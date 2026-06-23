@@ -3091,6 +3091,7 @@ async function collectBuildMetadataFromHost(metadataDir) {
     target_source_paths: new Set(),
     target_include_dirs: new Set(),
     matched_target_files: [],
+    build_dependency_source_paths: new Set(),
   };
   for (const name of (await readdir(replyHostPath)).sort()) {
     if (!name.endsWith('.json')) continue;
@@ -3101,15 +3102,20 @@ async function collectBuildMetadataFromHost(metadataDir) {
   if (!replyFiles.length) {
     throw new Error(`cached CMake metadata reply directory did not contain JSON metadata: ${replyHostPath}`);
   }
+  const buildDependencyFiles = await collectBuildDependencyFilesFromHost(metadataDir, projectionHints);
   ensureEntryCoveredByBuildMetadata({
     compileCommandSourcePaths,
     targetSourcePaths: projectionHints.target_source_paths,
+    buildDependencySourcePaths: projectionHints.build_dependency_source_paths,
   });
   return {
     compileCommandsJson,
+    compileCommandSourcePaths,
     cmakeReplyFiles: replyFiles,
+    buildDependencyFiles,
     targetSourcePaths: [...projectionHints.target_source_paths].sort(),
     targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    buildDependencySourcePaths: [...projectionHints.build_dependency_source_paths].sort(),
     matchedTargetFiles: projectionHints.matched_target_files.sort(),
   };
 }
@@ -3139,6 +3145,7 @@ async function collectBuildMetadataFromWorker(buildPath) {
     target_source_paths: new Set(),
     target_include_dirs: new Set(),
     matched_target_files: [],
+    build_dependency_source_paths: new Set(),
   };
   for (const name of (await readdir(replyHostPath)).sort()) {
     if (!name.endsWith('.json')) continue;
@@ -3149,15 +3156,20 @@ async function collectBuildMetadataFromWorker(buildPath) {
   if (!replyFiles.length) {
     throw new Error('CMake File API reply directory did not contain JSON metadata');
   }
+  const buildDependencyFiles = await collectBuildDependencyFilesFromWorker(buildPath, metadataDir, projectionHints);
   ensureEntryCoveredByBuildMetadata({
     compileCommandSourcePaths,
     targetSourcePaths: projectionHints.target_source_paths,
+    buildDependencySourcePaths: projectionHints.build_dependency_source_paths,
   });
   return {
     compileCommandsJson,
+    compileCommandSourcePaths,
     cmakeReplyFiles: replyFiles,
+    buildDependencyFiles,
     targetSourcePaths: [...projectionHints.target_source_paths].sort(),
     targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    buildDependencySourcePaths: [...projectionHints.build_dependency_source_paths].sort(),
     matchedTargetFiles: projectionHints.matched_target_files.sort(),
   };
 }
@@ -3186,6 +3198,77 @@ function collectProjectionHintsFromCmakeReply(name, content, projectionHints) {
   }
 }
 
+async function collectBuildDependencyFilesFromHost(metadataDir, projectionHints) {
+  const buildDepsDir = path.join(metadataDir, 'build-dependencies');
+  if (!existsSync(buildDepsDir)) return [];
+  const files = [];
+  for (const name of (await readdir(buildDepsDir)).sort()) {
+    const full = path.join(buildDepsDir, name);
+    const st = await stat(full);
+    if (!st.isFile()) continue;
+    const content = normalizeBuildMetadataText(await readFile(full, 'utf8'));
+    collectBuildDependencySourcePaths(content, projectionHints);
+    files.push({ path: `.cmake/build-dependencies/${name}`, content });
+  }
+  return files;
+}
+
+async function collectBuildDependencyFilesFromWorker(buildPath, metadataDir, projectionHints) {
+  const buildDepsDir = path.join(metadataDir, 'build-dependencies');
+  await mkdir(buildDepsDir, { recursive: true });
+  const patterns = [
+    `${buildPath.replace(/\/+$/, '')}/CMakeFiles/Makefile.cmake`,
+    `*CMakeFiles/${CFG.targetName}.dir/build.make`,
+    `*CMakeFiles/${CFG.targetName}.dir/DependInfo.cmake`,
+  ];
+  const remotePaths = [];
+  for (const pattern of patterns) {
+    const out = await execText(
+      'docker',
+      [
+        'exec',
+        CFG.workerContainer,
+        'sh',
+        '-lc',
+        `cd /tmp && find ${shQuote(buildPath)} -path ${shQuote(pattern)} -print 2>/dev/null`,
+      ],
+      30000,
+      true,
+    );
+    for (const line of String(out || '').split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed) remotePaths.push(trimmed);
+    }
+  }
+
+  const files = [];
+  for (const remotePath of [...new Set(remotePaths)].sort()) {
+    const hash = createHash('sha256').update(remotePath).digest('hex').slice(0, 12);
+    const localName = `${hash}-${path.posix.basename(remotePath)}`;
+    const localPath = path.join(buildDepsDir, localName);
+    await execText(
+      'docker',
+      ['cp', `${CFG.workerContainer}:${remotePath}`, localPath],
+      30000,
+      true,
+    );
+    const content = normalizeBuildMetadataText(await readFile(localPath, 'utf8'));
+    collectBuildDependencySourcePaths(content, projectionHints);
+    files.push({ path: `.cmake/build-dependencies/${localName}`, content });
+  }
+  return files;
+}
+
+function collectBuildDependencySourcePaths(content, projectionHints) {
+  const normalized = normalizeBuildMetadataText(content).replace(/\\\r?\n/g, ' ');
+  const matches = normalized.match(/[A-Za-z]:\/[^\s"'()<>]+|\/[^\s"'()<>]+/g) ?? [];
+  for (const raw of matches) {
+    const trimmed = raw.replace(/[;,:]+$/g, '');
+    const rel = repoRelativePath(trimmed);
+    if (rel) projectionHints.build_dependency_source_paths.add(rel);
+  }
+}
+
 function repoRelativePath(rawPath) {
   if (!rawPath) return null;
   const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -3209,17 +3292,35 @@ function normalizeBuildMetadataText(raw) {
   return String(raw).replaceAll(workerRoot, workspaceRoot);
 }
 
-function buildMetadataCoversSource(sourcePath, { compileCommandSourcePaths = [], targetSourcePaths = [] } = {}) {
+function buildMetadataCoversSource(
+  sourcePath,
+  {
+    compileCommandSourcePaths = [],
+    targetSourcePaths = [],
+    buildDependencySourcePaths = [],
+  } = {},
+) {
   const normalizedSource = String(sourcePath ?? '').replace(/\\/g, '/');
   if (!normalizedSource) return false;
   const compileSources = new Set([...compileCommandSourcePaths].map((candidate) => String(candidate).replace(/\\/g, '/')));
   const targetSources = new Set([...targetSourcePaths].map((candidate) => String(candidate).replace(/\\/g, '/')));
-  return compileSources.has(normalizedSource) || targetSources.has(normalizedSource);
+  const buildDependencySources = new Set([...buildDependencySourcePaths].map((candidate) => String(candidate).replace(/\\/g, '/')));
+  return compileSources.has(normalizedSource)
+    || targetSources.has(normalizedSource)
+    || buildDependencySources.has(normalizedSource);
 }
 
-function ensureEntryCoveredByBuildMetadata({ compileCommandSourcePaths, targetSourcePaths }) {
+function ensureEntryCoveredByBuildMetadata({
+  compileCommandSourcePaths,
+  targetSourcePaths,
+  buildDependencySourcePaths,
+}) {
   const entryFile = CFG.entryFile.replace(/\\/g, '/');
-  if (buildMetadataCoversSource(entryFile, { compileCommandSourcePaths, targetSourcePaths })) return;
+  if (buildMetadataCoversSource(entryFile, {
+    compileCommandSourcePaths,
+    targetSourcePaths,
+    buildDependencySourcePaths,
+  })) return;
   throw new Error(`CMake metadata did not include ${CFG.entryFile}`);
 }
 
@@ -3280,6 +3381,9 @@ async function collectRepoFiles(buildMetadata) {
   for (const reply of buildMetadata.cmakeReplyFiles) {
     files.push(reply);
   }
+  for (const dep of buildMetadata.buildDependencyFiles ?? []) {
+    files.push(dep);
+  }
 
   report.seeded_file_count = files.length;
   report.skipped_file_count = skipped.length;
@@ -3335,9 +3439,106 @@ function compileProjectionRequestArgs(selectedFiles, phaseName) {
   return { files: inlineFiles, file_refs: fileRefs };
 }
 
+function buildSourceCoverageForFocus(files, focusPath, buildMetadata, options = {}) {
+  const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
+  const fileMap = new Map(files.map((file) => [file.path, file.content]));
+  const directSources = directBuildMetadataSourceSet(buildMetadata);
+  if (directSources.has(normalizedFocus)) {
+    return {
+      covered: true,
+      reason: 'direct_build_metadata',
+      trace: [normalizedFocus],
+      coveredPaths: [normalizedFocus],
+    };
+  }
+
+  const includeDirs = ['.', ...(buildMetadata.targetIncludeDirs ?? [])].filter(Boolean);
+  const queue = [];
+  const parents = new Map();
+  const preferredRoots = (options.preferredRoots ?? [])
+    .map((candidate) => String(candidate ?? '').replace(/\\/g, '/'))
+    .filter((candidate) => candidate && directSources.has(candidate));
+  const orderedRoots = [
+    ...preferredRoots,
+    ...[...directSources].sort().filter((source) => !preferredRoots.includes(source)),
+  ];
+  for (const source of orderedRoots) {
+    if (!fileMap.has(source)) continue;
+    queue.push(source);
+    parents.set(source, null);
+  }
+
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    for (const includePath of extractSourceIncludes(fileMap.get(current))) {
+      const resolved = resolveSourceInclude(current, includePath, includeDirs, fileMap);
+      if (!resolved || parents.has(resolved)) continue;
+      parents.set(resolved, current);
+      if (resolved === normalizedFocus) {
+        const trace = [];
+        for (let node = resolved; node; node = parents.get(node)) trace.push(node);
+        trace.reverse();
+        return {
+          covered: true,
+          reason: 'static_include_from_build_metadata',
+          trace,
+          coveredPaths: trace,
+        };
+      }
+      queue.push(resolved);
+    }
+  }
+
+  return {
+    covered: false,
+    reason: 'not_reachable_from_build_metadata',
+    trace: [],
+    coveredPaths: [...parents.keys()].sort(),
+  };
+}
+
+function directBuildMetadataSourceSet(buildMetadata) {
+  return new Set([
+    ...(buildMetadata.compileCommandSourcePaths ?? []),
+    ...(buildMetadata.targetSourcePaths ?? []),
+    ...(buildMetadata.buildDependencySourcePaths ?? []),
+  ].map((candidate) => String(candidate).replace(/\\/g, '/')).filter(Boolean));
+}
+
+function extractSourceIncludes(content) {
+  const includes = [];
+  const pattern = /^\s*#\s*include\s*[<"]([^">]+)[">]/gm;
+  let match;
+  while ((match = pattern.exec(String(content ?? ''))) !== null) {
+    if (match[1]) includes.push(match[1].replace(/\\/g, '/'));
+  }
+  return includes;
+}
+
+function resolveSourceInclude(fromPath, includePath, includeDirs, fileMap) {
+  const fromDir = path.posix.dirname(String(fromPath ?? '').replace(/\\/g, '/'));
+  const candidates = [
+    path.posix.normalize(path.posix.join(fromDir, includePath)),
+    ...includeDirs.map((dir) => path.posix.normalize(path.posix.join(dir, includePath))),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || candidate.startsWith('../') || candidate === '..') continue;
+    if (fileMap.has(candidate)) return candidate;
+  }
+  return null;
+}
+
 function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
   const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
   const targetSources = new Set(buildMetadata.targetSourcePaths ?? []);
+  const buildDependencySources = new Set(buildMetadata.buildDependencySourcePaths ?? []);
+  const coverage = buildSourceCoverageForFocus(files, normalizedFocus, buildMetadata, {
+    preferredRoots: [CFG.entryFile],
+  });
+  if (!coverage.covered) {
+    throw new Error(`CMake metadata did not cover ${normalizedFocus}: ${coverage.reason}`);
+  }
+  const coveredDependencyPaths = new Set(coverage.coveredPaths ?? []);
   const includeDirs = (buildMetadata.targetIncludeDirs ?? [])
     .filter((dir) => dir && dir !== '.')
     .sort((a, b) => b.length - a.length);
@@ -3345,15 +3546,24 @@ function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
 
   for (const file of files) {
     if (file.path === normalizedFocus) continue;
-    const isMetadata = file.path === 'compile_commands.json' || file.path.startsWith('.cmake/api/v1/reply/');
+    const isMetadata = file.path === 'compile_commands.json'
+      || file.path.startsWith('.cmake/api/v1/reply/')
+      || file.path.startsWith('.cmake/build-dependencies/');
     const isTargetSource = targetSources.has(file.path);
+    const isCoveredDependency = coveredDependencyPaths.has(file.path);
     const includeDir = includeDirs.find((dir) => pathIsWithinDir(file.path, dir));
-    if (!isMetadata && !isTargetSource && !includeDir) continue;
-    const priority = isMetadata ? 0 : isTargetSource ? 1 : 2;
+    if (!isMetadata && !isTargetSource && !isCoveredDependency && !includeDir) continue;
+    const priority = isMetadata ? 0 : (isTargetSource || isCoveredDependency) ? 1 : 2;
     candidates.push({
       file,
       priority,
-      reason: isMetadata ? 'build_metadata' : isTargetSource ? 'target_source' : `include_dir:${includeDir}`,
+      reason: isMetadata
+        ? 'build_metadata'
+        : isTargetSource
+          ? 'target_source'
+          : isCoveredDependency
+            ? 'include_reachable_from_build_metadata'
+            : `include_dir:${includeDir}`,
       bytes: byteLength(file.content),
     });
   }
@@ -3379,8 +3589,11 @@ function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
     omitted_files: omitted.length,
     omitted_bytes: omitted.reduce((sum, item) => sum + item.bytes, 0),
     target_source_paths: targetSources.size,
+    build_dependency_source_paths: buildDependencySources.size,
     target_include_dirs: includeDirs.length,
     matched_target_files: buildMetadata.matchedTargetFiles ?? [],
+    coverage_reason: coverage.reason,
+    coverage_trace: coverage.trace,
     max_bytes: CFG.compileContextMaxBytes,
     compile_transport: CFG.compileTransport,
   };
@@ -3878,6 +4091,8 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
       await capturePhaseRuntimeIdentity(identityMonitor, 'wait_poll_error');
       const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
       if (identityLoss) return identityLoss;
+      const waitError = waitResultFromWaitHmrToolError(err);
+      if (waitError) return attachWaitEvidence(waitError, waitArgs);
       const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       throw err;
@@ -3922,6 +4137,24 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     wait_args: timeoutWaitArgs,
     wait_contract: timeoutWaitContract,
   };
+}
+
+function waitResultFromWaitHmrToolError(err) {
+  const message = String(err?.message ?? err ?? '');
+  const match = message.match(/tool synthi_wait_hmr isError:\s*(\{[\s\S]*\})$/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.error !== 'gpu_hmr_proof_insufficient') return null;
+    return {
+      ...parsed,
+      status: parsed.status ?? 'timeout',
+      source: parsed.source ?? 'tool_error',
+    };
+  } catch {
+    return null;
+  }
 }
 
 function hmrPreviewId(detail) {
@@ -7161,11 +7394,61 @@ int main()
   })) {
     throw new Error('CMake metadata coverage self-check should accept target header sources');
   }
+  if (!buildMetadataCoversSource('src/generated.cl', {
+    buildDependencySourcePaths: ['src/generated.cl'],
+  })) {
+    throw new Error('CMake metadata coverage self-check should accept generated build dependencies');
+  }
   if (buildMetadataCoversSource('src/missing.h', {
     compileCommandSourcePaths: ['src/main.cpp'],
     targetSourcePaths: ['src/kernel.h'],
+    buildDependencySourcePaths: ['src/generated.cl'],
   })) {
     throw new Error('CMake metadata coverage self-check should reject unrelated sources');
+  }
+  const includeCoverage = buildSourceCoverageForFocus(
+    [
+      { path: 'src/main.cl', content: '#include "kernel.h"\n__kernel void k() {}\n' },
+      { path: 'src/kernel.h', content: '#define K 1\n' },
+    ],
+    'src/kernel.h',
+    { buildDependencySourcePaths: ['src/main.cl'] },
+  );
+  const missingIncludeCoverage = buildSourceCoverageForFocus(
+    [
+      { path: 'src/main.cl', content: '#include "kernel.h"\n__kernel void k() {}\n' },
+      { path: 'src/kernel.h', content: '#define K 1\n' },
+    ],
+    'src/missing.h',
+    { buildDependencySourcePaths: ['src/main.cl'] },
+  );
+  const preferredIncludeCoverage = buildSourceCoverageForFocus(
+    [
+      { path: 'src/a.cl', content: '#include "kernel.h"\n__kernel void a() {}\n' },
+      { path: 'src/b.cl', content: '#include "kernel.h"\n__kernel void b() {}\n' },
+      { path: 'src/kernel.h', content: '#define K 1\n' },
+    ],
+    'src/kernel.h',
+    { buildDependencySourcePaths: ['src/a.cl', 'src/b.cl'] },
+    { preferredRoots: ['src/b.cl'] },
+  );
+  if (
+    includeCoverage.reason !== 'static_include_from_build_metadata'
+    || includeCoverage.trace.join('>') !== 'src/main.cl>src/kernel.h'
+    || missingIncludeCoverage.covered
+    || preferredIncludeCoverage.trace.join('>') !== 'src/b.cl>src/kernel.h'
+  ) {
+    throw new Error('CMake metadata include reachability self-check failed');
+  }
+  const parsedWaitError = waitResultFromWaitHmrToolError(new Error(
+    'tool synthi_wait_hmr isError: {"error":"gpu_hmr_proof_insufficient","status":"timeout","gpu_proof_validation":{"reason":"proof_state_missing"}}',
+  ));
+  if (
+    parsedWaitError?.status !== 'timeout'
+    || parsedWaitError?.gpu_proof_validation?.reason !== 'proof_state_missing'
+    || waitResultFromWaitHmrToolError(new Error('tool synthi_wait_hmr isError: {"error":"other"}')) !== null
+  ) {
+    throw new Error('wait_hmr proof-insufficient parser self-check failed');
   }
   const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
     available: true,
