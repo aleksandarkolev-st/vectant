@@ -39,6 +39,11 @@
   "outputOracle": {
     "profile": "none"
   },
+  "targetProgression": {
+    "phase": "final-acceptance",
+    "finalAcceptanceTarget": "MIOpenDriver",
+    "required": true
+  },
   "preview": {
     "renderPreview": false,
     "expectScreenshot": false,
