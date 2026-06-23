@@ -1016,7 +1016,11 @@ function rowSafetyFailures(row) {
   }
   if (
     row.acceptedForGpuHmr === true
-    && (row.proofMode === 'run_mode_proof' || row.proofMode === 'real_rocm_repo_validation')
+    && (
+      row.proofMode === 'run_mode_proof'
+      || row.proofMode === 'real_rocm_repo_validation'
+      || row.proofMode === 'mcp_preview_visual'
+    )
   ) {
     if (row.ledger?.present !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_embedded_proof_ledger' });
@@ -1626,6 +1630,9 @@ async function agentSplitRow(records, filePath, context) {
   const proofValidation = compactObject(waitDetail?.gpu_proof_validation);
   const ledgerValidation = compactObject(proofValidation.proofLedgerValidation);
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(waitDetail ?? {});
+  const recomputedLedger = runModeLedgerFacet(waitDetail ?? {}, runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
   const identity = runtimePayloadIdentity(waitDetail);
   const backend = backendFromVendorText(detailRecord(records, 'gpu vendor', false)?.detail)
     ?? identity.backend;
@@ -1642,6 +1649,13 @@ async function agentSplitRow(records, filePath, context) {
     deltaMetrics,
     true,
   );
+  const strictRuntimeProofAccepted =
+    recomputedLedger.present === true
+    && recomputedLedger.source === 'recomputed_ledger'
+    && recomputedLedger.gpuHmrSuccess === true
+    && recomputedLedger.failedInvariants.length === 0
+    && runtimeProofArtifactGate.present === true
+    && runtimeProofArtifactGate.accepted === true;
   const accepted =
     detailStatus(records, 'worker used GPU split endpoint') === 'pass'
     && detailStatus(records, 'generated split contains HMR ABI') === 'pass'
@@ -1653,20 +1667,23 @@ async function agentSplitRow(records, filePath, context) {
     && Array.isArray(ledgerValidation.failedInvariants)
     && ledgerValidation.failedInvariants.length === 0
     && runtimeValidation.accepted === true
+    && strictRuntimeProofAccepted
     && firewall.cpuHmrUsed === false
     && firewall.fullRebuildUsed === false
     && firewall.processRestarted === false
     && identity.targetId !== 'unknown'
     && deltaRecord?.status === 'pass'
     && visual.accepted === true;
-  const ledger = {
+  const embeddedLedgerValidation = {
     present: Boolean(ledgerValidation.proofId),
+    source: 'embedded_validation_claim',
     proofId: firstText(ledgerValidation.proofId),
     gpuHmrSuccess: boolOrNull(ledgerValidation.gpuHmrSuccess),
     failedInvariants: Array.isArray(ledgerValidation.failedInvariants)
       ? ledgerValidation.failedInvariants
       : [],
   };
+  const ledger = recomputedLedger.present === true ? recomputedLedger : embeddedLedgerValidation;
   const runMode = timingEvidence(
     waitDetail?.timingMetrics,
     waitDetail?.timing_metrics,
@@ -1691,10 +1708,14 @@ async function agentSplitRow(records, filePath, context) {
     proofChain: accepted ? 'mcp_wait_hmr_runtime_proof_gate' : 'mcp_wait_hmr_runtime_proof_gate_rejected',
     proofIds: proofIdsFrom(
       ledgerValidation.proofId,
+      ledger.proofId,
+      runtimeProofArtifactGate.proofId,
       waitDetail?.gpu_proof_telemetry?.proofId,
       waitDetail?.gpu_proof_telemetry?.proof_id,
     ),
     ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
     visual,
     runMode,
     cpuHmrUsed: firewall.cpuHmrUsed,
@@ -1707,7 +1728,12 @@ async function agentSplitRow(records, filePath, context) {
     reasons: accepted ? [] : compactStringList([
       proofValidation.reason,
       identity.targetId === 'unknown' ? 'target_identity_not_present_in_runtime_payload' : null,
+      recomputedLedger.present === true ? null : 'mcp_preview_recomputed_proof_ledger_missing',
+      recomputedLedger.source === 'recomputed_ledger' ? null : 'mcp_preview_recomputed_proof_ledger_required',
+      runtimeProofArtifactGate.present === true ? null : 'mcp_preview_runtime_proof_artifact_missing',
+      runtimeProofArtifactGate.accepted === true ? null : 'mcp_preview_runtime_proof_artifact_not_strictly_accepted',
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
     openGaps: accepted ? [] : ['mcp_runtime_visual_proof_not_accepted'],

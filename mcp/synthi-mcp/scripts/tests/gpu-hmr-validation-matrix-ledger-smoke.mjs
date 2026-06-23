@@ -719,6 +719,63 @@ await writeJson(path.join(visualDir, 'agent-split-results.json'), [
   { name: 'runner stayed alive after GPU HMR', status: 'pass', detail: 'no runner crash marker' },
 ]);
 
+const forgedLegacyDir = path.join(logsRoot, 'agent-split-artifacts', 'forged-legacy-preview');
+await writeRgbaPng(path.join(forgedLegacyDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
+await writeRgbaPng(path.join(forgedLegacyDir, 'after-hmr-first.png'), 8, 8, (x, y) => [64 + x, 80 + y, 128, 255]);
+await writeRgbaPng(path.join(forgedLegacyDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(forgedLegacyDir, 'agent-split-results.json'), [
+  { name: 'fixture', status: 'pass', detail: 'forged legacy preview with embedded claims only' },
+  { name: 'worker used GPU split endpoint', status: 'pass', detail: 'GPU markers detected' },
+  { name: 'generated split contains HMR ABI', status: 'pass', detail: 'shared.h, core.cpp, device.hip' },
+  { name: 'generated split HMR granularity', status: 'pass', detail: 'claim=device_translation_unit_hmr' },
+  {
+    name: 'mcp wait_hmr proof gate',
+    status: 'pass',
+    detail: JSON.stringify({
+      backend: 'hip',
+      targetId: 'forged-legacy-preview',
+      profileId: 'forged-legacy-preview',
+      gpu_proof_validation: {
+        satisfied: true,
+        proofLedgerValidation: {
+          proofId: 'gpu-ledger-proof:sha256:forged-legacy-preview',
+          gpuHmrSuccess: true,
+          failedInvariants: [],
+        },
+        runtimeProofArtifactValidation: {
+          accepted: true,
+          failedGates: [],
+        },
+      },
+      gpu_proof_telemetry: {
+        proofId: 'gpu-runtime-proof:sha256:forged-legacy-preview',
+      },
+      timingMetrics: {
+        metricClock: 'monotonic_ns',
+        metricScope: 'hot_delta_1',
+        cacheState: 'compiler_cache_warm',
+      },
+    }),
+  },
+  { name: 'device-only GPU HMR observed', status: 'pass', detail: '[gpu-reload] plan=device_only' },
+  {
+    name: 'mcp screenshot before hmr',
+    status: 'pass',
+    detail: `images=${path.join(forgedLegacyDir, 'before-hmr-first.png')}`,
+  },
+  {
+    name: 'mcp screenshot after hmr',
+    status: 'pass',
+    detail: `images=${path.join(forgedLegacyDir, 'after-hmr-first.png')}`,
+  },
+  {
+    name: 'mcp screenshot visual delta',
+    status: 'pass',
+    detail: `changed=4.20% mean_abs=6.50 selected_delta_ms=123 diff=${path.join(forgedLegacyDir, 'before-after-diff.png')}`,
+  },
+  { name: 'runner stayed alive after GPU HMR', status: 'pass', detail: 'no runner crash marker' },
+]);
+
 const runModeProofBase = {
   schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
   backend: 'hip',
@@ -1780,9 +1837,21 @@ assert.equal(forgedHiprt.oracleRegion.accepted, false);
 assert.equal(forgedHiprt.oracleRegion.nonBlankAfterEpoch, false);
 assert.ok(forgedHiprt.reasons.includes('hiprt_oracle_region_pixel_recompute_not_accepted'));
 
-const legacyAgentSplit = ledger.rows.find((row) => row.proofMode === 'mcp_preview_visual');
+const legacyAgentSplit = ledger.rows.find((row) =>
+  row.proofMode === 'mcp_preview_visual'
+  && row.targetId === 'unknown'
+);
 assert.equal(legacyAgentSplit?.matrixOutcome, 'unproven');
 assert.equal(legacyAgentSplit.targetId, 'unknown');
+
+const forgedLegacyPreview = ledger.rows.find((row) => row.targetId === 'forged-legacy-preview');
+assert.equal(forgedLegacyPreview?.proofMode, 'mcp_preview_visual');
+assert.equal(forgedLegacyPreview.matrixOutcome, 'unproven');
+assert.equal(forgedLegacyPreview.acceptedForGpuHmr, false);
+assert.equal(forgedLegacyPreview.ledger.source, 'embedded_validation_claim');
+assert.equal(forgedLegacyPreview.runtimeProofArtifact.present, false);
+assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_recomputed_proof_ledger_missing'));
+assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_runtime_proof_artifact_missing'));
 
 assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
 assert.equal(ledger.summary.broadFullRuntimeGpuHmrRows, 0);
