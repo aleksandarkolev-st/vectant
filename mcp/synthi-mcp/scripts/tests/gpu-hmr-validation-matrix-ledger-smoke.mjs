@@ -987,6 +987,36 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       detail: 'target progression phase is required but was not declared',
     },
   ],
+  real_rocm_app_hook_contract: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
+    declared: false,
+    required: true,
+    status: 'required_app_hook_contract_missing',
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    contractEvidenceComplete: false,
+    contract_evidence_complete: false,
+    runtimeObservationComplete: false,
+    runtime_observation_complete: false,
+    blockingGaps: [
+      'app_hook_contract_not_declared',
+      'app_hook_artifact_transport_evidence_missing',
+      'app_hook_epoch_publication_evidence_missing',
+      'app_hook_dispatch_trace_evidence_missing',
+      'app_hook_host_identity_evidence_missing',
+      'app_hook_output_oracle_evidence_missing',
+    ],
+    blocking_gaps: [
+      'app_hook_contract_not_declared',
+      'app_hook_artifact_transport_evidence_missing',
+      'app_hook_epoch_publication_evidence_missing',
+      'app_hook_dispatch_trace_evidence_missing',
+      'app_hook_host_identity_evidence_missing',
+      'app_hook_output_oracle_evidence_missing',
+    ],
+  },
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -1267,12 +1297,16 @@ assert.equal(largeRocm.outputOracleResolution.contractPresent, false);
 assert.equal(largeRocm.targetProgression.required, true);
 assert.equal(largeRocm.targetProgression.reason, 'phase_not_declared');
 assert.equal(largeRocm.targetProgressionGates[0]?.status, 'fail');
+assert.equal(largeRocm.realRocmAppHookContract.status, 'required_app_hook_contract_missing');
+assert.equal(largeRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target progression phase'));
+assert.ok(largeRocm.reasons.includes('real_rocm_app_hook_contract:app_hook_contract_not_declared'));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing'));
 
 const truncatedVisual = ledger.rows.find((row) => row.targetId === 'truncated-visual');
 assert.equal(truncatedVisual?.matrixOutcome, 'unproven');
@@ -1580,6 +1614,212 @@ const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCove
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+
+const forgedRequiredHookRocmDir = path.join(logsRoot, 'real-rocm-forged-required-hook');
+await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [90 + x, 112 + y, 140, 255]);
+await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-hook.json'), {
+  slug: 'gpu-real-rocm-forged-required-hook-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-required-hook' },
+  source_url: 'https://example.invalid/rocm/forged-required-hook.git',
+  repo_commit: 'cdef0123456789abcdef0123456789abcdef0123',
+  entry_file: 'src/kernels/required_hook_entry.hip',
+  delta_file: 'src/kernels/required_hook_delta.h',
+  target_name: 'ForgedRequiredHookDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    selectedSource: 'profile_runtime_profile',
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: false,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  real_rocm_app_hook_contract: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
+    declared: true,
+    required: true,
+    status: 'declared_app_hook_pending_runtime_observation',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    runtimeObservationComplete: false,
+    runtime_observation_complete: false,
+    blockingGaps: ['app_hook_dispatch_trace_runtime_not_observed'],
+    blocking_gaps: ['app_hook_dispatch_trace_runtime_not_observed'],
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'real-rocm-forged-required-hook',
+    visualRoot: forgedRequiredHookRocmDir,
+  }),
+  visual_artifact_paths: [
+    path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'),
+    path.join(forgedRequiredHookRocmDir, 'after-hmr-first.png'),
+    path.join(forgedRequiredHookRocmDir, 'before-after-diff.png'),
+  ],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-required-hook-delta',
+    editHash: hashValue('real-rocm-forged-required-hook-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-required-hook.git @ cdef012345 files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedRequiredHookRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRequiredHookRocmDir],
+  generatedAt: '2026-06-09T00:00:02.125Z',
+  includeUnproven: true,
+});
+const forgedRequiredHookRocm = forgedRequiredHookRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedRequiredHookRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedRequiredHookRocm.acceptedForGpuHmr, false);
+assert.equal(forgedRequiredHookRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedRequiredHookRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedRequiredHookRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.declared, true);
+assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
+assert.ok(forgedRequiredHookRocm.reasons.includes('real_rocm_app_hook_contract_required_not_proven'));
+assert.ok(forgedRequiredHookRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
+
+const forgedMissingHookFacetRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-hook-facet');
+await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [32 + x, 96 + y, 180, 255]);
+await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(forgedMissingHookFacetRocmDir, 'real-rocm-forged-missing-hook-facet.json'), {
+  slug: 'gpu-real-rocm-forged-missing-hook-facet-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-missing-hook-facet' },
+  source_url: 'https://example.invalid/rocm/forged-missing-hook-facet.git',
+  repo_commit: 'fedcba9876543210fedcba9876543210fedcba98',
+  entry_file: 'src/kernels/missing_hook_entry.hip',
+  delta_file: 'src/kernels/missing_hook_delta.h',
+  target_name: 'ForgedMissingHookFacetDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    selectedSource: 'profile_runtime_profile',
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: false,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  native_rocm_launch_boundary: {
+    schemaVersion: 'synthi.gpu_hmr.native_rocm_launch_boundary_refusal.v1',
+    observed: true,
+    status: 'refusal_evidence',
+    adapterOutcome: 'adapter_impossible_requires_app_hook',
+    adapter_outcome: 'adapter_impossible_requires_app_hook',
+    blockingGaps: ['adapter_impossible_requires_app_hook'],
+    blocking_gaps: ['adapter_impossible_requires_app_hook'],
+  },
+  real_rocm_runtime_eligibility: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_eligibility.v1',
+    status: 'refused_missing_runtime_proof',
+    appHookContractStatus: 'required_app_hook_contract_missing',
+    app_hook_contract_status: 'required_app_hook_contract_missing',
+    blockingGaps: ['app_hook_contract_not_declared'],
+    blocking_gaps: ['app_hook_contract_not_declared'],
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'real-rocm-forged-missing-hook-facet',
+    visualRoot: forgedMissingHookFacetRocmDir,
+  }),
+  visual_artifact_paths: [
+    path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'),
+    path.join(forgedMissingHookFacetRocmDir, 'after-hmr-first.png'),
+    path.join(forgedMissingHookFacetRocmDir, 'before-after-diff.png'),
+  ],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-missing-hook-facet-delta',
+    editHash: hashValue('real-rocm-forged-missing-hook-facet-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-missing-hook-facet.git @ fedcba9 files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedMissingHookFacetRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedMissingHookFacetRocmDir],
+  generatedAt: '2026-06-09T00:00:02.126Z',
+  includeUnproven: true,
+});
+const forgedMissingHookFacetRocm = forgedMissingHookFacetRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedMissingHookFacetRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedMissingHookFacetRocm.acceptedForGpuHmr, false);
+assert.equal(forgedMissingHookFacetRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedMissingHookFacetRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedMissingHookFacetRocm.outputOracleFacet.accepted, true);
+assert.deepEqual(forgedMissingHookFacetRocm.realRocmAppHookContract, {});
+assert.ok(forgedMissingHookFacetRocm.reasons.includes('real_rocm_app_hook_contract_required_not_proven'));
+assert.ok(forgedMissingHookFacetRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
 
 const acceptedComputeRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-lib');
 const acceptedComputeRawReadback = path.join(acceptedComputeRocmDir, 'readback.bin');

@@ -1935,6 +1935,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.native_runtime_eligibility
     ?? runtimeProofArtifact.nativeRuntimeEligibility,
   );
+  const realRocmAppHookContract = compactObject(
+    json.real_rocm_app_hook_contract
+    ?? json.realRocmAppHookContract
+    ?? json.app_hook_contract
+    ?? json.appHookContract
+    ?? summary.real_rocm_app_hook_contract
+    ?? summary.realRocmAppHookContract
+    ?? summary.app_hook_contract
+    ?? summary.appHookContract
+    ?? runtimeProofArtifact.real_rocm_app_hook_contract
+    ?? runtimeProofArtifact.realRocmAppHookContract
+    ?? runtimeProofArtifact.app_hook_contract
+    ?? runtimeProofArtifact.appHookContract,
+  );
   const nativeRocmBoundaryGaps = compactStringList([
     ...(Array.isArray(nativeRocmLaunchBoundary.blockingGaps) ? nativeRocmLaunchBoundary.blockingGaps : []),
     ...(Array.isArray(nativeRocmLaunchBoundary.blocking_gaps) ? nativeRocmLaunchBoundary.blocking_gaps : []),
@@ -1943,6 +1957,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmRuntimeEligibility.blockingGaps) ? realRocmRuntimeEligibility.blockingGaps : []),
     ...(Array.isArray(realRocmRuntimeEligibility.blocking_gaps) ? realRocmRuntimeEligibility.blocking_gaps : []),
   ]);
+  const realRocmAppHookContractGaps = compactStringList([
+    ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
+    ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
+  ]);
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -1950,6 +1968,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmRuntimeEligibilityReason =
     Object.keys(realRocmRuntimeEligibility).length > 0
       ? firstText(realRocmRuntimeEligibility.status, realRocmRuntimeEligibility.reason)
+      : null;
+  const realRocmAppHookContractReason =
+    Object.keys(realRocmAppHookContract).length > 0
+      ? firstText(realRocmAppHookContract.status, realRocmAppHookContract.reason)
       : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
@@ -1988,6 +2010,27 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     path.dirname(filePath),
   );
   const outputOrVisualOracleAccepted = outputOracleFacet.accepted === true;
+  const nativeBoundaryRequiresAppHook = compactStringList([
+    ...nativeRocmBoundaryGaps,
+    ...realRocmRuntimeEligibilityGaps,
+    nativeRocmLaunchBoundary.adapterOutcome,
+    nativeRocmLaunchBoundary.adapter_outcome,
+    nativeRocmLaunchBoundary.status,
+    realRocmRuntimeEligibility.appHookContractStatus,
+    realRocmRuntimeEligibility.app_hook_contract_status,
+  ]).some((value) =>
+    value === 'adapter_impossible_requires_app_hook'
+    || value === 'app_hook_contract_not_declared'
+    || value === 'required_app_hook_contract_missing'
+    || /^app_hook_/.test(value)
+  );
+  const appHookContractRequired =
+    nativeBoundaryRequiresAppHook
+    || realRocmAppHookContract.required === true;
+  const appHookContractAccepted =
+    !appHookContractRequired
+    || realRocmAppHookContract.canSatisfyRuntimeProof === true
+    || realRocmAppHookContract.can_satisfy_runtime_proof === true;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
     ?? json.full_runtime_proven
@@ -2008,7 +2051,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0
     && runtimeProofArtifactGate.accepted === true
-    && outputOrVisualOracleAccepted === true;
+    && outputOrVisualOracleAccepted === true
+    && appHookContractAccepted === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false
     || strictGateFailures.length > 0
@@ -2093,6 +2137,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     native_rocm_launch_boundary: nativeRocmLaunchBoundary,
     realRocmRuntimeEligibility,
     real_rocm_runtime_eligibility: realRocmRuntimeEligibility,
+    realRocmAppHookContract,
+    real_rocm_app_hook_contract: realRocmAppHookContract,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
     reasons: compactStringList([
       ...strictGateFailures,
@@ -2103,9 +2149,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       realRocmRuntimeEligibilityReason ? `real_rocm_runtime_eligibility:${realRocmRuntimeEligibilityReason}` : null,
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
+      realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
+      ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
+      appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
       ledger.present === true ? null : 'proof_ledger_record_missing',
       realRocmRequiredFullRuntimeProof(json) ? null : 'full_runtime_proof_not_required_by_artifact',
     ]),
@@ -2113,10 +2162,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeProofArtifactGate.accepted === true ? null : 'strict_runtime_proof_artifact_required',
       ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
+      appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
+      ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
     ]),
   });
 }
