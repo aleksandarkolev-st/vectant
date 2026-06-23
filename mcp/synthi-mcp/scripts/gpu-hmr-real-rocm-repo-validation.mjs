@@ -1492,14 +1492,40 @@ function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
   });
 }
 
+function runtimeOutputOracleProfileSyncPlan({
+  profile = null,
+  mcpTransport = CFG.mcpTransport,
+  workerContainer = CFG.workerContainer,
+} = {}) {
+  const container = String(workerContainer ?? '').trim();
+  const transport = String(mcpTransport ?? 'unknown').trim() || 'unknown';
+  if (!container) {
+    return {
+      action: 'skip',
+      status: profile ? 'warn' : 'info',
+      workerContainer: null,
+      syncSkippedReason: `transport_${transport}_worker_container_missing`,
+      detail: `transport=${transport} worker container unavailable`,
+    };
+  }
+  return {
+    action: profile ? 'write' : 'clear',
+    status: profile ? 'pass' : 'info',
+    workerContainer: container,
+    syncSkippedReason: null,
+    detail: `transport=${transport} worker=${container}`,
+  };
+}
+
 async function syncWorkerRuntimeOutputOracleProfile(profile) {
-  if (CFG.mcpTransport !== 'docker') {
+  const plan = runtimeOutputOracleProfileSyncPlan({ profile });
+  if (plan.action === 'skip') {
     report.output_oracle_resolution.runtimeProfileSynced = false;
-    report.output_oracle_resolution.syncSkippedReason = `transport_${CFG.mcpTransport}`;
+    report.output_oracle_resolution.syncSkippedReason = plan.syncSkippedReason;
     record(
       'runtime output oracle profile sync',
-      profile ? 'warn' : 'info',
-      `transport=${CFG.mcpTransport} worker profile sync skipped`,
+      plan.status,
+      `${plan.detail}; profile sync skipped`,
     );
     return;
   }
@@ -1508,7 +1534,7 @@ async function syncWorkerRuntimeOutputOracleProfile(profile) {
       'docker',
       [
         'exec',
-        CFG.workerContainer,
+        plan.workerContainer,
         'sh',
         '-lc',
         `rm -f '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}'`,
@@ -1531,7 +1557,7 @@ async function syncWorkerRuntimeOutputOracleProfile(profile) {
     'docker',
     [
       'exec',
-      CFG.workerContainer,
+      plan.workerContainer,
       'sh',
       '-lc',
       `mkdir -p "$(dirname '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}')" && printf '%s' '${encoded}' | base64 -d > '${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}'`,
@@ -6506,6 +6532,43 @@ async function selfCheckRuntimeDispatchEvidence() {
     || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
   ) {
     throw new Error('wait_hmr evidence attachment self-check failed');
+  }
+  const localWorkerOracleSync = runtimeOutputOracleProfileSyncPlan({
+    profile: { profileId: 'self-check-runtime-oracle' },
+    mcpTransport: 'local',
+    workerContainer: 'worker-self-check',
+  });
+  if (
+    localWorkerOracleSync.action !== 'write'
+    || localWorkerOracleSync.status !== 'pass'
+    || localWorkerOracleSync.workerContainer !== 'worker-self-check'
+    || localWorkerOracleSync.syncSkippedReason !== null
+  ) {
+    throw new Error('local worker runtime output oracle sync plan rejected a configured worker container');
+  }
+  const localMissingWorkerOracleSync = runtimeOutputOracleProfileSyncPlan({
+    profile: { profileId: 'self-check-runtime-oracle' },
+    mcpTransport: 'local',
+    workerContainer: '',
+  });
+  if (
+    localMissingWorkerOracleSync.action !== 'skip'
+    || localMissingWorkerOracleSync.status !== 'warn'
+    || localMissingWorkerOracleSync.syncSkippedReason !== 'transport_local_worker_container_missing'
+  ) {
+    throw new Error('runtime output oracle sync plan failed closed incorrectly for missing local worker container');
+  }
+  const dockerClearOracleSync = runtimeOutputOracleProfileSyncPlan({
+    profile: null,
+    mcpTransport: 'docker',
+    workerContainer: 'worker-self-check',
+  });
+  if (
+    dockerClearOracleSync.action !== 'clear'
+    || dockerClearOracleSync.status !== 'info'
+    || dockerClearOracleSync.syncSkippedReason !== null
+  ) {
+    throw new Error('runtime output oracle sync plan did not clear stale worker profile for docker worker');
   }
   const parsedCmakeArgs = parseStringArrayEnv(
     '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
