@@ -1017,6 +1017,45 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       'app_hook_output_oracle_evidence_missing',
     ],
   },
+  real_rocm_device_sidecar_contract: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_device_sidecar_contract_facet.v1',
+    declared: false,
+    required: false,
+    status: 'derived_device_sidecar_candidate_not_runtime_proof',
+    proofAuthority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    proof_authority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    runtimeObservationComplete: false,
+    runtime_observation_complete: false,
+    sourceCoverageComplete: true,
+    source_coverage_complete: true,
+    backend: 'hip',
+    artifact_identity: {
+      source_paths: ['src/kernels/entry_kernel.hip'],
+      artifact_kind: 'hsaco',
+      entry_points: ['entry_kernel'],
+      compile_target: 'gfx1201',
+      compiler: '/opt/rocm/llvm/bin/amdclang++',
+      compiler_args_hash: hashValue('large-rocm-device-sidecar-compile-args'),
+    },
+    blockingGaps: [
+      'device_sidecar_artifact_transport_runtime_not_observed',
+      'device_sidecar_epoch_publication_runtime_not_observed',
+      'device_sidecar_dispatch_trace_runtime_not_observed',
+      'device_sidecar_output_oracle_runtime_not_observed',
+      'device_sidecar_host_identity_runtime_not_observed',
+    ],
+    blocking_gaps: [
+      'device_sidecar_artifact_transport_runtime_not_observed',
+      'device_sidecar_epoch_publication_runtime_not_observed',
+      'device_sidecar_dispatch_trace_runtime_not_observed',
+      'device_sidecar_output_oracle_runtime_not_observed',
+      'device_sidecar_host_identity_runtime_not_observed',
+    ],
+  },
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -1299,14 +1338,22 @@ assert.equal(largeRocm.targetProgression.reason, 'phase_not_declared');
 assert.equal(largeRocm.targetProgressionGates[0]?.status, 'fail');
 assert.equal(largeRocm.realRocmAppHookContract.status, 'required_app_hook_contract_missing');
 assert.equal(largeRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmDeviceSidecarContract.status, 'derived_device_sidecar_candidate_not_runtime_proof');
+assert.equal(largeRocm.realRocmDeviceSidecarContract.canSatisfyRuntimeProof, false);
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target progression phase'));
 assert.ok(largeRocm.reasons.includes('real_rocm_app_hook_contract:app_hook_contract_not_declared'));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_device_sidecar_contract:derived_device_sidecar_candidate_not_runtime_proof',
+));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
 assert.ok(largeRocm.openGaps.includes('real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing'));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed',
+));
 
 const truncatedVisual = ledger.rows.find((row) => row.targetId === 'truncated-visual');
 assert.equal(truncatedVisual?.matrixOutcome, 'unproven');
@@ -1685,6 +1732,37 @@ await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-
     blockingGaps: ['compile_response_bridge_candidate_not_runtime_proof'],
     blocking_gaps: ['compile_response_bridge_candidate_not_runtime_proof'],
   },
+  real_rocm_device_sidecar_contract: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_device_sidecar_contract_facet.v1',
+    declared: true,
+    required: true,
+    status: 'declared_device_sidecar_contract_not_runtime_proof',
+    proofAuthority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    proof_authority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    runtimeObservationComplete: false,
+    runtime_observation_complete: false,
+    sourceCoverageComplete: true,
+    source_coverage_complete: true,
+    backend: 'hip',
+    artifact_identity: {
+      source_paths: ['src/kernels/required_hook_entry.hip'],
+      artifact_kind: 'hsaco',
+      entry_points: ['required_hook_kernel'],
+      compile_target: 'gfx1201',
+      compiler: '/opt/rocm/llvm/bin/amdclang++',
+      compiler_args_hash: hashValue('forged-required-hook-sidecar-compile-args'),
+    },
+    blockingGaps: [
+      'device_sidecar_dispatch_trace_runtime_not_observed',
+    ],
+    blocking_gaps: [
+      'device_sidecar_dispatch_trace_runtime_not_observed',
+    ],
+  },
   ...runtimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-required-hook',
     visualRoot: forgedRequiredHookRocmDir,
@@ -1726,10 +1804,18 @@ assert.equal(forgedRequiredHookRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedRequiredHookRocm.outputOracleFacet.accepted, true);
 assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.declared, true);
 assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
+assert.equal(forgedRequiredHookRocm.realRocmDeviceSidecarContract.declared, true);
+assert.equal(forgedRequiredHookRocm.realRocmDeviceSidecarContract.canSatisfyRuntimeProof, false);
 assert.equal(forgedRequiredHookRocm.realRocmCompileBridge.canSatisfyRuntimeProof, false);
 assert.ok(forgedRequiredHookRocm.reasons.includes('real_rocm_app_hook_contract_required_not_proven'));
+assert.ok(forgedRequiredHookRocm.reasons.includes(
+  'real_rocm_device_sidecar_contract:declared_device_sidecar_contract_not_runtime_proof',
+));
 assert.ok(forgedRequiredHookRocm.reasons.includes('real_rocm_compile_bridge:compile_bridge_candidate_observed_not_runtime_proof'));
 assert.ok(forgedRequiredHookRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
+assert.ok(forgedRequiredHookRocm.openGaps.includes(
+  'real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed',
+));
 assert.ok(forgedRequiredHookRocm.openGaps.includes(
   'real_rocm_compile_bridge:compile_response_bridge_candidate_not_runtime_proof',
 ));

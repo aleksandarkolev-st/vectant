@@ -1949,6 +1949,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_contract
     ?? runtimeProofArtifact.appHookContract,
   );
+  const realRocmDeviceSidecarContract = compactObject(
+    json.real_rocm_device_sidecar_contract
+    ?? json.realRocmDeviceSidecarContract
+    ?? json.device_sidecar_contract
+    ?? json.deviceSidecarContract
+    ?? summary.real_rocm_device_sidecar_contract
+    ?? summary.realRocmDeviceSidecarContract
+    ?? summary.device_sidecar_contract
+    ?? summary.deviceSidecarContract
+    ?? runtimeProofArtifact.real_rocm_device_sidecar_contract
+    ?? runtimeProofArtifact.realRocmDeviceSidecarContract
+    ?? runtimeProofArtifact.device_sidecar_contract
+    ?? runtimeProofArtifact.deviceSidecarContract,
+  );
   const realRocmCompileBridge = compactObject(
     json.real_rocm_compile_bridge
     ?? json.realRocmCompileBridge
@@ -1969,6 +1983,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
   ]);
+  const realRocmDeviceSidecarContractGaps = compactStringList([
+    ...(Array.isArray(realRocmDeviceSidecarContract.blockingGaps) ? realRocmDeviceSidecarContract.blockingGaps : []),
+    ...(Array.isArray(realRocmDeviceSidecarContract.blocking_gaps) ? realRocmDeviceSidecarContract.blocking_gaps : []),
+  ]);
   const realRocmCompileBridgeGaps = compactStringList([
     ...(Array.isArray(realRocmCompileBridge.blockingGaps) ? realRocmCompileBridge.blockingGaps : []),
     ...(Array.isArray(realRocmCompileBridge.blocking_gaps) ? realRocmCompileBridge.blocking_gaps : []),
@@ -1984,6 +2002,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmAppHookContractReason =
     Object.keys(realRocmAppHookContract).length > 0
       ? firstText(realRocmAppHookContract.status, realRocmAppHookContract.reason)
+      : null;
+  const realRocmDeviceSidecarContractReason =
+    Object.keys(realRocmDeviceSidecarContract).length > 0
+      ? firstText(realRocmDeviceSidecarContract.status, realRocmDeviceSidecarContract.reason)
       : null;
   const realRocmCompileBridgeReason =
     Object.keys(realRocmCompileBridge).length > 0
@@ -2155,6 +2177,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_eligibility: realRocmRuntimeEligibility,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmDeviceSidecarContract,
+    real_rocm_device_sidecar_contract: realRocmDeviceSidecarContract,
     realRocmCompileBridge,
     real_rocm_compile_bridge: realRocmCompileBridge,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
@@ -2169,6 +2193,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      !accepted && realRocmDeviceSidecarContractReason
+        ? `real_rocm_device_sidecar_contract:${realRocmDeviceSidecarContractReason}`
+        : null,
+      ...(!accepted ? realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`) : []),
       realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
@@ -2188,6 +2216,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
     ]),
   });

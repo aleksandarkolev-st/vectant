@@ -280,6 +280,54 @@ function normalizeRealRocmAppHookContract(rawContract) {
   };
 }
 
+function normalizeRealRocmDeviceSidecarContract(rawContract) {
+  const declared = rawContract !== undefined && rawContract !== null;
+  const contract = objectOrEmpty(rawContract, 'deviceSidecarContract');
+  const sourcePaths = optionalProfileStringList(
+    contract.sourcePaths ?? contract.source_paths ?? contract.sourcePath ?? contract.source_path,
+    'deviceSidecarContract.sourcePaths',
+  ).map((sourcePath) => sourcePath.replace(/\\/g, '/'));
+  const entryPoints = optionalProfileStringList(
+    contract.entryPoints ?? contract.entry_points ?? contract.kernelSymbols ?? contract.kernel_symbols,
+    'deviceSidecarContract.entryPoints',
+  );
+  const evidenceRefs = optionalProfileStringList(
+    contract.evidenceRefs ?? contract.evidence_refs ?? contract.evidenceRef ?? contract.evidence_ref,
+    'deviceSidecarContract.evidenceRefs',
+  );
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_device_sidecar_contract.v1',
+    declared,
+    required: declared
+      ? optionalProfileBoolean(contract.required, 'deviceSidecarContract.required') ?? true
+      : false,
+    proofAuthority: 'profile_declared_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'profile_declared_evidence_only_not_gpu_hmr_success',
+    sourcePaths,
+    source_paths: sourcePaths,
+    artifactKind:
+      optionalProfileString(contract.artifactKind ?? contract.artifact_kind, 'deviceSidecarContract.artifactKind')
+      || null,
+    artifact_kind:
+      optionalProfileString(contract.artifactKind ?? contract.artifact_kind, 'deviceSidecarContract.artifactKind')
+      || null,
+    entryPoints,
+    entry_points: entryPoints,
+    compileTarget:
+      optionalProfileString(contract.compileTarget ?? contract.compile_target, 'deviceSidecarContract.compileTarget')
+      || null,
+    compile_target:
+      optionalProfileString(contract.compileTarget ?? contract.compile_target, 'deviceSidecarContract.compileTarget')
+      || null,
+    compiler:
+      optionalProfileString(contract.compiler, 'deviceSidecarContract.compiler')
+      || null,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    notes: optionalProfileString(contract.notes, 'deviceSidecarContract.notes') || null,
+  };
+}
+
 function normalizeRealRocmProfile(rawProfile, source) {
   const raw = objectOrEmpty(rawProfile, 'root');
   const schemaVersion = raw.schemaVersion ?? REAL_ROCM_PROFILE_SCHEMA_VERSION;
@@ -293,6 +341,9 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const outputOracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle, 'outputOracle');
   const appHookContract = normalizeRealRocmAppHookContract(
     raw.appHookContract ?? raw.app_hook_contract,
+  );
+  const deviceSidecarContract = normalizeRealRocmDeviceSidecarContract(
+    raw.deviceSidecarContract ?? raw.device_sidecar_contract,
   );
   const preview = objectOrEmpty(raw.preview, 'preview');
   const targetProgression = objectOrEmpty(
@@ -349,6 +400,7 @@ function normalizeRealRocmProfile(rawProfile, source) {
           : null,
     },
     appHookContract,
+    deviceSidecarContract,
     preview: {
       renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
       expectScreenshot: optionalProfileBoolean(preview.expectScreenshot, 'preview.expectScreenshot'),
@@ -1682,6 +1734,7 @@ const CFG = {
       ?? 'auto',
   ),
   appHookContract: REAL_ROCM_PROFILE.appHookContract,
+  deviceSidecarContract: REAL_ROCM_PROFILE.deviceSidecarContract,
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   hmrRequiredGpuProofState: (process.env.SYNTHI_REAL_ROCM_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   forceGpuAiDelta: booleanFromEnv(
@@ -1716,6 +1769,8 @@ const report = {
     source: CFG.realRocmProfile.source,
     appHookContractDeclared: CFG.appHookContract.declared,
     app_hook_contract_declared: CFG.appHookContract.declared,
+    deviceSidecarContractDeclared: CFG.deviceSidecarContract.declared,
+    device_sidecar_contract_declared: CFG.deviceSidecarContract.declared,
   },
   source_url: CFG.repoUrl,
   repo_path: CFG.repoPath,
@@ -1793,6 +1848,10 @@ const report = {
   output_oracle_profile: CFG.outputOracleProfile,
   app_hook_contract: CFG.appHookContract,
   appHookContract: CFG.appHookContract,
+  device_sidecar_contract: CFG.deviceSidecarContract,
+  deviceSidecarContract: CFG.deviceSidecarContract,
+  real_rocm_device_sidecar_contract: null,
+  realRocmDeviceSidecarContract: null,
   output_oracle_adaptations: [],
   output_oracle_runtime_profile_path: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
   output_oracle_runtime_profile: null,
@@ -6833,6 +6892,262 @@ function sourceDialectFromPath(filePath) {
   return 'unknown';
 }
 
+function sidecarArtifactKindFromSourceDialect(dialect) {
+  if (dialect === 'hip_cpp') return 'hsaco';
+  if (dialect === 'opencl_c') return 'opencl_program';
+  if (dialect === 'cuda_cpp') return 'cuda_cubin_or_ptx';
+  return 'unknown';
+}
+
+function sidecarBackendFromSourceDialect(dialect) {
+  if (dialect === 'hip_cpp') return 'hip';
+  if (dialect === 'opencl_c') return 'opencl';
+  if (dialect === 'cuda_cpp') return 'cuda';
+  return 'unknown';
+}
+
+function realRocmDeviceSidecarCoverage(files, buildMetadata, focusPath) {
+  const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
+  if (!normalizedFocus) {
+    return {
+      focus_path: null,
+      covered: false,
+      reason: 'empty_source_path',
+      trace: [],
+      root_source_path: null,
+      source_dialect: 'unknown',
+      root_source_dialect: 'unknown',
+    };
+  }
+  let coverage;
+  try {
+    coverage = buildSourceCoverageForFocus(files, normalizedFocus, buildMetadata, {
+      preferredRoots: [CFG.entryFile],
+    });
+  } catch (err) {
+    coverage = {
+      covered: false,
+      reason: `coverage_error:${err.message}`,
+      trace: [],
+      coveredPaths: [],
+    };
+  }
+  const trace = Array.isArray(coverage.trace) ? coverage.trace : [];
+  const rootSourcePath = trace[0] ?? null;
+  return {
+    focus_path: normalizedFocus,
+    covered: coverage.covered === true,
+    reason: coverage.reason ?? 'unknown',
+    trace,
+    root_source_path: rootSourcePath,
+    source_dialect: sourceDialectFromPath(normalizedFocus),
+    root_source_dialect: sourceDialectFromPath(rootSourcePath),
+  };
+}
+
+function realRocmDeviceSidecarContractFacet({ files = [], buildMetadata = {} } = {}) {
+  const declaredContract = CFG.deviceSidecarContract && typeof CFG.deviceSidecarContract === 'object'
+    ? CFG.deviceSidecarContract
+    : normalizeRealRocmDeviceSidecarContract(null);
+  const focusSourcePaths = compactStringList([
+    CFG.entryFile,
+    CFG.deltaFile,
+    CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
+    ...((Array.isArray(report.extra_deltas) ? report.extra_deltas : [])
+      .map((delta) => delta?.file)
+      .filter(Boolean)),
+    ...(Array.isArray(declaredContract.sourcePaths) ? declaredContract.sourcePaths : []),
+    ...(Array.isArray(declaredContract.source_paths) ? declaredContract.source_paths : []),
+  ]);
+  const sourceCoverage = focusSourcePaths.map((sourcePath) =>
+    realRocmDeviceSidecarCoverage(files, buildMetadata, sourcePath)
+  );
+  const gpuRootSources = compactStringList(sourceCoverage
+    .filter((entry) => entry.covered && ['hip_cpp', 'opencl_c', 'cuda_cpp'].includes(entry.root_source_dialect))
+    .map((entry) => entry.root_source_path));
+  const directGpuSources = compactStringList(sourceCoverage
+    .filter((entry) => entry.covered && ['hip_cpp', 'opencl_c', 'cuda_cpp'].includes(entry.source_dialect))
+    .map((entry) => entry.focus_path));
+  const derivedSourcePaths = compactStringList([...gpuRootSources, ...directGpuSources]);
+  const declaredSourcePaths = compactStringList([
+    ...(Array.isArray(declaredContract.sourcePaths) ? declaredContract.sourcePaths : []),
+    ...(Array.isArray(declaredContract.source_paths) ? declaredContract.source_paths : []),
+  ]);
+  const effectiveSourcePaths = declaredSourcePaths.length > 0
+    ? declaredSourcePaths
+    : derivedSourcePaths;
+  const effectiveCoverage = effectiveSourcePaths.map((sourcePath) => {
+    const normalized = String(sourcePath ?? '').replace(/\\/g, '/');
+    return sourceCoverage.find((entry) => entry.focus_path === normalized)
+      ?? realRocmDeviceSidecarCoverage(files, buildMetadata, normalized);
+  });
+  const effectiveRootDialects = compactStringList(effectiveCoverage
+    .map((entry) => entry.root_source_dialect)
+    .filter((dialect) => dialect !== 'c_cpp' && dialect !== 'unknown'));
+  const effectiveSourceDialects = compactStringList([
+    ...effectiveRootDialects,
+    ...effectiveCoverage.map((entry) => entry.source_dialect)
+      .filter((dialect) => dialect !== 'c_cpp' && dialect !== 'unknown'),
+  ]);
+  const selectedDialect = effectiveSourceDialects.length === 1
+    ? effectiveSourceDialects[0]
+    : 'unknown';
+  const derivedArtifactKind = sidecarArtifactKindFromSourceDialect(selectedDialect);
+  const derivedBackend = sidecarBackendFromSourceDialect(selectedDialect);
+  const contractArtifactKind = declaredContract.artifactKind ?? declaredContract.artifact_kind ?? null;
+  const artifactKind = contractArtifactKind ?? derivedArtifactKind;
+  const contractEntryPoints = compactKnownStringList([
+    ...(Array.isArray(declaredContract.entryPoints) ? declaredContract.entryPoints : []),
+    ...(Array.isArray(declaredContract.entry_points) ? declaredContract.entry_points : []),
+  ]);
+  const entryPoints = compactKnownStringList([
+    ...contractEntryPoints,
+    ...compactStringList(CFG.nativeLaunchSymbols),
+  ]);
+  const compiler = declaredContract.compiler ?? compilerFromCmakeArgs(CFG.cmakeArgs);
+  const compileTarget = declaredContract.compileTarget
+    ?? declaredContract.compile_target
+    ?? CFG.gpuArch;
+  const compilerArgsHash = `sha256:${createHash('sha256').update(stableJson({
+    cmakeArgs: CFG.cmakeArgs,
+    cmakeConfigName: CFG.cmakeConfigName,
+    compileTarget,
+    compiler,
+    sourcePaths: effectiveSourcePaths,
+    targetName: CFG.targetName,
+  })).digest('hex')}`;
+  const sourceCoverageComplete =
+    effectiveSourcePaths.length > 0
+    && effectiveCoverage.length === effectiveSourcePaths.length
+    && effectiveCoverage.every((entry) => entry.covered === true);
+  const contractEvidenceComplete =
+    sourceCoverageComplete
+    && effectiveSourcePaths.length > 0
+    && artifactKind !== 'unknown'
+    && entryPoints.length > 0
+    && Boolean(compileTarget)
+    && Boolean(compiler);
+  const blockingGaps = [];
+  if (effectiveSourcePaths.length === 0) {
+    blockingGaps.push('device_sidecar_source_not_declared_or_derived');
+  }
+  if (!sourceCoverageComplete) {
+    blockingGaps.push('device_sidecar_source_not_covered_by_build_metadata');
+  }
+  if (derivedSourcePaths.length === 0) {
+    blockingGaps.push('device_sidecar_gpu_root_source_not_derived');
+  }
+  if (artifactKind === 'unknown') {
+    blockingGaps.push('device_sidecar_artifact_kind_unknown');
+  }
+  if (entryPoints.length === 0) {
+    blockingGaps.push('device_sidecar_entry_points_missing');
+  }
+  if (!compileTarget) {
+    blockingGaps.push('device_sidecar_compile_target_missing');
+  }
+  if (!compiler) {
+    blockingGaps.push('device_sidecar_compiler_missing');
+  }
+  if (derivedBackend === 'cuda') {
+    blockingGaps.push('device_sidecar_cuda_not_provable_on_rocm_host');
+  }
+  blockingGaps.push(
+    'device_sidecar_artifact_transport_runtime_not_observed',
+    'device_sidecar_epoch_publication_runtime_not_observed',
+    'device_sidecar_dispatch_trace_runtime_not_observed',
+    'device_sidecar_output_oracle_runtime_not_observed',
+    'device_sidecar_host_identity_runtime_not_observed',
+  );
+  const evidenceRefs = compactStringList([
+    `profile:${CFG.realRocmProfile.id}`,
+    `build-metadata:target:${CFG.targetName}`,
+    ...focusSourcePaths.map((sourcePath) => `profile:source:${sourcePath}`),
+    ...effectiveCoverage
+      .filter((entry) => entry.covered)
+      .map((entry) => `build-metadata:coverage:${entry.focus_path}:${entry.reason}`),
+    ...entryPoints.map((entryPoint) => `profile:native_launch_symbol:${entryPoint}`),
+    ...(Array.isArray(declaredContract.evidenceRefs) ? declaredContract.evidenceRefs : []),
+    ...(Array.isArray(declaredContract.evidence_refs) ? declaredContract.evidence_refs : []),
+  ]);
+  const status = declaredContract.declared
+    ? contractEvidenceComplete
+      ? 'declared_device_sidecar_contract_not_runtime_proof'
+      : 'declared_device_sidecar_contract_incomplete'
+    : contractEvidenceComplete
+      ? 'derived_device_sidecar_candidate_not_runtime_proof'
+      : derivedSourcePaths.length > 0
+        ? 'derived_device_sidecar_candidate_incomplete'
+        : 'device_sidecar_contract_not_derived';
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_device_sidecar_contract_facet.v1',
+    declared: declaredContract.declared === true,
+    required: declaredContract.required === true,
+    status,
+    proofAuthority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    proof_authority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    contractEvidenceComplete,
+    contract_evidence_complete: contractEvidenceComplete,
+    runtimeObservationComplete: false,
+    runtime_observation_complete: false,
+    sourceCoverageComplete,
+    source_coverage_complete: sourceCoverageComplete,
+    sourceCoverage,
+    source_coverage: sourceCoverage,
+    derivedSourcePaths,
+    derived_source_paths: derivedSourcePaths,
+    effectiveSourcePaths,
+    effective_source_paths: effectiveSourcePaths,
+    sourceDialects: effectiveSourceDialects,
+    source_dialects: effectiveSourceDialects,
+    sourceLanguage: selectedDialect,
+    source_language: selectedDialect,
+    backend: derivedBackend,
+    artifactIdentity: {
+      source_paths: effectiveSourcePaths,
+      artifact_kind: artifactKind,
+      entry_points: entryPoints,
+      compile_target: compileTarget,
+      compiler,
+      compiler_args_hash: compilerArgsHash,
+    },
+    artifact_identity: {
+      source_paths: effectiveSourcePaths,
+      artifact_kind: artifactKind,
+      entry_points: entryPoints,
+      compile_target: compileTarget,
+      compiler,
+      compiler_args_hash: compilerArgsHash,
+    },
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash: `sha256:${createHash('sha256').update(stableJson({
+      declaredContract,
+      artifactKind,
+      compileTarget,
+      compiler,
+      effectiveSourcePaths,
+      entryPoints,
+      sourceCoverage,
+    })).digest('hex')}`,
+    contract_hash: `sha256:${createHash('sha256').update(stableJson({
+      declaredContract,
+      artifactKind,
+      compileTarget,
+      compiler,
+      effectiveSourcePaths,
+      entryPoints,
+      sourceCoverage,
+    })).digest('hex')}`,
+  };
+}
+
 function runtimeBackendHintsFromCmakeArgs(cmakeArgs = []) {
   const hints = [];
   for (const rawArg of Array.isArray(cmakeArgs) ? cmakeArgs : []) {
@@ -9412,6 +9727,38 @@ int main()
   ) {
     throw new Error('compile response bridge evidence self-check failed');
   }
+  const sidecarSelfCheckFiles = [
+    {
+      path: CFG.entryFile,
+      content: `#include "${path.posix.basename(CFG.deltaFile)}"\nextern "C" __global__ void self_check_kernel() {}\n`,
+    },
+    {
+      path: CFG.deltaFile,
+      content: '#define SYNTHI_DEVICE_SIDECAR_SELF_CHECK 1\n',
+    },
+  ];
+  const sidecarSelfCheckMetadata = {
+    compileCommandSourcePaths: [CFG.entryFile],
+    targetSourcePaths: [CFG.entryFile],
+    buildDependencySourcePaths: [CFG.deltaFile],
+    targetIncludeDirs: compactStringList([path.posix.dirname(CFG.deltaFile)]),
+    matchedTargetFiles: ['target-self-check.json'],
+  };
+  const sidecarFacet = realRocmDeviceSidecarContractFacet({
+    files: sidecarSelfCheckFiles,
+    buildMetadata: sidecarSelfCheckMetadata,
+  });
+  if (
+    sidecarFacet.canSatisfyRuntimeProof !== false
+    || sidecarFacet.can_satisfy_runtime_proof !== false
+    || !sidecarFacet.source_coverage_complete
+    || !sidecarFacet.contract_hash?.startsWith('sha256:')
+    || !sidecarFacet.evidence_refs.some((ref) => ref.startsWith('build-metadata:coverage:'))
+    || !sidecarFacet.blocking_gaps.includes('device_sidecar_artifact_transport_runtime_not_observed')
+    || !sidecarFacet.blocking_gaps.includes('device_sidecar_dispatch_trace_runtime_not_observed')
+  ) {
+    throw new Error('real ROCm device sidecar contract self-check failed');
+  }
   const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
     available: true,
     path: '/tmp/self-check/.synthi_split_meta.json',
@@ -10561,6 +10908,10 @@ async function writeResults() {
     real_rocm_app_hook_contract: report.real_rocm_app_hook_contract,
     appHookContract: report.real_rocm_app_hook_contract,
     app_hook_contract: report.real_rocm_app_hook_contract,
+    realRocmDeviceSidecarContract: report.real_rocm_device_sidecar_contract,
+    real_rocm_device_sidecar_contract: report.real_rocm_device_sidecar_contract,
+    deviceSidecarContract: report.real_rocm_device_sidecar_contract,
+    device_sidecar_contract: report.real_rocm_device_sidecar_contract,
     realRocmCompileBridge: report.real_rocm_compile_bridge,
     real_rocm_compile_bridge: report.real_rocm_compile_bridge,
     realRocmRuntimeEligibility: report.real_rocm_runtime_eligibility,
@@ -10785,6 +11136,7 @@ async function writeResults() {
     `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
+    `real_rocm_device_sidecar_contract: ${JSON.stringify(report.real_rocm_device_sidecar_contract)}`,
     `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
     `model: ${report.model}`,
     `model_roles: ${JSON.stringify(report.model_roles)}`,
@@ -10884,6 +11236,22 @@ async function run() {
     before_sha256: createHash('sha256').update(delta.before).digest('hex'),
     after_sha256: createHash('sha256').update(delta.after).digest('hex'),
   }));
+  report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
+    files,
+    buildMetadata,
+  });
+  report.realRocmDeviceSidecarContract = report.real_rocm_device_sidecar_contract;
+  report.evidence.real_rocm_device_sidecar_contract = report.real_rocm_device_sidecar_contract;
+  record(
+    'real ROCm device sidecar contract facet',
+    'warn',
+    [
+      `status=${report.real_rocm_device_sidecar_contract.status}`,
+      `backend=${report.real_rocm_device_sidecar_contract.backend}`,
+      `sources=${report.real_rocm_device_sidecar_contract.effective_source_paths.length}`,
+      `gaps=${report.real_rocm_device_sidecar_contract.blocking_gaps.join(',') || 'none'}`,
+    ].join(' '),
+  );
   const primary = files.find((file) => file.path === CFG.entryFile);
   if (!primary) throw new Error(`entry file missing from seeded files: ${CFG.entryFile}`);
   const deltaPrimary = files.find((file) => file.path === CFG.deltaFile);
