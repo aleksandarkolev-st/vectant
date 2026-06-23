@@ -198,10 +198,22 @@ async function pngEvidence(filePath) {
       exists: false,
       sizeBytes: null,
       pngSignatureValid: false,
+      decoded: false,
+      decodeError: null,
+      format: null,
+      width: null,
+      height: null,
     };
   }
   try {
     const stat = await fs.stat(filePath);
+    let decodeEvidence = {
+      decoded: false,
+      decodeError: null,
+      format: null,
+      width: null,
+      height: null,
+    };
     const handle = await fs.open(filePath, 'r');
     try {
       const buffer = Buffer.alloc(8);
@@ -216,11 +228,38 @@ async function pngEvidence(filePath) {
         && buffer[5] === 0x0a
         && buffer[6] === 0x1a
         && buffer[7] === 0x0a;
+      if (pngSignatureValid) {
+        try {
+          const metadata = await sharp(filePath).metadata();
+          const decoded =
+            metadata.format === 'png'
+            && Number.isFinite(metadata.width)
+            && Number.isFinite(metadata.height)
+            && metadata.width > 0
+            && metadata.height > 0;
+          decodeEvidence = {
+            decoded,
+            decodeError: decoded ? null : 'png_metadata_missing_dimensions',
+            format: metadata.format ?? null,
+            width: finiteNumber(metadata.width),
+            height: finiteNumber(metadata.height),
+          };
+        } catch (err) {
+          decodeEvidence = {
+            decoded: false,
+            decodeError: `png_decode_failed:${err?.code ?? err?.name ?? 'unknown'}`,
+            format: null,
+            width: null,
+            height: null,
+          };
+        }
+      }
       return {
         path: filePath,
         exists: true,
         sizeBytes: stat.size,
         pngSignatureValid,
+        ...decodeEvidence,
       };
     } finally {
       await handle.close();
@@ -231,6 +270,11 @@ async function pngEvidence(filePath) {
       exists: false,
       sizeBytes: null,
       pngSignatureValid: false,
+      decoded: false,
+      decodeError: 'file_not_found_or_unreadable',
+      format: null,
+      width: null,
+      height: null,
     };
   }
 }
@@ -250,17 +294,25 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const imageCount = evidence.length;
   const existingImageCount = evidence.filter((item) => item.exists).length;
   const pngImageCount = evidence.filter((item) => item.pngSignatureValid).length;
+  const decodedImageCount = evidence.filter((item) => item.decoded).length;
   const allImagesExist = imageCount > 0 && existingImageCount === imageCount;
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
+  const allImagesDecode = imageCount > 0 && decodedImageCount === imageCount;
+  const allImagesAreDecodedPng = allImagesArePng && allImagesDecode;
   return {
     required,
     present: imageCount > 0,
-    accepted: required ? allImagesExist && allImagesArePng : imageCount === 0 || allImagesExist,
+    accepted: imageCount === 0
+      ? required !== true
+      : allImagesExist && allImagesAreDecodedPng,
     imageCount,
     existingImageCount,
     pngImageCount,
+    decodedImageCount,
     allImagesExist,
     allImagesArePng,
+    allImagesDecode,
+    allImagesAreDecodedPng,
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
@@ -1904,7 +1956,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
   const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
   const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
-  const visualRequired = json.visualRequired !== false && json.visual_required !== false;
+  const visualRequired = true;
   const visual = await visualArtifactEvidence(
     artifactPathsFromValue(visualArtifacts),
     context.repoRoot,
@@ -2272,6 +2324,10 @@ function acceptedRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr' && predicate(row));
 }
 
+function rowHasAcceptedVisualEvidence(row) {
+  return row.visual?.present === true && row.visual?.accepted === true;
+}
+
 function refusalRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'refusal_proven' && predicate(row));
 }
@@ -2452,8 +2508,16 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
 }
 
 function planCoverage(rows) {
-  const flowRows = acceptedRows(rows, (row) => row.backend === 'hip' && rowMatchesValidationProfile(row, 'flow'));
-  const rayRows = acceptedRows(rows, (row) => row.backend === 'hip' && rowMatchesValidationProfile(row, 'ray-light'));
+  const flowRows = acceptedRows(rows, (row) =>
+    row.backend === 'hip'
+    && rowMatchesValidationProfile(row, 'flow')
+    && rowHasAcceptedVisualEvidence(row)
+  );
+  const rayRows = acceptedRows(rows, (row) =>
+    row.backend === 'hip'
+    && rowMatchesValidationProfile(row, 'ray-light')
+    && rowHasAcceptedVisualEvidence(row)
+  );
   const hipRuntimeRows = acceptedRows(rows, (row) => row.backend === 'hip');
   const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');

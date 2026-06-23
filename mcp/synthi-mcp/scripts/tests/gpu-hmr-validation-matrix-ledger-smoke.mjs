@@ -505,9 +505,9 @@ const logsRoot = path.join(mcpRoot, '.gpu-hmr-test-logs');
 const artifactsRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts');
 
 const visualDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow');
-await writePng(path.join(visualDir, 'before-hmr-first.png'));
-await writePng(path.join(visualDir, 'after-hmr-first.png'));
-await writePng(path.join(visualDir, 'before-after-diff.png'));
+await writeRgbaPng(path.join(visualDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(visualDir, 'after-hmr-first.png'), 8, 8, (x, y) => [16 + x, 24 + y, 48, 255]);
+await writeRgbaPng(path.join(visualDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(visualDir, 'agent-split-results.json'), [
   { name: 'fixture', status: 'pass', detail: 'flow' },
   { name: 'worker used GPU split endpoint', status: 'pass', detail: 'GPU markers detected' },
@@ -879,9 +879,9 @@ await writeJson(path.join(artifactsRoot, 'webgpu-runtime-visual-proof', 'forged-
 });
 
 const forgedWebGpuVisualDir = path.join(artifactsRoot, 'webgpu-runtime-visual-proof');
-await writePng(path.join(forgedWebGpuVisualDir, 'forged-before.png'));
-await writePng(path.join(forgedWebGpuVisualDir, 'forged-after.png'));
-await writePng(path.join(forgedWebGpuVisualDir, 'forged-diff.png'));
+await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-after.png'), 8, 8, (x, y) => [32 + x, 48 + y, 64, 255]);
+await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:query-only-forged',
@@ -992,6 +992,66 @@ await writeJson(path.join(hiprtDir, 'forged-hiprt-proof.json'), hiprtWarmProofAr
   oracleRegionClaimNonBlank: true,
 }));
 
+const truncatedVisualDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-truncated-visual');
+await writePng(path.join(truncatedVisualDir, 'before-hmr-first.png'));
+await writePng(path.join(truncatedVisualDir, 'after-hmr-first.png'));
+await writePng(path.join(truncatedVisualDir, 'before-after-diff.png'));
+await writeJson(path.join(truncatedVisualDir, 'hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:truncated-visual-hot1', 'gpu-runtime-proof:sha256:truncated-visual-hot1'),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'truncated-visual',
+    visualRoot: truncatedVisualDir,
+  }),
+  targetId: 'truncated-visual',
+  profileId: 'truncated-visual',
+  proofId: 'agent-split-run-mode-proof:sha256:truncated-visual-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(truncatedVisualDir, 'before-hmr-first.png'),
+    afterImage: path.join(truncatedVisualDir, 'after-hmr-first.png'),
+    diffImage: path.join(truncatedVisualDir, 'before-after-diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:truncated-visual-hot1',
+    editHash: 'sha256:truncated-visual-hot1',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+
+const noVisualOptOutDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-no-visual-optout');
+await writeJson(path.join(noVisualOptOutDir, 'hot1.json'), {
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation('gpu-ledger-proof:sha256:no-visual-optout-hot1', 'gpu-runtime-proof:sha256:no-visual-optout-hot1'),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'no-visual-optout',
+    visualRoot: noVisualOptOutDir,
+  }),
+  backend: 'hip',
+  targetId: 'no-visual-optout',
+  profileId: 'no-visual-optout',
+  proofId: 'agent-split-run-mode-proof:sha256:no-visual-optout-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualRequired: false,
+  visual_required: false,
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:no-visual-optout-hot1',
+    editHash: 'sha256:no-visual-optout-hot1',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+
 const ledger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
@@ -1012,6 +1072,8 @@ const acceptedFlow = ledger.rows.find((row) =>
 assert.equal(acceptedFlow?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedFlow.acceptedForGpuHmr, true);
 assert.equal(acceptedFlow.visual.accepted, true);
+assert.equal(acceptedFlow.visual.allImagesAreDecodedPng, true);
+assert.equal(acceptedFlow.visual.decodedImageCount, 3);
 assert.equal(acceptedFlow.runMode.accepted, true);
 assert.equal(acceptedFlow.runMode.metricScope, 'hot_delta_1');
 assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
@@ -1053,6 +1115,24 @@ assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target prog
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
 
+const truncatedVisual = ledger.rows.find((row) => row.targetId === 'truncated-visual');
+assert.equal(truncatedVisual?.matrixOutcome, 'unproven');
+assert.equal(truncatedVisual.acceptedForGpuHmr, false);
+assert.equal(truncatedVisual.visual.present, true);
+assert.equal(truncatedVisual.visual.allImagesArePng, true);
+assert.equal(truncatedVisual.visual.allImagesDecode, false);
+assert.equal(truncatedVisual.visual.decodedImageCount, 0);
+assert.ok(truncatedVisual.visual.images.every((image) => image.decodeError?.startsWith('png_decode_failed')));
+assert.ok(truncatedVisual.reasons.includes('visual_artifacts_not_readable'));
+
+const noVisualOptOut = ledger.rows.find((row) => row.targetId === 'no-visual-optout');
+assert.equal(noVisualOptOut?.matrixOutcome, 'unproven');
+assert.equal(noVisualOptOut.acceptedForGpuHmr, false);
+assert.equal(noVisualOptOut.visual.required, true);
+assert.equal(noVisualOptOut.visual.present, false);
+assert.equal(noVisualOptOut.visual.accepted, false);
+assert.ok(noVisualOptOut.reasons.includes('visual_artifacts_not_readable'));
+
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpu.acceptedForGpuHmr, false);
@@ -1062,6 +1142,7 @@ const forgedWebGpuQueryOnly = ledger.rows.find((row) => row.targetId === 'forged
 assert.equal(forgedWebGpuQueryOnly?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpuQueryOnly.acceptedForGpuHmr, false);
 assert.equal(forgedWebGpuQueryOnly.visual.accepted, true);
+assert.equal(forgedWebGpuQueryOnly.visual.allImagesAreDecodedPng, true);
 assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
@@ -1139,9 +1220,9 @@ const negativeEdit = ledger.rows.find((row) => row.proofMode === 'negative_edit'
 assert.equal(negativeEdit?.matrixOutcome, 'refusal_proven');
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
-await writePng(path.join(duplicateHot2Dir, 'before.png'));
-await writePng(path.join(duplicateHot2Dir, 'after.png'));
-await writePng(path.join(duplicateHot2Dir, 'diff.png'));
+await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(duplicateHot2Dir, 'after.png'), 8, 8, (x, y) => [64 + x, 72 + y, 96, 255]);
+await writeRgbaPng(path.join(duplicateHot2Dir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
   ...runModeProofBase,
   ...waitProofValidation('gpu-ledger-proof:sha256:duplicate-hot1', 'gpu-runtime-proof:sha256:duplicate-hot1'),
@@ -1213,9 +1294,9 @@ assert.equal(fissionRow.proofChainAccepted, true);
 assert.equal(fissionRow.acceptanceClass, 'smallest_safe_per_kernel_fission');
 
 const acceptedRealRocmDir = path.join(logsRoot, 'real-rocm-accepted-lib');
-await writePng(path.join(acceptedRealRocmDir, 'before-hmr-first.png'));
-await writePng(path.join(acceptedRealRocmDir, 'after-hmr-first.png'));
-await writePng(path.join(acceptedRealRocmDir, 'before-after-diff.png'));
+await writeRgbaPng(path.join(acceptedRealRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(acceptedRealRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [80 + x, 96 + y, 128, 255]);
+await writeRgbaPng(path.join(acceptedRealRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
   slug: 'gpu-real-rocm-accepted-lib-20260623',
   real_rocm_profile: { id: 'real-rocm-accepted-lib' },
