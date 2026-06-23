@@ -406,6 +406,12 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
 
 export function hipModuleRuntimeTimingMetrics(proof) {
   const base = webGpuRuntimeComputeTimingMetrics(proof);
+  const computeArtifacts = firstObject(
+    proof?.computeOracleArtifacts,
+    proof?.compute_oracle_artifacts,
+    proof?.proofLedger?.records?.[0]?.oracleArtifacts?.computeOracleArtifacts,
+    proof?.proofLedger?.records?.[0]?.oracle_artifacts?.compute_oracle_artifacts,
+  );
   return {
     ...base,
     source: 'hip_module_runtime',
@@ -416,6 +422,22 @@ export function hipModuleRuntimeTimingMetrics(proof) {
     metric_scope: proof?.proofLedger?.records?.[0]?.metric_scope ?? 'hot_delta_1',
     cacheState: proof?.proofLedger?.records?.[0]?.cacheState ?? 'compiler_cache_warm',
     cache_state: proof?.proofLedger?.records?.[0]?.cache_state ?? 'compiler_cache_warm',
+    editToFirstVisualMs: null,
+    visualDiffMs: null,
+    computeEvidence: {
+      ...(base.computeEvidence ?? {}),
+      renderedCardPng: computeArtifacts?.rendered_card_png ?? computeArtifacts?.renderedCardPng ?? null,
+      expectedOutputVerified: computeArtifacts?.expected_output_verified === true,
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+    visualEvidence: {
+      screenshotCount: 0,
+      changedPixelRatio: null,
+      meanAbsDelta8bit: null,
+      visiblePixelCount: null,
+      accepted: false,
+      reason: 'hip_module_readback_uses_compute_card_not_runtime_frame_visual_proof',
+    },
     hipEvidence: {
       nativeApiCounts: proof?.nativeHipApiEvidence?.counts ?? null,
       deviceIdentity: proof?.runtimeTrace?.device ?? null,
