@@ -313,6 +313,9 @@ async function loadProfile(profilePath) {
     firstArray(oracle.expectedAfterValues, oracle.expected_after_values, oracle.expectedValues, oracle.expected_values),
     'outputOracle.expectedAfterValues',
   );
+  if (oracle.expectedOutputRequired === false || oracle.expected_output_required === false) {
+    throw new Error('outputOracle.expectedOutputRequired must be true for HIP module runtime acceptance');
+  }
   if (inputValues.length !== expectedBeforeValues.length || inputValues.length !== expectedAfterValues.length) {
     throw new Error('input, expected-before, and expected-after arrays must have the same length');
   }
@@ -391,7 +394,7 @@ async function loadProfile(profilePath) {
       kind: firstText(oracle.kind) ?? 'buffer_checksum',
       expectedBeforeValues,
       expectedAfterValues,
-      expectedOutputRequired: oracle.expectedOutputRequired !== false && oracle.expected_output_required !== false,
+      expectedOutputRequired: true,
       expectedOutputChange: oracle.expectedOutputChange !== false && oracle.expected_output_change !== false,
       tolerance: Math.max(0, finiteNumber(oracle.tolerance, 0.00001)),
       deterministicSlice: {
@@ -842,9 +845,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
 
 function computeOracleValidation({ artifacts }) {
   const changed = artifacts.checksum_before !== artifacts.checksum_after;
-  const expectedVerified = artifacts.expected_output_required === false
-    ? artifacts.expected_output_verified !== false
-    : artifacts.expected_output_declared === true && artifacts.expected_output_verified === true;
+  const expectedVerified = artifacts.expected_output_declared === true && artifacts.expected_output_verified === true;
   return {
     accepted:
       changed
