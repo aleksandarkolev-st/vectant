@@ -222,9 +222,9 @@ function classifyReport(json, filePath) {
   }
 
   if (
-    String(json.proofId ?? '').startsWith('hiprt-warm-runtime-proof:')
-    || filePath.includes(`${path.sep}hiprt-light-math-warm-proof${path.sep}`)
-    || json.repo?.target === 'HIPRTPathTracer'
+    schemaVersion === 'synthi.hiprt.warm_visual_proof.v2'
+    || String(json.schema ?? '').includes('hiprt.warm_visual_proof')
+    || String(json.proofId ?? '').startsWith('hiprt-warm-runtime-proof:')
   ) {
     return {
       kind: 'hiprt_warm_runtime',
@@ -482,6 +482,24 @@ function runSelfCheck() {
   for (const column of ['metricClock', 'metricScope', 'cacheState', 'durationMonotonicMs', 'modelAvailabilityCheckMs']) {
     assertSelfCheck(markdown.includes(column), `markdown missing ${column}`);
   }
+
+  const pathFallbackOnly = classifyReport(
+    { repo: { target: 'HIPRTPathTracer' }, timings: { totalWallMs: 1 } },
+    path.join(repoRoot, 'tmp', 'hiprt-light-math-warm-proof', 'path-only.json'),
+  );
+  assertSelfCheck(pathFallbackOnly === null, 'HIPRT timing classification must not use path or repo target fallbacks');
+
+  const schemaBackedHiprt = classifyReport(
+    {
+      schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
+      proofId: 'hiprt-warm-runtime-proof:sha256:selfcheck',
+      accepted: true,
+      timings: { totalWallMs: 1 },
+      runtime: { baseline: {}, changed: {} },
+    },
+    path.join(repoRoot, 'tmp', 'schema-backed-hiprt.json'),
+  );
+  assertSelfCheck(schemaBackedHiprt?.kind === 'hiprt_warm_runtime', 'HIPRT timing proof schema must classify');
 
   console.log(JSON.stringify({
     ok: true,
