@@ -420,6 +420,11 @@ async function selfCheckRealRocmProfiles() {
       if (!known && !profileRuntimeProfilePresent) {
         throw new Error(`real ROCm profile ${profile.id} references unknown output oracle profile: ${profile.outputOracle.profile}`);
       }
+      if (profile.target.nativeLaunchSymbols.length === 0) {
+        throw new Error(
+          `real ROCm profile ${profile.id} declares output oracle ${profile.outputOracle.profile} without target.nativeLaunchSymbols`,
+        );
+      }
     }
     const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
     if (existsSync(localRepoPath)) {
@@ -730,6 +735,13 @@ function compactStringList(values = []) {
     out.push(text);
   }
   return out;
+}
+
+function compactKnownStringList(values = []) {
+  return compactStringList(values).filter((value) => {
+    const normalized = value.trim().toLowerCase();
+    return !['unknown', 'null', 'undefined', 'n/a', 'na', '-'].includes(normalized);
+  });
 }
 
 function availableRealRocmEvidenceRefs({
@@ -6861,6 +6873,11 @@ function realRocmRuntimeEligibilityFacet({
     targetName: CFG.targetName,
     gpuArch: CFG.gpuArch,
   })).digest('hex')}`;
+  const candidateEntryPoints = compactKnownStringList([
+    ...compactStringList(nativeObservation.function_resolution_symbols),
+    ...compactStringList(nativeObservation.kernel_symbols),
+    ...compactStringList(CFG.nativeLaunchSymbols),
+  ]);
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_eligibility.v1',
     observed: hasRuntimeEvidence,
@@ -6890,11 +6907,7 @@ function realRocmRuntimeEligibilityFacet({
         : backendCandidates.includes('opencl')
           ? 'opencl_program'
           : 'unknown',
-      entry_points: compactStringList([
-        ...compactStringList(nativeObservation.function_resolution_symbols),
-        ...compactStringList(nativeObservation.kernel_symbols),
-        ...compactStringList(CFG.nativeLaunchSymbols),
-      ]),
+      entry_points: candidateEntryPoints,
       compile_target: CFG.gpuArch,
       compiler: candidateCompiler,
       compiler_args_hash: compilerArgsHash,
@@ -6906,11 +6919,7 @@ function realRocmRuntimeEligibilityFacet({
         : backendCandidates.includes('opencl')
           ? 'opencl_program'
           : 'unknown',
-      entry_points: compactStringList([
-        ...compactStringList(nativeObservation.function_resolution_symbols),
-        ...compactStringList(nativeObservation.kernel_symbols),
-        ...compactStringList(CFG.nativeLaunchSymbols),
-      ]),
+      entry_points: candidateEntryPoints,
       compile_target: CFG.gpuArch,
       compiler: candidateCompiler,
       compiler_args_hash: compilerArgsHash,
@@ -8395,6 +8404,31 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('array_capability=unavailable')
   ) {
     throw new Error('native launch observation self-check must remain observe-only');
+  }
+  const placeholderNativeEligibility = realRocmRuntimeEligibilityFacet({
+    nativeBoundary: { observed: true },
+    nativeObservation: {
+      api_coverage: ['hipLaunchKernel'],
+      attempted_apis: ['hipLaunchKernel'],
+      kernel_symbols: ['unknown'],
+      total_count: 1,
+    },
+    runtimeCapabilityPreflight: { backend: 'rocm' },
+    appHookContractFacet: {
+      status: 'required_app_hook_contract_missing',
+      blockingGaps: ['app_hook_contract_not_declared'],
+      blocking_gaps: ['app_hook_contract_not_declared'],
+    },
+    outputOracleResolution: { runtimeProfilePresent: true, contractPresent: true },
+  });
+  if (
+    CFG.nativeLaunchSymbols[0]
+    && (
+      placeholderNativeEligibility.candidate_artifact_identity.entry_points.includes('unknown')
+      || placeholderNativeEligibility.candidate_artifact_identity.entry_points[0] !== CFG.nativeLaunchSymbols[0]
+    )
+  ) {
+    throw new Error('runtime eligibility must prefer declared launch symbols over native unknown placeholders');
   }
   const hostIdentityEvidence = runtimeHostIdentityEvidence([
     '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1',

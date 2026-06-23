@@ -8,7 +8,10 @@
     "entryFile": "HIP-Basic/matrix_multiplication/main.hip",
     "deltaFile": "HIP-Basic/matrix_multiplication/main.hip",
     "targetName": "hip_matrix_multiplication",
-    "buildSubdir": "HIP-Basic/matrix_multiplication"
+    "buildSubdir": "HIP-Basic/matrix_multiplication",
+    "nativeLaunchSymbols": [
+      "matrix_multiplication_kernel"
+    ]
   },
   "sourceDelta": {
     "before": "constexpr float b_value = 0.02F;",
