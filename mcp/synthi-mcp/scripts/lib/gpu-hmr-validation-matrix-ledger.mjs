@@ -2012,7 +2012,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     ?? ledgerRecord.oracle_artifacts?.compute_oracle_artifacts
     ?? ledgerRecord.oracleArtifacts?.computeOracleArtifacts,
   );
-  const visual = await visualArtifactEvidence(
+  const computeCardEvidence = await visualArtifactEvidence(
     [
       directComputeArtifacts.rendered_card_png,
       directComputeArtifacts.renderedCardPng,
@@ -2071,7 +2071,14 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     expected_output_hash: directComputeArtifacts.expected_output_hash,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
-    visual,
+    visual: {
+      required: false,
+      accepted: false,
+      evidenceKind: 'compute_card_not_runtime_visual_oracle',
+      reason: 'webgpu_compute_readback_uses_compute_card_not_runtime_frame_visual_proof',
+    },
+    computeCardEvidence,
+    compute_card_evidence: computeCardEvidence,
     runMode: timingEvidence(
       ledgerRecord,
       json.timingMetrics,

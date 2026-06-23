@@ -1752,6 +1752,11 @@ const forgedWebGpuCompute = ledger.rows.find((row) => row.targetId === 'forged-w
 assert.equal(forgedWebGpuCompute?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpuCompute.acceptedForGpuHmr, false);
 assert.equal(forgedWebGpuCompute.outputOracleFacet.accepted, false);
+assert.equal(forgedWebGpuCompute.visual.accepted, false);
+assert.equal(
+  forgedWebGpuCompute.visual.reason,
+  'webgpu_compute_readback_uses_compute_card_not_runtime_frame_visual_proof',
+);
 assert.ok(forgedWebGpuCompute.reasons.includes('proof_ledger_record_missing'));
 assert.ok(forgedWebGpuCompute.reasons.includes('compute_oracle_files_not_accepted'));
 assert.ok(forgedWebGpuCompute.reasons.includes('compute_oracle_expected_output_not_verified'));
