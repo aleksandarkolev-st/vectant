@@ -9,26 +9,30 @@ import {
 } from '../programSessionSections';
 
 describe('buildProgramSessionSections', () => {
-  it('keeps running states in the running section and sorts newest first', () => {
+  it('separates sessions into running / stopped / crashed, newest first within each', () => {
     const sections = buildProgramSessionSections([
       { id: 'stopped', state: 'stopped', updatedAt: '2026-06-01T10:00:00.000Z' },
       { id: 'starting', state: 'starting', updatedAt: '2026-06-01T13:00:00.000Z' },
       { id: 'running', state: 'running', updatedAt: '2026-06-01T12:00:00.000Z' },
       { id: 'crashed', state: 'crashed', updatedAt: '2026-06-01T11:00:00.000Z' },
+      { id: 'restarting', state: 'restarting', updatedAt: '2026-06-01T14:00:00.000Z' },
     ]);
 
-    expect(sections.running.map((session) => session.id)).toEqual(['starting', 'running']);
-    expect(sections.recent.map((session) => session.id)).toEqual(['crashed', 'stopped']);
+    expect(sections.running.map((session) => session.id)).toEqual(['restarting', 'starting', 'running']);
+    expect(sections.stopped.map((session) => session.id)).toEqual(['stopped']);
+    expect(sections.crashed.map((session) => session.id)).toEqual(['crashed']);
   });
 
-  it('caps recent sessions to the requested limit', () => {
+  it('orders multiple stopped and crashed sessions newest-first independently', () => {
     const sections = buildProgramSessionSections([
-      { id: '1', state: 'stopped', updatedAt: '2026-06-01T10:00:00.000Z' },
-      { id: '2', state: 'stopped', updatedAt: '2026-06-01T11:00:00.000Z' },
-      { id: '3', state: 'stopped', updatedAt: '2026-06-01T12:00:00.000Z' },
-    ], { recentLimit: 2 });
+      { id: 's-old', state: 'stopped', updatedAt: '2026-06-01T10:00:00.000Z' },
+      { id: 's-new', state: 'stopped', updatedAt: '2026-06-01T12:00:00.000Z' },
+      { id: 'c-old', state: 'crashed', updatedAt: '2026-06-01T09:00:00.000Z' },
+      { id: 'c-new', state: 'crashed', updatedAt: '2026-06-01T11:00:00.000Z' },
+    ]);
 
-    expect(sections.recent.map((session) => session.id)).toEqual(['3', '2']);
+    expect(sections.stopped.map((session) => session.id)).toEqual(['s-new', 's-old']);
+    expect(sections.crashed.map((session) => session.id)).toEqual(['c-new', 'c-old']);
   });
 });
 

@@ -1492,3 +1492,25 @@ const attribution = attributeSessionPorts({
 - **Spec coverage:** §2 mechanism → T1+T5; §3 6-file conflicts → T2/T3/T4; §4 pre-merge cleanup → T1; §5 infra-port filter → T6; §6 verify (suites + live) → T5 + T7; §7 rollback → T1 + Conventions; §8 audit → T8. No gap.
 - **Placeholders:** none — conflict tasks name the exact symbols each side must keep; the filter task carries real test + impl.
 - **Type consistency:** `parseInfraPorts`/`infraPorts`/`RUNTIME_INFRA_PORTS`, `recomputeRuntimeScopePorts(scope, ports)`, `$PRE_MERGE_SHA` used consistently across tasks.
+
+---
+
+# Task: Programs panel — post-overhaul refinement round (2026-06-24, feat/docker-sysbox-engine)
+
+Live-review feedback after the Library/Store overhaul. Corrective slices on the existing design (no new spec). TDD from `synthi/`; commit per slice.
+
+## Done this round
+- [x] R0 Panel background = `var(--bg-sidebar)` (#06060a — matches every docked panel; dropped the custom gray gradient + the clipped outer border/drop-shadow). Store search field re-tiered to `var(--bg-panel)` so it doesn't vanish into the now-darker base. `programTokens.test.js` updated to assert the token (not the old gradient). 53/53 programs tests green. Lesson recorded.
+
+## Sensible defaults (proceeding unless told otherwise)
+- Removing a session = HARD-DELETE the `ProgramSession` row; for a *running* session, stop the runtime first (after the confirm), then delete. (User: "removing and deleting the session".)
+- Orphaned active session (DB state active, no live runtime) → present as **stopped**. Show **crashed** only when the DB state is explicitly `crashed` (or `lastHealthState` = unhealthy). We don't fabricate a crash we never recorded.
+
+## Slices (TDD, commit per slice)
+- [x] R1 State reconciliation + 3-way separation. `mergeProgramSession`: no live runtime + active state → `stopped` (kills zombie "all-running"). `buildProgramSessionSections` → `{running, stopped, crashed}`. `LibraryView` renders Running/Stopped/Crashed sections; only running cards use the glow shell + a live thumbnail (stopped = muted surface, crashed = red), which also removes most of the scroll-lag. TDD: routeHelpers +3, programSessionSections rewritten, libraryView +5; 166 programs+lib tests green.
+- [x] R2 (folded into R1) Program name as card title, session id as subtitle. `programLabelFromPackageId` + `LibraryView.nameFor` join `installId → packageId` (fallback `session.title`/"Program").
+- [ ] R3 X-to-remove + confirm dialog. New `DELETE /program-sessions/[sessionId]` (stop-if-running, then delete row) + store + client fn. X on every card. Extract a shared `ConfirmDialog` from `MultiLinePasteDialog` (exact chrome, MINUS the `<pre>` preview box + the paste-trust checkbox); running-removal shows it.
+- [ ] R4 Perf polish. Lighten/limit the running-card rim-glow (blurred box-shadow repaint = scroll jank), `content-visibility:auto` on cards, throttle/IntersectionObserver the live thumbnails (pause offscreen).
+
+## Already answered (no code)
+- Scale-to-zero: prod Sysbox runtime is a per-workspace Deployment (`replicas:1`), app-managed **idle-cull → on-demand respawn** (not k8s HPA-to-zero); optional warm image cache via `RUNTIME_PERSIST_DOCKER_DATA`.

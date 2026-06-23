@@ -2,7 +2,7 @@
 
 import { Command, RefreshCw, ExternalLink, Play, Store } from 'lucide-react';
 import { PROGRAM_STYLE } from '../programTokens';
-import { buildProgramSessionSections } from '../programSessionSections';
+import { buildProgramSessionSections, programLabelFromPackageId } from '../programSessionSections';
 import RunningCard from './RunningCard';
 import ProgramTile from './ProgramTile';
 
@@ -20,7 +20,16 @@ export default function LibraryView({
   onOpenStore, onRefresh, onOpenSession, onStop, onRestart,
   onLaunchInstall, onScaffold, onLaunchDetected, scaffoldableIds = [],
 }) {
-  const { running } = buildProgramSessionSections(sessions);
+  const { running, stopped, crashed } = buildProgramSessionSections(sessions);
+
+  // Sessions carry only an installId; resolve the program's name from the installed catalog.
+  const nameFor = (session) => {
+    const install = session?.installId ? installs.find((i) => i.id === session.installId) : null;
+    return (install && programLabelFromPackageId(install.packageId)) || session?.title || 'Program';
+  };
+  const renderCard = (s) => (
+    <RunningCard key={s.id} session={s} slug={slug} programName={nameFor(s)} onOpen={onOpenSession} onStop={onStop} onRestart={onRestart} />
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)' }}>
@@ -66,11 +75,23 @@ export default function LibraryView({
           ) : running.length === 0 ? (
             <div className="rounded-lg px-3 py-4" style={{ ...PROGRAM_STYLE.surfaceCard, fontSize: '12px', color: 'var(--text-muted)' }}>Nothing running.</div>
           ) : (
-            running.map((s) => (
-              <RunningCard key={s.id} session={s} slug={slug} onOpen={onOpenSession} onStop={onStop} onRestart={onRestart} />
-            ))
+            running.map(renderCard)
           )}
         </section>
+
+        {stopped.length > 0 ? (
+          <section className="flex flex-col gap-2">
+            <SectionLabel count={stopped.length}>Stopped</SectionLabel>
+            {stopped.map(renderCard)}
+          </section>
+        ) : null}
+
+        {crashed.length > 0 ? (
+          <section className="flex flex-col gap-2">
+            <SectionLabel count={crashed.length}>Crashed</SectionLabel>
+            {crashed.map(renderCard)}
+          </section>
+        ) : null}
 
         <section className="flex flex-col gap-2">
           <SectionLabel count={installs.length}>Installed</SectionLabel>

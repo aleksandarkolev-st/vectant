@@ -22,27 +22,26 @@ export function isTerminalRuntimeType(runtimeType) {
   return TERMINAL_RUNTIME_TYPES.has(String(runtimeType || '').toLowerCase());
 }
 
-export function buildProgramSessionSections(sessions, { recentLimit = 6 } = {}) {
+export function buildProgramSessionSections(sessions) {
   const ordered = [...(Array.isArray(sessions) ? sessions : [])].sort(
     (left, right) => sessionTimestamp(right) - sessionTimestamp(left),
   );
 
   const running = [];
-  const recent = [];
+  const stopped = [];
+  const crashed = [];
 
   for (const session of ordered) {
     if (isActiveProgramSession(session)) {
       running.push(session);
-      continue;
+    } else if (String(session?.state || '').toLowerCase() === 'crashed') {
+      crashed.push(session);
+    } else {
+      stopped.push(session);
     }
-
-    recent.push(session);
   }
 
-  return {
-    running,
-    recent: recent.slice(0, recentLimit),
-  };
+  return { running, stopped, crashed };
 }
 
 export function formatProgramSessionAge(session, now = Date.now()) {
@@ -68,4 +67,20 @@ export function formatProgramSessionPorts(session) {
   }
 
   return ports.join(', ');
+}
+
+/**
+ * Best-effort human label from a packageId — installs carry only a packageId
+ * (no displayName). "@vectant/dbeaver" → "Dbeaver", "local:team:web" → "Web".
+ */
+export function programLabelFromPackageId(packageId) {
+  const raw = String(packageId || '').trim();
+  if (!raw) {
+    return null;
+  }
+  const seg = raw.split('/').pop().split(':').pop().trim();
+  if (!seg) {
+    return null;
+  }
+  return seg.charAt(0).toUpperCase() + seg.slice(1);
 }

@@ -5,6 +5,11 @@ export function normalizeGrantScopes(value) {
   return [...new Set(scopes.map((scope) => String(scope || '').trim()).filter(Boolean))];
 }
 
+// A DB session can keep an active state long after its runtime is gone (idle-cull,
+// collab-server restart, crash). These are the states we reconcile to "stopped" when
+// no live runtime session backs the row.
+const ACTIVE_SESSION_STATES = new Set(['starting', 'running', 'restarting']);
+
 export function mergeProgramSession(session, runtimeSession = null) {
   if (!session) {
     return null;
@@ -22,6 +27,10 @@ export function mergeProgramSession(session, runtimeSession = null) {
 
   if (runtimeSession?.state) {
     merged.state = runtimeSession.state;
+  } else if (!runtimeSession && ACTIVE_SESSION_STATES.has(String(session.state || '').toLowerCase())) {
+    // Orphan reconciliation: no live runtime backs this active row → it's a zombie.
+    // Present it as stopped so the panel never shows a perpetual "running"/"starting".
+    merged.state = 'stopped';
   }
 
   return merged;
