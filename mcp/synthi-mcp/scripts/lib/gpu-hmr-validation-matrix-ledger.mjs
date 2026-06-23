@@ -1574,6 +1574,55 @@ function realRocmRequiredFullRuntimeProof(json) {
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
 
+function ledgerRecordsFromValue(ledger) {
+  const records = Array.isArray(ledger.records) ? ledger.records : [ledger];
+  return records.map(compactObject).filter((record) => Object.keys(record).length > 0);
+}
+
+function nestedArtifactObject(...values) {
+  for (const value of values) {
+    const object = compactObject(value);
+    if (Object.keys(object).length > 0) return object;
+  }
+  return {};
+}
+
+function ledgerRecordHasVisualOutput(record) {
+  const outputEvent = compactObject(record.output_event ?? record.outputEvent);
+  const oracleArtifacts = compactObject(record.oracle_artifacts ?? record.oracleArtifacts);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const outputOracleArtifacts = compactObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
+  const kind = String(firstText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '').toLowerCase();
+  const visualArtifacts = nestedArtifactObject(
+    oracleArtifacts.visual_oracle_artifacts,
+    oracleArtifacts.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts.visual_oracle_artifacts,
+    outputOracleArtifacts.visualOracleArtifacts,
+  );
+  return kind.includes('visual')
+    || kind.includes('render')
+    || kind.includes('frame')
+    || kind.includes('pixel')
+    || Object.keys(visualArtifacts).length > 0;
+}
+
+function realRocmLedgerOutputOracleAccepted(ledger, proofLedger, visual) {
+  const ledgerAccepted = ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0;
+  if (!ledgerAccepted) return false;
+  const visualLedgerOutput = ledgerRecordsFromValue(proofLedger).some(ledgerRecordHasVisualOutput);
+  if (visualLedgerOutput) {
+    return visual.present === true && visual.accepted === true;
+  }
+  return true;
+}
+
 async function realRocmRepoValidationRow(json, filePath, context) {
   const profile = compactObject(json.real_rocm_profile ?? json.realRocmProfile);
   const summary = compactObject(json.validation_proof_summary ?? json.validationProofSummary);
@@ -1581,6 +1630,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
   const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
+  const proofLedger = compactObject(
+    json.proofLedger
+    ?? json.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
   const strictGates = compactObject(
     json.strict_proof_gates
     ?? json.strictProofGates
@@ -1617,25 +1672,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     compactObject(json.visual_evidence_quality ?? json.visualEvidenceQuality),
     visualPaths.length > 0,
   );
-  const outputProof = compactObject(json.output_proof ?? json.outputProof ?? summary.output_proof ?? summary.outputProof);
-  const computeOracleEvidence = compactObject(
-    json.compute_output_oracle_visual_evidence
-    ?? json.computeOutputOracleVisualEvidence
-    ?? summary.compute_output_oracle_visual_evidence
-    ?? summary.computeOutputOracleVisualEvidence,
-  );
-  const outputOracleResultState = firstText(
-    outputProof.resultState,
-    outputProof.result_state,
-    computeOracleEvidence.resultState,
-    computeOracleEvidence.result_state,
-  );
   const outputOrVisualOracleAccepted =
-    outputProof.accepted === true
-    || outputProof.proven === true
-    || computeOracleEvidence.accepted === true
-    || computeOracleEvidence.proven === true
-    || outputOracleResultState === 'gpu-hmr-output-oracle-proven'
+    realRocmLedgerOutputOracleAccepted(ledger, proofLedger, visual)
     || (visual.present === true && visual.accepted === true);
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven

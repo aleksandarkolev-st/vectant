@@ -1174,6 +1174,10 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
   full_runtime_proof_required: true,
   full_runtime_proven: true,
   gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
   strict_proof_gates: {
     accepted: true,
     failures: [],
@@ -1230,6 +1234,10 @@ await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'),
   full_runtime_proof_required: true,
   full_runtime_proven: true,
   gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
   strict_proof_gates: {
     accepted: true,
     failures: [],
