@@ -350,6 +350,10 @@ function normalizeRealRocmProofObligations(rawObligations) {
     obligations.requiresOutputOracle ?? obligations.requires_output_oracle,
     'proofObligations.requiresOutputOracle',
   );
+  const requiresAppHookContract = optionalProfileBoolean(
+    obligations.requiresAppHookContract ?? obligations.requires_app_hook_contract,
+    'proofObligations.requiresAppHookContract',
+  );
   const requiresRunModes = optionalProfileBoolean(
     obligations.requiresRunModes ?? obligations.requires_run_modes,
     'proofObligations.requiresRunModes',
@@ -371,6 +375,8 @@ function normalizeRealRocmProofObligations(rawObligations) {
     requires_full_runtime_proof: requiresFullRuntimeProof,
     requiresOutputOracle,
     requires_output_oracle: requiresOutputOracle,
+    requiresAppHookContract,
+    requires_app_hook_contract: requiresAppHookContract,
     requiresRunModes,
     requires_run_modes: requiresRunModes,
     requiresNegativeEdit,
@@ -809,6 +815,8 @@ function realRocmProfileProofObligationsFacet({
     || declared.requires_full_runtime_proof === true;
   const explicitRequiresOutputOracle = declared.requiresOutputOracle === true
     || declared.requires_output_oracle === true;
+  const explicitRequiresAppHookContract = declared.requiresAppHookContract === true
+    || declared.requires_app_hook_contract === true;
   const requiresFullRuntimeProof =
     explicitRequiresFullRuntime
     || progressionRequired
@@ -818,10 +826,12 @@ function realRocmProfileProofObligationsFacet({
     || requirements.includes('output_oracle_proven')
     || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
     || finalAcceptance;
+  const requiresAppHookContract = explicitRequiresAppHookContract;
   const outputOraclePresent =
     !outputOracleProfileModeDisabled(outputOracleProfile)
     || Boolean(outputOracleContract)
     || Boolean(outputOracleRuntimeProfile);
+  const appHookContractDeclared = profile.appHookContract?.declared === true;
   const refusalOnly = declared.refusalOnly === true || declared.refusal_only === true;
   const blockingGaps = [];
   if (refusalOnly) {
@@ -836,6 +846,9 @@ function realRocmProfileProofObligationsFacet({
         ? 'proof_obligation_refusal_only_output_oracle_absent'
         : 'proof_obligation_output_oracle_profile_missing',
     );
+  }
+  if (requiresAppHookContract && !appHookContractDeclared) {
+    blockingGaps.push('proof_obligation_app_hook_contract_missing');
   }
   const status = blockingGaps.length === 0
     ? 'profile_proof_obligations_satisfied_by_configuration'
@@ -872,6 +885,10 @@ function realRocmProfileProofObligationsFacet({
     requires_output_oracle: requiresOutputOracle,
     outputOraclePresent,
     output_oracle_present: outputOraclePresent,
+    requiresAppHookContract,
+    requires_app_hook_contract: requiresAppHookContract,
+    appHookContractDeclared,
+    app_hook_contract_declared: appHookContractDeclared,
     outputOracleProfile: outputOracleProfile || null,
     output_oracle_profile: outputOracleProfile || null,
     blockingGaps: compactStringList(blockingGaps),
@@ -883,6 +900,7 @@ function realRocmProfileProofObligationsFacet({
       targetProgression,
       outputOracleProfile,
       outputOraclePresent,
+      appHookContractDeclared,
       requireFullRuntimeProof,
     })).digest('hex')}`,
     contract_hash: `sha256:${createHash('sha256').update(stableJson({
@@ -890,6 +908,7 @@ function realRocmProfileProofObligationsFacet({
       targetProgression,
       outputOracleProfile,
       outputOraclePresent,
+      appHookContractDeclared,
       requireFullRuntimeProof,
     })).digest('hex')}`,
   };
@@ -9908,6 +9927,63 @@ int main()
     outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
     requireFullRuntimeProof: true,
   });
+  const requiredAppHookMissingObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-required-app-hook-missing',
+      proofObligations: normalizeRealRocmProofObligations({
+        requiresAppHookContract: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'small-oracle',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
+    requireFullRuntimeProof: true,
+  });
+  const requiredAppHookDeclaredObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-required-app-hook-declared',
+      proofObligations: normalizeRealRocmProofObligations({
+        requires_app_hook_contract: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract({
+        declared: true,
+        required: true,
+        artifactTransport: {
+          declared: true,
+          evidenceRefs: ['artifact_transport:profile-required-app-hook-declared'],
+        },
+        epochPublication: {
+          declared: true,
+          evidenceRefs: ['epoch_publication:profile-required-app-hook-declared'],
+        },
+        dispatchTrace: {
+          declared: true,
+          evidenceRefs: ['dispatch_trace:profile-required-app-hook-declared'],
+        },
+        hostIdentity: {
+          declared: true,
+          evidenceRefs: ['host_identity:profile-required-app-hook-declared'],
+        },
+        outputOracle: {
+          declared: true,
+          evidenceRefs: ['output_oracle:profile-required-app-hook-declared'],
+        },
+      }),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'small-oracle',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
+    requireFullRuntimeProof: true,
+  });
   if (
     optionalProgressionRows[0]?.status !== 'skip'
     || requiredProgressionRows[0]?.status !== 'fail'
@@ -9945,6 +10021,11 @@ int main()
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_profile')
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_output_oracle_absent')
     || smallOracleProfileObligations.blocking_gaps.length !== 0
+    || requiredAppHookMissingObligations.status !== 'profile_proof_obligations_unmet'
+    || !requiredAppHookMissingObligations.requiresAppHookContract
+    || !requiredAppHookMissingObligations.blocking_gaps.includes('proof_obligation_app_hook_contract_missing')
+    || requiredAppHookDeclaredObligations.blocking_gaps.length !== 0
+    || requiredAppHookDeclaredObligations.appHookContractDeclared !== true
   ) {
     throw new Error('target progression gate self-check failed');
   }
