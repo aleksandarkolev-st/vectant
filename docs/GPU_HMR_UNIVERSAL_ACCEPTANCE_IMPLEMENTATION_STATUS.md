@@ -29,7 +29,7 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 42 rows: 17 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 15 structured refusal rows, 1 preflight-only row, 7 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
 json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
 markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.md
 latest rerun context: validation matrix rerun over existing proof artifacts after real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, required app-hook fail-closed gates, generic runtime capability preflight surfacing, and the latest MIOpen no-device strict refusal rerun
@@ -400,7 +400,7 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+proof id: gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
 json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
 markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.md
 ```
@@ -517,7 +517,7 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
   smoke coverage: compute-only real ROCm oracle acceptance plus forged missing raw/schema/card file refusal
 
 ray-light live MCP visual proof with hot-delta timing

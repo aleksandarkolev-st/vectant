@@ -45,10 +45,10 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+global matrix: gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
 global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
 global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
-latest global matrix after real ROCm proof-obligation, firewall, target-progression, app-hook gating, runtime capability preflight surfacing, and the latest MIOpen no-device refusal rerun: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+latest global matrix after real ROCm proof-obligation, firewall, target-progression, app-hook gating, runtime capability preflight surfacing, and the latest MIOpen no-device refusal rerun: gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
 latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
 latest global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 history audit matrix: gpu-validation-matrix-ledger:sha256:51b02527c6b39fe56b4d03fc9643d795bcf14de7e50bebae78e164f29f17e282
@@ -351,7 +351,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
