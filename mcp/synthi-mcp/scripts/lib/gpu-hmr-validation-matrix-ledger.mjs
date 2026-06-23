@@ -1949,6 +1949,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_contract
     ?? runtimeProofArtifact.appHookContract,
   );
+  const realRocmCompileBridge = compactObject(
+    json.real_rocm_compile_bridge
+    ?? json.realRocmCompileBridge
+    ?? summary.real_rocm_compile_bridge
+    ?? summary.realRocmCompileBridge
+    ?? runtimeProofArtifact.real_rocm_compile_bridge
+    ?? runtimeProofArtifact.realRocmCompileBridge,
+  );
   const nativeRocmBoundaryGaps = compactStringList([
     ...(Array.isArray(nativeRocmLaunchBoundary.blockingGaps) ? nativeRocmLaunchBoundary.blockingGaps : []),
     ...(Array.isArray(nativeRocmLaunchBoundary.blocking_gaps) ? nativeRocmLaunchBoundary.blocking_gaps : []),
@@ -1961,6 +1969,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
   ]);
+  const realRocmCompileBridgeGaps = compactStringList([
+    ...(Array.isArray(realRocmCompileBridge.blockingGaps) ? realRocmCompileBridge.blockingGaps : []),
+    ...(Array.isArray(realRocmCompileBridge.blocking_gaps) ? realRocmCompileBridge.blocking_gaps : []),
+  ]);
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -1972,6 +1984,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmAppHookContractReason =
     Object.keys(realRocmAppHookContract).length > 0
       ? firstText(realRocmAppHookContract.status, realRocmAppHookContract.reason)
+      : null;
+  const realRocmCompileBridgeReason =
+    Object.keys(realRocmCompileBridge).length > 0
+      ? firstText(realRocmCompileBridge.status, realRocmCompileBridge.reason)
       : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
@@ -2139,6 +2155,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_eligibility: realRocmRuntimeEligibility,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmCompileBridge,
+    real_rocm_compile_bridge: realRocmCompileBridge,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
     reasons: compactStringList([
       ...strictGateFailures,
@@ -2151,6 +2169,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
+      ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
@@ -2168,6 +2188,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
     ]),
   });
 }

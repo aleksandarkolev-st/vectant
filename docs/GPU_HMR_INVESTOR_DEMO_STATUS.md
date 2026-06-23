@@ -165,27 +165,28 @@ Current ROCm matrix multiplication compute-oracle caveat:
 
 ```text
 profile: real-rocm-matrix-multiplication
-result slug: gpu-real-rocm-matrix-small-oracle-20260623
+result slug: gpu-real-rocm-matrix-bridge-facet-tight-20260623
 result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
 repo: ROCm/rocm-examples @ c121d6d2e6a21ce1d0a140e97b890ada635f7574
 target: hip_matrix_multiplication
-upstream build/run: configure=1743ms, build=1715ms, run=282ms, run_exit_code=0
+upstream build/run: configure=1509ms, build=1840ms, run=230ms, run_exit_code=0
 output oracle: profile=hip.matrix-multiplication.readback-c.v1, selected_source=source_derived_profile, oracle=oracle:real-rocm:matrix-readback-c:b8f18aad760bfaf7, baseline=sha256:aaedc7073c76880db6c8be81a91229d0073f1069e70791a7d028f575910c352c, expected=sha256:e7352404a601e877e39b4ae06181ce1597e93ccbbb2c9d654eb9df479bb9a858, worker_profile_synced=true
 candidate artifact entry point: matrix_multiplication_kernel
 native evidence: hipLaunchKernel observed through the native launch observer
 target progression: phase=small-oracle, required=true, final_acceptance_target=MIOpenDriver, output_oracle gate failed because runtime_dispatch_not_observed
-timings: initial_compile=30020ms, hot_delta_compile=30016ms, hot_wait=30013ms, total_validator_wall=170669.576ms
+compile bridge facet: status=compile_bridge_missing, phase_count=2, compile_response_status=compile_bridge_not_declared_by_compile_response, load_device=false, device_sidecar=false, artifact_reference=false, runtime_proof_material=false, gap=compile_response_device_sidecar_bridge_not_declared
+timings: initial_compile=30007ms, hot_delta_compile=30005ms, hot_wait=30002ms, total_validator_wall=169071.7042ms
 accepted GPU HMR: false
 strict refusal: runtime proof artifact exists but is rejected; native HIP launch evidence is evidence-only and cannot satisfy GPU HMR
-runtime proof artifact: gpu-runtime-proof:sha256:82655af4784519cf095f2df5be8e70c427d95b48a088f78b7e8008322ee149f7
+runtime proof artifact: gpu-runtime-proof:sha256:0e09ae2abdc7bbae534ecca51d96f38d7276e6e243a47026d861e7d13fd2265e
 worker proof boundary: no synthi_gpu_launch dispatch, artifact_transport, dispatcher_epoch, host_identity, or runtime output_oracle observation
 native ROCm refusal facet: status=refusal_evidence, can_satisfy_dispatch_proof=false, gaps=native_launch_boundary_observed,native_boundary_not_synthi_dispatch_proof,synthi_dispatch_not_observed,artifact_transport_not_observed,epoch_not_observed,output_oracle_not_observed,host_identity_not_observed,adapter_impossible_requires_app_hook
 real ROCm app-hook contract facet: status=required_app_hook_contract_missing, declared=false, required=true, can_satisfy_runtime_proof=false
 visual proof: compute-only target; no frame captured or counted, and strict ledger still refuses because post-epoch output-oracle observation is missing
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
-matrix proof ids: gpu-ledger-proof:sha256:9ade3572363c2b3ee6505e6f2044372333c599cf9316b9a2b0d68af3ba8eef7e, gpu-runtime-proof:sha256:82655af4784519cf095f2df5be8e70c427d95b48a088f78b7e8008322ee149f7, real-rocm-validation:sha256:fd30c44fd8c02db0153aa805aa7a2eb26c3e986ef3e4ef57cb88ed9d7d8c4afc
-matrix row id: gpu-validation-matrix-row:sha256:8f8d35d3522637bd724af4003a1b10429ff35f988dbdb0d2aedb4e5c81f5a378
-validation matrix ledger: gpu-validation-matrix-ledger:sha256:d8c54043b4066ca828c2203e9d526c3557bce225fcde1fc02e469e191b6f7602
+matrix proof ids: gpu-ledger-proof:sha256:15de5dc81722d2de9a503693a4708046731875e6ae396759a109b094356c8413, gpu-runtime-proof:sha256:0e09ae2abdc7bbae534ecca51d96f38d7276e6e243a47026d861e7d13fd2265e, real-rocm-validation:sha256:bdabe89a91de0f03bfd1c732a1c96c8618ba1570d67378c724b12f08e4c0d5ac
+matrix row id: gpu-validation-matrix-row:sha256:61dd0d2471d7e70e698f0f55eaea75654c5931adda8b957efea75bf79cb0c040
+validation matrix ledger: gpu-validation-matrix-ledger:sha256:361ddb15ef7c1c953447756453578b4c10ab1888d62915156f72fd3618af8339
 ```
 
 ## Current Hardening Status
@@ -282,6 +283,7 @@ The ROCm examples matrix multiplication result records oracle resolution explici
 Real ROCm output-oracle profiles now require declared native launch symbols, and runtime eligibility filters native placeholder symbols such as `unknown`; the matrix multiplication candidate artifact records `matrix_multiplication_kernel`.
 The MIOpen large-ML profile now requires `targetProgression.phase=final-acceptance`; the latest run fails the missing prior small-oracle, partial-reload, original-host-path, full-runtime, and raw-compute-oracle-artifact gates instead of leaving the target undeclared.
 The ROCm examples matrix multiplication profile is now a required `small-oracle` progression phase for the larger `MIOpenDriver` final-acceptance ladder. It still fails closed because the small-oracle gate requires real runtime output proof after Synthi dispatch, not only a derived checksum contract.
+Real ROCm compile phases now preserve an evidence-only compile bridge facet. The latest tightened matrix run records no compile-declared `load_device`, device-sidecar, artifact-reference, runtime-proof material, or matching bridge signal strings, so the matrix row exposes `real_rocm_compile_bridge:compile_response_device_sidecar_bridge_not_declared`.
 Real ROCm final-acceptance target progression now revalidates prior small-oracle rows from raw compute oracle artifacts or readable visual artifacts with matching content hashes; proof ids and status labels are not enough.
 Real ROCm validation matrix rows now carry native ROCm launch-boundary and runtime-eligibility facets as queryable refusal gaps, while preserving `can_satisfy_dispatch_proof=false` for native function resolution.
 Real ROCm matrix rows now preserve `outputOracleResolution`, `targetProgression`, and `targetProgressionGates`, so the serious-project refusal reason is queryable from the matrix artifact instead of inferred from logs.

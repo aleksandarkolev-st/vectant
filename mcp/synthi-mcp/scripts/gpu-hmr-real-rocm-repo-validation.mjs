@@ -4395,6 +4395,120 @@ function runtimeIdentityChangeEvidence(runtimeIdentity = report.runtime_identity
   };
 }
 
+function compileResponseBridgeSignalStrings(value, out = [], depth = 0) {
+  if (out.length >= 80 || depth > 8 || value === null || value === undefined) return out;
+  if (typeof value === 'string') {
+    if (
+      /\b(?:load_device(?:_partial)?|device[_ -]?sidecar|gpu[_ -]?sidecar|gpu[_ -]?hmr|runtime[_ -]?proof|proof[_ -]?artifact|artifact(?:[_ -]?(?:path|hash|id))?|hsaco|cubin|fatbin|ptx)\b/i
+        .test(value)
+    ) {
+      out.push(value.length > 260 ? `${value.slice(0, 260)}...` : value);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      compileResponseBridgeSignalStrings(item, out, depth + 1);
+      if (out.length >= 80) break;
+    }
+    return out;
+  }
+  if (typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value)) {
+      if (
+        /\b(?:load_device(?:_partial)?|device[_ -]?sidecar|gpu[_ -]?sidecar|gpu[_ -]?hmr|runtime[_ -]?proof|proof[_ -]?artifact|artifact(?:[_ -]?(?:path|hash|id))?|hsaco|cubin|fatbin|ptx)\b/i
+          .test(key)
+      ) {
+        out.push(key);
+      }
+      compileResponseBridgeSignalStrings(nested, out, depth + 1);
+      if (out.length >= 80) break;
+    }
+  }
+  return out;
+}
+
+function compileResponseBridgeSummary(compile) {
+  const present = compile && typeof compile === 'object' && !Array.isArray(compile);
+  const matches = present ? compactStringList(compileResponseBridgeSignalStrings(compile)) : [];
+  const joined = matches.join('\n');
+  const loadDeviceCommandDeclared = /\bload_device(?:_partial)?\b/i.test(joined);
+  const deviceSidecarDeclared = /\b(?:device[_ -]?sidecar|gpu[_ -]?sidecar)\b/i.test(joined);
+  const artifactReferenceDeclared =
+    /\b(?:artifact(?:[_ -]?(?:path|hash|id))?|hsaco|cubin|fatbin|ptx)\b/i.test(joined);
+  const runtimeProofMaterialDeclared =
+    /\b(?:gpu[_ -]?hmr|runtime[_ -]?proof|proof[_ -]?artifact)\b/i.test(joined);
+  const completeBridgeCandidate =
+    loadDeviceCommandDeclared
+    && deviceSidecarDeclared
+    && artifactReferenceDeclared
+    && runtimeProofMaterialDeclared;
+  return {
+    schemaVersion: 'synthi.real_rocm.compile_bridge_summary.v1',
+    present,
+    ok: compile?.ok === true,
+    proofAuthority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: completeBridgeCandidate
+      ? 'compile_bridge_candidate_declared_not_runtime_proof'
+      : matches.length > 0
+        ? 'compile_bridge_incomplete_not_runtime_proof'
+        : 'compile_bridge_not_declared_by_compile_response',
+    topLevelKeys: present ? Object.keys(compile).slice(0, 80) : [],
+    top_level_keys: present ? Object.keys(compile).slice(0, 80) : [],
+    signals: {
+      loadDeviceCommandDeclared,
+      load_device_command_declared: loadDeviceCommandDeclared,
+      deviceSidecarDeclared,
+      device_sidecar_declared: deviceSidecarDeclared,
+      artifactReferenceDeclared,
+      artifact_reference_declared: artifactReferenceDeclared,
+      runtimeProofMaterialDeclared,
+      runtime_proof_material_declared: runtimeProofMaterialDeclared,
+    },
+    evidenceSample: matches.slice(0, 12),
+    evidence_sample: matches.slice(0, 12),
+  };
+}
+
+function realRocmCompileBridgeFacet(phases = []) {
+  const summaries = (Array.isArray(phases) ? phases : [])
+    .filter((phase) => /compile|hmr/i.test(String(phase?.name ?? '')))
+    .map((phase) => ({
+      phase: phase.name ?? null,
+      summary: phase.compile_response_summary ?? phase.compileResponseSummary ?? null,
+    }))
+    .filter((entry) => entry.summary && typeof entry.summary === 'object');
+  const anyCandidate = summaries.some((entry) =>
+    entry.summary.status === 'compile_bridge_candidate_declared_not_runtime_proof'
+  );
+  const anyIncomplete = summaries.some((entry) =>
+    entry.summary.status === 'compile_bridge_incomplete_not_runtime_proof'
+  );
+  const blockingGaps = [];
+  if (!anyCandidate) blockingGaps.push('compile_response_device_sidecar_bridge_not_declared');
+  return {
+    schemaVersion: 'synthi.real_rocm.compile_bridge_facet.v1',
+    status: anyCandidate
+      ? 'compile_bridge_candidate_observed_not_runtime_proof'
+      : anyIncomplete
+        ? 'compile_bridge_incomplete_not_runtime_proof'
+        : 'compile_bridge_missing',
+    proofAuthority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    phaseCount: summaries.length,
+    phase_count: summaries.length,
+    phaseSummaries: summaries,
+    phase_summaries: summaries,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function runtimeProofStateAccepted(proof, state) {
   return proof?.resultState === state && !proof?.degradedState;
 }
@@ -4507,7 +4621,7 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   if (compileIdentityChange?.changed) {
     const waitStart = Date.now();
     const wait = runtimeIdentityLostWaitResult(identityMonitor, start);
-    const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
+    const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor, compile);
     report.phases.push(phase);
     record(
       phaseName,
@@ -4525,7 +4639,7 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
   );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
-  const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
+  const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor, compile);
   report.phases.push(phase);
   const waitApplied = wait?.status === 'applied';
   const waitTerminalProvisional = !waitApplied && CFG.requireFullRuntimeProof;
@@ -4542,10 +4656,13 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   return { compile, wait, phase };
 }
 
-function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor) {
+function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor, compile = null) {
+  const compileSummary = compileResponseBridgeSummary(compile);
   return {
     name: phaseName,
     compile_wall_ms: Date.now() - start,
+    compile_response_summary: compileSummary,
+    compileResponseSummary: compileSummary,
     wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
     wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
     wait_hmr_status: wait?.status ?? null,
@@ -9971,6 +10088,9 @@ async function collectRuntimeEvidence() {
   });
   report.realRocmAppHookContract = report.real_rocm_app_hook_contract;
   report.evidence.real_rocm_app_hook_contract = report.real_rocm_app_hook_contract;
+  report.real_rocm_compile_bridge = realRocmCompileBridgeFacet(report.phases);
+  report.realRocmCompileBridge = report.real_rocm_compile_bridge;
+  report.evidence.real_rocm_compile_bridge = report.real_rocm_compile_bridge;
   report.real_rocm_runtime_eligibility = realRocmRuntimeEligibilityFacet({
     nativeBoundary: report.native_rocm_launch_boundary,
     appHookContractFacet: report.real_rocm_app_hook_contract,
@@ -10023,6 +10143,17 @@ async function collectRuntimeEvidence() {
         `contract_complete=${report.real_rocm_app_hook_contract.contract_evidence_complete}`,
         `runtime_complete=${report.real_rocm_app_hook_contract.runtime_observation_complete}`,
         `gaps=${report.real_rocm_app_hook_contract.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
+  if (report.real_rocm_compile_bridge.phase_count > 0) {
+    record(
+      'real ROCm compile bridge facet',
+      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_compile_bridge.status}`,
+        `phases=${report.real_rocm_compile_bridge.phase_count}`,
+        `gaps=${report.real_rocm_compile_bridge.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
@@ -10389,6 +10520,8 @@ async function writeResults() {
     real_rocm_app_hook_contract: report.real_rocm_app_hook_contract,
     appHookContract: report.real_rocm_app_hook_contract,
     app_hook_contract: report.real_rocm_app_hook_contract,
+    realRocmCompileBridge: report.real_rocm_compile_bridge,
+    real_rocm_compile_bridge: report.real_rocm_compile_bridge,
     realRocmRuntimeEligibility: report.real_rocm_runtime_eligibility,
     real_rocm_runtime_eligibility: report.real_rocm_runtime_eligibility,
     nativeRuntimeEligibility: report.real_rocm_runtime_eligibility,
