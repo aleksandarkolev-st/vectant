@@ -1963,6 +1963,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.device_sidecar_contract
     ?? runtimeProofArtifact.deviceSidecarContract,
   );
+  const realRocmSidecarRuntimeConsistency = compactObject(
+    json.real_rocm_sidecar_runtime_consistency
+    ?? json.realRocmSidecarRuntimeConsistency
+    ?? json.sidecar_runtime_consistency
+    ?? json.sidecarRuntimeConsistency
+    ?? summary.real_rocm_sidecar_runtime_consistency
+    ?? summary.realRocmSidecarRuntimeConsistency
+    ?? summary.sidecar_runtime_consistency
+    ?? summary.sidecarRuntimeConsistency
+    ?? runtimeProofArtifact.real_rocm_sidecar_runtime_consistency
+    ?? runtimeProofArtifact.realRocmSidecarRuntimeConsistency
+    ?? runtimeProofArtifact.sidecar_runtime_consistency
+    ?? runtimeProofArtifact.sidecarRuntimeConsistency,
+  );
   const realRocmCompileBridge = compactObject(
     json.real_rocm_compile_bridge
     ?? json.realRocmCompileBridge
@@ -1987,6 +2001,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmDeviceSidecarContract.blockingGaps) ? realRocmDeviceSidecarContract.blockingGaps : []),
     ...(Array.isArray(realRocmDeviceSidecarContract.blocking_gaps) ? realRocmDeviceSidecarContract.blocking_gaps : []),
   ]);
+  const realRocmSidecarRuntimeConsistencyGaps = compactStringList([
+    ...(Array.isArray(realRocmSidecarRuntimeConsistency.blockingGaps) ? realRocmSidecarRuntimeConsistency.blockingGaps : []),
+    ...(Array.isArray(realRocmSidecarRuntimeConsistency.blocking_gaps) ? realRocmSidecarRuntimeConsistency.blocking_gaps : []),
+  ]);
   const realRocmCompileBridgeGaps = compactStringList([
     ...(Array.isArray(realRocmCompileBridge.blockingGaps) ? realRocmCompileBridge.blockingGaps : []),
     ...(Array.isArray(realRocmCompileBridge.blocking_gaps) ? realRocmCompileBridge.blocking_gaps : []),
@@ -2006,6 +2024,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmDeviceSidecarContractReason =
     Object.keys(realRocmDeviceSidecarContract).length > 0
       ? firstText(realRocmDeviceSidecarContract.status, realRocmDeviceSidecarContract.reason)
+      : null;
+  const realRocmSidecarRuntimeConsistencyReason =
+    Object.keys(realRocmSidecarRuntimeConsistency).length > 0
+      ? firstText(realRocmSidecarRuntimeConsistency.status, realRocmSidecarRuntimeConsistency.reason)
       : null;
   const realRocmCompileBridgeReason =
     Object.keys(realRocmCompileBridge).length > 0
@@ -2069,6 +2091,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     !appHookContractRequired
     || realRocmAppHookContract.canSatisfyRuntimeProof === true
     || realRocmAppHookContract.can_satisfy_runtime_proof === true;
+  const sidecarRuntimeBackendMismatch =
+    realRocmSidecarRuntimeConsistencyGaps.includes('sidecar_runtime_backend_mismatch');
+  const sidecarRuntimeConsistencyAccepted = !sidecarRuntimeBackendMismatch;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
     ?? json.full_runtime_proven
@@ -2090,7 +2115,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && ledger.failedInvariants.length === 0
     && runtimeProofArtifactGate.accepted === true
     && outputOrVisualOracleAccepted === true
-    && appHookContractAccepted === true;
+    && appHookContractAccepted === true
+    && sidecarRuntimeConsistencyAccepted === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false
     || strictGateFailures.length > 0
@@ -2179,6 +2205,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_app_hook_contract: realRocmAppHookContract,
     realRocmDeviceSidecarContract,
     real_rocm_device_sidecar_contract: realRocmDeviceSidecarContract,
+    realRocmSidecarRuntimeConsistency,
+    real_rocm_sidecar_runtime_consistency: realRocmSidecarRuntimeConsistency,
     realRocmCompileBridge,
     real_rocm_compile_bridge: realRocmCompileBridge,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
@@ -2197,12 +2225,17 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         ? `real_rocm_device_sidecar_contract:${realRocmDeviceSidecarContractReason}`
         : null,
       ...(!accepted ? realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`) : []),
+      !accepted && realRocmSidecarRuntimeConsistencyReason
+        ? `real_rocm_sidecar_runtime_consistency:${realRocmSidecarRuntimeConsistencyReason}`
+        : null,
+      ...(!accepted ? realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`) : []),
       realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
+      sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
       ledger.present === true ? null : 'proof_ledger_record_missing',
       realRocmRequiredFullRuntimeProof(json) ? null : 'full_runtime_proof_not_required_by_artifact',
     ]),
@@ -2211,12 +2244,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
+      sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
+      ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
     ]),
   });

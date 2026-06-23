@@ -1056,6 +1056,22 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       'device_sidecar_host_identity_runtime_not_observed',
     ],
   },
+  real_rocm_sidecar_runtime_consistency: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1',
+    status: 'sidecar_runtime_backend_consistent_not_runtime_proof',
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sidecarBackend: 'hip',
+    sidecar_backend: 'hip',
+    runtimeBackendCandidates: ['hip'],
+    runtime_backend_candidates: ['hip'],
+    backendConsistent: true,
+    backend_consistent: true,
+    blockingGaps: ['sidecar_runtime_sidecar_observation_missing'],
+    blocking_gaps: ['sidecar_runtime_sidecar_observation_missing'],
+  },
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -1340,6 +1356,8 @@ assert.equal(largeRocm.realRocmAppHookContract.status, 'required_app_hook_contra
 assert.equal(largeRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
 assert.equal(largeRocm.realRocmDeviceSidecarContract.status, 'derived_device_sidecar_candidate_not_runtime_proof');
 assert.equal(largeRocm.realRocmDeviceSidecarContract.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmSidecarRuntimeConsistency.status, 'sidecar_runtime_backend_consistent_not_runtime_proof');
+assert.equal(largeRocm.realRocmSidecarRuntimeConsistency.backendConsistent, true);
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
@@ -1348,11 +1366,17 @@ assert.ok(largeRocm.reasons.includes('real_rocm_app_hook_contract:app_hook_contr
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_device_sidecar_contract:derived_device_sidecar_candidate_not_runtime_proof',
 ));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
+));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
 assert.ok(largeRocm.openGaps.includes('real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
 ));
 
 const truncatedVisual = ledger.rows.find((row) => row.targetId === 'truncated-visual');
@@ -1661,6 +1685,147 @@ const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCove
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+
+const forgedSidecarMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-sidecar-mismatch');
+await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [88 + x, 100 + y, 136, 255]);
+await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(forgedSidecarMismatchRocmDir, 'real-rocm-forged-sidecar-mismatch.json'), {
+  slug: 'gpu-real-rocm-forged-sidecar-mismatch-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-sidecar-mismatch' },
+  source_url: 'https://example.invalid/rocm/forged-sidecar-mismatch.git',
+  repo_commit: 'bcdef0123456789abcdef0123456789abcdef012',
+  entry_file: 'src/kernels/sidecar_entry.cl',
+  delta_file: 'src/kernels/sidecar_delta.h',
+  target_name: 'ForgedSidecarMismatchDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: false,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  real_rocm_device_sidecar_contract: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_device_sidecar_contract_facet.v1',
+    declared: true,
+    required: true,
+    status: 'declared_device_sidecar_contract_not_runtime_proof',
+    proofAuthority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    proof_authority: 'build_metadata_candidate_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    backend: 'opencl',
+    artifact_identity: {
+      source_paths: ['src/kernels/sidecar_entry.cl'],
+      artifact_kind: 'opencl_program',
+      entry_points: ['opencl_sidecar_kernel'],
+      compile_target: 'gfx1201',
+      compiler: '/opt/rocm/llvm/bin/amdclang',
+      compiler_args_hash: hashValue('forged-sidecar-mismatch-compile-args'),
+    },
+    blockingGaps: ['device_sidecar_dispatch_trace_runtime_not_observed'],
+    blocking_gaps: ['device_sidecar_dispatch_trace_runtime_not_observed'],
+  },
+  real_rocm_sidecar_runtime_consistency: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1',
+    status: 'sidecar_runtime_backend_inconsistent_or_unproven',
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sidecarBackend: 'opencl',
+    sidecar_backend: 'opencl',
+    runtimeBackendCandidates: ['hip'],
+    runtime_backend_candidates: ['hip'],
+    backendConsistent: false,
+    backend_consistent: false,
+    blockingGaps: ['sidecar_runtime_backend_mismatch'],
+    blocking_gaps: ['sidecar_runtime_backend_mismatch'],
+  },
+  real_rocm_runtime_eligibility: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_eligibility.v1',
+    status: 'supplemental_runtime_proof_evidence',
+    backendCandidates: ['hip'],
+    backend_candidates: ['hip'],
+    blockingGaps: [],
+    blocking_gaps: [],
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'real-rocm-forged-sidecar-mismatch',
+    visualRoot: forgedSidecarMismatchRocmDir,
+  }),
+  visual_artifact_paths: [
+    path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'),
+    path.join(forgedSidecarMismatchRocmDir, 'after-hmr-first.png'),
+    path.join(forgedSidecarMismatchRocmDir, 'before-after-diff.png'),
+  ],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-sidecar-mismatch-delta',
+    editHash: hashValue('real-rocm-forged-sidecar-mismatch-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-sidecar-mismatch.git @ bcdef012345 files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedSidecarMismatchLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedSidecarMismatchRocmDir],
+  generatedAt: '2026-06-09T00:00:02.050Z',
+  includeUnproven: true,
+});
+const forgedSidecarMismatch = forgedSidecarMismatchLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedSidecarMismatch?.matrixOutcome, 'unproven');
+assert.equal(forgedSidecarMismatch.acceptedForGpuHmr, false);
+assert.equal(forgedSidecarMismatch.runtimeProofArtifact.accepted, true);
+assert.equal(forgedSidecarMismatch.ledger.gpuHmrSuccess, true);
+assert.equal(forgedSidecarMismatch.outputOracleFacet.accepted, true);
+assert.equal(forgedSidecarMismatch.realRocmSidecarRuntimeConsistency.backendConsistent, false);
+assert.ok(forgedSidecarMismatch.reasons.includes('real_rocm_sidecar_runtime_consistency_not_proven'));
+assert.ok(forgedSidecarMismatch.reasons.includes(
+  'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_mismatch',
+));
+assert.ok(forgedSidecarMismatch.openGaps.includes('real_rocm_sidecar_runtime_consistency_required'));
+assert.ok(forgedSidecarMismatch.openGaps.includes(
+  'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_mismatch',
+));
 
 const forgedRequiredHookRocmDir = path.join(logsRoot, 'real-rocm-forged-required-hook');
 await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);

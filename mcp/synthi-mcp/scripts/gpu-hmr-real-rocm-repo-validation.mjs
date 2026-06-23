@@ -7387,6 +7387,111 @@ function realRocmRuntimeEligibilityFacet({
   };
 }
 
+function realRocmSidecarRuntimeConsistencyFacet({
+  deviceSidecarContract = {},
+  runtimeEligibility = {},
+} = {}) {
+  const sidecar = deviceSidecarContract && typeof deviceSidecarContract === 'object'
+    ? deviceSidecarContract
+    : {};
+  const eligibility = runtimeEligibility && typeof runtimeEligibility === 'object'
+    ? runtimeEligibility
+    : {};
+  const sidecarBackend = String(sidecar.backend ?? sidecar.hmrBackend ?? sidecar.hmr_backend ?? '').trim().toLowerCase();
+  const runtimeBackendCandidates = compactStringList([
+    ...(Array.isArray(eligibility.backendCandidates) ? eligibility.backendCandidates : []),
+    ...(Array.isArray(eligibility.backend_candidates) ? eligibility.backend_candidates : []),
+    ...(Array.isArray(eligibility.runtimeBackendCandidates) ? eligibility.runtimeBackendCandidates : []),
+    ...(Array.isArray(eligibility.runtime_backend_candidates) ? eligibility.runtime_backend_candidates : []),
+  ]).map((value) => value.toLowerCase());
+  const sidecarEvidenceComplete =
+    sidecar.contractEvidenceComplete === true
+    || sidecar.contract_evidence_complete === true;
+  const sidecarRuntimeObservationComplete =
+    sidecar.runtimeObservationComplete === true
+    || sidecar.runtime_observation_complete === true;
+  const runtimeObserved =
+    eligibility.observed === true
+    || eligibility.nativeLaunchBoundaryObserved === true
+    || eligibility.native_launch_boundary_observed === true
+    || runtimeBackendCandidates.length > 0;
+  const sidecarPresent = Object.keys(sidecar).length > 0
+    && sidecar.status !== 'device_sidecar_contract_not_derived';
+  const blockingGaps = [];
+  if (!sidecarPresent) {
+    blockingGaps.push('sidecar_runtime_sidecar_not_present');
+  }
+  if (sidecarPresent && !sidecarBackend) {
+    blockingGaps.push('sidecar_runtime_sidecar_backend_unknown');
+  }
+  if (!runtimeObserved || runtimeBackendCandidates.length === 0) {
+    blockingGaps.push('sidecar_runtime_backend_candidates_missing');
+  }
+  const backendConsistent =
+    sidecarBackend
+    && runtimeBackendCandidates.includes(sidecarBackend);
+  if (
+    sidecarPresent
+    && sidecarBackend
+    && runtimeBackendCandidates.length > 0
+    && !backendConsistent
+  ) {
+    blockingGaps.push('sidecar_runtime_backend_mismatch');
+  }
+  if (sidecarPresent && !sidecarEvidenceComplete) {
+    blockingGaps.push('sidecar_runtime_sidecar_contract_incomplete');
+  }
+  if (sidecarPresent && !sidecarRuntimeObservationComplete) {
+    blockingGaps.push('sidecar_runtime_sidecar_observation_missing');
+  }
+  const status = !sidecarPresent
+    ? 'sidecar_runtime_consistency_not_applicable'
+    : backendConsistent
+      ? 'sidecar_runtime_backend_consistent_not_runtime_proof'
+      : 'sidecar_runtime_backend_inconsistent_or_unproven';
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(sidecar.evidenceRefs) ? sidecar.evidenceRefs : []),
+    ...(Array.isArray(sidecar.evidence_refs) ? sidecar.evidence_refs : []),
+    ...(Array.isArray(eligibility.evidenceRefs) ? eligibility.evidenceRefs : []),
+    ...(Array.isArray(eligibility.evidence_refs) ? eligibility.evidence_refs : []),
+  ]);
+  const contractHash = `sha256:${createHash('sha256').update(stableJson({
+    sidecarBackend,
+    runtimeBackendCandidates,
+    sidecarEvidenceComplete,
+    sidecarRuntimeObservationComplete,
+    runtimeObserved,
+  })).digest('hex')}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1',
+    status,
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sidecarBackend: sidecarBackend || null,
+    sidecar_backend: sidecarBackend || null,
+    runtimeBackendCandidates,
+    runtime_backend_candidates: runtimeBackendCandidates,
+    backendConsistent: Boolean(backendConsistent),
+    backend_consistent: Boolean(backendConsistent),
+    sidecarEvidenceComplete,
+    sidecar_evidence_complete: sidecarEvidenceComplete,
+    sidecarRuntimeObservationComplete,
+    sidecar_runtime_observation_complete: sidecarRuntimeObservationComplete,
+    runtimeObserved,
+    runtime_observed: runtimeObserved,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash,
+    contract_hash: contractHash,
+  };
+}
+
 function selectedArtifactIdsFromProofArtifacts(records) {
   const ids = new Set();
   for (const record of Array.isArray(records) ? records : []) {
@@ -9759,6 +9864,34 @@ int main()
   ) {
     throw new Error('real ROCm device sidecar contract self-check failed');
   }
+  const sidecarRuntimeConsistent = realRocmSidecarRuntimeConsistencyFacet({
+    deviceSidecarContract: sidecarFacet,
+    runtimeEligibility: {
+      observed: true,
+      backend_candidates: ['hip'],
+    },
+  });
+  const sidecarRuntimeMismatch = realRocmSidecarRuntimeConsistencyFacet({
+    deviceSidecarContract: {
+      ...sidecarFacet,
+      backend: 'opencl',
+    },
+    runtimeEligibility: {
+      observed: true,
+      backend_candidates: ['hip'],
+    },
+  });
+  if (
+    sidecarRuntimeConsistent.status !== 'sidecar_runtime_backend_consistent_not_runtime_proof'
+    || sidecarRuntimeConsistent.canSatisfyRuntimeProof !== false
+    || sidecarRuntimeConsistent.backend_consistent !== true
+    || !sidecarRuntimeConsistent.blocking_gaps.includes('sidecar_runtime_sidecar_observation_missing')
+    || sidecarRuntimeMismatch.status !== 'sidecar_runtime_backend_inconsistent_or_unproven'
+    || sidecarRuntimeMismatch.backend_consistent !== false
+    || !sidecarRuntimeMismatch.blocking_gaps.includes('sidecar_runtime_backend_mismatch')
+  ) {
+    throw new Error('real ROCm sidecar/runtime consistency self-check failed');
+  }
   const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
     available: true,
     path: '/tmp/self-check/.synthi_split_meta.json',
@@ -10495,6 +10628,13 @@ async function collectRuntimeEvidence() {
     compiler: runtimeProofCompiler(),
   });
   report.evidence.real_rocm_runtime_eligibility = report.real_rocm_runtime_eligibility;
+  report.real_rocm_sidecar_runtime_consistency = realRocmSidecarRuntimeConsistencyFacet({
+    deviceSidecarContract: report.real_rocm_device_sidecar_contract,
+    runtimeEligibility: report.real_rocm_runtime_eligibility,
+  });
+  report.realRocmSidecarRuntimeConsistency = report.real_rocm_sidecar_runtime_consistency;
+  report.evidence.real_rocm_sidecar_runtime_consistency =
+    report.real_rocm_sidecar_runtime_consistency;
   if (report.native_rocm_launch_boundary.observed) {
     record(
       'native ROCm launch boundary refusal facet',
@@ -10531,6 +10671,19 @@ async function collectRuntimeEvidence() {
         `contract_complete=${report.real_rocm_app_hook_contract.contract_evidence_complete}`,
         `runtime_complete=${report.real_rocm_app_hook_contract.runtime_observation_complete}`,
         `gaps=${report.real_rocm_app_hook_contract.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
+  if (report.real_rocm_sidecar_runtime_consistency.status !== 'sidecar_runtime_consistency_not_applicable') {
+    record(
+      'real ROCm sidecar runtime consistency facet',
+      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_sidecar_runtime_consistency.status}`,
+        `sidecar_backend=${report.real_rocm_sidecar_runtime_consistency.sidecar_backend ?? 'none'}`,
+        `runtime_candidates=${report.real_rocm_sidecar_runtime_consistency.runtime_backend_candidates.join(',') || 'none'}`,
+        `backend_consistent=${report.real_rocm_sidecar_runtime_consistency.backend_consistent}`,
+        `gaps=${report.real_rocm_sidecar_runtime_consistency.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
@@ -10918,6 +11071,10 @@ async function writeResults() {
     real_rocm_runtime_eligibility: report.real_rocm_runtime_eligibility,
     nativeRuntimeEligibility: report.real_rocm_runtime_eligibility,
     native_runtime_eligibility: report.real_rocm_runtime_eligibility,
+    realRocmSidecarRuntimeConsistency: report.real_rocm_sidecar_runtime_consistency,
+    real_rocm_sidecar_runtime_consistency: report.real_rocm_sidecar_runtime_consistency,
+    sidecarRuntimeConsistency: report.real_rocm_sidecar_runtime_consistency,
+    sidecar_runtime_consistency: report.real_rocm_sidecar_runtime_consistency,
     backendCandidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backend_candidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backendEvidence: [
