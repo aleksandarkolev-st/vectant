@@ -2016,6 +2016,134 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
   });
 }
 
+async function hipModuleRuntimeRow(json, filePath, context) {
+  const ledger = ledgerFacet(json);
+  const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
+  const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
+  const hipContract = compactObject(contract.hip_contract ?? contract.hipContract);
+  const nativeApiEvidence = compactObject(json.nativeHipApiEvidence ?? json.native_hip_api_evidence);
+  const runtimeTrace = compactObject(json.runtimeTrace ?? json.runtime_trace);
+  const computeOracleFacet = await realRocmLedgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    { present: false, accepted: false },
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  const directComputeArtifacts = compactObject(
+    json.computeOracleArtifacts
+    ?? json.compute_oracle_artifacts
+    ?? ledgerRecord.oracle_artifacts?.compute_oracle_artifacts
+    ?? ledgerRecord.oracleArtifacts?.computeOracleArtifacts,
+  );
+  const visual = await visualArtifactEvidence(
+    [
+      directComputeArtifacts.rendered_card_png,
+      directComputeArtifacts.renderedCardPng,
+      computeOracleFacet.compute?.renderedCard?.path,
+    ],
+    context.repoRoot,
+    path.dirname(filePath),
+    {},
+    false,
+  );
+  const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
+  const expectedOutputVerified = directComputeArtifacts.expected_output_required === false
+    ? directComputeArtifacts.expected_output_verified !== false
+    : directComputeArtifacts.expected_output_declared === true
+      && directComputeArtifacts.expected_output_verified === true
+      && computeValidation.expectedOutputVerified === true;
+  const nativeCounts = compactObject(nativeApiEvidence.counts);
+  const supportedPipelineScope = firstText(
+    hipContract.supported_pipeline_scope,
+    hipContract.supportedPipelineScope,
+    contract.artifact_identity?.supported_pipeline_scope,
+    contract.artifactIdentity?.supportedPipelineScope,
+    json.profile?.validationScope,
+    json.profile?.validation_scope,
+  );
+  const accepted =
+    json.gpuHmrSuccess === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && computeOracleFacet.accepted === true
+    && computeValidation.accepted === true
+    && expectedOutputVerified
+    && runtimeTrace.processRestarted === false
+    && runtimeTrace.sameProcess === true
+    && nativeApiEvidence.accepted === true
+    && Number(nativeCounts.hipModuleLoadData ?? 0) >= 2
+    && Number(nativeCounts.hipModuleGetFunction ?? 0) >= 2
+    && Number(nativeCounts.hipModuleLaunchKernel ?? 0) >= 2
+    && supportedPipelineScope === 'explicit-hip-module-float32-readback';
+  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  return finalizeRow({
+    artifactSchema: json.schema,
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: 'hip',
+    targetId: profileId,
+    profileId,
+    proofMode: 'hip_module_runtime_readback',
+    evidenceKind: 'compute_oracle',
+    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
+    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'hip_module_runtime_rejected',
+    acceptedForGpuHmr: accepted,
+    gpuHmrSuccess: accepted,
+    refusalProven: false,
+    proofChainAccepted: accepted,
+    proofChain: accepted ? 'hip_module_ledger_native_api_readback_chain' : 'hip_module_runtime_chain_rejected',
+    proofIds: proofIdsFrom(json, ledger),
+    ledger,
+    outputOracleFacet: computeOracleFacet,
+    output_oracle_facet: computeOracleFacet,
+    supportedPipelineScope,
+    supported_pipeline_scope: supportedPipelineScope,
+    expectedOutputVerified,
+    expected_output_verified: expectedOutputVerified,
+    expectedOutputHash: directComputeArtifacts.expected_output_hash,
+    expected_output_hash: directComputeArtifacts.expected_output_hash,
+    nativeHipApiEvidence: nativeApiEvidence,
+    native_hip_api_evidence: nativeApiEvidence,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
+    visual,
+    runMode: timingEvidence(
+      ledgerRecord,
+      json.timingMetrics,
+      json.timing_metrics,
+      json.timings,
+    ),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: boolOrNull(runtimeTrace.processRestarted),
+    timings: {
+      totalValidatorWallTimeNs: finiteNumber(json.timings?.total_validator_wall_time),
+      dispatchToOutputProofTimeNs: finiteNumber(json.timings?.dispatch_to_output_proof_time),
+      oracleAnalysisTimeNs: finiteNumber(json.timings?.oracle_analysis_time),
+    },
+    reasons: accepted ? [] : compactStringList([
+      ...ledger.failedInvariants.map((failure) => failure.code),
+      ...((computeOracleFacet.failedGates ?? []).map((failure) => failure.code)),
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
+      computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
+      computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
+      expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
+      runtimeTrace.sameProcess === true ? null : 'same_process_not_accepted',
+      runtimeTrace.processRestarted === false ? null : 'process_continuity_not_accepted',
+      nativeApiEvidence.accepted === true ? null : 'native_hip_api_not_accepted',
+      supportedPipelineScope === 'explicit-hip-module-float32-readback'
+        ? null
+        : 'hip_module_supported_pipeline_scope_missing',
+    ]),
+    openGaps: accepted ? [] : ['hip_module_runtime_readback_proof_not_accepted'],
+  });
+}
+
 async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
   const backend = profileId?.includes('bevy') ? 'bevy_wgsl' : 'webgl';
@@ -3281,6 +3409,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema.includes('webgpu_runtime_compute_proof') || proofId.startsWith('webgpu-runtime-compute-proof:')) {
     return webGpuRuntimeComputeRow(json, filePath, context);
+  }
+  if (schema.includes('hip_module_runtime_proof') || proofId.startsWith('hip-module-runtime-proof:')) {
+    return hipModuleRuntimeRow(json, filePath, context);
   }
   if (
     schema.includes('oidn_preflight')

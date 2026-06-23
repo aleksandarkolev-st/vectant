@@ -404,6 +404,35 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
   };
 }
 
+export function hipModuleRuntimeTimingMetrics(proof) {
+  const base = webGpuRuntimeComputeTimingMetrics(proof);
+  return {
+    ...base,
+    source: 'hip_module_runtime',
+    profileId: proof?.profile?.id ?? null,
+    projectName: 'HIP module runtime compute proof',
+    proofMode: 'hip_module_runtime_readback',
+    metricScope: proof?.proofLedger?.records?.[0]?.metricScope ?? 'hot_delta_1',
+    metric_scope: proof?.proofLedger?.records?.[0]?.metric_scope ?? 'hot_delta_1',
+    cacheState: proof?.proofLedger?.records?.[0]?.cacheState ?? 'compiler_cache_warm',
+    cache_state: proof?.proofLedger?.records?.[0]?.cache_state ?? 'compiler_cache_warm',
+    hipEvidence: {
+      nativeApiCounts: proof?.nativeHipApiEvidence?.counts ?? null,
+      deviceIdentity: proof?.runtimeTrace?.device ?? null,
+      hsacoBeforeHash: proof?.compiler?.hsacoBeforeHash ?? null,
+      hsacoAfterHash: proof?.compiler?.hsacoAfterHash ?? null,
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+    hip_evidence: {
+      native_api_counts: proof?.nativeHipApiEvidence?.counts ?? null,
+      device_identity: proof?.runtimeTrace?.device ?? null,
+      hsaco_before_hash: proof?.compiler?.hsacoBeforeHash ?? null,
+      hsaco_after_hash: proof?.compiler?.hsacoAfterHash ?? null,
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+  };
+}
+
 export function externalProjectTimingMetrics(report) {
   const timings = report?.timings ?? {};
   const clockEvidence = timingClockEvidence(report, timings);

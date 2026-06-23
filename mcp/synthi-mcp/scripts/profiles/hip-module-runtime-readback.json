@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.hip_module_runtime_profile.v1",
+  "id": "hip-module-runtime-readback",
+  "targetId": "hip-module-runtime-readback",
+  "project": {
+    "name": "Generic HIP module runtime readback",
+    "kind": "gpu_project"
+  },
+  "validationScope": "explicit-hip-module-float32-readback",
+  "compile": {
+    "compiler": "hipcc",
+    "compileTarget": "rocm-hip-module-hsaco",
+    "sourceBeforePath": "hip-module/float32-before.hip",
+    "sourceAfterPath": "hip-module/float32-after.hip"
+  },
+  "kernel": {
+    "name": "synthi_hmr_float32_epoch_kernel",
+    "entryPoint": "synthi_hmr_float32_epoch_kernel",
+    "launchApi": "hipModuleLaunchKernel"
+  },
+  "launch": {
+    "gridDim": { "x": 1, "y": 1, "z": 1 },
+    "blockDim": { "x": 64, "y": 1, "z": 1 },
+    "sharedMemBytes": 0,
+    "stream": "hipStreamCreate"
+  },
+  "abi": {
+    "class": "compatible",
+    "params": [
+      { "name": "output", "type": "float*", "size": 8, "offset": 0, "valueKind": "global_buffer", "access": "write", "addressSpace": "global", "source": "profile_runtime_trace_contract" },
+      { "name": "input", "type": "const float*", "size": 8, "offset": 8, "valueKind": "global_buffer", "access": "read", "addressSpace": "global", "source": "profile_runtime_trace_contract" },
+      { "name": "scale", "type": "float", "size": 4, "offset": 16, "valueKind": "by_value", "access": "read", "addressSpace": "private", "source": "profile_runtime_trace_contract" },
+      { "name": "bias", "type": "float", "size": 4, "offset": 20, "valueKind": "by_value", "access": "read", "addressSpace": "private", "source": "profile_runtime_trace_contract" },
+      { "name": "n", "type": "unsigned int", "size": 4, "offset": 24, "valueKind": "by_value", "access": "read", "addressSpace": "private", "source": "profile_runtime_trace_contract" }
+    ]
+  },
+  "buffers": [
+    {
+      "name": "input",
+      "role": "input",
+      "dataType": "float32",
+      "values": [1, 2.5, 4, 8, 16, 32, 64, 128]
+    },
+    {
+      "name": "output",
+      "role": "readback",
+      "dataType": "float32",
+      "byteLength": 32
+    }
+  ],
+  "constants": {
+    "scale": 2,
+    "bias": 0.5
+  },
+  "outputOracle": {
+    "kind": "buffer_checksum",
+    "readbackBuffer": "output",
+    "expectedBeforeValues": [2.5, 5.5, 8.5, 16.5, 32.5, 64.5, 128.5, 256.5],
+    "expectedAfterValues": [3.5, 9, 14.5, 27.5, 52.5, 101.5, 198.5, 391.5],
+    "expectedOutputRequired": true,
+    "expectedOutputChange": true,
+    "tolerance": 0.00001,
+    "deterministicSlice": {
+      "offset": 0,
+      "length": 32
+    }
+  },
+  "runMode": {
+    "metricScope": "hot_delta_1",
+    "cacheState": "compiler_cache_warm",
+    "differentEdit": false
+  },
+  "negativeEdit": {
+    "editId": "hip-module-runtime-readback-abi-layout-change",
+    "claim": "Kernel argument layout changed and must be rejected before GPU HMR acceptance.",
+    "reasons": [
+      "hip_kernel_argument_layout_changed",
+      "gpu_hmr_rejected_before_load"
+    ],
+    "abiCompatibilityClass": "layout_changed"
+  }
+}

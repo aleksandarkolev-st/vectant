@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
   externalProjectTimingMetrics,
+  hipModuleRuntimeTimingMetrics,
   hiprtWarmTimingMetrics,
   realRocmTimingMetrics,
   webGpuRuntimeComputeTimingMetrics,
@@ -121,6 +122,16 @@ function classifyReport(json, filePath) {
     return {
       kind: 'webgpu_runtime_compute',
       metrics: webGpuRuntimeComputeTimingMetrics(json),
+    };
+  }
+
+  if (
+    String(json.schema ?? '').includes('hip_module_runtime_proof')
+    || String(json.proofId ?? '').startsWith('hip-module-runtime-proof:')
+  ) {
+    return {
+      kind: 'hip_module_runtime',
+      metrics: hipModuleRuntimeTimingMetrics(json),
     };
   }
 
