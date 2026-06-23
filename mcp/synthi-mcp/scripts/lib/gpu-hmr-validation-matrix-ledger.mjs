@@ -1936,11 +1936,11 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     false,
   );
   const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
-  const expectedOutputVerified = directComputeArtifacts.expected_output_required === false
-    ? directComputeArtifacts.expected_output_verified !== false
-    : directComputeArtifacts.expected_output_declared === true
-      && directComputeArtifacts.expected_output_verified === true
-      && computeValidation.expectedOutputVerified === true;
+  const expectedOutputVerified =
+    directComputeArtifacts.expected_output_declared === true
+    && directComputeArtifacts.expected_output_required !== false
+    && directComputeArtifacts.expected_output_verified === true
+    && computeValidation.expectedOutputVerified === true;
   const accepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -2037,7 +2037,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     ?? ledgerRecord.oracle_artifacts?.compute_oracle_artifacts
     ?? ledgerRecord.oracleArtifacts?.computeOracleArtifacts,
   );
-  const visual = await visualArtifactEvidence(
+  const computeCardEvidence = await visualArtifactEvidence(
     [
       directComputeArtifacts.rendered_card_png,
       directComputeArtifacts.renderedCardPng,
@@ -2049,11 +2049,11 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     false,
   );
   const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
-  const expectedOutputVerified = directComputeArtifacts.expected_output_required === false
-    ? directComputeArtifacts.expected_output_verified !== false
-    : directComputeArtifacts.expected_output_declared === true
-      && directComputeArtifacts.expected_output_verified === true
-      && computeValidation.expectedOutputVerified === true;
+  const expectedOutputVerified =
+    directComputeArtifacts.expected_output_declared === true
+    && directComputeArtifacts.expected_output_required !== false
+    && directComputeArtifacts.expected_output_verified === true
+    && computeValidation.expectedOutputVerified === true;
   const nativeCounts = compactObject(nativeApiEvidence.counts);
   const supportedPipelineScope = firstText(
     hipContract.supported_pipeline_scope,
@@ -2090,7 +2090,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     proofMode: 'hip_module_runtime_readback',
     evidenceKind: 'compute_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
-    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'hip_module_runtime_rejected',
+    acceptanceClass: accepted ? 'scoped_hip_module_runtime_hmr' : 'hip_module_runtime_rejected',
     acceptedForGpuHmr: accepted,
     gpuHmrSuccess: accepted,
     refusalProven: false,
@@ -2110,7 +2110,14 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     native_hip_api_evidence: nativeApiEvidence,
     runtimeTrace,
     runtime_trace: runtimeTrace,
-    visual,
+    visual: {
+      required: false,
+      accepted: false,
+      evidenceKind: 'compute_card_not_runtime_visual_oracle',
+      reason: 'hip_module_readback_card_is_human_compute_evidence_not_frame_visual_proof',
+    },
+    computeCardEvidence,
+    compute_card_evidence: computeCardEvidence,
     runMode: timingEvidence(
       ledgerRecord,
       json.timingMetrics,
@@ -3836,7 +3843,15 @@ function planCoverage(rows) {
     && rowMatchesValidationProfile(row, 'ray-light')
     && rowHasAcceptedVisualEvidence(row)
   );
-  const hipRuntimeRows = acceptedRows(rows, (row) => row.backend === 'hip');
+  const hipRuntimeRows = acceptedRows(rows, (row) =>
+    row.backend === 'hip'
+    && row.proofMode !== 'hip_module_runtime_readback'
+  );
+  const hipModuleRuntimeRows = acceptedRows(rows, (row) =>
+    row.backend === 'hip'
+    && row.proofMode === 'hip_module_runtime_readback'
+    && row.supportedPipelineScope === 'explicit-hip-module-float32-readback'
+  );
   const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
   const webgpuComputeRows = acceptedRows(rows, (row) =>
@@ -3867,6 +3882,13 @@ function planCoverage(rows) {
       status: hipRuntimeRows.length > 0 ? 'accepted' : 'missing',
       rows: hipRuntimeRows,
       openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
+    }),
+    coverageEntry({
+      id: 'hip_module_scoped_runtime_readback',
+      requirement: 'Scoped HIP module-load/runtime readback proof',
+      status: hipModuleRuntimeRows.length > 0 ? 'accepted' : 'missing',
+      rows: hipModuleRuntimeRows,
+      openGaps: hipModuleRuntimeRows.length > 0 ? [] : ['hip_module_runtime_readback_required'],
     }),
     coverageEntry({
       id: 'flow_visual_gpu_path',
