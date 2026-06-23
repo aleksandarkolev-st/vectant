@@ -795,6 +795,39 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
   gpu_hmr_success: false,
   runtime_proof_artifact: null,
   proof_artifacts: [],
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'none',
+    mode: 'none',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: null,
+    disabledReason: 'profile_disabled',
+    contractPresent: false,
+    runtimeProfilePresent: false,
+    runtimeProfileSynced: false,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: '',
+    phase: null,
+    recognized: true,
+    reason: 'phase_not_declared',
+    targetName: 'LargeRocmDriver',
+    finalAcceptanceTarget: 'LargeRocmDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    nonFinalPhase: false,
+    nonFinalTargetRequired: false,
+    requirements: [],
+  },
+  target_progression_gates: [
+    {
+      name: 'target progression phase',
+      status: 'fail',
+      detail: 'target progression phase is required but was not declared',
+    },
+  ],
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -1007,10 +1040,18 @@ assert.equal(largeRocm.acceptedForGpuHmr, false);
 assert.equal(largeRocm.gpuHmrSuccess, false);
 assert.equal(largeRocm.refusalProven, true);
 assert.equal(largeRocm.runtimeProofArtifact.present, false);
+assert.equal(largeRocm.outputOracleResolution.disabledReason, 'profile_disabled');
+assert.equal(largeRocm.outputOracleResolution.sourceDerivedCandidateCount, 0);
+assert.equal(largeRocm.outputOracleResolution.contractPresent, false);
+assert.equal(largeRocm.targetProgression.required, true);
+assert.equal(largeRocm.targetProgression.reason, 'phase_not_declared');
+assert.equal(largeRocm.targetProgressionGates[0]?.status, 'fail');
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
+assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target progression phase'));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
+assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
 
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
@@ -1187,6 +1228,40 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
   full_runtime_proof_required: true,
   full_runtime_proven: true,
   gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: false,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+    targetName: 'AcceptedRocmDriver',
+    finalAcceptanceTarget: 'AcceptedRocmDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    nonFinalPhase: true,
+    nonFinalTargetRequired: true,
+    requirements: ['target_must_not_be_final_acceptance_target_when_declared', 'output_oracle_proven'],
+  },
+  target_progression_gates: [
+    {
+      name: 'target progression phase',
+      status: 'pass',
+      detail: 'phase=small-oracle target=AcceptedRocmDriver final_target=AcceptedRocmDriver',
+    },
+  ],
   output_proof: {
     accepted: true,
     result_state: 'gpu-hmr-output-oracle-proven',
@@ -1233,6 +1308,10 @@ assert.equal(acceptedRealRocm.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedRealRocm.runtimeProofArtifact.accepted, true);
 assert.equal(acceptedRealRocm.visual.present, true);
 assert.equal(acceptedRealRocm.visual.accepted, true);
+assert.equal(acceptedRealRocm.outputOracleResolution.selectedSource, 'profile_runtime_profile');
+assert.equal(acceptedRealRocm.outputOracleResolution.contractPresent, true);
+assert.equal(acceptedRealRocm.targetProgression.phase, 'small-oracle');
+assert.equal(acceptedRealRocm.targetProgressionGates[0]?.status, 'pass');
 assert.equal(acceptedRealRocm.coverageObligations.perTargetRunModes, false);
 assert.equal(acceptedRealRocm.validationTargetScope, 'evidence_row');
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));

@@ -84,6 +84,13 @@ function compactObject(value) {
   return isObject(value) ? value : {};
 }
 
+function compactObjectList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(compactObject)
+    .filter((entry) => Object.keys(entry).length > 0);
+}
+
 function isSelfCheckId(value) {
   return /\bself[-_ ]?check\b/i.test(String(value ?? ''));
 }
@@ -1685,6 +1692,26 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.strictProofGates,
   );
   const strictGateFailures = compactStringList(strictGates.failures);
+  const outputOracleResolution = compactObject(
+    json.output_oracle_resolution
+    ?? json.outputOracleResolution
+    ?? summary.output_oracle_resolution
+    ?? summary.outputOracleResolution,
+  );
+  const targetProgression = compactObject(
+    json.target_progression
+    ?? json.targetProgression
+    ?? summary.target_progression
+    ?? summary.targetProgression,
+  );
+  const targetProgressionGates = compactObjectList(
+    json.target_progression_gates
+    ?? json.targetProgressionGates
+    ?? summary.target_progression_gates
+    ?? summary.targetProgressionGates,
+  );
+  const targetProgressionGateFailures = targetProgressionGates
+    .filter((gate) => text(gate.status)?.toLowerCase() === 'fail');
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
   const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
@@ -1813,10 +1840,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       seededFileCount: finiteNumber(json.seeded_file_count ?? json.seededFileCount),
       skippedFileCount: finiteNumber(json.skipped_file_count ?? json.skippedFileCount),
     },
+    outputOracleResolution,
+    targetProgression,
+    targetProgressionGates,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
     reasons: compactStringList([
       ...strictGateFailures,
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...targetProgressionGateFailures.map((gate) => `target_progression_gate_failed:${text(gate.name) ?? 'unnamed'}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
@@ -1828,6 +1859,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
+      targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
     ]),
   });
 }
