@@ -51,6 +51,7 @@ import {
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 import {
+  computeOracleArtifactsFromFiles,
   visualEvidenceArtifactsFromFiles,
   writeValidationRuntimeProofArtifact,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
@@ -670,6 +671,7 @@ function targetProgressionPhaseRequirements(phase) {
         'prior_original_host_path_proof_in_target_progression_ledger',
         'full_runtime_proven',
         'fresh_visual_evidence_when_rendering',
+        'raw_compute_oracle_artifacts_when_compute_only',
       ];
     default:
       return [];
@@ -933,6 +935,163 @@ function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
     .length;
 }
 
+function objectField(...values) {
+  return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? null;
+}
+
+function computeOracleArtifactsFromProof(outputProof = null) {
+  const oracleArtifacts = objectField(
+    outputProof?.oracleArtifacts,
+    outputProof?.oracle_artifacts,
+    outputProof?.outputOracle?.oracleArtifacts,
+    outputProof?.outputOracle?.oracle_artifacts,
+    outputProof?.output_oracle?.oracleArtifacts,
+    outputProof?.output_oracle?.oracle_artifacts,
+  );
+  return objectField(
+    oracleArtifacts?.compute_oracle_artifacts,
+    oracleArtifacts?.computeOracleArtifacts,
+    outputProof?.computeOracleArtifacts,
+    outputProof?.compute_oracle_artifacts,
+  );
+}
+
+function readFileProof(pathValue) {
+  const filePath = typeof pathValue === 'string' && pathValue.trim() ? pathValue.trim() : null;
+  if (!filePath) return { ok: false, reason: 'path_missing', filePath: null };
+  if (!existsSync(filePath)) return { ok: false, reason: 'file_missing', filePath };
+  try {
+    const bytes = readFileSync(filePath);
+    return {
+      ok: bytes.length > 0,
+      reason: bytes.length > 0 ? null : 'file_empty',
+      filePath,
+      bytes,
+      byteLength: bytes.length,
+      hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error?.message ? String(error.message) : String(error),
+      filePath,
+    };
+  }
+}
+
+function positiveIntegerField(object, names) {
+  for (const name of names) {
+    const value = object?.[name];
+    if (Number.isInteger(value) && value > 0) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+      const parsed = Number.parseInt(value, 10);
+      if (parsed > 0) return parsed;
+    }
+  }
+  return null;
+}
+
+function computeOracleArtifactProof(outputProof = null) {
+  const computeArtifacts = computeOracleArtifactsFromProof(outputProof);
+  if (!computeArtifacts) {
+    return {
+      accepted: false,
+      detail: 'compute oracle artifacts missing',
+    };
+  }
+  const verification = objectField(
+    computeArtifacts.raw_readback_verification,
+    computeArtifacts.rawReadbackVerification,
+  ) ?? {};
+  const raw = readFileProof(stringField(computeArtifacts, ['raw_readback_bin', 'rawReadbackBin']));
+  const schema = readFileProof(stringField(computeArtifacts, ['readback_schema_json', 'readbackSchemaJson']));
+  const card = readFileProof(stringField(computeArtifacts, ['rendered_card_png', 'renderedCardPng']));
+  const declaredRawHash = stringField(computeArtifacts, [
+    'raw_readback_hash',
+    'rawReadbackHash',
+  ]);
+  const verifiedRawHash = stringField(verification, [
+    'raw_readback_hash',
+    'rawReadbackHash',
+  ]);
+  const rawHashMatches = raw.ok
+    && (
+      !declaredRawHash
+      || declaredRawHash.toLowerCase() === raw.hash.toLowerCase()
+    )
+    && (
+      !verifiedRawHash
+      || verifiedRawHash.toLowerCase() === raw.hash.toLowerCase()
+    )
+    && computeArtifacts.raw_readback_hash_verified === true
+    && verification.hash_verified === true;
+  const schemaHashObserved = /^sha256:[0-9a-f]{64}$/i.test(String(
+    computeArtifacts.readback_schema_hash
+    ?? verification.readback_schema_hash
+    ?? '',
+  ));
+  const schemaByteLength = positiveIntegerField(verification, [
+    'readback_schema_byte_length',
+    'readbackSchemaByteLength',
+  ]);
+  const slice = objectField(
+    computeArtifacts.deterministic_slice,
+    computeArtifacts.deterministicSlice,
+  ) ?? {};
+  const sliceOffset = Number.isInteger(slice.offset) ? slice.offset : Number.parseInt(slice.offset, 10);
+  const sliceLength = Number.isInteger(slice.length) ? slice.length : Number.parseInt(slice.length, 10);
+  const declaredSliceHash = stringField(slice, ['hash', 'sha256', 'slice_hash', 'sliceHash'])
+    ?? stringField(computeArtifacts, ['deterministic_slice_hash', 'deterministicSliceHash']);
+  const sliceHashObserved = /^sha256:[0-9a-f]{64}$/i.test(String(declaredSliceHash ?? ''));
+  const sliceBoundsValid = raw.ok
+    && Number.isInteger(sliceOffset)
+    && Number.isInteger(sliceLength)
+    && sliceOffset >= 0
+    && sliceLength > 0
+    && sliceOffset + sliceLength <= raw.byteLength;
+  const sliceVerified = sliceBoundsValid
+    && sliceHashObserved
+    && computeArtifacts.deterministic_slice_hash_verified === true
+    && verification.deterministic_slice_hash_verified === true
+    && verification.slice_bounds_verified === true;
+  const cardIsPng = card.ok
+    && card.bytes.length >= 8
+    && card.bytes[0] === 0x89
+    && card.bytes[1] === 0x50
+    && card.bytes[2] === 0x4e
+    && card.bytes[3] === 0x47
+    && card.bytes[4] === 0x0d
+    && card.bytes[5] === 0x0a
+    && card.bytes[6] === 0x1a
+    && card.bytes[7] === 0x0a;
+  const before = stringField(computeArtifacts, ['checksum_before', 'checksumBefore']);
+  const after = stringField(computeArtifacts, ['checksum_after', 'checksumAfter']);
+  const checksumChanged = before !== null && after !== null && before !== after;
+  const accepted = raw.ok
+    && schema.ok
+    && cardIsPng
+    && rawHashMatches
+    && schemaHashObserved
+    && schemaByteLength !== null
+    && sliceVerified
+    && checksumChanged;
+  const failed = [
+    raw.ok ? null : `raw:${raw.reason}`,
+    schema.ok ? null : `schema:${schema.reason}`,
+    cardIsPng ? null : `card:${card.reason ?? 'not_png'}`,
+    rawHashMatches ? null : 'raw_hash_unverified',
+    schemaHashObserved && schemaByteLength !== null ? null : 'schema_unverified',
+    sliceVerified ? null : 'deterministic_slice_unverified',
+    checksumChanged ? null : 'checksum_unchanged_or_missing',
+  ].filter(Boolean);
+  return {
+    accepted,
+    detail: accepted
+      ? `raw compute oracle artifacts verified raw=${raw.byteLength} schema=${schemaByteLength} card=${card.byteLength}`
+      : `raw compute oracle artifacts unverified: ${failed.join(',')}`,
+  };
+}
+
 function targetProgressionGateRows({
   targetProgression,
   targetProgressionLedger = null,
@@ -989,12 +1148,20 @@ function targetProgressionGateRows({
     });
   }
   if (progression.phase === 'small-oracle') {
+    const outputOracleProven = proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven');
+    const visualOutputProof = outputProof?.visualEvidenceRequired === true
+      || outputProof?.renderVisualEvidenceRequired === true;
+    const computeOracleProof = visualOutputProof
+      ? { accepted: true, detail: 'visual output oracle proof' }
+      : computeOracleArtifactProof(outputProof);
     rows.push({
       name: 'target progression output oracle',
-      status: proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven') ? 'pass' : 'fail',
-      detail: proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven')
-        ? 'gpu-hmr-output-oracle-proven'
-        : summarizeGpuHmrOutputProof(outputProof),
+      status: outputOracleProven && computeOracleProof.accepted ? 'pass' : 'fail',
+      detail: outputOracleProven && computeOracleProof.accepted
+        ? `gpu-hmr-output-oracle-proven; ${computeOracleProof.detail}`
+        : outputOracleProven
+          ? computeOracleProof.detail
+          : summarizeGpuHmrOutputProof(outputProof),
     });
   }
   if (progression.phase === 'partial-reload') {
@@ -1065,6 +1232,13 @@ function targetProgressionGateRows({
         detail: acceptedVisualFrames > 0
           ? `fresh visual evidence frames=${acceptedVisualFrames}`
           : 'fresh visual evidence missing for final acceptance render workflow',
+      });
+    } else {
+      const computeOracleProof = computeOracleArtifactProof(outputProof);
+      rows.push({
+        name: 'target progression compute oracle artifacts',
+        status: computeOracleProof.accepted ? 'pass' : 'fail',
+        detail: computeOracleProof.detail,
       });
     }
   }
@@ -8300,6 +8474,50 @@ int main()
       required: true,
     }),
   });
+  const computeOracleTempDir = await mkdtemp(path.join(
+    process.env.TEMP ?? process.env.TMP ?? process.cwd(),
+    'synthi-rocm-oracle-',
+  ));
+  const computeRawPath = path.join(computeOracleTempDir, 'readback.bin');
+  const computeSchemaPath = path.join(computeOracleTempDir, 'schema.json');
+  const computeCardPath = path.join(computeOracleTempDir, 'card.png');
+  const computeRawBytes = Buffer.from([1, 3, 5, 7, 11, 13, 17, 19]);
+  const computeRawHash = `sha256:${createHash('sha256').update(computeRawBytes).digest('hex')}`;
+  await writeFile(computeRawPath, computeRawBytes);
+  await writeFile(computeSchemaPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    encoding: 'u8',
+    rawReadbackHash: computeRawHash,
+  }, null, 2)}\n`);
+  await sharp(Buffer.from([16, 32, 64, 255]), {
+    raw: { width: 1, height: 1, channels: 4 },
+  }).png().toFile(computeCardPath);
+  const verifiedComputeOracleArtifacts = await computeOracleArtifactsFromFiles({
+    raw_readback_bin: computeRawPath,
+    readback_schema_json: computeSchemaPath,
+    checksum_before: `sha256:${'1'.repeat(64)}`,
+    checksum_after: `sha256:${'2'.repeat(64)}`,
+    deterministic_slice: {
+      offset: 0,
+      length: computeRawBytes.length,
+      hash: computeRawHash,
+    },
+    raw_readback_hash: computeRawHash,
+    raw_readback_source: 'runtime_readback_sample',
+    rendered_card_png: computeCardPath,
+  });
+  const computeOnlyOutputProof = {
+    resultState: 'gpu-hmr-output-oracle-proven',
+    outputOracle: {
+      passed: true,
+      kind: 'buffer_checksum',
+    },
+    oracleArtifacts: {
+      compute_oracle_artifacts: verifiedComputeOracleArtifacts,
+    },
+    visualEvidenceRequired: false,
+    renderVisualEvidenceRequired: false,
+  };
   const smallOracleFailures = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
       targetName: 'large_target',
@@ -8316,7 +8534,7 @@ int main()
       finalAcceptanceTarget: 'large_target',
       required: true,
     }),
-    outputProof: { resultState: 'gpu-hmr-output-oracle-proven' },
+    outputProof: computeOnlyOutputProof,
   });
   const partialReloadPasses = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
@@ -8372,6 +8590,57 @@ int main()
     }),
     fullRuntimeProof: fullRuntimeBlockedProof,
   });
+  const finalAcceptanceComputePasses = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    outputProof: computeOnlyOutputProof,
+    targetProgressionLedger: completeProgressionLedger,
+  });
+  const finalAcceptanceChecksumOnlyFails = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    outputProof: {
+      resultState: 'gpu-hmr-output-oracle-proven',
+      oracleArtifacts: {
+        compute_oracle_artifacts: {
+          checksum_before: `sha256:${'1'.repeat(64)}`,
+          checksum_after: `sha256:${'2'.repeat(64)}`,
+        },
+      },
+      visualEvidenceRequired: false,
+      renderVisualEvidenceRequired: false,
+    },
+    targetProgressionLedger: completeProgressionLedger,
+  });
+  const finalAcceptanceMissingRawFails = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    outputProof: {
+      ...computeOnlyOutputProof,
+      oracleArtifacts: {
+        compute_oracle_artifacts: {
+          ...verifiedComputeOracleArtifacts,
+          raw_readback_bin: path.join(computeOracleTempDir, 'missing-readback.bin'),
+        },
+      },
+    },
+    targetProgressionLedger: completeProgressionLedger,
+  });
   const finalAcceptanceVisualFailures = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
       targetName: 'large_target',
@@ -8423,13 +8692,23 @@ int main()
     || smallOraclePasses.some((row) => row.status === 'fail')
     || partialReloadPasses.some((row) => row.status === 'fail')
     || !targetProgressionLedgerPhaseResult(parsedProgressionLedger, 'small-oracle').passed
-    || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 5
+    || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 6
+    || finalAcceptanceComputePasses.some((row) => row.status === 'fail')
+    || !finalAcceptanceChecksumOnlyFails.some((row) =>
+      row.name === 'target progression compute oracle artifacts'
+      && row.status === 'fail'
+      && row.detail.includes('raw:path_missing'))
+    || !finalAcceptanceMissingRawFails.some((row) =>
+      row.name === 'target progression compute oracle artifacts'
+      && row.status === 'fail'
+      && row.detail.includes('raw:file_missing'))
     || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 4
     || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
     || finalAcceptanceStaleVisualFails.filter((row) => row.status === 'fail').length !== 1
   ) {
     throw new Error('target progression gate self-check failed');
   }
+  await rm(computeOracleTempDir, { recursive: true, force: true });
   if (shouldFetchRequestedCommit({ requestedCommit: 'abc123', localCommitAvailable: true })) {
     throw new Error('fetch decision self-check should reuse a locally available requested commit');
   }
@@ -9073,8 +9352,11 @@ async function collectRuntimeEvidence() {
       runtimeOutputOracle,
       { proofCardPath: runtimeOutputOracleVisualRow?.path },
     );
-    runtimeOutputOracleArtifacts = computeOracleArtifacts
-      ? { compute_oracle_artifacts: computeOracleArtifacts }
+    const verifiedComputeOracleArtifacts = computeOracleArtifacts
+      ? await computeOracleArtifactsFromFiles(computeOracleArtifacts)
+      : null;
+    runtimeOutputOracleArtifacts = verifiedComputeOracleArtifacts
+      ? { compute_oracle_artifacts: verifiedComputeOracleArtifacts }
       : null;
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
@@ -9193,10 +9475,7 @@ async function collectRuntimeEvidence() {
     outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
     oracleArtifacts: runtimeOutputOracleArtifacts ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
-    visualEvidenceRequired:
-      CFG.renderPreview
-      || CFG.expectScreenshot
-      || report.target_progression?.phase === 'final-acceptance',
+    visualEvidenceRequired: renderingVisualEvidenceExpected(),
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
@@ -9410,10 +9689,7 @@ async function collectRuntimeEvidence() {
     hostPreservationProof: report.host_preservation_proof,
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
-    visualEvidenceExpected:
-      CFG.renderPreview
-      || CFG.expectScreenshot
-      || report.target_progression?.phase === 'final-acceptance',
+    visualEvidenceExpected: renderingVisualEvidenceExpected(),
     visualEvidenceFrames: freshVisualFrames,
   });
   report.target_progression_gates = targetProgressionRows;
@@ -9589,6 +9865,20 @@ function runtimeOutputOracleTarget() {
       'evidence:output-oracle:compute-readback-artifacts',
     ]),
   };
+}
+
+function renderingVisualEvidenceExpected() {
+  if (CFG.expectScreenshot || CFG.renderPreview) return true;
+  const runtimeProfile = objectField(report.output_oracle_runtime_profile);
+  const runtime = objectField(runtimeProfile?.runtime, runtimeProfile?.outputOracle, runtimeProfile?.output_oracle);
+  const oracleDescriptor = [
+    stringField(report.output_oracle_contract, ['kind', 'oracleKind', 'oracle_kind', 'mode']),
+    stringField(runtimeProfile, ['kind', 'oracleKind', 'oracle_kind', 'mode']),
+    stringField(runtime, ['kind', 'oracleKind', 'oracle_kind', 'mode']),
+    stringField(report.output_oracle_resolution, ['requestedProfile', 'requested_profile', 'selectedSource', 'selected_source']),
+  ].filter(Boolean).join(' ');
+  return /\b(visual|frame|framebuffer|image|render|screenshot|swapchain|pixel)\b/i
+    .test(oracleDescriptor);
 }
 
 async function writeResults() {
@@ -9856,10 +10146,7 @@ async function writeResults() {
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
-    visualEvidenceExpected:
-      CFG.expectScreenshot
-      || CFG.renderPreview
-      || report.target_progression?.phase === 'final-acceptance',
+    visualEvidenceExpected: renderingVisualEvidenceExpected(),
     visualArtifactPaths,
     proof_artifacts: report.proof_artifacts,
     runtimeProofArtifactRecords: report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],
