@@ -29,10 +29,10 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 42 rows: 17 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 15 structured refusal rows, 1 preflight-only row, 7 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.md
-latest rerun context: validation matrix rerun over existing proof artifacts after real ROCm profile proof-obligation gates and CPU/GPU firewall evidence gates were added
+gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.md
+latest rerun context: validation matrix rerun over existing proof artifacts after real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, and required app-hook fail-closed gates were added
 summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 ```
@@ -71,6 +71,7 @@ hot delta 1 total validator wall time: 2864084200ns
 hot delta 2 total validator wall time: 2930783900ns
 visual metrics: hot1 changed_pixel_ratio=0.058902083333333334, hot2 changed_pixel_ratio=0.049745833333333336
 fission: accepted per_kernel_hmr for trace_light_rays
+visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different ray-light geometry.
 ```
 
 Latest Flow visual proof:
@@ -84,6 +85,7 @@ hot delta 1 total validator wall time: 2961567300ns
 hot delta 2 total validator wall time: 2878428200ns
 visual metrics: hot1 changed_pixel_ratio=0.025272916666666666, hot2 changed_pixel_ratio=0.025222916666666668
 fission: device_translation_unit_hmr only; per-kernel/smallest-safe fission remains refused
+visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different Flow particle-ring patterns.
 ```
 
 Latest WebGPU run-mode visual proof:
@@ -205,6 +207,8 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multi
 - Real ROCm final-acceptance profiles now get an explicit profile proof-obligation facet. A final-acceptance profile with no output-oracle profile is blocked unless it is explicitly refusal-only, and target progression marked `required=true` implies full-runtime proof is required.
 - Real ROCm validation matrix rows now derive CPU HMR, full rebuild, and process restart firewall fields from recomputed ledger/runtime firewall evidence. Accepted rows must expose all three as explicit `false`; missing evidence or forged `true` values remain refusal/open-gap material. Smoke fixtures also prove old-artifact dispatch (`dispatch_artifact_hash_mismatch`) surfaces through ledger reasons instead of being accepted.
 - Large real ROCm final-acceptance progression now verifies prior `small-oracle` ledger entries from artifact-backed compute or visual oracle evidence. Compute prior rows must carry re-readable raw readback/schema/card artifacts; visual prior rows must carry re-readable image artifacts with matching content hashes.
+- Large real ROCm target-progression gate failures are now hard blockers in matrix acceptance; failed prior `partial-reload` or `original-host-path` gates cannot be hidden behind otherwise successful runtime/oracle rows.
+- Large real ROCm app-hook requirements now fail closed when explicitly declared through profile proof obligations, profile declarations, native-boundary app-hook gaps, or the app-hook facet itself. Missing or unproven required app-hook facets cannot be accepted by default-open ingestion.
 - The validation matrix now preserves each real ROCm row's `outputOracleResolution`, `targetProgression`, `targetProgressionGates`, `nativeRocmLaunchBoundary`, and `realRocmRuntimeEligibility` metadata, so large-project refusal gaps are machine-auditable without relying on raw logs.
 - Visual matrix acceptance now decodes PNG artifacts with `sharp`; PNG headers or existing files are not enough. Run-mode visual proofs cannot opt out with `visualRequired=false`, and Flow/ray-light coverage requires accepted visual evidence.
 - Docker proof runners now require explicit runtime configuration instead of baked-in endpoint/container/entry defaults.
@@ -222,6 +226,10 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multi
 Additional commits since the previous status pass:
 
 ```text
+56ab9db70 test(gpu-hmr): require explicit firewall safety fields
+0a80f4db0 test(gpu-hmr): require phase-specific target progression proof
+d93af9b6c test(gpu-hmr): gate real ROCm target progression failures
+b7068a698 test(gpu-hmr): fail closed on required ROCm app hooks
 1004e5d39 test(gpu-hmr): expose ROCm sidecar contracts as non-authoritative
 3ec61f494 fix(gpu-hmr): require ROCm oracle launch identity
 2ce7bf864 feat(gpu-hmr): add ROCm matrix compute oracle
@@ -384,9 +392,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.md
+proof id: gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.md
 ```
 
 Matrix result:
@@ -501,7 +509,7 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
   smoke coverage: compute-only real ROCm oracle acceptance plus forged missing raw/schema/card file refusal
 
 ray-light live MCP visual proof with hot-delta timing

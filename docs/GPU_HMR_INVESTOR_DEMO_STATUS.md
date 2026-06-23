@@ -45,11 +45,11 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
 global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
-latest global matrix after real ROCm proof-obligation and firewall gating: gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
+latest global matrix after real ROCm proof-obligation, firewall, target-progression, and app-hook gating: gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
 latest global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 global per-target run modes: accepted for 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL; SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
 HIPRT run modes: accepted for hiprt-camera-rays-horizontal-mirror with cold runtime visual evidence, hot-delta-1, hot-delta-2 different edit, and ABI-changing negative-edit refusal evidence
@@ -74,12 +74,14 @@ Ray-light hot1 ledger: gpu-ledger-proof:sha256:fc798cb97c10df6099ee16d994f882947
 Ray-light hot2 ledger: gpu-ledger-proof:sha256:a5fc66a3ef1f03824af64d2151ffa970fe57794421f3866bd0127cffdc5b50f2
 Ray-light visuals: before-after-diff.png, hot-delta-2-diff.png
 Ray-light timings: hot1 total_validator_wall_time=2864084200ns, hot2 total_validator_wall_time=2930783900ns
+Ray-light visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different ray-light geometry.
 
 Flow dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260622-embedded-ledger-10
 Flow hot1 ledger: gpu-ledger-proof:sha256:82171321eac0bc7b8a4bd5177e51766931a4361600f8b14a668290cdf0ad9e98
 Flow hot2 ledger: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd47b3668462c4049dbfbc211503c
 Flow visuals: before-after-diff.png, hot-delta-2-diff.png
 Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
+Flow visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different Flow particle-ring patterns.
 
 WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:23db4d987cd865c25a728ec8dfabde136e2beabc40e1efc3392e4a35f9cebcf5
 WebGPU hot1 runtime proof: gpu-runtime-proof:sha256:dddf2ab49fb6186c6f9fe2a9ac8af62715b5ccf0ee42e6e7df472e1caeb5fe75
@@ -196,6 +198,10 @@ historical matrix ledger for this matrix-multiplication run: gpu-validation-matr
 Latest implementation commits:
 
 ```text
+56ab9db70 test(gpu-hmr): require explicit firewall safety fields
+0a80f4db0 test(gpu-hmr): require phase-specific target progression proof
+d93af9b6c test(gpu-hmr): gate real ROCm target progression failures
+b7068a698 test(gpu-hmr): fail closed on required ROCm app hooks
 3ec61f494 fix(gpu-hmr): require ROCm oracle launch identity
 2ce7bf864 feat(gpu-hmr): add ROCm matrix compute oracle
 013e3f84c docs(gpu-hmr): record HIPRT light-gain proof
@@ -293,6 +299,8 @@ Real ROCm device-sidecar contracts are now a separate non-authoritative facet. T
 Real ROCm final-acceptance profile proof obligations are now matrix-gated. A final-acceptance target without an output-oracle profile is refused unless explicitly marked refusal-only, and `targetProgression.required=true` implies full-runtime proof.
 Real ROCm CPU/GPU firewall evidence is now matrix-gated from recomputed ledger/runtime evidence. Accepted rows must explicitly prove `cpuHmrUsed=false`, `fullRebuildUsed=false`, and `processRestarted=false`; missing firewall evidence, forged CPU fallback, hidden full rebuild, process restart, and old-artifact dispatch are refusal material.
 Real ROCm final-acceptance target progression now revalidates prior small-oracle rows from raw compute oracle artifacts or readable visual artifacts with matching content hashes; proof ids and status labels are not enough.
+Real ROCm target-progression gate failures are now hard matrix blockers; failed prior partial-reload/original-host-path gates cannot be hidden behind otherwise successful runtime/oracle rows.
+Real ROCm app-hook requirements now fail closed when explicitly declared through profile proof obligations, profile declarations, native-boundary app-hook gaps, or the app-hook facet itself. Missing or unproven required app-hook facets cannot be accepted by default-open ingestion.
 Real ROCm validation matrix rows now carry native ROCm launch-boundary and runtime-eligibility facets as queryable refusal gaps, while preserving `can_satisfy_dispatch_proof=false` for native function resolution.
 Real ROCm matrix rows now preserve `outputOracleResolution`, `targetProgression`, and `targetProgressionGates`, so the serious-project refusal reason is queryable from the matrix artifact instead of inferred from logs.
 Visual matrix evidence now requires decoded PNG images, not header-only files or screenshot existence. Run-mode visual proofs cannot opt out with `visualRequired=false`, and Flow/ray-light coverage only counts accepted visual rows.
@@ -334,7 +342,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
