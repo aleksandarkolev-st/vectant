@@ -5,9 +5,10 @@ export const BRAND_GRADIENT = 'var(--brand-gradient-horizontal)';
 
 export const PROGRAM_STYLE = {
   panelShell: {
-    background: 'linear-gradient(180deg, #0e0f17, #0b0c12)',
-    border: '1px solid var(--border-subtle)',
-    boxShadow: '0 18px 44px rgba(0,0,0,0.45)',
+    // Match every other docked panel: flush, pure-void background. The dock
+    // provides separation, so no outer border or drop-shadow (those made this
+    // panel read as a lighter "gray" slab against its black siblings).
+    background: 'var(--bg-sidebar)',
   },
   header: {
     borderBottom: '1px solid var(--border-subtle)',

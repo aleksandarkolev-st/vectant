@@ -53,7 +53,7 @@ export default function StoreView({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3">
-        <div className="flex items-center gap-2 px-2.5 py-2" style={{ background: 'var(--bg-app, #0a0b11)', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
+        <div className="flex items-center gap-2 px-2.5 py-2" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
           <Search className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
           <input
             value={query}
