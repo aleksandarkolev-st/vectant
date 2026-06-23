@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-miopen-activation-large-ml",
+  "repo": {
+    "url": "https://github.com/ROCm/MIOpen.git",
+    "commit": "06977176afd94476c18d5290f21cb40745bb73a9"
+  },
+  "target": {
+    "entryFile": "src/kernels/MIOpenNeuron.cl",
+    "deltaFile": "src/kernels/activation_functions.h",
+    "targetName": "MIOpenDriver",
+    "buildSubdir": ".",
+    "cmakeArgs": [
+      "-DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/amdclang",
+      "-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/amdclang++",
+      "-DBoost_USE_STATIC_LIBS=OFF",
+      "-DMIOPEN_BACKEND=HIP",
+      "-DMIOPEN_USE_COMPOSABLEKERNEL=OFF",
+      "-DMIOPEN_USE_ROCBLAS=OFF",
+      "-DMIOPEN_USE_HIPBLASLT=OFF",
+      "-DMIOPEN_USE_MLIR=OFF",
+      "-DHALF_INCLUDE_DIR=/opt/rocm-7.2.1/include",
+      "-DBUILD_TESTING=OFF",
+      "-DMIOPEN_ENABLE_AI_KERNEL_TUNING=OFF",
+      "-DMIOPEN_ENABLE_AI_IMMED_MODE_FALLBACK=OFF",
+      "-DMIOPEN_USE_ROCTRACER=OFF",
+      "-DMIOPEN_BUILD_DRIVER=ON"
+    ],
+    "upstreamRunCommand": "./build/bin/MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1",
+    "nativeLaunchSymbols": [
+      "MIOpenActivationForward",
+      "miopenActivationForward"
+    ]
+  },
+  "sourceDelta": {
+    "before": "res[i] = data[i] * (data[i] > 0);",
+    "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);"
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}
