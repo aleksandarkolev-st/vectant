@@ -21,7 +21,7 @@ Best demo surfaces:
 7. HIPRT same-process CameraRays: scoped ray-traced visual full-runtime proof with embedded ledger/runtime artifact, nonblank oracle-region proof, and cold/hot1/hot2/negative run-mode coverage.
 8. HIPRT same-process MegaKernel direct-light-gain: second scoped ray-traced visual full-runtime proof on a different HIPRT kernel path, with strict ledger/runtime proof and image-tool-inspected before/after/diff artifacts.
 9. HIPRT MegaKernel direct-light-zero: useful adversarial visual refusal proving blank render-region output is not accepted.
-10. MIOpen large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can build/run upstream MIOpen, trace a launched activation kernel, and still refuse when Synthi full-runtime proof is missing.
+10. MIOpen large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can build upstream MIOpen, attempt the upstream driver under the native observer, and still refuse when the runtime device/proof chain is missing.
 11. ROCm examples matrix multiplication profile: useful real ROCm compute refusal proving source-derived output-oracle generation and worker sync do not count as GPU HMR without Synthi epoch, dispatch, host identity, and post-dispatch output observation.
 
 Do not claim:
@@ -45,11 +45,11 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164947Z.json
 global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
-latest global matrix after real ROCm proof-obligation, firewall, target-progression, and app-hook gating: gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164153Z.json
+latest global matrix after real ROCm proof-obligation, firewall, target-progression, app-hook gating, and the latest MIOpen no-device refusal rerun: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T164947Z.json
 latest global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 global per-target run modes: accepted for 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL; SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
 HIPRT run modes: accepted for hiprt-camera-rays-horizontal-mirror with cold runtime visual evidence, hot-delta-1, hot-delta-2 different edit, and ABI-changing negative-edit refusal evidence
@@ -137,31 +137,32 @@ Current MIOpen large ROCm ML caveat:
 
 ```text
 profile: real-rocm-miopen-activation-large-ml
-result slug: gpu-real-rocm-MIOpen-20260623150008
+result slug: gpu-real-rocm-MIOpen-20260623161951
 result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
 repo: ROCm/MIOpen @ 06977176afd94476c18d5290f21cb40745bb73a9
 target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
-native evidence: hipModuleGetFunction resolved MIOpenActiveFwdLite through native_runtime_intercept
-driver evidence: Forward Activation Verifies on CPU and GPU
-split projection: src/kernels/MIOpenNeuron.cl, 1532 files, 50331605 bytes
-delta projection: src/kernels/MIOpenNeuron.cl -> src/kernels/activation_functions.h, 1535 files, 50331470 bytes
-compile bridge facet: status=compile_bridge_missing, phase_count=2, compile_response_status=compile_bridge_not_declared_by_compile_response, load_device=false, device_sidecar=false, artifact_reference=false, runtime_proof_material=false, gap=compile_response_device_sidecar_bridge_not_declared
+runtime device preflight: hipMallocArray result=100, device_count=0, error=no ROCm-capable device is detected
+native evidence: native launch observer ready for HIP/ORO launch and function-resolution APIs; native launch observed count=0
+driver evidence: MIOpenDriver exited 134 after hipMalloc reported no ROCm-capable device
+split projection: first_real_repo_ai_split_compile selected=1532 files, 50331605 bytes, omitted=5705
+delta projection: none accepted; MCP exited before compile/delta proof material was collected
+compile bridge facet: status=compile_bridge_missing, phase_count=0, load_device=false, device_sidecar=false, artifact_reference=false, runtime_proof_material=false, gap=compile_response_device_sidecar_bridge_not_declared
 device sidecar contract facet: status=derived_device_sidecar_candidate_not_runtime_proof, backend=opencl, source=src/kernels/MIOpenNeuron.cl, delta trace=src/kernels/MIOpenNeuron.cl -> src/kernels/activation_functions.h, artifact_kind=opencl_program, entry_points=MIOpenActivationForward/miopenActivationForward, compiler=/opt/rocm/llvm/bin/amdclang, gaps=device_sidecar_artifact_transport_runtime_not_observed,device_sidecar_epoch_publication_runtime_not_observed,device_sidecar_dispatch_trace_runtime_not_observed,device_sidecar_output_oracle_runtime_not_observed,device_sidecar_host_identity_runtime_not_observed
-timings: configure=9664ms, upstream_build=1838487ms, upstream_run=494ms, initial_compile=30375ms, hot_delta_compile=30431ms, hot_wait=30001ms, total_validator_wall=2068472.692ms
+timings: configure=9374ms, upstream_build=1656476ms, upstream_run=289ms, total_validator_wall=1746447.6975ms
 accepted GPU HMR: false
-strict refusal: runtime proof artifact exists but is rejected; full runtime proof remains unproven, proof ledger rejects, and acceptance contract rejects
+strict refusal: runtime proof artifact exists but is rejected; runtime device proof is unavailable, full runtime proof remains unproven, proof ledger rejects, and acceptance contract rejects
 oracle resolution: profile=none, source_derived_candidates=0, selected_source=null, contract_present=false, runtime_profile_present=false, worker profile cleared with syncSkippedReason=runtime_profile_absent
-worker proof boundary: runtime session native-launch-observer:86419; MIOpenActiveFwdLite function resolution observed; no synthi_gpu_launch dispatch, artifact_transport, dispatcher_epoch, output_oracle, or host_identity evidence
-native ROCm refusal facet: status=refusal_evidence, can_satisfy_dispatch_proof=false, gaps=native_launch_boundary_observed,native_boundary_not_synthi_dispatch_proof,synthi_dispatch_not_observed,artifact_transport_not_observed,epoch_not_observed,output_oracle_profile_absent,host_identity_not_observed,adapter_impossible_requires_app_hook,native_function_resolution_without_synthi_epoch_dispatch
+worker proof boundary: runtime session native-launch-observer:99112; observer ready but no native launch/function resolution entries were observed; no synthi_gpu_launch dispatch, artifact_transport, dispatcher_epoch, output_oracle, or host_identity evidence
+native ROCm refusal facet: status=refusal_evidence, can_satisfy_dispatch_proof=false, gaps=native_launch_boundary_observed,native_boundary_not_synthi_dispatch_proof,synthi_dispatch_not_observed,artifact_transport_not_observed,epoch_not_observed,output_oracle_profile_absent,host_identity_not_observed,adapter_impossible_requires_app_hook
 real ROCm app-hook contract facet: status=required_app_hook_contract_missing, declared=false, required=true, can_satisfy_runtime_proof=false, gaps=app_hook_contract_not_declared,app_hook_artifact_transport_evidence_missing,app_hook_artifact_transport_runtime_not_observed,app_hook_epoch_publication_evidence_missing,app_hook_epoch_publication_runtime_not_observed,app_hook_dispatch_trace_evidence_missing,app_hook_dispatch_trace_runtime_not_observed,app_hook_host_identity_evidence_missing,app_hook_host_identity_runtime_not_observed,app_hook_output_oracle_evidence_missing,app_hook_output_oracle_runtime_not_observed
-real ROCm runtime eligibility facet: status=refused_missing_runtime_proof, backend_candidates=hip, source_dialects=opencl_c,c_cpp, artifact_kind=hip_source_bridge, entry_points=MIOpenActiveFwdLite/MIOpenActivationForward/miopenActivationForward, compiler=/opt/rocm/llvm/bin/amdclang, gaps=native_boundary_not_synthi_dispatch_proof,artifact_transport_not_observed,same_process_epoch_missing,dispatch_epoch_missing,output_oracle_profile_absent,host_identity_not_observed,app_hook_contract_not_declared,app_hook_artifact_transport_evidence_missing,app_hook_artifact_transport_runtime_not_observed,app_hook_epoch_publication_evidence_missing,app_hook_epoch_publication_runtime_not_observed,app_hook_dispatch_trace_evidence_missing,app_hook_dispatch_trace_runtime_not_observed,app_hook_host_identity_evidence_missing,app_hook_host_identity_runtime_not_observed,app_hook_output_oracle_evidence_missing,app_hook_output_oracle_runtime_not_observed
+real ROCm runtime eligibility facet: status=refused_missing_runtime_proof, backend_candidates=hip, source_dialects=opencl_c,c_cpp, artifact_kind=hip_source_bridge, entry_points=MIOpenActivationForward/miopenActivationForward, compiler=/opt/rocm/llvm/bin/amdclang, gaps=native_boundary_not_synthi_dispatch_proof,artifact_transport_not_observed,same_process_epoch_missing,dispatch_epoch_missing,output_oracle_profile_absent,host_identity_not_observed,app_hook_contract_not_declared,app_hook_artifact_transport_evidence_missing,app_hook_artifact_transport_runtime_not_observed,app_hook_epoch_publication_evidence_missing,app_hook_epoch_publication_runtime_not_observed,app_hook_dispatch_trace_evidence_missing,app_hook_dispatch_trace_runtime_not_observed,app_hook_host_identity_evidence_missing,app_hook_host_identity_runtime_not_observed,app_hook_output_oracle_evidence_missing,app_hook_output_oracle_runtime_not_observed
 target progression: final-acceptance, required=true, target=MIOpenDriver, failed gates=prior small-oracle, prior partial-reload, prior original-host-path, full runtime, raw compute oracle artifacts
-target progression ledger: target-progression-ledger:sha256:367be47a7eff43fd9cb5ecfd958cb21cd488b31c4d8c8a0f07ba5fe87cb6ab04, entry_status=fail
+target progression ledger: target-progression-ledger:sha256:cd47f0bb1b2498e74ee41b6d435c7e0cf8b7e29b2c08a0fa7a6eed7c2703feba, entry_status=fail
 visual proof: no MIOpen frame captured; matrix marks visual.required=false for this compute-only target and still refuses because strict runtime ledger and raw output-oracle proof are missing
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
-matrix proof ids: gpu-ledger-proof:sha256:a691735bd2d73974d9422e11aacb3ed803f62fa7e7a7d64a5e885caca6a3a0c7, gpu-runtime-proof:sha256:dc8a0d5b01684b6ce00e07c2716b0e714c7a462add48f1f25a73846a03b3d2bf, real-rocm-validation:sha256:38801d4a61ab3cbadaf3836a1ae51c661dfe46af70f061dbb0faafe704b2149e
-matrix row id: gpu-validation-matrix-row:sha256:7a88680c0a5ff0a71fa501b8ef14e3141499b2f8872c5800acaed0430b623175
-matrix open gaps: strict_runtime_proof_artifact_required, proof_ledger_success_required, output_or_visual_oracle_proof_required, real_rocm_app_hook_contract_required, target_progression_gates_failed, native_rocm_launch_boundary:adapter_impossible_requires_app_hook, real_rocm_runtime_eligibility:app_hook_contract_not_declared, real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing, real_rocm_app_hook_contract:app_hook_dispatch_trace_runtime_not_observed, real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed
+matrix proof ids: gpu-ledger-proof:sha256:5f6099950f14c844983365cea135257c6a89b5e0e2a28ec10e82a2885f413e96, gpu-runtime-proof:sha256:a71699fa04a18b79432cd042d803f0eaf4bc4d3e168d556149649271a3ceac00, real-rocm-validation:sha256:c255ecf164802927be17e46f584b732136a0a5a0978c89e0cf62e3300d30810d
+matrix row id: gpu-validation-matrix-row:sha256:6a8f22c017a9666d944d778d361d0d83f48042defc908af547bff650c14e71b1
+matrix open gaps: strict_runtime_proof_artifact_required, proof_ledger_success_required, output_or_visual_oracle_proof_required, real_rocm_app_hook_contract_required, real_rocm_sidecar_runtime_consistency_required, real_rocm_profile_proof_obligations_required, target_progression_gates_failed, native_rocm_launch_boundary:adapter_impossible_requires_app_hook, real_rocm_runtime_eligibility:app_hook_contract_not_declared, real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing, real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing, real_rocm_app_hook_contract:app_hook_dispatch_trace_runtime_not_observed, real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed
 plan coverage: large_real_rocm_repo=refused
 ```
 
@@ -202,6 +203,7 @@ Latest implementation commits:
 0a80f4db0 test(gpu-hmr): require phase-specific target progression proof
 d93af9b6c test(gpu-hmr): gate real ROCm target progression failures
 b7068a698 test(gpu-hmr): fail closed on required ROCm app hooks
+95ddc87b6 test(gpu-hmr): surface ROCm app hook proof obligations
 3ec61f494 fix(gpu-hmr): require ROCm oracle launch identity
 2ce7bf864 feat(gpu-hmr): add ROCm matrix compute oracle
 013e3f84c docs(gpu-hmr): record HIPRT light-gain proof
@@ -288,7 +290,7 @@ Large real ROCm compute oracle rows now re-read raw readback, schema, and render
 Real ROCm runtime output-oracle profiles now sync by configured worker container instead of MCP transport; the latest MIOpen profile declares no runtime oracle profile, so the worker oracle file was cleared and the run correctly stayed refused.
 Native ROCm/HIP launch-boundary evidence is now machine-readable refusal context, not dispatch authority. It enters the derived acceptance contract as blocking gaps while `can_satisfy_dispatch_proof=false`.
 Large real ROCm profiles can now supply generic runtime output-oracle profiles and target-progression defaults. The latest MIOpen result records oracle resolution explicitly: profile `none`, no selected oracle source, no contract, and no runtime profile.
-The latest MIOpen rerun also records the generic compile-bridge facet as `compile_bridge_missing`: both compile responses contained no `load_device`, device-sidecar, artifact reference, or runtime-proof material.
+The latest MIOpen rerun also records the generic compile-bridge facet as `compile_bridge_missing`: the no-device run collected no compile phase proof material and no `load_device`, device-sidecar, artifact reference, or runtime-proof material.
 The ROCm examples matrix multiplication result records oracle resolution explicitly: profile `hip.matrix-multiplication.readback-c.v1`, source-derived selected oracle, runtime profile synced to the worker, and strict refusal because runtime Synthi epoch/dispatch/output proof is absent.
 Real ROCm output-oracle profiles now require declared native launch symbols, and runtime eligibility filters native placeholder symbols such as `unknown`; the matrix multiplication candidate artifact records `matrix_multiplication_kernel`.
 The MIOpen large-ML profile now requires `targetProgression.phase=final-acceptance`; the latest run fails the missing prior small-oracle, partial-reload, original-host-path, full-runtime, and raw-compute-oracle-artifact gates instead of leaving the target undeclared.
@@ -342,7 +344,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:3a864e50522aca17d7b94793910d7dfb8ab955bc5a8db72a884ffc0264fd995f
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -920,7 +922,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 
 - Full-runtime Bevy acceptance is not implemented.
 - Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix now reports `per_target_run_modes=accepted` for enrolled generated run-mode targets plus scoped WebGPU. Scoped HIPRT CameraRays now reports `hiprt_run_modes=accepted` with cold, hot delta 1, hot delta 2 with a different edit, full-runtime visual proof rows, and an ABI-changing negative-edit refusal. Scoped WebGPU now emits accepted cold/hot1/hot2 runtime run-mode artifacts with embedded strict runtime proof artifacts and binding-layout negative-edit refusals.
-- MIOpen large ROCm ML infrastructure now builds and runs under the proof harness, but full-runtime Synthi GPU HMR remains refused until an accepted full ledger chain, accepted runtime proof chain, generic app-hook contract/runtime observations, epoch/dispatch proof, target-progression ledger success, and output or visual oracle proof are produced. The latest profile has no output oracle and now requires final-acceptance target progression; the result fails those gates explicitly.
+- MIOpen large ROCm ML infrastructure now builds under the proof harness and attempts the upstream driver under the observer, but this rerun saw no ROCm-capable device in the worker and remains refused until an accepted full ledger chain, accepted runtime proof chain, generic app-hook contract/runtime observations, epoch/dispatch proof, target-progression ledger success, and output or visual oracle proof are produced. The latest profile has no output oracle and now requires final-acceptance target progression; the result fails those gates explicitly.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
