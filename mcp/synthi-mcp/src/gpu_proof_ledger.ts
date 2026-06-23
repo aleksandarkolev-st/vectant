@@ -15,11 +15,15 @@ const MODEL_AVAILABILITY_BASES = new Set([
   "live_model_list_registry_override",
   "private_alias_env",
 ]);
-const REQUIRED_MODEL_PROVIDER = "google_gemini";
-const REQUIRED_MODEL_BY_ROLE: Record<"split" | "gpu_delta", string> = {
-  split: "gemini-3.5-flash",
-  gpu_delta: "gemini-3.1-flash-lite",
-};
+export const DEFAULT_GPU_HMR_MODEL_POLICY = {
+  roles: {
+    split: { provider: "google_gemini", model: "gemini-3.5-flash" },
+    gpu_delta: { provider: "google_gemini", model: "gemini-3.1-flash-lite" },
+  },
+  providerAliases: {
+    google_gemini: ["gemini", "gemini_api", "google_gemini"],
+  },
+} as const;
 const CONVERGENCE_METRICS = new Set([
   "per_frame_delta",
   "window_mean_delta",
@@ -172,6 +176,79 @@ function compactStringList(values: unknown): string[] {
   return [...new Set((Array.isArray(values) ? values : [])
     .map(text)
     .filter((value): value is string => value !== null))];
+}
+
+type ModelRole = "split" | "gpu_delta";
+type ModelPolicy = {
+  roles: Record<ModelRole, { provider: string; model: string }>;
+  providerAliases: Record<string, readonly string[]>;
+};
+
+function modelPolicyRoleFromValue(value: unknown): { provider: string; model: string } | null {
+  const object = asObject(value);
+  const provider = firstText(object.provider, object.model_provider, object.modelProvider);
+  const model = firstText(object.model, object.required_model, object.requiredModel);
+  return provider && model ? { provider, model } : null;
+}
+
+function modelPolicyAliasesFromValue(value: unknown): Record<string, string[]> {
+  const object = asObject(value);
+  const aliases: Record<string, string[]> = {};
+  for (const [provider, rawAliases] of Object.entries(object)) {
+    const canonicalProvider = text(provider);
+    if (!canonicalProvider) continue;
+    const values = compactStringList(Array.isArray(rawAliases) ? rawAliases : [rawAliases]);
+    aliases[canonicalProvider] = values.length > 0 ? values : [canonicalProvider];
+  }
+  return aliases;
+}
+
+function resolveGpuHmrModelPolicy(...candidates: unknown[]): ModelPolicy {
+  const policy: ModelPolicy = {
+    roles: {
+      split: { ...DEFAULT_GPU_HMR_MODEL_POLICY.roles.split },
+      gpu_delta: { ...DEFAULT_GPU_HMR_MODEL_POLICY.roles.gpu_delta },
+    },
+    providerAliases: Object.fromEntries(
+      Object.entries(DEFAULT_GPU_HMR_MODEL_POLICY.providerAliases)
+        .map(([provider, aliases]) => [provider, [...aliases]])
+    ),
+  };
+  for (const candidate of candidates) {
+    const object = asObject(candidate);
+    if (Object.keys(object).length === 0) continue;
+    const roles = asObject(object.roles ?? object.model_roles ?? object.modelRoles);
+    for (const role of ["split", "gpu_delta"] as const) {
+      const roleValue = modelPolicyRoleFromValue(
+        roles[role]
+        ?? object[role]
+        ?? object[role === "gpu_delta" ? "gpuDelta" : role]
+      );
+      if (roleValue) policy.roles[role] = roleValue;
+    }
+    const providerAliases = modelPolicyAliasesFromValue(
+      object.providerAliases
+      ?? object.provider_aliases
+      ?? object.aliases
+      ?? object.provider_alias_map
+    );
+    for (const [provider, aliases] of Object.entries(providerAliases)) {
+      policy.providerAliases[provider] = compactStringList([provider, ...aliases]);
+    }
+  }
+  return policy;
+}
+
+function normalizeModelProvider(value: unknown, policy: ModelPolicy = DEFAULT_GPU_HMR_MODEL_POLICY): string | null {
+  const provider = firstText(value);
+  if (!provider) return null;
+  for (const [canonical, rawAliases] of Object.entries(policy.providerAliases)) {
+    const canonicalProvider = text(canonical);
+    if (!canonicalProvider) continue;
+    const values = compactStringList([canonicalProvider, ...rawAliases]);
+    if (values.includes(provider)) return canonicalProvider;
+  }
+  return provider;
 }
 
 function hasOwnDeep(object: unknown, key: string): boolean {
@@ -762,8 +839,15 @@ function modelFieldRecorded(record: Record<string, unknown>, snakeKey: string, c
   return valueRecorded(record, snakeKey) || valueRecorded(record, camelKey);
 }
 
-function modelFieldText(record: Record<string, unknown>, snakeKey: string, camelKey: string): string | null {
-  return firstText(modelField(record, snakeKey, camelKey));
+function modelFieldText(
+  record: Record<string, unknown>,
+  snakeKey: string,
+  camelKey: string,
+  modelPolicy: ModelPolicy = DEFAULT_GPU_HMR_MODEL_POLICY
+): string | null {
+  const value = firstText(modelField(record, snakeKey, camelKey));
+  if (snakeKey === "provider") return normalizeModelProvider(value, modelPolicy);
+  return value;
 }
 
 function modelStatus(record: Record<string, unknown>): string | null {
@@ -889,6 +973,12 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
   const timings = asObject(input.timings);
   const timingMetrics = asObject(input.timing_metrics ?? input.timingMetrics ?? timings.timing_metrics ?? timings.timingMetrics);
   const modelProvenance = asObject(input.model_provenance ?? input.modelProvenance);
+  const modelPolicy = resolveGpuHmrModelPolicy(
+    input.modelPolicy,
+    input.model_policy,
+    modelProvenance.modelPolicy,
+    modelProvenance.model_policy
+  );
   const projectId = firstText(input.project_id, input.projectId);
   const editId = firstText(input.edit_id, input.editId);
   const backend = firstText(input.backend, input.gpu_backend, input.gpuBackend);
@@ -1383,17 +1473,26 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
     }
     const role = requiredModelRole(models[index]!);
     if (role) {
-      const provider = modelFieldText(model, "provider", "provider");
-      if (provider !== REQUIRED_MODEL_PROVIDER) {
+      const expected = modelPolicy.roles[role];
+      const provider = modelFieldText(model, "provider", "provider", modelPolicy);
+      if (!expected?.provider || !expected?.model) {
+        failures.push({
+          code: "model_role_policy_missing",
+          record: prefix,
+          request_mode: role,
+        });
+        continue;
+      }
+      if (provider !== expected.provider) {
         failures.push({
           code: "model_provider_not_allowed",
           record: prefix,
           request_mode: role,
           provider,
-          expected_provider: REQUIRED_MODEL_PROVIDER,
+          expected_provider: expected.provider,
         });
       }
-      const expectedModel = REQUIRED_MODEL_BY_ROLE[role]!;
+      const expectedModel = expected.model;
       const modelMatch = modelMatchesRequiredModel(model, expectedModel);
       if (modelMatch.status === "private_alias" && !modelMatch.aliasResolvedTo) {
         failures.push({
@@ -1477,12 +1576,16 @@ function validateRecord(input: Record<string, unknown>): GpuHmrLedgerValidation 
 
 export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidation {
   const ledger = asObject(input);
+  const ledgerModelPolicy = resolveGpuHmrModelPolicy(ledger.modelPolicy, ledger.model_policy);
   const records = Array.isArray(ledger.records) ? ledger.records : null;
   const validations = records && records.length > 0
     ? records.map((record, index) => ({
         index,
         result: isObject(record)
-          ? validateRecord(record)
+          ? validateRecord({
+              modelPolicy: ledgerModelPolicy,
+              ...record,
+            })
           : {
               schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
               proofId: null,
@@ -1490,7 +1593,7 @@ export function queryGpuHmrLedgerInvariants(input: unknown): GpuHmrLedgerValidat
               failedInvariants: [{ code: "ledger_record_not_object" }],
             },
       }))
-    : [{ index: 0, result: validateRecord(ledger) }];
+    : [{ index: 0, result: validateRecord({ modelPolicy: ledgerModelPolicy, ...ledger }) }];
   const recomputed = validations[validations.length - 1]!.result;
   const proofId = records && records.length > 0
     ? canonicalLedgerRootProofId(validations.map(({ result }) => result.proofId))

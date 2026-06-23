@@ -1434,6 +1434,56 @@ const rejected = cases.map(([name, record, expectedCode]) => {
   return { name, expectedCode, failedInvariants: result.failedInvariants.map((failure) => failure.code) };
 });
 
+const customModelPolicy = {
+  roles: {
+    split: { provider: 'openai', model: 'gpt-5.5' },
+    gpu_delta: { provider: 'openai', model: 'gpt-5.5-mini' },
+  },
+  providerAliases: {
+    openai: ['openai', 'open_ai'],
+  },
+};
+const customPolicyRecord = baselineRecord({
+  model_policy: customModelPolicy,
+  model_provenance: baselineModelProvenance({
+    split: {
+      ...baselineModelProvenance().split,
+      provider: 'open_ai',
+      requested_model: 'gpt-5.5',
+      actual_model: 'gpt-5.5',
+    },
+    last_gpu_delta: {
+      ...baselineModelProvenance().last_gpu_delta,
+      provider: 'openai',
+      requested_model: 'gpt-5.5-mini',
+      actual_model: 'gpt-5.5-mini',
+    },
+  }),
+});
+const customPolicyResult = evaluateGpuHmrProofLedger(customPolicyRecord);
+assert.equal(
+  customPolicyResult.gpuHmrSuccess,
+  true,
+  `custom model policy should accept matching non-default provider provenance: ${
+    customPolicyResult.failedInvariants.map((failure) => failure.code).join(',')
+  }`,
+);
+const customPolicyTopLevelLedgerResult = queryGpuHmrLedgerInvariants({
+  model_policy: customModelPolicy,
+  records: [
+    baselineRecord({
+      model_provenance: customPolicyRecord.model_provenance,
+    }),
+  ],
+});
+assert.equal(
+  customPolicyTopLevelLedgerResult.gpuHmrSuccess,
+  true,
+  `top-level custom model policy should apply to ledger records: ${
+    customPolicyTopLevelLedgerResult.failedInvariants.map((failure) => failure.code).join(',')
+  }`,
+);
+
 const forgedLedger = buildGpuHmrProofLedger(baselineRecord({ cpu_hmr_used: true }));
 forgedLedger.query = {
   ...forgedLedger.query,

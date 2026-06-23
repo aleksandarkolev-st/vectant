@@ -1361,6 +1361,51 @@ describe("GPU HMR proof-state validation", () => {
     }
   });
 
+  it("accepts full runtime proof with an explicit non-default model policy", () => {
+    const customModelPolicy = {
+      roles: {
+        split: { provider: "openai", model: "gpt-5.5" },
+        gpu_delta: { provider: "openai", model: "gpt-5.5-mini" },
+      },
+      providerAliases: {
+        openai: ["openai", "open_ai"],
+      },
+    };
+    const customModelProvenance = {
+      split: {
+        ...(proofLedger().records[0] as Record<string, any>).model_provenance.split,
+        provider: "open_ai",
+        requested_model: "gpt-5.5",
+        actual_model: "gpt-5.5",
+      },
+      gpu_delta: {
+        ...(proofLedger().records[0] as Record<string, any>).model_provenance.gpu_delta,
+        provider: "openai",
+        requested_model: "gpt-5.5-mini",
+        actual_model: "gpt-5.5-mini",
+      },
+    };
+    const ledger = proofLedger({
+      model_policy: customModelPolicy,
+      model_provenance: customModelProvenance,
+    });
+
+    expect(ledger.query.gpuHmrSuccess).toBe(true);
+
+    const baseRecord = (proofLedger().records[0] as Record<string, any>);
+    const topLevelPolicyQuery = queryGpuHmrLedgerInvariants({
+      model_policy: customModelPolicy,
+      records: [
+        {
+          ...baseRecord,
+          model_provenance: customModelProvenance,
+        },
+      ],
+    });
+
+    expect(topLevelPolicyQuery.gpuHmrSuccess).toBe(true);
+  });
+
   it("rejects full runtime proof without compute oracle artifacts", () => {
     const ledger = proofLedger();
     const record = ledger.records[0] as Record<string, unknown>;
