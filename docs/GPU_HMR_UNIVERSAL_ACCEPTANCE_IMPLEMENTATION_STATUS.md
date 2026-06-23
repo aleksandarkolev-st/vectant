@@ -27,9 +27,9 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 29 rows: 10 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 11 structured refusal rows, 1 preflight-only row, 5 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:c6b83f10e3f2a67e1a910c6d6fd095b3150d741dc5f508bcb2a94e9811cda959
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T041948Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T041948Z.md
+gpu-validation-matrix-ledger:sha256:9cea47a33b194f540b1b527a26c435f9e74c39ecadd3a936e587dfe471511cb2
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T045724Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T045724Z.md
 ```
 
 The global per-target run-mode coverage row is now `accepted` for the 2 enrolled generated visual run-mode targets. Older/scoped accepted full-runtime rows such as SAXPY, HIPRT CameraRays, and WebGPU triangle remain valid evidence rows, but they are not enrolled in the run-mode-suite obligation until they provide structured run-mode proof artifacts for the full cold/hot1/hot2/negative sequence.
@@ -102,21 +102,21 @@ Latest large ROCm ML infrastructure validation:
 profile: mcp/synthi-mcp/scripts/profiles/real-rocm-miopen-activation-large-ml.json
 command: npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen
 repo: https://github.com/ROCm/MIOpen.git @ 06977176afd94476c18d5290f21cb40745bb73a9
-result slug: gpu-real-rocm-MIOpen-20260623031855
+result slug: gpu-real-rocm-MIOpen-20260623042419
 result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
 target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
 entry file: src/kernels/MIOpenNeuron.cl
 delta file: src/kernels/activation_functions.h
 repo files: 7869 git files, 8344 seeded text/proof-context files, 38 skipped text/binary limits
-upstream build/run: setup_build_ms=1751148, run_ms=296, run_exit_code=0
+upstream build/run: configure_ms=9288, build_ms=1730853, run_ms=328, run_exit_code=0
 native runtime evidence: hipModuleGetFunction resolved MIOpenActiveFwdLite through native_runtime_intercept
 MIOpen driver evidence: Forward Activation Verifies on CPU and GPU, GPU avg activation time 0.010436ms
 split projection: 1532 files, 50331605 bytes, coverage_trace=src/kernels/MIOpenNeuron.cl
 delta projection: 1535 files, 50331470 bytes, coverage_trace=src/kernels/MIOpenNeuron.cl -> src/kernels/activation_functions.h
-hot path timings: initial_compile_ms=30297, hot_delta_compile_ms=30314, hot_wait_ms=30007, total_validator_wall_ms=1948964.5723
+hot path timings: initial_compile_ms=30303, hot_delta_compile_ms=30323, hot_wait_ms=30008, total_validator_wall_ms=1938695.2449
 strict result: refused, gpu_hmr_success=false, runtime_proof_artifact=null, proof_artifacts=[]
 refusal reason: synthi_wait_hmr required gpu-hmr-full-runtime-proven; proof_state_missing; strict runtime proof artifact gate failed with runtime_proof_artifact_missing
-oracle resolution: requested_profile=none, source_derived_candidates=0, selected_source=null, contract_present=false, runtime_profile_present=false
+oracle resolution: requested_profile=none, source_derived_candidates=0, selected_source=null, contract_present=false, runtime_profile_present=false, worker oracle profile cleared, syncSkippedReason=runtime_profile_absent
 target progression: undeclared, required=false
 visual result: no MIOpen frame captured; screenshot proof unavailable and not counted
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
@@ -136,6 +136,7 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direc
 - MIOpen was added as a profile-driven large real ROCm project validation target. The runner reads repo, target, build, launch, and oracle settings from the profile/env path; there is no MIOpen-specific success branch.
 - Large real ROCm project validation rows are matrix-ingested through generic `real_rocm_profile` evidence and still fail closed unless a strict runtime proof artifact, recomputed proof ledger, and artifact-backed output oracle are present. Top-level `output_proof.accepted=true` flags are ignored for acceptance; visual-ledger outputs require readable visual artifact files.
 - Large real ROCm compute-oracle rows now re-read `raw_readback_bin`, `readback_schema_json`, and `rendered_card_png` from disk and derive hash, byte-length, deterministic-slice, schema, and PNG-card proof from those files. Embedded `raw_readback_hash_verified` or `deterministic_slice_hash_verified` booleans are not authority, and compute-ledger rows cannot pass by attaching unrelated top-level visual files.
+- Real ROCm runtime output-oracle profiles now sync by configured worker container instead of MCP transport. Local MCP validation can still deliver a profile into the real worker when a profile is declared; the latest MIOpen profile declares `profile=none`, so the worker oracle file was cleared and the run correctly remained refused.
 - Large real ROCm profiles can now declare generic runtime output-oracle profiles and target-progression defaults. The latest MIOpen profile declares `outputOracle.profile=none` and no target progression, so the result explicitly reports no installed oracle rather than implying hidden proof.
 - The validation matrix now preserves each real ROCm row's `outputOracleResolution`, `targetProgression`, and `targetProgressionGates` metadata, so large-project refusal gaps are machine-auditable without relying on raw logs.
 - Visual matrix acceptance now decodes PNG artifacts with `sharp`; PNG headers or existing files are not enough. Run-mode visual proofs cannot opt out with `visualRequired=false`, and Flow/ray-light coverage requires accepted visual evidence.
@@ -154,6 +155,7 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direc
 Additional commits since the previous status pass:
 
 ```text
+127aa1545 fix(gpu-hmr): sync real ROCm oracle profiles by worker
 40d2436f5 fix(gpu-hmr): verify real ROCm compute oracle files
 918ecf566 fix(gpu-hmr): decode visual evidence before acceptance
 caeb106a1 fix(gpu-hmr): expose real ROCm oracle resolution in matrix
@@ -290,9 +292,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:c6b83f10e3f2a67e1a910c6d6fd095b3150d741dc5f508bcb2a94e9811cda959
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T041948Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T041948Z.md
+proof id: gpu-validation-matrix-ledger:sha256:9cea47a33b194f540b1b527a26c435f9e74c39ecadd3a936e587dfe471511cb2
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T045724Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T045724Z.md
 ```
 
 Matrix result:
@@ -399,9 +401,11 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
 node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:c6b83f10e3f2a67e1a910c6d6fd095b3150d741dc5f508bcb2a94e9811cda959
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:9cea47a33b194f540b1b527a26c435f9e74c39ecadd3a936e587dfe471511cb2
   smoke coverage: compute-only real ROCm oracle acceptance plus forged missing raw/schema/card file refusal
 
 ray-light live MCP visual proof with hot-delta timing
