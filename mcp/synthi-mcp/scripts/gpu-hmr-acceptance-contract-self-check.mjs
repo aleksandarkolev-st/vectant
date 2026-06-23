@@ -708,6 +708,62 @@ assert.ok(
 );
 assert.equal(evaluateGpuHmrAcceptanceContract(derivedWithoutFirewall).accepted, false);
 
+const verifiedGpuFirewallEvidence = {
+  route: 'gpu_device_sidecar_reload',
+  evidence_source: 'self-check:verified-route-classifier',
+  evidence_refs: ['self-check:verified-route-classifier'],
+  cpu_hmr_used: false,
+  full_rebuild_used: false,
+  process_restarted: false,
+  process_id_before: 'pid-1',
+  process_id_after: 'pid-1',
+};
+const nativeRocmBoundary = {
+  schemaVersion: 'synthi.gpu_hmr.native_rocm_launch_boundary.v1',
+  observed: true,
+  status: 'refusal_evidence',
+  proof_authority: 'evidence_only_not_gpu_hmr_success',
+  can_satisfy_dispatch_proof: false,
+  function_resolution_count: 1,
+  function_resolution_symbols: ['light_kernel'],
+  blocking_gaps: [
+    'native_launch_boundary_observed',
+    'native_boundary_not_synthi_dispatch_proof',
+    'synthi_dispatch_not_observed',
+  ],
+  evidence_refs: ['worker-log:native_function_resolution:light_kernel'],
+};
+const derivedNativeBoundaryRefusal = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  fullRuntimeProof: { fullRuntimeProven: false },
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    native_rocm_launch_boundary: nativeRocmBoundary,
+  },
+});
+assert.ok(
+  derivedNativeBoundaryRefusal.classification.blocking_gaps.includes('native_launch_boundary_observed'),
+  `native ROCm boundary gap missing: ${derivedNativeBoundaryRefusal.classification.blocking_gaps.join(',')}`,
+);
+assert.ok(
+  derivedNativeBoundaryRefusal.unsupported_reasons.includes('native_boundary_not_synthi_dispatch_proof'),
+  `native ROCm boundary unsupported reason missing: ${derivedNativeBoundaryRefusal.unsupported_reasons.join(',')}`,
+);
+assert.equal(evaluateGpuHmrAcceptanceContract(derivedNativeBoundaryRefusal).accepted, false);
+
+const derivedNativeBoundarySupplemental = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    native_rocm_launch_boundary: nativeRocmBoundary,
+  },
+});
+assert.equal(
+  derivedNativeBoundarySupplemental.classification.blocking_gaps.includes('native_launch_boundary_observed'),
+  false,
+  `native ROCm boundary should be supplemental after full proof: ${derivedNativeBoundarySupplemental.classification.blocking_gaps.join(',')}`,
+);
+
 for (const [name, classification, expectedGate] of [
   [
     'host-only derived classification',

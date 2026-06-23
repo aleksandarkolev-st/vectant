@@ -5809,6 +5809,131 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
   };
 }
 
+function nativeRocmLaunchBoundaryRefusalFacet({
+  nativeObservation = {},
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+  outputOracleResolution = {},
+  fullRuntimeProof = {},
+} = {}) {
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  const observed = nativeObservation.ready === true
+    || Number(nativeObservation.function_resolution_count ?? 0) > 0
+    || Number(nativeObservation.attempt_count ?? 0) > 0
+    || Number(nativeObservation.total_count ?? 0) > 0
+    || Number(nativeObservation.array_allocation_count ?? 0) > 0
+    || Number(nativeObservation.texture_object_create_count ?? 0) > 0;
+  const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
+  const synthiDispatchObserved = Number(runtimeDispatch.success_count ?? 0) > 0;
+  const artifactTransportObserved = Number(runtimeArtifactTransport.total_count ?? 0) > 0;
+  const epochObserved = Number(epochEvidence.total_count ?? 0) > 0
+    || Number(epochEvidence.published_count ?? 0) > 0
+    || runtimeEpochSwap?.proof?.resultState === 'gpu-hmr-epoch-swap-proven';
+  const outputOracleObserved = Number(runtimeOutputOracle.total_count ?? 0) > 0;
+  const hostIdentityObserved = Number(hostEvidence.total_count ?? 0) > 0;
+  const oracleProfileAbsent =
+    outputOracleResolution?.runtimeProfilePresent !== true
+    && outputOracleResolution?.contractPresent !== true
+    && (
+      outputOracleResolution?.mode === 'none'
+      || outputOracleResolution?.requestedProfile === 'none'
+      || outputOracleResolution?.requested_profile === 'none'
+      || outputOracleResolution?.disabledReason === 'profile_disabled'
+      || outputOracleResolution?.disabled_reason === 'profile_disabled'
+    );
+  const blockingGaps = [];
+  if (observed && !fullRuntimeProven) {
+    blockingGaps.push('native_launch_boundary_observed');
+    blockingGaps.push('native_boundary_not_synthi_dispatch_proof');
+    if (!synthiDispatchObserved) blockingGaps.push('synthi_dispatch_not_observed');
+    if (!artifactTransportObserved) blockingGaps.push('artifact_transport_not_observed');
+    if (!epochObserved) blockingGaps.push('epoch_not_observed');
+    if (!outputOracleObserved) {
+      blockingGaps.push(oracleProfileAbsent ? 'output_oracle_profile_absent' : 'output_oracle_not_observed');
+    }
+    if (!hostIdentityObserved) blockingGaps.push('host_identity_not_observed');
+    if (!artifactTransportObserved || !epochObserved || !synthiDispatchObserved) {
+      blockingGaps.push('adapter_impossible_requires_app_hook');
+    }
+    if (Number(nativeObservation.function_resolution_count ?? 0) > 0 && !synthiDispatchObserved) {
+      blockingGaps.push('native_function_resolution_without_synthi_epoch_dispatch');
+    }
+  }
+  const evidenceRefs = compactStringList([
+    ...((nativeObservation.ready_runtime_session_ids ?? []).map((session) =>
+      `worker-log:native_launch_observer_ready:${session}`)),
+    ...((nativeObservation.runtime_session_ids ?? []).map((session) =>
+      `worker-log:native_rocm_launch_boundary:${session}`)),
+    ...((nativeObservation.function_resolution_symbols ?? []).map((symbol) =>
+      `worker-log:native_function_resolution:${symbol}`)),
+    ...((nativeObservation.kernel_symbols ?? []).map((symbol) =>
+      `worker-log:native_launch_observed:${symbol}`)),
+    ...((nativeObservation.array_allocation_apis ?? []).map((api) =>
+      `worker-log:native_array_allocation:${api}`)),
+    ...((nativeObservation.texture_object_apis ?? []).map((api) =>
+      `worker-log:native_texture_object_create:${api}`)),
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.native_rocm_launch_boundary.v1',
+    observed,
+    status: fullRuntimeProven
+      ? 'supplemental_runtime_boundary_evidence'
+      : observed
+        ? 'refusal_evidence'
+        : 'not_observed',
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    nativeLaunchBoundaryObserved: observed,
+    native_launch_boundary_observed: observed,
+    observerReady: nativeObservation.ready === true,
+    observer_ready: nativeObservation.ready === true,
+    readyRuntimeSessionIds: compactStringList(nativeObservation.ready_runtime_session_ids),
+    ready_runtime_session_ids: compactStringList(nativeObservation.ready_runtime_session_ids),
+    runtimeSessionIds: compactStringList(nativeObservation.runtime_session_ids),
+    runtime_session_ids: compactStringList(nativeObservation.runtime_session_ids),
+    apiCoverage: compactStringList(nativeObservation.api_coverage),
+    api_coverage: compactStringList(nativeObservation.api_coverage),
+    attemptedApis: compactStringList(nativeObservation.attempted_apis),
+    attempted_apis: compactStringList(nativeObservation.attempted_apis),
+    observedApis: compactStringList(nativeObservation.apis),
+    observed_apis: compactStringList(nativeObservation.apis),
+    functionResolutionApis: compactStringList(nativeObservation.function_resolution_api_coverage),
+    function_resolution_apis: compactStringList(nativeObservation.function_resolution_api_coverage),
+    functionResolutionCount: Number(nativeObservation.function_resolution_count ?? 0),
+    function_resolution_count: Number(nativeObservation.function_resolution_count ?? 0),
+    functionResolutionSymbols: compactStringList(nativeObservation.function_resolution_symbols),
+    function_resolution_symbols: compactStringList(nativeObservation.function_resolution_symbols),
+    launchAttemptCount: Number(nativeObservation.attempt_count ?? 0),
+    launch_attempt_count: Number(nativeObservation.attempt_count ?? 0),
+    nativeLaunchObservedCount: Number(nativeObservation.total_count ?? 0),
+    native_launch_observed_count: Number(nativeObservation.total_count ?? 0),
+    observeOnlyCount: Number(nativeObservation.observe_only_count ?? 0),
+    observe_only_count: Number(nativeObservation.observe_only_count ?? 0),
+    synthiDispatchObserved,
+    synthi_dispatch_observed: synthiDispatchObserved,
+    artifactTransportObserved,
+    artifact_transport_observed: artifactTransportObserved,
+    epochObserved,
+    epoch_observed: epochObserved,
+    outputOracleObserved,
+    output_oracle_observed: outputOracleObserved,
+    outputOracleProfileAbsent: oracleProfileAbsent,
+    output_oracle_profile_absent: oracleProfileAbsent,
+    hostIdentityObserved,
+    host_identity_observed: hostIdentityObserved,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function selectedArtifactIdsFromProofArtifacts(records) {
   const ids = new Set();
   for (const record of Array.isArray(records) ? records : []) {
@@ -7004,6 +7129,21 @@ async function selfCheckRuntimeDispatchEvidence() {
     ['different_kernel'],
   );
   const nativeOnlyDispatch = runtimeDispatchEvidence(nativeOnlyRuntimeEvidence.runtimeEvidence);
+  const nativeOnlyBoundary = nativeRocmLaunchBoundaryRefusalFacet({
+    nativeObservation: nativeOnlyObservation,
+    runtimeDispatch: nativeOnlyDispatch,
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+    runtimeOutputOracle: { total_count: 0 },
+    runtimeHostPreservation: { evidence: { total_count: 0 } },
+    outputOracleResolution: {
+      mode: 'none',
+      requestedProfile: 'none',
+      runtimeProfilePresent: false,
+      contractPresent: false,
+    },
+    fullRuntimeProof: { fullRuntimeProven: false },
+  });
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
     {
@@ -7098,6 +7238,19 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyOriginalHost.evidence.native_launch_records[0]?.kernel_symbol !== 'kernel'
     || nativeOnlyObservation.observe_only_count !== 1
     || nativeOnlyDispatch.success_count !== 0
+    || !nativeOnlyBoundary.observed
+    || nativeOnlyBoundary.status !== 'refusal_evidence'
+    || nativeOnlyBoundary.can_satisfy_dispatch_proof
+    || nativeOnlyBoundary.synthi_dispatch_observed
+    || !nativeOnlyBoundary.blocking_gaps.includes('native_launch_boundary_observed')
+    || !nativeOnlyBoundary.blocking_gaps.includes('native_boundary_not_synthi_dispatch_proof')
+    || !nativeOnlyBoundary.blocking_gaps.includes('synthi_dispatch_not_observed')
+    || !nativeOnlyBoundary.blocking_gaps.includes('artifact_transport_not_observed')
+    || !nativeOnlyBoundary.blocking_gaps.includes('epoch_not_observed')
+    || !nativeOnlyBoundary.blocking_gaps.includes('output_oracle_profile_absent')
+    || !nativeOnlyBoundary.blocking_gaps.includes('host_identity_not_observed')
+    || !nativeOnlyBoundary.blocking_gaps.includes('adapter_impossible_requires_app_hook')
+    || !nativeOnlyBoundary.blocking_gaps.includes('native_function_resolution_without_synthi_epoch_dispatch')
     || nativeOnlyOriginalHost.evidence.raw_count !== 1
     || nativeOnlyOriginalHost.proof.attachmentProven
     || !nativeOnlyOriginalHost.proof.runtimeCapabilityPreflightObserved
@@ -8427,6 +8580,30 @@ async function collectRuntimeEvidence() {
     hostRestartCount,
   });
   report.evidence.firewall_evidence = report.firewall_evidence;
+  report.native_rocm_launch_boundary = nativeRocmLaunchBoundaryRefusalFacet({
+    nativeObservation: runtimeNativeLaunchObservation,
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+    outputOracleResolution: report.output_oracle_resolution,
+    fullRuntimeProof: report.full_runtime_proof,
+  });
+  report.evidence.native_rocm_launch_boundary = report.native_rocm_launch_boundary;
+  if (report.native_rocm_launch_boundary.observed) {
+    record(
+      'native ROCm launch boundary refusal facet',
+      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+      [
+        `status=${report.native_rocm_launch_boundary.status}`,
+        `resolved=${report.native_rocm_launch_boundary.function_resolution_count}`,
+        `attempts=${report.native_rocm_launch_boundary.launch_attempt_count}`,
+        `observed=${report.native_rocm_launch_boundary.native_launch_observed_count}`,
+        `gaps=${report.native_rocm_launch_boundary.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
   if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
     record(
       'HIPRT native runtime proof bridge',
@@ -8768,6 +8945,8 @@ async function writeResults() {
     strict_proof_gates: report.strict_proof_gates,
     target_progression_gates: report.target_progression_gates,
     runtime_capability_preflight: report.runtime_capability_preflight,
+    nativeRocmLaunchBoundary: report.native_rocm_launch_boundary,
+    native_rocm_launch_boundary: report.native_rocm_launch_boundary,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,

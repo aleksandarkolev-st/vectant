@@ -1623,6 +1623,18 @@ function evidenceRefsFromProofs(...proofs) {
   ]));
 }
 
+function nativeRocmLaunchBoundaryBlockingGaps(nativeBoundary, fullRuntimeProof) {
+  const boundary = asObject(nativeBoundary);
+  const observed = boundary.observed === true
+    || boundary.native_launch_boundary_observed === true
+    || boundary.nativeLaunchBoundaryObserved === true;
+  if (!observed || fullRuntimeProof?.fullRuntimeProven === true) return [];
+  const configuredGaps = compactStringList(boundary.blocking_gaps ?? boundary.blockingGaps);
+  return configuredGaps.length > 0
+    ? configuredGaps
+    : ['native_launch_boundary_observed', 'native_boundary_not_synthi_dispatch_proof'];
+}
+
 function firewallProofFromVerifiedProofs({ input, validationContext }) {
   const firewallEvidence = firstObject(
     input.firewallEvidence,
@@ -1735,6 +1747,7 @@ function blockingGapsFromVerifiedProofs({
   selectedIsland,
   backendContractProof,
   classificationGaps = [],
+  nativeRocmLaunchBoundary = {},
 }) {
   const gaps = [];
   if (backend === 'unknown') gaps.push('backend_unknown');
@@ -1764,6 +1777,7 @@ function blockingGapsFromVerifiedProofs({
       gaps.push('backend_contract_not_verified');
     }
   }
+  gaps.push(...nativeRocmLaunchBoundaryBlockingGaps(nativeRocmLaunchBoundary, fullRuntimeProof));
   gaps.push(...asArray(firewallProof?.blockingGaps));
   return compactStringList(gaps);
 }
@@ -1811,6 +1825,12 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const outputProof = asObject(input.outputProof ?? input.output_proof);
   const hostPreservationProof = asObject(input.hostPreservationProof ?? input.host_preservation_proof);
   const fullRuntimeProof = asObject(input.fullRuntimeProof ?? input.full_runtime_proof);
+  const nativeRocmLaunchBoundary = asObject(
+    input.nativeRocmLaunchBoundary
+    ?? input.native_rocm_launch_boundary
+    ?? validationContext.nativeRocmLaunchBoundary
+    ?? validationContext.native_rocm_launch_boundary,
+  );
   const rawClassification = rawClassificationFromVerifiedContext(input, validationContext);
   const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
@@ -1863,6 +1883,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     outputProof,
     hostPreservationProof,
     backendContractProof,
+    nativeRocmLaunchBoundary,
   );
   const blockingGaps = blockingGapsFromVerifiedProofs({
     backend,
@@ -1879,6 +1900,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     selectedIsland,
     backendContractProof,
     classificationGaps: verifiedClassificationGaps(rawClassification, verifiedClassification),
+    nativeRocmLaunchBoundary,
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
   const artifactKind = selectedIslandKind(selectedIsland, backend);
