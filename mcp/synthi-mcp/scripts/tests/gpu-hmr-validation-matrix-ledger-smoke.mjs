@@ -773,6 +773,64 @@ await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-shader-mater
   proofId: 'external-rejection-proof:sha256:synthetic-bevy',
 });
 
+await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
+  slug: 'gpu-real-rocm-large-lib-20260623',
+  real_rocm_profile: {
+    id: 'real-rocm-large-lib',
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    source: 'scripts/profiles/real-rocm-large-lib.json',
+  },
+  source_url: 'https://example.invalid/rocm/large-lib.git',
+  repo_commit: '0123456789abcdef0123456789abcdef01234567',
+  entry_file: 'src/kernels/entry_kernel.hip',
+  delta_file: 'src/kernels/activation_delta.h',
+  target_name: 'LargeRocmDriver',
+  gpu_vendor: 'rocm',
+  gpu_arch: 'gfx1201',
+  file_count: 12000,
+  seeded_file_count: 11800,
+  skipped_file_count: 200,
+  full_runtime_proof_required: true,
+  full_runtime_proven: false,
+  gpu_hmr_success: false,
+  runtime_proof_artifact: null,
+  proof_artifacts: [],
+  strict_proof_gates: {
+    schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
+    name: 'strict runtime proof artifact presence',
+    status: 'fail',
+    accepted: false,
+    failures: ['runtime_proof_artifact_missing'],
+  },
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-large-lib-delta',
+    editHash: hashValue('real-rocm-large-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/large-lib.git @ 0123456789ab files=12000' },
+    { name: 'compile projection', status: 'pass', detail: 'real_repo_user_source_delta_hmr selected=120 bytes=1000000 omitted=11880' },
+    {
+      name: 'real_repo_user_source_delta_hmr',
+      status: 'warn',
+      detail: `provisional_wait_terminal=true gpu_proof=missing ${JSON.stringify({
+        name: 'real_repo_user_source_delta_hmr',
+        wait_hmr_status: 'timeout',
+        gpu_proof_validation: {
+          requiredState: 'gpu-hmr-full-runtime-proven',
+          satisfied: false,
+          reason: 'proof_state_missing',
+        },
+      })}`,
+    },
+    { name: 'strict runtime proof artifact presence', status: 'fail', detail: 'failures=runtime_proof_artifact_missing' },
+  ],
+});
+
 await writeJson(path.join(artifactsRoot, 'webgpu-runtime-visual-proof', 'forged-webgpu-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:forged',
@@ -939,6 +997,19 @@ assert.ok(bevy.reasons.includes('mcp_no_decoded_frames'));
 assert.ok(bevy.reasons.includes('mcp_request_timeout'));
 assert.ok(bevy.reasons.includes('visual_frame_missing'));
 
+const largeRocm = ledger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
+assert.equal(largeRocm?.targetId, 'real-rocm-large-lib');
+assert.equal(largeRocm.backend, 'hip');
+assert.equal(largeRocm.matrixOutcome, 'refusal_proven');
+assert.equal(largeRocm.acceptedForGpuHmr, false);
+assert.equal(largeRocm.gpuHmrSuccess, false);
+assert.equal(largeRocm.refusalProven, true);
+assert.equal(largeRocm.runtimeProofArtifact.present, false);
+assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
+assert.ok(largeRocm.reasons.includes('proof_state_missing'));
+assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
+assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
+
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpu.acceptedForGpuHmr, false);
@@ -975,13 +1046,15 @@ assert.equal(legacyAgentSplit?.matrixOutcome, 'unproven');
 assert.equal(legacyAgentSplit.targetId, 'unknown');
 
 assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
-assert.equal(ledger.summary.refusalProvenRows, 3);
+assert.equal(ledger.summary.refusalProvenRows, 4);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(coverageById.get('flow_visual_gpu_path')?.status, 'accepted');
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
+assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
+assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
 assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
@@ -1084,6 +1157,116 @@ const fissionRow = ledger.rows.find((row) => row.matrixOutcome === 'deterministi
 assert.equal(fissionRow?.acceptedForGpuHmr, false);
 assert.equal(fissionRow.proofChainAccepted, true);
 assert.equal(fissionRow.acceptanceClass, 'smallest_safe_per_kernel_fission');
+
+const acceptedRealRocmDir = path.join(logsRoot, 'real-rocm-accepted-lib');
+await writePng(path.join(acceptedRealRocmDir, 'before-hmr-first.png'));
+await writePng(path.join(acceptedRealRocmDir, 'after-hmr-first.png'));
+await writePng(path.join(acceptedRealRocmDir, 'before-after-diff.png'));
+await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
+  slug: 'gpu-real-rocm-accepted-lib-20260623',
+  real_rocm_profile: { id: 'real-rocm-accepted-lib' },
+  source_url: 'https://example.invalid/rocm/accepted-lib.git',
+  repo_commit: 'abcdef0123456789abcdef0123456789abcdef01',
+  entry_file: 'src/kernels/accepted_entry.hip',
+  delta_file: 'src/kernels/accepted_delta.h',
+  target_name: 'AcceptedRocmDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'real-rocm-accepted-lib',
+    visualRoot: acceptedRealRocmDir,
+  }),
+  visual_artifact_paths: [
+    path.join(acceptedRealRocmDir, 'before-hmr-first.png'),
+    path.join(acceptedRealRocmDir, 'after-hmr-first.png'),
+    path.join(acceptedRealRocmDir, 'before-after-diff.png'),
+  ],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-lib-delta',
+    editHash: hashValue('real-rocm-accepted-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-lib.git @ abcdef012345 files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedRealRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedRealRocmDir],
+  generatedAt: '2026-06-09T00:00:02.000Z',
+  includeUnproven: true,
+});
+const acceptedRealRocm = acceptedRealRocmLedger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
+assert.equal(acceptedRealRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedRealRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedRealRocm.ledger.source, 'recomputed_ledger');
+assert.equal(acceptedRealRocm.runtimeProofArtifact.accepted, true);
+assert.equal(acceptedRealRocm.visual.present, true);
+assert.equal(acceptedRealRocm.visual.accepted, true);
+
+const forgedRealRocmDir = path.join(logsRoot, 'real-rocm-forged-no-oracle');
+await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'), {
+  slug: 'gpu-real-rocm-forged-no-oracle-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-no-oracle' },
+  source_url: 'https://example.invalid/rocm/forged-lib.git',
+  repo_commit: 'fedcba9876543210fedcba9876543210fedcba98',
+  entry_file: 'src/kernels/forged_entry.hip',
+  delta_file: 'src/kernels/forged_delta.h',
+  target_name: 'ForgedRocmDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'real-rocm-forged-no-oracle',
+    visualRoot: forgedRealRocmDir,
+  }),
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-no-oracle-delta',
+    editHash: hashValue('real-rocm-forged-no-oracle-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-lib.git @ fedcba987654 files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedRealRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRealRocmDir],
+  generatedAt: '2026-06-09T00:00:03.000Z',
+  includeUnproven: true,
+});
+const forgedRealRocm = forgedRealRocmLedger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
+assert.equal(forgedRealRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedRealRocm.acceptedForGpuHmr, false);
+assert.equal(forgedRealRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedRealRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedRealRocm.visual.present, false);
+assert.ok(forgedRealRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 
 console.log(JSON.stringify({
   ok: true,

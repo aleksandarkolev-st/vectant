@@ -479,7 +479,10 @@ function rowSafetyFailures(row) {
   if (row.acceptedForGpuHmr === true && row.visual?.required === true && row.visual.accepted !== true) {
     failures.push({ code: 'visual_gpu_hmr_success_requires_readable_visual_artifacts' });
   }
-  if (row.acceptedForGpuHmr === true && row.proofMode === 'run_mode_proof') {
+  if (
+    row.acceptedForGpuHmr === true
+    && (row.proofMode === 'run_mode_proof' || row.proofMode === 'real_rocm_repo_validation')
+  ) {
     if (row.ledger?.present !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_embedded_proof_ledger' });
     }
@@ -1547,6 +1550,208 @@ async function preflightRow(json, filePath, context) {
   });
 }
 
+function realRocmCheck(records, name, fromEnd = true) {
+  if (!Array.isArray(records)) return null;
+  return detailRecord(records, name, fromEnd);
+}
+
+function realRocmCheckDetailJson(records, name, fromEnd = true) {
+  const detail = text(realRocmCheck(records, name, fromEnd)?.detail);
+  if (!detail) return null;
+  const jsonStart = detail.indexOf('{');
+  if (jsonStart < 0) return null;
+  try {
+    return JSON.parse(detail.slice(jsonStart));
+  } catch {
+    return null;
+  }
+}
+
+function realRocmRequiredFullRuntimeProof(json) {
+  return json.fullRuntimeProofRequired === true
+    || json.full_runtime_proof_required === true
+    || json.command?.env?.SYNTHI_REAL_ROCM_REQUIRE_FULL_RUNTIME_PROOF === '1'
+    || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
+}
+
+async function realRocmRepoValidationRow(json, filePath, context) {
+  const profile = compactObject(json.real_rocm_profile ?? json.realRocmProfile);
+  const summary = compactObject(json.validation_proof_summary ?? json.validationProofSummary);
+  const checks = Array.isArray(json.checks) ? json.checks : [];
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
+  const strictGates = compactObject(
+    json.strict_proof_gates
+    ?? json.strictProofGates
+    ?? summary.strict_proof_gates
+    ?? summary.strictProofGates,
+  );
+  const strictGateFailures = compactStringList(strictGates.failures);
+  const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
+    ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
+  const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
+  const profileId = firstText(profile.id, json.profileId, json.profile_id, json.slug);
+  const targetId = firstText(profileId, json.slug, json.target_name, json.targetName);
+  const backend = backendFromVendorText(firstText(json.gpu_vendor, summary.gpu_vendor, json.backend))
+    ?? firstText(json.backend)
+    ?? 'unknown';
+  const runMode = timingEvidence(
+    json.timingMetrics,
+    json.timing_metrics,
+    summary.timings?.timingMetrics,
+    summary.timings?.timing_metrics,
+    summary.timings,
+  );
+  const visualPaths = compactStringList([
+    ...(Array.isArray(json.visual_artifact_paths) ? json.visual_artifact_paths : []),
+    ...(Array.isArray(json.visualArtifactPaths) ? json.visualArtifactPaths : []),
+    ...(Array.isArray(summary.visual_artifact_paths) ? summary.visual_artifact_paths : []),
+    ...(Array.isArray(summary.visualArtifactPaths) ? summary.visualArtifactPaths : []),
+    ...artifactPathsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
+  ]);
+  const visual = await visualArtifactEvidence(
+    visualPaths,
+    context.repoRoot,
+    path.dirname(filePath),
+    compactObject(json.visual_evidence_quality ?? json.visualEvidenceQuality),
+    visualPaths.length > 0,
+  );
+  const outputProof = compactObject(json.output_proof ?? json.outputProof ?? summary.output_proof ?? summary.outputProof);
+  const computeOracleEvidence = compactObject(
+    json.compute_output_oracle_visual_evidence
+    ?? json.computeOutputOracleVisualEvidence
+    ?? summary.compute_output_oracle_visual_evidence
+    ?? summary.computeOutputOracleVisualEvidence,
+  );
+  const outputOracleResultState = firstText(
+    outputProof.resultState,
+    outputProof.result_state,
+    computeOracleEvidence.resultState,
+    computeOracleEvidence.result_state,
+  );
+  const outputOrVisualOracleAccepted =
+    outputProof.accepted === true
+    || outputProof.proven === true
+    || computeOracleEvidence.accepted === true
+    || computeOracleEvidence.proven === true
+    || outputOracleResultState === 'gpu-hmr-output-oracle-proven'
+    || (visual.present === true && visual.accepted === true);
+  const fullRuntimeProven = boolOrNull(
+    json.fullRuntimeProven
+    ?? json.full_runtime_proven
+    ?? summary.fullRuntimeProven
+    ?? summary.full_runtime_proven,
+  );
+  const gpuHmrSuccess = boolOrNull(
+    json.gpuHmrSuccess
+    ?? json.gpu_hmr_success
+    ?? summary.gpuHmrSuccess
+    ?? summary.gpu_hmr_success,
+  );
+  const accepted =
+    gpuHmrSuccess === true
+    && fullRuntimeProven === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && runtimeProofArtifactGate.accepted === true
+    && outputOrVisualOracleAccepted === true;
+  const strictRuntimeGateFailed =
+    strictGates.accepted === false
+    || strictGateFailures.length > 0
+    || runtimeProofArtifactGate.present === false
+    || runtimeProofArtifactGate.accepted === false;
+  const proofStateMissing =
+    hmrProofValidation.reason === 'proof_state_missing'
+    || hmrProofValidation.satisfied === false
+    || hmrWaitDetail?.wait_hmr_status === 'timeout';
+  const refusalProven =
+    !accepted
+    && realRocmRequiredFullRuntimeProof(json)
+    && gpuHmrSuccess !== true
+    && fullRuntimeProven !== true
+    && (strictRuntimeGateFailed || proofStateMissing);
+  const matrixOutcome = accepted
+    ? 'full_runtime_gpu_hmr'
+    : refusalProven
+      ? 'refusal_proven'
+      : 'unproven';
+  return finalizeRow({
+    artifactSchema: firstText(json.schemaVersion, json.schema, 'synthi.gpu.hmr.real_rocm_repo_validation.v1'),
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend,
+    targetId,
+    profileId,
+    proofMode: 'real_rocm_repo_validation',
+    evidenceKind: accepted ? 'large_repo_output_oracle' : 'large_repo_runtime_refusal',
+    matrixOutcome,
+    acceptanceClass: accepted
+      ? 'full_runtime_gpu_hmr'
+      : refusalProven
+        ? 'large_real_rocm_repo_refusal'
+        : 'large_real_rocm_repo_unproven',
+    acceptedForGpuHmr: accepted,
+    gpuHmrSuccess: accepted,
+    refusalProven,
+    proofChainAccepted: accepted || refusalProven,
+    proofChain: accepted
+      ? 'real_rocm_full_runtime_ledger_oracle_chain'
+      : refusalProven
+        ? 'real_rocm_strict_runtime_refusal'
+        : 'real_rocm_validation_unproven',
+    proofIds: proofIdsFrom(
+      json,
+      summary,
+      ledger,
+      runtimeProofArtifactGate,
+      proofIdFor('real-rocm-validation', {
+        profileId,
+        targetId,
+        sourceUrl: firstText(json.source_url, json.sourceUrl),
+        repoCommit: firstText(json.repo_commit, json.repoCommit),
+        slug: firstText(json.slug),
+      }),
+    ),
+    ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
+    visual,
+    runMode,
+    cpuHmrUsed: null,
+    fullRebuildUsed: null,
+    processRestarted: null,
+    realRocm: {
+      sourceUrl: firstText(json.source_url, json.sourceUrl),
+      repoCommit: firstText(json.repo_commit, json.repoCommit),
+      entryFile: firstText(json.entry_file, json.entryFile),
+      deltaFile: firstText(json.delta_file, json.deltaFile),
+      targetName: firstText(json.target_name, json.targetName),
+      fileCount: finiteNumber(json.file_count ?? json.fileCount),
+      seededFileCount: finiteNumber(json.seeded_file_count ?? json.seededFileCount),
+      skippedFileCount: finiteNumber(json.skipped_file_count ?? json.skippedFileCount),
+    },
+    timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
+    reasons: compactStringList([
+      ...strictGateFailures,
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
+      hmrProofValidation.reason,
+      outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      realRocmRequiredFullRuntimeProof(json) ? null : 'full_runtime_proof_not_required_by_artifact',
+    ]),
+    openGaps: accepted ? [] : compactStringList([
+      runtimeProofArtifactGate.accepted === true ? null : 'strict_runtime_proof_artifact_required',
+      ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
+      outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
+      proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
+    ]),
+  });
+}
+
 async function agentSplitRunModeProofRow(json, filePath, context) {
   const schema = firstText(
     json.schemaVersion,
@@ -1813,6 +2018,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema === 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1') {
     return agentSplitNegativeEditRefusalRow(json, filePath, context);
+  }
+  if (isObject(json.real_rocm_profile ?? json.realRocmProfile) && Array.isArray(json.checks)) {
+    return realRocmRepoValidationRow(json, filePath, context);
   }
   if (schema.includes('webgpu_runtime_visual_proof') || proofId.startsWith('webgpu-runtime-visual-proof:')) {
     return webGpuRuntimeVisualRow(json, filePath, context);
@@ -2135,6 +2343,13 @@ function planCoverage(rows) {
       openGaps: externalVisualRows.length > 0
         ? compactStringList(externalVisualRows.flatMap((row) => row.openGaps))
         : ['external_engine_visual_profile_required'],
+    }),
+    acceptedOrRefusedCoverage({
+      rows,
+      id: 'large_real_rocm_repo',
+      requirement: 'Large real ROCm repository validation with full-runtime proof gating',
+      acceptedPredicate: (row) => row.proofMode === 'real_rocm_repo_validation',
+      missingGap: 'large_real_rocm_repo_validation_required',
     }),
     acceptedOrRefusedCoverage({
       rows,
