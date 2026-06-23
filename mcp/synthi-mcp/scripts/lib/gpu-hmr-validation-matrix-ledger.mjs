@@ -2394,6 +2394,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && appHookContractAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
     && profileProofObligationsAccepted === true
+    && targetProgressionGateFailures.length === 0
     && realRocmFirewall.accepted === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false

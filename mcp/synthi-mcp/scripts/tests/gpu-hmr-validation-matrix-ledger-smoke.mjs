@@ -2563,6 +2563,91 @@ assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLen
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
 
+const forgedTargetProgressionRocmDir = path.join(logsRoot, 'real-rocm-forged-target-progression-failure');
+const forgedTargetProgressionRawReadback = path.join(forgedTargetProgressionRocmDir, 'readback.bin');
+const forgedTargetProgressionBytes = Buffer.from([5, 10, 15, 20, 25, 30, 35, 40]);
+await fs.mkdir(forgedTargetProgressionRocmDir, { recursive: true });
+await fs.writeFile(forgedTargetProgressionRawReadback, forgedTargetProgressionBytes);
+await writeJson(`${forgedTargetProgressionRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedTargetProgressionBytes.length,
+  shape: [forgedTargetProgressionBytes.length],
+});
+await writeRgbaPng(`${forgedTargetProgressionRawReadback}.card.png`, 8, 8, (x, y) => [
+  forgedTargetProgressionBytes[(x + y) % forgedTargetProgressionBytes.length],
+  72 + x,
+  96 + y,
+  255,
+]);
+const forgedTargetProgressionProofMaterials = computeProofLedgerMaterials('forged-target-progression-failure', {
+  projectId: 'real-rocm-forged-target-progression-failure',
+  rawReadbackPath: forgedTargetProgressionRawReadback,
+  rawReadbackBytes: forgedTargetProgressionBytes,
+});
+await writeJson(path.join(forgedTargetProgressionRocmDir, 'real-rocm-forged-target-progression-failure.json'), {
+  slug: 'gpu-real-rocm-forged-target-progression-failure-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-target-progression-failure' },
+  source_url: 'https://example.invalid/rocm/forged-target-progression.git',
+  repo_commit: 'cccccccccccccccccccccccccccccccccccccccc',
+  entry_file: 'src/kernels/progression_entry.hip',
+  delta_file: 'src/kernels/progression_delta.h',
+  target_name: 'ForgedProgressionDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  target_progression_gates: [
+    {
+      name: 'target progression prior partial-reload',
+      status: 'fail',
+      detail: 'prior phase partial-reload proof missing from target progression ledger',
+    },
+  ],
+  ...forgedTargetProgressionProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-target-progression-failure-delta',
+    editHash: hashValue('real-rocm-forged-target-progression-failure-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-target-progression.git @ cccccccc files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedTargetProgressionRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedTargetProgressionRocmDir],
+  generatedAt: '2026-06-09T00:00:02.375Z',
+  includeUnproven: true,
+});
+const forgedTargetProgressionRocm = forgedTargetProgressionRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedTargetProgressionRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedTargetProgressionRocm.acceptedForGpuHmr, false);
+assert.equal(forgedTargetProgressionRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedTargetProgressionRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedTargetProgressionRocm.outputOracleFacet.accepted, true);
+assert.ok(forgedTargetProgressionRocm.reasons.includes(
+  'target_progression_gate_failed:target progression prior partial-reload',
+));
+assert.ok(forgedTargetProgressionRocm.openGaps.includes('target_progression_gates_failed'));
+
 const forgedComputeRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-missing-raw');
 const forgedComputeRawReadback = path.join(forgedComputeRocmDir, 'missing-readback.bin');
 const forgedComputeProofMaterials = computeProofLedgerMaterials('forged-compute-missing-raw', {
