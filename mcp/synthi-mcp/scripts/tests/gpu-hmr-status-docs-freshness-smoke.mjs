@@ -68,11 +68,13 @@ function matrixSummaryTokens(artifact, includeUnproven) {
     artifact.json.proofId,
     repoPath(artifact.filePath),
     `${summary.rowCount} rows`,
-    `${summary.acceptedFullRuntimeGpuHmrRows} broad full-runtime GPU HMR`,
-    `${summary.scopedFullRuntimeGpuHmrRows} scoped HIP module full-runtime`,
+    `${summary.acceptedFullRuntimeGpuHmrRows} accepted full-runtime GPU HMR`,
+    `${summary.broadFullRuntimeGpuHmrRows} broad library-agnostic full-runtime GPU HMR`,
+    `${summary.scopedFullRuntimeGpuHmrRows} scoped full-runtime GPU HMR`,
     `${summary.allFullRuntimeGpuHmrRows} all full-runtime`,
     `${summary.refusalProvenRows} refusals`,
     `${summary.byOutcome?.cold_split_proven ?? 0} cold splits`,
+    ...Object.entries(summary.fullRuntimeScopeBreakdown ?? {}).map(([scope, count]) => `${scope}: ${count}`),
   ];
   if (includeUnproven) {
     tokens.push(`${summary.byOutcome?.unproven ?? 0} historical unproven rows`);
@@ -127,7 +129,7 @@ function assertScopedBoundaryLanguage(doc) {
     ],
     [
       'not counted in the broad full-runtime headline',
-      '23 broad full-runtime GPU HMR',
+      '0 broad library-agnostic full-runtime GPU HMR',
     ],
   ];
   const missing = requiredGroups.filter((group) => !group.some((token) => doc.text.includes(token)));
@@ -159,9 +161,14 @@ assert.ok(matrix.json.proofId, 'latest matrix must carry proofId');
 assert.ok(history.json.proofId, 'latest history matrix must carry proofId');
 assert.ok(Number.isInteger(timing.json.count), 'latest timing summary must carry count');
 assert.equal(
-  matrix.json.summary.acceptedFullRuntimeGpuHmrRows + matrix.json.summary.scopedFullRuntimeGpuHmrRows,
+  matrix.json.summary.broadFullRuntimeGpuHmrRows + matrix.json.summary.scopedFullRuntimeGpuHmrRows,
   matrix.json.summary.allFullRuntimeGpuHmrRows,
   'matrix broad + scoped full-runtime counts must match all full-runtime count',
+);
+assert.equal(
+  matrix.json.summary.acceptedFullRuntimeGpuHmrRows,
+  matrix.json.summary.allFullRuntimeGpuHmrRows,
+  'accepted full-runtime count must match all full-runtime count',
 );
 
 const docs = await readDocs();
@@ -192,8 +199,10 @@ console.log(JSON.stringify({
     proofId: matrix.json.proofId,
     path: repoPath(matrix.filePath),
     rowCount: matrix.json.summary.rowCount,
-    broadFullRuntimeRows: matrix.json.summary.acceptedFullRuntimeGpuHmrRows,
+    acceptedFullRuntimeRows: matrix.json.summary.acceptedFullRuntimeGpuHmrRows,
+    broadFullRuntimeRows: matrix.json.summary.broadFullRuntimeGpuHmrRows,
     scopedFullRuntimeRows: matrix.json.summary.scopedFullRuntimeGpuHmrRows,
+    scopeBreakdown: matrix.json.summary.fullRuntimeScopeBreakdown,
   },
   history: {
     proofId: history.json.proofId,
