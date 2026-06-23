@@ -328,6 +328,56 @@ function normalizeRealRocmDeviceSidecarContract(rawContract) {
   };
 }
 
+function normalizeRealRocmProofObligations(rawObligations) {
+  const declared = rawObligations !== undefined && rawObligations !== null;
+  const obligations = objectOrEmpty(rawObligations, 'proofObligations');
+  const acceptanceMode = optionalProfileString(
+    obligations.acceptanceMode ?? obligations.acceptance_mode,
+    'proofObligations.acceptanceMode',
+  ) || null;
+  const allowedAcceptanceModes = new Set(['strict_acceptance', 'refusal_only', 'evidence_only']);
+  if (acceptanceMode && !allowedAcceptanceModes.has(acceptanceMode)) {
+    throw new Error(`invalid real ROCm profile proofObligations.acceptanceMode: ${acceptanceMode}`);
+  }
+  const targetClass =
+    optionalProfileString(obligations.targetClass ?? obligations.target_class, 'proofObligations.targetClass')
+    || null;
+  const requiresFullRuntimeProof = optionalProfileBoolean(
+    obligations.requiresFullRuntimeProof ?? obligations.requires_full_runtime_proof,
+    'proofObligations.requiresFullRuntimeProof',
+  );
+  const requiresOutputOracle = optionalProfileBoolean(
+    obligations.requiresOutputOracle ?? obligations.requires_output_oracle,
+    'proofObligations.requiresOutputOracle',
+  );
+  const requiresRunModes = optionalProfileBoolean(
+    obligations.requiresRunModes ?? obligations.requires_run_modes,
+    'proofObligations.requiresRunModes',
+  );
+  const requiresNegativeEdit = optionalProfileBoolean(
+    obligations.requiresNegativeEdit ?? obligations.requires_negative_edit,
+    'proofObligations.requiresNegativeEdit',
+  );
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations.v1',
+    declared,
+    acceptanceMode,
+    acceptance_mode: acceptanceMode,
+    refusalOnly: acceptanceMode === 'refusal_only',
+    refusal_only: acceptanceMode === 'refusal_only',
+    targetClass,
+    target_class: targetClass,
+    requiresFullRuntimeProof,
+    requires_full_runtime_proof: requiresFullRuntimeProof,
+    requiresOutputOracle,
+    requires_output_oracle: requiresOutputOracle,
+    requiresRunModes,
+    requires_run_modes: requiresRunModes,
+    requiresNegativeEdit,
+    requires_negative_edit: requiresNegativeEdit,
+  };
+}
+
 function normalizeRealRocmProfile(rawProfile, source) {
   const raw = objectOrEmpty(rawProfile, 'root');
   const schemaVersion = raw.schemaVersion ?? REAL_ROCM_PROFILE_SCHEMA_VERSION;
@@ -349,6 +399,9 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const targetProgression = objectOrEmpty(
     raw.targetProgression ?? raw.target_progression,
     'targetProgression',
+  );
+  const proofObligations = normalizeRealRocmProofObligations(
+    raw.proofObligations ?? raw.proof_obligations,
   );
   return {
     schemaVersion,
@@ -401,6 +454,7 @@ function normalizeRealRocmProfile(rawProfile, source) {
     },
     appHookContract,
     deviceSidecarContract,
+    proofObligations,
     preview: {
       renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
       expectScreenshot: optionalProfileBoolean(preview.expectScreenshot, 'preview.expectScreenshot'),
@@ -733,6 +787,112 @@ function targetProgressionPhaseRequirements(phase) {
     default:
       return [];
   }
+}
+
+function realRocmProfileProofObligationsFacet({
+  profile = {},
+  targetProgression = {},
+  outputOracleProfile = '',
+  outputOracleContract = null,
+  outputOracleRuntimeProfile = null,
+  requireFullRuntimeProof = false,
+} = {}) {
+  const declared = profile.proofObligations && typeof profile.proofObligations === 'object'
+    ? profile.proofObligations
+    : normalizeRealRocmProofObligations(null);
+  const requirements = Array.isArray(targetProgression.requirements)
+    ? targetProgression.requirements
+    : [];
+  const progressionRequired = targetProgression.required === true;
+  const finalAcceptance = targetProgression.phase === 'final-acceptance';
+  const explicitRequiresFullRuntime = declared.requiresFullRuntimeProof === true
+    || declared.requires_full_runtime_proof === true;
+  const explicitRequiresOutputOracle = declared.requiresOutputOracle === true
+    || declared.requires_output_oracle === true;
+  const requiresFullRuntimeProof =
+    explicitRequiresFullRuntime
+    || progressionRequired
+    || finalAcceptance;
+  const requiresOutputOracle =
+    explicitRequiresOutputOracle
+    || requirements.includes('output_oracle_proven')
+    || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
+    || finalAcceptance;
+  const outputOraclePresent =
+    !outputOracleProfileModeDisabled(outputOracleProfile)
+    || Boolean(outputOracleContract)
+    || Boolean(outputOracleRuntimeProfile);
+  const refusalOnly = declared.refusalOnly === true || declared.refusal_only === true;
+  const blockingGaps = [];
+  if (refusalOnly) {
+    blockingGaps.push('proof_obligation_refusal_only_profile');
+  }
+  if (requiresFullRuntimeProof && !requireFullRuntimeProof) {
+    blockingGaps.push('proof_obligation_full_runtime_not_requested');
+  }
+  if (requiresOutputOracle && !outputOraclePresent) {
+    blockingGaps.push(
+      refusalOnly
+        ? 'proof_obligation_refusal_only_output_oracle_absent'
+        : 'proof_obligation_output_oracle_profile_missing',
+    );
+  }
+  const status = blockingGaps.length === 0
+    ? 'profile_proof_obligations_satisfied_by_configuration'
+    : refusalOnly
+      ? 'profile_declared_refusal_only'
+      : 'profile_proof_obligations_unmet';
+  const evidenceRefs = compactStringList([
+    profile.id ? `profile:${profile.id}` : null,
+    targetProgression.phase ? `target_progression:${targetProgression.phase}` : null,
+    outputOracleProfile ? `output_oracle_profile:${outputOracleProfile}` : null,
+    declared.targetClass ? `target_class:${declared.targetClass}` : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations_facet.v1',
+    status,
+    proofAuthority: 'profile_configuration_gate_not_runtime_proof',
+    proof_authority: 'profile_configuration_gate_not_runtime_proof',
+    declared: declared.declared === true,
+    acceptanceMode: declared.acceptanceMode ?? declared.acceptance_mode ?? null,
+    acceptance_mode: declared.acceptanceMode ?? declared.acceptance_mode ?? null,
+    targetClass: declared.targetClass ?? declared.target_class ?? null,
+    target_class: declared.targetClass ?? declared.target_class ?? null,
+    refusalOnly,
+    refusal_only: refusalOnly,
+    progressionRequired,
+    progression_required: progressionRequired,
+    finalAcceptance,
+    final_acceptance: finalAcceptance,
+    requiresFullRuntimeProof,
+    requires_full_runtime_proof: requiresFullRuntimeProof,
+    fullRuntimeProofRequested: requireFullRuntimeProof === true,
+    full_runtime_proof_requested: requireFullRuntimeProof === true,
+    requiresOutputOracle,
+    requires_output_oracle: requiresOutputOracle,
+    outputOraclePresent,
+    output_oracle_present: outputOraclePresent,
+    outputOracleProfile: outputOracleProfile || null,
+    output_oracle_profile: outputOracleProfile || null,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash: `sha256:${createHash('sha256').update(stableJson({
+      declared,
+      targetProgression,
+      outputOracleProfile,
+      outputOraclePresent,
+      requireFullRuntimeProof,
+    })).digest('hex')}`,
+    contract_hash: `sha256:${createHash('sha256').update(stableJson({
+      declared,
+      targetProgression,
+      outputOracleProfile,
+      outputOraclePresent,
+      requireFullRuntimeProof,
+    })).digest('hex')}`,
+  };
 }
 
 function proofHasResultState(proof, state) {
@@ -1771,6 +1931,8 @@ const report = {
     app_hook_contract_declared: CFG.appHookContract.declared,
     deviceSidecarContractDeclared: CFG.deviceSidecarContract.declared,
     device_sidecar_contract_declared: CFG.deviceSidecarContract.declared,
+    proofObligations: CFG.realRocmProfile.proofObligations,
+    proof_obligations: CFG.realRocmProfile.proofObligations,
   },
   source_url: CFG.repoUrl,
   repo_path: CFG.repoPath,
@@ -1846,6 +2008,8 @@ const report = {
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
   output_oracle_profile: CFG.outputOracleProfile,
+  real_rocm_profile_proof_obligations: null,
+  realRocmProfileProofObligations: null,
   app_hook_contract: CFG.appHookContract,
   appHookContract: CFG.appHookContract,
   device_sidecar_contract: CFG.deviceSidecarContract,
@@ -1888,6 +2052,18 @@ const report = {
   duration_monotonic_ns: null,
   timingMetrics: null,
 };
+
+report.real_rocm_profile_proof_obligations = realRocmProfileProofObligationsFacet({
+  profile: CFG.realRocmProfile,
+  targetProgression: report.target_progression,
+  outputOracleProfile: CFG.outputOracleProfile,
+  outputOracleContract: CFG.outputOracleContract,
+  outputOracleRuntimeProfile: CFG.outputOracleRuntimeProfile,
+  requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+});
+report.realRocmProfileProofObligations = report.real_rocm_profile_proof_obligations;
+report.profile_proof_obligations = report.real_rocm_profile_proof_obligations;
+report.profileProofObligations = report.real_rocm_profile_proof_obligations;
 
 function record(name, status, detail = '') {
   const row = { name, status, detail, ts: new Date().toISOString() };
@@ -9653,6 +9829,50 @@ int main()
     }],
     targetProgressionLedger: completeProgressionLedger,
   });
+  const finalAcceptanceNoOracleObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-final-no-oracle',
+      proofObligations: normalizeRealRocmProofObligations(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final-acceptance',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'none',
+    requireFullRuntimeProof: true,
+  });
+  const finalAcceptanceRefusalOnlyObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-final-refusal-only',
+      proofObligations: normalizeRealRocmProofObligations({
+        acceptanceMode: 'refusal_only',
+      }),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final-acceptance',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'none',
+    requireFullRuntimeProof: true,
+  });
+  const smallOracleProfileObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-small-oracle',
+      proofObligations: normalizeRealRocmProofObligations(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'small_target',
+      rawPhase: 'small-oracle',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
+    requireFullRuntimeProof: true,
+  });
   if (
     optionalProgressionRows[0]?.status !== 'skip'
     || requiredProgressionRows[0]?.status !== 'fail'
@@ -9676,6 +9896,12 @@ int main()
     || finalAcceptanceVisualFailures.filter((row) => row.status === 'fail').length !== 4
     || finalAcceptanceVisualPasses.some((row) => row.status === 'fail')
     || finalAcceptanceStaleVisualFails.filter((row) => row.status === 'fail').length !== 1
+    || finalAcceptanceNoOracleObligations.status !== 'profile_proof_obligations_unmet'
+    || !finalAcceptanceNoOracleObligations.blocking_gaps.includes('proof_obligation_output_oracle_profile_missing')
+    || finalAcceptanceRefusalOnlyObligations.status !== 'profile_declared_refusal_only'
+    || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_profile')
+    || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_output_oracle_absent')
+    || smallOracleProfileObligations.blocking_gaps.length !== 0
   ) {
     throw new Error('target progression gate self-check failed');
   }
@@ -10176,6 +10402,7 @@ async function collectRuntimeEvidence() {
     runtimeCapabilityPreflight: report.runtime_capability_preflight,
   });
   report.evidence = {
+    real_rocm_profile_proof_obligations: report.real_rocm_profile_proof_obligations,
     runtime_capability_preflight: report.runtime_capability_preflight,
     worker_log_lines: workerEvidence,
     worker_service_log_lines: scopedWorkerEvidence,
@@ -11049,6 +11276,10 @@ async function writeResults() {
     gpu_vendor: report.gpu_vendor,
     gpu_arch: report.gpu_arch,
     target_progression: report.target_progression,
+    realRocmProfileProofObligations: report.real_rocm_profile_proof_obligations,
+    real_rocm_profile_proof_obligations: report.real_rocm_profile_proof_obligations,
+    profileProofObligations: report.real_rocm_profile_proof_obligations,
+    profile_proof_obligations: report.real_rocm_profile_proof_obligations,
     target_progression_ledger: report.target_progression_ledger,
     target_progression_ledger_entry: report.target_progression_ledger_entry,
     target_progression_ledger_artifact: report.target_progression_ledger_artifact,

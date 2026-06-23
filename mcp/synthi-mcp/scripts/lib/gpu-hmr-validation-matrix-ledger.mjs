@@ -1670,8 +1670,20 @@ function realRocmCheckDetailJson(records, name, fromEnd = true) {
 }
 
 function realRocmRequiredFullRuntimeProof(json) {
+  const targetProgression = compactObject(json.target_progression ?? json.targetProgression);
+  const profileProofObligations = compactObject(
+    json.real_rocm_profile_proof_obligations
+    ?? json.realRocmProfileProofObligations
+    ?? json.profile_proof_obligations
+    ?? json.profileProofObligations
+    ?? json.summary?.real_rocm_profile_proof_obligations
+    ?? json.summary?.realRocmProfileProofObligations,
+  );
   return json.fullRuntimeProofRequired === true
     || json.full_runtime_proof_required === true
+    || targetProgression.required === true
+    || profileProofObligations.requiresFullRuntimeProof === true
+    || profileProofObligations.requires_full_runtime_proof === true
     || json.command?.env?.SYNTHI_REAL_ROCM_REQUIRE_FULL_RUNTIME_PROOF === '1'
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
@@ -1935,6 +1947,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.native_runtime_eligibility
     ?? runtimeProofArtifact.nativeRuntimeEligibility,
   );
+  const realRocmProfileProofObligations = compactObject(
+    json.real_rocm_profile_proof_obligations
+    ?? json.realRocmProfileProofObligations
+    ?? json.profile_proof_obligations
+    ?? json.profileProofObligations
+    ?? summary.real_rocm_profile_proof_obligations
+    ?? summary.realRocmProfileProofObligations
+    ?? summary.profile_proof_obligations
+    ?? summary.profileProofObligations
+    ?? runtimeProofArtifact.real_rocm_profile_proof_obligations
+    ?? runtimeProofArtifact.realRocmProfileProofObligations
+    ?? runtimeProofArtifact.profile_proof_obligations
+    ?? runtimeProofArtifact.profileProofObligations,
+  );
   const realRocmAppHookContract = compactObject(
     json.real_rocm_app_hook_contract
     ?? json.realRocmAppHookContract
@@ -1993,6 +2019,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmRuntimeEligibility.blockingGaps) ? realRocmRuntimeEligibility.blockingGaps : []),
     ...(Array.isArray(realRocmRuntimeEligibility.blocking_gaps) ? realRocmRuntimeEligibility.blocking_gaps : []),
   ]);
+  const realRocmProfileProofObligationsGaps = compactStringList([
+    ...(Array.isArray(realRocmProfileProofObligations.blockingGaps) ? realRocmProfileProofObligations.blockingGaps : []),
+    ...(Array.isArray(realRocmProfileProofObligations.blocking_gaps) ? realRocmProfileProofObligations.blocking_gaps : []),
+  ]);
   const realRocmAppHookContractGaps = compactStringList([
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
@@ -2016,6 +2046,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmRuntimeEligibilityReason =
     Object.keys(realRocmRuntimeEligibility).length > 0
       ? firstText(realRocmRuntimeEligibility.status, realRocmRuntimeEligibility.reason)
+      : null;
+  const realRocmProfileProofObligationsReason =
+    Object.keys(realRocmProfileProofObligations).length > 0
+      ? firstText(realRocmProfileProofObligations.status, realRocmProfileProofObligations.reason)
       : null;
   const realRocmAppHookContractReason =
     Object.keys(realRocmAppHookContract).length > 0
@@ -2094,6 +2128,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const sidecarRuntimeBackendMismatch =
     realRocmSidecarRuntimeConsistencyGaps.includes('sidecar_runtime_backend_mismatch');
   const sidecarRuntimeConsistencyAccepted = !sidecarRuntimeBackendMismatch;
+  const profileProofObligationsAccepted = realRocmProfileProofObligationsGaps.length === 0;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
     ?? json.full_runtime_proven
@@ -2116,7 +2151,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeProofArtifactGate.accepted === true
     && outputOrVisualOracleAccepted === true
     && appHookContractAccepted === true
-    && sidecarRuntimeConsistencyAccepted === true;
+    && sidecarRuntimeConsistencyAccepted === true
+    && profileProofObligationsAccepted === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false
     || strictGateFailures.length > 0
@@ -2196,6 +2232,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     },
     outputOracleResolution,
     targetProgression,
+    realRocmProfileProofObligations,
+    real_rocm_profile_proof_obligations: realRocmProfileProofObligations,
     targetProgressionGates,
     nativeRocmLaunchBoundary,
     native_rocm_launch_boundary: nativeRocmLaunchBoundary,
@@ -2219,6 +2257,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       realRocmRuntimeEligibilityReason ? `real_rocm_runtime_eligibility:${realRocmRuntimeEligibilityReason}` : null,
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
+      realRocmProfileProofObligationsReason ? `real_rocm_profile_proof_obligations:${realRocmProfileProofObligationsReason}` : null,
+      ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       !accepted && realRocmDeviceSidecarContractReason
@@ -2236,6 +2276,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
+      profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
       ledger.present === true ? null : 'proof_ledger_record_missing',
       realRocmRequiredFullRuntimeProof(json) ? null : 'full_runtime_proof_not_required_by_artifact',
     ]),
@@ -2245,10 +2286,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
+      profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
+      ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),

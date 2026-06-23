@@ -987,6 +987,29 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       detail: 'target progression phase is required but was not declared',
     },
   ],
+  real_rocm_profile_proof_obligations: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations_facet.v1',
+    status: 'profile_proof_obligations_unmet',
+    proofAuthority: 'profile_configuration_gate_not_runtime_proof',
+    proof_authority: 'profile_configuration_gate_not_runtime_proof',
+    declared: false,
+    refusalOnly: false,
+    refusal_only: false,
+    progressionRequired: true,
+    progression_required: true,
+    finalAcceptance: true,
+    final_acceptance: true,
+    requiresFullRuntimeProof: true,
+    requires_full_runtime_proof: true,
+    fullRuntimeProofRequested: true,
+    full_runtime_proof_requested: true,
+    requiresOutputOracle: true,
+    requires_output_oracle: true,
+    outputOraclePresent: false,
+    output_oracle_present: false,
+    blockingGaps: ['proof_obligation_output_oracle_profile_missing'],
+    blocking_gaps: ['proof_obligation_output_oracle_profile_missing'],
+  },
   real_rocm_app_hook_contract: {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
     declared: false,
@@ -1352,6 +1375,10 @@ assert.equal(largeRocm.outputOracleResolution.contractPresent, false);
 assert.equal(largeRocm.targetProgression.required, true);
 assert.equal(largeRocm.targetProgression.reason, 'phase_not_declared');
 assert.equal(largeRocm.targetProgressionGates[0]?.status, 'fail');
+assert.equal(largeRocm.realRocmProfileProofObligations.status, 'profile_proof_obligations_unmet');
+assert.ok(largeRocm.realRocmProfileProofObligations.blockingGaps.includes(
+  'proof_obligation_output_oracle_profile_missing',
+));
 assert.equal(largeRocm.realRocmAppHookContract.status, 'required_app_hook_contract_missing');
 assert.equal(largeRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
 assert.equal(largeRocm.realRocmDeviceSidecarContract.status, 'derived_device_sidecar_candidate_not_runtime_proof');
@@ -1362,6 +1389,9 @@ assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target progression phase'));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
+));
 assert.ok(largeRocm.reasons.includes('real_rocm_app_hook_contract:app_hook_contract_not_declared'));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_device_sidecar_contract:derived_device_sidecar_candidate_not_runtime_proof',
@@ -1371,6 +1401,10 @@ assert.ok(largeRocm.reasons.includes(
 ));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_profile_proof_obligations_required'));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
+));
 assert.ok(largeRocm.openGaps.includes('real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed',
@@ -1378,6 +1412,67 @@ assert.ok(largeRocm.openGaps.includes(
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
 ));
+
+const requiredProgressionRocmDir = path.join(logsRoot, 'real-rocm-required-progression-runtime');
+await writeJson(path.join(requiredProgressionRocmDir, 'real-rocm-required-progression-runtime.json'), {
+  slug: 'gpu-real-rocm-required-progression-runtime-20260623',
+  real_rocm_profile: { id: 'real-rocm-required-progression-runtime' },
+  source_url: 'https://example.invalid/rocm/required-progression.git',
+  repo_commit: '0123456789abcdef0123456789abcdef01234567',
+  entry_file: 'src/kernels/required_progression.hip',
+  delta_file: 'src/kernels/required_progression.hip',
+  target_name: 'RequiredProgressionDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proven: false,
+  gpu_hmr_success: false,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'none',
+    mode: 'none',
+    disabledReason: 'profile_disabled',
+    contractPresent: false,
+    runtimeProfilePresent: false,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+  },
+  strict_proof_gates: {
+    schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
+    status: 'fail',
+    accepted: false,
+    failures: ['runtime_proof_artifact_missing'],
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/required-progression.git @ 0123456789ab files=2000' },
+    {
+      name: 'real_repo_user_source_delta_hmr',
+      status: 'warn',
+      detail: JSON.stringify({
+        wait_hmr_status: 'timeout',
+        gpu_proof_validation: { reason: 'proof_state_missing', satisfied: false },
+      }),
+    },
+  ],
+});
+const requiredProgressionLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [requiredProgressionRocmDir],
+  generatedAt: '2026-06-09T00:00:01.100Z',
+  includeUnproven: true,
+});
+const requiredProgressionRow = requiredProgressionLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(requiredProgressionRow?.matrixOutcome, 'refusal_proven');
+assert.equal(requiredProgressionRow.acceptedForGpuHmr, false);
+assert.equal(requiredProgressionRow.refusalProven, true);
+assert.ok(requiredProgressionRow.openGaps.includes('strict_runtime_proof_artifact_required'));
 
 const truncatedVisual = ledger.rows.find((row) => row.targetId === 'truncated-visual');
 assert.equal(truncatedVisual?.matrixOutcome, 'unproven');
