@@ -63,6 +63,10 @@ function hashValue(label) {
   return `sha256:${sha256Hex(label)}`;
 }
 
+function hashBuffer(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
 function modelProvenance(requestMode, requestedModel) {
   return {
     provider: 'google_gemini',
@@ -416,6 +420,161 @@ function runtimeProofMaterials(scope, options = {}) {
     proof_ledger_query: proofLedgerQuery,
     runtimeProofArtifact,
     runtime_proof_artifact: runtimeProofArtifact,
+  };
+}
+
+function computeProofLedgerMaterials(scope, {
+  projectId,
+  rawReadbackPath,
+  rawReadbackBytes = null,
+}) {
+  const beforeHash = hashValue(`compute-artifact-before:${scope}`);
+  const afterHash = hashValue(`compute-artifact-after:${scope}`);
+  const actualRawReadbackBytes = Buffer.isBuffer(rawReadbackBytes) ? rawReadbackBytes : null;
+  const deterministicSliceLength = Math.min(4, actualRawReadbackBytes?.length ?? 4);
+  const rawReadbackHash = actualRawReadbackBytes
+    ? hashBuffer(actualRawReadbackBytes)
+    : hashValue(`raw-readback:${scope}`);
+  const deterministicSliceHash = actualRawReadbackBytes
+    ? hashBuffer(actualRawReadbackBytes.subarray(0, deterministicSliceLength))
+    : hashValue(`raw-readback-slice:${scope}`);
+  const computeOracleArtifacts = {
+    raw_readback_bin: rawReadbackPath,
+    readback_schema_json: `${rawReadbackPath}.schema.json`,
+    checksum_before: hashValue(`compute-checksum-before:${scope}`),
+    checksum_after: hashValue(`compute-checksum-after:${scope}`),
+    deterministic_slice: {
+      offset: 0,
+      length: deterministicSliceLength,
+      hash: deterministicSliceHash,
+    },
+    deterministic_slice_hash: deterministicSliceHash,
+    deterministic_slice_hash_verified: true,
+    oracle_code_hash: hashValue(`compute-oracle-code:${scope}`),
+    rendered_card_png: `${rawReadbackPath}.card.png`,
+    producer: 'synthetic_compute_oracle',
+    timestamp_after_dispatch: 4000,
+    epoch: `epoch:${scope}`,
+    raw_readback_hash: rawReadbackHash,
+    raw_readback_hash_verified: true,
+    raw_readback_byte_length: actualRawReadbackBytes?.length ?? 4,
+    raw_readback_source: 'runtime_raw_readback',
+    output_change_expected: true,
+  };
+  const proofLedger = buildGpuHmrProofLedger({
+    project_id: projectId,
+    edit_id: `source-edit:${scope}`,
+    backend: 'hip',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'gpu_hmr',
+    },
+    contract_hash: hashValue(`compute-contract:${scope}`),
+    artifact_before_hash: beforeHash,
+    artifact_after_hash: afterHash,
+    loader_event: {
+      id: `loader:${scope}`,
+      artifact_hash: afterHash,
+      timestamp_monotonic_ns: 1000,
+      process_id: 'pid:4242',
+    },
+    epoch_publish_event: {
+      id: `epoch-publish:${scope}`,
+      epoch: `epoch:${scope}`,
+      artifact_hash: afterHash,
+      timestamp_monotonic_ns: 2000,
+      process_id: 'pid:4242',
+    },
+    dispatch_event: {
+      id: `dispatch:${scope}`,
+      epoch: `epoch:${scope}`,
+      artifact_hash: afterHash,
+      timestamp_monotonic_ns: 3000,
+      process_id: 'pid:4242',
+    },
+    output_event: {
+      id: `output:${scope}`,
+      kind: 'compute_oracle',
+      epoch: `epoch:${scope}`,
+      artifact_hash: afterHash,
+      after_dispatch_id: `dispatch:${scope}`,
+      timestamp_monotonic_ns: 4000,
+      process_id: 'pid:4242',
+      passed: true,
+      compute_oracle_artifacts: computeOracleArtifacts,
+    },
+    retirement_event: {
+      id: `retire:${scope}`,
+      epoch: `epoch:${scope}`,
+      timestamp_monotonic_ns: 5000,
+      process_id: 'pid:4242',
+      proof: 'stream_event_proven',
+    },
+    process_identity: { process_id: 'pid:4242' },
+    device_identity: { device_uuid: 'gpu:synthetic-rocm', backend: 'hip' },
+    oracle_artifacts: { compute_oracle_artifacts: computeOracleArtifacts },
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    timings: timingFields('hot_delta_1'),
+    modelProvenance: {
+      split: modelProvenance('split', 'gemini-3.5-flash'),
+      gpu_delta: modelProvenance('gpu_delta', 'gemini-3.1-flash-lite'),
+    },
+    evidence_refs: [`evidence:synthetic-compute:${scope}`],
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    cpu_hmr_used_evidence_present: true,
+    full_rebuild_used_evidence_present: true,
+    process_restarted_evidence_present: true,
+    firewall_process_id_before: 'pid:4242',
+    firewall_process_id_after: 'pid:4242',
+  });
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  assert.deepEqual(proofLedgerQuery.failedInvariants, []);
+  assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
+  const contract = acceptanceContract(scope, { projectId });
+  const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
+  assert.deepEqual(acceptanceContractEvaluation.failedGates, []);
+  assert.equal(acceptanceContractEvaluation.accepted, true);
+  const acceptanceContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: contract,
+    derivedContract: contract,
+  });
+  assert.equal(acceptanceContractConsistency.accepted, true);
+  const runtimeProofArtifact = {
+    proofId: `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`,
+    fullRuntimeProven: true,
+    gpuHmrSuccess: true,
+    stageResults: [
+      { stageId: 'fission-candidate-verification', status: 'passed' },
+      { stageId: 'device-compile', status: 'passed' },
+      { stageId: 'artifact-load', status: 'passed' },
+      { stageId: 'epoch-publish', status: 'passed' },
+      { stageId: 'dispatch-trace', status: 'passed' },
+      { stageId: 'output-oracle', status: 'passed' },
+    ],
+    limitations: [],
+    proofLedger,
+    proofLedgerQuery,
+    acceptanceContract: contract,
+    acceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    proofLedgerSourceConsistency: {
+      accepted: true,
+      mode: 'derived_only',
+    },
+  };
+  return {
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery,
+    proof_ledger_query: proofLedgerQuery,
+    runtimeProofArtifact,
+    runtime_proof_artifact: runtimeProofArtifact,
+    computeOracleArtifacts,
   };
 }
 
@@ -1399,6 +1558,160 @@ const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCove
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+
+const acceptedComputeRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-lib');
+const acceptedComputeRawReadback = path.join(acceptedComputeRocmDir, 'readback.bin');
+const acceptedComputeBytes = Buffer.from([1, 7, 23, 42, 88, 111, 4, 19]);
+await fs.mkdir(acceptedComputeRocmDir, { recursive: true });
+await fs.writeFile(acceptedComputeRawReadback, acceptedComputeBytes);
+await writeJson(`${acceptedComputeRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: acceptedComputeBytes.length,
+  shape: [acceptedComputeBytes.length],
+});
+await writeRgbaPng(`${acceptedComputeRawReadback}.card.png`, 8, 8, (x, y) => [
+  acceptedComputeBytes[(x + y) % acceptedComputeBytes.length],
+  64 + x,
+  120 + y,
+  255,
+]);
+const acceptedComputeProofMaterials = computeProofLedgerMaterials('accepted-compute-files', {
+  projectId: 'real-rocm-accepted-compute-lib',
+  rawReadbackPath: acceptedComputeRawReadback,
+  rawReadbackBytes: acceptedComputeBytes,
+});
+await writeJson(path.join(acceptedComputeRocmDir, 'real-rocm-accepted-compute.json'), {
+  slug: 'gpu-real-rocm-accepted-compute-lib-20260623',
+  real_rocm_profile: { id: 'real-rocm-accepted-compute-lib' },
+  source_url: 'https://example.invalid/rocm/accepted-compute.git',
+  repo_commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'AcceptedComputeDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...acceptedComputeProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-compute-lib-delta',
+    editHash: hashValue('real-rocm-accepted-compute-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-compute.git @ bbbbbbbb files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedComputeRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedComputeRocmDir],
+  generatedAt: '2026-06-09T00:00:02.250Z',
+  includeUnproven: true,
+});
+const acceptedComputeRocm = acceptedComputeRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedComputeRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedComputeRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedComputeRocm.runtimeProofArtifact.accepted, true);
+assert.equal(acceptedComputeRocm.ledger.gpuHmrSuccess, true);
+assert.equal(acceptedComputeRocm.visual.present, false);
+assert.equal(acceptedComputeRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(acceptedComputeRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.rawReadbackHashVerified, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.rawReadbackByteLength, acceptedComputeBytes.length);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.deterministicSliceHashVerified, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLength > 0, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
+
+const forgedComputeRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-missing-raw');
+const forgedComputeRawReadback = path.join(forgedComputeRocmDir, 'missing-readback.bin');
+const forgedComputeProofMaterials = computeProofLedgerMaterials('forged-compute-missing-raw', {
+  projectId: 'real-rocm-forged-compute-missing-raw',
+  rawReadbackPath: forgedComputeRawReadback,
+});
+await writeJson(path.join(forgedComputeRocmDir, 'real-rocm-forged-compute-missing-raw.json'), {
+  slug: 'gpu-real-rocm-forged-compute-missing-raw-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-compute-missing-raw' },
+  source_url: 'https://example.invalid/rocm/forged-compute.git',
+  repo_commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'ForgedComputeDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedComputeProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-compute-missing-raw-delta',
+    editHash: hashValue('real-rocm-forged-compute-missing-raw-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-compute.git @ aaaaaaaa files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedComputeRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedComputeRocmDir],
+  generatedAt: '2026-06-09T00:00:02.500Z',
+  includeUnproven: true,
+});
+const forgedComputeRocm = forgedComputeRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedComputeRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedComputeRocm.acceptedForGpuHmr, false);
+assert.equal(forgedComputeRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedComputeRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedComputeRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(forgedComputeRocm.outputOracleFacet.accepted, false);
+assert.equal(forgedComputeRocm.outputOracleFacet.compute.present, true);
+assert.equal(forgedComputeRocm.outputOracleFacet.compute.rawReadbackHashVerified, false);
+assert.equal(forgedComputeRocm.outputOracleFacet.compute.deterministicSliceHashVerified, false);
+assert.ok(forgedComputeRocm.outputOracleFacet.compute.rawReadbackReadError);
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_raw_readback_hash_unverified'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_raw_readback_bytes_missing'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_deterministic_slice_hash_unverified'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_raw_readback_unreadable'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_readback_schema_bytes_missing'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_readback_schema_unreadable'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_rendered_card_decode_failed'));
+assert.ok(forgedComputeRocm.reasons.includes('compute_oracle_rendered_card_not_png'));
+assert.ok(forgedComputeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 
 const forgedRealRocmDir = path.join(logsRoot, 'real-rocm-forged-no-oracle');
 await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'), {

@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
+import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
@@ -1711,17 +1712,165 @@ function ledgerRecordHasVisualOutput(record) {
     || Object.keys(visualArtifacts).length > 0;
 }
 
-function realRocmLedgerOutputOracleAccepted(ledger, proofLedger, visual) {
+function ledgerRecordComputeOracleArtifacts(record) {
+  const outputEvent = compactObject(record.output_event ?? record.outputEvent);
+  const oracleArtifacts = compactObject(record.oracle_artifacts ?? record.oracleArtifacts);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const outputOracleArtifacts = compactObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
+  return nestedArtifactObject(
+    oracleArtifacts.compute_oracle_artifacts,
+    oracleArtifacts.computeOracleArtifacts,
+    outputEvent.compute_oracle_artifacts,
+    outputEvent.computeOracleArtifacts,
+    outputOracle.compute_oracle_artifacts,
+    outputOracle.computeOracleArtifacts,
+    outputOracleArtifacts.compute_oracle_artifacts,
+    outputOracleArtifacts.computeOracleArtifacts,
+  );
+}
+
+function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
+  const out = { ...artifacts };
+  for (const [snakeName, camelName] of [
+    ['raw_readback_bin', 'rawReadbackBin'],
+    ['readback_schema_json', 'readbackSchemaJson'],
+    ['rendered_card_png', 'renderedCardPng'],
+  ]) {
+    const value = firstText(out[snakeName], out[camelName]);
+    if (!value) continue;
+    const resolved = resolveEvidencePath(value, repoRoot, baseDir);
+    if (!resolved) continue;
+    out[snakeName] = resolved;
+    out[camelName] = resolved;
+  }
+  return out;
+}
+
+async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir) {
+  const computeArtifacts = ledgerRecordsFromValue(proofLedger)
+    .map(ledgerRecordComputeOracleArtifacts)
+    .find((artifacts) => Object.keys(artifacts).length > 0);
+  if (!computeArtifacts) {
+    return {
+      present: false,
+      accepted: false,
+      source: 'missing',
+      failedGates: [{ code: 'compute_oracle_artifacts_missing' }],
+    };
+  }
+  const resolvedArtifacts = resolveComputeOracleArtifactPaths(computeArtifacts, repoRoot, baseDir);
+  const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts);
+  const verification = compactObject(
+    enriched?.raw_readback_verification
+    ?? enriched?.rawReadbackVerification,
+  );
+  const rawReadbackPath = firstText(resolvedArtifacts.raw_readback_bin, resolvedArtifacts.rawReadbackBin);
+  const schemaPath = firstText(resolvedArtifacts.readback_schema_json, resolvedArtifacts.readbackSchemaJson);
+  const renderedCardPath = firstText(resolvedArtifacts.rendered_card_png, resolvedArtifacts.renderedCardPng);
+  let renderedCard = {
+    present: Boolean(renderedCardPath),
+    decoded: false,
+    decodeError: null,
+    format: null,
+    width: null,
+    height: null,
+  };
+  if (renderedCardPath) {
+    try {
+      const metadata = await sharp(renderedCardPath).metadata();
+      renderedCard = {
+        present: true,
+        decoded: true,
+        decodeError: null,
+        format: metadata.format ?? null,
+        width: metadata.width ?? null,
+        height: metadata.height ?? null,
+      };
+    } catch (error) {
+      renderedCard = {
+        present: true,
+        decoded: false,
+        decodeError: error?.message ? String(error.message) : String(error),
+        format: null,
+        width: null,
+        height: null,
+      };
+    }
+  }
+  const rawReadbackByteLength = finiteNumber(
+    verification.byte_length
+    ?? verification.byteLength,
+  );
+  const schemaByteLength = finiteNumber(
+    verification.readback_schema_byte_length
+    ?? verification.readbackSchemaByteLength,
+  );
+  const hashVerified =
+    verification.hash_verified === true
+    || verification.hashVerified === true;
+  const deterministicSliceHashVerified =
+    verification.deterministic_slice_hash_verified === true
+    || verification.deterministicSliceHashVerified === true;
+  const failedGates = compactStringList([
+    rawReadbackPath ? null : 'compute_oracle_raw_readback_path_missing',
+    hashVerified ? null : 'compute_oracle_raw_readback_hash_unverified',
+    rawReadbackByteLength && rawReadbackByteLength > 0 ? null : 'compute_oracle_raw_readback_bytes_missing',
+    deterministicSliceHashVerified ? null : 'compute_oracle_deterministic_slice_hash_unverified',
+    verification.raw_readback_read_error ? 'compute_oracle_raw_readback_unreadable' : null,
+    schemaPath ? null : 'compute_oracle_readback_schema_path_missing',
+    schemaByteLength && schemaByteLength > 0 ? null : 'compute_oracle_readback_schema_bytes_missing',
+    verification.readback_schema_read_error ? 'compute_oracle_readback_schema_unreadable' : null,
+    renderedCard.present ? null : 'compute_oracle_rendered_card_path_missing',
+    renderedCard.decoded ? null : 'compute_oracle_rendered_card_decode_failed',
+    renderedCard.decoded && renderedCard.format === 'png' ? null : 'compute_oracle_rendered_card_not_png',
+  ]).map((code) => ({ code }));
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    source: 'matrix_verified_compute_oracle_files',
+    failedGates,
+    rawReadbackHash: firstText(enriched?.raw_readback_hash, enriched?.rawReadbackHash),
+    rawReadbackByteLength,
+    rawReadbackHashVerified: hashVerified,
+    deterministicSliceHashVerified,
+    readbackSchemaByteLength: schemaByteLength,
+    readbackSchemaReadError: firstText(verification.readback_schema_read_error, verification.readbackSchemaReadError),
+    renderedCard,
+    rawReadbackReadError: firstText(verification.raw_readback_read_error, verification.rawReadbackReadError),
+  };
+}
+
+async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, baseDir) {
   const ledgerAccepted = ledger.present === true
     && ledger.source === 'recomputed_ledger'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0;
-  if (!ledgerAccepted) return false;
+  if (!ledgerAccepted) {
+    return {
+      accepted: false,
+      kind: 'ledger_rejected',
+      compute: null,
+      failedGates: [{ code: 'proof_ledger_success_required' }],
+    };
+  }
   const visualLedgerOutput = ledgerRecordsFromValue(proofLedger).some(ledgerRecordHasVisualOutput);
   if (visualLedgerOutput) {
-    return visual.present === true && visual.accepted === true;
+    return {
+      accepted: visual.present === true && visual.accepted === true,
+      kind: 'visual_oracle',
+      compute: null,
+      failedGates: visual.present === true && visual.accepted === true
+        ? []
+        : [{ code: 'visual_oracle_artifacts_not_accepted' }],
+    };
   }
-  return true;
+  const compute = await realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir);
+  return {
+    accepted: compute.accepted === true,
+    kind: 'compute_oracle',
+    compute,
+    failedGates: compute.failedGates,
+  };
 }
 
 async function realRocmRepoValidationRow(json, filePath, context) {
@@ -1793,9 +1942,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     compactObject(json.visual_evidence_quality ?? json.visualEvidenceQuality),
     visualPaths.length > 0,
   );
-  const outputOrVisualOracleAccepted =
-    realRocmLedgerOutputOracleAccepted(ledger, proofLedger, visual)
-    || (visual.present === true && visual.accepted === true);
+  const outputOracleFacet = await realRocmLedgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  const outputOrVisualOracleAccepted = outputOracleFacet.accepted === true;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
     ?? json.full_runtime_proven
@@ -1878,6 +2032,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
     visual,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     runMode,
     cpuHmrUsed: null,
     fullRebuildUsed: null,
@@ -1900,6 +2056,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...strictGateFailures,
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...targetProgressionGateFailures.map((gate) => `target_progression_gate_failed:${text(gate.name) ?? 'unnamed'}`),
+      ...outputOracleFacet.failedGates.map((failure) => failure.code),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
