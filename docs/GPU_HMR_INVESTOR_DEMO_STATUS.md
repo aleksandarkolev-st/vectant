@@ -42,10 +42,11 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:b6b2dc451ffa3e73bcedb6be41324ded2f677ab525518bc90bdef8077671cd92
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T074216Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:9ce89a4da02ce55774f73d644ef729597cefe64f80295d4c45746c22fc6ac4ee
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T075823Z.json
 global matrix summary: 29 rows, 10 full-runtime GPU HMR, 11 refusals, 5 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 global per-target run modes: accepted for 2 enrolled generated visual run-mode targets; SAXPY, HIPRT CameraRays, and WebGPU triangle are full-runtime evidence rows but not enrolled run-mode-suite targets
+HIPRT run modes: partial for hiprt-camera-rays-horizontal-mirror; missing cold, hot-delta-2, hot-delta-2-different-edit, and negative-edit refusal evidence
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
@@ -86,7 +87,7 @@ WebGPU hot2 visual inspection: before blue triangle, after green rotated triangl
 Current HIPRT/OIDN caveat:
 
 ```text
-HIPRT CameraRays rerun on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201 is strict-matrix accepted for that scoped ray-traced profile after the matrix recomputes the oracle region from persisted before/after PNG pixels.
+HIPRT CameraRays rerun on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201 is strict-matrix accepted for that scoped ray-traced profile after the matrix recomputes the oracle region from persisted before/after PNG pixels. It is not broad HIPRT run-mode coverage: the matrix now reports `hiprt_run_modes=partial` until cold, hot-delta-2, hot-delta-2-different-edit, and negative-edit refusal evidence exist for the HIPRT target.
 HIPRT MegaKernel direct-light-zero rerun on 2026-06-22 is refused because the post-epoch oracle region is blank.
 OIDN live preflight ran against /tmp/synthi-real-rocm/HIPRT-Path-Tracer and is rejected for HIP output proof because libOpenImageDenoise_device_hip.so.2.3.0 depends on missing libamdhip64.so.5.
 No compatibility shim, symlink, fake ICD, or project-specific branch was added.
@@ -125,6 +126,8 @@ plan coverage: large_real_rocm_repo=refused
 Latest implementation commits:
 
 ```text
+c6ab525a0 fix(gpu-hmr): track HIPRT run-mode coverage gaps
+6afcd0d64 fix(gpu-hmr): generalize ROCm backend hints
 a0c42543f fix(gpu-hmr): add ROCm runtime eligibility refusals
 47c63a49e fix(gpu-hmr): expose native ROCm refusal boundary
 452f2fc62 fix(gpu-hmr): collect real ROCm worker evidence by container
@@ -228,7 +231,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:b6b2dc451ffa3e73bcedb6be41324ded2f677ab525518bc90bdef8077671cd92
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:9ce89a4da02ce55774f73d644ef729597cefe64f80295d4c45746c22fc6ac4ee
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -805,7 +808,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 ## Honest Remaining Work
 
 - Full-runtime Bevy acceptance is not implemented.
-- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix now reports `per_target_run_modes=accepted` for enrolled run-mode targets. SAXPY, scoped HIPRT CameraRays, and scoped WebGPU remain full-runtime evidence rows outside that run-mode-suite obligation until they provide structured cold/hot1/hot2/negative run-mode artifacts.
+- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix now reports `per_target_run_modes=accepted` for enrolled generated run-mode targets. Scoped HIPRT CameraRays now has a separate `hiprt_run_modes=partial` matrix row, and scoped WebGPU remains a full-runtime evidence row outside that run-mode-suite obligation until it provides structured cold/hot1/hot2/negative run-mode artifacts.
 - MIOpen large ROCm ML infrastructure now builds and runs under the proof harness, but full-runtime Synthi GPU HMR remains refused until the full ledger chain, same-process runtime proof artifact, epoch/dispatch proof, and output or visual oracle proof are produced. The latest profile has no output oracle or target progression declared, and the result says that explicitly.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
