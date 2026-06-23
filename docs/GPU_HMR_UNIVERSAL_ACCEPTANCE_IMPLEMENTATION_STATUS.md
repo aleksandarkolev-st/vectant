@@ -41,7 +41,7 @@ self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -
 history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:c28d9ede2fed026ff0fcce8969cc73573b9fd4f121251897b4e9f87fb1f0dd7e, 654 rows with 597 historical unproven rows included
 history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260623T233116Z.json
 history scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, rocm_hip_declared_runtime_profile: 1, hiprt_declared_visual_profile: 6, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=21, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T231806Z.json
+timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=21, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T234336Z.json; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 ```
 
 The global per-target run-mode coverage row is `accepted` for the 4 enrolled run-mode targets: generated Flow, generated ray-light, scoped WebGPU explicit-empty WGSL, and scoped WebGPU explicit-profiled WGSL. SAXPY remains a valid full-runtime evidence row outside that run-mode-suite obligation. Scoped WebGPU now has structured cold runtime evidence, hot delta 1, hot delta 2 with a different shader edit, and binding-layout/vertex-layout negative-edit refusal rows.
@@ -1193,10 +1193,12 @@ trigger to visible time: 67788100ns
 The shared timing summary includes the scoped WebGPU rows:
 
 ```text
-timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T231806Z.json
+timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T234336Z.json
 sources: webgpu_runtime_visual, webgpu_runtime_compute
 profiles: webgpu-wgsl-runtime-triangle, webgpu-wgsl-runtime-profiled-layout, webgpu-wgsl-runtime-compute-storage, webgpu-wgsl-runtime-compute-storage-hot2
-status: pass
+reportedStatus: pass
+proofVerdict: not_evaluated_by_timing_summary
+timing authority: timing metrics are telemetry only; validation-matrix proof ledgers are the acceptance authority.
 profiled hot1 total wall: 931.5372ms
 profiled hot1 trigger to visible: 122.5624ms
 profiled hot2 total wall: 923.1318ms
@@ -1227,7 +1229,7 @@ hot2 raw readback and expected hash: sha256:25e6442aa7b6a1c025719aaec529c2c815c3
 hot2 expected output verified: true, max_abs_delta=0
 hot2 timing: total_validator_wall_time=684121000ns, dispatch_to_output_proof_time=681865500ns
 hot2 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260623215754-webgpu-wgsl-runtime-compute-storage-hot2/webgpu-wgsl-runtime-compute-storage-hot2-compute-card.png
-compute-card image inspection: both WebGPU compute cards were opened with the local image tool on 2026-06-24; each card shows mapped before/after values, the raw/slice hash, and `expected output verified: true`. These cards are human-readable compute/readback evidence, not runtime frame visual proof; the timing summary now reports `screenshotCount=0`, `visualAccepted=false`, and `computeCardAccepted=true` for WebGPU compute rows.
+compute-card image inspection: both WebGPU compute cards were opened with the local image tool on 2026-06-24; each card shows mapped before/after values, the raw/slice hash, and `expected output verified: true`. These cards are human-readable compute/readback evidence, not runtime frame visual proof; the timing summary now reports `screenshotCount=0`, `reportedVisualAccepted=false`, and `reportedComputeCardAccepted=true` for WebGPU compute rows.
 matrix rows: hot1 gpu-validation-matrix-row:sha256:e7a8387d3822ade08a7cf62968b16bfae8e6d7da87a7ca1265f3ea24a08172e5, hot2 gpu-validation-matrix-row:sha256:b871abe7a51c0459fee0d051ec439aca02865a718ff84c91c8acb4070d9a1eb2
 negative refusals: incompatible WebGPU compute ABI edits still reject before GPU HMR acceptance for both compute profiles.
 ```
@@ -1253,7 +1255,7 @@ hot2 raw readback hash: sha256:f2eb735a90c4a5ee34cc05d6f1422d550c5610662a51762e2
 hot2 expected output verified: true, max_delta=0
 hot2 timing: total_validator_wall_time=4879394000ns, dispatch_to_output_proof_time=33391718ns
 hot2 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hip-module-runtime-proof/hip-module-runtime-20260623224659-hip-module-runtime-readback/hip-module-runtime-readback-compute-card.png
-compute-card image inspection: both HIP module compute cards were opened with the local image tool on 2026-06-24; each card is rendered from raw HIP readback bytes after the epoch-2 dispatch and shows `expected output verified: true`. These cards are human-readable compute/readback evidence, not runtime frame visual proof; the timing summary reports `screenshotCount=0`, `visualAccepted=false`, and `computeCardAccepted=true` for HIP module rows.
+compute-card image inspection: both HIP module compute cards were opened with the local image tool on 2026-06-24; each card is rendered from raw HIP readback bytes after the epoch-2 dispatch and shows `expected output verified: true`. These cards are human-readable compute/readback evidence, not runtime frame visual proof; the timing summary reports `screenshotCount=0`, `reportedVisualAccepted=false`, and `reportedComputeCardAccepted=true` for HIP module rows.
 matrix rows: hot1 gpu-validation-matrix-row:sha256:ce03d3cdc085614c40ba8990762853a38c322a4e02283e59e607a964d3ac88b1, hot2 gpu-validation-matrix-row:sha256:f9e3130f23ddc8f0f78dde20f311c1e7defa0eccdb5172064e56a2d4b9226cdd
 matrix coverage: hip_module_scoped_runtime_readback accepted only because the same scoped target has hot_delta_1, hot_delta_2 with a distinct edit hash, executable ABI-negative refusal, native runtime event timestamps, epoch-2 artifact hash continuity, and compute-card-only proof separation.
 negative refusal: the paired ABI-layout negative edit rejects before GPU HMR acceptance; accepted signature hash sha256:e6916d59b50b110cd3613fcc53c0eb193175d2943796f56e885ebc1dc6212093 differs from negative signature hash sha256:05bd5ef8a4acf24fc29c4c229af54b31521b4fedc37858c9f7136d0e4f7a17a5.

@@ -88,6 +88,9 @@ function timingTokens(artifact) {
   return [
     repoPath(artifact.filePath),
     `count=${artifact.json.count}`,
+    'timing metrics are telemetry only',
+    'evidenceAuthority=timing_telemetry_only',
+    'proofVerdict=not_evaluated_by_timing_summary',
   ];
 }
 

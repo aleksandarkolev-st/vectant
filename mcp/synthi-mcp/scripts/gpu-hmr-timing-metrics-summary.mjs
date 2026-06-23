@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+  GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
   externalProjectTimingMetrics,
   hipModuleRuntimeTimingMetrics,
   hiprtWarmTimingMetrics,
@@ -359,6 +360,10 @@ function compactRow(row) {
     projectName: metrics.projectName,
     proofMode: metrics.proofMode,
     status: metrics.status,
+    telemetryOnly: true,
+    evidenceAuthority: metrics.evidenceAuthority ?? GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    proofVerdict: metrics.proofVerdict ?? 'not_evaluated_by_timing_summary',
+    reportedStatus: metrics.reportedStatus ?? metrics.status ?? null,
     totalWallMs: metrics.totalWallMs,
     setupBuildMs: metrics.setupBuildMs,
     adapterBuildMs: metrics.adapterBuildMs,
@@ -381,6 +386,14 @@ function compactRow(row) {
     meanAbsDelta8bit: metrics.visualEvidence?.meanAbsDelta8bit ?? null,
     visualAccepted: metrics.visualEvidence?.accepted ?? null,
     computeCardAccepted: metrics.computeEvidence?.computeCardAccepted ?? null,
+    reportedVisualAccepted:
+      metrics.visualEvidence?.reportedAccepted
+      ?? metrics.visualEvidence?.accepted
+      ?? null,
+    reportedComputeCardAccepted:
+      metrics.computeEvidence?.computeCardReportedAccepted
+      ?? metrics.computeEvidence?.computeCardAccepted
+      ?? null,
     renderedCardPng: metrics.computeEvidence?.renderedCardPng ?? null,
     rawReadbackHash: metrics.computeEvidence?.rawReadbackHash ?? null,
     rawReadbackByteLength: metrics.computeEvidence?.rawReadbackByteLength ?? null,
@@ -403,7 +416,8 @@ function markdownTable(rows) {
     'metricClock',
     'metricScope',
     'cacheState',
-    'status',
+    'reportedStatus',
+    'proofVerdict',
     'totalWallMs',
     'durationMonotonicMs',
     'setupBuildMs',
@@ -417,8 +431,8 @@ function markdownTable(rows) {
     'editToFirstVisualMs',
     'changedPixelRatio',
     'meanAbsDelta8bit',
-    'visualAccepted',
-    'computeCardAccepted',
+    'reportedVisualAccepted',
+    'reportedComputeCardAccepted',
   ];
   const header = `| ${columns.join(' | ')} |`;
   const divider = `| ${columns.map(() => '---').join(' | ')} |`;
@@ -427,6 +441,8 @@ function markdownTable(rows) {
     `# GPU HMR Timing Metrics`,
     '',
     `Schema: \`${GPU_HMR_TIMING_METRICS_SCHEMA_VERSION}\``,
+    '',
+    'Timing metrics are telemetry only; validation-matrix proof ledgers are the acceptance authority. Reported status/accepted columns are copied from source artifacts for timing context and must not be treated as GPU HMR acceptance.',
     '',
     header,
     divider,
@@ -447,6 +463,10 @@ function runSelfCheck() {
     metrics: {
       schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
       source: 'external_project_profile',
+      telemetryOnly: true,
+      evidenceAuthority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+      proofVerdict: 'not_evaluated_by_timing_summary',
+      reportedStatus: 'pass',
       metricClock: 'monotonic_ns',
       metricUnit: 'ms',
       metricScope: 'hot_delta_1',
@@ -484,6 +504,10 @@ function runSelfCheck() {
   assertSelfCheck(row.metricUnit === 'ms', 'metric unit missing');
   assertSelfCheck(row.metricScope === 'hot_delta_1', 'metric scope missing');
   assertSelfCheck(row.cacheState === 'compiler_cache_warm', 'cache state missing');
+  assertSelfCheck(row.telemetryOnly === true, 'telemetry-only marker missing');
+  assertSelfCheck(row.evidenceAuthority === GPU_HMR_TIMING_TELEMETRY_AUTHORITY, 'telemetry authority missing');
+  assertSelfCheck(row.proofVerdict === 'not_evaluated_by_timing_summary', 'proof verdict boundary missing');
+  assertSelfCheck(row.reportedStatus === 'pass', 'reported status missing');
   assertSelfCheck(row.durationMonotonicNs === '600000000', 'duration monotonic ns missing');
   assertSelfCheck(row.durationMonotonicMs === 600, 'duration monotonic ms missing');
   assertSelfCheck(row.modelAvailabilityCheckMs === 2, 'model availability timing missing');
@@ -491,7 +515,8 @@ function runSelfCheck() {
   assertSelfCheck(row.clockEvidence?.durationMonotonicMs === 600, 'clock evidence missing');
 
   const markdown = markdownTable([row]);
-  for (const column of ['metricClock', 'metricScope', 'cacheState', 'durationMonotonicMs', 'modelAvailabilityCheckMs']) {
+  assertSelfCheck(markdown.includes('Timing metrics are telemetry only'), 'markdown missing telemetry-only notice');
+  for (const column of ['metricClock', 'metricScope', 'cacheState', 'reportedStatus', 'proofVerdict', 'durationMonotonicMs', 'modelAvailabilityCheckMs']) {
     assertSelfCheck(markdown.includes(column), `markdown missing ${column}`);
   }
 
@@ -576,6 +601,9 @@ async function main() {
   const rows = selected.map(compactRow);
   const summary = {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+    telemetryOnly: true,
+    evidenceAuthority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    proofVerdict: 'not_evaluated_by_timing_summary',
     generatedAt: new Date().toISOString(),
     latestPerProfile: args.latestPerProfile,
     count: rows.length,

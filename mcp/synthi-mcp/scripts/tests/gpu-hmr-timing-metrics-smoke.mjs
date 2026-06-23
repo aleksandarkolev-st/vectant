@@ -7,6 +7,7 @@ import {
   webGpuRuntimeComputeTimingMetrics,
   webGpuRuntimeVisualTimingMetrics,
   GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+  GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
 } from '../lib/gpu-hmr-timing-metrics.mjs';
 
 const REQUIRED_KEYS = [
@@ -24,6 +25,10 @@ const REQUIRED_KEYS = [
   'projectName',
   'proofMode',
   'status',
+  'telemetryOnly',
+  'evidenceAuthority',
+  'proofVerdict',
+  'reportedStatus',
   'totalWallMs',
   'setupBuildMs',
   'adapterBuildMs',
@@ -75,6 +80,9 @@ function assertCommonShape(metrics) {
   }
   assert.ok(Array.isArray(metrics.phases), 'phases must be an array');
   assert.equal(typeof metrics.visualEvidence, 'object');
+  assert.equal(metrics.telemetryOnly, true);
+  assert.equal(metrics.evidenceAuthority, GPU_HMR_TIMING_TELEMETRY_AUTHORITY);
+  assert.equal(metrics.proofVerdict, 'not_evaluated_by_timing_summary');
   assert.equal(typeof metrics.normalizedTimings, 'object');
   assert.equal(typeof metrics.normalized_timings, 'object');
   assert.equal(typeof metrics.clockEvidence, 'object');
@@ -250,6 +258,7 @@ assertCommonShape(webgpu);
 assert.equal(webgpu.source, 'webgpu_runtime_visual');
 assert.equal(webgpu.profileId, 'webgpu-wgsl-runtime-triangle');
 assert.equal(webgpu.status, 'pass');
+assert.equal(webgpu.reportedStatus, 'pass');
 assert.equal(webgpu.totalWallMs, 951);
 assert.equal(webgpu.editToFirstVisualMs, 67);
 assert.equal(webgpu.visualEvidence.changedPixelRatio, 0.29);
@@ -297,11 +306,14 @@ assertCommonShape(webgpuCompute);
 assert.equal(webgpuCompute.source, 'webgpu_runtime_compute');
 assert.equal(webgpuCompute.profileId, 'webgpu-wgsl-runtime-compute-storage');
 assert.equal(webgpuCompute.status, 'pass');
+assert.equal(webgpuCompute.reportedStatus, 'pass');
 assert.equal(webgpuCompute.totalWallMs, 951);
 assert.equal(webgpuCompute.computeEvidence.rawReadbackByteLength, 32);
 assert.equal(webgpuCompute.computeEvidence.computeCardAccepted, true);
+assert.equal(webgpuCompute.computeEvidence.reportedAccepted, true);
 assert.equal(webgpuCompute.visualEvidence.screenshotCount, 0);
 assert.equal(webgpuCompute.visualEvidence.accepted, false);
+assert.equal(webgpuCompute.visualEvidence.reportedAccepted, false);
 assert.equal(
   webgpuCompute.visualEvidence.reason,
   'webgpu_compute_readback_uses_compute_card_not_runtime_frame_visual_proof',

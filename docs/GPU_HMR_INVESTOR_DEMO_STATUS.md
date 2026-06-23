@@ -60,7 +60,7 @@ history audit matrix: gpu-validation-matrix-ledger:sha256:c28d9ede2fed026ff0fcce
 history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260623T233116Z.json
 history audit summary: 654 rows, including 597 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps
 history audit scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, rocm_hip_declared_runtime_profile: 1, hiprt_declared_visual_profile: 6, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T231806Z.json, count=21
+timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T234336Z.json, count=21; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 global per-target run modes: accepted for 4 enrolled run-mode targets: generated Flow, generated ray-light, scoped WebGPU explicit-empty WGSL, and scoped WebGPU explicit-profiled WGSL; SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
 HIP module scoped run modes: accepted for hip-module-runtime-readback only as scoped module-load/readback evidence, with hot_delta_1, hot_delta_2 different edit, executable ABI-negative refusal, epoch-2 artifact hash continuity, and compute-card-only proof separation; it is not a broad HIP app/library claim.
 Broad library-agnostic full-runtime rows: 0. Every accepted full-runtime row is currently scoped by generated/profiled preview contract, declared HIP module/readback contract, declared HIPRT profile, declared WebGPU pipeline/readback profile, or declared ROCm/HIP runtime ledger evidence.
@@ -145,7 +145,7 @@ WebGPU compute hot2 raw/expected hash: sha256:25e6442aa7b6a1c025719aaec529c2c815
 WebGPU compute hot2 expected output verified: true, max_abs_delta=0
 WebGPU compute hot2 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260623215754-webgpu-wgsl-runtime-compute-storage-hot2/webgpu-wgsl-runtime-compute-storage-hot2-compute-card.png
 WebGPU compute hot2 timing: total_validator_wall_time=684121000ns, dispatch_to_output_proof_time=681865500ns
-WebGPU compute-card image inspection: hot1 and hot2 compute cards opened with the local image tool; both display mapped GPU readback values and `expected output verified: true`. They are compute/readback evidence, not runtime frame visual proof; current timing rows report `screenshotCount=0`, `visualAccepted=false`, and `computeCardAccepted=true`.
+WebGPU compute-card image inspection: hot1 and hot2 compute cards opened with the local image tool; both display mapped GPU readback values and `expected output verified: true`. They are compute/readback evidence, not runtime frame visual proof; current timing rows report `screenshotCount=0`, `reportedVisualAccepted=false`, and `reportedComputeCardAccepted=true`.
 
 HIPRT hot1 proof id: hiprt-warm-runtime-proof:sha256:d0a8b4ca701d855e96ce0c6b812c668a4307901d13b232948e5c629fe7b0384b
 HIPRT hot1 runtime proof: gpu-runtime-proof:sha256:41cfc3ac84b5d95ee667711bcbb52e76a6fc4c2be96905d95f3fac4e7ce4b355

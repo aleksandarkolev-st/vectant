@@ -1,4 +1,5 @@
 export const GPU_HMR_TIMING_METRICS_SCHEMA_VERSION = 'synthi.gpu.hmr.timing_metrics.v1';
+export const GPU_HMR_TIMING_TELEMETRY_AUTHORITY = 'timing_telemetry_only';
 
 function finiteMs(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -43,6 +44,34 @@ function phase(name, wallMs, source = null) {
     name,
     wallMs: finiteMs(wallMs),
     source,
+  };
+}
+
+function telemetryAuthority(reportedStatus = null, reportedAcceptanceSource = null) {
+  return {
+    telemetryOnly: true,
+    telemetry_only: true,
+    evidenceAuthority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    evidence_authority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    proofVerdict: 'not_evaluated_by_timing_summary',
+    proof_verdict: 'not_evaluated_by_timing_summary',
+    reportedStatus: reportedStatus ?? null,
+    reported_status: reportedStatus ?? null,
+    reportedAcceptanceSource: reportedAcceptanceSource ?? 'source_reported_field',
+    reported_acceptance_source: reportedAcceptanceSource ?? 'source_reported_field',
+  };
+}
+
+function reportedEvidence(value, source) {
+  return {
+    reportedAccepted: typeof value === 'boolean' ? value : null,
+    reported_accepted: typeof value === 'boolean' ? value : null,
+    evidenceAuthority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    evidence_authority: GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
+    proofVerdict: 'not_evaluated_by_timing_summary',
+    proof_verdict: 'not_evaluated_by_timing_summary',
+    reportedAcceptanceSource: source,
+    reported_acceptance_source: source,
   };
 }
 
@@ -240,9 +269,12 @@ export function webGpuRuntimeVisualTimingMetrics(proof) {
     totalValidatorWallTimeMs: totalWallMs,
   });
   const metrics = proof?.metrics ?? {};
+  const reportedStatus = proof?.gpuHmrSuccess === true ? 'pass' : 'fail';
+  const reportedAccepted = proof?.gpuHmrSuccess === true;
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'webgpu_runtime_visual',
+    ...telemetryAuthority(reportedStatus, 'proof.gpuHmrSuccess'),
     metricClock: 'monotonic_ns',
     metric_clock: 'monotonic_ns',
     metricUnit: 'ms',
@@ -254,7 +286,7 @@ export function webGpuRuntimeVisualTimingMetrics(proof) {
     profileId: proof?.profile?.id ?? null,
     projectName: 'WebGPU runtime visual proof',
     proofMode: 'webgpu_wgsl_runtime_visual',
-    status: proof?.gpuHmrSuccess === true ? 'pass' : 'fail',
+    status: reportedStatus,
     totalWallMs,
     setupBuildMs: null,
     adapterBuildMs: normalizedTimings.adapterGenerationTimeMs,
@@ -282,7 +314,8 @@ export function webGpuRuntimeVisualTimingMetrics(proof) {
       changedPixelRatio: finiteMs(metrics.changedPixelRatio),
       meanAbsDelta8bit: finiteMs(metrics.meanAbsDelta8bit),
       visiblePixelCount: finiteMs(metrics.visiblePixelCount),
-      accepted: proof?.gpuHmrSuccess === true,
+      accepted: reportedAccepted,
+      ...reportedEvidence(reportedAccepted, 'proof.gpuHmrSuccess'),
     },
     phases: [
       phase('runtime_probe', normalizedTimings.runtimeProbeTimeMs, 'timings.runtime_probe_time'),
@@ -343,9 +376,15 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
     proof?.proofLedger?.records?.[0]?.oracleArtifacts?.computeOracleArtifacts,
     proof?.proofLedger?.records?.[0]?.oracle_artifacts?.compute_oracle_artifacts,
   );
+  const reportedStatus = proof?.gpuHmrSuccess === true ? 'pass' : 'fail';
+  const reportedAccepted = proof?.gpuHmrSuccess === true;
+  const computeCardReportedAccepted = Boolean(
+    computeArtifacts?.rendered_card_png ?? computeArtifacts?.renderedCardPng,
+  ) && reportedAccepted;
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'webgpu_runtime_compute',
+    ...telemetryAuthority(reportedStatus, 'proof.gpuHmrSuccess'),
     metricClock: 'monotonic_ns',
     metric_clock: 'monotonic_ns',
     metricUnit: 'ms',
@@ -357,7 +396,7 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
     profileId: proof?.profile?.id ?? null,
     projectName: 'WebGPU runtime compute proof',
     proofMode: 'webgpu_wgsl_runtime_compute',
-    status: proof?.gpuHmrSuccess === true ? 'pass' : 'fail',
+    status: reportedStatus,
     totalWallMs,
     setupBuildMs: null,
     adapterBuildMs: normalizedTimings.adapterGenerationTimeMs,
@@ -385,8 +424,11 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
       rawReadbackByteLength: computeArtifacts?.raw_readback_byte_length ?? computeArtifacts?.rawReadbackByteLength ?? null,
       deterministicSliceHash: computeArtifacts?.deterministic_slice_hash ?? computeArtifacts?.deterministicSliceHash ?? null,
       renderedCardPng: computeArtifacts?.rendered_card_png ?? computeArtifacts?.renderedCardPng ?? null,
-      computeCardAccepted: Boolean(computeArtifacts?.rendered_card_png ?? computeArtifacts?.renderedCardPng) && proof?.gpuHmrSuccess === true,
-      accepted: proof?.gpuHmrSuccess === true,
+      computeCardAccepted: computeCardReportedAccepted,
+      accepted: reportedAccepted,
+      ...reportedEvidence(reportedAccepted, 'proof.gpuHmrSuccess'),
+      computeCardReportedAccepted,
+      compute_card_reported_accepted: computeCardReportedAccepted,
     },
     visualEvidence: {
       screenshotCount: 0,
@@ -394,6 +436,7 @@ export function webGpuRuntimeComputeTimingMetrics(proof) {
       meanAbsDelta8bit: null,
       visiblePixelCount: null,
       accepted: false,
+      ...reportedEvidence(false, 'compute_readback_no_runtime_frame_visual'),
       reason: 'webgpu_compute_readback_uses_compute_card_not_runtime_frame_visual_proof',
     },
     phases: [
@@ -432,6 +475,7 @@ export function hipModuleRuntimeTimingMetrics(proof) {
       renderedCardPng: computeArtifacts?.rendered_card_png ?? computeArtifacts?.renderedCardPng ?? null,
       expectedOutputVerified: computeArtifacts?.expected_output_verified === true,
       accepted: proof?.gpuHmrSuccess === true,
+      ...reportedEvidence(proof?.gpuHmrSuccess === true, 'proof.gpuHmrSuccess'),
     },
     visualEvidence: {
       screenshotCount: 0,
@@ -439,6 +483,7 @@ export function hipModuleRuntimeTimingMetrics(proof) {
       meanAbsDelta8bit: null,
       visiblePixelCount: null,
       accepted: false,
+      ...reportedEvidence(false, 'compute_readback_no_runtime_frame_visual'),
       reason: 'hip_module_readback_uses_compute_card_not_runtime_frame_visual_proof',
     },
     hipEvidence: {
@@ -447,6 +492,7 @@ export function hipModuleRuntimeTimingMetrics(proof) {
       hsacoBeforeHash: proof?.compiler?.hsacoBeforeHash ?? null,
       hsacoAfterHash: proof?.compiler?.hsacoAfterHash ?? null,
       accepted: proof?.gpuHmrSuccess === true,
+      ...reportedEvidence(proof?.gpuHmrSuccess === true, 'proof.gpuHmrSuccess'),
     },
     hip_evidence: {
       native_api_counts: proof?.nativeHipApiEvidence?.counts ?? null,
@@ -454,6 +500,7 @@ export function hipModuleRuntimeTimingMetrics(proof) {
       hsaco_before_hash: proof?.compiler?.hsacoBeforeHash ?? null,
       hsaco_after_hash: proof?.compiler?.hsacoAfterHash ?? null,
       accepted: proof?.gpuHmrSuccess === true,
+      ...reportedEvidence(proof?.gpuHmrSuccess === true, 'proof.gpuHmrSuccess'),
     },
   };
 }
@@ -486,10 +533,13 @@ export function externalProjectTimingMetrics(report) {
     screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
     totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? timings.totalMs,
   });
+  const reportedStatus = report?.status ?? null;
+  const reportedAccepted = report?.status === 'pass';
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'external_project_profile',
+    ...telemetryAuthority(reportedStatus, 'report.status'),
     metricClock: clockEvidence.metricClock,
     metric_clock: clockEvidence.metric_clock,
     metricUnit: clockEvidence.metricUnit,
@@ -501,7 +551,7 @@ export function externalProjectTimingMetrics(report) {
     profileId: report?.profile?.id ?? null,
     projectName: report?.profile?.project?.name ?? null,
     proofMode: report?.proofMode ?? null,
-    status: report?.status ?? null,
+    status: reportedStatus,
     totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(timings.totalMs),
     setupBuildMs: finiteMs(timings.buildMs),
     adapterBuildMs: null,
@@ -530,7 +580,8 @@ export function externalProjectTimingMetrics(report) {
       screenshotCount: screenshots.length,
       changedPixelRatio: finiteMs(report?.visualDiff?.changedPixelRatio),
       meanAbsDelta8bit: finiteMs(report?.visualDiff?.meanAbsDelta8bit),
-      accepted: report?.status === 'pass',
+      accepted: reportedAccepted,
+      ...reportedEvidence(reportedAccepted, 'report.status'),
     },
     phases: [
       phase('setup_build', timings.buildMs, 'timings.buildMs'),
@@ -584,10 +635,13 @@ export function hiprtWarmTimingMetrics(proof) {
     screenshotCaptureTimeMs: sumMs([beforeCaptureMs, afterCaptureMs]),
     totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? timings.totalWallMs,
   });
+  const reportedStatus = proof?.accepted === true ? 'pass' : 'fail';
+  const reportedAccepted = proof?.accepted === true;
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'hiprt_warm_runtime',
+    ...telemetryAuthority(reportedStatus, 'proof.accepted'),
     metricClock: clockEvidence.metricClock,
     metric_clock: clockEvidence.metric_clock,
     metricUnit: clockEvidence.metricUnit,
@@ -599,7 +653,7 @@ export function hiprtWarmTimingMetrics(proof) {
     profileId: proof?.profile?.id ?? proof?.runtimeProfile?.id ?? null,
     projectName: proof?.repo?.target ?? null,
     proofMode: timings.mode ?? proof?.mode ?? null,
-    status: proof?.accepted === true ? 'pass' : 'fail',
+    status: reportedStatus,
     totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(timings.totalWallMs),
     setupBuildMs: finiteMs(timings.sameProcessAdapterBuildMs),
     adapterBuildMs: finiteMs(timings.sameProcessAdapterBuildMs),
@@ -629,7 +683,8 @@ export function hiprtWarmTimingMetrics(proof) {
       screenshotCount: 2,
       changedPixelRatio: finiteMs(proof?.diff?.changedPixelRatioThreshold4),
       meanAbsDelta8bit: finiteMs(proof?.diff?.meanAbsDelta8bit),
-      accepted: proof?.accepted === true,
+      accepted: reportedAccepted,
+      ...reportedEvidence(reportedAccepted, 'proof.accepted'),
     },
     phases: [
       phase('adapter_build', timings.sameProcessAdapterBuildMs, 'timings.sameProcessAdapterBuildMs'),
@@ -729,10 +784,12 @@ export function realRocmTimingMetrics(report) {
     dispatchToOutputProofTimeMs: outputProofDeltaMs ?? 0,
     totalValidatorWallTimeMs: clockEvidence.durationMonotonicMs ?? report?.duration_ms,
   });
+  const reportedStatus = realRocmStatus(report);
 
   return {
     schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
     source: 'real_rocm_validation',
+    ...telemetryAuthority(reportedStatus, 'reported_status_and_strict_gate_fields'),
     metricClock: clockEvidence.metricClock,
     metric_clock: clockEvidence.metric_clock,
     metricUnit: clockEvidence.metricUnit,
@@ -744,7 +801,7 @@ export function realRocmTimingMetrics(report) {
     profileId: report?.slug ?? null,
     projectName: report?.target_name ?? null,
     proofMode: report?.hiprt_runtime_probe?.enabled ? 'real_rocm_hiprt_probe' : 'real_rocm',
-    status: realRocmStatus(report),
+    status: reportedStatus,
     totalWallMs: clockEvidence.durationMonotonicMs ?? finiteMs(report?.duration_ms),
     setupBuildMs,
     adapterBuildMs: null,
@@ -775,6 +832,10 @@ export function realRocmTimingMetrics(report) {
         shot?.accepted_as_visual_evidence === true
       ).length,
       accepted: screenshotPhases.some((shot) => shot?.accepted_as_visual_evidence === true),
+      ...reportedEvidence(
+        screenshotPhases.some((shot) => shot?.accepted_as_visual_evidence === true),
+        'screenshots.accepted_as_visual_evidence',
+      ),
     },
     phases: [
       phase('upstream_configure_build', sumMs([
