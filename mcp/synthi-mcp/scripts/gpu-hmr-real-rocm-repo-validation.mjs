@@ -709,6 +709,11 @@ function stringField(entry, names) {
   return '';
 }
 
+function maybeStringField(entry, names) {
+  const value = stringField(entry, names);
+  return value || null;
+}
+
 function booleanField(entry, names) {
   if (!entry || typeof entry !== 'object') return false;
   return names.some((name) => entry[name] === true);
@@ -797,6 +802,104 @@ function targetProgressionEntryStatusPassed(entry) {
   return ['pass', 'passed', 'proven', 'success', 'succeeded', 'ok'].includes(status);
 }
 
+function arrayField(entry, names) {
+  if (!entry || typeof entry !== 'object') return [];
+  for (const name of names) {
+    if (Array.isArray(entry[name])) return entry[name];
+  }
+  return [];
+}
+
+function visualEvidenceArtifactProof(entry) {
+  const artifacts = arrayField(entry, ['visualEvidenceArtifacts', 'visual_evidence_artifacts'])
+    .filter((artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact));
+  if (artifacts.length === 0) {
+    return {
+      accepted: false,
+      detail: 'visual oracle artifacts missing',
+    };
+  }
+  let acceptedCount = 0;
+  const failed = [];
+  for (const artifact of artifacts) {
+    const artifactPath = maybeStringField(artifact, ['path', 'filePath', 'file_path']);
+    const expectedHash = maybeStringField(artifact, ['contentHash', 'content_hash']);
+    const accepted = (artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence) === true;
+    const readError = artifact.readError ?? artifact.read_error ?? null;
+    const width = positiveIntegerField(artifact, ['width']);
+    const height = positiveIntegerField(artifact, ['height']);
+    const visiblePixels = positiveIntegerField(artifact, ['visiblePixels', 'visible_pixels']);
+    if (!artifactPath) {
+      failed.push('visual:path_missing');
+      continue;
+    }
+    if (!existsSync(artifactPath)) {
+      failed.push('visual:file_missing');
+      continue;
+    }
+    let actualHash = null;
+    let byteLength = 0;
+    try {
+      const bytes = readFileSync(artifactPath);
+      byteLength = bytes.length;
+      actualHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    } catch (error) {
+      failed.push(`visual:read_failed:${error?.message ? String(error.message) : String(error)}`);
+      continue;
+    }
+    const hashVerified = expectedHash !== null
+      && actualHash.toLowerCase() === expectedHash.toLowerCase();
+    const artifactAccepted = accepted
+      && !readError
+      && byteLength > 0
+      && hashVerified
+      && width !== null
+      && height !== null
+      && visiblePixels !== null;
+    if (artifactAccepted) {
+      acceptedCount += 1;
+    } else {
+      failed.push([
+        accepted ? null : 'visual:not_accepted',
+        readError ? 'visual:read_error' : null,
+        byteLength > 0 ? null : 'visual:file_empty',
+        hashVerified ? null : 'visual:hash_unverified',
+        width !== null && height !== null ? null : 'visual:dimensions_missing',
+        visiblePixels !== null ? null : 'visual:visible_pixels_missing',
+      ].filter(Boolean).join('+'));
+    }
+  }
+  const declaredAccepted = positiveIntegerField(entry, [
+    'visualEvidenceAcceptedCount',
+    'visual_evidence_accepted_count',
+  ]);
+  const readErrorCountRaw =
+    entry?.visualEvidenceReadErrorCount
+    ?? entry?.visual_evidence_read_error_count
+    ?? 0;
+  const readErrorCount = Number.parseInt(readErrorCountRaw, 10);
+  const declaredAcceptedCompatible = declaredAccepted === null || declaredAccepted >= acceptedCount;
+  const readErrorFree = !Number.isInteger(readErrorCount) || readErrorCount <= 0;
+  const accepted = acceptedCount > 0 && declaredAcceptedCompatible && readErrorFree;
+  return {
+    accepted,
+    detail: accepted
+      ? `visual oracle artifacts verified count=${acceptedCount}`
+      : `visual oracle artifacts unverified: ${failed.filter(Boolean).join(',') || 'accepted_count_missing'}`,
+  };
+}
+
+function targetProgressionSmallOracleEvidenceProof(entry) {
+  const computeProof = computeOracleArtifactProof(entry);
+  if (computeProof.accepted) return computeProof;
+  const visualProof = visualEvidenceArtifactProof(entry);
+  if (visualProof.accepted) return visualProof;
+  return {
+    accepted: false,
+    detail: `${computeProof.detail}; ${visualProof.detail}`,
+  };
+}
+
 function targetProgressionLedgerPhaseResult(ledger, phase) {
   const normalizedPhase = normalizeTargetProgressionPhase(phase).phase;
   const entries = targetProgressionLedgerEntries(ledger)
@@ -807,8 +910,10 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
     const statusPassedWithStructuredProof =
       targetProgressionEntryStatusPassed(entry) && hasStructuredProofReference;
     if (normalizedPhase === 'small-oracle') {
+      const oracleEvidence = targetProgressionSmallOracleEvidenceProof(entry);
       if (
         hasStructuredProofReference
+        && oracleEvidence.accepted
         && (
           resultState === 'gpu-hmr-output-oracle-proven'
           || booleanField(entry, ['outputOracleProven', 'output_oracle_proven'])
@@ -817,7 +922,7 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
       ) {
         return {
           passed: true,
-          detail: `small-oracle proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
+          detail: `small-oracle proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}; ${oracleEvidence.detail}`,
         };
       }
     } else if (normalizedPhase === 'partial-reload') {
@@ -1040,8 +1145,8 @@ function computeOracleArtifactProof(outputProof = null) {
   ) ?? {};
   const sliceOffset = Number.isInteger(slice.offset) ? slice.offset : Number.parseInt(slice.offset, 10);
   const sliceLength = Number.isInteger(slice.length) ? slice.length : Number.parseInt(slice.length, 10);
-  const declaredSliceHash = stringField(slice, ['hash', 'sha256', 'slice_hash', 'sliceHash'])
-    ?? stringField(computeArtifacts, ['deterministic_slice_hash', 'deterministicSliceHash']);
+  const declaredSliceHash = maybeStringField(slice, ['hash', 'sha256', 'slice_hash', 'sliceHash'])
+    ?? maybeStringField(computeArtifacts, ['deterministic_slice_hash', 'deterministicSliceHash']);
   const sliceHashObserved = /^sha256:[0-9a-f]{64}$/i.test(String(declaredSliceHash ?? ''));
   const sliceBoundsValid = raw.ok
     && Number.isInteger(sliceOffset)
@@ -1064,8 +1169,8 @@ function computeOracleArtifactProof(outputProof = null) {
     && card.bytes[5] === 0x0a
     && card.bytes[6] === 0x1a
     && card.bytes[7] === 0x0a;
-  const before = stringField(computeArtifacts, ['checksum_before', 'checksumBefore']);
-  const after = stringField(computeArtifacts, ['checksum_after', 'checksumAfter']);
+  const before = maybeStringField(computeArtifacts, ['checksum_before', 'checksumBefore']);
+  const after = maybeStringField(computeArtifacts, ['checksum_after', 'checksumAfter']);
   const checksumChanged = before !== null && after !== null && before !== after;
   const accepted = raw.ok
     && schema.ok
@@ -1270,6 +1375,7 @@ function buildTargetProgressionLedgerEntry({
       artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence
     ) === true)
     .length;
+  const computeOracleArtifacts = computeOracleArtifactsFromProof(report.output_proof);
   return {
     schemaVersion: 'synthi.real_rocm.target_progression_ledger_entry.v1',
     phase: progression.phase,
@@ -1309,6 +1415,8 @@ function buildTargetProgressionLedgerEntry({
     visualEvidenceContentHashes: visualContentHashes,
     visualEvidenceAcceptedCount: visualAcceptedCount,
     visualEvidenceReadErrorCount: visualReadErrorCount,
+    computeOracleArtifacts,
+    compute_oracle_artifacts: computeOracleArtifacts,
     gateRows,
     createdAt: report.finished_at ?? new Date().toISOString(),
   };
@@ -8518,6 +8626,20 @@ int main()
     visualEvidenceRequired: false,
     renderVisualEvidenceRequired: false,
   };
+  const topLevelSliceArtifacts = JSON.parse(JSON.stringify(verifiedComputeOracleArtifacts));
+  topLevelSliceArtifacts.deterministic_slice = {
+    ...topLevelSliceArtifacts.deterministic_slice,
+    hash: '',
+  };
+  topLevelSliceArtifacts.deterministic_slice_hash = computeRawHash;
+  const missingChecksumArtifacts = JSON.parse(JSON.stringify(verifiedComputeOracleArtifacts));
+  delete missingChecksumArtifacts.checksum_after;
+  const topLevelSliceProof = computeOracleArtifactProof({
+    compute_oracle_artifacts: topLevelSliceArtifacts,
+  });
+  const missingChecksumProof = computeOracleArtifactProof({
+    compute_oracle_artifacts: missingChecksumArtifacts,
+  });
   const smallOracleFailures = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
       targetName: 'large_target',
@@ -8554,6 +8676,8 @@ int main()
         proofId: 'proof:small-oracle:123',
         proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
         resultState: 'gpu-hmr-output-oracle-proven',
+        compute_oracle_artifacts: verifiedComputeOracleArtifacts,
+        computeOracleArtifacts: verifiedComputeOracleArtifacts,
       },
       {
         phase: 'partial-reload',
@@ -8579,6 +8703,8 @@ int main()
       status: 'pass',
       proof_id: 'proof:small-oracle:alias',
       proof_artifact_schema_version: 'synthi.gpu.hmr.validation-proof.v1',
+      result_state: 'gpu-hmr-output-oracle-proven',
+      compute_oracle_artifacts: verifiedComputeOracleArtifacts,
     },
   }));
   const finalAcceptanceFailures = targetProgressionGateRows({
@@ -8690,6 +8816,8 @@ int main()
     || unknownProgressionRows[0]?.status !== 'fail'
     || smallOracleFailures.filter((row) => row.status === 'fail').length !== 2
     || smallOraclePasses.some((row) => row.status === 'fail')
+    || !topLevelSliceProof.accepted
+    || missingChecksumProof.accepted
     || partialReloadPasses.some((row) => row.status === 'fail')
     || !targetProgressionLedgerPhaseResult(parsedProgressionLedger, 'small-oracle').passed
     || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 6
