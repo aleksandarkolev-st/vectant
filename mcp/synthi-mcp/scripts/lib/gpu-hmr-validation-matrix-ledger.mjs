@@ -531,6 +531,37 @@ function rowKey(row) {
   ].join('|');
 }
 
+function canonicalTargetKey(row) {
+  const supportedScope = firstText(
+    row.supportedPipelineScope,
+    row.supported_pipeline_scope,
+    row.validationScope,
+    row.validation_scope,
+  );
+  if (row.proofMode === 'hip_module_runtime_readback' && supportedScope) {
+    return `${row.proofMode}:${supportedScope}`;
+  }
+  return firstText(row.targetId, row.profileId) ?? 'unknown';
+}
+
+function rowAttemptKey(row) {
+  const runModeKey = (
+    row.proofMode === 'run_mode_proof'
+    || row.matrixOutcome === 'full_runtime_gpu_hmr'
+    || row.matrixOutcome === 'cold_split_proven'
+  )
+    ? row.runMode?.metricScope ?? 'unknown'
+    : null;
+  return [
+    row.backend ?? 'unknown',
+    canonicalTargetKey(row),
+    row.profileId ?? 'unknown',
+    row.proofMode ?? 'unknown',
+    runModeKey,
+    row.evidenceKind ?? 'unknown',
+  ].join('|');
+}
+
 function normalizeCoverageObligations(row) {
   const declared = compactObject(
     row.coverageObligations
@@ -581,6 +612,7 @@ function finalizeRow(seed) {
     rowId: undefined,
   });
   row.matrixKey = rowKey(row);
+  row.attemptKey = rowAttemptKey(row);
   return row;
 }
 
@@ -3603,21 +3635,40 @@ function rowPriority(row) {
   return MATRIX_OUTCOME_PRIORITY.get(row.matrixOutcome) ?? 0;
 }
 
+function rowUpdatedAtMs(row) {
+  const parsed = Date.parse(String(row.updatedAt ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function selectBestRows(rows) {
   const selected = new Map();
   for (const row of rows) {
-    const key = row.matrixKey;
+    const key = row.attemptKey ?? rowAttemptKey(row);
     const existing = selected.get(key);
     if (!existing) {
       selected.set(key, row);
       continue;
     }
+    const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
     const priorityDelta = rowPriority(row) - rowPriority(existing);
-    if (priorityDelta > 0 || (priorityDelta === 0 && String(row.updatedAt) > String(existing.updatedAt))) {
+    if (
+      updatedDelta > 0
+      || (
+        updatedDelta === 0
+        && (priorityDelta > 0 || String(row.artifactPath) > String(existing.artifactPath))
+      )
+    ) {
       selected.set(key, row);
     }
   }
   return [...selected.values()];
+}
+
+function rowIsScopedOnlyFullRuntime(row) {
+  return row.acceptanceClass === 'scoped_hip_module_runtime_hmr'
+    || row.claimBoundary?.broadHipApplicationAcceptance === false
+    || row.claim_boundary?.broadHipApplicationAcceptance === false
+    || row.claim_boundary?.broad_hip_application_acceptance === false;
 }
 
 function coverageSummary(rows) {
@@ -3628,6 +3679,8 @@ function coverageSummary(rows) {
     byBackend[row.backend] = (byBackend[row.backend] ?? 0) + 1;
   }
   const fullRuntimeRows = rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr');
+  const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
+  const broadRuntimeRows = fullRuntimeRows.filter((row) => !rowIsScopedOnlyFullRuntime(row));
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
   const refusalRows = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const preflightRows = rows.filter((row) => row.matrixOutcome === 'preflight_only');
@@ -3636,8 +3689,12 @@ function coverageSummary(rows) {
     rowCount: rows.length,
     byOutcome,
     byBackend,
-    acceptedFullRuntimeGpuHmrRows: fullRuntimeRows.length,
-    acceptedFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
+    acceptedFullRuntimeGpuHmrRows: broadRuntimeRows.length,
+    acceptedFullRuntimeTargets: compactStringList(broadRuntimeRows.map((row) => row.targetId)),
+    scopedFullRuntimeGpuHmrRows: scopedRuntimeRows.length,
+    scopedFullRuntimeTargets: compactStringList(scopedRuntimeRows.map((row) => row.targetId)),
+    allFullRuntimeGpuHmrRows: fullRuntimeRows.length,
+    allFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
     visualProfileAcceptedRows: visualProfileRows.length,
     visualProfileTargets: compactStringList(visualProfileRows.map((row) => row.targetId)),
     refusalProvenRows: refusalRows.length,
@@ -3659,6 +3716,11 @@ function rowRefs(rows) {
     proofChain: row.proofChain,
     proofIds: row.proofIds,
     runMode: row.runMode,
+    proofMode: row.proofMode,
+    acceptanceClass: row.acceptanceClass,
+    supportedPipelineScope: row.supportedPipelineScope,
+    claimBoundaryAccepted: row.claimBoundaryAccepted,
+    negativeAbiRefusalAccepted: row.negativeAbiRefusalAccepted,
     validationTargetScope: row.validationTargetScope,
     coverageObligations: row.coverageObligations,
   }));
@@ -3678,6 +3740,88 @@ function coverageEntry({ id, requirement, status, rows = [], openGaps = [], ...e
 
 function acceptedRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr' && predicate(row));
+}
+
+function hipModuleScopedRuntimeCoverage(rows) {
+  const hipModuleRows = acceptedRows(rows, (row) =>
+    row.backend === 'hip'
+    && row.proofMode === 'hip_module_runtime_readback'
+    && row.supportedPipelineScope === 'explicit-hip-module-float32-readback'
+    && row.claimBoundaryAccepted === true
+    && row.negativeAbiRefusalAccepted === true
+    && row.runtimeTimestampProof?.accepted === true
+    && row.epoch2ArtifactHashProof?.accepted === true
+    && row.computeCardOnlyProofAccepted === true
+  );
+  const groups = new Map();
+  for (const row of hipModuleRows) {
+    const key = canonicalTargetKey(row);
+    const list = groups.get(key) ?? [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  const acceptedGroups = [];
+  const incompleteGroups = [];
+  for (const [key, groupRows] of groups) {
+    const hot1 = groupRows.find((row) => row.runMode?.metricScope === 'hot_delta_1');
+    const hot2 = groupRows.find((row) =>
+      row.runMode?.metricScope === 'hot_delta_2'
+      && row.runMode?.differentEdit === true
+    );
+    const hot1Hash = firstText(hot1?.runMode?.editHash, hot1?.runMode?.edit_hash);
+    const hot2Hash = firstText(hot2?.runMode?.editHash, hot2?.runMode?.edit_hash);
+    const distinctHotEdits = Boolean(hot1Hash && hot2Hash && hot1Hash !== hot2Hash);
+    const negativeRefusal = groupRows.some((row) => row.negativeAbiRefusalAccepted === true);
+    const accepted = Boolean(hot1 && hot2 && distinctHotEdits && negativeRefusal);
+    const record = {
+      key,
+      rows: groupRows,
+      hot1,
+      hot2,
+      distinctHotEdits,
+      negativeRefusal,
+      openGaps: compactStringList([
+        hot1 ? null : 'hip_module_hot_delta_1_required',
+        hot2 ? null : 'hip_module_hot_delta_2_different_edit_required',
+        distinctHotEdits ? null : 'hip_module_hot_delta_edit_hashes_not_distinct',
+        negativeRefusal ? null : 'hip_module_negative_abi_refusal_required',
+      ]),
+    };
+    if (accepted) acceptedGroups.push(record);
+    else incompleteGroups.push(record);
+  }
+  const acceptedRowsForCoverage = acceptedGroups.flatMap((group) => group.rows);
+  const incompleteRows = incompleteGroups.flatMap((group) => group.rows);
+  if (acceptedGroups.length > 0) {
+    return coverageEntry({
+      id: 'hip_module_scoped_runtime_readback',
+      requirement: 'Scoped HIP module-load/runtime readback proof with hot1, hot2 different edit, and executable ABI-negative refusal',
+      status: 'accepted',
+      rows: acceptedRowsForCoverage,
+      openGaps: [],
+      acceptedTargetCount: acceptedGroups.length,
+      incompleteTargetCount: incompleteGroups.length,
+    });
+  }
+  if (incompleteRows.length > 0) {
+    return coverageEntry({
+      id: 'hip_module_scoped_runtime_readback',
+      requirement: 'Scoped HIP module-load/runtime readback proof with hot1, hot2 different edit, and executable ABI-negative refusal',
+      status: 'incomplete',
+      rows: incompleteRows,
+      openGaps: compactStringList(incompleteGroups.flatMap((group) => group.openGaps)),
+      acceptedTargetCount: 0,
+      incompleteTargetCount: incompleteGroups.length,
+    });
+  }
+  return coverageEntry({
+    id: 'hip_module_scoped_runtime_readback',
+    requirement: 'Scoped HIP module-load/runtime readback proof with hot1, hot2 different edit, and executable ABI-negative refusal',
+    status: 'missing',
+    openGaps: ['hip_module_runtime_readback_required'],
+    acceptedTargetCount: 0,
+    incompleteTargetCount: 0,
+  });
 }
 
 function rowHasAcceptedVisualEvidence(row) {
@@ -3979,11 +4123,6 @@ function planCoverage(rows) {
     row.backend === 'hip'
     && row.proofMode !== 'hip_module_runtime_readback'
   );
-  const hipModuleRuntimeRows = acceptedRows(rows, (row) =>
-    row.backend === 'hip'
-    && row.proofMode === 'hip_module_runtime_readback'
-    && row.supportedPipelineScope === 'explicit-hip-module-float32-readback'
-  );
   const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
   const webgpuComputeRows = acceptedRows(rows, (row) =>
@@ -4015,13 +4154,7 @@ function planCoverage(rows) {
       rows: hipRuntimeRows,
       openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
     }),
-    coverageEntry({
-      id: 'hip_module_scoped_runtime_readback',
-      requirement: 'Scoped HIP module-load/runtime readback proof',
-      status: hipModuleRuntimeRows.length > 0 ? 'accepted' : 'missing',
-      rows: hipModuleRuntimeRows,
-      openGaps: hipModuleRuntimeRows.length > 0 ? [] : ['hip_module_runtime_readback_required'],
-    }),
+    hipModuleScopedRuntimeCoverage(rows),
     coverageEntry({
       id: 'flow_visual_gpu_path',
       requirement: 'Flow visual GPU path with runtime proof and visual oracle',
