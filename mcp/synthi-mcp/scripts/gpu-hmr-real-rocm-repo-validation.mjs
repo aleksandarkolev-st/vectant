@@ -1153,7 +1153,7 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
       const partialAndFission =
         booleanField(entry, ['partialReloadProven', 'partial_reload_proven'])
         && booleanField(entry, ['fissionProven', 'fission_proven']);
-      if (hasStructuredProofReference && (partialAndFission || statusPassedWithStructuredProof)) {
+      if (hasStructuredProofReference && partialAndFission) {
         return {
           passed: true,
           detail: `partial-reload proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
@@ -1164,7 +1164,7 @@ function targetProgressionLedgerPhaseResult(ledger, phase) {
         booleanField(entry, ['originalHostPathProven', 'original_host_path_proven', 'attachmentProven', 'attachment_proven'])
         && booleanField(entry, ['hostPreservationProven', 'host_preservation_proven'])
         && booleanField(entry, ['dispatchSafeProven', 'dispatch_safe_proven']);
-      if (hasStructuredProofReference && (originalHostPath || statusPassedWithStructuredProof)) {
+      if (hasStructuredProofReference && originalHostPath) {
         return {
           passed: true,
           detail: `original-host-path proof=${stringField(entry, ['proofId', 'proof_id', 'proofArtifactPath', 'proof_artifact_path']) || resultState || 'observed'}`,
@@ -9717,6 +9717,30 @@ int main()
       },
     ],
   };
+  const structuredReferenceOnlyProgressionLedger = {
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        proofId: 'proof:small-oracle:reference-only',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
+        resultState: 'gpu-hmr-output-oracle-proven',
+        compute_oracle_artifacts: verifiedComputeOracleArtifacts,
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'proof:partial-reload:reference-only',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'proof:original-host-path:reference-only',
+        proofArtifactSchemaVersion: 'synthi.gpu.hmr.validation-proof.v1',
+      },
+    ],
+  };
   const parsedProgressionLedger = parseTargetProgressionLedger(JSON.stringify({
     small_oracle: {
       status: 'pass',
@@ -9745,6 +9769,17 @@ int main()
     fullRuntimeProof: { fullRuntimeProven: true },
     outputProof: computeOnlyOutputProof,
     targetProgressionLedger: completeProgressionLedger,
+  });
+  const finalAcceptanceReferenceOnlyPriorFails = targetProgressionGateRows({
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    fullRuntimeProof: { fullRuntimeProven: true },
+    outputProof: computeOnlyOutputProof,
+    targetProgressionLedger: structuredReferenceOnlyProgressionLedger,
   });
   const finalAcceptanceChecksumOnlyFails = targetProgressionGateRows({
     targetProgression: buildTargetProgressionMetadata({
@@ -9883,8 +9918,16 @@ int main()
     || missingChecksumProof.accepted
     || partialReloadPasses.some((row) => row.status === 'fail')
     || !targetProgressionLedgerPhaseResult(parsedProgressionLedger, 'small-oracle').passed
+    || targetProgressionLedgerPhaseResult(structuredReferenceOnlyProgressionLedger, 'partial-reload').passed
+    || targetProgressionLedgerPhaseResult(structuredReferenceOnlyProgressionLedger, 'original-host-path').passed
     || finalAcceptanceFailures.filter((row) => row.status === 'fail').length !== 6
     || finalAcceptanceComputePasses.some((row) => row.status === 'fail')
+    || !finalAcceptanceReferenceOnlyPriorFails.some((row) =>
+      row.name === 'target progression prior partial-reload'
+      && row.status === 'fail')
+    || !finalAcceptanceReferenceOnlyPriorFails.some((row) =>
+      row.name === 'target progression prior original-host-path'
+      && row.status === 'fail')
     || !finalAcceptanceChecksumOnlyFails.some((row) =>
       row.name === 'target progression compute oracle artifacts'
       && row.status === 'fail'
