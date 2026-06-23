@@ -792,7 +792,7 @@ Implement HIP/HIPRT first, then OpenCL, then WebGPU/Bevy, then Vulkan. Vulkan re
 
 ### Step 9: Positive validation matrix expansion
 
-Only after the adversarial refusal harness passes should the matrix broaden success claims across HIP, HIPRT, OpenCL, WebGPU, Bevy, Flow, Vulkan, and larger engine-style projects.
+Only after the adversarial refusal harness passes should the matrix broaden scoped positive candidates across HIP, HIPRT, OpenCL, WebGPU, Bevy, Flow, Vulkan, and larger engine-style projects.
 
 ### Step 10: Timing normalization
 
