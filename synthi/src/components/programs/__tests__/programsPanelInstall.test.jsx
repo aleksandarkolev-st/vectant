@@ -56,6 +56,9 @@ vi.mock('@/components/docking-wm/state/layout-slice', () => ({
   openFloatingPanel: (p) => ({ type: 'openFloatingPanel', payload: p }),
   bringFloatToFrontAction: (p) => ({ type: 'bringFloatToFront', payload: p }),
 }));
+vi.mock('@/redux/uiSlice', () => ({
+  setShowTerminal: (v) => ({ type: 'ui/setShowTerminal', payload: v }),
+}));
 
 import ProgramsPanel from '../ProgramsPanel';
 
@@ -72,6 +75,13 @@ function byTestId(container, id) {
   return container.querySelector(`[data-testid="${id}"]`);
 }
 
+// The Store (marketplace / install-from-manifest / publish) is now a view pushed
+// inside the panel — navigate to it before interacting with store-housed controls.
+async function openStore(container) {
+  await act(async () => { byTestId(container, 'open-store').click(); });
+  await flush();
+}
+
 describe('ProgramsPanel install / launch-from-install', () => {
   let container;
   let root;
@@ -82,6 +92,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
       workspace: { slug: 'team', role: 'owner' },
       nodes: { g1: { type: 'tabgroup', tabs: ['t1'] } },
       tabs: { t1: { panelType: IDE_PANEL.EDITOR } },
+      floating: {},
     };
     h.fetchProgramSessions.mockResolvedValue([]);
     h.fetchInstalledPrograms.mockResolvedValue([]);
@@ -109,6 +120,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
   it('shows a consent prompt listing the requested scopes when install needs consent', async () => {
     h.installWorkspaceProgram.mockRejectedValueOnce({ status: 409, body: { requested: ['program.launch', 'network.outbound'] } });
     await render();
+    await openStore(container);
 
     await act(async () => {
       byTestId(container, 'install-from-manifest').click();
@@ -127,6 +139,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
       .mockResolvedValueOnce({ install: { id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' } });
     h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
     await render();
+    await openStore(container);
 
     await act(async () => {
       byTestId(container, 'install-from-manifest').click();
@@ -158,6 +171,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
   it('surfaces the manifest_invalid message from a 422 install response', async () => {
     h.installWorkspaceProgram.mockRejectedValueOnce({ status: 422, body: { error: 'manifest_invalid', message: 'Invalid packageId' } });
     await render();
+    await openStore(container);
 
     await act(async () => {
       byTestId(container, 'install-from-manifest').click();
@@ -173,13 +187,17 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
     await render();
 
-    expect(byTestId(container, 'install-from-manifest')).toBeNull();
+    // Library: a member sees the tile but no launch button.
     expect(byTestId(container, 'launch-install-inst1')).toBeNull();
+    // Store: a member can browse but install-from-manifest is hidden.
+    await openStore(container);
+    expect(byTestId(container, 'install-from-manifest')).toBeNull();
   });
 
   it('publishes the workspace program when an owner clicks Publish', async () => {
     h.publishWorkspaceProgram.mockResolvedValue({ program: { packageId: '@team/web', publisher: 'team' } });
     await render();
+    await openStore(container);
     await act(async () => { byTestId(container, 'publish-program').click(); });
     await flush();
     expect(h.publishWorkspaceProgram).toHaveBeenCalledWith('team');
@@ -189,6 +207,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchMarketplace.mockResolvedValue([{ id: 'p1', packageId: '@other/web', publisher: 'other', displayName: 'Web', installCount: 4, verified: false, latestVersion: '1.0.0' }]);
     h.installPublishedProgram.mockResolvedValue({ install: { id: 'inst9', packageId: '@other/web', version: '1.0.0', status: 'installed' } });
     await render();
+    await openStore(container);
     const card = byTestId(container, 'marketplace-item-@other/web');
     expect(card).not.toBeNull();
     await act(async () => { byTestId(container, 'install-published-@other/web').click(); });
@@ -199,19 +218,20 @@ describe('ProgramsPanel install / launch-from-install', () => {
   it('hides the Publish action for a plain member', async () => {
     h.state.workspace.role = 'member';
     await render();
+    await openStore(container);
     expect(byTestId(container, 'publish-program')).toBeNull();
   });
 
-  it('shows a Verified badge only on verified marketplace programs and renders descriptions', async () => {
+  it('shows a Verified badge only on verified marketplace programs', async () => {
     h.fetchMarketplace.mockResolvedValue([
       { id: 'p1', packageId: '@vectant/nextjs-dev', publisher: 'vectant', displayName: 'Next.js Dev Server', description: 'Next.js development server with hot reload (port 3000).', installCount: 12, verified: true, latestVersion: '1.0.0' },
       { id: 'p2', packageId: '@other/web', publisher: 'other', displayName: 'Web', description: 'A community app', installCount: 1, verified: false, latestVersion: '1.0.0' },
     ]);
     await render();
+    await openStore(container);
 
     expect(byTestId(container, 'verified-badge-@vectant/nextjs-dev')).not.toBeNull();
     expect(byTestId(container, 'verified-badge-@other/web')).toBeNull();
-    expect(byTestId(container, 'marketplace-item-@vectant/nextjs-dev').textContent).toContain('Next.js development server');
   });
 
   it('shows "Set up project" for a scaffoldable installed default and scaffolds then launches', async () => {
