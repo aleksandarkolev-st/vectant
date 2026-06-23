@@ -55,6 +55,7 @@ const CFG = {
   slug: process.env.SLUG ?? `hip-module-runtime-${nowSlugDate()}`,
   profilePath: process.env.SYNTHI_HIP_MODULE_PROFILE ?? DEFAULT_PROFILE_PATH,
   hipcc: process.env.SYNTHI_HIP_MODULE_HIPCC ?? process.env.HIPCC ?? 'hipcc',
+  execContainer: process.env.SYNTHI_HIP_MODULE_EXEC_CONTAINER ?? process.env.WORKER_CONTAINER ?? '',
   gpuArch: process.env.SYNTHI_HIP_MODULE_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? '',
   timeoutMs: Number(process.env.SYNTHI_HIP_MODULE_TIMEOUT_MS ?? 120000),
   splitModel: process.env.SYNTHI_GEMINI_SPLIT_MODEL ?? 'gemini-3.5-flash',
@@ -455,6 +456,40 @@ function execFileChecked(command, args, options = {}) {
   });
 }
 
+async function dockerExec(container, args, options = {}) {
+  return execFileChecked('docker', [
+    'exec',
+    '-u',
+    'root',
+    '-w',
+    options.workdir ?? '/tmp',
+    container,
+    ...args,
+  ], {
+    timeout: options.timeout ?? CFG.timeoutMs,
+  });
+}
+
+async function dockerCpTo(container, localPath, remotePath) {
+  await execFileChecked('docker', ['cp', localPath, `${container}:${remotePath}`], {
+    timeout: CFG.timeoutMs,
+  });
+}
+
+async function dockerCpFrom(container, remotePath, localPath) {
+  await execFileChecked('docker', ['cp', `${container}:${remotePath}`, localPath], {
+    timeout: CFG.timeoutMs,
+  });
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function remoteDirFor(outDir) {
+  return `/tmp/synthi-hip-module-runtime/${safeSlug(path.basename(outDir))}`;
+}
+
 function hipccArgsForHsaco({ sourcePath, outputPath, gpuArch }) {
   const args = ['--genco', '-O2'];
   if (gpuArch) args.push(`--offload-arch=${gpuArch}`);
@@ -473,6 +508,60 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
   const beforeHsaco = path.join(outDir, `${safeSlug(profile.targetId)}-before.hsaco`);
   const afterHsaco = path.join(outDir, `${safeSlug(profile.targetId)}-after.hsaco`);
   const compileStart = process.hrtime.bigint();
+  if (CFG.execContainer) {
+    const remoteDir = remoteDirFor(outDir);
+    const remoteProbeSource = `${remoteDir}/hip_module_runtime_probe.cpp`;
+    const remoteBeforeSource = `${remoteDir}/before.hip`;
+    const remoteAfterSource = `${remoteDir}/after.hip`;
+    const remoteHostPath = `${remoteDir}/hip_module_runtime_probe`;
+    const remoteBeforeHsaco = `${remoteDir}/before.hsaco`;
+    const remoteAfterHsaco = `${remoteDir}/after.hsaco`;
+    await dockerExec(CFG.execContainer, [
+      'sh',
+      '-lc',
+      `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`,
+    ], { timeout: CFG.timeoutMs });
+    await dockerCpTo(CFG.execContainer, PROBE_SOURCE_PATH, remoteProbeSource);
+    await dockerCpTo(CFG.execContainer, profile.beforePath, remoteBeforeSource);
+    await dockerCpTo(CFG.execContainer, profile.afterPath, remoteAfterSource);
+    const hostArgs = ['-std=c++17', '-O2', remoteProbeSource, '-o', remoteHostPath];
+    const beforeArgs = hipccArgsForHsaco({
+      sourcePath: remoteBeforeSource,
+      outputPath: remoteBeforeHsaco,
+      gpuArch: profile.compile.gpuArch,
+    });
+    const afterArgs = hipccArgsForHsaco({
+      sourcePath: remoteAfterSource,
+      outputPath: remoteAfterHsaco,
+      gpuArch: profile.compile.gpuArch,
+    });
+    await dockerExec(CFG.execContainer, [CFG.hipcc, ...hostArgs], { timeout: CFG.timeoutMs });
+    await dockerExec(CFG.execContainer, [CFG.hipcc, ...beforeArgs], { timeout: CFG.timeoutMs });
+    await dockerExec(CFG.execContainer, [CFG.hipcc, ...afterArgs], { timeout: CFG.timeoutMs });
+    await dockerCpFrom(CFG.execContainer, remoteBeforeHsaco, beforeHsaco);
+    await dockerCpFrom(CFG.execContainer, remoteAfterHsaco, afterHsaco);
+    const compileEnd = process.hrtime.bigint();
+    return {
+      transport: 'docker_exec_container',
+      container: CFG.execContainer,
+      hostPath,
+      remoteHostPath,
+      beforeHsaco,
+      afterHsaco,
+      remoteBeforeHsaco,
+      remoteAfterHsaco,
+      remoteDir,
+      compiler: CFG.hipcc,
+      commands: {
+        host: ['docker', 'exec', '-u', 'root', '-w', '/tmp', CFG.execContainer, CFG.hipcc, ...hostArgs],
+        before: ['docker', 'exec', '-u', 'root', '-w', '/tmp', CFG.execContainer, CFG.hipcc, ...beforeArgs],
+        after: ['docker', 'exec', '-u', 'root', '-w', '/tmp', CFG.execContainer, CFG.hipcc, ...afterArgs],
+      },
+      compileDurationNs: durationNs(compileStart, compileEnd),
+      beforeHsacoHash: await sha256File(beforeHsaco),
+      afterHsacoHash: await sha256File(afterHsaco),
+    };
+  }
   const hostArgs = ['-std=c++17', '-O2', PROBE_SOURCE_PATH, '-o', hostPath];
   const beforeArgs = hipccArgsForHsaco({
     sourcePath: profile.beforePath,
@@ -489,6 +578,7 @@ async function compileRuntimeArtifacts({ profile, outDir }) {
   await execFileChecked(CFG.hipcc, afterArgs);
   const compileEnd = process.hrtime.bigint();
   return {
+    transport: 'local_process',
     hostPath,
     beforeHsaco,
     afterHsaco,
@@ -544,6 +634,35 @@ async function runHipProbe({ profile, compiled, outDir }) {
     afterHsacoHash: compiled.afterHsacoHash,
   });
   const runtimeStart = process.hrtime.bigint();
+  if (compiled.transport === 'docker_exec_container') {
+    const remotePlanPath = `${compiled.remoteDir}/probe-plan.env`;
+    const remoteRawAfterPath = `${compiled.remoteDir}/after-readback.bin`;
+    const remoteRuntimeTracePath = `${compiled.remoteDir}/runtime-trace.json`;
+    await dockerCpTo(CFG.execContainer, planPath, remotePlanPath);
+    const run = await dockerExec(CFG.execContainer, [
+      compiled.remoteHostPath,
+      remotePlanPath,
+      compiled.remoteBeforeHsaco,
+      compiled.remoteAfterHsaco,
+      remoteRawAfterPath,
+      remoteRuntimeTracePath,
+    ], {
+      timeout: CFG.timeoutMs,
+    });
+    await dockerCpFrom(CFG.execContainer, remoteRawAfterPath, rawAfterPath);
+    await dockerCpFrom(CFG.execContainer, remoteRuntimeTracePath, runtimeTracePath);
+    const runtimeEnd = process.hrtime.bigint();
+    const runtimeTrace = JSON.parse(await readFile(runtimeTracePath, 'utf8'));
+    return {
+      planPath,
+      rawAfterPath,
+      runtimeTracePath,
+      runtimeTrace,
+      stdout: run.stdout,
+      stderr: run.stderr,
+      runtimeDurationNs: durationNs(runtimeStart, runtimeEnd),
+    };
+  }
   const run = await execFileChecked(compiled.hostPath, [
     planPath,
     compiled.beforeHsaco,
@@ -1335,6 +1454,8 @@ async function main() {
     },
     compiler: {
       hipcc: CFG.hipcc,
+      executionTransport: compiled.transport,
+      executionContainer: compiled.container ?? null,
       gpuArch: profile.compile.gpuArch,
       commands: compiled.commands,
       hsacoBefore: relRepo(compiled.beforeHsaco),
