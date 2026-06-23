@@ -1057,7 +1057,14 @@ assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
-assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
+assert.equal(coverageById.get('per_target_run_modes')?.status, 'partial');
+assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);
+assert.ok(coverageById.get('per_target_run_modes')?.incompleteTargetCount > 0);
+const flowRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
+  (entry) => entry.targetKey === 'hip:flow',
+);
+assert.equal(flowRunModeTarget?.status, 'accepted');
+assert.deepEqual(flowRunModeTarget.openGaps, []);
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));

@@ -2173,15 +2173,16 @@ function rowRefs(rows) {
   }));
 }
 
-function coverageEntry({ id, requirement, status, rows = [], openGaps = [] }) {
-  return {
+function coverageEntry({ id, requirement, status, rows = [], openGaps = [], ...extra }) {
+  return compactObject({
     id,
     requirement,
     status,
     rowCount: rows.length,
     rows: rowRefs(rows),
     openGaps: compactStringList(openGaps),
-  };
+    ...extra,
+  });
 }
 
 function acceptedRows(rows, predicate) {
@@ -2249,13 +2250,26 @@ function validationRunModeCoverage(rows) {
       rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
     }
   }
+  const negativeEditRows = refusalRows(rows, (row) =>
+    row.proofMode === 'negative_edit'
+    || row.evidenceKind === 'negative_edit'
+    || row.runMode?.metricScope === 'negative_edit'
+  );
+  for (const row of negativeEditRows) {
+    const key = `${row.backend}:${row.targetId}`;
+    if (rowsByTarget.has(key)) {
+      rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
+    }
+  }
   const openGaps = [];
+  const targetCoverage = [];
   for (const [targetKey, targetRows] of rowsByTarget) {
+    const targetGaps = [];
     for (const requiredMode of REQUIRED_FULL_TARGET_RUN_MODES) {
       const hasMode = targetRows.some((row) =>
         row.runMode?.accepted === true && row.runMode.metricScope === requiredMode
       );
-      if (!hasMode) openGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
+      if (!hasMode) targetGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
     }
     const hotDelta1EditHashes = new Set(targetRows
       .filter((row) => row.runMode?.accepted === true && row.runMode.metricScope === 'hot_delta_1')
@@ -2275,23 +2289,54 @@ function validationRunModeCoverage(rows) {
       )
     );
     if (!hasHotDelta2DifferentEdit) {
-      openGaps.push(`${targetKey}:hot_delta_2_different_edit_evidence_missing`);
+      targetGaps.push(`${targetKey}:hot_delta_2_different_edit_evidence_missing`);
     }
+    const hasNegativeEditRefusal = targetRows.some((row) =>
+      row.matrixOutcome === 'refusal_proven'
+      && (
+        row.proofMode === 'negative_edit'
+        || row.evidenceKind === 'negative_edit'
+        || row.runMode?.editKind === 'negative_edit'
+        || row.runMode?.edit_kind === 'negative_edit'
+        || row.runMode?.metricScope === 'negative_edit'
+      )
+    );
+    if (!hasNegativeEditRefusal) {
+      targetGaps.push(`${targetKey}:negative_edit_refusal_evidence_missing`);
+    }
+    openGaps.push(...targetGaps);
+    const [backend, ...targetIdParts] = targetKey.split(':');
+    targetCoverage.push({
+      targetKey,
+      backend,
+      targetId: targetIdParts.join(':'),
+      status: targetGaps.length === 0 ? 'accepted' : 'missing',
+      rowCount: targetRows.length,
+      rows: rowRefs(targetRows),
+      openGaps: compactStringList(targetGaps),
+    });
   }
-  const negativeEditRows = refusalRows(rows, (row) =>
-    row.proofMode === 'negative_edit'
-    || row.evidenceKind === 'negative_edit'
-    || row.runMode?.metricScope === 'negative_edit'
-  );
-  if (negativeEditRows.length === 0) {
+  if (fullRuntimeRows.length > 0 && negativeEditRows.length === 0) {
     openGaps.push('negative_edit_refusal_evidence_missing');
   }
+  const acceptedTargetCount = targetCoverage.filter((entry) => entry.status === 'accepted').length;
+  const incompleteTargetCount = targetCoverage.filter((entry) => entry.status !== 'accepted').length;
+  const status = fullRuntimeRows.length === 0
+    ? 'missing'
+    : openGaps.length === 0
+      ? 'accepted'
+      : acceptedTargetCount > 0
+        ? 'partial'
+        : 'missing';
   return coverageEntry({
     id: 'per_target_run_modes',
     requirement: 'Per-target cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
-    status: fullRuntimeRows.length > 0 && openGaps.length === 0 ? 'accepted' : 'missing',
+    status,
     rows: [...fullRuntimeRows, ...coldRows, ...negativeEditRows],
     openGaps,
+    targetCoverage,
+    acceptedTargetCount,
+    incompleteTargetCount,
   });
 }
 
