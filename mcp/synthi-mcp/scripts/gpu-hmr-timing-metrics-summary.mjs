@@ -94,13 +94,91 @@ async function readJson(filePath) {
   }
 }
 
+function finiteNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function eventsByEpoch(events, epoch) {
+  return Array.isArray(events)
+    ? objectOrEmpty(events.find((event) => Number(event?.epoch) === Number(epoch)))
+    : {};
+}
+
+function eventTimestampNs(event) {
+  return finiteNumber(
+    event.timestamp_monotonic_ns
+    ?? event.timestampMonotonicNs
+    ?? event.timestamp_ns
+    ?? event.timestampNs
+    ?? event.timestamp,
+  );
+}
+
+function hardenedHipModuleProofAccepted(json) {
+  const claimBoundary = objectOrEmpty(json?.claimBoundary ?? json?.claim_boundary);
+  const negativeEditRefusal = objectOrEmpty(json?.negativeEditRefusal ?? json?.negative_edit_refusal);
+  const executableStaticCheck = objectOrEmpty(
+    negativeEditRefusal.executableStaticCheck ?? negativeEditRefusal.executable_static_check,
+  );
+  const timingVisual = objectOrEmpty(
+    json?.timingMetrics?.visualEvidence
+    ?? json?.timing_metrics?.visual_evidence,
+  );
+  const runtimeTrace = objectOrEmpty(json?.runtimeTrace ?? json?.runtime_trace);
+  const loader = eventsByEpoch(runtimeTrace.loaderEvents ?? runtimeTrace.loader_events, 2);
+  const publish = eventsByEpoch(runtimeTrace.epochEvents ?? runtimeTrace.epoch_events, 2);
+  const dispatch = eventsByEpoch(runtimeTrace.dispatchEvents ?? runtimeTrace.dispatch_events, 2);
+  const output = eventsByEpoch(runtimeTrace.outputEvents ?? runtimeTrace.output_events, 2);
+  const retirement = objectOrEmpty(runtimeTrace.retirementEvent ?? runtimeTrace.retirement_event);
+  const timestamps = [
+    eventTimestampNs(loader),
+    eventTimestampNs(publish),
+    eventTimestampNs(dispatch),
+    eventTimestampNs(output),
+    eventTimestampNs(retirement),
+  ];
+  return claimBoundary.proofAuthority === 'scoped_native_hip_module_runtime_trace'
+    && claimBoundary.executionBoundary === 'standalone_hip_module_probe'
+    && claimBoundary.arbitraryTargetRuntimeAccepted === false
+    && claimBoundary.arbitraryLibraryAccepted === false
+    && claimBoundary.broadHipApplicationAcceptance === false
+    && negativeEditRefusal.refusalProven === true
+    && negativeEditRefusal.gpuHmrSuccess === false
+    && executableStaticCheck.accepted === true
+    && executableStaticCheck.signatureChanged === true
+    && executableStaticCheck.negativeKernelFound === true
+    && finiteNumber(timingVisual.screenshotCount ?? timingVisual.screenshot_count) === 0
+    && timingVisual.accepted === false
+    && timestamps.every((timestamp) => timestamp !== null);
+}
+
+function withProofContext(metrics, json) {
+  return {
+    ...metrics,
+    proofId: json?.proofId ?? json?.proof_id ?? metrics?.proofId ?? null,
+    profileTargetId: json?.profile?.targetId ?? json?.profile?.target_id ?? metrics?.profileTargetId ?? null,
+  };
+}
+
 function classifyReport(json, filePath) {
   if (!json || typeof json !== 'object') return null;
 
   if (json.timingMetrics?.schemaVersion === GPU_HMR_TIMING_METRICS_SCHEMA_VERSION) {
+    if (
+      json.timingMetrics.source === 'hip_module_runtime'
+      && hardenedHipModuleProofAccepted(json) !== true
+    ) {
+      return null;
+    }
     return {
       kind: json.timingMetrics.source ?? 'precomputed',
-      metrics: json.timingMetrics,
+      metrics: withProofContext(json.timingMetrics, json),
     };
   }
 
@@ -129,9 +207,10 @@ function classifyReport(json, filePath) {
     String(json.schema ?? '').includes('hip_module_runtime_proof')
     || String(json.proofId ?? '').startsWith('hip-module-runtime-proof:')
   ) {
+    if (hardenedHipModuleProofAccepted(json) !== true) return null;
     return {
       kind: 'hip_module_runtime',
-      metrics: hipModuleRuntimeTimingMetrics(json),
+      metrics: withProofContext(hipModuleRuntimeTimingMetrics(json), json),
     };
   }
 
@@ -237,6 +316,7 @@ function latestPerProfile(rows) {
       row.metrics?.source ?? row.kind ?? 'unknown',
       row.metrics?.profileId ?? row.metrics?.projectName ?? row.filePath,
       row.metrics?.proofMode ?? 'unknown',
+      row.metrics?.metricScope ?? row.metrics?.metric_scope ?? 'unknown_scope',
     ].join('|');
 
     const existing = byKey.get(key);
@@ -261,7 +341,9 @@ function compactRow(row) {
     finishedMonotonicNs: metrics.clockEvidence?.finishedMonotonicNs ?? metrics.finishedMonotonicNs ?? null,
     durationMonotonicNs: metrics.clockEvidence?.durationMonotonicNs ?? metrics.durationMonotonicNs ?? null,
     durationMonotonicMs: metrics.clockEvidence?.durationMonotonicMs ?? metrics.durationMonotonicMs ?? null,
+    proofId: metrics.proofId ?? null,
     profileId: metrics.profileId,
+    profileTargetId: metrics.profileTargetId ?? null,
     projectName: metrics.projectName,
     proofMode: metrics.proofMode,
     status: metrics.status,
