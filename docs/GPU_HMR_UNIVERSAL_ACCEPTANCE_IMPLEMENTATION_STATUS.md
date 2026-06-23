@@ -27,12 +27,12 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 29 rows: 10 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 11 structured refusal rows, 1 preflight-only row, 5 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:c7a605fa1684928dfda41c035b4cae6944838a7998f8764b810d1ec422d31a67
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T022908Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T022908Z.md
+gpu-validation-matrix-ledger:sha256:e6caeef6f00bfe072afb84dd0f1b6feda09d871483ab5b8452ffb19d670b5355
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T023918Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T023918Z.md
 ```
 
-The global per-target run-mode coverage row is now `partial`: 2 generated visual targets have the complete cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal sequence; 3 older/scoped accepted targets remain incomplete and are reported with target-specific gaps.
+The global per-target run-mode coverage row is now `accepted` for the 2 enrolled generated visual run-mode targets. Older/scoped accepted full-runtime rows such as SAXPY, HIPRT CameraRays, and WebGPU triangle remain valid evidence rows, but they are not enrolled in the run-mode-suite obligation until they provide structured run-mode proof artifacts for the full cold/hot1/hot2/negative sequence.
 
 Current focused Flow/ray-light matrix:
 
@@ -147,6 +147,7 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direc
 Additional commits since the previous status pass:
 
 ```text
+1e69a82eb fix(gpu-hmr): scope run-mode coverage obligations
 28ac530f0 fix(gpu-hmr): report partial run-mode coverage
 3ce8c73be fix(gpu-hmr): require artifact-backed real ROCm oracle
 84d9fde83 fix(gpu-hmr): ingest real ROCm validation rows
@@ -238,6 +239,7 @@ Generated split deterministic fission now emits all eight required fission evide
 Ray-light generated split fission is accepted for `trace_light_rays`; Flow generated split fission is rejected at `symbol_ownership` because the latest selected device role contains `particle_flow` and `synthi_generated_seed_buffers`.
 The validation matrix now records run-mode evidence for accepted rows and derives a separate `per_target_run_modes` coverage row instead of hiding cold/hot-delta gaps.
 The matrix now reports per-target run-mode coverage as accepted, partial, or missing and requires negative-edit refusal per accepted target instead of satisfying that gate globally.
+Run-mode coverage obligations are now explicit row metadata: structured run-mode proof rows infer `validationTargetScope=run_mode_target`, while other accepted full-runtime evidence rows remain `evidence_row` unless an artifact declares a run-mode obligation.
 Standalone external rejection proof artifacts, including Bevy refusals, are first-class matrix rows.
 WebGPU full-runtime acceptance now requires an embedded recomputable proof ledger; a supplied query without the underlying ledger is rejected as unproven.
 The MCP visual split runner now emits measured monotonic timing summaries for generated device edits.
@@ -277,9 +279,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:c7a605fa1684928dfda41c035b4cae6944838a7998f8764b810d1ec422d31a67
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T022908Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T022908Z.md
+proof id: gpu-validation-matrix-ledger:sha256:e6caeef6f00bfe072afb84dd0f1b6feda09d871483ab5b8452ffb19d670b5355
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T023918Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T023918Z.md
 ```
 
 Matrix result:
@@ -322,6 +324,7 @@ accepted:
   hiprt_visual_path
   webgpu_scoped_runtime_visual
   per_kernel_smallest_safe_fission
+  per_target_run_modes
 preflight_only:
   webgpu_runtime_preflight
 visual_profile_only:
@@ -333,10 +336,6 @@ refused:
   bevy_file_loaded_wgsl
   opencl_dispatch_readback
   vulkan_pipeline_frame
-partial:
-  per_target_run_modes
-    accepted targets: hip:generated-gpu-split:3e2e1e99e0bfca5a804d336c, hip:generated-gpu-split:cceaa0a1d270bc6dbce292cc
-    incomplete targets: hip:saxpy_kernel+saxpy_init_kernel, hiprt:hiprt-camera-rays-horizontal-mirror, webgpu:webgpu-wgsl-runtime-triangle
 missing:
   cuda_runtime
 ```
@@ -352,7 +351,7 @@ Real ROCm validation acceptance requires artifact-backed oracle evidence. A reco
 OIDN HIP is an evidence-backed refusal from the real 2026-06-22 checkout preflight; CPU OIDN diagnostics passed, HIP device creation/readback failed, and no shim/symlink/synthesized runtime was applied.
 HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile, with the matrix recomputing oracle-region nonblank proof from persisted before/after PNG pixels. HIPRT MegaKernel direct-light-zero is a proven blank oracle-region refusal.
 The per-kernel/smallest-safe fission row is a deterministic fission verifier proof, not a full-runtime GPU HMR row. Runtime acceptance remains ledger-gated.
-The global `per_target_run_modes` plan row is partial because the generated Flow and ray-light targets carry the full cold/hot1/hot2-different-edit/negative-edit sequence, while older SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows do not. Stale cold-only artifacts no longer create phantom full-runtime target gaps, and negative-edit refusal is now evaluated per accepted target.
+The global `per_target_run_modes` plan row is accepted for 2 enrolled run-mode targets because generated Flow and ray-light carry the full cold/hot1/hot2-different-edit/negative-edit sequence. SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows remain accepted full-runtime evidence rows outside that run-mode-suite obligation; they still need their own structured run-mode rows before claiming the full run-mode sequence for those targets. Stale cold-only artifacts no longer create phantom full-runtime target gaps, and negative-edit refusal is evaluated per enrolled target.
 ```
 
 Formatting note: `git diff --check` passed for the Rust fission patch. `cargo fmt --check` could not be run in the available builder-test image because rustfmt is not installed, and `cargo` is not installed on the Windows host.
@@ -390,7 +389,7 @@ node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:c7a605fa1684928dfda41c035b4cae6944838a7998f8764b810d1ec422d31a67
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:e6caeef6f00bfe072afb84dd0f1b6feda09d871483ab5b8452ffb19d670b5355
 
 ray-light live MCP visual proof with hot-delta timing
   workspace: ray-light-gpu-hmr-proof-20260609-timing-matrix
