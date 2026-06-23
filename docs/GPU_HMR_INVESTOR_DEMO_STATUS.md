@@ -42,10 +42,10 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:6b3ae5a55e584bbf3ed36711852c081622c7613a5b38cdd30c691ef238d571a1
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T090513Z.json
-global matrix summary: 34 rows, 13 full-runtime GPU HMR, 12 refusals, 6 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
-global per-target run modes: accepted for 2 enrolled generated visual run-mode targets; SAXPY and WebGPU triangle are full-runtime evidence rows outside that generated run-mode-suite target set
+global matrix: gpu-validation-matrix-ledger:sha256:2fd9428dfa41e999554f72af2bc4f4fb9e88cb75b353af93293e928dea34d008
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T092351Z.json
+global matrix summary: 36 rows, 15 full-runtime GPU HMR, 12 refusals, 6 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+global per-target run modes: accepted for 2 enrolled generated visual run-mode targets; SAXPY remains a full-runtime evidence row outside that generated run-mode-suite target set; scoped WebGPU now has accepted generic cold/hot1/hot2 runtime artifacts but is not enrolled until negative-edit refusal exists
 HIPRT run modes: accepted for hiprt-camera-rays-horizontal-mirror with cold runtime visual evidence, hot-delta-1, hot-delta-2 different edit, and ABI-changing negative-edit refusal evidence
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
@@ -75,13 +75,17 @@ Flow hot2 ledger: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd4
 Flow visuals: before-after-diff.png, hot-delta-2-diff.png
 Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
 
-WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:cf42f6465d5f5d85fd2e158548c88cac679c4a4c4c0271b7ac0940f50dd77ed2
-WebGPU hot1 ledger: gpu-ledger-proof:sha256:326adf853c655cfbde76091a7fdaad8d456708b7e9f6b6395357a7da7760df63
-WebGPU hot1 timing: total_validator_wall_time=1381243000ns, trigger_to_visible_time=66979500ns, changed_pixel_ratio=0.29389322916666666
-WebGPU hot2 proof id: webgpu-runtime-visual-proof:sha256:bbfb53e28f06f4a8cf93cc94e2a6ba42101042bc0ed60c441e0df6f1738f4995
-WebGPU hot2 ledger: gpu-ledger-proof:sha256:08b548a7df18d1f8514930c8282e3199e03056d81883ba29af52d9b2071ced28
-WebGPU hot2 timing: total_validator_wall_time=1500198700ns, trigger_to_visible_time=151383400ns, changed_pixel_ratio=0.32245225694444446
-WebGPU hot2 visual inspection: before blue triangle, after green rotated triangle, diff nonblank
+WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:eacf1cc6906a8a20808dd785305614d9ff701a59de3dda23dec524876f202272
+WebGPU hot1 runtime proof: gpu-runtime-proof:sha256:66ebd3b2cdb406fb03fad9249d1b6dcd81f2a72b27a5e29fb390dd71fc5b9435
+WebGPU hot1 ledger: gpu-ledger-proof:sha256:ee841565386781e9eb023ad39e78e9ccf7c3c222fb6a189adfba15cebb764b65
+WebGPU hot1 run-mode proof: runtime-run-mode-proof:sha256:22b10a2bce59687fa6cdd4c74af9b2f9205dc5c7b289e6df063ff1b4e18613f6
+WebGPU hot1 timing: total_validator_wall_time=678430600ns, trigger_to_visible_time=53942000ns, changed_pixel_ratio=0.29389322916666666
+WebGPU hot2 proof id: webgpu-runtime-visual-proof:sha256:593de2ad961945e0b0ff93cc7038ef35dd1039c9b62c047f2e55b8aadb4983e6
+WebGPU hot2 runtime proof: gpu-runtime-proof:sha256:991f2254dc5d225c077156f24db21afde76d4d6dff96c8879cc68d90d0db2e5f
+WebGPU hot2 ledger: gpu-ledger-proof:sha256:4d23aea65aa2cc886e28842e9de9d733c34f53edd892b32e6aab5caf457e3424
+WebGPU hot2 run-mode proof: runtime-run-mode-proof:sha256:05c91d7b8295624af8feb4deafc7b8fb91b2f27a729d978bc6951f8e54104875
+WebGPU hot2 timing: total_validator_wall_time=624688800ns, trigger_to_visible_time=53991100ns, changed_pixel_ratio=0.32245225694444446
+WebGPU visual inspection: hot1 after yellow inverted triangle with nonblank diff; hot2 after green rotated triangle with nonblank diff, opened with the local image tool
 
 HIPRT hot1 proof id: hiprt-warm-runtime-proof:sha256:d0a8b4ca701d855e96ce0c6b812c668a4307901d13b232948e5c629fe7b0384b
 HIPRT hot1 runtime proof: gpu-runtime-proof:sha256:41cfc3ac84b5d95ee667711bcbb52e76a6fc4c2be96905d95f3fac4e7ce4b355
@@ -141,6 +145,7 @@ plan coverage: large_real_rocm_repo=refused
 Latest implementation commits:
 
 ```text
+872e75007 fix(gpu-hmr): emit WebGPU runtime run-mode artifacts
 811a67e5b fix(gpu-hmr): surface native ROCm refusal gaps
 4e94059a2 fix(gpu-hmr): require MIOpen final progression proof
 07872b21c docs(gpu-hmr): record HIPRT run-mode proof acceptance
@@ -256,7 +261,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:6b3ae5a55e584bbf3ed36711852c081622c7613a5b38cdd30c691ef238d571a1
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:2fd9428dfa41e999554f72af2bc4f4fb9e88cb75b353af93293e928dea34d008
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -833,7 +838,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 ## Honest Remaining Work
 
 - Full-runtime Bevy acceptance is not implemented.
-- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix now reports `per_target_run_modes=accepted` for enrolled generated run-mode targets. Scoped HIPRT CameraRays now reports `hiprt_run_modes=accepted` with cold, hot delta 1, hot delta 2 with a different edit, full-runtime visual proof rows, and an ABI-changing negative-edit refusal. Scoped WebGPU remains a full-runtime evidence row outside that run-mode-suite obligation until it provides structured cold/hot1/hot2/negative run-mode artifacts.
+- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix now reports `per_target_run_modes=accepted` for enrolled generated run-mode targets. Scoped HIPRT CameraRays now reports `hiprt_run_modes=accepted` with cold, hot delta 1, hot delta 2 with a different edit, full-runtime visual proof rows, and an ABI-changing negative-edit refusal. Scoped WebGPU now emits accepted generic cold/hot1/hot2 runtime run-mode artifacts with embedded strict runtime proof artifacts, but remains outside full run-mode-suite enrollment until it provides a structured negative-edit refusal.
 - MIOpen large ROCm ML infrastructure now builds and runs under the proof harness, but full-runtime Synthi GPU HMR remains refused until the full ledger chain, same-process runtime proof artifact, epoch/dispatch proof, target-progression ledger, and output or visual oracle proof are produced. The latest profile has no output oracle and now requires final-acceptance target progression; the result fails those gates explicitly.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
