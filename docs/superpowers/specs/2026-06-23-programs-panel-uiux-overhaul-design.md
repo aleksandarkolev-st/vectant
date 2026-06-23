@@ -71,7 +71,7 @@ Vertical order, **Store logo pinned above everything**:
 1. **Store logo / header** — `[← back to Library] [store icon] Store`. Pinned (stays visible).
 2. **Search bar** — full-width, `bg-app` field.
 3. **Actions row** — `[Install from manifest]` and `[Publish]` (secondary, brand-restrained).
-4. **Filter strip** — category chips (`All`, `Databases`, `API tools`, `Dev servers`, `Desktop GUIs`, `Community`). **Horizontally scrollable** with a short **fade-out on both ends**; **mouse wheel up/down scrolls the strip left/right**. Reuse the existing navbar/editor tab-strip horizontal-scroll-with-fade pattern (do not reinvent). The strip is **sticky** — it stays while the tiles scroll.
+4. **Filter strip** — category chips (`All`, `Databases`, `API tools`, `Dev servers`, `Desktop GUIs`, `Community`). It reuses the **navbar tab-strip scrollbar** (`EditorTabStrip`): the native scrollbar is hidden (`.no-scrollbar` + `overflow-x-auto`), a **custom 3px draggable thumb** rides in its own lane, the ends get a **CSS-mask fade-out**, and **mouse wheel up/down scrolls the strip left/right**. Extract/share that mechanism — do not reinvent it. The strip is **sticky** — it stays while the tiles scroll.
 5. **Tile grid** — **2 tiles per row**. Each tile: tinted icon plate, name, **Verified badge** (brand-gradient — official Vectant only), installs / `community` meta, and Install. The grid mixes **verified (official)** and **community** apps.
 
 Tapping a tile opens the **detail view**.
@@ -117,7 +117,8 @@ The actual `publish → build → image/host → run` pipeline, and the **sandbo
 
 - **Navigation:** Library ↔ Store within the panel (push/back); view state preserved on return.
 - **Pinning:** the Store logo stays above everything; the filter strip is sticky; only the tile grid scrolls vertically.
-- **Filter strip:** horizontal scroll, edge fades, wheel-vertical → horizontal — reuse the existing tab-strip component/behavior.
+- **Filter strip scrollbar:** reuse the **navbar tab-strip scrollbar** (`synthi/src/components/EditorTabStrip.jsx`) — native bar hidden via `.no-scrollbar`, a custom 3px draggable thumb in its own lane, edge-fade mask, and wheel-vertical → horizontal. Extract it into a shared strip component rather than duplicating.
+- **Program list scrollbar (vertical, up/down):** the **regular global vectant scrollbar** — the branded `::-webkit-scrollbar` in `globals.css` (8px, `accent-primary 50%` thumb, `bg-surface 50%` track, 4px radius; Firefox `scrollbar-width: thin` + matching `scrollbar-color`). Do **not** apply `.no-scrollbar` to the vertical scroller; it inherits the global branded bar by default.
 - **Live thumbnail:** for `webGui` running programs, render a snapshot/preview from the `/wsport` proxy. Snapshot-vs-live-iframe is an implementation choice (decide in the plan); respect `prefers-reduced-motion`.
 - **Roles:** preserve the current `canManage` gating — members get a read-only view (no launch/install/publish).
 
@@ -125,7 +126,7 @@ The actual `publish → build → image/host → run` pipeline, and the **sandbo
 
 - `synthi/src/components/programs/ProgramsPanel.jsx` — major rework; split into focused sub-components (e.g. `LibraryView`, `StoreView`, `RunningCard`, `ProgramTile`, `StoreTile`, `FilterStrip`, `ProgramDetail`). Today's file is a single ~840-line component doing everything; splitting is part of the work.
 - `synthi/src/components/programs/programsClient.js` — no API-shape change required for the UI overhaul (community-hosted install is platform-side, later).
-- Reuse the existing horizontal tab-strip scroll/fade component (`EditorTabStrip` or the navbar strip) for the Store filter strip — extract/share it rather than duplicating.
+- `synthi/src/components/EditorTabStrip.jsx` — extract its custom horizontal scrollbar (3px draggable thumb in its own lane), edge-fade mask, and wheel-to-horizontal handler into a shared strip component, and use it for the Store filter strip. The vertical program scroller just uses the default global scrollbar (no extra work).
 - Docking panel registry (`ide-panels.js` / `panel-wrappers.jsx`) — the panel stays one IDE panel; the Store is an **internal view**, not a new docked panel.
 - Possibly a small live-thumbnail component for `webGui` running cards.
 
