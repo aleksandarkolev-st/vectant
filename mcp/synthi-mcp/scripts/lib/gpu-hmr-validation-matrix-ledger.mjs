@@ -61,6 +61,13 @@ function boolOrNull(value) {
   return typeof value === 'boolean' ? value : null;
 }
 
+function firstBool(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
+}
+
 function finiteNumber(value) {
   if (value === undefined || value === null || value === '') return null;
   const number = Number(value);
@@ -441,11 +448,46 @@ function rowKey(row) {
   ].join('|');
 }
 
+function normalizeCoverageObligations(row) {
+  const declared = compactObject(
+    row.coverageObligations
+      ?? row.coverage_obligations
+      ?? row.validationCoverage
+      ?? row.validation_coverage,
+  );
+  const declaredPerTargetRunModes = firstBool(
+    declared.perTargetRunModes,
+    declared.per_target_run_modes,
+    declared.fullTargetRunModes,
+    declared.full_target_run_modes,
+  );
+  if (declaredPerTargetRunModes !== null) {
+    return {
+      perTargetRunModes: declaredPerTargetRunModes,
+      source: 'artifact_declared',
+    };
+  }
+  const schemaInfersRunModeObligation = row.proofMode === 'run_mode_proof';
+  return {
+    perTargetRunModes: schemaInfersRunModeObligation,
+    source: schemaInfersRunModeObligation ? 'schema_inferred_run_mode_proof' : 'not_obligated',
+  };
+}
+
+function rowRequiresPerTargetRunModes(row) {
+  return row.coverageObligations?.perTargetRunModes === true;
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     ...seed,
   };
+  row.coverageObligations = normalizeCoverageObligations(row);
+  row.validationTargetScope = firstText(
+    row.validationTargetScope,
+    row.validation_target_scope,
+  ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -1917,6 +1959,13 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       telemetry.proofId,
       telemetry.proof_id,
     ),
+    coverageObligations: compactObject(
+      json.coverageObligations
+        ?? json.coverage_obligations
+        ?? json.validationCoverage
+        ?? json.validation_coverage,
+    ),
+    validationTargetScope: firstText(json.validationTargetScope, json.validation_target_scope),
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
@@ -2170,6 +2219,8 @@ function rowRefs(rows) {
     proofChain: row.proofChain,
     proofIds: row.proofIds,
     runMode: row.runMode,
+    validationTargetScope: row.validationTargetScope,
+    coverageObligations: row.coverageObligations,
   }));
 }
 
@@ -2233,9 +2284,10 @@ function rowMatchesValidationProfile(row, profileId) {
 }
 
 function validationRunModeCoverage(rows) {
-  const fullRuntimeRows = acceptedRows(rows, () => true);
+  const fullRuntimeRows = acceptedRows(rows, rowRequiresPerTargetRunModes);
   const coldRows = rows.filter((row) =>
-    row.matrixOutcome === 'cold_split_proven'
+    rowRequiresPerTargetRunModes(row)
+    && row.matrixOutcome === 'cold_split_proven'
     && row.runMode?.accepted === true
     && row.runMode.metricScope === 'cold'
   );
@@ -2244,10 +2296,12 @@ function validationRunModeCoverage(rows) {
     const key = `${row.backend}:${row.targetId}`;
     rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
   }
+  const attachedColdRows = [];
   for (const row of coldRows) {
     const key = `${row.backend}:${row.targetId}`;
     if (rowsByTarget.has(key)) {
       rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
+      attachedColdRows.push(row);
     }
   }
   const negativeEditRows = refusalRows(rows, (row) =>
@@ -2255,10 +2309,12 @@ function validationRunModeCoverage(rows) {
     || row.evidenceKind === 'negative_edit'
     || row.runMode?.metricScope === 'negative_edit'
   );
+  const attachedNegativeEditRows = [];
   for (const row of negativeEditRows) {
     const key = `${row.backend}:${row.targetId}`;
     if (rowsByTarget.has(key)) {
       rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
+      attachedNegativeEditRows.push(row);
     }
   }
   const openGaps = [];
@@ -2316,7 +2372,7 @@ function validationRunModeCoverage(rows) {
       openGaps: compactStringList(targetGaps),
     });
   }
-  if (fullRuntimeRows.length > 0 && negativeEditRows.length === 0) {
+  if (fullRuntimeRows.length > 0 && attachedNegativeEditRows.length === 0) {
     openGaps.push('negative_edit_refusal_evidence_missing');
   }
   const acceptedTargetCount = targetCoverage.filter((entry) => entry.status === 'accepted').length;
@@ -2332,7 +2388,7 @@ function validationRunModeCoverage(rows) {
     id: 'per_target_run_modes',
     requirement: 'Per-target cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
     status,
-    rows: [...fullRuntimeRows, ...coldRows, ...negativeEditRows],
+    rows: [...fullRuntimeRows, ...attachedColdRows, ...attachedNegativeEditRows],
     openGaps,
     targetCoverage,
     acceptedTargetCount,

@@ -894,6 +894,7 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  coverageObligations: { perTargetRunModes: false },
   proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-cold',
   coldSplitProven: true,
   cold_split_proven: true,
@@ -923,6 +924,7 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  coverageObligations: { perTargetRunModes: false },
   proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-hot2',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
@@ -1057,14 +1059,18 @@ assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
-assert.equal(coverageById.get('per_target_run_modes')?.status, 'partial');
+assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
 assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);
-assert.ok(coverageById.get('per_target_run_modes')?.incompleteTargetCount > 0);
+assert.equal(coverageById.get('per_target_run_modes')?.incompleteTargetCount, 0);
 const flowRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
   (entry) => entry.targetKey === 'hip:flow',
 );
 assert.equal(flowRunModeTarget?.status, 'accepted');
 assert.deepEqual(flowRunModeTarget.openGaps, []);
+const optedOutHiprtRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
+  (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
+);
+assert.equal(optedOutHiprtRunModeTarget, undefined);
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));
@@ -1227,6 +1233,12 @@ assert.equal(acceptedRealRocm.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedRealRocm.runtimeProofArtifact.accepted, true);
 assert.equal(acceptedRealRocm.visual.present, true);
 assert.equal(acceptedRealRocm.visual.accepted, true);
+assert.equal(acceptedRealRocm.coverageObligations.perTargetRunModes, false);
+assert.equal(acceptedRealRocm.validationTargetScope, 'evidence_row');
+const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
+assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
+assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
+assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
 
 const forgedRealRocmDir = path.join(logsRoot, 'real-rocm-forged-no-oracle');
 await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'), {
