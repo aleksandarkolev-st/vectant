@@ -1492,8 +1492,7 @@ function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
   });
 }
 
-function runtimeOutputOracleProfileSyncPlan({
-  profile = null,
+function runtimeWorkerContainerAccess({
   mcpTransport = CFG.mcpTransport,
   workerContainer = CFG.workerContainer,
 } = {}) {
@@ -1501,19 +1500,41 @@ function runtimeOutputOracleProfileSyncPlan({
   const transport = String(mcpTransport ?? 'unknown').trim() || 'unknown';
   if (!container) {
     return {
+      available: false,
+      workerContainer: null,
+      reason: `transport_${transport}_worker_container_missing`,
+      detail: `transport=${transport} worker container unavailable`,
+    };
+  }
+  return {
+    available: true,
+    workerContainer: container,
+    reason: null,
+    detail: `transport=${transport} worker=${container}`,
+  };
+}
+
+function runtimeOutputOracleProfileSyncPlan({
+  profile = null,
+  mcpTransport = CFG.mcpTransport,
+  workerContainer = CFG.workerContainer,
+} = {}) {
+  const access = runtimeWorkerContainerAccess({ mcpTransport, workerContainer });
+  if (!access.available) {
+    return {
       action: 'skip',
       status: profile ? 'warn' : 'info',
       workerContainer: null,
-      syncSkippedReason: `transport_${transport}_worker_container_missing`,
-      detail: `transport=${transport} worker container unavailable`,
+      syncSkippedReason: access.reason,
+      detail: access.detail,
     };
   }
   return {
     action: profile ? 'write' : 'clear',
     status: profile ? 'pass' : 'info',
-    workerContainer: container,
+    workerContainer: access.workerContainer,
     syncSkippedReason: null,
-    detail: `transport=${transport} worker=${container}`,
+    detail: access.detail,
   };
 }
 
@@ -1708,8 +1729,9 @@ function proofArtifactPathCandidatesFromPhases() {
 }
 
 async function readWorkerProofArtifact(proofArtifactPath) {
-  if (CFG.mcpTransport !== 'docker') {
-    return { proofArtifactPath, found: false, reason: 'docker_transport_required' };
+  const access = runtimeWorkerContainerAccess();
+  if (!access.available) {
+    return { proofArtifactPath, found: false, reason: access.reason };
   }
   const fileName = proofArtifactFileName(proofArtifactPath);
   if (!fileName) {
@@ -1721,7 +1743,7 @@ async function readWorkerProofArtifact(proofArtifactPath) {
       'exec',
       '-w',
       '/',
-      CFG.workerContainer,
+      access.workerContainer,
       'sh',
       '-c',
       'find / -path "*/.synthi/gpu-hmr/proofs/$1" -type f -print -quit 2>/dev/null',
@@ -1736,7 +1758,7 @@ async function readWorkerProofArtifact(proofArtifactPath) {
   }
   const text = await execText(
     'docker',
-    ['exec', '-w', '/', CFG.workerContainer, 'cat', containerPath],
+    ['exec', '-w', '/', access.workerContainer, 'cat', containerPath],
     120000,
     false,
   );
@@ -5296,11 +5318,12 @@ async function readWorkerWorkspaceJson(relativePath) {
   if (!normalizedRelative) {
     return { available: false, path: null, reason: 'empty_relative_path' };
   }
-  if (CFG.mcpTransport !== 'docker') {
+  const access = runtimeWorkerContainerAccess();
+  if (!access.available) {
     return {
       available: false,
       path: normalizedRelative,
-      reason: `transport_${CFG.mcpTransport}_cannot_read_worker_workspace`,
+      reason: access.reason,
     };
   }
   const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -5311,7 +5334,7 @@ async function readWorkerWorkspaceJson(relativePath) {
     'docker',
     [
       'exec',
-      CFG.workerContainer,
+      access.workerContainer,
       'sh',
       '-lc',
       [
@@ -6532,6 +6555,27 @@ async function selfCheckRuntimeDispatchEvidence() {
     || attachedWait.wait_contract?.require_gpu_full_runtime_proof !== true
   ) {
     throw new Error('wait_hmr evidence attachment self-check failed');
+  }
+  const localWorkerAccess = runtimeWorkerContainerAccess({
+    mcpTransport: 'local',
+    workerContainer: 'worker-self-check',
+  });
+  if (
+    localWorkerAccess.available !== true
+    || localWorkerAccess.workerContainer !== 'worker-self-check'
+    || localWorkerAccess.reason !== null
+  ) {
+    throw new Error('local worker runtime access rejected a configured worker container');
+  }
+  const localMissingWorkerAccess = runtimeWorkerContainerAccess({
+    mcpTransport: 'local',
+    workerContainer: '',
+  });
+  if (
+    localMissingWorkerAccess.available !== false
+    || localMissingWorkerAccess.reason !== 'transport_local_worker_container_missing'
+  ) {
+    throw new Error('local worker runtime access did not fail closed without worker container');
   }
   const localWorkerOracleSync = runtimeOutputOracleProfileSyncPlan({
     profile: { profileId: 'self-check-runtime-oracle' },
@@ -7890,24 +7934,36 @@ int main()
 }
 
 async function collectRuntimeEvidence() {
-  if (CFG.mcpTransport !== 'docker') return;
+  const workerAccess = runtimeWorkerContainerAccess();
+  if (!workerAccess.available) {
+    record('runtime evidence collected', 'warn', `${workerAccess.detail}; worker log collection skipped`);
+    return;
+  }
+  const mcpContainer = String(CFG.mcpContainer ?? '').trim();
+  const aiEngineContainer = String(CFG.aiEngineContainer ?? '').trim();
   report.docker = {
-    mcp: await dockerContainerSnapshot(CFG.mcpContainer),
-    worker: await dockerContainerSnapshot(CFG.workerContainer),
-    ai_engine: await dockerContainerSnapshot(CFG.aiEngineContainer),
+    mcp: mcpContainer
+      ? await dockerContainerSnapshot(mcpContainer)
+      : { container: null, available: false, reason: 'mcp_container_not_configured' },
+    worker: await dockerContainerSnapshot(workerAccess.workerContainer),
+    ai_engine: aiEngineContainer
+      ? await dockerContainerSnapshot(aiEngineContainer)
+      : { container: null, available: false, reason: 'ai_engine_container_not_configured' },
   };
   const workerLogs = await execText(
     'docker',
-    ['logs', '--timestamps', '--since', report.started_at, CFG.workerContainer],
+    ['logs', '--timestamps', '--since', report.started_at, workerAccess.workerContainer],
     120000,
     false,
   );
-  const aiLogs = await execText(
-    'docker',
-    ['logs', '--timestamps', '--since', report.started_at, CFG.aiEngineContainer],
-    120000,
-    false,
-  );
+  const aiLogs = aiEngineContainer
+    ? await execText(
+      'docker',
+      ['logs', '--timestamps', '--since', report.started_at, aiEngineContainer],
+      120000,
+      false,
+    )
+    : '';
   const {
     scopedWorkerLogs,
     scopedWorkerEvidence,
@@ -8481,6 +8537,9 @@ async function collectRuntimeEvidence() {
 }
 
 async function dockerContainerSnapshot(containerName) {
+  if (!String(containerName ?? '').trim()) {
+    return { container: null, available: false, reason: 'container_not_configured' };
+  }
   const raw = await execText(
     'docker',
     ['inspect', containerName],
