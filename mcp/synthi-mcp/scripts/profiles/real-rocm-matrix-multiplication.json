@@ -20,6 +20,11 @@
   "outputOracle": {
     "profile": "hip.matrix-multiplication.readback-c.v1"
   },
+  "targetProgression": {
+    "phase": "small-oracle",
+    "finalAcceptanceTarget": "MIOpenDriver",
+    "required": true
+  },
   "preview": {
     "renderPreview": false,
     "expectScreenshot": false,
