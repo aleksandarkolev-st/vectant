@@ -1760,6 +1760,7 @@ assert.equal(
 assert.ok(forgedWebGpuCompute.reasons.includes('proof_ledger_record_missing'));
 assert.ok(forgedWebGpuCompute.reasons.includes('compute_oracle_files_not_accepted'));
 assert.ok(forgedWebGpuCompute.reasons.includes('compute_oracle_expected_output_not_verified'));
+assert.ok(forgedWebGpuCompute.reasons.includes('webgpu_compute_declared_scope_not_evidence_backed'));
 
 const acceptedHiprt = ledger.rows.find((row) =>
   row.targetId === 'accepted-hiprt-recomputed-oracle'

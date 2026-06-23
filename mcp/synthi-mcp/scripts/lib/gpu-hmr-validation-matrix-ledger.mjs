@@ -623,6 +623,108 @@ function inferFullRuntimeAcceptanceScope(row) {
   return 'declared_profile_scoped';
 }
 
+function declaredScopeEvidenceFacet({
+  supportedPipelineScope,
+  contract = {},
+  backendContract = {},
+  profile = {},
+  claimBoundary = {},
+  requireScopedClaimBoundary = false,
+} = {}) {
+  const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
+  const scopeEvidenceSources = [
+    ['backend_contract.supported_pipeline_scope', backendContract.supported_pipeline_scope],
+    ['backend_contract.supportedPipelineScope', backendContract.supportedPipelineScope],
+    ['artifact_identity.supported_pipeline_scope', artifactIdentity.supported_pipeline_scope],
+    ['artifact_identity.supportedPipelineScope', artifactIdentity.supportedPipelineScope],
+    ['profile.validationScope', profile.validationScope],
+    ['profile.validation_scope', profile.validation_scope],
+    ['profile.pipeline.scope', profile.pipeline?.scope],
+    ['profile.pipeline.supportedPipelineScope', profile.pipeline?.supportedPipelineScope],
+    ['profile.pipeline.supported_pipeline_scope', profile.pipeline?.supported_pipeline_scope],
+    ['claim_boundary.acceptedScope', claimBoundary.acceptedScope],
+    ['claim_boundary.accepted_scope', claimBoundary.accepted_scope],
+  ]
+    .map(([source, value]) => ({ source, value: firstText(value) }))
+    .filter((item) => item.value);
+  const scope = firstText(
+    supportedPipelineScope,
+    backendContract.supported_pipeline_scope,
+    backendContract.supportedPipelineScope,
+    artifactIdentity.supported_pipeline_scope,
+    artifactIdentity.supportedPipelineScope,
+    profile.validationScope,
+    profile.validation_scope,
+    profile.pipeline?.scope,
+    profile.pipeline?.supportedPipelineScope,
+    profile.pipeline?.supported_pipeline_scope,
+    claimBoundary.acceptedScope,
+    claimBoundary.accepted_scope,
+  );
+  const observedScopes = scopeEvidenceSources.map((item) => item.value);
+  const distinctScopes = [...new Set(observedScopes)];
+  const arbitraryTargetAccepted = firstBool(
+    claimBoundary.arbitraryTargetRuntimeAccepted,
+    claimBoundary.arbitrary_target_runtime_accepted,
+  );
+  const arbitraryLibraryAccepted = firstBool(
+    claimBoundary.arbitraryLibraryAccepted,
+    claimBoundary.arbitrary_library_accepted,
+  );
+  const broadApplicationAccepted = firstBool(
+    claimBoundary.broadHipApplicationAcceptance,
+    claimBoundary.broad_hip_application_acceptance,
+    claimBoundary.broadApplicationAcceptance,
+    claimBoundary.broad_application_acceptance,
+  );
+  const broadAcceptanceClaimed =
+    arbitraryTargetAccepted === true
+    || arbitraryLibraryAccepted === true
+    || broadApplicationAccepted === true
+    || scope === 'broad_library_agnostic';
+  const claimBoundaryPresent = Object.keys(claimBoundary).length > 0;
+  const scopedClaimBoundaryAccepted = !requireScopedClaimBoundary || (
+    claimBoundaryPresent
+    && Boolean(firstText(claimBoundary.proofAuthority, claimBoundary.proof_authority))
+    && Boolean(firstText(claimBoundary.executionBoundary, claimBoundary.execution_boundary))
+    && firstText(claimBoundary.acceptedScope, claimBoundary.accepted_scope) === scope
+    && arbitraryTargetAccepted === false
+    && arbitraryLibraryAccepted === false
+    && broadApplicationAccepted === false
+    && compactStringList(
+      claimBoundary.unsupportedWithoutEvidence
+      ?? claimBoundary.unsupported_without_evidence
+    ).length > 0
+  );
+  const accepted =
+    Boolean(scope)
+    && observedScopes.length >= 2
+    && distinctScopes.length === 1
+    && broadAcceptanceClaimed === false
+    && scopedClaimBoundaryAccepted === true;
+  return {
+    accepted,
+    scope,
+    scopeEvidenceSources,
+    scope_evidence_sources: scopeEvidenceSources,
+    observedScopes,
+    observed_scopes: observedScopes,
+    distinctScopes,
+    distinct_scopes: distinctScopes,
+    broadAcceptanceClaimed,
+    broad_acceptance_claimed: broadAcceptanceClaimed,
+    scopedClaimBoundaryAccepted,
+    scoped_claim_boundary_accepted: scopedClaimBoundaryAccepted,
+    failedGates: compactStringList([
+      scope ? null : 'declared_supported_scope_missing',
+      scopeEvidenceSources.length >= 2 ? null : 'declared_supported_scope_requires_multiple_evidence_sources',
+      distinctScopes.length === 1 ? null : 'declared_supported_scope_mismatch',
+      broadAcceptanceClaimed === false ? null : 'declared_supported_scope_claims_broad_acceptance',
+      scopedClaimBoundaryAccepted === true ? null : 'declared_supported_scope_claim_boundary_not_proven',
+    ]),
+  };
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -1999,6 +2101,12 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     contract.artifact_identity?.supported_pipeline_scope,
     contract.artifactIdentity?.supportedPipelineScope,
   );
+  const declaredScopeEvidence = declaredScopeEvidenceFacet({
+    supportedPipelineScope,
+    contract,
+    backendContract: webgpuContract,
+    profile: json.profile,
+  });
   const computeOracleFacet = await realRocmLedgerOutputOracleFacet(
     ledger,
     proofLedger,
@@ -2029,6 +2137,21 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && directComputeArtifacts.expected_output_required !== false
     && directComputeArtifacts.expected_output_verified === true
     && computeValidation.expectedOutputVerified === true;
+  const runtimeReadbackResource = compactObject(
+    runtimeResourceTrace.readbackResource
+    ?? runtimeResourceTrace.readback_resource,
+  );
+  const webGpuComputeRuntimeProfileAccepted =
+    webgpuContract.pipeline_kind === 'compute'
+    && Boolean(firstText(webgpuContract.compute_pipeline_trace, webgpuContract.computePipelineTrace))
+    && Boolean(firstText(webgpuContract.compute_readback_trace, webgpuContract.computeReadbackTrace))
+    && Boolean(firstText(webgpuContract.bind_group_layout_hash, webgpuContract.bindGroupLayoutHash))
+    && Boolean(firstText(webgpuContract.pipeline_layout_hash, webgpuContract.pipelineLayoutHash))
+    && Boolean(firstText(webgpuContract.pipeline_state_hash, webgpuContract.pipelineStateHash))
+    && Object.keys(runtimeResourceTrace).length > 0
+    && Array.isArray(runtimeResourceTrace.buffers)
+    && runtimeResourceTrace.buffers.length > 0
+    && finiteNumber(runtimeReadbackResource.byteLength ?? runtimeReadbackResource.byte_length) > 0;
   const accepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -2041,7 +2164,8 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && processContinuity.accepted === true
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
-    && supportedPipelineScope === 'explicit-compute-profiled-layout-storage-uniform-float32-readback';
+    && declaredScopeEvidence.accepted === true
+    && webGpuComputeRuntimeProfileAccepted === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
@@ -2065,6 +2189,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     output_oracle_facet: computeOracleFacet,
     supportedPipelineScope,
     supported_pipeline_scope: supportedPipelineScope,
+    declaredScopeEvidence,
+    declared_scope_evidence: declaredScopeEvidence,
+    webGpuComputeRuntimeProfileAccepted,
+    webgpu_compute_runtime_profile_accepted: webGpuComputeRuntimeProfileAccepted,
     expectedOutputVerified,
     expected_output_verified: expectedOutputVerified,
     expectedOutputHash: directComputeArtifacts.expected_output_hash,
@@ -2103,9 +2231,12 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
       expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
-      supportedPipelineScope === 'explicit-compute-profiled-layout-storage-uniform-float32-readback'
+      declaredScopeEvidence.accepted === true
         ? null
-        : 'webgpu_compute_supported_pipeline_scope_missing',
+        : 'webgpu_compute_declared_scope_not_evidence_backed',
+      webGpuComputeRuntimeProfileAccepted === true
+        ? null
+        : 'webgpu_compute_runtime_profile_trace_not_accepted',
     ]),
     openGaps: accepted ? [] : ['webgpu_runtime_compute_readback_proof_not_accepted'],
   });
@@ -2165,6 +2296,14 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     json.profile?.validationScope,
     json.profile?.validation_scope,
   );
+  const declaredScopeEvidence = declaredScopeEvidenceFacet({
+    supportedPipelineScope,
+    contract,
+    backendContract: hipContract,
+    profile: json.profile,
+    claimBoundary,
+    requireScopedClaimBoundary: true,
+  });
   const artifactAfterHash = firstText(
     json.compiler?.hsacoAfterHash,
     json.compiler?.hsaco_after_hash,
@@ -2209,12 +2348,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     Boolean(artifactAfterHash)
     && epoch2ArtifactHashes.length >= 4
     && epoch2ArtifactHashes.every((hash) => hash === artifactAfterHash);
-  const claimBoundaryAccepted =
-    claimBoundary.proofAuthority === 'scoped_native_hip_module_runtime_trace'
-    && claimBoundary.executionBoundary === 'standalone_hip_module_probe'
-    && claimBoundary.arbitraryTargetRuntimeAccepted === false
-    && claimBoundary.arbitraryLibraryAccepted === false
-    && claimBoundary.broadHipApplicationAcceptance === false;
+  const claimBoundaryAccepted = declaredScopeEvidence.scopedClaimBoundaryAccepted === true;
   const negativeAbiRefusalAccepted =
     negativeEditRefusal.refusalProven === true
     && negativeEditRefusal.gpuHmrSuccess === false
@@ -2244,7 +2378,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     && Number(nativeCounts.hipModuleLoadData ?? 0) >= 2
     && Number(nativeCounts.hipModuleGetFunction ?? 0) >= 2
     && Number(nativeCounts.hipModuleLaunchKernel ?? 0) >= 2
-    && supportedPipelineScope === 'explicit-hip-module-float32-readback'
+    && declaredScopeEvidence.accepted === true
     && claimBoundaryAccepted
     && negativeAbiRefusalAccepted
     && runtimeTimestampProofAccepted
@@ -2273,6 +2407,8 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     output_oracle_facet: computeOracleFacet,
     supportedPipelineScope,
     supported_pipeline_scope: supportedPipelineScope,
+    declaredScopeEvidence,
+    declared_scope_evidence: declaredScopeEvidence,
     expectedOutputVerified,
     expected_output_verified: expectedOutputVerified,
     expectedOutputHash: directComputeArtifacts.expected_output_hash,
@@ -2342,9 +2478,9 @@ async function hipModuleRuntimeRow(json, filePath, context) {
       runtimeTrace.sameProcess === true ? null : 'same_process_not_accepted',
       runtimeTrace.processRestarted === false ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_hip_api_not_accepted',
-      supportedPipelineScope === 'explicit-hip-module-float32-readback'
+      declaredScopeEvidence.accepted === true
         ? null
-        : 'hip_module_supported_pipeline_scope_missing',
+        : 'hip_module_declared_scope_not_evidence_backed',
       claimBoundaryAccepted ? null : 'hip_module_claim_boundary_not_scoped',
       negativeAbiRefusalAccepted ? null : 'hip_module_negative_abi_refusal_not_executable',
       runtimeTimestampProofAccepted ? null : 'hip_module_runtime_event_timestamps_not_observed',
