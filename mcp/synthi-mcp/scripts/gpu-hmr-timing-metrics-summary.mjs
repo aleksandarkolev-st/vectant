@@ -368,6 +368,10 @@ function compactRow(row) {
     changedPixelRatio: metrics.visualEvidence?.changedPixelRatio ?? null,
     meanAbsDelta8bit: metrics.visualEvidence?.meanAbsDelta8bit ?? null,
     visualAccepted: metrics.visualEvidence?.accepted ?? null,
+    computeCardAccepted: metrics.computeEvidence?.computeCardAccepted ?? null,
+    renderedCardPng: metrics.computeEvidence?.renderedCardPng ?? null,
+    rawReadbackHash: metrics.computeEvidence?.rawReadbackHash ?? null,
+    rawReadbackByteLength: metrics.computeEvidence?.rawReadbackByteLength ?? null,
     normalizedTimings: metrics.normalizedTimings ?? null,
     clockEvidence: metrics.clockEvidence ?? null,
     updatedAt: row.updatedAt,
@@ -402,6 +406,7 @@ function markdownTable(rows) {
     'changedPixelRatio',
     'meanAbsDelta8bit',
     'visualAccepted',
+    'computeCardAccepted',
   ];
   const header = `| ${columns.join(' | ')} |`;
   const divider = `| ${columns.map(() => '---').join(' | ')} |`;

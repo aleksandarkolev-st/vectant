@@ -299,7 +299,14 @@ assert.equal(webgpuCompute.profileId, 'webgpu-wgsl-runtime-compute-storage');
 assert.equal(webgpuCompute.status, 'pass');
 assert.equal(webgpuCompute.totalWallMs, 951);
 assert.equal(webgpuCompute.computeEvidence.rawReadbackByteLength, 32);
-assert.equal(webgpuCompute.visualEvidence.screenshotCount, 1);
+assert.equal(webgpuCompute.computeEvidence.computeCardAccepted, true);
+assert.equal(webgpuCompute.visualEvidence.screenshotCount, 0);
+assert.equal(webgpuCompute.visualEvidence.accepted, false);
+assert.equal(
+  webgpuCompute.visualEvidence.reason,
+  'webgpu_compute_readback_uses_compute_card_not_runtime_frame_visual_proof',
+);
+assert.equal(webgpuCompute.editToFirstVisualMs, null);
 assert.equal(webgpuCompute.normalizedTimings.dispatchToOutputProofTimeMs, 55);
 
 console.log(JSON.stringify({
