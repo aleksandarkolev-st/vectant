@@ -6,6 +6,13 @@
 #
 # The container is a long-running sleeper; live-test.mjs does `docker exec -i`
 # per run so stdio (MCP JSON-RPC) stays wired to the host harness.
+#
+# npm-WORKSPACE build: this image builds from the MONOREPO ROOT context (not
+# ./mcp/synthi-mcp) because @synthi-inc/mcp-server depends on the workspace
+# package @synthi/mcp-hub (packages/mcp-hub) — a narrow context can't resolve
+# the workspace sibling and `npm ci` falls back to the registry (404). The
+# repo-root .dockerignore keeps the context lean; docker-compose sets
+# `context: .` + `dockerfile: mcp/synthi-mcp/Dockerfile`.
 
 FROM node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
 

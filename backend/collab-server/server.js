@@ -10,12 +10,13 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
+const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
 const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
-const { runtimeRunOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -136,6 +137,10 @@ const containerPortProxy = ENABLE_CONTAINER_RUNTIME
         const spaceIdx = match.indexOf(' ');
         return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
       },
+      // Stream auto-login: hand the proxy the per-session KasmVNC credential so it
+      // injects Authorization: Basic for webGui desktop streams (DBeaver/Postman).
+      // Invoked at request time, after managedProgramRuntime is initialized.
+      resolveStreamAuth: (slug, port) => managedProgramRuntime.resolveStreamAuth(slug, port),
     })
   : null;
 
@@ -221,6 +226,18 @@ const managedProgramRuntime = createProgramRuntimeManager({
       commandStartedPromise,
     };
   },
+});
+
+// Continuous editor→disk flush: keep /workspace current for a running
+// container/webGui program (e.g. DBeaver) that reads the same files as the
+// editor, reusing flushWorkspaceDocsToDisk. Periodic while a session is active
+// (self-terminating via the manager's session state) + prompt on save. Tracks
+// only container/webGui sessions; env-gated (SYNTHI_CONTINUOUS_FLUSH_ENABLED /
+// SYNTHI_FLUSH_INTERVAL_MS / SYNTHI_FLUSH_DEBOUNCE_MS) so it is a no-op otherwise.
+const continuousFlush = createContinuousFlushService({
+  flushFn: (slug, userId) => flushWorkspaceDocsToDisk(slug, userId),
+  isSessionActive: (sessionId) =>
+    managedProgramRuntime.getManagedSession(sessionId)?.state === 'running',
 });
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
@@ -1023,6 +1040,10 @@ function _resolveNotifyUserId(scope = {}) {
  * to match currentContent, clearing the unsaved indicator.
  */
 function broadcastFileSaved(slug, filePath, scope = {}) {
+  // A running container/webGui program reads /workspace from disk — flush the
+  // workspace's live editor docs so this save (and any sibling unsaved edits)
+  // become visible to it. No-op unless such a session is active for this slug.
+  continuousFlush.notifySave(slug);
   if (!slug || !notifyWss) return;
   const message = JSON.stringify({ type: 'file-saved', slug, filePath, scope });
   notifyWss.clients.forEach((ws) => {
@@ -1896,6 +1917,7 @@ const server = http.createServer(async (req, res) => {
 
     if (runtimeSessionId && runtimeAction === 'stop' && req.method === 'POST') {
       const session = await managedProgramRuntime.stopManagedSession(runtimeSessionId, { reason: 'user_stop' });
+      continuousFlush.unregisterSession(runtimeSessionId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
       return;
@@ -1949,11 +1971,59 @@ const server = http.createServer(async (req, res) => {
         title: parsed.title || null,
         config,
       });
+      // Container/webGui programs read /workspace from disk for their whole
+      // lifetime — keep the editor's content flushed there while this session runs.
+      continuousFlush.registerSession({ sessionId, slug, userId: parsed.userId || '', config });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/exec  { command, timeout? }
+  // One-shot, non-interactive command exec inside the workspace's Sysbox runtime
+  // pod (where its own dockerd lives, so `docker ...` works). Routed by
+  // workspaceSlug → runtimeScope (never a user id). Returns
+  // { runtimeScope, stdout, stderr, exitCode, timedOut }. Used by the PAT-gated
+  // MCP `synthi_exec_in_runtime` tool (the in-app AI's command control).
+  const execRuntimeMatch = /^\/program-runtime\/([^/]+)\/exec$/.exec(programRuntimeUrl.pathname);
+  if (execRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(execRuntimeMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    const command = String(parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+    try {
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, slug);
+      if (!runtimeScope) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'runtime_pod_not_ready' }));
+        return;
+      }
+      const result = await runtimeExecOnce(runtimeScope, command, { timeoutMs: Number(parsed.timeout) || 30000 });
+      console.log(`[RuntimeExec] slug=${slug} runtimeScope=${runtimeScope} exit=${result.exitCode} timedOut=${result.timedOut} cmd=${command.slice(0, 120)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ runtimeScope, ...result }));
+    } catch (err) {
+      const notReady = err && err.message === 'runtime_pod_not_ready';
+      res.writeHead(notReady ? 409 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'runtime exec failed' }));
     }
     return;
   }

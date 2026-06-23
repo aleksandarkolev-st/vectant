@@ -11,8 +11,25 @@
 
 import { parseProgramManifest } from './manifest';
 import { importDevcontainer } from './devcontainer';
+import { workspaceMountFlags } from './workspaceMount';
 
 const WEB_SCOPES = ['program.launch', 'network.outbound', 'ports.expose'];
+
+// GUI dev-tool streaming (Slice 3): the curated DBeaver image (KasmVNC kiosk).
+// The image ref is env-driven so prod can pin the digest-pinned Artifact Registry
+// image; defaults to the locally-built dev tag. The web port is the KasmVNC port.
+const DBEAVER_IMAGE = process.env.VECTANT_DBEAVER_IMAGE || 'vectant-dbeaver:dev';
+const DBEAVER_PORT = Number(process.env.VECTANT_DBEAVER_PORT) || 6901;
+
+// Postman shares the same KasmVNC kiosk tier (curated gui-base image). Its KasmVNC
+// port is distinct from DBeaver's so both can stream in one workspace at once.
+const POSTMAN_IMAGE = process.env.VECTANT_POSTMAN_IMAGE || 'vectant-postman:dev';
+const POSTMAN_PORT = Number(process.env.VECTANT_POSTMAN_PORT) || 6902;
+
+// Web-UI tier (Docker GUI): the official Portainer CE image. Env-driven so prod
+// pins a digest in Artifact Registry; defaults to the upstream LTS tag.
+const PORTAINER_IMAGE = process.env.VECTANT_PORTAINER_IMAGE || 'portainer/portainer-ce:lts';
+const PORTAINER_PORT = Number(process.env.VECTANT_PORTAINER_PORT) || 9000;
 
 /**
  * @typedef {{ name: string, kind: 'manifest'|'devcontainer', recipe: object, description?: string }} DefaultRecipe
@@ -88,6 +105,63 @@ export const DEFAULT_PROGRAM_RECIPES = [
       description: 'lazygit terminal UI for Git.',
       runtimeType: 'tui', install: [], launch: 'lazygit',
       ports: [], permissions: ['program.launch'],
+    },
+  },
+  {
+    name: 'dbeaver',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'dbeaver', version: '1.0.0',
+      displayName: 'DBeaver',
+      description: 'DBeaver Community database GUI, streamed to your workspace via KasmVNC.',
+      // Container GUI program: runs the curated KasmVNC kiosk image in the
+      // per-workspace Sysbox runtime; webGui ⇒ rendered as an interactive
+      // floating surface (not a plain web iframe). The launch command is run
+      // inside the runtime pod's docker; the published KasmVNC port is detected
+      // by the runtime port monitor and surfaced via the slice-1 proxy.
+      runtimeType: 'container', webGui: true,
+      install: [],
+      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} -e KASM_PASSWORD ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
+      ports: [DBEAVER_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
+    },
+  },
+  {
+    name: 'postman',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'postman', version: '1.0.0',
+      displayName: 'Postman',
+      description: 'Postman API client — build, test and debug APIs, streamed to your workspace via KasmVNC.',
+      // Same KasmVNC-desktop tier as DBeaver: the curated single-app kiosk image,
+      // streamed as a webGui floating surface. A distinct KASM_PORT (6902 vs
+      // DBeaver's 6901) lets both stream in one workspace runtime without a
+      // host-port clash. The workspace is mounted so Postman can import/export
+      // collections as /workspace files.
+      runtimeType: 'container', webGui: true,
+      install: [],
+      launch: `docker run --rm --name vectant-postman -p ${POSTMAN_PORT}:${POSTMAN_PORT} -e KASM_PORT=${POSTMAN_PORT} -e KASM_PASSWORD ${workspaceMountFlags()} ${POSTMAN_IMAGE}`,
+      ports: [POSTMAN_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
+    },
+  },
+  {
+    name: 'portainer',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'portainer', version: '1.0.0',
+      displayName: 'Portainer (Docker)',
+      description: 'Portainer CE - manage the Docker containers, images and volumes in your workspace via a web UI.',
+      // Web-UI tier: a container program with NO webGui. Its web port is served
+      // into the App-tab iframe by the container port proxy. Mounts the runtime's
+      // docker socket to manage the workspace's own dockerd (contained by Sysbox);
+      // --no-csp lets Portainer be framed; /data persists to /workspace so the
+      // admin account + saved connections survive relaunch.
+      runtimeType: 'container',
+      install: [],
+      launch: `docker run --rm --name vectant-portainer -p ${PORTAINER_PORT}:9000 -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/.vectant/portainer":/data ${PORTAINER_IMAGE} --no-csp`,
+      ports: [PORTAINER_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
   },
   {

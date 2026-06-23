@@ -59,10 +59,18 @@ export async function restartProgramSessionRuntime(workspaceSlug, sessionId) {
  * and route through `/wsport/<slug>/<port>/`; all other runtime types use the global
  * `/port/<port>/` path. All share the collab origin, so no CSP change is needed.
  *
+ * `vncPath` appends the noVNC websocket path for a webGui (KasmVNC) App tab: noVNC
+ * otherwise opens `ws://<host>/websockify` at the ROOT, which the container port proxy
+ * (only routing `/wsport/<slug>/<port>/…`) can't reach → 1006. It also adds
+ * `resize=scale`, which makes noVNC zoom the framebuffer to fit the iframe instead of
+ * showing scrollbars — so the stream is resizeable (tracks a dragged floating window)
+ * and an undocked frame always fits the whole app (zooms out when the frame is small).
+ * Only affects the `/wsport/` form (the local hybrid container path); a no-op otherwise.
+ *
  * @param {number} port
- * @param {{ slug?: string, runtimeType?: string, runtimeScope?: string }} [opts]
+ * @param {{ slug?: string, runtimeType?: string, runtimeScope?: string, vncPath?: boolean }} [opts]
  */
-export function getProgramSessionAppUrl(port, { slug = null, runtimeType = null, runtimeScope = null } = {}) {
+export function getProgramSessionAppUrl(port, { slug = null, runtimeType = null, runtimeScope = null, vncPath = false } = {}) {
   if (typeof port !== 'number' || !Number.isFinite(port)) {
     return null;
   }
@@ -72,7 +80,9 @@ export function getProgramSessionAppUrl(port, { slug = null, runtimeType = null,
   }
 
   if (runtimeType === 'container' && slug) {
-    return `${COLLAB_BASE}/wsport/${encodeURIComponent(slug)}/${port}/`;
+    const encSlug = encodeURIComponent(slug);
+    const base = `${COLLAB_BASE}/wsport/${encSlug}/${port}/`;
+    return vncPath ? `${base}?path=wsport/${encSlug}/${port}/websockify&resize=scale` : base;
   }
 
   return `${COLLAB_BASE}/port/${port}/`;

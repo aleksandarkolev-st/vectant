@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Globe, HeartPulse, RotateCcw, ScrollText, Settings2, Square, TerminalSquare } from 'lucide-react';
 import { toast } from 'sonner';
 import TerminalPane from '@/app/workspace/TerminalPane.jsx';
+import ScaleToFitFrame from './ScaleToFitFrame';
 import {
   fetchProgramSession,
   fetchProgramSessionEvents,
@@ -116,7 +117,9 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
   const [appPortOverride, setAppPortOverride] = useState(null);
   const effectiveWebPort = appPortOverride ?? session?.webPort ?? null;
   const appUrl = useMemo(
-    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope }),
+    // vncPath: route KasmVNC's noVNC websocket through the /wsport proxy (it would
+    // otherwise dial ws://<host>/websockify at the root and fail with 1006).
+    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope, vncPath: true }),
     [effectiveWebPort, workspaceSlug, session?.runtimeType, session?.runtimeScope],
   );
   const ports = Array.isArray(session?.activePorts) ? session.activePorts : [];
@@ -233,13 +236,19 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
               <div className="text-xs">Live visual capture (WebRTC via the broker) is not yet wired — coming in a later phase.</div>
             </div>
           ) : appUrl ? (
-            <iframe
-              title={`${title} app`}
-              src={appUrl}
-              className="w-full h-full border-0"
-              sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads"
-              allow="clipboard-read; clipboard-write"
-            />
+            runtimeType === 'container' ? (
+              // Container GUI programs (KasmVNC desktop + web-UI like Portainer)
+              // zoom to fit the tab they live in, the same way DBeaver does.
+              <ScaleToFitFrame src={appUrl} title={`${title} app`} />
+            ) : (
+              <iframe
+                title={`${title} app`}
+                src={appUrl}
+                className="w-full h-full border-0"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+                allow="clipboard-read; clipboard-write"
+              />
+            )
           ) : isStarting ? (
             <div data-testid="app-waiting" className="h-full flex flex-col items-center justify-center gap-2 text-sm px-6 text-center" style={{ color: 'var(--text-muted)' }}>
               <Globe className="w-5 h-5 opacity-60" />

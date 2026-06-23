@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 const DEFAULT_HEADLESS_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_OUTPUT_CAP = 50_000;
@@ -50,6 +52,21 @@ const BLOCKED_ENV_VALUE_FRAGMENTS = [
   '\\\\.\\pipe\\docker_engine',
 ];
 
+// Stream auto-login: the KasmVNC Basic-auth user is the gui-base default
+// (KASM_VNC_USER → vectant); single source of truth for both the injected
+// credential and the proxy header.
+const KASM_STREAM_USER = 'vectant';
+const KASM_PASSWORD_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+/** Per-session random KasmVNC password: 24 chars of [A-Za-z0-9], unbiased. */
+function generateKasmStreamPassword(length = 24) {
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += KASM_PASSWORD_ALPHABET[crypto.randomInt(KASM_PASSWORD_ALPHABET.length)];
+  }
+  return out;
+}
+
 function toPublicManagedSession(record) {
   if (!record) {
     return null;
@@ -63,6 +80,7 @@ function toPublicManagedSession(record) {
     runtimeDataDisposable,
     runtimeExitDisposable,
     launchRequest,
+    kasmAuth, // per-session KasmVNC secret — never expose to the API/browser
     ...publicRecord
   } = record;
 
@@ -75,6 +93,30 @@ function toPublicManagedSession(record) {
 function normalizePorts(value) {
   const ports = Array.isArray(value) ? value : [];
   return [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0))].sort((left, right) => left - right);
+}
+
+// dockerd's TLS API port — the per-workspace daemon inside the Sysbox runtime
+// pod always listens here. It's infra, never a user program's "app port".
+const DOCKERD_TLS_PORT = 2376;
+const DEFAULT_PREVIEW_SIDECAR_PORT = 18080;
+
+function parseInfraPortList(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const ports = raw
+    .split(',')
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((port) => Number.isInteger(port) && port > 0);
+  return ports.length ? ports : null;
+}
+
+// Runtime-pod infra ports to exclude from program port attribution. Env-driven
+// (RUNTIME_INFRA_PORTS, comma-separated) so it tracks the runtime image as it
+// evolves; defaults to dockerd's 2376 + the preview sidecar port.
+function resolveRuntimeInfraPorts(env = process.env) {
+  const configured = parseInfraPortList(env.RUNTIME_INFRA_PORTS);
+  if (configured) return configured;
+  const sidecarPort = Number.parseInt(env.SYNTHI_PREVIEW_SIDECAR_PORT, 10);
+  return [DOCKERD_TLS_PORT, Number.isInteger(sidecarPort) && sidecarPort > 0 ? sidecarPort : DEFAULT_PREVIEW_SIDECAR_PORT];
 }
 
 const RUNNING_STATES = ['starting', 'running', 'unhealthy'];
@@ -230,12 +272,14 @@ function createProgramRuntimeManager(options = {}) {
     launchRuntime = null,
     getActivePorts = () => [],
     baseEnv = process.env,
+    infraPorts = resolveRuntimeInfraPorts(baseEnv),
     probeHost = process.env.PROXY_TARGET_HOST || '127.0.0.1',
     httpProbe = defaultHttpProbe,
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
   } = options;
   const managedSessions = new Map();
+  const infraPortSet = new Set(normalizePorts(infraPorts));
 
   if (!activeSessions || typeof activeSessions.get !== 'function' || typeof activeSessions.delete !== 'function') {
     throw new TypeError('activeSessions map is required');
@@ -444,6 +488,7 @@ function createProgramRuntimeManager(options = {}) {
     command,
     env = {},
     runtimeType = 'cli',
+    webGui = false,
     title = null,
     metadata = null,
     ports = [],
@@ -466,6 +511,18 @@ function createProgramRuntimeManager(options = {}) {
 
     const currentTime = now();
     const safeEnv = buildManagedRuntimeEnv(baseEnv, env);
+    // Stream auto-login: webGui container programs (KasmVNC desktop tier) get a
+    // unique random password per launch, injected via env-passthrough — the
+    // recipe declares `-e KASM_PASSWORD`, which reads this value from the exec
+    // env (hybrid) / exported shell env (pod). Regenerated on every launch, so
+    // restartManagedSession rotates it; gone when the record is dropped.
+    const isWebGuiContainer = webGui === true && runtimeType === 'container';
+    let kasmAuth = null;
+    if (isWebGuiContainer) {
+      const password = generateKasmStreamPassword();
+      safeEnv.KASM_PASSWORD = password;
+      kasmAuth = { user: KASM_STREAM_USER, password };
+    }
     // Phase 2 surfaces *declared* manifest ports immediately (Phase 3 adds
     // live auto-detection via refreshManagedSessionPorts).
     const declaredPorts = normalizePorts(ports);
@@ -491,6 +548,8 @@ function createProgramRuntimeManager(options = {}) {
       workspaceSlug,
       userId,
       runtimeType,
+      webGui: webGui === true,
+      kasmAuth,
       title: title || trimmedCommand,
       state: 'starting',
       startedAt: currentTime,
@@ -516,6 +575,7 @@ function createProgramRuntimeManager(options = {}) {
         command: trimmedCommand,
         env,
         runtimeType,
+        webGui: webGui === true,
         title,
         metadata,
         ports: declaredPorts,
@@ -560,6 +620,7 @@ function createProgramRuntimeManager(options = {}) {
       command,
       env: config.env || {},
       runtimeType: config.runtimeType || 'cli',
+      webGui: config.webGui === true,
       title: title || config.displayName || config.packageId || null,
       ports: Array.isArray(config.ports) ? config.ports : [],
       health: config.health || null,
@@ -652,6 +713,9 @@ function createProgramRuntimeManager(options = {}) {
    */
   function recomputeRuntimeScopePorts(runtimeScope, detectedPorts) {
     if (!runtimeScope) return [];
+    // Strip runtime infra ports (e.g. dockerd 2376) before attribution so they
+    // never surface as a program's app port. See resolveRuntimeInfraPorts.
+    const appPorts = (Array.isArray(detectedPorts) ? detectedPorts : []).filter((port) => !infraPortSet.has(port));
     const scoped = [...managedSessions.values()].filter((record) => record.runtimeScope === runtimeScope);
     const attribution = attributeSessionPorts({
       sessions: scoped.map((record) => ({
@@ -659,7 +723,7 @@ function createProgramRuntimeManager(options = {}) {
         state: record.state,
         declaredPorts: record.declaredPorts || [],
       })),
-      detectedPorts,
+      detectedPorts: appPorts,
     });
     const updated = [];
 
@@ -748,6 +812,25 @@ function createProgramRuntimeManager(options = {}) {
     return toPublicManagedSession(managedSessions.get(sessionId));
   }
 
+  /**
+   * Stream auto-login lookup for the container port proxy. Return the in-memory
+   * KasmVNC credential of the RUNNING webGui session whose workspaceSlug === slug
+   * and whose declared/active ports include `port`; else null. Returns a copy so
+   * callers can't mutate the stored secret.
+   */
+  function resolveStreamAuth(slug, port) {
+    if (!slug || !Number.isInteger(port)) return null;
+    for (const record of managedSessions.values()) {
+      if (!record.kasmAuth) continue;
+      if (record.workspaceSlug !== slug) continue;
+      if (!RUNNING_STATES.includes(record.state)) continue;
+      const ports = new Set([...(record.declaredPorts || []), ...(record.activePorts || [])]);
+      if (!ports.has(port)) continue;
+      return { ...record.kasmAuth };
+    }
+    return null;
+  }
+
   function getManagedRuntime(sessionId) {
     return managedSessions.get(sessionId)?.runtime || null;
   }
@@ -779,6 +862,7 @@ function createProgramRuntimeManager(options = {}) {
     recomputeManagedPorts,
     recomputeRuntimeScopePorts,
     refreshManagedSessionPorts,
+    resolveStreamAuth,
     restartManagedSession,
     stopManagedSession,
     promoteHeadlessSession,

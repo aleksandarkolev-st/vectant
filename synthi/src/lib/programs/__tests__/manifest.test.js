@@ -178,3 +178,37 @@ describe('container runtime type', () => {
     expect(cfg.runtimeType).toBe('container');
   });
 });
+
+describe('parseProgramManifest — webGui marker', () => {
+  it('normalizes webGui:true on a container program', () => {
+    const cfg = parseProgramManifest({
+      packageId: 'dbeaver', version: '1.0.0', runtimeType: 'container',
+      launch: 'docker run --rm vectant-dbeaver', webGui: true,
+    });
+    expect(cfg.webGui).toBe(true);
+  });
+
+  it('defaults webGui to false when absent', () => {
+    const cfg = parseProgramManifest({
+      packageId: 'x', version: '1.0.0', runtimeType: 'container',
+      launch: 'docker run --rm hello-world',
+    });
+    expect(cfg.webGui).toBe(false);
+  });
+
+  it('coerces a non-boolean webGui to false', () => {
+    const cfg = parseProgramManifest({
+      packageId: 'x', version: '1.0.0', runtimeType: 'container',
+      launch: 'docker run --rm hello-world', webGui: 'yes',
+    });
+    expect(cfg.webGui).toBe(false);
+  });
+
+  it('ignores webGui for non-container runtime types', () => {
+    const cfg = parseProgramManifest({
+      packageId: 'x', version: '1.0.0', runtimeType: 'web',
+      launch: 'npm run dev', ports: [3000], webGui: true,
+    });
+    expect(cfg.webGui).toBe(false);
+  });
+});

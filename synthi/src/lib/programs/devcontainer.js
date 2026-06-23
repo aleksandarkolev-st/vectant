@@ -12,6 +12,7 @@
  */
 
 import { coerceManifestObject, parseProgramManifest, ProgramManifestError, normalizeWorkingDir } from './manifest';
+import { workspaceMountFlags } from './workspaceMount';
 
 /** Env key prefixes mirrored from the runtime scrub denylist (transparency only). */
 const BLOCKED_ENV_PREFIXES = [
@@ -154,7 +155,7 @@ export function importDevcontainer(input, { containerRuntime = false } = {}) {
     install = image
       ? [`docker pull ${shellQuote(image)}`]
       : [`docker build -t ${shellQuote(tag)} -f ${shellQuote(dockerfile)} .`];
-    launch = `docker run --rm ${portFragment}-v "$PWD":/workspace -w /workspace ${shellQuote(tag)} sh -lc ${JSON.stringify(inContainerCmd)}`;
+    launch = `docker run --rm ${portFragment}${workspaceMountFlags()} ${shellQuote(tag)} sh -lc ${JSON.stringify(inContainerCmd)}`;
   } else {
     // install: onCreate → updateContent → postCreate, in order.
     install = [

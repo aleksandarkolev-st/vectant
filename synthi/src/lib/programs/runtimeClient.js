@@ -59,6 +59,20 @@ export async function launchProgramRuntime({ workspaceSlug, sessionId, command, 
   };
 }
 
+/**
+ * One-shot command exec inside the workspace's Sysbox runtime pod (where the
+ * workspace's own dockerd lives). Routed by workspaceSlug → runtimeScope on the
+ * collab-server (never a user id). Returns the collab response verbatim:
+ * `{ runtimeScope, stdout, stderr, exitCode, timedOut }`. Throws with
+ * `error.status === 409` (`runtime_pod_not_ready`) when no runtime pod is ready.
+ */
+export async function execInWorkspaceRuntime(workspaceSlug, { command, timeout } = {}) {
+  return requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/exec`, {
+    method: 'POST',
+    body: JSON.stringify({ command, ...(timeout != null ? { timeout } : {}) }),
+  });
+}
+
 export async function stopProgramRuntimeSession(workspaceSlug, sessionId) {
   const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/sessions/${encodeURIComponent(sessionId)}/stop`, {
     method: 'POST',

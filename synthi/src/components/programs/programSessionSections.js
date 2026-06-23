@@ -15,6 +15,13 @@ export function canRestartProgramSession(session) {
   return RESTARTABLE_STATES.has(String(session?.state || '').toLowerCase());
 }
 
+const TERMINAL_RUNTIME_TYPES = new Set(['cli', 'tui']);
+
+/** cli/tui programs run in the integrated terminal, not a ProgramSessionPanel. */
+export function isTerminalRuntimeType(runtimeType) {
+  return TERMINAL_RUNTIME_TYPES.has(String(runtimeType || '').toLowerCase());
+}
+
 export function buildProgramSessionSections(sessions, { recentLimit = 6 } = {}) {
   const ordered = [...(Array.isArray(sessions) ? sessions : [])].sort(
     (left, right) => sessionTimestamp(right) - sessionTimestamp(left),

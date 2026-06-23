@@ -5,6 +5,7 @@ import {
   formatProgramSessionAge,
   formatProgramSessionPorts,
   isActiveProgramSession,
+  isTerminalRuntimeType,
 } from '../programSessionSections';
 
 describe('buildProgramSessionSections', () => {
@@ -45,5 +46,20 @@ describe('program session helpers', () => {
     expect(formatProgramSessionAge({ updatedAt: null })).toBeNull();
     expect(formatProgramSessionPorts({ activePorts: [3000, 5173] })).toBe('3000, 5173');
     expect(formatProgramSessionPorts({ activePorts: [] })).toBeNull();
+  });
+});
+
+describe('isTerminalRuntimeType', () => {
+  it('is true for cli and tui (case-insensitive)', () => {
+    expect(isTerminalRuntimeType('cli')).toBe(true);
+    expect(isTerminalRuntimeType('tui')).toBe(true);
+    expect(isTerminalRuntimeType('TUI')).toBe(true);
+    expect(isTerminalRuntimeType('Cli')).toBe(true);
+  });
+
+  it('is false for web/container/background/gui/unknown/empty', () => {
+    for (const rt of ['web', 'container', 'background', 'gui', 'webgui', 'unknown', '', null, undefined]) {
+      expect(isTerminalRuntimeType(rt)).toBe(false);
+    }
   });
 });
