@@ -10,6 +10,10 @@ export function normalizeGrantScopes(value) {
 // no live runtime session backs the row.
 const ACTIVE_SESSION_STATES = new Set(['starting', 'running', 'restarting']);
 
+export function isActiveSessionState(state) {
+  return ACTIVE_SESSION_STATES.has(String(state || '').toLowerCase());
+}
+
 export function mergeProgramSession(session, runtimeSession = null) {
   if (!session) {
     return null;
