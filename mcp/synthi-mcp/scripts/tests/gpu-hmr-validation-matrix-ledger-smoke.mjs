@@ -1547,6 +1547,32 @@ await writeJson(path.join(forgedRawBackendPreflightDir, 'raw-vulkan-backend-refs
   proofId: 'vulkan-preflight-proof:sha256:forged-raw-backend-refs',
 });
 
+const schemaCorrectRawBackendPreflightDir = path.join(artifactsRoot, 'schema-correct-raw-backend-preflight');
+await writeJson(path.join(schemaCorrectRawBackendPreflightDir, 'schema-correct-raw-vulkan-backend.json'), {
+  schema: 'synthi.gpu_hmr.vulkan_preflight.v1',
+  slug: 'schema-correct-raw-vulkan-backend',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: 'vulkan',
+    backendFamily: 'vulkan',
+    runtimeCapabilityPreflight: {
+      probe: 'vulkan_loader_preflight',
+      evidenceRefs: ['evidence:schema-correct-raw-vulkan-preflight'],
+    },
+    evidenceRefs: ['evidence:schema-correct-raw-vulkan-preflight'],
+  },
+  acceptance: {
+    acceptedForVulkanRuntimePreflight: true,
+    acceptedForVulkanPipelineProof: false,
+    gpuHmrSuccess: false,
+    noShimApplied: true,
+    noIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'vulkan-preflight-proof:sha256:schema-correct-raw-backend',
+});
+
 await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'bevy-wgsl-name-only',
@@ -2463,6 +2489,30 @@ assert.equal(acceptedFlow.generalityClaim.arbitraryLibraryAccepted, false);
 assert.equal(acceptedFlow.generalityClaim.arbitraryTargetRuntimeAccepted, false);
 assert.ok(acceptedFlow.generalityClaim.unsupportedWithoutEvidence.length > 0);
 
+const backendMutatedAcceptedRow = JSON.parse(JSON.stringify(acceptedFlow));
+backendMutatedAcceptedRow.backend = 'vulkan';
+const backendMutatedAcceptedQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [backendMutatedAcceptedRow],
+});
+assert.equal(backendMutatedAcceptedQuery.accepted, false);
+assert.equal(backendMutatedAcceptedQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(backendMutatedAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_row_backend_bound_to_ledger_record'
+));
+
+const targetMutatedAcceptedRow = JSON.parse(JSON.stringify(acceptedFlow));
+targetMutatedAcceptedRow.targetId = 'forged-target-with-stale-row-id';
+const targetMutatedAcceptedQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [targetMutatedAcceptedRow],
+});
+assert.equal(targetMutatedAcceptedQuery.accepted, false);
+assert.equal(targetMutatedAcceptedQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(targetMutatedAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'validation_matrix_row_id_mismatch'
+));
+
 const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');
 assert.equal(strictMissingArtifact?.proofMode, 'strict_runtime_ledger');
 assert.equal(strictMissingArtifact.matrixOutcome, 'unproven');
@@ -2541,12 +2591,24 @@ function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
 
 function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
   const row = JSON.parse(JSON.stringify(acceptedFlow));
-  return {
+  const out = {
     ...row,
     targetId,
     profileId: targetId,
     ...fields,
   };
+  delete out.matrixKey;
+  delete out.attemptKey;
+  delete out.row_id;
+  const rowIdSeed = { ...out };
+  delete rowIdSeed.rowId;
+  delete rowIdSeed.row_id;
+  delete rowIdSeed.matrixKey;
+  delete rowIdSeed.matrix_key;
+  delete rowIdSeed.attemptKey;
+  delete rowIdSeed.attempt_key;
+  out.rowId = `gpu-validation-matrix-row:sha256:${sha256Hex(stableJson(rowIdSeed))}`;
+  return out;
 }
 
 function mutateAcceptedLedgerRecord(row, mutate) {
@@ -2980,6 +3042,31 @@ const forgedRawBackendPreflightCoverage = new Map(
   forgedRawBackendPreflightLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
 assert.equal(forgedRawBackendPreflightCoverage.get('vulkan_pipeline_frame')?.status, 'missing');
+
+const schemaCorrectRawBackendPreflightLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [schemaCorrectRawBackendPreflightDir],
+  generatedAt: '2026-06-09T00:00:00.070Z',
+  includeUnproven: true,
+});
+const schemaCorrectRawBackendPreflight = schemaCorrectRawBackendPreflightLedger.rows.find(
+  (row) => row.targetId === 'schema-correct-raw-vulkan-backend',
+);
+assert.equal(schemaCorrectRawBackendPreflight?.proofMode, 'runtime_preflight');
+assert.equal(schemaCorrectRawBackendPreflight.matrixOutcome, 'unproven');
+assert.equal(schemaCorrectRawBackendPreflight.backend, 'unknown');
+assert.equal(schemaCorrectRawBackendPreflight.backendEvidence.accepted, false);
+assert.ok(schemaCorrectRawBackendPreflight.backendEvidence.failedGates.some(
+  (gate) => gate.code === 'preflight_backend_value_missing'
+));
+assert.ok(schemaCorrectRawBackendPreflight.backendEvidence.failedGates.some(
+  (gate) => gate.code === 'preflight_backend_field_evidence_refs_missing'
+));
+const schemaCorrectRawBackendPreflightCoverage = new Map(
+  schemaCorrectRawBackendPreflightLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(schemaCorrectRawBackendPreflightCoverage.get('vulkan_pipeline_frame')?.status, 'missing');
 
 const forgedPreflightBackendCoverageQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

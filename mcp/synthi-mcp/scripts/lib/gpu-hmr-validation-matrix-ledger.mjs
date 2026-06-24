@@ -110,6 +110,21 @@ function proofIdFor(prefix, value) {
   return `${prefix}:sha256:${sha256Hex(stableJson(value))}`;
 }
 
+function rowIdSeed(row = {}) {
+  const seed = { ...row };
+  delete seed.rowId;
+  delete seed.row_id;
+  delete seed.matrixKey;
+  delete seed.matrix_key;
+  delete seed.attemptKey;
+  delete seed.attempt_key;
+  return seed;
+}
+
+function rowIdFor(row = {}) {
+  return proofIdFor('gpu-validation-matrix-row', rowIdSeed(row));
+}
+
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1460,10 +1475,7 @@ function finalizeRow(seed) {
     accepted: safetyFailures.length === 0,
     failedGates: safetyFailures,
   };
-  row.rowId = proofIdFor('gpu-validation-matrix-row', {
-    ...row,
-    rowId: undefined,
-  });
+  row.rowId = rowIdFor(row);
   row.matrixKey = rowKey(row);
   row.attemptKey = rowAttemptKey(row);
   return row;
@@ -1711,6 +1723,8 @@ function fullRuntimeLedgerAuthorityFailures(row) {
       : null;
   const ledgerProofId = firstText(ledger.proofId, ledger.proof_id);
   const recordProofId = firstText(record.proofId, record.proof_id);
+  const rowBackend = valueFieldText(row.backend);
+  const recordBackend = valueFieldText(record.backend);
   const recomputed = Object.keys(record).length > 0
     ? queryGpuHmrLedgerInvariants({ records: [record] })
     : null;
@@ -1743,6 +1757,13 @@ function fullRuntimeLedgerAuthorityFailures(row) {
   }
   if (ledgerProofId && !proofIds.includes(ledgerProofId)) {
     failures.push({ code: 'gpu_hmr_success_requires_ledger_proof_id_in_row_proof_ids' });
+  }
+  if (rowBackend && recordBackend && rowBackend !== recordBackend) {
+    failures.push({
+      code: 'gpu_hmr_success_requires_row_backend_bound_to_ledger_record',
+      rowBackend,
+      recordBackend,
+    });
   }
   if (recomputed !== null) {
     const recomputedRecord = compactObject(recomputed.record);
@@ -4284,8 +4305,12 @@ function evidenceRefsFromValue(value) {
   ];
 }
 
-function typedValueField(value) {
+function valueFieldText(value) {
   return isObject(value) ? firstText(value.value) : firstText(value);
+}
+
+function typedValueField(value) {
+  return isObject(value) ? firstText(value.value) : null;
 }
 
 function preflightBackendEvidenceCandidates(json = {}) {
@@ -4356,6 +4381,16 @@ function backendEvidenceFromCandidate(source, candidate) {
     typedValueField(profile.backendFamily ?? profile.backend_family),
     typedValueField(runtimeCapability.backendFamily ?? runtimeCapability.backend_family),
   );
+  const backendFieldEvidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(backendField),
+    ...evidenceRefsFromValue(profile.backend ?? profile.gpuBackend ?? profile.gpu_backend),
+    ...evidenceRefsFromValue(runtimeCapability.backend ?? runtimeCapability.gpuBackend ?? runtimeCapability.gpu_backend),
+  ]);
+  const backendFamilyFieldEvidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(backendFamilyField),
+    ...evidenceRefsFromValue(profile.backendFamily ?? profile.backend_family),
+    ...evidenceRefsFromValue(runtimeCapability.backendFamily ?? runtimeCapability.backend_family),
+  ]);
   const backend = backendRaw && backendRaw !== 'unknown' ? backendRaw : null;
   const backendFamily = backendFamilyRaw && backendFamilyRaw !== 'unknown' ? backendFamilyRaw : null;
   const evidenceRefs = compactStringList([
@@ -4378,6 +4413,8 @@ function backendEvidenceFromCandidate(source, candidate) {
       : 'preflight_backend_contract_schema_missing',
     backend ? null : 'preflight_backend_value_missing',
     backendFamily ? null : 'preflight_backend_family_missing',
+    backendFieldEvidenceRefs.length > 0 ? null : 'preflight_backend_field_evidence_refs_missing',
+    backendFamilyFieldEvidenceRefs.length > 0 ? null : 'preflight_backend_family_field_evidence_refs_missing',
     runtimeProbe ? null : 'preflight_backend_probe_identity_missing',
     evidenceRefs.length > 0 ? null : 'preflight_backend_evidence_refs_missing',
   ]);
@@ -4390,6 +4427,10 @@ function backendEvidenceFromCandidate(source, candidate) {
     backend_family: backendFamily,
     runtimeProbe,
     runtime_probe: runtimeProbe,
+    backendFieldEvidenceRefs,
+    backend_field_evidence_refs: backendFieldEvidenceRefs,
+    backendFamilyFieldEvidenceRefs,
+    backend_family_field_evidence_refs: backendFamilyFieldEvidenceRefs,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     accepted: failedGates.length === 0,
@@ -6938,15 +6979,49 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   if (rows.length === 0) {
     failures.push({ code: 'validation_matrix_rows_empty' });
   }
+  const rowIdentityFailuresByIndex = new Map();
   evaluatedRows.forEach((row, index) => {
+    const identityFailures = [];
     if (row.schemaVersion !== GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION) {
       failures.push({ code: 'validation_matrix_row_schema_mismatch', row_index: index });
+    }
+    const expectedRowId = rowIdFor(row);
+    if (!row.rowId) {
+      identityFailures.push({ code: 'validation_matrix_row_id_missing' });
+    } else if (row.rowId !== expectedRowId) {
+      identityFailures.push({
+        code: 'validation_matrix_row_id_mismatch',
+        suppliedRowId: row.rowId,
+        recomputedRowId: expectedRowId,
+      });
+    }
+    if (identityFailures.length > 0) {
+      rowIdentityFailuresByIndex.set(index, identityFailures);
+      failures.push(...identityFailures.map((failure) => ({
+        ...failure,
+        row_index: index,
+        targetId: row.targetId,
+      })));
     }
     for (const failure of row.safety.failedGates) {
       failures.push({ ...failure, row_index: index, targetId: row.targetId });
     }
   });
-  const recomputedSummary = coverageSummary(evaluatedRows);
+  const summaryRows = evaluatedRows.map((row, index) => {
+    const identityFailures = rowIdentityFailuresByIndex.get(index) ?? [];
+    if (identityFailures.length === 0) return row;
+    return {
+      ...row,
+      safety: {
+        accepted: false,
+        failedGates: dedupeFailedGates([
+          ...identityFailures,
+          ...(Array.isArray(row.safety?.failedGates) ? row.safety.failedGates : []),
+        ]),
+      },
+    };
+  });
+  const recomputedSummary = coverageSummary(summaryRows);
   const suppliedSummary = compactObject(ledger.summary);
   if (Object.keys(suppliedSummary).length > 0) {
     const suppliedRowDerivedSummary = rowDerivedSummaryFields(suppliedSummary);
