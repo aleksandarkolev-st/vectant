@@ -521,6 +521,7 @@ function runtimeProofMaterials(scope, options = {}) {
 
 function computeProofLedgerMaterials(scope, {
   projectId,
+  backend = 'hip',
   rawReadbackPath,
   rawReadbackBytes = null,
   runtimeSessionId = `runtime-session:${scope}`,
@@ -564,7 +565,7 @@ function computeProofLedgerMaterials(scope, {
   const proofLedger = buildGpuHmrProofLedger({
     project_id: projectId,
     edit_id: `source-edit:${scope}`,
-    backend: 'hip',
+    backend,
     classification: {
       project_kind: 'gpu_project',
       edit_kind: 'gpu_artifact_edit',
@@ -630,7 +631,7 @@ function computeProofLedgerMaterials(scope, {
       proof: 'stream_event_proven',
     },
     process_identity: { process_id: 'pid:4242', runtime_session_id: runtimeSessionId },
-    device_identity: { device_uuid: 'gpu:synthetic-rocm', backend: 'hip' },
+    device_identity: { device_uuid: 'gpu:synthetic-rocm', backend },
     oracle_artifacts: { compute_oracle_artifacts: computeOracleArtifacts },
     metric_clock: 'monotonic_ns',
     metric_scope: 'hot_delta_1',
@@ -1147,6 +1148,111 @@ await writeJson(path.join(artifactsRoot, 'strict-runtime-ledger', 'missing-compu
   proof_ledger_query: strictComputeMissingReadbackMaterials.proof_ledger_query,
   runtimeProofArtifact: strictComputeMissingReadbackMaterials.runtimeProofArtifact,
   runtime_proof_artifact: strictComputeMissingReadbackMaterials.runtime_proof_artifact,
+});
+
+const forgedGenericOpenclDir = path.join(artifactsRoot, 'strict-runtime-ledger', 'forged-generic-opencl');
+const forgedGenericOpenclReadback = path.join(forgedGenericOpenclDir, 'readback.bin');
+const forgedGenericOpenclBytes = Buffer.from([2, 4, 8, 16, 32, 64, 128, 255]);
+await fs.mkdir(forgedGenericOpenclDir, { recursive: true });
+await fs.writeFile(forgedGenericOpenclReadback, forgedGenericOpenclBytes);
+await writeJson(`${forgedGenericOpenclReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  dtype: 'uint8',
+  byteLength: forgedGenericOpenclBytes.length,
+  shape: [forgedGenericOpenclBytes.length],
+});
+await writeRgbaPng(`${forgedGenericOpenclReadback}.card.png`, 8, 8, (x, y) => {
+  const value = forgedGenericOpenclBytes[(x + y) % forgedGenericOpenclBytes.length];
+  return [value, 255 - value, (value * 3) % 256, 255];
+});
+const forgedGenericOpenclMaterials = computeProofLedgerMaterials('forged-generic-opencl-label', {
+  projectId: 'forged-generic-opencl-label',
+  backend: 'opencl',
+  rawReadbackPath: forgedGenericOpenclReadback,
+  rawReadbackBytes: forgedGenericOpenclBytes,
+});
+const forgedGenericOpenclContract = acceptanceContract('forged_generic_opencl_label', {
+  projectId: 'forged-generic-opencl-label',
+});
+forgedGenericOpenclContract.backend = { value: 'opencl' };
+forgedGenericOpenclContract.artifact_identity.artifact_kind = 'opencl_program';
+forgedGenericOpenclContract.opencl_contract = {
+  program_hash_before: forgedGenericOpenclContract.artifact_hash_before,
+  program_hash_after: forgedGenericOpenclContract.artifact_hash_after,
+  kernel_name: 'flow_kernel',
+  command_queue: 'queue:0',
+  work_dim: 1,
+  global_work_size: [64],
+  local_work_size: [64],
+  event_trace: 'event:forged-generic-opencl-label',
+  output_buffer_readback: 'buffer:flow-output',
+  field_evidence_refs: Object.fromEntries([
+    'program_hash_before',
+    'program_hash_after',
+    'kernel_name',
+    'command_queue',
+    'work_dim',
+    'global_work_size',
+    'local_work_size',
+    'event_trace',
+    'output_buffer_readback',
+  ].map((field) => [field, ['evidence:synthetic-runtime:forged-generic-opencl-label']])),
+};
+forgedGenericOpenclMaterials.proofLedger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.proof_ledger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.runtimeProofArtifact.proof_ledger =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedger;
+forgedGenericOpenclMaterials.runtime_proof_artifact.proof_ledger =
+  forgedGenericOpenclMaterials.runtime_proof_artifact.proofLedger;
+forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.runtimeProofArtifact.proof_ledger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContract = forgedGenericOpenclContract;
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptance_contract = forgedGenericOpenclContract;
+forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedgerQuery =
+  queryGpuHmrLedgerInvariants(forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedger);
+forgedGenericOpenclMaterials.runtimeProofArtifact.proof_ledger_query =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedgerQuery;
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractEvaluation =
+  evaluateGpuHmrAcceptanceContract(forgedGenericOpenclContract);
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptance_contract_evaluation =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractEvaluation;
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractConsistency =
+  evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: forgedGenericOpenclContract,
+    derivedContract: forgedGenericOpenclContract,
+  });
+forgedGenericOpenclMaterials.runtimeProofArtifact.acceptance_contract_consistency =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractConsistency;
+forgedGenericOpenclMaterials.runtime_proof_artifact.proofLedger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.runtime_proof_artifact.proof_ledger.records[0].backend = 'opencl';
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptanceContract = forgedGenericOpenclContract;
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptance_contract = forgedGenericOpenclContract;
+forgedGenericOpenclMaterials.runtime_proof_artifact.proofLedgerQuery =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedgerQuery;
+forgedGenericOpenclMaterials.runtime_proof_artifact.proof_ledger_query =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.proofLedgerQuery;
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptanceContractEvaluation =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractEvaluation;
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptance_contract_evaluation =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractEvaluation;
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptanceContractConsistency =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractConsistency;
+forgedGenericOpenclMaterials.runtime_proof_artifact.acceptance_contract_consistency =
+  forgedGenericOpenclMaterials.runtimeProofArtifact.acceptanceContractConsistency;
+await writeJson(path.join(forgedGenericOpenclDir, 'forged-generic-opencl-label.json'), {
+  schemaVersion: 'synthi.gpu.hmr.proof.v1',
+  proofId: 'gpu-runtime-proof:sha256:forged-generic-opencl-label',
+  target_name: 'forged-generic-opencl-label',
+  gpuHmrSuccess: true,
+  fullRuntimeProven: true,
+  resultState: 'gpu-hmr-full-runtime-proven',
+  acceptanceContract: forgedGenericOpenclContract,
+  proofLedger: forgedGenericOpenclMaterials.proofLedger,
+  proof_ledger: forgedGenericOpenclMaterials.proof_ledger,
+  proofLedgerQuery: forgedGenericOpenclMaterials.proofLedgerQuery,
+  proof_ledger_query: forgedGenericOpenclMaterials.proof_ledger_query,
+  runtimeProofArtifact: forgedGenericOpenclMaterials.runtimeProofArtifact,
+  runtime_proof_artifact: forgedGenericOpenclMaterials.runtime_proof_artifact,
 });
 
 await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json'), {
@@ -2359,6 +2465,21 @@ assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_files_no
 assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_raw_readback_hash_unverified'));
 assert.ok(strictComputeMissingReadback.openGaps.includes('compute_oracle_raw_readback_unreadable'));
 
+const forgedGenericOpencl = ledger.rows.find((row) =>
+  row.targetId === 'forged-generic-opencl-label'
+);
+assert.equal(forgedGenericOpencl?.proofMode, 'strict_runtime_ledger');
+assert.equal(forgedGenericOpencl.backend, 'opencl');
+assert.equal(forgedGenericOpencl.matrixOutcome, 'unproven');
+assert.equal(forgedGenericOpencl.acceptedForGpuHmr, false);
+assert.equal(forgedGenericOpencl.gpuHmrSuccess, false);
+assert.equal(forgedGenericOpencl.outputOracleFacet.accepted, true);
+assert.equal(forgedGenericOpencl.acceptanceScope, 'declared_profile_scoped');
+assert.equal(forgedGenericOpencl.claimScope, 'unknown_scope');
+assert.equal(forgedGenericOpencl.safety.accepted, true);
+assert.ok(forgedGenericOpencl.reasons.includes('gpu_hmr_success_requires_known_acceptance_scope'));
+assert.ok(forgedGenericOpencl.openGaps.includes('gpu_hmr_success_requires_known_acceptance_scope'));
+
 function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
   return {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -2776,7 +2897,10 @@ assert.ok(missingRuntimeCapabilityPreflightSafetyQuery.failedGates.some((gate) =
   gate.code === 'gpu_hmr_success_requires_real_rocm_runtime_capability_preflight'
 ));
 
-const opencl = ledger.rows.find((row) => row.backend === 'opencl');
+const opencl = ledger.rows.find((row) =>
+  row.backend === 'opencl'
+  && row.targetId === 'synthetic-opencl-preflight'
+);
 assert.equal(opencl?.matrixOutcome, 'refusal_proven');
 assert.equal(opencl.acceptedForGpuHmr, false);
 assert.equal(opencl.gpuHmrSuccess, false);
@@ -3219,6 +3343,9 @@ assert.ok(flowVisualCoverage.rows.some((row) =>
   && row.validationProfileEvidence.profileClass === 'flow_visual_gpu_path'
 ));
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
+assert.ok(!coverageById.get('opencl_dispatch_readback')?.rows.some((row) =>
+  row.targetId === 'forged-generic-opencl-label'
+));
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));

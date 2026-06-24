@@ -33,7 +33,6 @@ const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'hiprt_declared_visual_profile',
   'webgpu_declared_compute_readback',
   'webgpu_declared_pipeline_visual',
-  'declared_profile_scoped',
 ]);
 const VALIDATION_VISUAL_PROFILE_REQUIREMENTS = [
   {
@@ -1034,7 +1033,13 @@ function inferFullRuntimeAcceptanceScope(row) {
   if (row.backend === 'hip' && row.proofMode === 'run_mode_proof') {
     return 'generated_rocm_hip_preview_visual';
   }
-  if (row.backend === 'hip' && row.proofMode === 'strict_runtime_ledger') {
+  if (
+    row.backend === 'hip'
+    && (
+      row.proofMode === 'strict_runtime_ledger'
+      || row.proofMode === 'real_rocm_repo_validation'
+    )
+  ) {
     return 'rocm_hip_declared_runtime_profile';
   }
   return 'declared_profile_scoped';
@@ -1416,6 +1421,29 @@ function finalizeRow(seed) {
   row.acceptance_scope = row.acceptanceScope;
   row.claimScope = claimScopeForAcceptanceScope(row.acceptanceScope);
   row.claim_scope = row.claimScope;
+  if (
+    row.matrixOutcome === 'full_runtime_gpu_hmr'
+    && row.acceptedForGpuHmr === true
+    && row.claimScope === 'unknown_scope'
+  ) {
+    row.matrixOutcome = 'unproven';
+    row.acceptedForGpuHmr = false;
+    row.gpuHmrSuccess = false;
+    row.proofChainAccepted = false;
+    row.acceptanceClass = firstText(row.acceptanceClass, row.acceptance_class)
+      ?? 'runtime_proof_rejected';
+    row.acceptance_class = row.acceptanceClass;
+    row.proofChain = 'acceptance_scope_rejected';
+    row.proof_chain = row.proofChain;
+    row.reasons = compactStringList([
+      ...(Array.isArray(row.reasons) ? row.reasons : []),
+      'gpu_hmr_success_requires_known_acceptance_scope',
+    ]);
+    row.openGaps = compactStringList([
+      ...(Array.isArray(row.openGaps) ? row.openGaps : []),
+      'gpu_hmr_success_requires_known_acceptance_scope',
+    ]);
+  }
   const shouldCarryGeneralityClaim =
     row.matrixOutcome === 'full_runtime_gpu_hmr'
     || row.acceptedForGpuHmr === true;
