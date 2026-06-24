@@ -6,7 +6,7 @@ This document records the current implementation status against `GPU_HMR_UNIVERS
 
 ## Executive Status
 
-Accepted local proof is ROCm/HIP on the AMD Radeon RX 9070 XT (`gfx1201`). CUDA was not validated on this machine.
+Accepted local proof is scoped ROCm/HIP-profile proof on the AMD Radeon RX 9070 XT (`gfx1201`). CUDA was not validated on this machine.
 
 Current accepted proof spans multiple scoped profiles, but it is not universal production acceptance and is not broad library-agnostic GPU HMR:
 
@@ -31,15 +31,15 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 55 rows: 23 accepted full-runtime GPU HMR rows, 0 broad library-agnostic full-runtime GPU HMR rows, 23 scoped full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 21 structured refusal rows, 1 preflight-only row, 8 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:128288bcf374ec5c635cf8e4a719bc69b85c70906e271eca0d20afd505c11408
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T004218Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T004218Z.md
-latest rerun context: validation matrix rerun over existing proof artifacts after evidence-backed declared-scope gates, explicit full-runtime scope classification, live status-doc aggregation checks, latest-attempt selection by canonical target/scope, scoped HIP module hardened proof gates, WebGPU profiled-layout runtime binding proof, WebGPU compute/readback proof with expected-output verification, native HIP module-load/readback proof, real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, required app-hook fail-closed gates, disabled output-oracle resolution gating, generic runtime capability preflight surfacing, and the latest 2026-06-24 MIOpen SQLite3/missing-runtime-proof refusal rerun
+gpu-validation-matrix-ledger:sha256:a3df4d04bc27bfda2d3cbedde919984b16bd80d99f7dfc14e399d4c46e640d5b
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T005534Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T005534Z.md
+latest rerun context: validation matrix rerun over existing proof artifacts after evidence-backed declared-scope gates, explicit full-runtime scope classification, broad/library-agnostic scope proof-facet rejection, query-time summary recomputation, live status-doc aggregation checks, latest-attempt selection by canonical target/scope, scoped HIP module hardened proof gates, WebGPU profiled-layout runtime binding proof, WebGPU compute/readback proof with expected-output verification, native HIP module-load/readback proof, real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, required app-hook fail-closed gates, disabled output-oracle resolution gating, generic runtime capability preflight surfacing, and the latest 2026-06-24 MIOpen SQLite3/missing-runtime-proof refusal rerun
 summary: 55 rows, 23 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 23 scoped full-runtime GPU HMR, 23 all full-runtime rows, 21 refusals, 8 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, rocm_hip_declared_runtime_profile: 1, hiprt_declared_visual_profile: 4, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
-history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:2e38008f74c624b95a13d84587b0865be52b6b5cbce861415a64333e16f045ed, 654 rows with 599 historical unproven rows included
-history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260624T004218Z.json
+history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:418f9bd131cf6832dbf5b8b3ffe377fc40b9de21d7f77fbb74ddf6d9678f153a, 654 rows with 599 historical unproven rows included
+history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260624T005534Z.json
 history scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, rocm_hip_declared_runtime_profile: 1, hiprt_declared_visual_profile: 4, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=21, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T234336Z.json; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 ```
@@ -60,7 +60,7 @@ json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-mat
 rows: 9
 outcomes: 4 full_runtime_gpu_hmr, 2 cold_split_proven, 2 refusal_proven, 1 deterministic_fission_proven
 open gates: none
-coverage accepted: ROCm/HIP full runtime, Flow visual GPU path, ray-light visual GPU path, per-target run modes, and ray-light `trace_light_rays` per-kernel/smallest-safe fission. Flow remains device-translation-unit HMR only for fission because its selected device role owns two kernels.
+coverage accepted: scoped ROCm/HIP full-runtime profile rows, Flow visual GPU path, ray-light visual GPU path, per-target run modes, and ray-light `trace_light_rays` per-kernel/smallest-safe fission. Flow remains device-translation-unit HMR only for fission because its selected device role owns two kernels.
 ```
 
 Latest live preview URLs checked HTTP 200:
@@ -68,7 +68,7 @@ Latest live preview URLs checked HTTP 200:
 ```text
 Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
 Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10
-Preview stack: frontend 127.0.0.1:3000 -> HTTP 200 on 2026-06-23; Postgres bound to 127.0.0.1:15432 because 5432 was unavailable.
+Preview stack: frontend 127.0.0.1:3000 -> HTTP 200 on 2026-06-24; Postgres bound to 127.0.0.1:15432 because 5432 was unavailable.
 ```
 
 Latest ray-light visual proof:
@@ -446,9 +446,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:128288bcf374ec5c635cf8e4a719bc69b85c70906e271eca0d20afd505c11408
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T004218Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T004218Z.md
+proof id: gpu-validation-matrix-ledger:sha256:a3df4d04bc27bfda2d3cbedde919984b16bd80d99f7dfc14e399d4c46e640d5b
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T005534Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T005534Z.md
 ```
 
 Matrix result:
@@ -569,7 +569,7 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:128288bcf374ec5c635cf8e4a719bc69b85c70906e271eca0d20afd505c11408
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:a3df4d04bc27bfda2d3cbedde919984b16bd80d99f7dfc14e399d4c46e640d5b
   smoke coverage: compute-only real ROCm oracle acceptance plus forged missing raw/schema/card file refusal
 
 ray-light live MCP visual proof with hot-delta timing
