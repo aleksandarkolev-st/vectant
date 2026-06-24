@@ -65,8 +65,13 @@ function markdownTable(rows) {
     'proofMode',
     'matrixOutcome',
     'acceptedForGpuHmr',
+    'acceptanceScope',
+    'claimScope',
+    'supportedPipelineScope',
+    'validationTargetScope',
     'visualProfileAccepted',
     'refusalProven',
+    'safetyAccepted',
     'proofChain',
     'ledgerProofId',
     'changedPixelRatio',
@@ -79,6 +84,7 @@ function markdownTable(rows) {
       ...row,
       ledgerProofId: row.ledger?.proofId ?? null,
       changedPixelRatio: row.visual?.changedPixelRatio ?? null,
+      safetyAccepted: row.safety?.accepted ?? null,
       openGaps: row.openGaps ?? [],
     };
     return `| ${columns.map((column) => value(compact[column])).join(' | ')} |`;

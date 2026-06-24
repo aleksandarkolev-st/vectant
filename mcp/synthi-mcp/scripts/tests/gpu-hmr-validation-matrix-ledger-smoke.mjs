@@ -1578,6 +1578,8 @@ function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
     acceptedForGpuHmr: true,
     gpuHmrSuccess: true,
     proofChainAccepted: true,
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    claimScope: 'scoped_profile',
     ledger: {
       present: true,
       source: 'recomputed_ledger',
@@ -1639,6 +1641,22 @@ for (const expectedGate of [
     `expected validation matrix safety gate ${expectedGate}`,
   );
 }
+const unknownAcceptanceScopeQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-unknown-acceptance-scope', {
+      acceptanceScope: 'vendor_runtime_claim_without_declared_scope',
+      claimScope: 'unknown_scope',
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(unknownAcceptanceScopeQuery.accepted, false);
+assert.ok(unknownAcceptanceScopeQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
+));
 const missingRequiredHookSafetyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

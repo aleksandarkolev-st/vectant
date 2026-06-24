@@ -25,6 +25,15 @@ const MATRIX_OUTCOME_PRIORITY = new Map([
 const ACCEPTED_METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const ACCEPTED_CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
 const REQUIRED_FULL_TARGET_RUN_MODES = ['cold', 'hot_delta_1', 'hot_delta_2'];
+const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
+  'generated_rocm_hip_preview_visual',
+  'hip_module_declared_compute_readback',
+  'rocm_hip_declared_runtime_profile',
+  'hiprt_declared_visual_profile',
+  'webgpu_declared_compute_readback',
+  'webgpu_declared_pipeline_visual',
+  'declared_profile_scoped',
+]);
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -623,6 +632,13 @@ function inferFullRuntimeAcceptanceScope(row) {
   return 'declared_profile_scoped';
 }
 
+function claimScopeForAcceptanceScope(scope) {
+  if (scope === 'broad_library_agnostic') return 'broad_library_agnostic';
+  if (SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES.has(scope)) return 'scoped_profile';
+  if (scope === 'not_full_runtime') return 'not_full_runtime';
+  return 'unknown_scope';
+}
+
 function declaredScopeEvidenceFacet({
   supportedPipelineScope,
   contract = {},
@@ -834,6 +850,8 @@ function finalizeRow(seed) {
   ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
   row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
   row.acceptance_scope = row.acceptanceScope;
+  row.claimScope = claimScopeForAcceptanceScope(row.acceptanceScope);
+  row.claim_scope = row.claimScope;
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -1083,6 +1101,15 @@ function rowSafetyFailures(row) {
   const failures = [];
   if (row.acceptedForGpuHmr === true && row.matrixOutcome !== 'full_runtime_gpu_hmr') {
     failures.push({ code: 'gpu_hmr_success_requires_full_runtime_outcome' });
+  }
+  if (
+    row.acceptedForGpuHmr === true
+    && ![
+      'broad_library_agnostic',
+      ...SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES,
+    ].includes(row.acceptanceScope)
+  ) {
+    failures.push({ code: 'gpu_hmr_success_requires_known_acceptance_scope' });
   }
   if (row.acceptedForGpuHmr === true && row.proofChainAccepted !== true) {
     failures.push({ code: 'gpu_hmr_success_requires_accepted_proof_chain' });
@@ -4087,8 +4114,22 @@ function selectBestRows(rows) {
 }
 
 function rowIsScopedOnlyFullRuntime(row) {
+  return acceptedFullRuntimeRow(row)
+    && row.claimScope === 'scoped_profile'
+    && SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES.has(row.acceptanceScope);
+}
+
+function rowIsBroadFullRuntime(row) {
+  return acceptedFullRuntimeRow(row)
+    && row.claimScope === 'broad_library_agnostic'
+    && row.acceptanceScope === 'broad_library_agnostic';
+}
+
+function acceptedFullRuntimeRow(row) {
   return row.matrixOutcome === 'full_runtime_gpu_hmr'
-    && row.acceptanceScope !== 'broad_library_agnostic';
+    && row.acceptedForGpuHmr === true
+    && row.proofChainAccepted === true
+    && row.safety?.accepted !== false;
 }
 
 function fullRuntimeScopeBreakdown(rows) {
@@ -4107,9 +4148,9 @@ function coverageSummary(rows) {
     byOutcome[row.matrixOutcome] = (byOutcome[row.matrixOutcome] ?? 0) + 1;
     byBackend[row.backend] = (byBackend[row.backend] ?? 0) + 1;
   }
-  const fullRuntimeRows = rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr');
+  const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
-  const broadRuntimeRows = fullRuntimeRows.filter((row) => row.acceptanceScope === 'broad_library_agnostic');
+  const broadRuntimeRows = fullRuntimeRows.filter(rowIsBroadFullRuntime);
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
   const refusalRows = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const preflightRows = rows.filter((row) => row.matrixOutcome === 'preflight_only');
@@ -4120,6 +4161,10 @@ function coverageSummary(rows) {
     byBackend,
     acceptedFullRuntimeGpuHmrRows: fullRuntimeRows.length,
     acceptedFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
+    acceptedFullRuntimeClaimScopeBreakdown: fullRuntimeScopeBreakdown(fullRuntimeRows.map((row) => ({
+      ...row,
+      acceptanceScope: row.claimScope,
+    }))),
     broadFullRuntimeGpuHmrRows: broadRuntimeRows.length,
     broadFullRuntimeTargets: compactStringList(broadRuntimeRows.map((row) => row.targetId)),
     scopedFullRuntimeGpuHmrRows: scopedRuntimeRows.length,
@@ -4152,6 +4197,7 @@ function rowRefs(rows) {
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
     acceptanceScope: row.acceptanceScope,
+    claimScope: row.claimScope,
     claimBoundaryAccepted: row.claimBoundaryAccepted,
     negativeAbiRefusalAccepted: row.negativeAbiRefusalAccepted,
     validationTargetScope: row.validationTargetScope,
@@ -4159,11 +4205,26 @@ function rowRefs(rows) {
   }));
 }
 
+function claimScopeForRows(rows) {
+  const scopes = compactStringList(rows.map((row) => row.claimScope));
+  if (scopes.length === 0) return null;
+  if (scopes.length === 1) return scopes[0];
+  if (scopes.includes('broad_library_agnostic')) return 'mixed_includes_broad';
+  if (scopes.every((scope) => scope === 'scoped_profile' || scope === 'not_full_runtime')) {
+    return 'scoped_profile_with_support';
+  }
+  return 'mixed_claim_scope';
+}
+
 function coverageEntry({ id, requirement, status, rows = [], openGaps = [], ...extra }) {
   return compactObject({
     id,
     requirement,
     status,
+    claimScope: extra.claimScope ?? claimScopeForRows(rows),
+    claim_scope: extra.claimScope ?? claimScopeForRows(rows),
+    acceptanceScopes: compactStringList(rows.map((row) => row.acceptanceScope)),
+    acceptance_scopes: compactStringList(rows.map((row) => row.acceptanceScope)),
     rowCount: rows.length,
     rows: rowRefs(rows),
     openGaps: compactStringList(openGaps),
@@ -4172,7 +4233,7 @@ function coverageEntry({ id, requirement, status, rows = [], openGaps = [], ...e
 }
 
 function acceptedRows(rows, predicate) {
-  return rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr' && predicate(row));
+  return rows.filter((row) => acceptedFullRuntimeRow(row) && predicate(row));
 }
 
 function hipModuleScopedRuntimeCoverage(rows) {
