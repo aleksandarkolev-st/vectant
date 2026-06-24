@@ -35,6 +35,31 @@ const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'webgpu_declared_pipeline_visual',
   'declared_profile_scoped',
 ]);
+const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
+  ['schemaVersion', 'schema_version'],
+  ['proofId', 'proof_id'],
+  ['projectId', 'project_id'],
+  ['editId', 'edit_id'],
+  ['backend'],
+  ['classification'],
+  ['contractHash', 'contract_hash'],
+  ['artifactBeforeHash', 'artifact_before_hash'],
+  ['artifactAfterHash', 'artifact_after_hash'],
+  ['loaderEvent', 'loader_event'],
+  ['epochPublishEvent', 'epoch_publish_event'],
+  ['dispatchEvent', 'dispatch_event'],
+  ['outputEvent', 'output_event'],
+  ['retirementEvent', 'retirement_event'],
+  ['processIdentity', 'process_identity'],
+  ['deviceIdentity', 'device_identity'],
+  ['cpuHmrUsed', 'cpu_hmr_used'],
+  ['fullRebuildUsed', 'full_rebuild_used'],
+  ['processRestarted', 'process_restarted'],
+  ['oracleArtifacts', 'oracle_artifacts'],
+  ['timings'],
+  ['modelProvenance', 'model_provenance'],
+  ['evidenceRefs', 'evidence_refs'],
+];
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -100,6 +125,10 @@ function compactObjectList(value) {
   return value
     .map(compactObject)
     .filter((entry) => Object.keys(entry).length > 0);
+}
+
+function hasOwnAny(object, names) {
+  return names.some((name) => Object.prototype.hasOwnProperty.call(object, name));
 }
 
 function eventList(...values) {
@@ -1183,6 +1212,79 @@ function runtimeCapabilityPreflightFromSources({
   return candidates.find((candidate) => Object.keys(candidate).length > 0) ?? {};
 }
 
+function fullRuntimeLedgerAuthorityFailures(row) {
+  const failures = [];
+  const ledger = compactObject(row.ledger);
+  const record = compactObject(ledger.record);
+  const failedInvariants = Array.isArray(ledger.failedInvariants)
+    ? ledger.failedInvariants
+    : Array.isArray(ledger.failed_invariants)
+      ? ledger.failed_invariants
+      : null;
+  const ledgerProofId = firstText(ledger.proofId, ledger.proof_id);
+  const recordProofId = firstText(record.proofId, record.proof_id);
+  const recomputed = Object.keys(record).length > 0
+    ? queryGpuHmrLedgerInvariants({ records: [record] })
+    : null;
+  const proofIds = compactStringList(row.proofIds ?? row.proof_ids);
+  if (ledger.present !== true) {
+    failures.push({ code: 'gpu_hmr_success_requires_embedded_proof_ledger' });
+  }
+  if (ledger.source !== 'recomputed_ledger') {
+    failures.push({ code: 'gpu_hmr_success_requires_recomputed_proof_ledger' });
+  }
+  if (ledger.gpuHmrSuccess !== true) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_success' });
+  }
+  if (failedInvariants === null) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_invariant_list' });
+  } else if (failedInvariants.length > 0) {
+    failures.push({ code: 'gpu_hmr_success_requires_zero_ledger_invariants' });
+  }
+  if (!ledgerProofId) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_proof_id' });
+  }
+  if (Object.keys(record).length === 0) {
+    failures.push({ code: 'gpu_hmr_success_requires_proof_ledger_record' });
+  }
+  if (!recordProofId) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_record_proof_id' });
+  }
+  if (ledgerProofId && recordProofId && ledgerProofId !== recordProofId) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_record_proof_id_match' });
+  }
+  if (ledgerProofId && !proofIds.includes(ledgerProofId)) {
+    failures.push({ code: 'gpu_hmr_success_requires_ledger_proof_id_in_row_proof_ids' });
+  }
+  if (recomputed !== null) {
+    const recomputedRecord = compactObject(recomputed.record);
+    const recomputedRecordProofId = firstText(recomputedRecord.proofId, recomputedRecord.proof_id);
+    if (recomputed.gpuHmrSuccess !== true) {
+      failures.push({ code: 'gpu_hmr_success_requires_recomputed_ledger_record_success' });
+    }
+    const recomputedFailures = Array.isArray(recomputed.failedInvariants) ? recomputed.failedInvariants : [];
+    if (recomputedFailures.length > 0) {
+      failures.push({
+        code: 'gpu_hmr_success_requires_zero_recomputed_ledger_record_invariants',
+        invariantCodes: compactStringList(recomputedFailures.map((failure) => compactObject(failure).code)),
+      });
+    }
+    if (recordProofId && recomputedRecordProofId && recordProofId !== recomputedRecordProofId) {
+      failures.push({ code: 'gpu_hmr_success_requires_recomputed_ledger_record_proof_id_match' });
+    }
+  }
+  const missingFields = REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS
+    .filter((fieldNames) => !hasOwnAny(record, fieldNames))
+    .map((fieldNames) => fieldNames[0]);
+  if (missingFields.length > 0) {
+    failures.push({
+      code: 'gpu_hmr_success_requires_complete_ledger_record',
+      missingFields,
+    });
+  }
+  return failures;
+}
+
 function rowSafetyFailures(row) {
   const failures = [];
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
@@ -1213,6 +1315,13 @@ function rowSafetyFailures(row) {
     failures.push({ code: 'gpu_hmr_success_requires_accepted_proof_chain' });
   }
   if (row.acceptedForGpuHmr === true) {
+    if (row.gpuHmrSuccess !== true) {
+      failures.push({ code: 'accepted_gpu_hmr_row_requires_gpu_hmr_success_true' });
+    }
+    if (row.refusalProven === true || row.refusal_proven === true) {
+      failures.push({ code: 'accepted_gpu_hmr_row_cannot_be_refusal_proven' });
+    }
+    failures.push(...fullRuntimeLedgerAuthorityFailures(row));
     const sourceAdaptation = sourceAdaptationProofFacet(row);
     if (sourceAdaptation.acceptedForNoShimHmr !== true) {
       failures.push(...sourceAdaptation.failedGates);
@@ -1250,18 +1359,6 @@ function rowSafetyFailures(row) {
       || row.proofMode === 'mcp_preview_visual'
     )
   ) {
-    if (row.ledger?.present !== true) {
-      failures.push({ code: 'gpu_hmr_success_requires_embedded_proof_ledger' });
-    }
-    if (row.ledger?.source !== 'recomputed_ledger') {
-      failures.push({ code: 'gpu_hmr_success_requires_recomputed_proof_ledger' });
-    }
-    if (row.ledger?.gpuHmrSuccess !== true) {
-      failures.push({ code: 'gpu_hmr_success_requires_ledger_success' });
-    }
-    if (Array.isArray(row.ledger?.failedInvariants) && row.ledger.failedInvariants.length > 0) {
-      failures.push({ code: 'gpu_hmr_success_requires_zero_ledger_invariants' });
-    }
     if (row.runtimeProofArtifact?.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
     }

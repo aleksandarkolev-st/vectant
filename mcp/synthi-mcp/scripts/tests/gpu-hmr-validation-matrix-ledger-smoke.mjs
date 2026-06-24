@@ -1688,6 +1688,23 @@ function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
     ...firewallFields,
   };
 }
+
+function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
+  const row = JSON.parse(JSON.stringify(acceptedFlow));
+  return {
+    ...row,
+    targetId,
+    profileId: targetId,
+    ...fields,
+  };
+}
+
+function mutateAcceptedLedgerRecord(row, mutate) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  mutate(cloned.ledger.record, cloned);
+  return cloned;
+}
+
 const missingFirewallQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -1731,6 +1748,86 @@ for (const expectedGate of [
     `expected validation matrix safety gate ${expectedGate}`,
   );
 }
+const missingLedgerAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-missing-ledger-authority', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(missingLedgerAuthorityQuery.accepted, false);
+assert.equal(missingLedgerAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+for (const expectedGate of [
+  'gpu_hmr_success_requires_ledger_proof_id',
+  'gpu_hmr_success_requires_proof_ledger_record',
+  'gpu_hmr_success_requires_ledger_record_proof_id',
+  'gpu_hmr_success_requires_complete_ledger_record',
+]) {
+  assert.ok(
+    missingLedgerAuthorityQuery.failedGates.some((gate) => gate.code === expectedGate),
+    `expected validation matrix ledger authority gate ${expectedGate}`,
+  );
+}
+const missingLedgerProofRefQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedAuthoritativeMatrixRow('accepted-ledger-proof-id-not-referenced', {
+      proofIds: [],
+    }),
+  ],
+});
+assert.equal(missingLedgerProofRefQuery.accepted, false);
+assert.equal(missingLedgerProofRefQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(missingLedgerProofRefQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_ledger_proof_id_in_row_proof_ids'
+));
+const forgedRecordCpuFallbackQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    mutateAcceptedLedgerRecord(
+      acceptedAuthoritativeMatrixRow('accepted-ledger-record-cpu-fallback'),
+      (record) => {
+        record.cpuHmrUsed = true;
+      },
+    ),
+  ],
+});
+assert.equal(forgedRecordCpuFallbackQuery.accepted, false);
+assert.equal(forgedRecordCpuFallbackQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedRecordCpuFallbackQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_recomputed_ledger_record_success'
+));
+assert.ok(forgedRecordCpuFallbackQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_zero_recomputed_ledger_record_invariants'
+  && gate.invariantCodes?.includes('cpu_hmr_used')
+));
+const acceptedRowSuccessFlagMismatchQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedAuthoritativeMatrixRow('accepted-row-success-flag-false', {
+      gpuHmrSuccess: false,
+    }),
+  ],
+});
+assert.equal(acceptedRowSuccessFlagMismatchQuery.accepted, false);
+assert.ok(acceptedRowSuccessFlagMismatchQuery.failedGates.some((gate) =>
+  gate.code === 'accepted_gpu_hmr_row_requires_gpu_hmr_success_true'
+));
+const acceptedRowRefusalMismatchQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedAuthoritativeMatrixRow('accepted-row-refusal-proven', {
+      refusalProven: true,
+    }),
+  ],
+});
+assert.equal(acceptedRowRefusalMismatchQuery.accepted, false);
+assert.ok(acceptedRowRefusalMismatchQuery.failedGates.some((gate) =>
+  gate.code === 'accepted_gpu_hmr_row_cannot_be_refusal_proven'
+));
 const sourceAdaptedFirewallQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -1828,22 +1925,14 @@ assert.ok(forgedBroadScopeWithFacetQuery.failedGates.some((gate) =>
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    acceptedMatrixRowMissingFirewall('accepted-scoped-summary-row', {
-      cpuHmrUsed: false,
-      fullRebuildUsed: false,
-      processRestarted: false,
-    }),
+    acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row'),
   ],
 });
 assert.equal(validScopedSummaryQuery.accepted, true);
 const inflatedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    acceptedMatrixRowMissingFirewall('accepted-scoped-summary-row', {
-      cpuHmrUsed: false,
-      fullRebuildUsed: false,
-      processRestarted: false,
-    }),
+    acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row'),
   ],
   summary: {
     ...validScopedSummaryQuery.summary,
