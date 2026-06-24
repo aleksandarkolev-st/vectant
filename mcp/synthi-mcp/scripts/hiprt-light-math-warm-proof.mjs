@@ -1280,6 +1280,67 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
   };
 }
 
+function buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter) {
+  const baseAdapter = sameProcessAdapter?.baseRuntimeProbeAdapter ?? {};
+  const sourceAdaptations = Array.from(new Set([
+    ...(Array.isArray(baseAdapter.sourceAdaptations) ? baseAdapter.sourceAdaptations : []),
+    sameProcessAdapter ? 'same_process_targeted_kernel_recompile_hook' : null,
+  ].filter(Boolean)));
+  const files = Array.isArray(baseAdapter.records)
+    ? baseAdapter.records.flatMap((record) => Array.isArray(record?.files) ? record.files : [])
+    : [];
+  const adaptedOrAlreadyPresent =
+    baseAdapter.adaptedOrAlreadyPresent === true
+    || files.some((file) => ['adapted', 'already-adapted'].includes(file?.status));
+  const accepted = Boolean(sameProcessAdapter)
+    && adaptedOrAlreadyPresent
+    && sourceAdaptations.length > 0;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_profile_probe_instrumentation',
+    instrumentationKind: 'profile_probe_instrumentation',
+    instrumentation_kind: 'profile_probe_instrumentation',
+    adapterFamily: 'hiprt-path-tracer-profile-adapter',
+    adapter_family: 'hiprt-path-tracer-profile-adapter',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    accepted,
+    applied: sameProcessAdapter?.applied === true || baseAdapter.applied === true,
+    adaptedOrAlreadyPresent,
+    adapted_or_already_present: adaptedOrAlreadyPresent,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
+    files,
+    records: Array.isArray(baseAdapter.records) ? baseAdapter.records : [],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    proof_authority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    executionBoundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    execution_boundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'non_interposable_engine_render_graph',
+      'undisclosed_runtime_probe_instrumentation',
+    ],
+    unsupported_without_evidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'non_interposable_engine_render_graph',
+      'undisclosed_runtime_probe_instrumentation',
+    ],
+  };
+}
+
 async function buildHiprtTarget(reason) {
   const localLogPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${reason}-build.log`);
   const script = `
@@ -1945,6 +2006,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const shaderArtifact = changedRun.shaderCacheArtifact ?? {};
   const post = changedRun.postRecompileEvidence ?? {};
   const dispatch = post.dispatch ?? {};
+  const runtimeProbeInstrumentation = proof.runtimeProbeInstrumentation ?? proof.runtime_probe_instrumentation ?? {};
   const artifactHashAfter = shaderArtifact.selectedArtifactHash;
   const artifactHashBefore = shaderArtifact.beforeManifestHash;
   const limitations = [];
@@ -1955,6 +2017,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   if (!dispatch.processId) limitations.push({ code: 'hiprt_dispatch_process_id_missing' });
   if (!dispatch.stream) limitations.push({ code: 'hiprt_dispatch_stream_missing' });
   if (!proof.accepted) limitations.push({ code: 'hiprt_visual_proof_not_accepted' });
+  if (runtimeProbeInstrumentation.accepted !== true) {
+    limitations.push({ code: 'hiprt_profile_instrumentation_disclosure_missing' });
+  }
 
   const processId = dispatch.processId ?? 'unknown-process';
   const stream = dispatch.stream ?? 'unknown-stream';
@@ -1993,6 +2058,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     `runtime:hiprt:shader-cache-delta:${shaderArtifact.selectedArtifactHash ?? 'missing'}`,
     `runtime:hiprt:native-launch:${dispatch.sequence ?? 'missing'}`,
     `visual:hiprt:framebuffer-diff:${proof.diff.contentHash}`,
+    `runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`,
   ];
   const compileRecipeHash = sha256Json({
     source: proof.source.file,
@@ -2180,6 +2246,24 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       evidenceRefs,
     },
     backendContractProof,
+    claimBoundary: {
+      proofAuthority: runtimeProbeInstrumentation.proofAuthority,
+      proof_authority: runtimeProbeInstrumentation.proof_authority,
+      executionBoundary: runtimeProbeInstrumentation.executionBoundary,
+      execution_boundary: runtimeProbeInstrumentation.execution_boundary,
+      acceptedScope: runtimeProbeInstrumentation.acceptanceScope,
+      accepted_scope: runtimeProbeInstrumentation.acceptance_scope,
+      arbitraryTargetRuntimeAccepted: false,
+      arbitrary_target_runtime_accepted: false,
+      arbitraryLibraryAccepted: false,
+      arbitrary_library_accepted: false,
+      broadApplicationAcceptance: false,
+      broad_application_acceptance: false,
+      broadHipApplicationAcceptance: false,
+      broad_hip_application_acceptance: false,
+      unsupportedWithoutEvidence: runtimeProbeInstrumentation.unsupportedWithoutEvidence,
+      unsupported_without_evidence: runtimeProbeInstrumentation.unsupported_without_evidence,
+    },
     engineSceneHandles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
     firewallEvidence: {
       route: 'gpu_runtime_epoch_reload',
@@ -2293,6 +2377,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     },
     deterministic_visual_mode: deterministicVisualMode,
     output_oracle_target: contractInput.outputProof.outputOracleTarget,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeProbeInstrumentation,
     metric_clock: 'monotonic_ns',
     metric_scope: CFG.metricScope,
     cache_state: CFG.cacheState,
@@ -2364,6 +2450,11 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
         status: acceptanceContractEvaluation.accepted === true ? 'passed' : 'failed',
         evidenceRefs: [acceptanceContract.contract_hash],
       },
+      {
+        stageId: 'hiprt-profile-instrumentation-disclosure',
+        status: runtimeProbeInstrumentation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
+      },
     ],
     limitations: fullRuntimeProven ? [] : limitations,
     proofLedger,
@@ -2382,6 +2473,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
     shaderCacheArtifact: shaderArtifact,
     shader_cache_artifact: shaderArtifact,
     postRecompileEvidence: post,
@@ -2547,6 +2640,8 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
     run_mode: coldRunMode,
     timingMetrics: coldRunMode,
     timing_metrics: coldRunMode,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: proof.runtimeProbeInstrumentation,
     sourceProofId: proof.proofId,
     source_proof_id: proof.proofId,
     evidenceKind: 'cold_runtime_initial_visual_oracle',
@@ -2615,6 +2710,8 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
     acceptance_contract: proof.acceptanceContract,
     deterministicVisualMode: proof.deterministicVisualMode,
     deterministic_visual_mode: proof.deterministicVisualMode,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: proof.runtimeProbeInstrumentation,
     sourceProofId: proof.proofId,
     source_proof_id: proof.proofId,
     evidenceKind: 'raytraced_visual_oracle',
@@ -2969,6 +3066,7 @@ async function main() {
   };
   const accepted = Object.values(acceptance).every(Boolean);
   const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
+  const runtimeProbeInstrumentation = buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter);
   const proof = {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug: CFG.slug,
@@ -3023,6 +3121,8 @@ async function main() {
       : { reused: false },
     sameProcessAdapter,
     sameProcessBuild,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
     strictHmrProvenance: strictSummary,
     runtime: {
       baseline: baselineRun,
@@ -3088,6 +3188,7 @@ async function main() {
     acceptance: proof.acceptance,
     accepted: proof.accepted,
     gpuHmrSuccess: proof.gpuHmrSuccess,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
     runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
     proofLedgerId: proof.proofLedger.proofId,
     acceptanceContractHash: proof.acceptanceContract.contract_hash,
@@ -3122,6 +3223,12 @@ async function main() {
       enabled: CFG.mode === 'same-process',
       liveRecompileMs: changedRun.liveRecompileMs ?? null,
       adapterBuildMs: sameProcessBuild?.buildMs ?? null,
+    },
+    runtimeProbeInstrumentation: {
+      accepted: proof.runtimeProbeInstrumentation.accepted,
+      acceptanceScope: proof.runtimeProbeInstrumentation.acceptanceScope,
+      sourceAdaptations: proof.runtimeProbeInstrumentation.sourceAdaptations,
+      arbitraryLibraryAccepted: proof.runtimeProbeInstrumentation.arbitraryLibraryAccepted,
     },
     strictRuntimeProof: {
       gpuHmrSuccess: proof.gpuHmrSuccess,

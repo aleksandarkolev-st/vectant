@@ -725,6 +725,103 @@ function declaredScopeEvidenceFacet({
   };
 }
 
+function runtimeProbeInstrumentationDisclosureFacet(...sources) {
+  const disclosure = compactObject(sources.find((source) => Object.keys(compactObject(source)).length > 0));
+  const sourceAdaptations = compactStringList(
+    disclosure.sourceAdaptations
+    ?? disclosure.source_adaptations
+  );
+  const scope = firstText(
+    disclosure.acceptanceScope,
+    disclosure.acceptance_scope,
+    disclosure.acceptedScope,
+    disclosure.accepted_scope,
+  );
+  const arbitraryTargetAccepted = firstBool(
+    disclosure.arbitraryTargetRuntimeAccepted,
+    disclosure.arbitrary_target_runtime_accepted,
+  );
+  const arbitraryLibraryAccepted = firstBool(
+    disclosure.arbitraryLibraryAccepted,
+    disclosure.arbitrary_library_accepted,
+  );
+  const broadApplicationAccepted = firstBool(
+    disclosure.broadApplicationAcceptance,
+    disclosure.broad_application_acceptance,
+    disclosure.broadHipApplicationAcceptance,
+    disclosure.broad_hip_application_acceptance,
+  );
+  const adaptedOrAlreadyPresent = firstBool(
+    disclosure.adaptedOrAlreadyPresent,
+    disclosure.adapted_or_already_present,
+  );
+  const present = Object.keys(disclosure).length > 0;
+  const accepted =
+    present
+    && disclosure.accepted === true
+    && firstText(disclosure.kind) === 'declared_profile_probe_instrumentation'
+    && firstText(disclosure.instrumentationKind, disclosure.instrumentation_kind) === 'profile_probe_instrumentation'
+    && Boolean(firstText(disclosure.adapterFamily, disclosure.adapter_family))
+    && Boolean(firstText(disclosure.proofAuthority, disclosure.proof_authority))
+    && Boolean(firstText(disclosure.executionBoundary, disclosure.execution_boundary))
+    && scope === 'hiprt_declared_visual_profile'
+    && sourceAdaptations.length > 0
+    && adaptedOrAlreadyPresent === true
+    && arbitraryTargetAccepted === false
+    && arbitraryLibraryAccepted === false
+    && broadApplicationAccepted === false
+    && compactStringList(
+      disclosure.unsupportedWithoutEvidence
+      ?? disclosure.unsupported_without_evidence
+    ).length > 0;
+  return {
+    present,
+    accepted,
+    disclosure,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
+    scope,
+    adaptedOrAlreadyPresent,
+    adapted_or_already_present: adaptedOrAlreadyPresent,
+    arbitraryTargetAccepted,
+    arbitrary_target_accepted: arbitraryTargetAccepted,
+    arbitraryLibraryAccepted,
+    arbitrary_library_accepted: arbitraryLibraryAccepted,
+    broadApplicationAccepted,
+    broad_application_accepted: broadApplicationAccepted,
+    failedGates: compactStringList([
+      present ? null : 'runtime_probe_instrumentation_disclosure_missing',
+      disclosure.accepted === true ? null : 'runtime_probe_instrumentation_disclosure_not_accepted',
+      firstText(disclosure.kind) === 'declared_profile_probe_instrumentation'
+        ? null
+        : 'runtime_probe_instrumentation_kind_not_declared',
+      firstText(disclosure.instrumentationKind, disclosure.instrumentation_kind) === 'profile_probe_instrumentation'
+        ? null
+        : 'runtime_probe_instrumentation_type_not_profile_probe',
+      firstText(disclosure.adapterFamily, disclosure.adapter_family)
+        ? null
+        : 'runtime_probe_instrumentation_adapter_family_missing',
+      firstText(disclosure.proofAuthority, disclosure.proof_authority)
+        ? null
+        : 'runtime_probe_instrumentation_authority_missing',
+      firstText(disclosure.executionBoundary, disclosure.execution_boundary)
+        ? null
+        : 'runtime_probe_instrumentation_execution_boundary_missing',
+      scope === 'hiprt_declared_visual_profile'
+        ? null
+        : 'runtime_probe_instrumentation_scope_not_hiprt_declared_visual_profile',
+      sourceAdaptations.length > 0 ? null : 'runtime_probe_source_adaptations_missing',
+      adaptedOrAlreadyPresent === true ? null : 'runtime_probe_source_adaptations_not_applied',
+      arbitraryTargetAccepted === false ? null : 'runtime_probe_claims_arbitrary_target_acceptance',
+      arbitraryLibraryAccepted === false ? null : 'runtime_probe_claims_arbitrary_library_acceptance',
+      broadApplicationAccepted === false ? null : 'runtime_probe_claims_broad_application_acceptance',
+      compactStringList(disclosure.unsupportedWithoutEvidence ?? disclosure.unsupported_without_evidence).length > 0
+        ? null
+        : 'runtime_probe_unsupported_without_evidence_missing',
+    ]),
+  };
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -1887,6 +1984,12 @@ async function hiprtWarmRow(json, filePath, context) {
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
   const runtimeProofArtifactProof = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProbeInstrumentation = runtimeProbeInstrumentationDisclosureFacet(
+    json.runtimeProbeInstrumentation,
+    json.runtime_probe_instrumentation,
+    runtimeProofArtifact.runtimeProbeInstrumentation,
+    runtimeProofArtifact.runtime_probe_instrumentation,
+  );
   const ledgerRecord = compactObject(
     json.proofLedger?.records?.[0]
     ?? json.proof_ledger?.records?.[0]
@@ -1937,7 +2040,11 @@ async function hiprtWarmRow(json, filePath, context) {
     && strict.fullRuntimeProven === true
     && strict.strictFullRuntimePassed === true
     && changed.sameProcess === true
-    && visual.accepted === true;
+    && visual.accepted === true
+    && runtimeProbeInstrumentation.accepted === true
+    && cpuHmrUsed === false
+    && fullRebuildUsed === false
+    && processRestarted === false;
   const blankRegionRefusal =
     json.accepted === false
     && acceptance.visualDelta === true
@@ -1977,6 +2084,8 @@ async function hiprtWarmRow(json, filePath, context) {
     proofIds: proofIdsFrom(json, strict, runtimeProofArtifact, ledger),
     ledger,
     runtimeProofArtifact: runtimeProofArtifactProof,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
     oracleRegion: oracleRegionRecomputed,
     visual,
     runMode,
@@ -2002,6 +2111,10 @@ async function hiprtWarmRow(json, filePath, context) {
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+      runtimeProbeInstrumentation.accepted === true
+        ? null
+        : 'hiprt_profile_instrumentation_disclosure_not_proven',
+      ...runtimeProbeInstrumentation.failedGates,
       ...oracleRegionRecomputed.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted
@@ -3537,6 +3650,16 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProbeInstrumentation = runtimeProbeInstrumentationDisclosureFacet(
+    json.runtimeProbeInstrumentation,
+    json.runtime_probe_instrumentation,
+    runtimeProofArtifact.runtimeProbeInstrumentation,
+    runtimeProofArtifact.runtime_probe_instrumentation,
+    json.proofLedger?.records?.[0]?.runtimeProbeInstrumentation,
+    json.proofLedger?.records?.[0]?.runtime_probe_instrumentation,
+    json.proof_ledger?.records?.[0]?.runtimeProbeInstrumentation,
+    json.proof_ledger?.records?.[0]?.runtime_probe_instrumentation,
+  );
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
   const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
   const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
@@ -3567,7 +3690,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && runMode.accepted === true
     && noCpuFallback
     && noFullRebuild
-    && noRestart;
+    && noRestart
+    && (backend !== 'hiprt' || runtimeProbeInstrumentation.accepted === true);
   const acceptedCold =
     isCold
     && (
@@ -3637,6 +3761,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
     visual,
     runMode,
     cpuHmrUsed,
@@ -3653,11 +3779,22 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+      backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
+        ? 'hiprt_profile_instrumentation_disclosure_not_proven'
+        : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
       ...ledger.failedInvariants.map((failure) => failure.code),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
     ]) : [],
-    openGaps: matrixOutcome === 'unproven' ? ['run_mode_proof_not_accepted'] : [],
+    openGaps: matrixOutcome === 'unproven'
+      ? compactStringList([
+          'run_mode_proof_not_accepted',
+          backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
+            ? 'hiprt_profile_instrumentation_disclosure_required'
+            : null,
+        ])
+      : [],
   });
 }
 

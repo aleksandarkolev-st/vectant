@@ -592,6 +592,7 @@ function hiprtWarmProofArtifact({
     projectId: profileId,
     visualRoot: path.dirname(diffPath),
   });
+  const runtimeProbeInstrumentation = hiprtRuntimeProbeInstrumentation(profileId);
   return {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug,
@@ -645,6 +646,8 @@ function hiprtWarmProofArtifact({
       fullRuntimeProven: true,
       strictFullRuntimePassed: true,
     },
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
     timings: {
       totalWallMs: 3,
     },
@@ -657,6 +660,54 @@ function hiprtWarmProofArtifact({
       editKind: 'gpu_artifact_edit',
     },
     ...materials,
+  };
+}
+
+function hiprtRuntimeProbeInstrumentation(profileId) {
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_profile_probe_instrumentation',
+    instrumentationKind: 'profile_probe_instrumentation',
+    instrumentation_kind: 'profile_probe_instrumentation',
+    adapterFamily: 'hiprt-path-tracer-profile-adapter',
+    adapter_family: 'hiprt-path-tracer-profile-adapter',
+    profileId,
+    profile_id: profileId,
+    accepted: true,
+    applied: true,
+    adaptedOrAlreadyPresent: true,
+    adapted_or_already_present: true,
+    sourceAdaptations: [
+      'runtime_capture_from_device_framebuffer',
+      'same_process_targeted_kernel_recompile_hook',
+    ],
+    source_adaptations: [
+      'runtime_capture_from_device_framebuffer',
+      'same_process_targeted_kernel_recompile_hook',
+    ],
+    files: [
+      { path: 'src/Renderer/GPURendererThread.cpp', status: 'adapted' },
+    ],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    proof_authority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    executionBoundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    execution_boundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+    ],
+    unsupported_without_evidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+    ],
   };
 }
 
@@ -1326,6 +1377,8 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  runtimeProbeInstrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
+  runtime_probe_instrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   coverageObligations: { perTargetRunModes: false },
   proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-cold',
   coldSplitProven: true,
@@ -1356,6 +1409,8 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  runtimeProbeInstrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
+  runtime_probe_instrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   coverageObligations: { perTargetRunModes: false },
   proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-hot2',
   acceptedForGpuHmr: true,
@@ -1373,6 +1428,38 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
     editHash: 'sha256:accepted-hiprt-hot2',
     editKind: 'different_gpu_edit',
     differentEdit: true,
+  },
+});
+
+await writeJson(path.join(hiprtDir, 'forged-hiprt-missing-instrumentation-hot.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:forged-hiprt-missing-instrumentation',
+    'gpu-runtime-proof:sha256:forged-hiprt-missing-instrumentation',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-hiprt-missing-instrumentation',
+    visualRoot: hiprtDir,
+  }),
+  backend: 'hiprt',
+  targetId: 'forged-hiprt-missing-instrumentation',
+  profileId: 'forged-hiprt-missing-instrumentation',
+  coverageObligations: { perTargetRunModes: false },
+  proofId: 'agent-split-run-mode-proof:sha256:forged-hiprt-missing-instrumentation',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: hiprtAcceptedBefore,
+    afterImage: hiprtAcceptedAfter,
+    diffImage: hiprtAcceptedDiff,
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:forged-hiprt-missing-instrumentation',
+    editHash: 'sha256:forged-hiprt-missing-instrumentation',
+    editKind: 'gpu_artifact_edit',
   },
 });
 
@@ -1828,6 +1915,25 @@ assert.equal(acceptedHiprt.acceptedForGpuHmr, true);
 assert.equal(acceptedHiprt.oracleRegion.source, 'matrix_recomputed_png_pixels');
 assert.equal(acceptedHiprt.oracleRegion.accepted, true);
 assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
+assert.equal(acceptedHiprt.runtimeProbeInstrumentation.accepted, true);
+assert.equal(acceptedHiprt.runtimeProbeInstrumentation.scope, 'hiprt_declared_visual_profile');
+assert.equal(acceptedHiprt.runtimeProbeInstrumentation.arbitraryLibraryAccepted, false);
+
+const forgedHiprtMissingInstrumentation = ledger.rows.find(
+  (row) => row.targetId === 'forged-hiprt-missing-instrumentation',
+);
+assert.equal(forgedHiprtMissingInstrumentation?.matrixOutcome, 'unproven');
+assert.equal(forgedHiprtMissingInstrumentation.acceptedForGpuHmr, false);
+assert.equal(forgedHiprtMissingInstrumentation.runtimeProofArtifact.accepted, true);
+assert.equal(forgedHiprtMissingInstrumentation.ledger.gpuHmrSuccess, true);
+assert.equal(forgedHiprtMissingInstrumentation.visual.accepted, true);
+assert.equal(forgedHiprtMissingInstrumentation.runtimeProbeInstrumentation.accepted, false);
+assert.ok(forgedHiprtMissingInstrumentation.reasons.includes(
+  'hiprt_profile_instrumentation_disclosure_not_proven',
+));
+assert.ok(forgedHiprtMissingInstrumentation.openGaps.includes(
+  'hiprt_profile_instrumentation_disclosure_required',
+));
 
 const forgedHiprt = ledger.rows.find((row) => row.targetId === 'forged-hiprt-oracle-region-json');
 assert.equal(forgedHiprt?.matrixOutcome, 'unproven');
