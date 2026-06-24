@@ -55,7 +55,6 @@ const VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION =
 const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
   'agent_split_fixture_runtime_visual_proof',
   'agent_split_run_mode_visual_ledger_recomputed',
-  'explicit_validation_matrix_profile_contract',
 ]);
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],

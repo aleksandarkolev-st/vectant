@@ -1004,13 +1004,19 @@ function runModeCoverageSupportFor(materials, extraProofIds = []) {
   };
 }
 
-function validationProfileEvidenceFor({ profileId, profileClass, evidenceRefs, proofIds }) {
+function validationProfileEvidenceFor({
+  profileId,
+  profileClass,
+  evidenceRefs,
+  proofIds,
+  source = 'agent_split_run_mode_visual_ledger_recomputed',
+}) {
   return {
     schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
     accepted: true,
     profileId,
     profileClass,
-    source: 'explicit_validation_matrix_profile_contract',
+    source,
     evidenceRefs,
     proofIds,
   };
@@ -3826,6 +3832,76 @@ assert.ok(substringOnlyProfileRuntime.validationProfileEvidence.failedGates.incl
   'validation_profile_evidence_refs_not_bound_to_row',
 ));
 assert.equal(substringOnlyProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+
+const explicitContractSourceProfileDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-explicit-contract-source-profile',
+);
+await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'after.png'), 8, 8, (x, y) => [104 + x, 124 + y, 148, 255]);
+await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const explicitContractSourceProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: explicitContractSourceProfileDir,
+});
+await writeJson(path.join(explicitContractSourceProfileDir, 'hot1-explicit-contract-source-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    explicitContractSourceProfileMaterials.proofLedgerQuery.record.proofId,
+    explicitContractSourceProfileMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...explicitContractSourceProfileMaterials,
+  proofId: 'agent-split-run-mode-proof:sha256:flow-explicit-contract-source-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    source: 'explicit_validation_matrix_profile_contract',
+    evidenceRefs: [
+      explicitContractSourceProfileMaterials.proofLedgerQuery.record.proofId,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-explicit-contract-source-profile',
+      explicitContractSourceProfileMaterials.proofLedgerQuery.record.proofId,
+      explicitContractSourceProfileMaterials.runtimeProofArtifact.proofId,
+    ],
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(explicitContractSourceProfileDir, 'before.png'),
+    afterImage: path.join(explicitContractSourceProfileDir, 'after.png'),
+    diffImage: path.join(explicitContractSourceProfileDir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-explicit-contract-source-profile',
+    editHash: 'sha256:flow-explicit-contract-source-profile',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const explicitContractSourceProfileLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [explicitContractSourceProfileDir],
+  generatedAt: '2026-06-09T00:00:01.040Z',
+  includeUnproven: true,
+});
+const explicitContractSourceProfileCoverage = new Map(
+  explicitContractSourceProfileLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const explicitContractSourceProfileRuntime = explicitContractSourceProfileLedger.rows.find((row) =>
+  row.targetId === 'flow'
+);
+assert.equal(explicitContractSourceProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(explicitContractSourceProfileRuntime.validationProfileEvidence.accepted, false);
+assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.binding.accepted);
+assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_evidence_source_not_authorized',
+));
+assert.equal(explicitContractSourceProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
