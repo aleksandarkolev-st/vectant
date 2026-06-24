@@ -7,6 +7,7 @@ import {
   fetchProgramSessions,
   restartProgramSession,
   stopProgramSession,
+  deleteProgramSession,
   fetchInstalledPrograms,
   installWorkspaceProgram,
   launchInstalledProgram,
@@ -18,7 +19,7 @@ import {
   launchDetectedProgram,
 } from './programsClient';
 import { SCAFFOLDABLE_PACKAGE_IDS } from '@/lib/programs/scaffoldTemplates';
-import { isTerminalRuntimeType } from './programSessionSections';
+import { isActiveProgramSession, isTerminalRuntimeType } from './programSessionSections';
 import {
   activateTabAction,
   openTab,
@@ -34,6 +35,7 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { PROGRAM_STYLE } from './programTokens';
 import LibraryView from './library/LibraryView';
 import StoreView from './store/StoreView';
+import ConfirmDialog from './ConfirmDialog';
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -92,6 +94,7 @@ export default function ProgramsPanel() {
   const [loading, setLoading] = useState(true);
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState(null);
 
   // Members get a read-only view; owner/admin (or unknown role — the API still
   // enforces) can launch / install. 'member' is the only role denied here.
@@ -204,6 +207,29 @@ export default function ProgramsPanel() {
       toast.error(error.message || 'Failed to restart program');
     }
   }, [load, workspaceSlug]);
+
+  const doRemove = useCallback(async (session) => {
+    if (!workspaceSlug || !session?.id) return;
+    setRemoveTarget(null);
+    try {
+      await deleteProgramSession(workspaceSlug, session.id);
+      toast.success(`${sessionLabel(session)} removed`);
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to remove session');
+    }
+  }, [load, workspaceSlug]);
+
+  // A running session needs confirmation (removing it stops + deletes it); an
+  // idle one (stopped/crashed) is just a record, so drop it straight away.
+  const handleRemove = useCallback((session) => {
+    if (!session?.id) return;
+    if (isActiveProgramSession(session)) {
+      setRemoveTarget(session);
+    } else {
+      doRemove(session);
+    }
+  }, [doRemove]);
 
   const handleLaunchInstall = useCallback(async (install) => {
     if (!workspaceSlug || !install?.id) return;
@@ -323,6 +349,7 @@ export default function ProgramsPanel() {
           onOpenSession={openProgramSession}
           onStop={handleStop}
           onRestart={handleRestart}
+          onRemove={handleRemove}
           onLaunchInstall={handleLaunchInstall}
           onScaffold={handleScaffold}
           onLaunchDetected={handleLaunchDetected}
@@ -343,6 +370,17 @@ export default function ProgramsPanel() {
           onApprove={onApprove}
         />
       )}
+
+      {removeTarget ? (
+        <ConfirmDialog
+          title="Remove this running program?"
+          message={`${sessionLabel(removeTarget)} is still running. Removing it stops the session and deletes it — this can't be undone.`}
+          confirmLabel="Stop & remove"
+          cancelLabel="Cancel"
+          onConfirm={() => doRemove(removeTarget)}
+          onCancel={() => setRemoveTarget(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   launchInstalledProgram: vi.fn(),
   stopProgramSession: vi.fn(),
   restartProgramSession: vi.fn(),
+  deleteProgramSession: vi.fn(),
   publishWorkspaceProgram: vi.fn(),
   fetchMarketplace: vi.fn(),
   installPublishedProgram: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../programsClient', () => ({
   launchInstalledProgram: h.launchInstalledProgram,
   stopProgramSession: h.stopProgramSession,
   restartProgramSession: h.restartProgramSession,
+  deleteProgramSession: h.deleteProgramSession,
   publishWorkspaceProgram: h.publishWorkspaceProgram,
   fetchMarketplace: h.fetchMarketplace,
   installPublishedProgram: h.installPublishedProgram,
@@ -278,5 +280,32 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchDetectedProgram.mockResolvedValue({ config: { runtimeType: 'container' }, source: 'Dockerfile' });
     await render();
     expect(byTestId(container, 'detected-program')).toBeNull();
+  });
+
+  it('removing a running session asks for confirmation, then deletes on confirm', async () => {
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-run', state: 'running', runtimeType: 'web' }]);
+    h.deleteProgramSession.mockResolvedValue({ ok: true });
+    await render();
+
+    await act(async () => { byTestId(container, 'session-remove-ps-run').click(); });
+    await flush();
+    // Confirm dialog (portaled to document.body) appears; nothing deleted yet.
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).not.toBeNull();
+    expect(h.deleteProgramSession).not.toHaveBeenCalled();
+
+    await act(async () => { document.querySelector('[data-testid="confirm-accept"]').click(); });
+    await flush();
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('team', 'ps-run');
+  });
+
+  it('removing a stopped session deletes immediately without a dialog', async () => {
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-stop', state: 'stopped', runtimeType: 'web' }]);
+    h.deleteProgramSession.mockResolvedValue({ ok: true });
+    await render();
+
+    await act(async () => { byTestId(container, 'session-remove-ps-stop').click(); });
+    await flush();
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeNull();
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('team', 'ps-stop');
   });
 });

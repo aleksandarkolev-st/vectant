@@ -17,7 +17,7 @@ function SectionLabel({ children, count }) {
 
 export default function LibraryView({
   canManage, slug, sessions, installs, detected, loading,
-  onOpenStore, onRefresh, onOpenSession, onStop, onRestart,
+  onOpenStore, onRefresh, onOpenSession, onStop, onRestart, onRemove,
   onLaunchInstall, onScaffold, onLaunchDetected, scaffoldableIds = [],
 }) {
   const { running, stopped, crashed } = buildProgramSessionSections(sessions);
@@ -28,7 +28,7 @@ export default function LibraryView({
     return (install && programLabelFromPackageId(install.packageId)) || session?.title || 'Program';
   };
   const renderCard = (s) => (
-    <RunningCard key={s.id} session={s} slug={slug} programName={nameFor(s)} onOpen={onOpenSession} onStop={onStop} onRestart={onRestart} />
+    <RunningCard key={s.id} session={s} slug={slug} programName={nameFor(s)} onOpen={onOpenSession} onStop={onStop} onRestart={onRestart} onRemove={onRemove} />
   );
 
   return (

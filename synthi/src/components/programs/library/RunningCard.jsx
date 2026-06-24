@@ -1,6 +1,6 @@
 'use client';
 
-import { Square, RotateCcw } from 'lucide-react';
+import { Square, RotateCcw, X } from 'lucide-react';
 import { PROGRAM_STYLE } from '../programTokens';
 import { canRestartProgramSession, formatProgramSessionPorts, isActiveProgramSession } from '../programSessionSections';
 import ProgramThumbnail from './ProgramThumbnail';
@@ -21,7 +21,7 @@ function sessionSubtitle(session) {
   return session?.id ? `Session ${String(session.id).slice(0, 8)}` : 'Session';
 }
 
-export default function RunningCard({ session, slug, programName, onOpen, onStop, onRestart }) {
+export default function RunningCard({ session, slug, programName, onOpen, onStop, onRestart, onRemove }) {
   const active = isActiveProgramSession(session);
   const ports = formatProgramSessionPorts(session);
   const canRestart = canRestartProgramSession(session);
@@ -39,7 +39,19 @@ export default function RunningCard({ session, slug, programName, onOpen, onStop
           <span className="block truncate" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>{title}</span>
           <span className="block truncate" style={{ color: 'var(--text-muted)', fontSize: '10px' }}>{sessionSubtitle(session)}</span>
         </span>
-        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: tone.dot, boxShadow: active ? `0 0 7px ${tone.dot}` : 'none', flexShrink: 0 }} />
+        <span className="flex items-center gap-1.5 shrink-0">
+          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: tone.dot, boxShadow: active ? `0 0 7px ${tone.dot}` : 'none' }} />
+          <button
+            type="button"
+            data-testid={`session-remove-${session.id}`}
+            onClick={() => onRemove?.(session)}
+            aria-label="Remove session"
+            className="opacity-50 hover:opacity-100 transition-opacity cursor-pointer"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </span>
       </div>
 
       {active && session?.webGui ? (

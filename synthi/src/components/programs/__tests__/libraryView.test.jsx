@@ -13,7 +13,7 @@ const baseProps = {
   installs: [{ id: 'inst1', packageId: '@vectant/dbeaver', version: '1.0.0', status: 'installed' }],
   detected: null, loading: false,
   onOpenStore: noop, onRefresh: noop, onOpenSession: noop, onStop: noop, onRestart: noop,
-  onLaunchInstall: noop, onScaffold: noop, onLaunchDetected: noop, scaffoldableIds: [],
+  onLaunchInstall: noop, onScaffold: noop, onLaunchDetected: noop, onRemove: noop, scaffoldableIds: [],
 };
 
 describe('LibraryView', () => {
@@ -91,5 +91,19 @@ describe('LibraryView — running/stopped/crashed separation + named cards', () 
     const card = byTestId(container, 'session-card-crs-9012abcd');
     expect(byTestId(container, 'running-restart-crs-9012abcd')).not.toBeNull();
     expect(card.textContent).toContain('Postman');
+  });
+
+  it('every session card has an X to remove it', async () => {
+    await render();
+    expect(byTestId(container, 'session-remove-run-1234abcd')).not.toBeNull();
+    expect(byTestId(container, 'session-remove-stp-5678ef01')).not.toBeNull();
+    expect(byTestId(container, 'session-remove-crs-9012abcd')).not.toBeNull();
+  });
+
+  it('clicking the X calls onRemove with the session', async () => {
+    const onRemove = vi.fn();
+    await render({ onRemove });
+    await act(async () => byTestId(container, 'session-remove-stp-5678ef01').click());
+    expect(onRemove).toHaveBeenCalledWith(expect.objectContaining({ id: 'stp-5678ef01' }));
   });
 });
