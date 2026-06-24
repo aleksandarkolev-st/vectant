@@ -4235,6 +4235,16 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     json.proof_ledger?.records?.[0]?.runtimeProbeInstrumentation,
     json.proof_ledger?.records?.[0]?.runtime_probe_instrumentation,
   );
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    runtimeProofArtifact,
+    ledger.record,
+    json.proofLedger?.records?.[0],
+    json.proof_ledger?.records?.[0],
+    json.contract,
+    json.acceptanceContract,
+    json.acceptance_contract,
+  );
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
   const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
   const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
@@ -4254,13 +4264,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const noCpuFallback = cpuHmrUsed === false;
   const noFullRebuild = fullRebuildUsed === false;
   const noRestart = processRestarted === false;
-  const sourceAdaptedProfile =
-    compactStringList(
-      runtimeProbeInstrumentation.sourceAdaptations
-      ?? runtimeProbeInstrumentation.source_adaptations,
-    ).length > 0
-    || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
-    || runtimeProbeInstrumentation.adapted_or_already_present === true;
+  const sourceAdaptedProfile = sourceAdaptation.sourceAdaptedProfile === true;
   const strictRuntimeVisualProfileProof =
     !isCold
     && ledger.present === true
@@ -4365,6 +4369,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     runtime_proof_artifact: runtimeProofArtifactGate,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
     visual,
     runMode,
     cpuHmrUsed,
@@ -4389,6 +4395,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ...ledger.failedInvariants.map((failure) => failure.code),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]) : [],
     openGaps: sourceAdaptedVisualProfileAccepted
       ? ['source_adapted_profile_not_no_shim_gpu_hmr']
@@ -4398,6 +4405,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
             ? 'hiprt_profile_instrumentation_disclosure_required'
             : null,
+          ...sourceAdaptation.failedGates.map((failure) => failure.code),
         ])
       : [],
   });

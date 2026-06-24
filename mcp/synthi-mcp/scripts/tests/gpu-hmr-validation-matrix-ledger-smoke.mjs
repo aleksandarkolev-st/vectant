@@ -969,6 +969,46 @@ await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json
   },
 });
 
+await writeJson(path.join(visualDir, 'run-mode-forged-top-level-source-adapted-webgpu.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:forged-top-level-source-adapted-webgpu',
+    'gpu-runtime-proof:sha256:forged-top-level-source-adapted-webgpu',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-top-level-source-adapted-webgpu',
+  }),
+  backend: 'webgpu',
+  targetId: 'forged-top-level-source-adapted-webgpu',
+  profileId: 'forged-top-level-source-adapted-webgpu',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-top-level-source-adapted-webgpu',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  sourceAdaptation: {
+    sourceAdaptations: [
+      'top_level_runtime_capture_hook_inserted',
+      'top_level_dispatch_binding_rewrite',
+    ],
+    adaptedOrAlreadyPresent: true,
+  },
+  source_adaptation: {
+    source_adaptations: [
+      'top_level_runtime_capture_hook_inserted',
+      'top_level_dispatch_binding_rewrite',
+    ],
+    adapted_or_already_present: true,
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:forged-top-level-source-adapted-webgpu',
+    editHash: 'sha256:forged-top-level-source-adapted-webgpu',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+
 await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
   schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
   proofId: 'agent-split-negative-edit-refusal:sha256:synthetic',
@@ -2253,6 +2293,20 @@ assert.equal(forgedSourceAdaptedWebGpu.ledger.gpuHmrSuccess, true);
 assert.equal(forgedSourceAdaptedWebGpu.backend, 'webgpu');
 assert.ok(forgedSourceAdaptedWebGpu.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 assert.ok(forgedSourceAdaptedWebGpu.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+
+const forgedTopLevelSourceAdaptedWebGpu = ledger.rows.find((row) =>
+  row.targetId === 'forged-top-level-source-adapted-webgpu'
+);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.acceptedForGpuHmr, false);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.gpuHmrSuccess, false);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.visualProfileAccepted, true);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.sourceAdaptedProfile, true);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.sourceAdaptation.sourceAdaptedProfile, true);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.runtimeProbeInstrumentation.accepted, false);
+assert.equal(forgedTopLevelSourceAdaptedWebGpu.backend, 'webgpu');
+assert.ok(forgedTopLevelSourceAdaptedWebGpu.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+assert.ok(forgedTopLevelSourceAdaptedWebGpu.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 
 const forgedSourceAdaptedWebGpuVisual = ledger.rows.find((row) =>
   row.targetId === 'forged-webgpu-source-adapted-visual'
