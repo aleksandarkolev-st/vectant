@@ -2080,26 +2080,6 @@ async function hiprtWarmRow(json, filePath, context) {
     && oracleRegionRecomputed.blankFrameRejected === true
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixels) > 0;
-  const strictVisualProofAccepted =
-    json.accepted === true
-    && ledger.present === true
-    && ledger.source === 'recomputed_ledger'
-    && ledger.gpuHmrSuccess === true
-    && ledger.failedInvariants.length === 0
-    && runtimeProofArtifactProof.present === true
-    && runtimeProofArtifactProof.accepted === true
-    && acceptance.strictProvenance === true
-    && acceptance.sameProcessRuntime === true
-    && acceptance.visualDelta === true
-    && oracleRegionAccepted === true
-    && strict.fullRuntimeProven === true
-    && strict.strictFullRuntimePassed === true
-    && changed.sameProcess === true
-    && visual.accepted === true
-    && runtimeProbeInstrumentation.accepted === true
-    && cpuHmrUsed === false
-    && fullRebuildUsed === false
-    && processRestarted === false;
   const sourceAdaptedProfile =
     compactStringList(
       runtimeProbeInstrumentation.sourceAdaptations
@@ -2107,11 +2087,33 @@ async function hiprtWarmRow(json, filePath, context) {
     ).length > 0
     || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
     || runtimeProbeInstrumentation.adapted_or_already_present === true;
+  const strictVisualProfileAccepted =
+    json.accepted === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && runtimeProofArtifactProof.present === true
+    && acceptance.strictProvenance === true
+    && acceptance.sameProcessRuntime === true
+    && acceptance.visualDelta === true
+    && oracleRegionAccepted === true
+    && changed.sameProcess === true
+    && visual.accepted === true
+    && runtimeProbeInstrumentation.accepted === true
+    && cpuHmrUsed === false
+    && fullRebuildUsed === false
+    && processRestarted === false;
+  const strictVisualProofAccepted =
+    strictVisualProfileAccepted === true
+    && runtimeProofArtifactProof.accepted === true
+    && strict.fullRuntimeProven === true
+    && strict.strictFullRuntimePassed === true;
   const accepted =
     strictVisualProofAccepted === true
     && sourceAdaptedProfile === false;
   const sourceAdaptedVisualProfileAccepted =
-    strictVisualProofAccepted === true
+    strictVisualProfileAccepted === true
     && sourceAdaptedProfile === true;
   const blankRegionRefusal =
     json.accepted === false
@@ -3854,24 +3856,28 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ).length > 0
     || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
     || runtimeProbeInstrumentation.adapted_or_already_present === true;
-  const strictRuntimeVisualProof =
+  const strictRuntimeVisualProfileProof =
     !isCold
     && ledger.present === true
     && ledger.source === 'recomputed_ledger'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0
-    && runtimeProofArtifactGate.accepted === true
+    && runtimeProofArtifactGate.present === true
     && visual.accepted === true
     && runMode.accepted === true
     && noCpuFallback
     && noFullRebuild
     && noRestart
     && (backend !== 'hiprt' || runtimeProbeInstrumentation.accepted === true);
+  const strictRuntimeVisualProof =
+    strictRuntimeVisualProfileProof === true
+    && runtimeProofArtifactGate.accepted === true
+    && json.gpuHmrSuccess === true;
   const acceptedRuntime =
     strictRuntimeVisualProof === true
     && !(backend === 'hiprt' && sourceAdaptedProfile === true);
   const sourceAdaptedVisualProfileAccepted =
-    strictRuntimeVisualProof === true
+    strictRuntimeVisualProfileProof === true
     && backend === 'hiprt'
     && sourceAdaptedProfile === true;
   const acceptedCold =

@@ -297,6 +297,7 @@ function acceptanceContract(scope, options = {}) {
 function runtimeProofMaterials(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
   const visualRoot = options.visualRoot ?? visualDir;
+  const sourceAdaptedVisualProfile = options.sourceAdaptedVisualProfile === true;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
   const beforeHash = hashValue(`artifact-before:${scope}`);
   const afterHash = hashValue(`artifact-after:${scope}`);
@@ -392,8 +393,10 @@ function runtimeProofMaterials(scope, options = {}) {
   assert.equal(deterministicVisualModeEvaluation.accepted, true);
   const runtimeProofArtifact = {
     proofId: `runtime-proof-artifact:sha256:${sha256Hex(scope)}`,
-    fullRuntimeProven: true,
-    gpuHmrSuccess: true,
+    fullRuntimeProven: sourceAdaptedVisualProfile ? false : true,
+    gpuHmrSuccess: sourceAdaptedVisualProfile ? false : true,
+    visualProfileAccepted: sourceAdaptedVisualProfile,
+    sourceAdaptedProfile: sourceAdaptedVisualProfile,
     stageResults: [
       { stageId: 'fission-candidate-verification', status: 'passed' },
       { stageId: 'device-compile', status: 'passed' },
@@ -401,8 +404,14 @@ function runtimeProofMaterials(scope, options = {}) {
       { stageId: 'epoch-publish', status: 'passed' },
       { stageId: 'dispatch-trace', status: 'passed' },
       { stageId: 'output-oracle', status: 'passed' },
+      {
+        stageId: 'no-source-adapted-profile',
+        status: sourceAdaptedVisualProfile ? 'failed' : 'passed',
+      },
     ],
-    limitations: [],
+    limitations: sourceAdaptedVisualProfile
+      ? [{ code: 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr' }]
+      : [],
     proofLedger,
     proofLedgerQuery,
     acceptanceContract: contract,
@@ -591,6 +600,7 @@ function hiprtWarmProofArtifact({
   const materials = runtimeProofMaterials('hot_delta_1', {
     projectId: profileId,
     visualRoot: path.dirname(diffPath),
+    sourceAdaptedVisualProfile: true,
   });
   const runtimeProbeInstrumentation = hiprtRuntimeProbeInstrumentation(profileId);
   return {
@@ -1405,6 +1415,7 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   ...runtimeProofMaterials('hot_delta_2', {
     projectId: 'accepted-hiprt-recomputed-oracle',
     visualRoot: hiprtDir,
+    sourceAdaptedVisualProfile: true,
   }),
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
@@ -1413,8 +1424,10 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   runtime_probe_instrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   coverageObligations: { perTargetRunModes: false },
   proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-hot2',
-  acceptedForGpuHmr: true,
-  gpuHmrSuccess: true,
+  acceptedForGpuHmr: false,
+  visualProfileAccepted: true,
+  sourceAdaptedProfile: true,
+  gpuHmrSuccess: false,
   visualArtifacts: {
     beforeImage: hiprtAcceptedBefore,
     afterImage: hiprtAcceptedAfter,

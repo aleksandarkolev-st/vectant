@@ -1341,6 +1341,18 @@ function buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter) {
   };
 }
 
+function sourceAdaptationListFromRuntimeProbeInstrumentation(value) {
+  const sourceAdaptations = value?.sourceAdaptations ?? value?.source_adaptations;
+  if (!Array.isArray(sourceAdaptations)) return [];
+  return sourceAdaptations.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function isSourceAdaptedRuntimeProbeInstrumentation(value) {
+  return sourceAdaptationListFromRuntimeProbeInstrumentation(value).length > 0
+    || value?.adaptedOrAlreadyPresent === true
+    || value?.adapted_or_already_present === true;
+}
+
 async function buildHiprtTarget(reason) {
   const localLogPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${reason}-build.log`);
   const script = `
@@ -2007,6 +2019,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const post = changedRun.postRecompileEvidence ?? {};
   const dispatch = post.dispatch ?? {};
   const runtimeProbeInstrumentation = proof.runtimeProbeInstrumentation ?? proof.runtime_probe_instrumentation ?? {};
+  const sourceAdaptedProfile = isSourceAdaptedRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
+  const sourceAdaptations =
+    sourceAdaptationListFromRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
   const artifactHashAfter = shaderArtifact.selectedArtifactHash;
   const artifactHashBefore = shaderArtifact.beforeManifestHash;
   const limitations = [];
@@ -2019,6 +2034,13 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   if (!proof.accepted) limitations.push({ code: 'hiprt_visual_proof_not_accepted' });
   if (runtimeProbeInstrumentation.accepted !== true) {
     limitations.push({ code: 'hiprt_profile_instrumentation_disclosure_missing' });
+  }
+  if (sourceAdaptedProfile) {
+    limitations.push({
+      code: 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr',
+      sourceAdaptations,
+      source_adaptations: sourceAdaptations,
+    });
   }
 
   const processId = dispatch.processId ?? 'unknown-process';
@@ -2403,6 +2425,13 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     evidence_refs: evidenceRefs,
     failures: proofLedgerQuery.failedInvariants,
   };
+  const visualProfileAccepted =
+    sourceAdaptedProfile === true
+    && proof.accepted === true
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractConsistency.accepted === true
+    && deterministicVisualModeEvaluation?.accepted === true
+    && runtimeProbeInstrumentation.accepted === true;
   const fullRuntimeProven =
     proof.accepted === true
     && limitations.length === 0
@@ -2424,6 +2453,12 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     full_runtime_proven: fullRuntimeProven,
     gpuHmrSuccess: fullRuntimeProven,
     gpu_hmr_success: fullRuntimeProven,
+    visualProfileAccepted,
+    visual_profile_accepted: visualProfileAccepted,
+    sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptedProfile,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
     stageResults: [
       {
         stageId: 'hiprt-shader-cache-artifact',
@@ -2453,6 +2488,11 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       {
         stageId: 'hiprt-profile-instrumentation-disclosure',
         status: runtimeProbeInstrumentation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
+      },
+      {
+        stageId: 'hiprt-no-source-adapted-profile',
+        status: sourceAdaptedProfile ? 'failed' : 'passed',
         evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
       },
     ],
@@ -2616,6 +2656,10 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
     cold_runtime_initial_proven: proof.acceptance.baselineCapture === true,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
+    visualProfileAccepted: false,
+    visual_profile_accepted: false,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile === true,
+    source_adapted_profile: proof.sourceAdaptedProfile === true,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
     cpuHmrUsed: false,
@@ -2675,6 +2719,10 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
     profile_id: CFG.profileId,
     acceptedForGpuHmr: proof.gpuHmrSuccess === true,
     accepted_for_gpu_hmr: proof.gpuHmrSuccess === true,
+    visualProfileAccepted: proof.visualProfileAccepted === true,
+    visual_profile_accepted: proof.visualProfileAccepted === true,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile === true,
+    source_adapted_profile: proof.sourceAdaptedProfile === true,
     gpuHmrSuccess: proof.gpuHmrSuccess === true,
     gpu_hmr_success: proof.gpuHmrSuccess === true,
     cpuHmrUsed: false,
@@ -3170,8 +3218,16 @@ async function main() {
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
   proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
   proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
+  proof.sourceAdaptedProfile = strictRuntimeProof.runtimeProofArtifact.sourceAdaptedProfile === true;
+  proof.source_adapted_profile = proof.sourceAdaptedProfile;
+  proof.sourceAdaptations = strictRuntimeProof.runtimeProofArtifact.sourceAdaptations ?? [];
+  proof.source_adaptations = proof.sourceAdaptations;
+  proof.visualProfileAccepted = strictRuntimeProof.runtimeProofArtifact.visualProfileAccepted === true;
+  proof.visual_profile_accepted = proof.visualProfileAccepted;
   proof.gpuHmrSuccess = strictRuntimeProof.runtimeProofArtifact.gpuHmrSuccess === true;
   proof.gpu_hmr_success = proof.gpuHmrSuccess;
+  proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
+  proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
   const proofBytesForId = Buffer.from(JSON.stringify({
     schemaVersion: proof.schemaVersion,
     slug: proof.slug,
@@ -3188,6 +3244,9 @@ async function main() {
     acceptance: proof.acceptance,
     accepted: proof.accepted,
     gpuHmrSuccess: proof.gpuHmrSuccess,
+    visualProfileAccepted: proof.visualProfileAccepted,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile,
+    sourceAdaptations: proof.sourceAdaptations,
     runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
     runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
     proofLedgerId: proof.proofLedger.proofId,
@@ -3229,6 +3288,12 @@ async function main() {
       acceptanceScope: proof.runtimeProbeInstrumentation.acceptanceScope,
       sourceAdaptations: proof.runtimeProbeInstrumentation.sourceAdaptations,
       arbitraryLibraryAccepted: proof.runtimeProbeInstrumentation.arbitraryLibraryAccepted,
+    },
+    claimBoundary: {
+      gpuHmrSuccess: proof.gpuHmrSuccess,
+      visualProfileAccepted: proof.visualProfileAccepted,
+      sourceAdaptedProfile: proof.sourceAdaptedProfile,
+      acceptedForGpuHmr: proof.acceptedForGpuHmr,
     },
     strictRuntimeProof: {
       gpuHmrSuccess: proof.gpuHmrSuccess,
