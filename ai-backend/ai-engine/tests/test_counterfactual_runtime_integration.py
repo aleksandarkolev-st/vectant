@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shadow import events
 from shadow.counterfactual_types import PolicyDeltaKind
 from shadow.multiverse import _capture_counterfactual_evidence
+from shadow.multiverse import _proof_validated_winner
 from shadow.policy_delta import STORE, make_policy_delta
 from shadow.universe import UniverseSpec
 from shadow.universe_planner import apply_policy_deltas
@@ -147,3 +148,23 @@ def test_active_policy_delta_changes_next_run_plan():
     planned = apply_policy_deltas(specs, STORE.list_active("workspace", "fix"))
 
     assert [spec.universe_id for spec in planned] == ["B", "A"]
+
+
+def test_convergence_winner_must_survive_proof_gate():
+    job = events.JobState("job", "standard", "ws", None)
+    job.selection_verdict = {"winner": "B"}
+    eligible = [
+        FakeUniverseResult(
+            "B",
+            0.8,
+            {
+                "style": "idiomatic",
+                "diagnostics": {"lint": "clean", "types": "clean", "tests": "1/1 passed", "runtime": "clean"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": "+3 -0",
+                "score": 0.8,
+            },
+        )
+    ]
+
+    assert _proof_validated_winner(job, preferred_winner="A", eligible=eligible) == "B"
