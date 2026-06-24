@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 from . import cost_ledger, events, multiverse, preference, snapshot
 from .choice_scene import annotate_traces_with_choice, build_choice_scene
 from .generator import PatchBlock
+from .policy_delta import STORE as POLICY_STORE
 from .policy_delta import persist_policy_deltas
+from .regret_memory_markdown import append_session_memory, load_policy_deltas
 from .regret_arbiter import extract_regret_lessons
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
@@ -62,6 +64,8 @@ class ShadowVerifyOnlyRequest(BaseModel):
 
 class ShadowApplyRequest(BaseModel):
     universeId: str
+    openedDiffUniverseIds: List[str] = Field(default_factory=list)
+    openedExplanationUniverseIds: List[str] = Field(default_factory=list)
 
 
 class ShadowWhyRequest(BaseModel):
@@ -75,6 +79,7 @@ class ShadowWhyRequest(BaseModel):
 @router.post("/run")
 async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict[str, Any]:
     repo = _resolve_repo(req.workspace_path)
+    _load_markdown_memory(repo, req.intent)
     job_id = multiverse.make_job_id()
     cost_usd = multiverse.estimate_cost_for_request(req.tier, req.models)
     job = events.JobState(
@@ -135,6 +140,7 @@ async def cost_cap(req: CostCapRequest) -> Dict[str, Any]:
 @router.post("/verify-only")
 async def shadow_verify_only(req: ShadowVerifyOnlyRequest, background: BackgroundTasks) -> Dict[str, Any]:
     repo = _resolve_repo(req.workspace_path)
+    _load_markdown_memory(repo, "fix")
     job_id = multiverse.make_job_id()
     job = events.JobState(
         job_id=job_id,
@@ -325,6 +331,8 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
             task_class=job.intent or "fix",
             available_universe_ids=visible_ids,
             visible_universe_ids=visible_ids,
+            opened_diff_universe_ids=req.openedDiffUniverseIds,
+            opened_explanation_universe_ids=req.openedExplanationUniverseIds,
             arbiter_recommendation=arbiter_pick,
             selector_action="applied" if written and not failed else "apply_failed",
             selected_universe_id=req.universeId if written and not failed else None,
@@ -339,6 +347,13 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
         persist_policy_deltas(lesson.policy_delta for lesson in lessons)
         learned_lines = [lesson.text for lesson in lessons]
         policy_delta_payloads = [lesson.policy_delta.to_dict() for lesson in lessons]
+        append_session_memory(
+            repo,
+            task_class=job.intent or "fix",
+            learned_lines=learned_lines,
+            policy_deltas=[lesson.policy_delta for lesson in lessons],
+            run_id=job.counterfactual_run_id or job.job_id,
+        )
         job.branch_traces = traces
         job.learned_lines.extend(learned_lines)
         if learned_lines:
@@ -526,6 +541,12 @@ def _resolve_repo(workspace_path: str) -> Path:
     if not p.exists():
         raise HTTPException(status_code=400, detail=f"unresolvable workspace_path: {workspace_path}")
     return p
+
+
+def _load_markdown_memory(repo: Path, task_class: str) -> None:
+    workspace_id = str(repo)
+    for delta in load_policy_deltas(repo, task_class, workspace_id=workspace_id):
+        POLICY_STORE.add(delta)
 
 
 def _resolve_patches(repo: Path, patches: List[PatchModel]) -> List[PatchBlock]:
