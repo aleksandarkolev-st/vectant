@@ -14,10 +14,11 @@ describe('RunningCard', () => {
 
   const base = { id: 'ps1', state: 'running', runtimeType: 'container', webGui: true, webPort: 6901, activePorts: [6901], workspaceSlug: 'team' };
 
-  it('renders ports, a thumbnail for webGui, and fires onStop', async () => {
+  it('renders ports, a static thumbnail block for webGui, and fires onStop', async () => {
     const onStop = vi.fn();
     await act(async () => root.render(<RunningCard session={base} slug="team" onOpen={() => {}} onStop={onStop} onRestart={() => {}} />));
-    expect(container.querySelector('img')).not.toBeNull();
+    expect(byTestId(container, 'thumb-ps1')).not.toBeNull();  // thumbnail block present
+    expect(container.querySelector('img')).toBeNull();         // but no live <img> polling a 404
     expect(container.textContent).toContain(':6901');
     await act(async () => byTestId(container, 'running-stop-ps1').click());
     expect(onStop).toHaveBeenCalledWith(base);
