@@ -3387,6 +3387,7 @@ async function main() {
       visualProfileAccepted: proof.visualProfileAccepted,
       sourceAdaptedProfile: proof.sourceAdaptedProfile,
       acceptedForGpuHmr: proof.acceptedForGpuHmr,
+      rejectedDiagnosticAllowed: CFG.allowRejected,
     },
     strictRuntimeProof: {
       gpuHmrSuccess: proof.gpuHmrSuccess,
@@ -3404,7 +3405,7 @@ async function main() {
       ),
     },
   }, null, 2));
-  if (!accepted && !CFG.allowRejected) {
+  if (proof.gpuHmrSuccess !== true && !CFG.allowRejected) {
     process.exitCode = 1;
   }
 }

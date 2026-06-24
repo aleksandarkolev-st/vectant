@@ -25,6 +25,7 @@ const CFG = {
   timeoutMs: Number(process.env.SYNTHI_OIDN_PREFLIGHT_TIMEOUT_MS ?? 120000),
   seed: process.env.SYNTHI_OIDN_RNG_SEED ?? '12345',
   requireHip: process.env.SYNTHI_OIDN_REQUIRE_HIP === '1',
+  allowRejected: process.env.SYNTHI_OIDN_ALLOW_REJECTED === '1',
 };
 
 function failConfig(message) {
@@ -486,7 +487,7 @@ if (args.has('--self-check')) {
   console.log(`oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`);
   console.log(`proof_json=${paths.jsonPath}`);
   console.log(`summary_txt=${paths.txtPath}`);
-  if (CFG.requireHip && !proof.classification.oidnHipAccepted) {
+  if (!proof.classification.oidnHipAccepted && (CFG.requireHip || !CFG.allowRejected)) {
     process.exitCode = 1;
   }
 }
