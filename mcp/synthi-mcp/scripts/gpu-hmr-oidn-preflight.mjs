@@ -98,6 +98,103 @@ async function findHipDeviceLibrary() {
   return { library, probe: summarizeCommand(result) };
 }
 
+function decodeBase64Field(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  return Buffer.from(text, 'base64').toString('utf8');
+}
+
+async function inspectWorkerPath(workerPath, kind) {
+  if (!workerPath) {
+    return {
+      kind,
+      path: null,
+      found: false,
+      resolvedPath: null,
+      isSymlink: false,
+      fileType: null,
+      sha256: null,
+      wrapperOrShimDetected: false,
+      probe: null,
+    };
+  }
+  const repo = shellQuote(CFG.repoPath);
+  const cmd = [
+    `cd ${repo}`,
+    `p=${shellQuote(workerPath)}`,
+    'if [ ! -e "$p" ]; then printf "SYNTHI_OIDN_PATH_INSPECTION found=0 kind=%s path_b64=%s\\n" '
+      + `${shellQuote(kind)} "$(printf '%s' "$p" | base64 | tr -d '\\n')"; exit 0; fi`,
+    'resolved="$(readlink -f "$p" 2>/dev/null || printf "%s" "$p")"',
+    'file_type="$(file -b "$p" 2>/dev/null || printf unknown)"',
+    'sha="$(sha256sum "$p" 2>/dev/null | awk \'{print $1}\')"',
+    'is_symlink=0; if [ -L "$p" ]; then is_symlink=1; fi',
+    'printf "SYNTHI_OIDN_PATH_INSPECTION found=1 kind=%s path_b64=%s resolved_b64=%s is_symlink=%s file_b64=%s sha256=%s\\n" '
+      + `${shellQuote(kind)} "$(printf '%s' "$p" | base64 | tr -d '\\n')" "$(printf '%s' "$resolved" | base64 | tr -d '\\n')" "$is_symlink" "$(printf '%s' "$file_type" | base64 | tr -d '\\n')" "$sha"`,
+  ].join(' && ');
+  const result = await execDockerShell(cmd, 30000);
+  const line = `${result.stdout}\n${result.stderr}`.split(/\r?\n/)
+    .find((entry) => entry.includes('SYNTHI_OIDN_PATH_INSPECTION')) ?? '';
+  const found = /\bfound=1\b/.test(line);
+  const isSymlink = /\bis_symlink=1\b/.test(line);
+  const fileType = decodeBase64Field(/\bfile_b64=([A-Za-z0-9+/=]+)/.exec(line)?.[1]);
+  const pathValue = decodeBase64Field(/\bpath_b64=([A-Za-z0-9+/=]+)/.exec(line)?.[1]) || workerPath;
+  const resolvedPath = decodeBase64Field(/\bresolved_b64=([A-Za-z0-9+/=]+)/.exec(line)?.[1]) || null;
+  const sha = /\bsha256=([0-9a-fA-F]{64})\b/.exec(line)?.[1] ?? null;
+  const expectedElf = kind === 'oidn_tool' || kind === 'oidn_hip_device_library';
+  const wrapperOrShimDetected = found && expectedElf && !/\bELF\b/i.test(fileType);
+  return {
+    kind,
+    path: pathValue,
+    found,
+    resolvedPath,
+    resolved_path: resolvedPath,
+    isSymlink,
+    is_symlink: isSymlink,
+    fileType,
+    file_type: fileType,
+    sha256: sha ? `sha256:${sha}` : null,
+    wrapperOrShimDetected,
+    wrapper_or_shim_detected: wrapperOrShimDetected,
+    probe: summarizeCommand(result),
+  };
+}
+
+async function buildPathIntegrity({ tool, library }) {
+  const inspections = [
+    await inspectWorkerPath(tool, 'oidn_tool'),
+    await inspectWorkerPath(library, 'oidn_hip_device_library'),
+  ];
+  const inspectedExisting = inspections.filter((entry) => entry.found);
+  const symlinkedPaths = inspectedExisting.filter((entry) => entry.isSymlink).map((entry) => entry.path);
+  const wrapperPaths = inspectedExisting
+    .filter((entry) => entry.wrapperOrShimDetected)
+    .map((entry) => ({ path: entry.path, fileType: entry.fileType }));
+  const noShimApplied = wrapperPaths.length === 0;
+  const noSymlinkApplied = symlinkedPaths.length === 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_path_integrity.v1',
+    inspections,
+    noShimApplied,
+    no_shim_applied: noShimApplied,
+    noSymlinkApplied,
+    no_symlink_applied: noSymlinkApplied,
+    noSynthesizedRuntime: noShimApplied && noSymlinkApplied,
+    no_synthesized_runtime: noShimApplied && noSymlinkApplied,
+    symlinkedPaths,
+    symlinked_paths: symlinkedPaths,
+    wrapperOrShimPaths: wrapperPaths,
+    wrapper_or_shim_paths: wrapperPaths,
+    failedGates: [
+      ...(noShimApplied ? [] : ['oidn_wrapper_or_shim_detected']),
+      ...(noSymlinkApplied ? [] : ['oidn_symlinked_runtime_artifact_detected']),
+    ],
+    failed_gates: [
+      ...(noShimApplied ? [] : ['oidn_wrapper_or_shim_detected']),
+      ...(noSymlinkApplied ? [] : ['oidn_symlinked_runtime_artifact_detected']),
+    ],
+  };
+}
+
 function summarizeCommand(result) {
   return {
     exitCode: result.exitCode,
@@ -157,10 +254,18 @@ function missingLibrariesFromLdd(text) {
   return [...missing].sort();
 }
 
-function classifyPreflight({ oidnTool, tests, ldd }) {
+function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
   const hipTests = tests.filter((test) => test.device === 'hip');
   const cpuTests = tests.filter((test) => test.device === 'cpu');
-  const hipPassed = hipTests.length > 0 && hipTests.every((test) => test.passed);
+  const hipTestsPassed = hipTests.length > 0 && hipTests.every((test) => test.passed);
+  const pathIntegrityAccepted =
+    pathIntegrity === null
+    || (
+      pathIntegrity.noShimApplied === true
+      && pathIntegrity.noSymlinkApplied === true
+      && pathIntegrity.noSynthesizedRuntime === true
+    );
+  const hipPassed = hipTestsPassed && pathIntegrityAccepted;
   const cpuPassed = cpuTests.length > 0 && cpuTests.every((test) => test.passed);
   const missingLibs = ldd?.missingLibraries ?? [];
   const unsupportedReasons = [];
@@ -171,8 +276,12 @@ function classifyPreflight({ oidnTool, tests, ldd }) {
   for (const lib of missingLibs) {
     unsupportedReasons.push(`missing_dependency:${lib}`);
   }
+  for (const gate of pathIntegrity?.failedGates ?? pathIntegrity?.failed_gates ?? []) {
+    unsupportedReasons.push(gate);
+  }
   return {
     oidnHipAccepted: hipPassed,
+    oidnHipTestsPassed: hipTestsPassed,
     oidnCpuDiagnosticsPassed: cpuPassed,
     resultState: hipPassed ? 'oidn-hip-device-available' : 'oidn-hip-rejected',
     unsupportedReasons: [...new Set(unsupportedReasons)].sort(),
@@ -180,7 +289,7 @@ function classifyPreflight({ oidnTool, tests, ldd }) {
   };
 }
 
-function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd }) {
+function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd, pathIntegrity }) {
   const evidenceRefs = [
     'probe:oidn_tool',
     'probe:oidn_hip_device_library',
@@ -209,9 +318,10 @@ function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd }) {
       hipTestCount: tests.filter((test) => test.device === 'hip').length,
       cpuDiagnosticCount: tests.filter((test) => test.device === 'cpu').length,
       missingLibraries: ldd?.missingLibraries ?? [],
-      noShimApplied: true,
-      noSymlinkApplied: true,
-      noSynthesizedRuntime: true,
+      noShimApplied: pathIntegrity.noShimApplied,
+      noSymlinkApplied: pathIntegrity.noSymlinkApplied,
+      noSynthesizedRuntime: pathIntegrity.noSynthesizedRuntime,
+      pathIntegrity,
       evidenceRefs,
     },
     evidenceRefs,
@@ -226,6 +336,10 @@ async function buildProof() {
   const started = process.hrtime.bigint();
   const toolProbe = await findTool();
   const libraryProbe = await findHipDeviceLibrary();
+  const pathIntegrity = await buildPathIntegrity({
+    tool: toolProbe.tool,
+    library: libraryProbe.library,
+  });
   const tests = [];
   if (toolProbe.tool) {
     tests.push(await runOidnTest(toolProbe.tool, 'device creation', 'hip'));
@@ -234,7 +348,12 @@ async function buildProof() {
     tests.push(await runOidnTest(toolProbe.tool, 'buffer read/write', 'cpu'));
   }
   const ldd = await runLdd(libraryProbe.library);
-  const classification = classifyPreflight({ oidnTool: toolProbe.tool, tests, ldd });
+  const classification = classifyPreflight({
+    oidnTool: toolProbe.tool,
+    tests,
+    ldd,
+    pathIntegrity,
+  });
   const ended = process.hrtime.bigint();
   const proofBase = {
     schema: 'synthi.gpu_hmr.oidn_preflight.v1',
@@ -249,6 +368,8 @@ async function buildProof() {
     oidnToolProbe: toolProbe.probe,
     hipDeviceLibrary: libraryProbe.library || null,
     hipDeviceLibraryProbe: libraryProbe.probe,
+    pathIntegrity,
+    path_integrity: pathIntegrity,
     ldd,
     tests,
     backendEvidence: preflightBackendEvidence({
@@ -256,14 +377,15 @@ async function buildProof() {
       libraryProbe,
       tests,
       ldd,
+      pathIntegrity,
     }),
     classification,
     acceptance: {
       acceptedForHipOutputProof: classification.oidnHipAccepted,
       cpuDiagnosticOnly: classification.oidnCpuDiagnosticsPassed && !classification.oidnHipAccepted,
-      noShimApplied: true,
-      noSymlinkApplied: true,
-      noSynthesizedRuntime: true,
+      noShimApplied: pathIntegrity.noShimApplied,
+      noSymlinkApplied: pathIntegrity.noSymlinkApplied,
+      noSynthesizedRuntime: pathIntegrity.noSynthesizedRuntime,
     },
   };
   const proofId = `oidn-preflight-proof:sha256:${sha256Json(proofBase)}`;
@@ -329,6 +451,27 @@ function runSelfCheck() {
     ldd: { missingLibraries: [] },
   });
   assert(accepted.resultState === 'oidn-hip-device-available', 'accepted state not classified');
+  const shimRejected = classifyPreflight({
+    oidnTool: './bin/oidnTest',
+    tests: [
+      { name: 'device creation', device: 'hip', passed: true },
+      { name: 'buffer read/write', device: 'hip', passed: true },
+      { name: 'device creation', device: 'cpu', passed: true },
+      { name: 'buffer read/write', device: 'cpu', passed: true },
+    ],
+    ldd: { missingLibraries: [] },
+    pathIntegrity: {
+      noShimApplied: false,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: false,
+      failedGates: ['oidn_wrapper_or_shim_detected'],
+    },
+  });
+  assert(shimRejected.resultState === 'oidn-hip-rejected', 'shimmed OIDN path must reject HIP acceptance');
+  assert(
+    shimRejected.unsupportedReasons.includes('oidn_wrapper_or_shim_detected'),
+    'shim rejection reason absent',
+  );
   console.log('[ok] OIDN preflight self-check passed');
 }
 
