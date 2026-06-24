@@ -160,7 +160,15 @@ const CFG = {
     process.env.SYNTHI_HIPRT_WARM_GPU_ARCH
     ?? process.env.SYNTHI_GPU_ARCH
     ?? process.env.SYNTHI_REAL_ROCM_GPU_ARCH
-    ?? 'gfx1201',
+    ?? '',
+  rocmPrefix:
+    process.env.SYNTHI_HIPRT_WARM_ROCM_PREFIX
+    ?? process.env.SYNTHI_GPU_HMR_RUNTIME_ROCM_PREFIX
+    ?? process.env.SYNTHI_REAL_ROCM_ROCM_PREFIX
+    ?? process.env.ROCM_PATH
+    ?? '',
+  gpuArchSource: '',
+  rocmPrefixSource: '',
   orochiApi: (
     process.env.SYNTHI_GPU_HMR_RUNTIME_OROCHI_API
     ?? process.env.SYNTHI_HIPRT_WARM_OROCHI_API
@@ -425,6 +433,81 @@ async function dockerText(args, options = {}) {
 
 async function dockerShell(script, options = {}) {
   return dockerText(['exec', CFG.workerContainer, 'sh', '-lc', script], options);
+}
+
+async function detectWorkerGpuArch() {
+  const configured = String(CFG.gpuArch ?? '').trim();
+  if (configured) {
+    CFG.gpuArch = configured;
+    CFG.gpuArchSource = 'env';
+    return;
+  }
+  const output = await dockerShell(`
+set +e
+arch=''
+source=''
+if command -v hipconfig >/dev/null 2>&1; then
+  arch="$(hipconfig --amdgpu-target 2>/dev/null | tr ' ,;' '\\n' | grep -E '^gfx[0-9A-Za-z]+$' | head -n 1)"
+  [ -n "$arch" ] && source='hipconfig --amdgpu-target'
+fi
+if [ -z "$arch" ] && command -v rocminfo >/dev/null 2>&1; then
+  arch="$(rocminfo 2>/dev/null | sed -n 's/.*Name:[[:space:]]*\\(gfx[0-9A-Za-z]*\\).*/\\1/p' | head -n 1)"
+  [ -n "$arch" ] && source='rocminfo'
+fi
+printf 'SYNTHI_ROCM_GPU_ARCH_DETECTION source=%s value=%s\\n' "$source" "$arch"
+`, { timeout: 30000 });
+  const match = /SYNTHI_ROCM_GPU_ARCH_DETECTION\s+source=(.*?)\s+value=(gfx[0-9A-Za-z]+)/.exec(output);
+  if (!match) {
+    throw new Error(
+      'ROCm GPU arch is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_HIPRT_WARM_GPU_ARCH or SYNTHI_GPU_ARCH, or make hipconfig/rocminfo available',
+    );
+  }
+  CFG.gpuArch = match[2];
+  CFG.gpuArchSource = match[1] || 'worker_detection';
+}
+
+async function detectWorkerRocmPrefix() {
+  const configured = String(CFG.rocmPrefix ?? '').trim();
+  const output = await dockerShell(`
+set +e
+prefix=${configured ? shQuote(configured) : "''"}
+source=${configured ? "'env'" : "''"}
+if [ -z "$prefix" ] && command -v hipconfig >/dev/null 2>&1; then
+  prefix="$(hipconfig --path 2>/dev/null | head -n 1)"
+  [ -n "$prefix" ] && source='hipconfig --path'
+fi
+if [ -n "$prefix" ] && [ -d "$prefix" ]; then
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value=%s include=%s llvm=%s\\n' "$source" "$prefix" "$([ -d "$prefix/include" ] && printf 1 || printf 0)" "$([ -d "$prefix/llvm/bin" ] && printf 1 || printf 0)"
+else
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value= include=0 llvm=0\\n' "$source"
+fi
+`, { timeout: 30000 });
+  const match = /SYNTHI_ROCM_PREFIX_DETECTION\s+source=(.*?)\s+value=(\S+)\s+include=(\d+)\s+llvm=(\d+)/.exec(output);
+  if (!match || match[2] === '') {
+    throw new Error(
+      'ROCm prefix is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_HIPRT_WARM_ROCM_PREFIX/SYNTHI_REAL_ROCM_ROCM_PREFIX/ROCM_PATH or make hipconfig --path available',
+    );
+  }
+  if (match[3] !== '1') {
+    throw new Error(`detected ROCm prefix ${match[2]} is missing an include directory`);
+  }
+  CFG.rocmPrefix = match[2];
+  CFG.rocmPrefixSource = match[1] || 'worker_detection';
+}
+
+function expandRocmConfigValue(value) {
+  return String(value ?? '')
+    .replace(/\$\{ROCM_PREFIX\}/g, CFG.rocmPrefix)
+    .replace(/\$\{ROCM_LLVM_BIN\}/g, `${CFG.rocmPrefix}/llvm/bin`)
+    .replace(/\$\{ROCM_INCLUDE_DIR\}/g, `${CFG.rocmPrefix}/include`);
+}
+
+async function ensureRocmBuildConfig() {
+  await detectWorkerGpuArch();
+  await detectWorkerRocmPrefix();
+  CFG.cmakeArgs = CFG.cmakeArgs.map(expandRocmConfigValue);
 }
 
 async function dockerCpFromWorker(workerPath, hostPath) {
@@ -1394,7 +1477,7 @@ ${shellExports(CFG.buildEnv)}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF ${CFG.cmakeArgs.map(shQuote).join(' ')}
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=${shQuote(CFG.rocmPrefix)} -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF ${CFG.cmakeArgs.map(shQuote).join(' ')}
 status=$?
 end=$(date +%s%3N)
 printf 'SYNTHI_WARM_CONFIGURE_TIMING reason=%s configure_ms=%s exit_code=%s\\n' ${shQuote(reason)} "$((end-start))" "$status"
@@ -2088,6 +2171,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     cmakeArgs: CFG.cmakeArgs,
     buildEnv: CFG.buildEnv,
     gpuArch: CFG.gpuArch,
+    gpuArchSource: CFG.gpuArchSource,
+    rocmPrefix: CFG.rocmPrefix,
+    rocmPrefixSource: CFG.rocmPrefixSource,
   });
   const cameraStateHash = visualArtifacts?.camera_state_hash ?? sha256Json({
     runtimeArgs: CFG.runtimeArgs,
@@ -2141,6 +2227,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     editId: `${proof.slug}:${proof.source.changedHash}`,
     backend: 'hiprt',
     gpuArch: CFG.gpuArch,
+    gpuArchSource: CFG.gpuArchSource,
+    rocmPrefix: CFG.rocmPrefix,
+    rocmPrefixSource: CFG.rocmPrefixSource,
     compiler: 'hiprt_orochi_runtime_compiler',
     classification: {
       project_kind: 'gpu_project',
@@ -2389,6 +2478,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       device_uuid: `rocm:${CFG.gpuArch}`,
       backend: 'hiprt',
       gpu_arch: CFG.gpuArch,
+      gpu_arch_source: CFG.gpuArchSource,
+      rocm_prefix: CFG.rocmPrefix,
+      rocm_prefix_source: CFG.rocmPrefixSource,
     },
     firewall_evidence: contractInput.firewallEvidence,
     cpu_hmr_used: false,
@@ -3002,6 +3094,7 @@ function summarizeStrictProof(strict) {
 async function main() {
   const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
+  await ensureRocmBuildConfig();
   const strictProof = await findStrictProofJson();
   const strictSummary = summarizeStrictProof(strictProof);
   if (CFG.requireStrictProvenance && !strictSummary?.strictFullRuntimePassed) {

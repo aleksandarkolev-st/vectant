@@ -1940,7 +1940,14 @@ const CFG = {
     'SYNTHI_REAL_ROCM_FORCE_GPU_AI_DELTA',
     false,
   ),
-  gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
+  gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? '',
+  rocmPrefix:
+    process.env.SYNTHI_REAL_ROCM_ROCM_PREFIX
+    ?? process.env.SYNTHI_GPU_HMR_RUNTIME_ROCM_PREFIX
+    ?? process.env.ROCM_PATH
+    ?? '',
+  gpuArchSource: '',
+  rocmPrefixSource: '',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.5-flash',
   gpuSplitModel: process.env.SYNTHI_GPU_SPLIT_MODEL
@@ -2188,6 +2195,108 @@ async function resolveDockerContainers() {
   if (!CFG.mcpContainerEntry) {
     throw new Error('MCP_TRANSPORT=docker requires explicit MCP_CONTAINER_ENTRY or SYNTHI_MCP_CONTAINER_ENTRY');
   }
+}
+
+async function detectWorkerGpuArch() {
+  const configured = String(CFG.gpuArch ?? '').trim();
+  if (configured) {
+    CFG.gpuArch = configured;
+    CFG.gpuArchSource = 'env';
+    return;
+  }
+  const output = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `
+set +e
+arch=''
+source=''
+if command -v hipconfig >/dev/null 2>&1; then
+  arch="$(hipconfig --amdgpu-target 2>/dev/null | tr ' ,;' '\\n' | grep -E '^gfx[0-9A-Za-z]+$' | head -n 1)"
+  [ -n "$arch" ] && source='hipconfig --amdgpu-target'
+fi
+if [ -z "$arch" ] && command -v rocminfo >/dev/null 2>&1; then
+  arch="$(rocminfo 2>/dev/null | sed -n 's/.*Name:[[:space:]]*\\(gfx[0-9A-Za-z]*\\).*/\\1/p' | head -n 1)"
+  [ -n "$arch" ] && source='rocminfo'
+fi
+printf 'SYNTHI_ROCM_GPU_ARCH_DETECTION source=%s value=%s\\n' "$source" "$arch"
+`,
+    ],
+    30000,
+    true,
+  );
+  const match = /SYNTHI_ROCM_GPU_ARCH_DETECTION\s+source=(.*?)\s+value=(gfx[0-9A-Za-z]+)/.exec(output);
+  if (!match) {
+    throw new Error(
+      'ROCm GPU arch is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_REAL_ROCM_GPU_ARCH or SYNTHI_GPU_ARCH, or make hipconfig/rocminfo available',
+    );
+  }
+  CFG.gpuArch = match[2];
+  CFG.gpuArchSource = match[1] || 'worker_detection';
+}
+
+async function detectWorkerRocmPrefix() {
+  const configured = String(CFG.rocmPrefix ?? '').trim();
+  const output = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `
+set +e
+prefix=${configured ? shQuote(configured) : "''"}
+source=${configured ? "'env'" : "''"}
+if [ -z "$prefix" ] && command -v hipconfig >/dev/null 2>&1; then
+  prefix="$(hipconfig --path 2>/dev/null | head -n 1)"
+  [ -n "$prefix" ] && source='hipconfig --path'
+fi
+if [ -n "$prefix" ] && [ -d "$prefix" ]; then
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value=%s include=%s llvm=%s\\n' "$source" "$prefix" "$([ -d "$prefix/include" ] && printf 1 || printf 0)" "$([ -d "$prefix/llvm/bin" ] && printf 1 || printf 0)"
+else
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value= include=0 llvm=0\\n' "$source"
+fi
+`,
+    ],
+    30000,
+    true,
+  );
+  const match = /SYNTHI_ROCM_PREFIX_DETECTION\s+source=(.*?)\s+value=(\S+)\s+include=(\d+)\s+llvm=(\d+)/.exec(output);
+  if (!match || match[2] === '') {
+    throw new Error(
+      'ROCm prefix is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_REAL_ROCM_ROCM_PREFIX/ROCM_PATH or make hipconfig --path available',
+    );
+  }
+  if (match[3] !== '1') {
+    throw new Error(`detected ROCm prefix ${match[2]} is missing an include directory`);
+  }
+  CFG.rocmPrefix = match[2];
+  CFG.rocmPrefixSource = match[1] || 'worker_detection';
+}
+
+function expandRocmConfigValue(value) {
+  return String(value ?? '')
+    .replace(/\$\{ROCM_PREFIX\}/g, CFG.rocmPrefix)
+    .replace(/\$\{ROCM_LLVM_BIN\}/g, `${CFG.rocmPrefix}/llvm/bin`)
+    .replace(/\$\{ROCM_INCLUDE_DIR\}/g, `${CFG.rocmPrefix}/include`);
+}
+
+async function ensureRocmBuildConfig() {
+  await detectWorkerGpuArch();
+  await detectWorkerRocmPrefix();
+  CFG.cmakeArgs = CFG.cmakeArgs.map(expandRocmConfigValue);
+  report.gpu_arch = CFG.gpuArch;
+  report.gpu_arch_source = CFG.gpuArchSource;
+  report.rocm_prefix = CFG.rocmPrefix;
+  report.rocm_prefix_source = CFG.rocmPrefixSource;
+  report.cmake_args = CFG.cmakeArgs;
 }
 
 function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
@@ -3759,7 +3868,7 @@ ${cleanBuildCommand}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=${shQuote(CFG.rocmPrefix)} -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configured=$(date +%s%3N)
 ${hiprtPostConfigureAdaptationCommand}
 if [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
@@ -9027,7 +9136,7 @@ async function selfCheckRuntimeDispatchEvidence() {
       backend: 'rocm',
       api: 'hipMallocArray',
     },
-    compiler: '/opt/rocm/llvm/bin/amdclang++',
+    compiler: 'rocm-llvm-bin/amdclang++',
   });
   if (!rocmCuAliasCandidates.includes('hip') || rocmCuAliasCandidates.includes('cuda')) {
     throw new Error(`ROCm cu* compatibility aliases must infer HIP only, got ${rocmCuAliasCandidates.join(',')}`);
@@ -10077,7 +10186,7 @@ int main()
   ].join('\n'));
   const arrayCapabilityMatrix = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
-    'device_identity result=0 error=no error index=0 name="AMD Radeon Test" pci_domain=0 pci_bus=3 pci_device=0 gcn_arch="gfx1201" multiprocessors=64',
+    'device_identity result=0 error=no error index=0 name="AMD Radeon Test" pci_domain=0 pci_bus=3 pci_device=0 gcn_arch="gfx0000" multiprocessors=64',
     'hipMallocArray label=u8x1 x=8 y=0 z=0 w=0 kind=1 result=1 error=invalid argument array=(nil)',
     'hipMallocArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
     'hipMalloc3DArray label=f32x4 x=32 y=32 z=32 w=32 kind=2 result=1 error=invalid argument array=(nil)',
@@ -10103,7 +10212,7 @@ int main()
     || arrayCapabilityMatrix.textureResourceFallbackAvailable !== false
     || arrayCapabilityMatrix.textureResourceMatrix[0]?.resourceType !== 'linear'
     || arrayCapabilityMatrix.textureResourceMatrix[2]?.resourceType !== 'pitch2D'
-    || arrayCapabilityMatrix.deviceIdentity?.gcn_arch_name !== 'gfx1201'
+    || arrayCapabilityMatrix.deviceIdentity?.gcn_arch_name !== 'gfx0000'
     || !arrayCapabilityMatrix.deviceIdentity?.device_uuid?.startsWith('hip-device:sha256:')
     || arrayCapabilityMatrix.allocationFormat !== 'f32x4'
     || !arrayCapabilityMatrix.degradedReason.includes('matrix failed 3/3')
@@ -11730,6 +11839,7 @@ async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   await resolveDockerContainers();
+  await ensureRocmBuildConfig();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
   });
