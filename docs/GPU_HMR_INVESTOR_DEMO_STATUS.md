@@ -184,7 +184,7 @@ Current MIOpen large ROCm ML caveat:
 
 ```text
 profile: real-rocm-miopen-activation-large-ml
-result slug: gpu-real-rocm-MIOpen-20260623223010
+result slug: gpu-real-rocm-MIOpen-20260624004129
 result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
 repo: ROCm/MIOpen @ 06977176afd94476c18d5290f21cb40745bb73a9
 target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
@@ -197,7 +197,7 @@ split projection: no fresh AI split/delta calls in this rerun
 delta projection: none accepted; configure failed before compile/delta proof material was collected
 compile bridge facet: status=compile_bridge_missing, phase_count=0, load_device=false, device_sidecar=false, artifact_reference=false, runtime_proof_material=false, gap=compile_response_device_sidecar_bridge_not_declared
 device sidecar contract facet: no sidecar contract accepted; static candidate metadata is evidence-only and cannot satisfy runtime proof
-timings: total_validator_wall=15995.459ms
+timings: total_validator_wall=16598.7458ms
 accepted GPU HMR: false
 strict refusal: runtime proof artifact exists but is rejected; configure/build evidence and runtime proof chain are missing, full runtime proof remains unproven, proof ledger rejects, and acceptance contract rejects
 oracle resolution: profile=none, source_derived_candidates=0, selected_source=null, contract_present=false, runtime_profile_present=false, worker profile cleared with syncSkippedReason=runtime_profile_absent
@@ -206,11 +206,11 @@ native ROCm refusal facet: status=not_observed, can_satisfy_dispatch_proof=false
 real ROCm app-hook contract facet: declared=false, can_satisfy_runtime_proof=false, stages missing artifact_transport, epoch_publication, dispatch_trace, host_identity, and output_oracle
 real ROCm runtime eligibility facet: status=refused_missing_runtime_proof, backend_candidates=hip, source_dialects=opencl_c,c_cpp, artifact_kind=hip_source_bridge, entry_points=MIOpenActivationForward/miopenActivationForward, compiler=/opt/rocm/llvm/bin/amdclang, gaps=artifact_transport_not_observed,same_process_epoch_missing,dispatch_epoch_missing,output_oracle_profile_absent,host_identity_not_observed
 target progression: final-acceptance, required=true, target=MIOpenDriver, failed gates=prior small-oracle, prior partial-reload, prior original-host-path, full runtime, raw compute oracle artifacts
-target progression ledger: target-progression-ledger:sha256:68141b7596db4be46bbcd428c7ee11a4c19392382832b9fe8edfe18d4430822c, entry_status=fail
+target progression ledger: target-progression-ledger:sha256:02a374c77757e3c0d220bae4d8905707deb52cba76060573eaaeee61744ff608, entry_status=fail
 visual proof: no MIOpen frame captured; matrix marks visual.required=false for this compute-only target and still refuses because strict runtime ledger and raw output-oracle proof are missing
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
-refusal proof ids: gpu-ledger-proof:sha256:a934dfd42b783f50f4db734418a08bac2c5828b83b645b8458a36634e0b73af0, gpu-runtime-proof:sha256:dda55142397cb183e2b44868bb7f0fbdb19fa07a11761249acb352eb59a3d7db, real-rocm-validation:sha256:d61530133db338b6cba18eaedf55047a87192b347de8b8803efbd5dba296a7f8, target-progression-ledger:sha256:68141b7596db4be46bbcd428c7ee11a4c19392382832b9fe8edfe18d4430822c
-matrix row id: captured in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T231716Z.json
+refusal proof ids: gpu-ledger-proof:sha256:20cf0403be1c941188adeedf3a08c573a75007e24fa484a391706d5e692ea9b5, gpu-runtime-proof:sha256:9c49bea898437713b4d3bdf49d098a89c3e1daea91b301c986de0ce6ec2dd792, real-rocm-validation:sha256:e2d276f7d5cf461a66723cc7a433a30b3330635a51b60e8c1a55688792b06203, target-progression-ledger:sha256:02a374c77757e3c0d220bae4d8905707deb52cba76060573eaaeee61744ff608
+matrix row id: gpu-validation-matrix-row:sha256:15ef5d6925b15c0fa10c46a1dab62051416441e845ff381135868b503e0e1dc1 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260624T005534Z.json
 matrix open gaps: strict runtime proof artifact rejected, proof ledger success false, output or visual oracle proof missing, app-hook contract/runtime observations missing, target-progression gates failed, artifact transport not observed, same-process epoch missing, dispatch epoch missing, host identity not observed
 plan coverage: large_real_rocm_repo=refused
 ```
