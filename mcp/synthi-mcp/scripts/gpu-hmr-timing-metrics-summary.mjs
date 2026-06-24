@@ -359,7 +359,6 @@ function compactRow(row) {
     profileTargetId: metrics.profileTargetId ?? null,
     projectName: metrics.projectName,
     proofMode: metrics.proofMode,
-    status: metrics.status,
     telemetryOnly: true,
     evidenceAuthority: metrics.evidenceAuthority ?? GPU_HMR_TIMING_TELEMETRY_AUTHORITY,
     proofVerdict: metrics.proofVerdict ?? 'not_evaluated_by_timing_summary',
@@ -384,8 +383,6 @@ function compactRow(row) {
     screenshotCount: metrics.visualEvidence?.screenshotCount ?? null,
     changedPixelRatio: metrics.visualEvidence?.changedPixelRatio ?? null,
     meanAbsDelta8bit: metrics.visualEvidence?.meanAbsDelta8bit ?? null,
-    visualAccepted: metrics.visualEvidence?.accepted ?? null,
-    computeCardAccepted: metrics.computeEvidence?.computeCardAccepted ?? null,
     reportedVisualAccepted:
       metrics.visualEvidence?.reportedAccepted
       ?? metrics.visualEvidence?.accepted
@@ -508,6 +505,9 @@ function runSelfCheck() {
   assertSelfCheck(row.evidenceAuthority === GPU_HMR_TIMING_TELEMETRY_AUTHORITY, 'telemetry authority missing');
   assertSelfCheck(row.proofVerdict === 'not_evaluated_by_timing_summary', 'proof verdict boundary missing');
   assertSelfCheck(row.reportedStatus === 'pass', 'reported status missing');
+  assertSelfCheck(!('status' in row), 'compact timing row must not expose status as proof authority');
+  assertSelfCheck(!('visualAccepted' in row), 'compact timing row must not expose visualAccepted as proof authority');
+  assertSelfCheck(!('computeCardAccepted' in row), 'compact timing row must not expose computeCardAccepted as proof authority');
   assertSelfCheck(row.durationMonotonicNs === '600000000', 'duration monotonic ns missing');
   assertSelfCheck(row.durationMonotonicMs === 600, 'duration monotonic ms missing');
   assertSelfCheck(row.modelAvailabilityCheckMs === 2, 'model availability timing missing');
