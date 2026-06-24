@@ -96,6 +96,10 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function sha256BufferHash(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
 function proofIdFor(prefix, value) {
   return `${prefix}:sha256:${sha256Hex(stableJson(value))}`;
 }
@@ -280,6 +284,14 @@ async function pathExists(filePath) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function fileSha256Hash(filePath) {
+  try {
+    return sha256BufferHash(await fs.readFile(filePath));
+  } catch {
+    return null;
   }
 }
 
@@ -3389,6 +3401,18 @@ async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
   const externalProjectContract = externalProjectContractEvidence(json);
   const backend = externalProjectContract.backend;
+  const externalVisualProofArtifact = await externalVisualProofArtifactEvidence(
+    json,
+    context.repoRoot,
+    path.dirname(filePath),
+    profileId,
+  );
+  const externalProfileSelection = externalProfileSelectionEvidence(
+    json,
+    externalVisualProofArtifact,
+    profileId,
+  );
+  const externalSourceDelta = externalSourceDeltaEvidence(json, externalVisualProofArtifact);
   const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
   const visualDiff = compactObject(json.visualDiff ?? json.visual_diff);
   const visual = await visualArtifactEvidence(
@@ -3403,7 +3427,10 @@ async function externalProjectRow(json, filePath, context) {
   const visualProfileAccepted =
     json.status === 'pass'
     && visual.accepted === true
-    && deterministicAccepted;
+    && deterministicAccepted
+    && externalProfileSelection.accepted === true
+    && externalSourceDelta.accepted === true
+    && externalVisualProofArtifact.accepted === true;
   const rejection = compactObject(json.rejectionProofArtifact ?? json.rejection_proof_artifact);
   const refusalProven =
     json.status === 'fail'
@@ -3428,6 +3455,12 @@ async function externalProjectRow(json, filePath, context) {
     backend,
     externalProjectContract,
     external_project_contract: externalProjectContract,
+    externalProfileSelection,
+    external_profile_selection: externalProfileSelection,
+    externalSourceDelta,
+    external_source_delta: externalSourceDelta,
+    externalVisualProofArtifact,
+    external_visual_proof_artifact: externalVisualProofArtifact,
     backendEvidence: externalProjectContract,
     backend_evidence: externalProjectContract,
     targetId: profileId,
@@ -3454,7 +3487,7 @@ async function externalProjectRow(json, filePath, context) {
       : refusalProven
         ? 'external_rejection_artifact'
         : 'external_profile_unproven',
-    proofIds: proofIdsFrom(json, rejection, linkedRejection.proof),
+    proofIds: proofIdsFrom(json, externalVisualProofArtifact, rejection, linkedRejection.proof),
     ledger: {
       present: false,
       proofId: null,
@@ -3475,12 +3508,21 @@ async function externalProjectRow(json, filePath, context) {
       ...rejectionReasons,
       json.error?.message ? 'external_profile_failed' : null,
       visualProfileAccepted || visual.accepted ? null : 'visual_artifacts_not_readable',
+      externalProfileSelection.accepted === true ? null : 'external_profile_selection_not_accepted',
+      externalSourceDelta.accepted === true ? null : 'external_source_delta_not_accepted',
+      externalVisualProofArtifact.accepted === true ? null : 'external_visual_proof_artifact_not_accepted',
     ]),
     openGaps: visualProfileAccepted
       ? compactStringList(['full_runtime_gpu_hmr_ledger_not_present', ...externalProjectContract.failedGates])
       : refusalProven
         ? compactStringList(['full_runtime_gpu_hmr_not_proven', ...externalProjectContract.failedGates])
-        : compactStringList(['external_profile_not_accepted', ...externalProjectContract.failedGates]),
+        : compactStringList([
+          'external_profile_not_accepted',
+          ...externalProjectContract.failedGates,
+          ...externalProfileSelection.failedGates,
+          ...externalSourceDelta.failedGates,
+          ...externalVisualProofArtifact.failedGates,
+        ]),
   });
 }
 
@@ -3594,6 +3636,362 @@ function externalProjectContractEvidence(json = {}) {
     authority: accepted ? 'explicit_external_profile_contract_metadata' : 'missing_explicit_external_profile_contract_metadata',
     failedGates,
     failed_gates: failedGates,
+  };
+}
+
+function externalProfileSelectionEvidence(json = {}, linkedProof = {}, expectedProfileId = null) {
+  const supplied = compactObject(
+    json.profileSelection
+      ?? json.profile_selection
+      ?? linkedProof.profileSelection
+      ?? linkedProof.profile_selection,
+  );
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema);
+  const profileId = firstText(supplied.profileId, supplied.profile_id, supplied.id);
+  const manifestHash = firstText(supplied.manifestHash, supplied.manifest_hash);
+  const evidenceRefs = evidenceRefsFromValue(supplied);
+  const accepted = Boolean(
+    schemaVersion === 'synthi.gpu.hmr.external_profile_selection.v1'
+    && supplied.accepted === true
+    && supplied.explicit === true
+    && profileId
+    && (!expectedProfileId || profileId === expectedProfileId)
+    && contentAddressedSha256(manifestHash)
+    && firstText(supplied.source)
+    && evidenceRefs.length > 0,
+  );
+  const failedGates = compactStringList([
+    schemaVersion === 'synthi.gpu.hmr.external_profile_selection.v1'
+      ? null
+      : 'external_profile_selection_schema_missing',
+    supplied.accepted === true ? null : 'external_profile_selection_not_accepted',
+    supplied.explicit === true ? null : 'external_profile_selection_not_explicit',
+    profileId ? null : 'external_profile_selection_profile_id_missing',
+    !expectedProfileId || profileId === expectedProfileId
+      ? null
+      : 'external_profile_selection_profile_id_mismatch',
+    contentAddressedSha256(manifestHash) ? null : 'external_profile_selection_manifest_hash_missing',
+    firstText(supplied.source) ? null : 'external_profile_selection_source_missing',
+    evidenceRefs.length > 0 ? null : 'external_profile_selection_evidence_refs_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_profile_selection_evidence.v1',
+    accepted,
+    present: Object.keys(supplied).length > 0,
+    profileId,
+    profile_id: profileId,
+    source: firstText(supplied.source),
+    manifestHash,
+    manifest_hash: manifestHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function externalSourceDeltaEvidence(json = {}, linkedProof = {}) {
+  const supplied = compactObject(
+    json.sourceDeltaEvidence
+      ?? json.source_delta_evidence
+      ?? linkedProof.sourceDeltaEvidence
+      ?? linkedProof.source_delta_evidence,
+  );
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema);
+  const matchCount = finiteNumber(supplied.matchCount ?? supplied.match_count);
+  const beforeFileHash = firstText(supplied.beforeFileHash, supplied.before_file_hash);
+  const afterFileHash = firstText(supplied.afterFileHash, supplied.after_file_hash);
+  const beforeSnippetHash = firstText(supplied.beforeSnippetHash, supplied.before_snippet_hash);
+  const afterSnippetHash = firstText(supplied.afterSnippetHash, supplied.after_snippet_hash);
+  const sourceFile = firstText(supplied.sourceFile, supplied.source_file, supplied.sourcePath, supplied.source_path);
+  const byteRange = compactObject(supplied.byteRange ?? supplied.byte_range);
+  const evidenceRefs = evidenceRefsFromValue(supplied);
+  const accepted = Boolean(
+    schemaVersion === 'synthi.gpu.hmr.external_source_delta_evidence.v1'
+    && supplied.accepted === true
+    && matchCount === 1
+    && sourceFile
+    && contentAddressedSha256(beforeFileHash)
+    && contentAddressedSha256(afterFileHash)
+    && beforeFileHash !== afterFileHash
+    && contentAddressedSha256(beforeSnippetHash)
+    && contentAddressedSha256(afterSnippetHash)
+    && beforeSnippetHash !== afterSnippetHash
+    && Number.isFinite(byteRange.start)
+    && Number.isFinite(byteRange.end)
+    && byteRange.end > byteRange.start
+    && evidenceRefs.length > 0,
+  );
+  const failedGates = compactStringList([
+    schemaVersion === 'synthi.gpu.hmr.external_source_delta_evidence.v1'
+      ? null
+      : 'external_source_delta_schema_missing',
+    supplied.accepted === true ? null : 'external_source_delta_not_accepted',
+    matchCount === 1 ? null : 'external_source_delta_unique_match_missing',
+    sourceFile ? null : 'external_source_delta_source_file_missing',
+    contentAddressedSha256(beforeFileHash) ? null : 'external_source_delta_before_hash_missing',
+    contentAddressedSha256(afterFileHash) ? null : 'external_source_delta_after_hash_missing',
+    beforeFileHash && afterFileHash && beforeFileHash !== afterFileHash
+      ? null
+      : 'external_source_delta_file_hash_unchanged',
+    contentAddressedSha256(beforeSnippetHash) ? null : 'external_source_delta_before_snippet_hash_missing',
+    contentAddressedSha256(afterSnippetHash) ? null : 'external_source_delta_after_snippet_hash_missing',
+    beforeSnippetHash && afterSnippetHash && beforeSnippetHash !== afterSnippetHash
+      ? null
+      : 'external_source_delta_snippet_hash_unchanged',
+    Number.isFinite(byteRange.start) && Number.isFinite(byteRange.end) && byteRange.end > byteRange.start
+      ? null
+      : 'external_source_delta_byte_range_missing',
+    evidenceRefs.length > 0 ? null : 'external_source_delta_evidence_refs_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_source_delta_evidence.v1',
+    accepted,
+    present: Object.keys(supplied).length > 0,
+    sourceFile,
+    source_file: sourceFile,
+    matchCount,
+    match_count: matchCount,
+    beforeFileHash,
+    before_file_hash: beforeFileHash,
+    afterFileHash,
+    after_file_hash: afterFileHash,
+    beforeSnippetHash,
+    before_snippet_hash: beforeSnippetHash,
+    afterSnippetHash,
+    after_snippet_hash: afterSnippetHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+async function visualPairDiffEvidence(beforePath, afterPath) {
+  if (!beforePath || !afterPath) {
+    return {
+      accepted: false,
+      failedGates: ['external_visual_pair_paths_missing'],
+      failed_gates: ['external_visual_pair_paths_missing'],
+    };
+  }
+  try {
+    const before = await sharp(beforePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const after = await sharp(afterPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const sameResolution =
+      before.info.width === after.info.width
+      && before.info.height === after.info.height
+      && before.info.width > 0
+      && before.info.height > 0;
+    let changed = 0;
+    let totalAbs = 0;
+    let visiblePixelCount = 0;
+    if (sameResolution) {
+      for (let i = 0; i < before.data.length; i += 4) {
+        const dr = Math.abs(before.data[i] - after.data[i]);
+        const dg = Math.abs(before.data[i + 1] - after.data[i + 1]);
+        const db = Math.abs(before.data[i + 2] - after.data[i + 2]);
+        const da = Math.abs(before.data[i + 3] - after.data[i + 3]);
+        const sum = dr + dg + db + da;
+        if (sum > 0) changed += 1;
+        if (after.data[i + 3] > 0) visiblePixelCount += 1;
+        totalAbs += (dr + dg + db) / 3;
+      }
+    }
+    const pixelCount = sameResolution ? before.info.width * before.info.height : 0;
+    const changedPixelRatio = pixelCount > 0 ? changed / pixelCount : null;
+    const meanAbsDelta8bit = pixelCount > 0 ? totalAbs / pixelCount : null;
+    const accepted = Boolean(
+      sameResolution
+      && Number(changedPixelRatio) > 0
+      && Number(meanAbsDelta8bit) > 0
+      && visiblePixelCount > 0,
+    );
+    const failedGates = compactStringList([
+      sameResolution ? null : 'external_visual_pair_resolution_mismatch',
+      Number(changedPixelRatio) > 0 ? null : 'external_visual_pair_zero_pixel_delta',
+      Number(meanAbsDelta8bit) > 0 ? null : 'external_visual_pair_zero_mean_delta',
+      visiblePixelCount > 0 ? null : 'external_visual_pair_blank_after_frame',
+    ]);
+    return {
+      accepted,
+      width: sameResolution ? before.info.width : null,
+      height: sameResolution ? before.info.height : null,
+      changedPixelRatio,
+      changed_pixel_ratio: changedPixelRatio,
+      meanAbsDelta8bit,
+      mean_abs_delta_8bit: meanAbsDelta8bit,
+      visiblePixelCount,
+      visible_pixel_count: visiblePixelCount,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  } catch (err) {
+    const failedGates = [`external_visual_pair_decode_failed:${err?.code ?? err?.name ?? 'unknown'}`];
+    return {
+      accepted: false,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
+}
+
+function externalVisualProofArtifactCandidatePaths(json = {}) {
+  const visualProofArtifact = compactObject(json.visualProofArtifact ?? json.visual_proof_artifact);
+  return compactStringList([
+    visualProofArtifact.path,
+    visualProofArtifact.localPath,
+    visualProofArtifact.local_path,
+    ...(Array.isArray(json.proofArtifactPaths) ? json.proofArtifactPaths : []),
+    ...(Array.isArray(json.proof_artifact_paths) ? json.proof_artifact_paths : []),
+  ]);
+}
+
+async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, expectedProfileId = null) {
+  const resolved = resolveEvidencePath(proofPath, repoRoot, baseDir);
+  if (!resolved) {
+    return {
+      present: false,
+      accepted: false,
+      failedGates: ['external_visual_proof_artifact_path_missing'],
+      failed_gates: ['external_visual_proof_artifact_path_missing'],
+    };
+  }
+  const json = await readJson(resolved);
+  if (!isObject(json)) {
+    return {
+      present: false,
+      accepted: false,
+      path: relPath(resolved, repoRoot),
+      failedGates: ['external_visual_proof_artifact_unreadable'],
+      failed_gates: ['external_visual_proof_artifact_unreadable'],
+    };
+  }
+  const proofDir = path.dirname(resolved);
+  const schemaVersion = firstText(json.schemaVersion, json.schema);
+  const proofId = firstText(json.proofId, json.proof_id);
+  const material = { ...json };
+  delete material.proofId;
+  delete material.proof_id;
+  const recomputedProofId = `external-visual-proof:${sha256Hex(stableJson(material))}`;
+  const profileId = firstText(json.profileId, json.profile_id);
+  const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
+  const requiredRolePaths = {
+    before: resolveEvidencePath(visualArtifacts.before_image ?? visualArtifacts.beforeImage, repoRoot, proofDir),
+    after: resolveEvidencePath(visualArtifacts.after_image ?? visualArtifacts.afterImage, repoRoot, proofDir),
+    diff: resolveEvidencePath(visualArtifacts.diff_image ?? visualArtifacts.diffImage, repoRoot, proofDir),
+  };
+  const requiredPaths = Object.values(requiredRolePaths).filter(Boolean);
+  const contentHashes = [];
+  for (const imagePath of requiredPaths) {
+    contentHashes.push(await fileSha256Hash(imagePath));
+  }
+  const requiredContentHashes = compactStringList(contentHashes);
+  const visualEvidenceArtifacts = compactObjectList(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts);
+  const acceptedArtifactHashes = new Set(visualEvidenceArtifacts
+    .filter((artifact) =>
+      artifact.acceptedAsVisualEvidence === true
+      && artifact.accepted_as_visual_evidence === true
+      && !artifact.readError
+      && !artifact.read_error
+      && !artifact.visualAnalysisError
+      && !artifact.visual_analysis_error
+    )
+    .map((artifact) => firstText(artifact.contentHash, artifact.content_hash))
+    .filter(contentAddressedSha256));
+  const allRequiredHashesAccepted =
+    requiredContentHashes.length === requiredPaths.length
+    && requiredContentHashes.length >= 3
+    && requiredContentHashes.every((hash) => acceptedArtifactHashes.has(hash));
+  const visualDiff = await visualPairDiffEvidence(requiredRolePaths.before, requiredRolePaths.after);
+  const deterministicAccepted =
+    json.deterministicVisualModeEvaluation?.accepted === true
+    || json.deterministic_visual_mode_evaluation?.accepted === true;
+  const mcpPreviewRequiresFullProof = firstText(json.proofMode, json.proof_mode) === 'mcp_preview';
+  const mcpPreviewFullProofAccepted = !mcpPreviewRequiresFullProof;
+  const accepted = Boolean(
+    schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
+    && json.status === 'pass'
+    && proofId
+    && proofId === recomputedProofId
+    && profileId
+    && (!expectedProfileId || profileId === expectedProfileId)
+    && allRequiredHashesAccepted
+    && visualDiff.accepted === true
+    && deterministicAccepted
+    && mcpPreviewFullProofAccepted,
+  );
+  const failedGates = compactStringList([
+    schemaVersion === 'synthi.gpu.hmr.external_visual_proof_artifact.v1'
+      ? null
+      : 'external_visual_proof_artifact_schema_missing',
+    json.status === 'pass' ? null : 'external_visual_proof_artifact_status_not_pass',
+    proofId ? null : 'external_visual_proof_artifact_proof_id_missing',
+    proofId && proofId === recomputedProofId ? null : 'external_visual_proof_artifact_proof_id_hash_mismatch',
+    profileId ? null : 'external_visual_proof_artifact_profile_id_missing',
+    !expectedProfileId || profileId === expectedProfileId
+      ? null
+      : 'external_visual_proof_artifact_profile_id_mismatch',
+    requiredPaths.length >= 3 ? null : 'external_visual_proof_artifact_required_images_missing',
+    allRequiredHashesAccepted ? null : 'external_visual_proof_artifact_required_hashes_not_accepted',
+    visualDiff.accepted === true ? null : 'external_visual_proof_artifact_pair_diff_not_accepted',
+    deterministicAccepted ? null : 'external_visual_proof_artifact_deterministic_mode_not_accepted',
+    mcpPreviewFullProofAccepted ? null : 'external_visual_proof_artifact_mcp_preview_full_runtime_proof_missing',
+    ...visualDiff.failedGates,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_visual_proof_artifact_evidence.v1',
+    present: true,
+    accepted,
+    path: relPath(resolved, repoRoot),
+    proofId,
+    proof_id: proofId,
+    recomputedProofId,
+    recomputed_proof_id: recomputedProofId,
+    profileId,
+    profile_id: profileId,
+    status: json.status ?? null,
+    requiredContentHashes,
+    required_content_hashes: requiredContentHashes,
+    acceptedArtifactHashCount: acceptedArtifactHashes.size,
+    accepted_artifact_hash_count: acceptedArtifactHashes.size,
+    visualDiff,
+    visual_diff: visualDiff,
+    deterministicAccepted,
+    deterministic_accepted: deterministicAccepted,
+    profileSelection: compactObject(json.profileSelection ?? json.profile_selection),
+    profile_selection: compactObject(json.profileSelection ?? json.profile_selection),
+    sourceDeltaEvidence: compactObject(json.sourceDeltaEvidence ?? json.source_delta_evidence),
+    source_delta_evidence: compactObject(json.sourceDeltaEvidence ?? json.source_delta_evidence),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+async function externalVisualProofArtifactEvidence(json = {}, repoRoot, baseDir, expectedProfileId = null) {
+  const paths = externalVisualProofArtifactCandidatePaths(json);
+  if (paths.length === 0) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.external_visual_proof_artifact_evidence.v1',
+      present: false,
+      accepted: false,
+      failedGates: ['external_visual_proof_artifact_path_missing'],
+      failed_gates: ['external_visual_proof_artifact_path_missing'],
+    };
+  }
+  const attempts = [];
+  for (const candidatePath of paths) {
+    const attempt = await readExternalVisualProofArtifact(candidatePath, repoRoot, baseDir, expectedProfileId);
+    attempts.push(attempt);
+    if (attempt.accepted === true) return attempt;
+  }
+  const firstPresent = attempts.find((attempt) => attempt.present === true) ?? attempts[0];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_visual_proof_artifact_evidence.v1',
+    ...firstPresent,
+    accepted: false,
+    failedGates: compactStringList(attempts.flatMap((attempt) => attempt.failedGates)),
+    failed_gates: compactStringList(attempts.flatMap((attempt) => attempt.failedGates)),
   };
 }
 
@@ -5681,6 +6079,9 @@ function rowRefs(rows) {
     runMode: row.runMode,
     runModeCoverageSupport: row.runModeCoverageSupport,
     validationProfileEvidence: row.validationProfileEvidence,
+    externalProfileSelection: row.externalProfileSelection,
+    externalSourceDelta: row.externalSourceDelta,
+    externalVisualProofArtifact: row.externalVisualProofArtifact,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,

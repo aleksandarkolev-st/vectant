@@ -1410,9 +1410,145 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-sha
 });
 
 const externalVisualDir = path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual');
-await writeRgbaPng(path.join(externalVisualDir, 'before.png'), 8, 8, () => [4, 8, 16, 255]);
-await writeRgbaPng(path.join(externalVisualDir, 'after.png'), 8, 8, (x, y) => [80 + x, 48 + y, 24, 255]);
-await writeRgbaPng(path.join(externalVisualDir, 'diff.png'), 8, 8, () => [255, 180, 64, 255]);
+await writeRgbaPng(path.join(externalVisualDir, 'before.png'), 320, 240, (x, y) => [
+  (x * 3 + y) % 256,
+  (x + y * 2) % 256,
+  (32 + x + y) % 256,
+  255,
+]);
+await writeRgbaPng(path.join(externalVisualDir, 'after.png'), 320, 240, (x, y) => [
+  (80 + x * 5 + y) % 256,
+  (48 + x + y * 3) % 256,
+  (24 + x * 2 + y) % 256,
+  255,
+]);
+await writeRgbaPng(path.join(externalVisualDir, 'diff.png'), 320, 240, (x, y) => [
+  (255 - x + y) % 256,
+  (180 + x * 2) % 256,
+  (64 + y * 3) % 256,
+  255,
+]);
+const externalVisualBefore = path.join(externalVisualDir, 'before.png');
+const externalVisualAfter = path.join(externalVisualDir, 'after.png');
+const externalVisualDiff = path.join(externalVisualDir, 'diff.png');
+const externalVisualProfileSelection = {
+  schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+  accepted: true,
+  explicit: true,
+  source: 'test_profile_path',
+  profileId: 'explicit-external-engine-visual',
+  profile_id: 'explicit-external-engine-visual',
+  manifestHash: hashValue('explicit-external-engine-visual-manifest'),
+  manifest_hash: hashValue('explicit-external-engine-visual-manifest'),
+  path: 'profiles/explicit-external-engine-visual.json',
+  evidenceRefs: ['test:external-profile-selection:explicit-path'],
+  evidence_refs: ['test:external-profile-selection:explicit-path'],
+};
+const externalVisualSourceDeltaEvidence = {
+  schemaVersion: 'synthi.gpu.hmr.external_source_delta_evidence.v1',
+  accepted: true,
+  sourceFile: 'src/material.frag',
+  source_file: 'src/material.frag',
+  sourcePath: 'external/src/material.frag',
+  source_path: 'external/src/material.frag',
+  matchCount: 1,
+  match_count: 1,
+  byteRange: { start: 128, end: 160 },
+  byte_range: { start: 128, end: 160 },
+  beforeFileHash: hashValue('explicit-external-engine-visual-before-file'),
+  before_file_hash: hashValue('explicit-external-engine-visual-before-file'),
+  afterFileHash: hashValue('explicit-external-engine-visual-after-file'),
+  after_file_hash: hashValue('explicit-external-engine-visual-after-file'),
+  beforeSnippetHash: hashValue('vec3 color = vec3(0.25);'),
+  before_snippet_hash: hashValue('vec3 color = vec3(0.25);'),
+  afterSnippetHash: hashValue('vec3 color = vec3(0.75);'),
+  after_snippet_hash: hashValue('vec3 color = vec3(0.75);'),
+  evidenceRefs: ['source:src/material.frag:unique-before-snippet'],
+  evidence_refs: ['source:src/material.frag:unique-before-snippet'],
+};
+const externalVisualEvidenceArtifacts = [];
+for (const artifactPath of [externalVisualBefore, externalVisualAfter, externalVisualDiff]) {
+  const artifactBytes = await fs.readFile(artifactPath);
+  const artifactHash = hashBuffer(artifactBytes);
+  externalVisualEvidenceArtifacts.push({
+    path: artifactPath,
+    bytes: artifactBytes.length,
+    contentHash: artifactHash,
+    evidenceId: `evidence:visual-artifact:${artifactHash}`,
+    evidence_id: `evidence:visual-artifact:${artifactHash}`,
+    readError: null,
+    read_error: null,
+    visualAnalysisError: null,
+    visual_analysis_error: null,
+    width: 320,
+    height: 240,
+    visiblePixels: 76800,
+    visible_pixels: 76800,
+    visualQuality: 'gpu-hmr-visual-varied-frame',
+    visual_quality: 'gpu-hmr-visual-varied-frame',
+    acceptedAsVisualEvidence: true,
+    accepted_as_visual_evidence: true,
+    kind: 'visual-artifact',
+    producerSubsystem: 'mcp.gpu_hmr_validation',
+    producer_subsystem: 'mcp.gpu_hmr_validation',
+  });
+}
+const externalVisualProofMaterial = {
+  schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+  profileId: 'explicit-external-engine-visual',
+  proofMode: 'external_runtime_screenshot',
+  status: 'pass',
+  createdAt: '2026-06-09T00:00:00.000Z',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  backend_family: 'webgl',
+  libraryFamily: 'threejs',
+  library_family: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  runtime_environment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  profile_class: 'external_engine_visual_profile',
+  profileSelection: externalVisualProfileSelection,
+  profile_selection: externalVisualProfileSelection,
+  sourceDeltaEvidence: externalVisualSourceDeltaEvidence,
+  source_delta_evidence: externalVisualSourceDeltaEvidence,
+  visualOracleArtifacts: {
+    before_image: externalVisualBefore,
+    after_image: externalVisualAfter,
+    diff_image: externalVisualDiff,
+    capture_backend: 'external_runtime_screenshot',
+  },
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 76800,
+  },
+  deterministicVisualMode: {
+    frozen_camera: true,
+    fixed_resolution: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+    seed_policy_fixed: true,
+    temporal_accumulation_not_applicable: true,
+    taa_not_applicable: true,
+    denoiser_not_applicable: true,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  visualEvidenceArtifacts: externalVisualEvidenceArtifacts,
+  acceptedVisualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+};
+const externalVisualProofArtifact = {
+  ...externalVisualProofMaterial,
+  proofId: `external-visual-proof:${sha256Hex(stableJson(externalVisualProofMaterial))}`,
+};
+const externalVisualProofArtifactPath = path.join(
+  logsRoot,
+  'external-projects',
+  'explicit-external-engine-visual-proof.json',
+);
+await writeJson(externalVisualProofArtifactPath, externalVisualProofArtifact);
 await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual-report.json'), {
   schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
   profile: {
@@ -1430,26 +1566,92 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engi
   runtimeEnvironment: 'browser_dev_server',
   profileClass: 'external_engine_visual_profile',
   status: 'pass',
+  profileSelection: externalVisualProfileSelection,
+  profile_selection: externalVisualProfileSelection,
+  sourceDeltaEvidence: externalVisualSourceDeltaEvidence,
+  source_delta_evidence: externalVisualSourceDeltaEvidence,
   visualOracleArtifacts: {
-    before_image: path.join(externalVisualDir, 'before.png'),
-    after_image: path.join(externalVisualDir, 'after.png'),
-    diff_image: path.join(externalVisualDir, 'diff.png'),
+    before_image: externalVisualBefore,
+    after_image: externalVisualAfter,
+    diff_image: externalVisualDiff,
     capture_backend: 'external_runtime_screenshot',
   },
   visualDiff: {
     changedPixelRatio: 0.5,
     meanAbsDelta8bit: 24,
-    visiblePixelCount: 64,
+    visiblePixelCount: 76800,
   },
   deterministicVisualModeEvaluation: {
     accepted: true,
   },
+  visualProofArtifact: {
+    schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    proofId: externalVisualProofArtifact.proofId,
+    path: externalVisualProofArtifactPath,
+    visualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    acceptedVisualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    contentHashes: externalVisualEvidenceArtifacts.map((artifact) => artifact.contentHash),
+  },
+  proofArtifactPaths: [externalVisualProofArtifactPath],
   timings: {
     totalMs: 44,
     editToScreenshotMs: 12,
     visualDiffMs: 3,
   },
   proofId: 'external-profile-report:sha256:synthetic-engine-visual',
+});
+
+const forgedExternalVisualDir = path.join(logsRoot, 'external-projects', 'forged-external-engine-visual');
+await writeRgbaPng(path.join(forgedExternalVisualDir, 'before.png'), 320, 240, (x, y) => [
+  (x + y) % 256,
+  (x * 2) % 256,
+  (y * 3) % 256,
+  255,
+]);
+await writeRgbaPng(path.join(forgedExternalVisualDir, 'after.png'), 320, 240, (x, y) => [
+  (72 + x + y) % 256,
+  (24 + x * 2) % 256,
+  (96 + y * 3) % 256,
+  255,
+]);
+await writeRgbaPng(path.join(forgedExternalVisualDir, 'diff.png'), 320, 240, (x, y) => [
+  (255 - x) % 256,
+  (255 - y) % 256,
+  (x + y) % 256,
+  255,
+]);
+await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine-visual-report.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+  profile: {
+    id: 'forged-external-engine-visual',
+    backend: 'webgl',
+    backendFamily: 'webgl',
+    libraryFamily: 'threejs',
+    runtimeEnvironment: 'browser_dev_server',
+    profileClass: 'external_engine_visual_profile',
+  },
+  proofMode: 'external_runtime_screenshot',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  status: 'pass',
+  visualOracleArtifacts: {
+    before_image: path.join(forgedExternalVisualDir, 'before.png'),
+    after_image: path.join(forgedExternalVisualDir, 'after.png'),
+    diff_image: path.join(forgedExternalVisualDir, 'diff.png'),
+    capture_backend: 'external_runtime_screenshot',
+  },
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 76800,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  proofId: 'external-profile-report:sha256:forged-engine-visual',
 });
 
 const noDeviceRuntimeCapabilityPreflight = {
@@ -2602,6 +2804,24 @@ assert.equal(externalVisual.backend, 'webgl');
 assert.equal(externalVisual.visual.accepted, true);
 assert.equal(externalVisual.externalProjectContract.accepted, true);
 assert.equal(externalVisual.externalProjectContract.profileClass, 'external_engine_visual_profile');
+assert.equal(externalVisual.externalProfileSelection.accepted, true);
+assert.equal(externalVisual.externalSourceDelta.accepted, true);
+assert.equal(externalVisual.externalSourceDelta.matchCount, 1);
+assert.equal(externalVisual.externalVisualProofArtifact.accepted, true);
+assert.equal(externalVisual.externalVisualProofArtifact.requiredContentHashes.length, 3);
+assert.equal(externalVisual.externalVisualProofArtifact.visualDiff.accepted, true);
+
+const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
+assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');
+assert.equal(forgedExternalVisual.backend, 'webgl');
+assert.equal(forgedExternalVisual.visual.accepted, true);
+assert.equal(forgedExternalVisual.externalProjectContract.accepted, true);
+assert.equal(forgedExternalVisual.externalProfileSelection.accepted, false);
+assert.equal(forgedExternalVisual.externalSourceDelta.accepted, false);
+assert.equal(forgedExternalVisual.externalVisualProofArtifact.accepted, false);
+assert.ok(forgedExternalVisual.openGaps.includes('external_profile_selection_schema_missing'));
+assert.ok(forgedExternalVisual.openGaps.includes('external_source_delta_schema_missing'));
+assert.ok(forgedExternalVisual.openGaps.includes('external_visual_proof_artifact_path_missing'));
 
 const largeRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
@@ -2943,6 +3163,14 @@ assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'mi
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_compute_runtime_readback')?.status, 'missing');
 assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
+assert.ok(coverageById.get('external_engine_visual_profile')?.rows.every((row) =>
+  row.externalProfileSelection?.accepted === true
+  && row.externalSourceDelta?.accepted === true
+  && row.externalVisualProofArtifact?.accepted === true
+));
+assert.ok(!coverageById.get('external_engine_visual_profile')?.rows.some((row) =>
+  row.targetId === 'forged-external-engine-visual'
+));
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
 assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
 assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);
