@@ -2954,6 +2954,75 @@ function realRocmRequiredFullRuntimeProof(json) {
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
 
+function realRocmOutputOracleResolutionGate(outputOracleResolution = {}) {
+  const resolution = compactObject(outputOracleResolution);
+  if (Object.keys(resolution).length === 0) {
+    return {
+      present: false,
+      accepted: true,
+      disabled: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const requestedProfile = firstText(
+    resolution.requestedProfile,
+    resolution.requested_profile,
+    resolution.profile,
+  );
+  const mode = firstText(resolution.mode);
+  const selectedSource = firstText(resolution.selectedSource, resolution.selected_source);
+  const disabledReason = firstText(resolution.disabledReason, resolution.disabled_reason);
+  const failedReason = firstText(resolution.failedReason, resolution.failed_reason);
+  const contractPresent = firstBool(resolution.contractPresent, resolution.contract_present);
+  const runtimeProfilePresent = firstBool(
+    resolution.runtimeProfilePresent,
+    resolution.runtime_profile_present,
+  );
+  const runtimeProfileSynced = firstBool(
+    resolution.runtimeProfileSynced,
+    resolution.runtime_profile_synced,
+  );
+  const profileDisabled =
+    requestedProfile === 'none'
+    || mode === 'none'
+    || Boolean(disabledReason);
+  const contractMissing = contractPresent === false;
+  const runtimeProfileMissing = runtimeProfilePresent === false;
+  const runtimeProfileUnsynced = runtimeProfileSynced === false;
+  const noSelectedSource = selectedSource === 'none' || selectedSource === null;
+  const failedGates = compactStringList([
+    profileDisabled ? 'real_rocm_output_oracle_profile_disabled' : null,
+    contractMissing ? 'real_rocm_output_oracle_contract_missing' : null,
+    runtimeProfileMissing ? 'real_rocm_output_oracle_runtime_profile_missing' : null,
+    runtimeProfileUnsynced ? 'real_rocm_output_oracle_runtime_profile_not_synced' : null,
+    noSelectedSource ? 'real_rocm_output_oracle_source_missing' : null,
+    failedReason ? `real_rocm_output_oracle_resolution_failed:${failedReason}` : null,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    disabled: profileDisabled,
+    requestedProfile,
+    requested_profile: requestedProfile,
+    mode,
+    selectedSource,
+    selected_source: selectedSource,
+    disabledReason,
+    disabled_reason: disabledReason,
+    failedReason,
+    failed_reason: failedReason,
+    contractPresent,
+    contract_present: contractPresent,
+    runtimeProfilePresent,
+    runtime_profile_present: runtimeProfilePresent,
+    runtimeProfileSynced,
+    runtime_profile_synced: runtimeProfileSynced,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function ledgerRecordsFromValue(ledger) {
   const records = Array.isArray(ledger.records) ? ledger.records : [ledger];
   return records.map(compactObject).filter((record) => Object.keys(record).length > 0);
@@ -3183,6 +3252,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.output_oracle_resolution
     ?? summary.outputOracleResolution,
   );
+  const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution);
   const targetProgression = compactObject(
     json.target_progression
     ?? json.targetProgression
@@ -3432,6 +3502,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && ledger.failedInvariants.length === 0
     && runtimeProofArtifactGate.accepted === true
     && outputOrVisualOracleAccepted === true
+    && outputOracleResolutionGate.accepted === true
     && appHookContractAccepted === true
     && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
@@ -3501,6 +3572,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     visual,
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
+    outputOracleResolutionGate,
+    output_oracle_resolution_gate: outputOracleResolutionGate,
     runMode,
     cpuHmrUsed: realRocmFirewall.cpuHmrUsed,
     cpu_hmr_used: realRocmFirewall.cpu_hmr_used,
@@ -3549,6 +3622,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...targetProgressionGateFailures.map((gate) => `target_progression_gate_failed:${text(gate.name) ?? 'unnamed'}`),
       ...outputOracleFacet.failedGates.map((failure) => failure.code),
+      ...outputOracleResolutionGate.failedGates,
       nativeRocmBoundaryReason ? `native_rocm_launch_boundary:${nativeRocmBoundaryReason}` : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       realRocmRuntimeEligibilityReason ? `real_rocm_runtime_eligibility:${realRocmRuntimeEligibilityReason}` : null,
@@ -3578,6 +3652,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmFirewall.failedGates.map((failure) => failure.code),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
+      outputOracleResolutionGate.accepted ? null : 'real_rocm_output_oracle_resolution_not_accepted',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
       runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_not_proven',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
@@ -3590,6 +3665,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeProofArtifactGate.accepted === true ? null : 'strict_runtime_proof_artifact_required',
       ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
+      outputOracleResolutionGate.accepted ? null : 'real_rocm_output_oracle_resolution_required',
+      ...outputOracleResolutionGate.failedGates,
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       ...appHookContractGate.failedGaps,
       runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_failed',

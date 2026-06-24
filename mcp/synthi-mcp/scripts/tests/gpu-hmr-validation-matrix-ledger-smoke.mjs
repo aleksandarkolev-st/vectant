@@ -2921,6 +2921,122 @@ assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLen
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
 
+const forgedFinalNoOracleRocmDir = path.join(logsRoot, 'real-rocm-forged-final-no-oracle');
+const forgedFinalNoOracleRawReadback = path.join(forgedFinalNoOracleRocmDir, 'readback.bin');
+const forgedFinalNoOracleBytes = Buffer.from([13, 21, 34, 55, 89, 144, 233, 1]);
+await fs.mkdir(forgedFinalNoOracleRocmDir, { recursive: true });
+await fs.writeFile(forgedFinalNoOracleRawReadback, forgedFinalNoOracleBytes);
+await writeJson(`${forgedFinalNoOracleRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedFinalNoOracleBytes.length,
+  shape: [forgedFinalNoOracleBytes.length],
+});
+await writeRgbaPng(`${forgedFinalNoOracleRawReadback}.card.png`, 8, 8, (x, y) => [
+  forgedFinalNoOracleBytes[(x + y) % forgedFinalNoOracleBytes.length],
+  70 + x,
+  90 + y,
+  255,
+]);
+const forgedFinalNoOracleProofMaterials = computeProofLedgerMaterials('forged-final-no-oracle', {
+  projectId: 'real-rocm-forged-final-no-oracle',
+  rawReadbackPath: forgedFinalNoOracleRawReadback,
+  rawReadbackBytes: forgedFinalNoOracleBytes,
+});
+await writeJson(path.join(forgedFinalNoOracleRocmDir, 'real-rocm-forged-final-no-oracle.json'), {
+  slug: 'gpu-real-rocm-forged-final-no-oracle-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-final-no-oracle' },
+  source_url: 'https://example.invalid/rocm/forged-final-no-oracle.git',
+  repo_commit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  entry_file: 'src/kernels/final_entry.hip',
+  delta_file: 'src/kernels/final_delta.h',
+  target_name: 'ForgedFinalDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'none',
+    mode: 'none',
+    selectedSource: 'none',
+    disabledReason: 'profile_disabled',
+    failedReason: null,
+    contractPresent: false,
+    runtimeProfilePresent: false,
+    runtimeProfileSynced: false,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedFinalDriver',
+    finalAcceptanceTarget: 'ForgedFinalDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  real_rocm_profile_proof_obligations: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations.v1',
+    status: 'profile_proof_obligations_met',
+    requiresFullRuntimeProof: true,
+    requires_full_runtime_proof: true,
+    blockingGaps: [],
+    blocking_gaps: [],
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedFinalNoOracleProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-final-no-oracle-delta',
+    editHash: hashValue('real-rocm-forged-final-no-oracle-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-final-no-oracle.git @ eeeeeeee files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedFinalNoOracleRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedFinalNoOracleRocmDir],
+  generatedAt: '2026-06-09T00:00:02.275Z',
+  includeUnproven: true,
+});
+const forgedFinalNoOracleRocm = forgedFinalNoOracleRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedFinalNoOracleRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedFinalNoOracleRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalNoOracleRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedFinalNoOracleRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedFinalNoOracleRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedFinalNoOracleRocm.outputOracleResolutionGate.accepted, false);
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_profile_disabled'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_contract_missing'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_runtime_profile_missing'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_runtime_profile_not_synced'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_source_missing'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_resolution_not_accepted'));
+assert.ok(forgedFinalNoOracleRocm.openGaps.includes('real_rocm_output_oracle_resolution_required'));
+
 const forgedMissingRequiredHookRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-required-hook');
 const forgedMissingRequiredHookRawReadback = path.join(forgedMissingRequiredHookRocmDir, 'readback.bin');
 const forgedMissingRequiredHookBytes = Buffer.from([3, 6, 9, 12, 15, 18, 21, 24]);
