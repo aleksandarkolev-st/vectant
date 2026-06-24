@@ -1265,6 +1265,57 @@ const noDeviceRuntimeCapabilityPreflight = {
   degradedReason: 'HIP array allocation matrix failed 8/8 entries; no ROCm-capable device is detected',
 };
 
+const acceptedRuntimeCapabilityPreflight = {
+  schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+  backend: 'rocm',
+  api: 'hipMallocArray',
+  probe: 'hip_array_allocation_preflight',
+  deviceCountResult: 0,
+  deviceCount: 1,
+  allocationResult: 0,
+  allocationAvailable: true,
+  anyAllocationAvailable: true,
+  allocationMatrixTotal: 8,
+  allocationMatrixFailureCount: 0,
+  textureResourceFallbackAvailable: true,
+  textureResourceMatrixTotal: 4,
+  textureResourceMatrixFailureCount: 0,
+  exitCode: 0,
+  evidenceRefs: ['evidence:runtime-capability-preflight:accepted'],
+};
+
+function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
+  const camelRuntimeProofArtifact = materials.runtimeProofArtifact && typeof materials.runtimeProofArtifact === 'object'
+    ? materials.runtimeProofArtifact
+    : {};
+  const snakeRuntimeProofArtifact = materials.runtime_proof_artifact && typeof materials.runtime_proof_artifact === 'object'
+    ? materials.runtime_proof_artifact
+    : camelRuntimeProofArtifact;
+  return {
+    ...materials,
+    runtimeCapabilityPreflight: acceptedRuntimeCapabilityPreflight,
+    runtime_capability_preflight: acceptedRuntimeCapabilityPreflight,
+    runtimeProofArtifact: {
+      ...camelRuntimeProofArtifact,
+      runtimeCapabilityPreflight: acceptedRuntimeCapabilityPreflight,
+      runtime_capability_preflight: acceptedRuntimeCapabilityPreflight,
+    },
+    runtime_proof_artifact: {
+      ...snakeRuntimeProofArtifact,
+      runtimeCapabilityPreflight: acceptedRuntimeCapabilityPreflight,
+      runtime_capability_preflight: acceptedRuntimeCapabilityPreflight,
+    },
+  };
+}
+
+function realRocmRuntimeProofMaterials(scope, options = {}) {
+  return withAcceptedRuntimeCapabilityPreflight(runtimeProofMaterials(scope, options));
+}
+
+function realRocmComputeProofLedgerMaterials(scope, options = {}) {
+  return withAcceptedRuntimeCapabilityPreflight(computeProofLedgerMaterials(scope, options));
+}
+
 await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -2184,6 +2235,30 @@ assert.equal(failedRuntimeCapabilityPreflightSafetyQuery.accepted, false);
 assert.ok(failedRuntimeCapabilityPreflightSafetyQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_capability_preflight'
 ));
+const missingRuntimeCapabilityPreflightSafetyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    {
+      ...acceptedMatrixRowMissingFirewall('accepted-missing-runtime-capability-preflight', {
+        cpuHmrUsed: false,
+        fullRebuildUsed: false,
+        processRestarted: false,
+      }),
+      proofMode: 'real_rocm_repo_validation',
+      realRocmRuntimeCapabilityPreflight: {
+        schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_capability_preflight_facet.v1',
+        present: false,
+        accepted: null,
+        blockingGaps: [],
+        blocking_gaps: [],
+      },
+    },
+  ],
+});
+assert.equal(missingRuntimeCapabilityPreflightSafetyQuery.accepted, false);
+assert.ok(missingRuntimeCapabilityPreflightSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_real_rocm_runtime_capability_preflight'
+));
 
 const opencl = ledger.rows.find((row) => row.backend === 'opencl');
 assert.equal(opencl?.matrixOutcome, 'refusal_proven');
@@ -2724,7 +2799,7 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
     accepted: true,
     failures: [],
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-accepted-lib',
     visualRoot: acceptedRealRocmDir,
   }),
@@ -2778,6 +2853,8 @@ assert.equal(acceptedRealRocm.realRocmRuntimeChain.selectedLoaderTransport, 'ram
 assert.equal(acceptedRealRocm.realRocmRuntimeChain.runtimeSessionId, 'runtime-session:hot_delta_1');
 assert.equal(acceptedRealRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dispatch-table-entry:hot_delta_1');
 assert.equal(acceptedRealRocm.realRocmRuntimeChain.outputTargetId, 'output-target:hot_delta_1');
+assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.present, true);
+assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
@@ -2788,7 +2865,7 @@ async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) 
   await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
   await writeRgbaPng(path.join(dir, 'after-hmr-first.png'), 8, 8, (x, y) => [90 + x, 104 + y, 140, 255]);
   await writeRgbaPng(path.join(dir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
-  const materials = runtimeProofMaterials('hot_delta_1', {
+  const materials = realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: `real-rocm-forged-${slug}`,
     visualRoot: dir,
   });
@@ -2907,7 +2984,7 @@ const forgedOldArtifactRocmDir = path.join(logsRoot, 'real-rocm-forged-old-artif
 await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
 await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [94 + x, 106 + y, 144, 255]);
 await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const forgedOldArtifactMaterials = runtimeProofMaterials('hot_delta_1', {
+const forgedOldArtifactMaterials = realRocmRuntimeProofMaterials('hot_delta_1', {
   projectId: 'real-rocm-forged-old-artifact-dispatch',
   visualRoot: forgedOldArtifactRocmDir,
 });
@@ -3084,7 +3161,7 @@ await writeJson(path.join(forgedSidecarMismatchRocmDir, 'real-rocm-forged-sideca
     blockingGaps: [],
     blocking_gaps: [],
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-sidecar-mismatch',
     visualRoot: forgedSidecarMismatchRocmDir,
   }),
@@ -3234,7 +3311,7 @@ await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-
       'device_sidecar_dispatch_trace_runtime_not_observed',
     ],
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-required-hook',
     visualRoot: forgedRequiredHookRocmDir,
   }),
@@ -3352,7 +3429,7 @@ await writeJson(path.join(forgedMissingHookFacetRocmDir, 'real-rocm-forged-missi
     blockingGaps: ['app_hook_contract_not_declared'],
     blocking_gaps: ['app_hook_contract_not_declared'],
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-missing-hook-facet',
     visualRoot: forgedMissingHookFacetRocmDir,
   }),
@@ -3412,7 +3489,7 @@ await writeRgbaPng(`${acceptedComputeRawReadback}.card.png`, 8, 8, (x, y) => [
   120 + y,
   255,
 ]);
-const acceptedComputeProofMaterials = computeProofLedgerMaterials('accepted-compute-files', {
+const acceptedComputeProofMaterials = realRocmComputeProofLedgerMaterials('accepted-compute-files', {
   projectId: 'real-rocm-accepted-compute-lib',
   rawReadbackPath: acceptedComputeRawReadback,
   rawReadbackBytes: acceptedComputeBytes,
@@ -3493,9 +3570,11 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.selectedLoaderTransport, '
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.runtimeSessionId, 'runtime-session:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dispatch-table-entry:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
+assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
+assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
 
 const forgedRuntimeChainMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-runtime-chain-mismatch');
-const forgedRuntimeChainMismatchProofMaterials = computeProofLedgerMaterials(
+const forgedRuntimeChainMismatchProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-runtime-chain-mismatch',
   {
     projectId: 'real-rocm-forged-runtime-chain-mismatch',
@@ -3580,7 +3659,7 @@ assert.ok(forgedRuntimeChainMismatchRocm.openGaps.includes('real_rocm_runtime_ch
 async function writeForgedRuntimeChainCase({ slug, mutateRecord, expectedReason }) {
   const dir = path.join(logsRoot, `real-rocm-forged-runtime-chain-${slug}`);
   const scope = `forged-runtime-chain-${slug}`;
-  const materials = computeProofLedgerMaterials(scope, {
+  const materials = realRocmComputeProofLedgerMaterials(scope, {
     projectId: `real-rocm-forged-runtime-chain-${slug}`,
     rawReadbackPath: acceptedComputeRawReadback,
     rawReadbackBytes: acceptedComputeBytes,
@@ -3703,7 +3782,7 @@ const forgedMissingUnflaggedResolutionRocmDir = path.join(
   logsRoot,
   'real-rocm-forged-missing-unflagged-resolution',
 );
-const forgedMissingUnflaggedResolutionProofMaterials = computeProofLedgerMaterials(
+const forgedMissingUnflaggedResolutionProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-missing-unflagged-resolution',
   {
     projectId: 'real-rocm-forged-missing-unflagged-resolution',
@@ -3778,7 +3857,7 @@ assert.ok(forgedMissingUnflaggedResolutionRocm.openGaps.includes(
 ));
 
 const forgedMissingResolutionRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-resolution');
-const forgedMissingResolutionProofMaterials = computeProofLedgerMaterials('forged-missing-resolution', {
+const forgedMissingResolutionProofMaterials = realRocmComputeProofLedgerMaterials('forged-missing-resolution', {
   projectId: 'real-rocm-forged-missing-resolution',
   rawReadbackPath: acceptedComputeRawReadback,
   rawReadbackBytes: acceptedComputeBytes,
@@ -3856,7 +3935,7 @@ await writeRgbaPng(`${forgedFinalNoOracleRawReadback}.card.png`, 8, 8, (x, y) =>
   90 + y,
   255,
 ]);
-const forgedFinalNoOracleProofMaterials = computeProofLedgerMaterials('forged-final-no-oracle', {
+const forgedFinalNoOracleProofMaterials = realRocmComputeProofLedgerMaterials('forged-final-no-oracle', {
   projectId: 'real-rocm-forged-final-no-oracle',
   rawReadbackPath: forgedFinalNoOracleRawReadback,
   rawReadbackBytes: forgedFinalNoOracleBytes,
@@ -3972,7 +4051,7 @@ await writeRgbaPng(`${forgedMissingRequiredHookRawReadback}.card.png`, 8, 8, (x,
   104 + y,
   255,
 ]);
-const forgedMissingRequiredHookProofMaterials = computeProofLedgerMaterials('forged-missing-required-hook', {
+const forgedMissingRequiredHookProofMaterials = realRocmComputeProofLedgerMaterials('forged-missing-required-hook', {
   projectId: 'real-rocm-forged-missing-required-hook',
   rawReadbackPath: forgedMissingRequiredHookRawReadback,
   rawReadbackBytes: forgedMissingRequiredHookBytes,
@@ -4060,7 +4139,7 @@ await writeRgbaPng(`${forgedTargetProgressionRawReadback}.card.png`, 8, 8, (x, y
   96 + y,
   255,
 ]);
-const forgedTargetProgressionProofMaterials = computeProofLedgerMaterials('forged-target-progression-failure', {
+const forgedTargetProgressionProofMaterials = realRocmComputeProofLedgerMaterials('forged-target-progression-failure', {
   projectId: 'real-rocm-forged-target-progression-failure',
   rawReadbackPath: forgedTargetProgressionRawReadback,
   rawReadbackBytes: forgedTargetProgressionBytes,
@@ -4130,7 +4209,7 @@ assert.ok(forgedTargetProgressionRocm.openGaps.includes('target_progression_gate
 
 const forgedComputeRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-missing-raw');
 const forgedComputeRawReadback = path.join(forgedComputeRocmDir, 'missing-readback.bin');
-const forgedComputeProofMaterials = computeProofLedgerMaterials('forged-compute-missing-raw', {
+const forgedComputeProofMaterials = realRocmComputeProofLedgerMaterials('forged-compute-missing-raw', {
   projectId: 'real-rocm-forged-compute-missing-raw',
   rawReadbackPath: forgedComputeRawReadback,
 });
@@ -4221,7 +4300,7 @@ await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'),
     accepted: true,
     failures: [],
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...realRocmRuntimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-no-oracle',
     visualRoot: forgedRealRocmDir,
   }),

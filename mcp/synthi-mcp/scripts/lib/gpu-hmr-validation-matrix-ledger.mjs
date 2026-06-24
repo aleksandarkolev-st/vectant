@@ -1503,7 +1503,11 @@ function rowSafetyFailures(row) {
       ?? row.runtimeCapabilityPreflight
       ?? row.runtime_capability_preflight,
     );
-    if (runtimeCapabilityPreflight.present === true && runtimeCapabilityPreflight.accepted === false) {
+    if (runtimeCapabilityPreflight.present !== true) {
+      failures.push({
+        code: 'gpu_hmr_success_requires_real_rocm_runtime_capability_preflight',
+      });
+    } else if (runtimeCapabilityPreflight.accepted !== true) {
       failures.push({
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_capability_preflight',
       });
@@ -4376,7 +4380,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmProfile: profile,
   });
   const appHookContractAccepted = appHookContractGate.accepted === true;
-  const runtimeCapabilityPreflightAccepted = realRocmRuntimeCapabilityPreflight.accepted !== false;
+  const runtimeCapabilityPreflightPresent = realRocmRuntimeCapabilityPreflight.present === true;
+  const runtimeCapabilityPreflightAccepted =
+    runtimeCapabilityPreflightPresent
+    && realRocmRuntimeCapabilityPreflight.accepted === true;
   const sidecarRuntimeBackendMismatch =
     realRocmSidecarRuntimeConsistencyGaps.includes('sidecar_runtime_backend_mismatch');
   const sidecarRuntimeConsistencyAccepted = !sidecarRuntimeBackendMismatch;
@@ -4582,7 +4589,11 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmRuntimeChain.failedGates.map((failure) => failure.code),
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       ...appHookContractGate.failedGaps,
-      runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_failed',
+      runtimeCapabilityPreflightAccepted
+        ? null
+        : runtimeCapabilityPreflightPresent
+          ? 'real_rocm_runtime_capability_preflight_failed'
+          : 'real_rocm_runtime_capability_preflight_required',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_required',
