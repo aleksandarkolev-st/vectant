@@ -973,6 +973,25 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   },
 });
 
+const strictMissingArtifactMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'strict-runtime-missing-artifact',
+});
+await writeJson(path.join(artifactsRoot, 'strict-runtime-ledger', 'missing-runtime-proof-artifact.json'), {
+  schemaVersion: 'synthi.gpu.hmr.proof.v1',
+  proofId: 'gpu-runtime-proof:sha256:strict-missing-runtime-artifact',
+  target_name: 'strict-runtime-missing-artifact',
+  gpuHmrSuccess: true,
+  fullRuntimeProven: true,
+  resultState: 'gpu-hmr-full-runtime-proven',
+  acceptanceContract: acceptanceContract('strict_missing_runtime_artifact', {
+    projectId: 'strict-runtime-missing-artifact',
+  }),
+  proofLedger: strictMissingArtifactMaterials.proofLedger,
+  proof_ledger: strictMissingArtifactMaterials.proof_ledger,
+  proofLedgerQuery: strictMissingArtifactMaterials.proofLedgerQuery,
+  proof_ledger_query: strictMissingArtifactMaterials.proof_ledger_query,
+});
+
 await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
@@ -1923,6 +1942,17 @@ assert.equal(acceptedFlow.generalityClaim.arbitraryLibraryAccepted, false);
 assert.equal(acceptedFlow.generalityClaim.arbitraryTargetRuntimeAccepted, false);
 assert.ok(acceptedFlow.generalityClaim.unsupportedWithoutEvidence.length > 0);
 
+const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');
+assert.equal(strictMissingArtifact?.proofMode, 'strict_runtime_ledger');
+assert.equal(strictMissingArtifact.matrixOutcome, 'unproven');
+assert.equal(strictMissingArtifact.acceptedForGpuHmr, false);
+assert.equal(strictMissingArtifact.gpuHmrSuccess, false);
+assert.equal(strictMissingArtifact.ledger.gpuHmrSuccess, true);
+assert.equal(strictMissingArtifact.runtimeProofArtifact.present, false);
+assert.equal(strictMissingArtifact.runtimeProofArtifact.accepted, false);
+assert.ok(strictMissingArtifact.reasons.includes('runtime_proof_artifact_not_strictly_accepted'));
+assert.ok(strictMissingArtifact.openGaps.includes('runtime_proof_artifact_missing'));
+
 function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
   return {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -1970,6 +2000,27 @@ function mutateAcceptedLedgerRecord(row, mutate) {
   mutate(cloned.ledger.record, cloned);
   return cloned;
 }
+
+const missingStrictRuntimeArtifactQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-missing-strict-runtime-artifact', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+      runtimeProofArtifact: {
+        present: false,
+        accepted: false,
+        failedGates: [{ code: 'runtime_proof_artifact_missing' }],
+      },
+    }),
+  ],
+});
+assert.equal(missingStrictRuntimeArtifactQuery.accepted, false);
+assert.equal(missingStrictRuntimeArtifactQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(missingStrictRuntimeArtifactQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_strict_runtime_proof_artifact'
+));
 
 const missingGeneralityClaimRow = acceptedAuthoritativeMatrixRow('accepted-missing-generality-claim');
 delete missingGeneralityClaimRow.generalityClaim;

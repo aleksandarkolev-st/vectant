@@ -1460,6 +1460,7 @@ function rowSafetyFailures(row) {
       row.proofMode === 'run_mode_proof'
       || row.proofMode === 'real_rocm_repo_validation'
       || row.proofMode === 'mcp_preview_visual'
+      || row.proofMode === 'strict_runtime_ledger'
     )
   ) {
     if (row.runtimeProofArtifact?.accepted !== true) {
@@ -1664,11 +1665,12 @@ async function runtimeProofRow(json, filePath, context) {
   const classification = compactObject(contract.classification);
   const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
   const ledger = ledgerFacet(json);
-  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactRaw = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifactRaw);
   const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const sourceAdaptation = sourceAdaptationProofFacet(
     json,
-    runtimeProofArtifact,
+    runtimeProofArtifactRaw,
     ledgerRecord,
     ledger.record,
     contract,
@@ -1680,6 +1682,7 @@ async function runtimeProofRow(json, filePath, context) {
     && resultState === 'gpu-hmr-full-runtime-proven'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0
+    && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
   const backend = firstText(
     isObject(contract.backend) ? contract.backend.value : contract.backend,
@@ -1760,8 +1763,10 @@ async function runtimeProofRow(json, filePath, context) {
     refusalProven: false,
     proofChainAccepted: accepted,
     proofChain: accepted ? 'proof_ledger_invariant_query' : 'proof_ledger_rejected',
-    proofIds: proofIdsFrom(json, ledger),
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifactRaw),
     ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -1774,11 +1779,15 @@ async function runtimeProofRow(json, filePath, context) {
     reasons: accepted ? [] : compactStringList([
       json.degradedReason,
       ...(Array.isArray(json.limitations) ? json.limitations.map((item) => item?.degradedReason ?? item?.degraded_reason ?? item) : []),
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       ...ledger.failedInvariants.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'runtime_proof_not_accepted',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
     classification: {
