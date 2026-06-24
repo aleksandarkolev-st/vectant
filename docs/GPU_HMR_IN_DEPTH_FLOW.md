@@ -2,16 +2,24 @@
 
 Last updated: 2026-05-18
 
+Historical note, 2026-06-24: this document predates the GPU HMR universal
+acceptance proof ledger. It is retained as implementation background for the
+early Flow path, but the current acceptance authority is the validation matrix
+ledger referenced from `GPU_HMR_UNIVERSAL_ACCEPTANCE_IMPLEMENTATION_STATUS.md`.
+Screenshots, compile logs, AI-generated split output, or worker log markers are
+not authoritative GPU HMR proof by themselves.
+
 This document explains the current Synthi GPU HMR path end to end: what the
 user writes, what the browser sends, what the worker asks the AI engine to
 generate, how the generated files are compiled, how device-only HMR is applied,
 and how to validate the result through MCP.
 
-The current live implementation is C++ with CUDA or HIP/ROCm kernels. It is
-render-library and framework agnostic inside that C++ GPU scope: the splitter
-must preserve the user's original rendering backend instead of assuming SDL2,
-GLFW, winit, OpenGL, Vulkan, etc. Broader language support is a future runtime
-contract problem, not something this path can honestly claim today.
+The implementation described here is C++ with CUDA or HIP/ROCm kernels. The
+design intent is to avoid assuming a particular rendering library inside that
+C++ GPU scope: the splitter must preserve the user's original rendering backend
+instead of assuming SDL2, GLFW, winit, OpenGL, Vulkan, etc. That design intent
+is not the same as broad library-agnostic GPU HMR acceptance; broad acceptance
+requires matrix-level proof, not this workflow note.
 
 ## Tiny Glossary
 
@@ -621,7 +629,7 @@ does this:
 7. Edits the generated device file only.
 8. Calls MCP synthi_compile again.
 9. Waits for device-only HMR.
-10. Checks worker logs for GPU compile/reload markers.
+10. Records worker logs for GPU compile/reload markers as diagnostic evidence.
 11. Confirms the runner stayed alive.
 ```
 
@@ -633,7 +641,9 @@ synthi_screenshot
 ```
 
 This confirms the WebRTC video path is alive and the generated app is rendering
-after the AI split and GPU HMR reload.
+after the AI split and GPU HMR reload. It is not proof-ledger acceptance by
+itself; current acceptance requires artifact hash, same-process load, epoch
+publication, dispatch trace, and post-dispatch visual or readback oracle proof.
 
 ## How To Run The Stack
 
@@ -739,8 +749,11 @@ shot 1: 800x600, visible bright/color pixels
 shot 2: 800x600, visible bright/color pixels
 ```
 
-The two screenshots showed the particle field advancing, which proves that the
-render loop and video path were alive after the AI split and device HMR reload.
+The two screenshots showed the particle field advancing, which proves only that
+the render loop and video path were alive after the AI split and device HMR
+reload. Current GPU HMR acceptance also requires the structured proof-ledger
+invariants and post-dispatch oracle evidence described in the universal
+acceptance status document.
 
 ## What Is Fixed And What Is Not
 

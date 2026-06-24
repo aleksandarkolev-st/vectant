@@ -1,7 +1,15 @@
-GPU HMR fully works for the validated end-to-end split path.
+Historical note: this May 2026 file is superseded by
+GPU_HMR_UNIVERSAL_ACCEPTANCE_IMPLEMENTATION_STATUS.md and the validation matrix
+proof ledger.
+
+The old conclusion was: GPU HMR worked for the validated end-to-end split path.
+It must not be read as broad library-agnostic GPU HMR, universal production
+acceptance, or current proof-ledger acceptance.
 
 Validated on 2026-05-18 on the local ROCm/RX 9070 XT stack using
-gemini-3.1-flash-lite-preview.
+gemini-3.1-flash-lite-preview. The current model policy no longer treats that
+preview model as valid by default; see the universal acceptance status doc for
+the current model-availability gate.
 
 What passed:
 - MCP-driven compile of ordinary monolithic user source with no Synthi ABI.
@@ -11,7 +19,10 @@ What passed:
 - Persisting generated split files back into the workspace.
 - Device-only edit of generated device.hip.
 - Device-only GPU HMR reload without restarting runner state.
-- MCP screenshot capture after HMR with advancing frame sequence.
+- MCP screenshot capture after HMR with advancing frame sequence. Under the
+  current plan this is human visual evidence only; acceptance requires a
+  structured proof ledger, runtime dispatch/epoch proof, and a visual or raw
+  readback oracle after dispatch.
 - Baseline flow fixture and complex two-kernel flow fixture.
 
 Model notes:
@@ -20,5 +31,7 @@ Model notes:
 - gemini-3.1-flash-ltie was unavailable; this appears to be a misspelled model id.
 
 Scope:
-- This proves the current Synthi C++ CUDA/HIP GPU split/HMR path on ROCm.
+- This recorded a historical scoped Synthi C++ CUDA/HIP split/HMR path on ROCm.
 - It does not claim CUDA runtime execution on this AMD host.
+- It does not claim arbitrary GPU project, framework, library, or environment
+  acceptance.
