@@ -852,6 +852,76 @@ function runtimeProbeInstrumentationDisclosureFacet(...sources) {
   };
 }
 
+function objectsForSourceAdaptationFacet(...sources) {
+  const direct = sources.flatMap((source) => {
+    if (Array.isArray(source)) return source.map(compactObject);
+    return [compactObject(source)];
+  }).filter((source) => Object.keys(source).length > 0);
+  const nested = direct.flatMap((source) => [
+    compactObject(source.runtimeProbeInstrumentation ?? source.runtime_probe_instrumentation),
+    compactObject(source.runtimeProofArtifact ?? source.runtime_proof_artifact),
+    compactObject(source.sourceAdaptation ?? source.source_adaptation),
+    compactObject(source.derivedProofLedgerRecord ?? source.derived_proof_ledger_record),
+    compactObject(source.proofLedger?.records?.[0] ?? source.proof_ledger?.records?.[0]),
+    ...compactObjectList(source.records),
+    ...compactObjectList(source.limitations),
+    ...compactObjectList(source.failedGates ?? source.failed_gates),
+  ]);
+  return [...direct, ...nested].filter((source) => Object.keys(source).length > 0);
+}
+
+function sourceAdaptationProofFacet(...sources) {
+  const objects = objectsForSourceAdaptationFacet(...sources);
+  const sourceAdaptations = compactStringList(objects.flatMap((source) => [
+    ...(Array.isArray(source.sourceAdaptations) ? source.sourceAdaptations : []),
+    ...(Array.isArray(source.source_adaptations) ? source.source_adaptations : []),
+  ]));
+  const adaptedFlags = objects
+    .map((source) => firstBool(
+      source.sourceAdaptedProfile,
+      source.source_adapted_profile,
+      source.adaptedOrAlreadyPresent,
+      source.adapted_or_already_present,
+    ))
+    .filter((value) => value !== null);
+  const limitationCodes = compactStringList(objects.flatMap((source) => [
+    source.code,
+    source.reason,
+    source.degradedReason,
+    source.degraded_reason,
+    ...(Array.isArray(source.limitations)
+      ? source.limitations.map((item) => (
+          isObject(item)
+            ? firstText(item.code, item.reason, item.degradedReason, item.degraded_reason)
+            : item
+        ))
+      : []),
+  ]));
+  const sourceAdaptedProfile =
+    sourceAdaptations.length > 0
+    || adaptedFlags.includes(true)
+    || limitationCodes.includes('source_adapted_profile_not_no_shim_gpu_hmr');
+  return {
+    present: objects.length > 0,
+    acceptedForNoShimHmr: sourceAdaptedProfile === false,
+    accepted_for_no_shim_hmr: sourceAdaptedProfile === false,
+    sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptedProfile,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
+    adaptedFlags,
+    adapted_flags: adaptedFlags,
+    limitationCodes,
+    limitation_codes: limitationCodes,
+    failedGates: sourceAdaptedProfile
+      ? [{ code: 'source_adapted_profile_not_no_shim_gpu_hmr' }]
+      : [],
+    failed_gates: sourceAdaptedProfile
+      ? [{ code: 'source_adapted_profile_not_no_shim_gpu_hmr' }]
+      : [],
+  };
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -1142,6 +1212,12 @@ function rowSafetyFailures(row) {
   if (row.acceptedForGpuHmr === true && row.proofChainAccepted !== true) {
     failures.push({ code: 'gpu_hmr_success_requires_accepted_proof_chain' });
   }
+  if (row.acceptedForGpuHmr === true) {
+    const sourceAdaptation = sourceAdaptationProofFacet(row);
+    if (sourceAdaptation.acceptedForNoShimHmr !== true) {
+      failures.push(...sourceAdaptation.failedGates);
+    }
+  }
   if (row.acceptedForGpuHmr === true && row.cpuHmrUsed !== false) {
     failures.push({
       code: row.cpuHmrUsed === true
@@ -1365,13 +1441,23 @@ async function runtimeProofRow(json, filePath, context) {
   const classification = compactObject(contract.classification);
   const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
   const ledger = ledgerFacet(json);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    runtimeProofArtifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
   const resultState = firstText(json.resultState, json.result_state);
   const accepted =
     json.gpuHmrSuccess === true
     && json.fullRuntimeProven === true
     && resultState === 'gpu-hmr-full-runtime-proven'
     && ledger.gpuHmrSuccess === true
-    && ledger.failedInvariants.length === 0;
+    && ledger.failedInvariants.length === 0
+    && sourceAdaptation.acceptedForNoShimHmr === true;
   const backend = firstText(
     isObject(contract.backend) ? contract.backend.value : contract.backend,
     json.backend,
@@ -1385,7 +1471,6 @@ async function runtimeProofRow(json, filePath, context) {
     json.workspaceSlug,
     json.workspace_slug,
   );
-  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const oracleArtifacts = compactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts);
   const hasVisualOracle = isObject(oracleArtifacts.visual_oracle_artifacts ?? oracleArtifacts.visualOracleArtifacts);
   const hasComputeOracle = isObject(oracleArtifacts.compute_oracle_artifacts ?? oracleArtifacts.computeOracleArtifacts);
@@ -1454,6 +1539,10 @@ async function runtimeProofRow(json, filePath, context) {
     proofChain: accepted ? 'proof_ledger_invariant_query' : 'proof_ledger_rejected',
     proofIds: proofIdsFrom(json, ledger),
     ledger,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     visual,
     runMode,
     cpuHmrUsed,
@@ -1462,9 +1551,13 @@ async function runtimeProofRow(json, filePath, context) {
     reasons: accepted ? [] : compactStringList([
       json.degradedReason,
       ...(Array.isArray(json.limitations) ? json.limitations.map((item) => item?.degradedReason ?? item?.degraded_reason ?? item) : []),
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       ...ledger.failedInvariants.map((failure) => failure.code),
     ]),
-    openGaps: accepted ? [] : ['runtime_proof_not_accepted'],
+    openGaps: accepted ? [] : compactStringList([
+      'runtime_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
     classification: {
       projectKind: firstText(classification.project_kind, classification.projectKind),
       editKind: firstText(classification.edit_kind, classification.editKind),
@@ -1785,6 +1878,11 @@ async function agentSplitRow(records, filePath, context) {
   const runtimeProofArtifact = runtimeProofArtifactFromValue(waitDetail ?? {});
   const recomputedLedger = runModeLedgerFacet(waitDetail ?? {}, runtimeProofArtifact);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    waitDetail,
+    runtimeProofArtifact,
+    recomputedLedger.record,
+  );
   const identity = runtimePayloadIdentity(waitDetail);
   const backend = backendFromVendorText(detailRecord(records, 'gpu vendor', false)?.detail)
     ?? identity.backend;
@@ -1808,7 +1906,7 @@ async function agentSplitRow(records, filePath, context) {
     && recomputedLedger.failedInvariants.length === 0
     && runtimeProofArtifactGate.present === true
     && runtimeProofArtifactGate.accepted === true;
-  const accepted =
+  const strictPreviewProofAccepted =
     detailStatus(records, 'worker used GPU split endpoint') === 'pass'
     && detailStatus(records, 'generated split contains HMR ABI') === 'pass'
     && detailStatus(records, 'generated split HMR granularity') === 'pass'
@@ -1826,6 +1924,12 @@ async function agentSplitRow(records, filePath, context) {
     && identity.targetId !== 'unknown'
     && deltaRecord?.status === 'pass'
     && visual.accepted === true;
+  const accepted =
+    strictPreviewProofAccepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
+  const sourceAdaptedVisualProfileAccepted =
+    strictPreviewProofAccepted === true
+    && sourceAdaptation.sourceAdaptedProfile === true;
   const embeddedLedgerValidation = {
     present: Boolean(ledgerValidation.proofId),
     source: 'embedded_validation_claim',
@@ -1851,13 +1955,27 @@ async function agentSplitRow(records, filePath, context) {
     profileId: identity.profileId,
     proofMode: 'mcp_preview_visual',
     evidenceKind: 'visual_oracle',
-    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
-    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'mcp_preview_rejected',
+    matrixOutcome: accepted
+      ? 'full_runtime_gpu_hmr'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'visual_profile_accepted'
+        : 'unproven',
+    acceptanceClass: accepted
+      ? 'full_runtime_gpu_hmr'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
+        : 'mcp_preview_rejected',
     acceptedForGpuHmr: accepted,
+    visualProfileAccepted: sourceAdaptedVisualProfileAccepted,
+    visual_profile_accepted: sourceAdaptedVisualProfileAccepted,
     gpuHmrSuccess: accepted,
     refusalProven: false,
-    proofChainAccepted: accepted,
-    proofChain: accepted ? 'mcp_wait_hmr_runtime_proof_gate' : 'mcp_wait_hmr_runtime_proof_gate_rejected',
+    proofChainAccepted: accepted || sourceAdaptedVisualProfileAccepted,
+    proofChain: accepted
+      ? 'mcp_wait_hmr_runtime_proof_gate'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
+        : 'mcp_wait_hmr_runtime_proof_gate_rejected',
     proofIds: proofIdsFrom(
       ledgerValidation.proofId,
       ledger.proofId,
@@ -1868,6 +1986,10 @@ async function agentSplitRow(records, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     visual,
     runMode,
     cpuHmrUsed: firewall.cpuHmrUsed,
@@ -1886,9 +2008,13 @@ async function agentSplitRow(records, filePath, context) {
       runtimeProofArtifactGate.accepted === true ? null : 'mcp_preview_runtime_proof_artifact_not_strictly_accepted',
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
-    openGaps: accepted ? [] : ['mcp_runtime_visual_proof_not_accepted'],
+    openGaps: accepted ? [] : compactStringList([
+      'mcp_runtime_visual_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
   });
 }
 
@@ -2233,6 +2359,14 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    json.runtimeProofArtifact,
+    json.runtime_proof_artifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
   const runtimeResourceTrace = compactObject(
     webgpuContract.runtime_resource_trace
     ?? webgpuContract.runtimeResourceTrace
@@ -2245,7 +2379,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     contract.artifact_identity?.supported_pipeline_scope,
     contract.artifactIdentity?.supportedPipelineScope,
   );
-  const accepted =
+  const strictVisualProofAccepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
     && ledger.source === 'recomputed_ledger'
@@ -2256,6 +2390,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
     && visual.accepted === true;
+  const accepted =
+    strictVisualProofAccepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
+  const sourceAdaptedVisualProfileAccepted =
+    strictVisualProofAccepted === true
+    && sourceAdaptation.sourceAdaptedProfile === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
@@ -2266,15 +2406,33 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     profileId,
     proofMode: 'webgpu_wgsl_runtime_visual',
     evidenceKind: 'deterministic_visual_oracle',
-    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
-    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'webgpu_runtime_visual_rejected',
+    matrixOutcome: accepted
+      ? 'full_runtime_gpu_hmr'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'visual_profile_accepted'
+        : 'unproven',
+    acceptanceClass: accepted
+      ? 'full_runtime_gpu_hmr'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
+        : 'webgpu_runtime_visual_rejected',
     acceptedForGpuHmr: accepted,
+    visualProfileAccepted: sourceAdaptedVisualProfileAccepted,
+    visual_profile_accepted: sourceAdaptedVisualProfileAccepted,
     gpuHmrSuccess: accepted,
     refusalProven: false,
-    proofChainAccepted: accepted,
-    proofChain: accepted ? 'webgpu_ledger_process_native_visual_chain' : 'webgpu_runtime_visual_chain_rejected',
+    proofChainAccepted: accepted || sourceAdaptedVisualProfileAccepted,
+    proofChain: accepted
+      ? 'webgpu_ledger_process_native_visual_chain'
+      : sourceAdaptedVisualProfileAccepted
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
+        : 'webgpu_runtime_visual_chain_rejected',
     proofIds: proofIdsFrom(json, ledger),
     ledger,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     supportedPipelineScope,
     supported_pipeline_scope: supportedPipelineScope,
     runtimeResourceTrace,
@@ -2302,8 +2460,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
     ]),
-    openGaps: accepted ? [] : ['webgpu_runtime_visual_proof_not_accepted'],
+    openGaps: accepted ? [] : compactStringList([
+      'webgpu_runtime_visual_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
   });
 }
 
@@ -2315,6 +2477,14 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    json.runtimeProofArtifact,
+    json.runtime_proof_artifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
   const runtimeResourceTrace = compactObject(
     webgpuContract.runtime_resource_trace
     ?? webgpuContract.runtimeResourceTrace
@@ -2391,7 +2561,8 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
     && declaredScopeEvidence.accepted === true
-    && webGpuComputeRuntimeProfileAccepted === true;
+    && webGpuComputeRuntimeProfileAccepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
@@ -2411,6 +2582,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     proofChain: accepted ? 'webgpu_ledger_process_native_compute_readback_chain' : 'webgpu_runtime_compute_chain_rejected',
     proofIds: proofIdsFrom(json, ledger),
     ledger,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     outputOracleFacet: computeOracleFacet,
     output_oracle_facet: computeOracleFacet,
     supportedPipelineScope,
@@ -2457,6 +2632,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
       expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       declaredScopeEvidence.accepted === true
         ? null
         : 'webgpu_compute_declared_scope_not_evidence_backed',
@@ -2464,7 +2640,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
         ? null
         : 'webgpu_compute_runtime_profile_trace_not_accepted',
     ]),
-    openGaps: accepted ? [] : ['webgpu_runtime_compute_readback_proof_not_accepted'],
+    openGaps: accepted ? [] : compactStringList([
+      'webgpu_runtime_compute_readback_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
   });
 }
 
@@ -2474,6 +2653,14 @@ async function hipModuleRuntimeRow(json, filePath, context) {
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const hipContract = compactObject(contract.hip_contract ?? contract.hipContract);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    json.runtimeProofArtifact,
+    json.runtime_proof_artifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
   const nativeApiEvidence = compactObject(json.nativeHipApiEvidence ?? json.native_hip_api_evidence);
   const runtimeTrace = compactObject(json.runtimeTrace ?? json.runtime_trace);
   const claimBoundary = compactObject(json.claimBoundary ?? json.claim_boundary);
@@ -2609,7 +2796,8 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     && negativeAbiRefusalAccepted
     && runtimeTimestampProofAccepted
     && epoch2ArtifactHashProofAccepted
-    && computeCardOnlyProofAccepted;
+    && computeCardOnlyProofAccepted
+    && sourceAdaptation.acceptedForNoShimHmr === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
@@ -2629,6 +2817,10 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     proofChain: accepted ? 'hip_module_ledger_native_api_readback_chain' : 'hip_module_runtime_chain_rejected',
     proofIds: proofIdsFrom(json, ledger),
     ledger,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     outputOracleFacet: computeOracleFacet,
     output_oracle_facet: computeOracleFacet,
     supportedPipelineScope,
@@ -2701,6 +2893,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
       computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
       computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
       expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runtimeTrace.sameProcess === true ? null : 'same_process_not_accepted',
       runtimeTrace.processRestarted === false ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_hip_api_not_accepted',
@@ -2713,7 +2906,10 @@ async function hipModuleRuntimeRow(json, filePath, context) {
       epoch2ArtifactHashProofAccepted ? null : 'hip_module_epoch2_artifact_hash_chain_not_proven',
       computeCardOnlyProofAccepted ? null : 'hip_module_compute_card_not_separated_from_visual_proof',
     ]),
-    openGaps: accepted ? [] : ['hip_module_runtime_readback_proof_not_accepted'],
+    openGaps: accepted ? [] : compactStringList([
+      'hip_module_runtime_readback_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
   });
 }
 
@@ -3321,6 +3517,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.proofLedger
     ?? runtimeProofArtifact.proof_ledger,
   );
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    summary,
+    runtimeProofArtifact,
+    proofLedger,
+    proofLedger.records?.[0],
+    ledger.record,
+  );
   const realRocmFirewall = realRocmFirewallFieldsFromEvidence({
     json,
     summary,
@@ -3601,7 +3805,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && sidecarRuntimeConsistencyAccepted === true
     && profileProofObligationsAccepted === true
     && targetProgressionGateFailures.length === 0
-    && realRocmFirewall.accepted === true;
+    && realRocmFirewall.accepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false
     || strictGateFailures.length > 0
@@ -3662,6 +3867,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     visual,
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
@@ -3743,6 +3952,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       ...realRocmFirewall.failedGates.map((failure) => failure.code),
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       outputOracleResolutionGate.accepted ? null : 'real_rocm_output_oracle_resolution_not_accepted',
@@ -3766,6 +3976,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_required',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
