@@ -7,7 +7,7 @@ function shortName(packageId) {
   return String(packageId || 'program').split('/').pop();
 }
 
-export default function ProgramTile({ install, canManage, scaffoldable, onLaunch, onScaffold }) {
+export default function ProgramTile({ install, canManage, scaffoldable, activeSession, onLaunch, onScaffold }) {
   const launch = () => canManage && onLaunch(install);
   return (
     <div
@@ -35,7 +35,7 @@ export default function ProgramTile({ install, canManage, scaffoldable, onLaunch
             onClick={launch}
             style={{ ...PROGRAM_STYLE.primaryButton, fontSize: '10px', padding: '4px 12px', cursor: 'pointer' }}
           >
-            Launch
+            {activeSession ? 'Open' : 'Launch'}
           </button>
         </div>
       ) : null}

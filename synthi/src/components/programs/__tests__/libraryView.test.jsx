@@ -106,4 +106,12 @@ describe('LibraryView — running/stopped/crashed separation + named cards', () 
     await act(async () => byTestId(container, 'session-remove-stp-5678ef01').click());
     expect(onRemove).toHaveBeenCalledWith(expect.objectContaining({ id: 'stp-5678ef01' }));
   });
+
+  it('an installed program with an active session shows Open, otherwise Launch', async () => {
+    await render();
+    // inst-d has a running session (run-1234abcd) → already open.
+    expect(byTestId(container, 'launch-install-inst-d').textContent).toContain('Open');
+    // inst-p only has a crashed session → not active → launchable.
+    expect(byTestId(container, 'launch-install-inst-p').textContent).toContain('Launch');
+  });
 });

@@ -233,6 +233,14 @@ export default function ProgramsPanel() {
 
   const handleLaunchInstall = useCallback(async (install) => {
     if (!workspaceSlug || !install?.id) return;
+    // One instance per program: if it already has a live session, focus that one
+    // instead of spawning another. (sessions are reconciled, so a dead/zombie
+    // session won't match and the program can still be relaunched.)
+    const existing = sessions.find((s) => s.installId === install.id && isActiveProgramSession(s));
+    if (existing) {
+      openProgramSession(existing, { label: install.packageId });
+      return;
+    }
     try {
       const result = await launchInstalledProgram(workspaceSlug, install.id);
       toast.success('Program launched');
@@ -243,7 +251,7 @@ export default function ProgramsPanel() {
     } catch (error) {
       toast.error(error.message || 'Failed to launch program');
     }
-  }, [load, openProgramSession, workspaceSlug]);
+  }, [sessions, load, openProgramSession, workspaceSlug]);
 
   const handleScaffold = useCallback(async (install) => {
     if (!workspaceSlug || !install?.id) return;

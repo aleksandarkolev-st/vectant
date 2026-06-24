@@ -308,4 +308,16 @@ describe('ProgramsPanel install / launch-from-install', () => {
     expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeNull();
     expect(h.deleteProgramSession).toHaveBeenCalledWith('team', 'ps-stop');
   });
+
+  it('opening an installed program that already has a running session reuses it (no second launch)', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-existing', state: 'running', runtimeType: 'web', installId: 'inst1' }]);
+    await render();
+
+    await act(async () => { byTestId(container, 'launch-install-inst1').click(); });
+    await flush();
+
+    expect(h.launchInstalledProgram).not.toHaveBeenCalled(); // reused, not relaunched
+    expect(h.dispatch).toHaveBeenCalled();                   // existing session opened
+  });
 });

@@ -102,6 +102,7 @@ export default function LibraryView({
                 install={install}
                 canManage={canManage}
                 scaffoldable={scaffoldableIds.includes(install.packageId)}
+                activeSession={running.find((s) => s.installId === install.id) || null}
                 onLaunch={onLaunchInstall}
                 onScaffold={onScaffold}
               />
