@@ -3,14 +3,13 @@
 import React from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
 import { ArbiterCard } from './ArbiterCard';
-import { ShieldCheck } from 'lucide-react';
+import { Eye, Image, ShieldCheck } from 'lucide-react';
 
 /**
- * Synthi Genome — MultiverseCard
+ * Synthi Genome - MultiverseCard
  *
- * Renders the verify panel for a shadow job. In Wave 1 there is exactly
- * one universe per job, but the component is structured to render N
- * universes once Wave 2 lifts the count.
+ * Renders the verify panel for a shadow job. The component is structured for
+ * N universes and surfaces counterfactual proof, selection, and policy state.
  */
 
 const STAGE_LABEL = {
@@ -34,11 +33,34 @@ function diagText(diag) {
     return String(diag);
 }
 
-function UniverseRow({ universe, onApply }) {
+function visualProofFromEvidence(evidence) {
+    if (!evidence) return null;
+    return evidence.visual_proof || evidence.visualProof || evidence.visual_snapshot || evidence.visualSnapshot || null;
+}
+
+function proofStatus(proof) {
+    if (!proof) return 'missing';
+    if (proof.status) return String(proof.status);
+    const failed = proof.failed_visual_gates || proof.failedGates || proof.failed_gates || [];
+    if (failed.length) return 'failed';
+    if (proof.screenshot_sha256 || proof.screenshotSha256 || proof.raw_artifact_ref || proof.artifact_ref) return 'passed';
+    return 'partial';
+}
+
+function shortHash(proof) {
+    const value = proof?.screenshot_sha256 || proof?.screenshotSha256 || '';
+    return value ? value.slice(0, 12) : 'not captured';
+}
+
+function UniverseRow({ universe, onApply, onReview, reviewed }) {
     const { id, stage, modelGen, modelCritic, style, evidence } = universe;
+    const visualProof = visualProofFromEvidence(evidence);
+    const visualStatus = proofStatus(visualProof);
+    const visualRequired = Boolean(visualProof?.required || evidence?.visual_proof_required || evidence?.visualProofRequired);
     const verified = stage === 'done' && evidence?.diagnostics &&
         evidence.diagnostics.lint !== 'failed' &&
-        (evidence.attacks?.failed || []).length === 0;
+        (evidence.attacks?.failed || []).length === 0 &&
+        (!visualRequired || visualStatus === 'passed');
 
     return (
         <div className="genome-universe">
@@ -46,35 +68,59 @@ function UniverseRow({ universe, onApply }) {
                 <span className="genome-universe__id">Universe {id}</span>
                 <span className="genome-universe__model">
                     {modelGen}
-                    {modelCritic && modelGen !== modelCritic ? ` → ${modelCritic} critic` : ''}
+                    {modelCritic && modelGen !== modelCritic ? ` -> ${modelCritic} critic` : ''}
                 </span>
                 <span className="genome-universe__style">{style}</span>
                 <span className={`genome-universe__status genome-universe__status--${verified ? 'ok' : stage}`}>
-                    {stage === 'done' ? (verified ? '✓ verified' : '⚠ issues') : (STAGE_LABEL[stage] || stage)}
+                    {stage === 'done' ? (verified ? 'verified' : 'issues') : (STAGE_LABEL[stage] || stage)}
                 </span>
             </div>
             {evidence ? (
                 <div className="genome-universe__evidence">
                     <span>lint: {diagText(evidence.diagnostics?.lint)}</span>
-                    <span>· types: {diagText(evidence.diagnostics?.types)}</span>
-                    <span>· tests: {evidence.diagnostics?.tests || 'skipped'}</span>
-                    <span>· runtime: {evidence.diagnostics?.runtime || 'skipped'}</span>
-                    <span>· attacks {evidence.attacks?.survived || 0}/{evidence.attacks?.tested || 0} survived</span>
-                    <span>· LOC {evidence.loc}</span>
-                    <span>· score {evidence.score}</span>
+                    <span>types: {diagText(evidence.diagnostics?.types)}</span>
+                    <span>tests: {evidence.diagnostics?.tests || 'skipped'}</span>
+                    <span>runtime: {evidence.diagnostics?.runtime || 'skipped'}</span>
+                    <span>attacks {evidence.attacks?.survived || 0}/{evidence.attacks?.tested || 0} survived</span>
+                    <span>LOC {evidence.loc}</span>
+                    <span>score {evidence.score}</span>
                 </div>
             ) : null}
             {evidence?.attacks?.failed?.length ? (
                 <ul className="genome-universe__attacks">
                     {evidence.attacks.failed.map((a, i) => (
                         <li key={i}>
-                            <strong>{a.severity}</strong> · {a.kind || 'logic'} · {a.msg}
+                            <strong>{a.severity}</strong> {a.kind || 'logic'} {a.msg}
                         </li>
                     ))}
                 </ul>
             ) : null}
+            {visualProof ? (
+                <div
+                    className={`genome-universe__visual genome-universe__visual--${visualStatus}`}
+                    data-testid={`visual-proof-${id}`}
+                >
+                    <span className="genome-universe__visual-title">
+                        <Image className="w-3.5 h-3.5" aria-hidden="true" />
+                        Visual proof {visualStatus}
+                    </span>
+                    <span>hash {shortHash(visualProof)}</span>
+                    {visualProof.viewport ? <span>viewport {visualProof.viewport}</span> : null}
+                    {visualProof.raw_artifact_ref || visualProof.artifact_ref ? (
+                        <span>artifact {visualProof.raw_artifact_ref || visualProof.artifact_ref}</span>
+                    ) : null}
+                </div>
+            ) : null}
             {stage === 'done' ? (
                 <div className="genome-universe__actions">
+                    <button
+                        type="button"
+                        className={reviewed ? 'genome-universe__review genome-universe__review--done' : 'genome-universe__review'}
+                        onClick={() => onReview(id)}
+                    >
+                        <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                        {reviewed ? 'Reviewed' : 'Mark reviewed'}
+                    </button>
                     <button type="button" onClick={() => onApply(id)} disabled={!verified}>Apply</button>
                 </div>
             ) : null}
@@ -119,10 +165,16 @@ export function MultiverseCard({ jobId }) {
                 </div>
             ) : null}
             {universes.length === 0 ? (
-                <div className="genome-card__empty">starting universe…</div>
+                <div className="genome-card__empty">starting universe...</div>
             ) : (
                 universes.map((u) => (
-                    <UniverseRow key={u.id} universe={u} onApply={(id) => verify.apply(id)} />
+                    <UniverseRow
+                        key={u.id}
+                        universe={u}
+                        onApply={(id) => verify.apply(id)}
+                        onReview={(id) => verify.markUniverseReviewed?.(id)}
+                        reviewed={(verify.reviewedUniverseIds || []).includes(u.id)}
+                    />
                 ))
             )}
             {verify.convergence || verify.arbiter ? (

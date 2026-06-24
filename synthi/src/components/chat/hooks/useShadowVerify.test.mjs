@@ -7,6 +7,7 @@ const baseState = {
   policyDeltas: [],
   policyHints: [],
   directionForecast: [],
+  reviewedUniverseIds: [],
   cancelled: false,
   error: null,
 };
@@ -57,5 +58,11 @@ describe('useShadowVerify counterfactual events', () => {
     );
 
     expect(state.learnedLines).toEqual(['Existing line', 'Selector preferred smaller branch.']);
+  });
+
+  it('tracks reviewed universes as opened comparison evidence', () => {
+    const state = reduce(baseState, { type: 'universe_reviewed', id: 'A' });
+
+    expect(state.reviewedUniverseIds).toEqual(['A']);
   });
 });

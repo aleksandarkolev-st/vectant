@@ -23,6 +23,7 @@ const initial = () => ({
     directionForecast: [],
     learnedLines: [],
     policyDeltas: [],
+    reviewedUniverseIds: [],
     winner: null,
     finished: false,
     cancelled: false,
@@ -104,11 +105,21 @@ export function useShadowVerify(jobId) {
         const res = await fetch(`/api/shadow/${encodeURIComponent(jobId)}/apply`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ universeId }),
+            body: JSON.stringify({
+                universeId,
+                openedDiffUniverseIds: state.reviewedUniverseIds || [],
+            }),
         });
         const data = await res.json().catch(() => ({}));
         setState((s) => applySelectionResult(s, data));
         return data;
+    };
+
+    const markUniverseReviewed = (universeId) => {
+        setState((s) => ({
+            ...s,
+            reviewedUniverseIds: mergeUnique(s.reviewedUniverseIds, [universeId]),
+        }));
     };
 
     const cancel = async () => {
@@ -135,7 +146,7 @@ export function useShadowVerify(jobId) {
         return data;
     };
 
-    return { ...state, apply, cancel, askWhy };
+    return { ...state, apply, cancel, askWhy, markUniverseReviewed };
 }
 
 export function reduce(s, evt) {
@@ -197,6 +208,11 @@ export function reduce(s, evt) {
                 ...s,
                 learnedLines: mergeUnique(s.learnedLines, learnedLinesFromPayload(evt)),
                 policyDeltas: [...(s.policyDeltas || []), ...(evt.policy_deltas || [])],
+            };
+        case 'universe_reviewed':
+            return {
+                ...s,
+                reviewedUniverseIds: mergeUnique(s.reviewedUniverseIds, [evt.id]),
             };
         case 'all_done':
             return { ...s, finished: true, winner: evt.winner || null };
