@@ -2,6 +2,7 @@
 
 import { ShieldCheck, Download } from 'lucide-react';
 import { PROGRAM_STYLE, BRAND_GRADIENT } from '../programTokens';
+import ProgramIcon from '../ProgramIcon';
 
 export default function StoreTile({ item, canManage, onInstall, onOpenDetail }) {
   const name = item.displayName || item.packageId;
@@ -13,7 +14,9 @@ export default function StoreTile({ item, canManage, onInstall, onOpenDetail }) 
       className="flex flex-col gap-1.5"
     >
       <div className="flex items-start justify-between">
-        <button type="button" onClick={() => onOpenDetail(item)} className="cursor-pointer" style={{ ...PROGRAM_STYLE.iconPlate, width: '30px', height: '30px' }} aria-label={`Open ${name}`} />
+        <button type="button" onClick={() => onOpenDetail(item)} className="cursor-pointer" aria-label={`Open ${name}`}>
+          <ProgramIcon packageId={item.packageId} size={30} />
+        </button>
         {item.verified ? (
           <span data-testid={`verified-badge-${item.packageId}`} aria-label="Verified"
             className="inline-flex items-center" style={{ background: BRAND_GRADIENT, borderRadius: '5px', padding: '2px 4px', color: '#fff' }}>

@@ -2,6 +2,7 @@
 
 import { Wrench } from 'lucide-react';
 import { PROGRAM_STYLE } from '../programTokens';
+import ProgramIcon from '../ProgramIcon';
 
 function shortName(packageId) {
   return String(packageId || 'program').split('/').pop();
@@ -14,7 +15,7 @@ export default function ProgramTile({ install, canManage, scaffoldable, activeSe
       style={{ ...PROGRAM_STYLE.surfaceCard, padding: '10px 7px' }}
       className="flex flex-col items-center gap-1.5 text-center"
     >
-      <div style={{ ...PROGRAM_STYLE.iconPlate, width: '32px', height: '32px' }} className="flex items-center justify-center" />
+      <ProgramIcon packageId={install.packageId} size={32} />
       <span style={{ color: 'var(--text-primary)', fontSize: '11px' }} className="truncate max-w-full">{shortName(install.packageId)}</span>
       <span style={{ color: 'var(--text-muted)', fontSize: '9px' }}>v{install.version}</span>
       {canManage ? (

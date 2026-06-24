@@ -1514,5 +1514,9 @@ Live-review feedback after the Library/Store overhaul. Corrective slices on the 
 
 ## Round status — R0–R4 all landed (commits 31457a5e4, 6c1b71b06, ed7eb0f08, adf2512cd, + R4). Covers user points #1 (names), #2 (X-remove), #3 (running-remove confirm), #4 (perf), #5 (state separation). #6 (scale-to-zero) answered. Env note: C: drive at ~0.1 GB free — vitest workers OOM/crash; ran single-fork with TEMP redirected to D:\synthi-tmp. Surface to user.
 
+## Follow-up asks (same round)
+- [x] R5 One session per program: `handleLaunchInstall` reuses the live session instead of spawning a duplicate; the tile reads "Open" vs "Launch". Zombie-safe (uses reconciled session state). Commit `7c592f264`.
+- [x] R6 Real program logos: `ProgramIcon` + generated `programLogos.js` (inline single-path brand SVGs from simple-icons/CC0 for the 9 built-ins — Next.js, Vite, Flask, Node, Git, DBeaver, Postman, Portainer, Docker — keyed by the @vectant slug) replace the empty icon plates in Installed + marketplace tiles; deterministic colored monogram fallback for community programs. Inlined → no external requests under COEP/CSP.
+
 ## Already answered (no code)
 - Scale-to-zero: prod Sysbox runtime is a per-workspace Deployment (`replicas:1`), app-managed **idle-cull → on-demand respawn** (not k8s HPA-to-zero); optional warm image cache via `RUNTIME_PERSIST_DOCKER_DATA`.
