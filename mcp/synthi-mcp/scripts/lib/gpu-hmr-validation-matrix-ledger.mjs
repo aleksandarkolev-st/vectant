@@ -790,14 +790,14 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
       || identity.startsWith(`${profileId}:`)
       || identity.includes(`:${profileId}:`)
     );
+  const evidenceRefsBound = evidenceRefs.filter((ref) =>
+    evidenceRefSet.has(ref)
+    || visualArtifactHashSet.has(ref)
+    || rowProofIds.has(ref)
+  );
   const evidenceRefsBoundToRow =
     evidenceRefs.length > 0
-    && evidenceRefs.some((ref) =>
-      evidenceRefSet.has(ref)
-      || (profileId && ref.includes(profileId))
-      || (profileClass && ref.includes(profileClass))
-      || visualArtifactHashSet.has(ref)
-    );
+    && evidenceRefsBound.length > 0;
   const failedGates = compactStringList([
     profileIdBoundToRow ? null : 'validation_profile_id_not_bound_to_runtime_identity',
     proofIdsBoundToRow ? null : 'validation_profile_proof_ids_not_bound_to_row',
@@ -811,6 +811,8 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     proof_ids_bound_to_row: proofIdsBoundToRow,
     evidenceRefsBoundToRow,
     evidence_refs_bound_to_row: evidenceRefsBoundToRow,
+    evidenceRefsBound,
+    evidence_refs_bound: evidenceRefsBound,
     rowProofIdCount: rowProofIds.size,
     row_proof_id_count: rowProofIds.size,
     failedGates,
@@ -6720,48 +6722,6 @@ function visualProfileRows(rows, predicate) {
 
 function deterministicFissionRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'deterministic_fission_proven' && predicate(row));
-}
-
-function normalizedRowIdentityValues(row) {
-  return compactStringList([
-    row.targetId,
-    row.target_id,
-    row.profileId,
-    row.profile_id,
-    row.fixtureId,
-    row.fixture_id,
-    row.artifactPath,
-    row.artifact_path,
-    ...(Array.isArray(row.proofIds) ? row.proofIds : []),
-  ]).map((value) => value.toLowerCase());
-}
-
-function rowMatchesValidationProfile(row, profileId) {
-  const expected = String(profileId ?? '').trim().toLowerCase();
-  if (!expected) return false;
-  return normalizedRowIdentityValues(row).some((value) =>
-    value === expected
-    || value.includes(`/${expected}/`)
-    || value.includes(`\\${expected}\\`)
-    || value.includes(`/${expected}-`)
-    || value.includes(`\\${expected}-`)
-    || value.includes(`-${expected}-`)
-  );
-}
-
-function rowHasDeclaredValidationProfile(row, profileId) {
-  const expected = String(profileId ?? '').trim().toLowerCase();
-  if (!expected) return false;
-  return compactStringList([
-    row.validationProfileId,
-    row.validation_profile_id,
-    row.targetId,
-    row.target_id,
-    row.profileId,
-    row.profile_id,
-    row.fixtureId,
-    row.fixture_id,
-  ]).some((value) => value.toLowerCase() === expected);
 }
 
 function validationRunModeCoverage(rows) {

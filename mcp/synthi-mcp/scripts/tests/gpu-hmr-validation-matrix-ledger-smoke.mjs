@@ -3765,6 +3765,68 @@ assert.ok(forgedAcceptedProfileRuntime.validationProfileEvidence.failedGates.inc
 ));
 assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
 
+const substringOnlyProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-substring-only-profile');
+await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(substringOnlyProfileDir, 'after.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
+await writeRgbaPng(path.join(substringOnlyProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const substringOnlyProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: substringOnlyProfileDir,
+});
+await writeJson(path.join(substringOnlyProfileDir, 'hot1-substring-only-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    substringOnlyProfileMaterials.proofLedgerQuery.record.proofId,
+    substringOnlyProfileMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...substringOnlyProfileMaterials,
+  proofId: 'agent-split-run-mode-proof:sha256:flow-substring-only-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-substring-only-profile',
+      substringOnlyProfileMaterials.proofLedgerQuery.record.proofId,
+      substringOnlyProfileMaterials.runtimeProofArtifact.proofId,
+    ],
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(substringOnlyProfileDir, 'before.png'),
+    afterImage: path.join(substringOnlyProfileDir, 'after.png'),
+    diffImage: path.join(substringOnlyProfileDir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-substring-only-profile',
+    editHash: 'sha256:flow-substring-only-profile',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const substringOnlyProfileLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [substringOnlyProfileDir],
+  generatedAt: '2026-06-09T00:00:01.030Z',
+  includeUnproven: true,
+});
+const substringOnlyProfileCoverage = new Map(
+  substringOnlyProfileLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const substringOnlyProfileRuntime = substringOnlyProfileLedger.rows.find((row) => row.targetId === 'flow');
+assert.equal(substringOnlyProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(substringOnlyProfileRuntime.validationProfileEvidence.accepted, false);
+assert.ok(substringOnlyProfileRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_evidence_refs_not_bound_to_row',
+));
+assert.equal(substringOnlyProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
 await writeRgbaPng(path.join(duplicateHot2Dir, 'after.png'), 8, 8, (x, y) => [64 + x, 72 + y, 96, 255]);
