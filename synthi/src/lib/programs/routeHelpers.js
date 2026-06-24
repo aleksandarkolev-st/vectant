@@ -27,6 +27,9 @@ export function mergeProgramSession(session, runtimeSession = null) {
     // surface it so ProgramSessionPanel builds /runtime/<scope>/port/N preview URLs.
     runtimeScope: runtimeSession?.runtimeScope ?? null,
     lastHealthState: runtimeSession?.healthState ?? session.lastHealthState ?? null,
+    // Surface the live runtime's webGui flag (DB rows don't store it) so the
+    // running card can render the KasmVNC live thumbnail.
+    webGui: runtimeSession?.webGui ?? session.webGui ?? false,
   };
 
   if (runtimeSession?.state) {

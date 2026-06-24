@@ -32,7 +32,9 @@ export default function RunningCard({ session, slug, programName, onOpen, onStop
   return (
     <div
       data-testid={`session-card-${session.id}`}
-      style={{ ...(active ? PROGRAM_STYLE.runningShell : PROGRAM_STYLE.surfaceCard), padding: '9px' }}
+      // content-visibility skips painting offscreen cards (cheap scrolling for long
+      // stopped/crashed lists); containIntrinsicSize keeps the scrollbar stable.
+      style={{ ...(active ? PROGRAM_STYLE.runningShell : PROGRAM_STYLE.surfaceCard), padding: '9px', contentVisibility: 'auto', containIntrinsicSize: '0 80px' }}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0">

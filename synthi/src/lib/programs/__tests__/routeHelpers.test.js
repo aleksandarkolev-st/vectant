@@ -53,3 +53,11 @@ describe('mergeProgramSession orphan reconciliation (R1)', () => {
     expect(mergeProgramSession({ id: 'ps-1', state: 'starting' }, { state: 'running' }).state).toBe('running');
   });
 });
+
+describe('mergeProgramSession webGui surfacing (R4 — live thumbnail)', () => {
+  it('surfaces webGui from the live runtime session so the running card can render a thumbnail', () => {
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: true }).webGui).toBe(true);
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: false }).webGui).toBe(false);
+    expect(mergeProgramSession({ id: 'ps-1' }, null).webGui).toBe(false);
+  });
+});
