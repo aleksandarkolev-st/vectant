@@ -984,12 +984,39 @@ function waitProofValidation(proofId, runtimeProofId) {
   };
 }
 
+function runModeCoverageSupportFor(materials, extraProofIds = []) {
+  const record = materials.proofLedgerQuery?.record ?? materials.proofLedger?.records?.[0] ?? {};
+  return {
+    schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
+    parentProofIds: [...new Set([
+      materials.proofLedger?.proofId,
+      materials.proofLedger?.proof_id,
+      record.proofId,
+      record.proof_id,
+      materials.runtimeProofArtifact?.proofId,
+      materials.runtimeProofArtifact?.proof_id,
+      ...extraProofIds,
+    ].filter(Boolean))],
+    contractHash: record.contractHash ?? record.contract_hash,
+    artifactBeforeHash: record.artifactBeforeHash ?? record.artifact_before_hash,
+    artifactAfterHash: record.artifactAfterHash ?? record.artifact_after_hash,
+  };
+}
+
+const flowHot1RuntimeMaterials = runtimeProofMaterials('hot_delta_1');
+const flowHot2RuntimeMaterials = runtimeProofMaterials('hot_delta_2');
+const flowRunModeCoverageSupport = runModeCoverageSupportFor(flowHot1RuntimeMaterials, [
+  'gpu-runtime-proof:sha256:synthetic-hot1',
+  'agent-split-run-mode-proof:sha256:hot1',
+]);
+
 await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   proofId: 'agent-split-run-mode-proof:sha256:cold',
   coldRuntimeInitialProven: true,
   cold_runtime_initial_proven: true,
+  runModeCoverageSupport: flowRunModeCoverageSupport,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   runMode: {
@@ -1004,7 +1031,7 @@ await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
 await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
   ...runModeProofBase,
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot1', 'gpu-runtime-proof:sha256:synthetic-hot1'),
-  ...runtimeProofMaterials('hot_delta_1'),
+  ...flowHot1RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
@@ -1021,7 +1048,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot2', 'gpu-runtime-proof:sha256:synthetic-hot2'),
-  ...runtimeProofMaterials('hot_delta_2'),
+  ...flowHot2RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot2',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
@@ -1141,6 +1168,7 @@ await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
   backend: 'hip',
   targetId: 'flow',
   profileId: 'flow',
+  runModeCoverageSupport: flowRunModeCoverageSupport,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   cpuHmrUsed: false,
@@ -1156,6 +1184,24 @@ await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
     differentEdit: true,
   },
   reasons: ['abi_compatibility_class_layout_changed', 'gpu_hmr_rejected_before_load'],
+});
+
+await writeJson(path.join(visualDir, 'forged-unlinked-flow-cold.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-unlinked-flow-cold',
+  profileId: 'forged-unlinked-flow-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split-forged-unlinked',
+    editHash: 'sha256:forged-unlinked-flow-cold',
+  },
 });
 
 await writeJson(path.join(visualDir, 'stale-cold-only.json'), {
@@ -2879,6 +2925,14 @@ const flowRunModeTarget = coverageById.get('per_target_run_modes')?.targetCovera
 );
 assert.equal(flowRunModeTarget?.status, 'accepted');
 assert.deepEqual(flowRunModeTarget.openGaps, []);
+assert.ok(flowRunModeTarget.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:cold')
+  && row.runModeCoverageSupport?.accepted === true
+));
+assert.ok(!flowRunModeTarget.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-unlinked-flow-cold')
+));
+assert.ok(coverageById.get('per_target_run_modes')?.unlinkedSupportRowCount >= 1);
 const optedOutHiprtRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
 );
@@ -2914,6 +2968,16 @@ assert.equal(hot2RunMode.runMode.differentEdit, true);
 
 const negativeEdit = ledger.rows.find((row) => row.proofMode === 'negative_edit');
 assert.equal(negativeEdit?.matrixOutcome, 'refusal_proven');
+assert.equal(negativeEdit.runModeCoverageSupport.accepted, true);
+
+const forgedUnlinkedFlowCold = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-unlinked-flow-cold')
+);
+assert.equal(forgedUnlinkedFlowCold?.matrixOutcome, 'cold_split_proven');
+assert.equal(forgedUnlinkedFlowCold.runModeCoverageSupport.accepted, false);
+assert.ok(forgedUnlinkedFlowCold.runModeCoverageSupport.failedGates.includes(
+  'run_mode_support_parent_proof_id_missing',
+));
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);

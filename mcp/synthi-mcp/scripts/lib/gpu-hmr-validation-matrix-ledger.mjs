@@ -644,6 +644,143 @@ function rowRequiresPerTargetRunModes(row) {
   return row.coverageObligations?.perTargetRunModes === true;
 }
 
+function contentAddressedSha256(value) {
+  return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
+}
+
+function ledgerRecordForRow(row = {}) {
+  return compactObject(row.ledger?.record ?? row.proofLedger?.records?.[0] ?? row.proof_ledger?.records?.[0]);
+}
+
+function fullRuntimeCoverageIdentity(row = {}) {
+  const record = ledgerRecordForRow(row);
+  const chain = compactObject(row.realRocmRuntimeChain ?? row.real_rocm_runtime_chain);
+  const proofIds = compactStringList([
+    ...(Array.isArray(row.proofIds) ? row.proofIds : []),
+    ...(Array.isArray(row.proof_ids) ? row.proof_ids : []),
+    row.ledger?.proofId,
+    row.ledger?.proof_id,
+    record.proofId,
+    record.proof_id,
+  ]);
+  const contractHash = firstText(
+    row.contractHash,
+    row.contract_hash,
+    record.contractHash,
+    record.contract_hash,
+  );
+  const artifactAfterHash = firstText(
+    row.artifactAfterHash,
+    row.artifact_after_hash,
+    row.artifactHash,
+    row.artifact_hash,
+    record.artifactAfterHash,
+    record.artifact_after_hash,
+    chain.artifactHash,
+    chain.artifact_hash,
+  );
+  return {
+    accepted: proofIds.length > 0
+      && contentAddressedSha256(contractHash)
+      && contentAddressedSha256(artifactAfterHash),
+    proofIds,
+    proof_ids: proofIds,
+    contractHash,
+    contract_hash: contractHash,
+    artifactAfterHash,
+    artifact_after_hash: artifactAfterHash,
+  };
+}
+
+function rawRunModeCoverageSupport(row = {}) {
+  const runMode = compactObject(row.runMode ?? row.run_mode);
+  return compactObject(
+    row.runModeCoverageSupport
+      ?? row.run_mode_coverage_support
+      ?? row.coverageSupport
+      ?? row.coverage_support
+      ?? runMode.coverageSupport
+      ?? runMode.coverage_support,
+  );
+}
+
+function runModeCoverageSupportFacet(row = {}) {
+  const supplied = rawRunModeCoverageSupport(row);
+  const parentProofIds = compactStringList([
+    ...(Array.isArray(supplied.parentProofIds) ? supplied.parentProofIds : []),
+    ...(Array.isArray(supplied.parent_proof_ids) ? supplied.parent_proof_ids : []),
+    ...(Array.isArray(supplied.supportedProofIds) ? supplied.supportedProofIds : []),
+    ...(Array.isArray(supplied.supported_proof_ids) ? supplied.supported_proof_ids : []),
+    ...(Array.isArray(supplied.fullRuntimeProofIds) ? supplied.fullRuntimeProofIds : []),
+    ...(Array.isArray(supplied.full_runtime_proof_ids) ? supplied.full_runtime_proof_ids : []),
+  ]);
+  const contractHash = firstText(supplied.contractHash, supplied.contract_hash);
+  const artifactAfterHash = firstText(
+    supplied.artifactAfterHash,
+    supplied.artifact_after_hash,
+    supplied.artifactHash,
+    supplied.artifact_hash,
+  );
+  const failedGates = compactStringList([
+    parentProofIds.length > 0 ? null : 'run_mode_support_parent_proof_id_missing',
+    contentAddressedSha256(contractHash) ? null : 'run_mode_support_contract_hash_missing_or_not_content_addressed',
+    contentAddressedSha256(artifactAfterHash) ? null : 'run_mode_support_artifact_hash_missing_or_not_content_addressed',
+  ]);
+  return {
+    present: Object.keys(supplied).length > 0,
+    accepted: failedGates.length === 0,
+    parentProofIds,
+    parent_proof_ids: parentProofIds,
+    contractHash,
+    contract_hash: contractHash,
+    artifactAfterHash,
+    artifact_after_hash: artifactAfterHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function rowHasLinkedRunModeCoverageSupport(row, fullRuntimeRows) {
+  const support = compactObject(row.runModeCoverageSupport ?? row.run_mode_coverage_support);
+  if (support.accepted !== true) return false;
+  const supportParentProofIds = compactStringList(support.parentProofIds ?? support.parent_proof_ids);
+  const supportContractHash = firstText(support.contractHash, support.contract_hash);
+  const supportArtifactAfterHash = firstText(support.artifactAfterHash, support.artifact_after_hash);
+  return fullRuntimeRows.some((fullRuntimeRow) => {
+    const identity = fullRuntimeCoverageIdentity(fullRuntimeRow);
+    if (identity.accepted !== true) return false;
+    return supportContractHash === identity.contractHash
+      && supportArtifactAfterHash === identity.artifactAfterHash
+      && supportParentProofIds.some((proofId) => identity.proofIds.includes(proofId));
+  });
+}
+
+function targetKeyForCoverageRow(row = {}) {
+  return `${row.backend}:${row.targetId}`;
+}
+
+function appendTargetRow(rowsByTarget, row) {
+  const key = targetKeyForCoverageRow(row);
+  rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+}
+
+function attachLinkedRunModeSupportRows({ rowsByTarget, fullRuntimeRowsByTarget, supportRows }) {
+  const attachedRows = [];
+  const unlinkedRows = [];
+  for (const row of supportRows) {
+    const key = targetKeyForCoverageRow(row);
+    const targetFullRuntimeRows = fullRuntimeRowsByTarget.get(key) ?? [];
+    if (targetFullRuntimeRows.length === 0) continue;
+    if (!rowHasLinkedRunModeCoverageSupport(row, targetFullRuntimeRows)) {
+      unlinkedRows.push(row);
+      continue;
+    }
+    appendTargetRow(rowsByTarget, row);
+    attachedRows.push(row);
+  }
+  return { attachedRows, unlinkedRows };
+}
+
 function broadLibraryAgnosticScopeProven(_row = {}) {
   // Broad acceptance is a matrix-level generalization claim. A single row, even
   // with a broad-looking facet, cannot authorize it.
@@ -1052,6 +1189,8 @@ function finalizeRow(seed) {
     row.validationTargetScope,
     row.validation_target_scope,
   ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
+  row.runModeCoverageSupport = runModeCoverageSupportFacet(row);
+  row.run_mode_coverage_support = row.runModeCoverageSupport;
   row.declaredAcceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? null;
   row.declared_acceptance_scope = row.declaredAcceptanceScope;
   row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
@@ -4972,6 +5111,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       telemetry.proofId,
       telemetry.proof_id,
     ),
+    runModeCoverageSupport: compactObject(
+      json.runModeCoverageSupport
+        ?? json.run_mode_coverage_support
+        ?? json.coverageSupport
+        ?? json.coverage_support,
+    ),
     coverageObligations: compactObject(
       json.coverageObligations
         ?? json.coverage_obligations
@@ -5082,6 +5227,12 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     proofChainAccepted: refusalProven,
     proofChain: refusalProven ? 'structured_negative_edit_refusal' : 'negative_edit_refusal_unproven',
     proofIds: proofIdsFrom(json),
+    runModeCoverageSupport: compactObject(
+      json.runModeCoverageSupport
+        ?? json.run_mode_coverage_support
+        ?? json.coverageSupport
+        ?? json.coverage_support,
+    ),
     ledger: {
       present: false,
       proofId: null,
@@ -5430,6 +5581,7 @@ function rowRefs(rows) {
     proofChain: row.proofChain,
     proofIds: row.proofIds,
     runMode: row.runMode,
+    runModeCoverageSupport: row.runModeCoverageSupport,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
@@ -5652,31 +5804,32 @@ function validationRunModeCoverage(rows) {
     && row.runMode.metricScope === 'cold'
   );
   const rowsByTarget = new Map();
+  const fullRuntimeRowsByTarget = new Map();
   for (const row of fullRuntimeRows) {
-    const key = `${row.backend}:${row.targetId}`;
-    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
-  }
-  const attachedColdRows = [];
-  for (const row of coldRows) {
-    const key = `${row.backend}:${row.targetId}`;
-    if (rowsByTarget.has(key)) {
-      rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
-      attachedColdRows.push(row);
-    }
+    appendTargetRow(rowsByTarget, row);
+    appendTargetRow(fullRuntimeRowsByTarget, row);
   }
   const negativeEditRows = refusalRows(rows, (row) =>
     row.proofMode === 'negative_edit'
     || row.evidenceKind === 'negative_edit'
     || row.runMode?.metricScope === 'negative_edit'
   );
-  const attachedNegativeEditRows = [];
-  for (const row of negativeEditRows) {
-    const key = `${row.backend}:${row.targetId}`;
-    if (rowsByTarget.has(key)) {
-      rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
-      attachedNegativeEditRows.push(row);
-    }
-  }
+  const {
+    attachedRows: attachedColdRows,
+    unlinkedRows: unlinkedColdRows,
+  } = attachLinkedRunModeSupportRows({
+    rowsByTarget,
+    fullRuntimeRowsByTarget,
+    supportRows: coldRows,
+  });
+  const {
+    attachedRows: attachedNegativeEditRows,
+    unlinkedRows: unlinkedNegativeEditRows,
+  } = attachLinkedRunModeSupportRows({
+    rowsByTarget,
+    fullRuntimeRowsByTarget,
+    supportRows: negativeEditRows,
+  });
   const openGaps = [];
   const targetCoverage = [];
   for (const [targetKey, targetRows] of rowsByTarget) {
@@ -5753,6 +5906,8 @@ function validationRunModeCoverage(rows) {
     targetCoverage,
     acceptedTargetCount,
     incompleteTargetCount,
+    unlinkedSupportRowCount: unlinkedColdRows.length + unlinkedNegativeEditRows.length,
+    unlinked_support_row_count: unlinkedColdRows.length + unlinkedNegativeEditRows.length,
   });
 }
 
@@ -5768,23 +5923,26 @@ function backendRunModeCoverage({ rows, backend, id, requirement, missingGap }) 
   }
 
   const rowsByTarget = new Map();
+  const fullRuntimeRowsByTarget = new Map();
   for (const row of fullRuntimeRows) {
-    const key = `${row.backend}:${row.targetId}`;
-    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+    appendTargetRow(rowsByTarget, row);
+    appendTargetRow(fullRuntimeRowsByTarget, row);
   }
 
-  const targetKeys = new Set(rowsByTarget.keys());
   const fullRuntimeRowIds = new Set(fullRuntimeRows.map((row) => row.rowId));
-  const supportRows = rows.filter((row) =>
+  const candidateSupportRows = rows.filter((row) =>
     row.backend === backend
     && !fullRuntimeRowIds.has(row.rowId)
     && row.runMode?.accepted === true
-    && targetKeys.has(`${row.backend}:${row.targetId}`)
   );
-  for (const row of supportRows) {
-    const key = `${row.backend}:${row.targetId}`;
-    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
-  }
+  const {
+    attachedRows: supportRows,
+    unlinkedRows: unlinkedSupportRows,
+  } = attachLinkedRunModeSupportRows({
+    rowsByTarget,
+    fullRuntimeRowsByTarget,
+    supportRows: candidateSupportRows,
+  });
 
   const openGaps = [];
   const targetCoverage = [];
@@ -5854,6 +6012,8 @@ function backendRunModeCoverage({ rows, backend, id, requirement, missingGap }) 
     targetCoverage,
     acceptedTargetCount: targetCoverage.filter((entry) => entry.status === 'accepted').length,
     incompleteTargetCount: targetCoverage.filter((entry) => entry.status !== 'accepted').length,
+    unlinkedSupportRowCount: unlinkedSupportRows.length,
+    unlinked_support_row_count: unlinkedSupportRows.length,
   });
 }
 
