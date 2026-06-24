@@ -1483,6 +1483,8 @@ function finalizeRow(seed) {
     }
     row.generality_claim = row.generalityClaim;
   }
+  row.fullRuntimeEvidenceAuthority = fullRuntimeEvidenceAuthorityFacet(row);
+  row.full_runtime_evidence_authority = row.fullRuntimeEvidenceAuthority;
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -1900,6 +1902,143 @@ function fullRuntimeLedgerAuthorityFailures(row) {
   return failures;
 }
 
+function nativeRuntimeTraceEvidenceFacet(row = {}) {
+  const runtimeTrace = compactObject(row.runtimeTrace ?? row.runtime_trace);
+  const runtimeResourceTrace = compactObject(row.runtimeResourceTrace ?? row.runtime_resource_trace);
+  const nativeHipApiEvidence = compactObject(row.nativeHipApiEvidence ?? row.native_hip_api_evidence);
+  const ledgerRecord = ledgerRecordForRow(row);
+  const traceDispatchEvent = compactObject(
+    eventList(runtimeTrace.dispatchEvents, runtimeTrace.dispatch_events, runtimeTrace.dispatchEvent, runtimeTrace.dispatch_event)[0],
+  );
+  const traceLoaderEvent = compactObject(
+    eventList(runtimeTrace.loaderEvents, runtimeTrace.loader_events, runtimeTrace.loaderEvent, runtimeTrace.loader_event)[0],
+  );
+  const traceOutputEvent = compactObject(
+    eventList(runtimeTrace.outputEvents, runtimeTrace.output_events, runtimeTrace.outputEvent, runtimeTrace.output_event)[0],
+  );
+  const ledgerDispatchEvent = compactObject(ledgerRecord.dispatchEvent ?? ledgerRecord.dispatch_event);
+  const ledgerLoaderEvent = compactObject(ledgerRecord.loaderEvent ?? ledgerRecord.loader_event);
+  const ledgerOutputEvent = compactObject(ledgerRecord.outputEvent ?? ledgerRecord.output_event);
+  const dispatchEvent = compactObject({ ...traceDispatchEvent, ...ledgerDispatchEvent });
+  const loaderEvent = compactObject({ ...traceLoaderEvent, ...ledgerLoaderEvent });
+  const outputEvent = compactObject({ ...traceOutputEvent, ...ledgerOutputEvent });
+  const evidenceObjects = [
+    runtimeTrace,
+    runtimeResourceTrace,
+    nativeHipApiEvidence,
+    ledgerRecord,
+    traceDispatchEvent,
+    traceLoaderEvent,
+    traceOutputEvent,
+    dispatchEvent,
+    loaderEvent,
+    outputEvent,
+  ].filter((value) => Object.keys(value).length > 0);
+  const topLevelRuntimeTracePresent = Object.keys(runtimeTrace).length > 0
+    || Object.keys(runtimeResourceTrace).length > 0
+    || Object.keys(nativeHipApiEvidence).length > 0;
+  const dispatchBoundaryPresent = firstText(
+    dispatchEvent.command,
+    dispatchEvent.launch_api,
+    dispatchEvent.launchApi,
+    dispatchEvent.pipeline_id,
+    dispatchEvent.pipelineId,
+  ) !== null;
+  const loaderBoundaryPresent = firstText(
+    loaderEvent.source,
+    loaderEvent.command,
+    loaderEvent.loader_api,
+    loaderEvent.loaderApi,
+    loaderEvent.pipeline_id,
+    loaderEvent.pipelineId,
+  ) !== null;
+  const outputBoundaryPresent = Object.keys(outputEvent).length > 0;
+  const runtimeTracePresent = topLevelRuntimeTracePresent
+    || (dispatchBoundaryPresent && loaderBoundaryPresent && outputBoundaryPresent);
+  const evidenceRefs = compactStringList(evidenceObjects.flatMap((value) => evidenceRefsFromValue(value)));
+  const failedGates = compactStringList([
+    runtimeTracePresent ? null : 'native_runtime_trace_missing',
+    dispatchBoundaryPresent ? null : 'native_runtime_dispatch_boundary_missing',
+    loaderBoundaryPresent ? null : 'native_runtime_loader_boundary_missing',
+    outputBoundaryPresent ? null : 'native_runtime_output_boundary_missing',
+    evidenceRefs.length > 0 ? null : 'native_runtime_trace_evidence_refs_missing',
+  ]);
+  return {
+    accepted: failedGates.length === 0,
+    runtimeTracePresent,
+    runtime_trace_present: runtimeTracePresent,
+    dispatchBoundaryPresent,
+    dispatch_boundary_present: dispatchBoundaryPresent,
+    loaderBoundaryPresent,
+    loader_boundary_present: loaderBoundaryPresent,
+    outputBoundaryPresent,
+    output_boundary_present: outputBoundaryPresent,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
+function fullRuntimeEvidenceAuthorityFacet(row = {}) {
+  const strictRuntimeArtifactAccepted = row.runtimeProofArtifact?.accepted === true;
+  const ledgerAccepted =
+    row.ledger?.present === true
+    && row.ledger?.source === 'recomputed_ledger'
+    && row.ledger?.gpuHmrSuccess === true
+    && Array.isArray(row.ledger?.failedInvariants)
+    && row.ledger.failedInvariants.length === 0;
+  const computeOracleAccepted =
+    row.outputOracleFacet?.kind === 'compute_oracle'
+    && row.outputOracleFacet?.accepted === true;
+  const visualOracleAccepted = row.visual?.required === true && row.visual?.accepted === true;
+  const outputOracleAccepted = computeOracleAccepted || visualOracleAccepted;
+  const nativeRuntimeTrace = nativeRuntimeTraceEvidenceFacet(row);
+  const nativeRuntimeAuthorityAccepted =
+    ledgerAccepted
+    && row.proofChainAccepted === true
+    && outputOracleAccepted
+    && nativeRuntimeTrace.accepted === true;
+  const accepted = strictRuntimeArtifactAccepted || nativeRuntimeAuthorityAccepted;
+  const failedGates = accepted
+    ? []
+    : compactStringList([
+      ledgerAccepted ? null : 'full_runtime_authority_recomputed_ledger_missing',
+      row.proofChainAccepted === true ? null : 'full_runtime_authority_proof_chain_not_accepted',
+      outputOracleAccepted ? null : 'full_runtime_authority_output_oracle_not_accepted',
+      strictRuntimeArtifactAccepted || nativeRuntimeTrace.accepted
+        ? null
+        : 'full_runtime_authority_native_runtime_trace_missing',
+      'full_runtime_authority_requires_strict_artifact_or_native_runtime_trace',
+    ]);
+  return {
+    accepted,
+    authority: strictRuntimeArtifactAccepted
+      ? 'strict_runtime_proof_artifact'
+      : nativeRuntimeAuthorityAccepted
+        ? 'backend_native_recomputed_ledger_trace'
+        : 'unproven',
+    strictRuntimeArtifactAccepted,
+    strict_runtime_artifact_accepted: strictRuntimeArtifactAccepted,
+    nativeRuntimeAuthorityAccepted,
+    native_runtime_authority_accepted: nativeRuntimeAuthorityAccepted,
+    ledgerAccepted,
+    ledger_accepted: ledgerAccepted,
+    proofChainAccepted: row.proofChainAccepted === true,
+    proof_chain_accepted: row.proofChainAccepted === true,
+    outputOracleAccepted,
+    output_oracle_accepted: outputOracleAccepted,
+    computeOracleAccepted,
+    compute_oracle_accepted: computeOracleAccepted,
+    visualOracleAccepted,
+    visual_oracle_accepted: visualOracleAccepted,
+    nativeRuntimeTrace,
+    native_runtime_trace: nativeRuntimeTrace,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 function rowSafetyFailures(row) {
   const failures = [];
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
@@ -1938,6 +2077,10 @@ function rowSafetyFailures(row) {
     }
     failures.push(...generalityClaimFailures(row));
     failures.push(...fullRuntimeLedgerAuthorityFailures(row));
+    const fullRuntimeAuthority = fullRuntimeEvidenceAuthorityFacet(row);
+    if (fullRuntimeAuthority.accepted !== true) {
+      failures.push(...fullRuntimeAuthority.failedGates);
+    }
     const sourceAdaptation = sourceAdaptationProofFacet(row);
     if (sourceAdaptation.acceptedForNoShimHmr !== true) {
       failures.push(...sourceAdaptation.failedGates);
@@ -6558,6 +6701,7 @@ function rowRefs(rows) {
     acceptanceScope: row.acceptanceScope,
     claimScope: row.claimScope,
     generalityClaim: row.generalityClaim ?? row.generality_claim,
+    fullRuntimeEvidenceAuthority: row.fullRuntimeEvidenceAuthority ?? row.full_runtime_evidence_authority,
     claimBoundaryAccepted: row.claimBoundaryAccepted,
     negativeAbiRefusalAccepted: row.negativeAbiRefusalAccepted,
     validationTargetScope: row.validationTargetScope,

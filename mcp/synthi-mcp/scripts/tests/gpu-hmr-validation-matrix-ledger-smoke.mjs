@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import {
+  buildGpuHmrValidationMatrixLedger,
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -2610,6 +2611,65 @@ assert.ok(targetMutatedAcceptedQuery.failedGates.some((gate) =>
   gate.code === 'validation_matrix_row_id_mismatch'
 ));
 
+const nativeAuthorityTrace = {
+  loaderEvents: [{
+    source: 'hipModuleLoadData',
+    evidenceRefs: ['evidence:native-authority:loader'],
+  }],
+  dispatchEvents: [{
+    command: 'hipModuleLaunchKernel',
+    evidenceRefs: ['evidence:native-authority:dispatch'],
+  }],
+  outputEvents: [{
+    kind: 'visual_frame',
+    evidenceRefs: ['evidence:native-authority:output'],
+  }],
+};
+const nativeAuthorityRow = withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('native-authority-no-strict-artifact', {
+  proofMode: 'hip_module_runtime_readback',
+  proofChain: 'backend_native_recomputed_ledger_trace',
+  proofChainAccepted: true,
+  runtimeProofArtifact: null,
+  runtime_proof_artifact: null,
+  runtimeTrace: nativeAuthorityTrace,
+  runtime_trace: nativeAuthorityTrace,
+  fullRuntimeEvidenceAuthority: null,
+  full_runtime_evidence_authority: null,
+}));
+const nativeAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [nativeAuthorityRow],
+});
+assert.equal(nativeAuthorityQuery.accepted, true, JSON.stringify(nativeAuthorityQuery.failedGates));
+assert.equal(nativeAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 1);
+
+const nativeAuthorityMissingLoaderRow = withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('native-authority-missing-loader', {
+  proofMode: 'hip_module_runtime_readback',
+  proofChain: 'backend_native_recomputed_ledger_trace',
+  proofChainAccepted: true,
+  runtimeProofArtifact: null,
+  runtime_proof_artifact: null,
+  runtimeTrace: {
+    dispatchEvents: nativeAuthorityTrace.dispatchEvents,
+    outputEvents: nativeAuthorityTrace.outputEvents,
+  },
+  runtime_trace: {
+    dispatchEvents: nativeAuthorityTrace.dispatchEvents,
+    outputEvents: nativeAuthorityTrace.outputEvents,
+  },
+  fullRuntimeEvidenceAuthority: null,
+  full_runtime_evidence_authority: null,
+}));
+const nativeAuthorityMissingLoaderQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [nativeAuthorityMissingLoaderRow],
+});
+assert.equal(nativeAuthorityMissingLoaderQuery.accepted, false);
+assert.equal(nativeAuthorityMissingLoaderQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(nativeAuthorityMissingLoaderQuery.failedGates.some((gate) =>
+  gate.code === 'full_runtime_authority_native_runtime_trace_missing'
+));
+
 const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');
 assert.equal(strictMissingArtifact?.proofMode, 'strict_runtime_ledger');
 assert.equal(strictMissingArtifact.matrixOutcome, 'unproven');
@@ -2706,6 +2766,23 @@ function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
   delete rowIdSeed.attempt_key;
   out.rowId = `gpu-validation-matrix-row:sha256:${sha256Hex(stableJson(rowIdSeed))}`;
   return out;
+}
+
+function withQueryRecomputedRowId(row) {
+  const probe = {
+    ...JSON.parse(JSON.stringify(row)),
+    rowId: 'gpu-validation-matrix-row:sha256:0000000000000000000000000000000000000000000000000000000000000000',
+  };
+  const query = queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [probe],
+  });
+  const mismatch = query.failedGates.find((gate) => gate.code === 'validation_matrix_row_id_mismatch');
+  assert.ok(mismatch?.recomputedRowId, 'expected query to expose recomputed row id for probe row');
+  return {
+    ...row,
+    rowId: mismatch.recomputedRowId,
+  };
 }
 
 function mutateAcceptedLedgerRecord(row, mutate) {
