@@ -4336,6 +4336,7 @@ function preflightBackendEvidenceCandidates(json = {}) {
 }
 
 function backendEvidenceFromCandidate(source, candidate) {
+  const schemaVersion = firstText(candidate.schemaVersion, candidate.schema);
   const backendField = candidate.backend ?? candidate.gpuBackend ?? candidate.gpu_backend;
   const backendFamilyField = candidate.backendFamily ?? candidate.backend_family;
   const profile = compactObject(candidate.profile ?? candidate.runtimeProfile ?? candidate.runtime_profile);
@@ -4364,16 +4365,31 @@ function backendEvidenceFromCandidate(source, candidate) {
     ...evidenceRefsFromValue(profile),
     ...evidenceRefsFromValue(runtimeCapability),
   ]);
+  const runtimeProbe = firstText(
+    runtimeCapability.probe,
+    runtimeCapability.probeId,
+    runtimeCapability.probe_id,
+    runtimeCapability.probeCommand,
+    runtimeCapability.probe_command,
+  );
   const failedGates = compactStringList([
+    schemaVersion === 'synthi.gpu_hmr.preflight_backend_contract.v1'
+      ? null
+      : 'preflight_backend_contract_schema_missing',
     backend ? null : 'preflight_backend_value_missing',
     backendFamily ? null : 'preflight_backend_family_missing',
+    runtimeProbe ? null : 'preflight_backend_probe_identity_missing',
     evidenceRefs.length > 0 ? null : 'preflight_backend_evidence_refs_missing',
   ]);
   return {
     source,
+    schemaVersion,
+    schema_version: schemaVersion,
     backend,
     backendFamily,
     backend_family: backendFamily,
+    runtimeProbe,
+    runtime_probe: runtimeProbe,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     accepted: failedGates.length === 0,
@@ -4409,6 +4425,8 @@ function preflightBackendEvidenceFacet(json = {}) {
 }
 
 function preflightBackendEvidenceAccepted(row = {}) {
+  const existing = compactObject(row.backendEvidence ?? row.backend_evidence);
+  if (existing.accepted === true) return true;
   const evidence = preflightBackendEvidenceFacet(row);
   return evidence.accepted === true;
 }

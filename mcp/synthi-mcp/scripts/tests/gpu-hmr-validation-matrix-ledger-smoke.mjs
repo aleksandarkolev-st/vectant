@@ -1520,6 +1520,33 @@ await writeJson(path.join(legacySchemaOnlyPreflightDir, 'schema-only-opencl-pref
   proofId: 'opencl-preflight-proof:sha256:legacy-schema-only',
 });
 
+const forgedRawBackendPreflightDir = path.join(artifactsRoot, 'forged-raw-backend-preflight');
+await writeJson(path.join(forgedRawBackendPreflightDir, 'raw-vulkan-backend-refs.json'), {
+  schema: 'synthi.gpu_hmr.vulkan_preflight.v1',
+  slug: 'forged-raw-vulkan-backend-refs',
+  backend: 'vulkan',
+  backendFamily: 'vulkan',
+  evidenceRefs: ['evidence:forged-raw-vulkan-preflight'],
+  classification: {
+    backend: 'vulkan',
+    backendFamily: 'vulkan',
+    vulkanAccepted: true,
+    resultState: 'vulkan-runtime-observed',
+    unsupportedReasons: [],
+    evidenceRefs: ['evidence:forged-raw-vulkan-preflight'],
+  },
+  acceptance: {
+    acceptedForVulkanRuntimePreflight: true,
+    acceptedForVulkanPipelineProof: false,
+    gpuHmrSuccess: false,
+    noShimApplied: true,
+    noIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'vulkan-preflight-proof:sha256:forged-raw-backend-refs',
+});
+
 await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'bevy-wgsl-name-only',
@@ -2931,6 +2958,29 @@ const legacySchemaOnlyPreflightCoverage = new Map(
   legacySchemaOnlyPreflightLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
 assert.equal(legacySchemaOnlyPreflightCoverage.get('opencl_dispatch_readback')?.status, 'missing');
+
+const forgedRawBackendPreflightLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRawBackendPreflightDir],
+  generatedAt: '2026-06-09T00:00:00.060Z',
+  includeUnproven: true,
+});
+const forgedRawBackendPreflight = forgedRawBackendPreflightLedger.rows.find(
+  (row) => row.targetId === 'forged-raw-vulkan-backend-refs',
+);
+assert.equal(forgedRawBackendPreflight?.proofMode, 'runtime_preflight');
+assert.equal(forgedRawBackendPreflight.matrixOutcome, 'unproven');
+assert.equal(forgedRawBackendPreflight.backend, 'unknown');
+assert.equal(forgedRawBackendPreflight.backendEvidence.accepted, false);
+assert.ok(forgedRawBackendPreflight.backendEvidence.failedGates.some(
+  (gate) => gate.code === 'preflight_backend_contract_schema_missing'
+));
+const forgedRawBackendPreflightCoverage = new Map(
+  forgedRawBackendPreflightLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(forgedRawBackendPreflightCoverage.get('vulkan_pipeline_frame')?.status, 'missing');
+
 const forgedPreflightBackendCoverageQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [{

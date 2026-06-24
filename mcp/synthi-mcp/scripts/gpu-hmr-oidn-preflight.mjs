@@ -180,6 +180,44 @@ function classifyPreflight({ oidnTool, tests, ldd }) {
   };
 }
 
+function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd }) {
+  const evidenceRefs = [
+    'probe:oidn_tool',
+    'probe:oidn_hip_device_library',
+    'probe:oidn_hip_tests',
+    'probe:oidn_cpu_diagnostics',
+    'probe:oidn_hip_ldd',
+  ];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'oidn_hip',
+      evidenceRefs,
+    },
+    backendFamily: {
+      value: 'oidn_hip',
+      evidenceRefs,
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      probe: 'oidn_hip_device_preflight',
+      workerContainer: CFG.workerContainer,
+      repoPath: CFG.repoPath,
+      toolFound: Boolean(toolProbe.tool),
+      hipDeviceLibraryFound: Boolean(libraryProbe.library),
+      hipTestCount: tests.filter((test) => test.device === 'hip').length,
+      cpuDiagnosticCount: tests.filter((test) => test.device === 'cpu').length,
+      missingLibraries: ldd?.missingLibraries ?? [],
+      noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
+      evidenceRefs,
+    },
+    evidenceRefs,
+  };
+}
+
 async function buildProof() {
   if (!CFG.workerContainer) failConfig('OIDN preflight requires a worker container');
   if (!CFG.repoPath) failConfig('OIDN preflight requires the HIPRT/OIDN repo path inside the worker');
@@ -213,6 +251,12 @@ async function buildProof() {
     hipDeviceLibraryProbe: libraryProbe.probe,
     ldd,
     tests,
+    backendEvidence: preflightBackendEvidence({
+      toolProbe,
+      libraryProbe,
+      tests,
+      ldd,
+    }),
     classification,
     acceptance: {
       acceptedForHipOutputProof: classification.oidnHipAccepted,
