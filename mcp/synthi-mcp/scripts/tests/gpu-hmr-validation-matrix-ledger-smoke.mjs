@@ -1003,7 +1003,7 @@ function runModeCoverageSupportFor(materials, extraProofIds = []) {
   };
 }
 
-function validationProfileEvidenceFor({ profileId, profileClass, evidenceRefs }) {
+function validationProfileEvidenceFor({ profileId, profileClass, evidenceRefs, proofIds }) {
   return {
     schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
     accepted: true,
@@ -1011,6 +1011,7 @@ function validationProfileEvidenceFor({ profileId, profileClass, evidenceRefs })
     profileClass,
     source: 'explicit_validation_matrix_profile_contract',
     evidenceRefs,
+    proofIds,
   };
 }
 
@@ -1020,12 +1021,30 @@ const flowRunModeCoverageSupport = runModeCoverageSupportFor(flowHot1RuntimeMate
   'gpu-runtime-proof:sha256:synthetic-hot1',
   'agent-split-run-mode-proof:sha256:hot1',
 ]);
-const flowVisualProfileEvidence = validationProfileEvidenceFor({
+const flowHot1VisualProfileEvidence = validationProfileEvidenceFor({
   profileId: 'flow',
   profileClass: 'flow_visual_gpu_path',
   evidenceRefs: [
     'evidence:validation-profile:flow:runtime-visual',
     flowHot1RuntimeMaterials.proofLedgerQuery.record.proofId,
+  ],
+  proofIds: [
+    'agent-split-run-mode-proof:sha256:hot1',
+    flowHot1RuntimeMaterials.proofLedgerQuery.record.proofId,
+    flowHot1RuntimeMaterials.runtimeProofArtifact.proofId,
+  ],
+});
+const flowHot2VisualProfileEvidence = validationProfileEvidenceFor({
+  profileId: 'flow',
+  profileClass: 'flow_visual_gpu_path',
+  evidenceRefs: [
+    'evidence:validation-profile:flow:runtime-visual',
+    flowHot2RuntimeMaterials.proofLedgerQuery.record.proofId,
+  ],
+  proofIds: [
+    'agent-split-run-mode-proof:sha256:hot2',
+    flowHot2RuntimeMaterials.proofLedgerQuery.record.proofId,
+    flowHot2RuntimeMaterials.runtimeProofArtifact.proofId,
   ],
 });
 
@@ -1052,7 +1071,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot1', 'gpu-runtime-proof:sha256:synthetic-hot1'),
   ...flowHot1RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot1',
-  validationProfileEvidence: flowVisualProfileEvidence,
+  validationProfileEvidence: flowHot1VisualProfileEvidence,
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
   runMode: {
@@ -1070,7 +1089,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot2', 'gpu-runtime-proof:sha256:synthetic-hot2'),
   ...flowHot2RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot2',
-  validationProfileEvidence: flowVisualProfileEvidence,
+  validationProfileEvidence: flowHot2VisualProfileEvidence,
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
   runMode: {
@@ -3277,6 +3296,73 @@ assert.equal(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.status, 'missin
 assert.ok(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.openGaps.includes(
   'flow_visual_runtime_profile_evidence_required',
 ));
+
+const forgedAcceptedProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-non-flow-forged-profile');
+await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'after.png'), 8, 8, (x, y) => [88 + x, 96 + y, 132, 255]);
+await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const forgedAcceptedProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'not-flow-runtime-target',
+  visualRoot: forgedAcceptedProfileDir,
+});
+await writeJson(path.join(forgedAcceptedProfileDir, 'hot1-forged-flow-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    forgedAcceptedProfileMaterials.proofLedgerQuery.record.proofId,
+    forgedAcceptedProfileMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...forgedAcceptedProfileMaterials,
+  targetId: 'not-flow-runtime-target',
+  profileId: 'not-flow-runtime-target',
+  proofId: 'agent-split-run-mode-proof:sha256:not-flow-forged-flow-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+      forgedAcceptedProfileMaterials.proofLedgerQuery.record.proofId,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:not-flow-forged-flow-profile',
+      forgedAcceptedProfileMaterials.proofLedgerQuery.record.proofId,
+      forgedAcceptedProfileMaterials.runtimeProofArtifact.proofId,
+    ],
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(forgedAcceptedProfileDir, 'before.png'),
+    afterImage: path.join(forgedAcceptedProfileDir, 'after.png'),
+    diffImage: path.join(forgedAcceptedProfileDir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:not-flow-forged-profile',
+    editHash: 'sha256:not-flow-forged-profile',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const forgedAcceptedProfileLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAcceptedProfileDir],
+  generatedAt: '2026-06-09T00:00:01.020Z',
+  includeUnproven: true,
+});
+const forgedAcceptedProfileCoverage = new Map(
+  forgedAcceptedProfileLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const forgedAcceptedProfileRuntime = forgedAcceptedProfileLedger.rows.find((row) =>
+  row.targetId === 'not-flow-runtime-target'
+);
+assert.equal(forgedAcceptedProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(forgedAcceptedProfileRuntime.validationProfileEvidence.accepted, false);
+assert.ok(forgedAcceptedProfileRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_id_not_bound_to_runtime_identity',
+));
+assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);

@@ -51,6 +51,13 @@ const VALIDATION_VISUAL_PROFILE_REQUIREMENTS = [
     missingGap: 'ray_light_visual_runtime_profile_evidence_required',
   },
 ];
+const VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu.hmr.validation_profile_evidence.v1';
+const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
+  'agent_split_fixture_runtime_visual_proof',
+  'agent_split_run_mode_visual_ledger_recomputed',
+  'explicit_validation_matrix_profile_contract',
+]);
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],
   ['proofId', 'proof_id'],
@@ -687,8 +694,107 @@ function rawValidationProfileEvidence(row = {}) {
   );
 }
 
+function rowEvidenceRefs(row = {}) {
+  const ledgerRecord = ledgerRecordForRow(row);
+  return compactStringList([
+    ...(Array.isArray(row.evidenceRefs) ? row.evidenceRefs : []),
+    ...(Array.isArray(row.evidence_refs) ? row.evidence_refs : []),
+    ...evidenceRefsFromValue(ledgerRecord),
+    ...evidenceRefsFromValue(row.runtimeProofArtifact ?? row.runtime_proof_artifact),
+    ...evidenceRefsFromValue(row.visual),
+  ]);
+}
+
+function visualArtifactHashesForRow(row = {}) {
+  return compactStringList([
+    ...(Array.isArray(row.visual?.images)
+      ? row.visual.images.map((image) => firstText(image.contentHash, image.content_hash))
+      : []),
+    ...artifactPathsFromValue(row.visualEvidenceArtifacts ?? row.visual_evidence_artifacts)
+      .filter(contentAddressedSha256),
+  ]);
+}
+
+function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
+  const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
+  const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
+  const rowProofIds = new Set(compactStringList([
+    ...(Array.isArray(row.proofIds) ? row.proofIds : []),
+    ...(Array.isArray(row.proof_ids) ? row.proof_ids : []),
+    row.ledger?.proofId,
+    row.ledger?.proof_id,
+    row.ledger?.record?.proofId,
+    row.ledger?.record?.proof_id,
+    row.runtimeProofArtifact?.proofId,
+    row.runtimeProofArtifact?.proof_id,
+    row.runtime_proof_artifact?.proofId,
+    row.runtime_proof_artifact?.proof_id,
+  ]));
+  const evidenceRefSet = new Set(rowEvidenceRefs(row));
+  const visualArtifactHashSet = new Set(visualArtifactHashesForRow(row));
+  const ledgerRecord = ledgerRecordForRow(row);
+  const profileId = firstText(supplied.profileId, supplied.profile_id, supplied.id);
+  const profileClass = firstText(
+    supplied.profileClass,
+    supplied.profile_class,
+    supplied.requirementId,
+    supplied.requirement_id,
+    supplied.coverageId,
+    supplied.coverage_id,
+  );
+  const proofIdsBoundToRow =
+    proofIds.length > 0
+    && proofIds.every((proofId) => rowProofIds.has(proofId));
+  const rowRuntimeIdentities = compactStringList([
+    row.targetId,
+    row.target_id,
+    row.profileId,
+    row.profile_id,
+    row.projectId,
+    row.project_id,
+    ledgerRecord.projectId,
+    ledgerRecord.project_id,
+    ledgerRecord.editId,
+    ledgerRecord.edit_id,
+  ]);
+  const profileIdBoundToRow =
+    Boolean(profileId)
+    && rowRuntimeIdentities.some((identity) =>
+      identity === profileId
+      || identity.startsWith(`${profileId}:`)
+      || identity.includes(`:${profileId}:`)
+    );
+  const evidenceRefsBoundToRow =
+    evidenceRefs.length > 0
+    && evidenceRefs.some((ref) =>
+      evidenceRefSet.has(ref)
+      || (profileId && ref.includes(profileId))
+      || (profileClass && ref.includes(profileClass))
+      || visualArtifactHashSet.has(ref)
+    );
+  const failedGates = compactStringList([
+    profileIdBoundToRow ? null : 'validation_profile_id_not_bound_to_runtime_identity',
+    proofIdsBoundToRow ? null : 'validation_profile_proof_ids_not_bound_to_row',
+    evidenceRefsBoundToRow ? null : 'validation_profile_evidence_refs_not_bound_to_row',
+  ]);
+  return {
+    accepted: failedGates.length === 0,
+    profileIdBoundToRow,
+    profile_id_bound_to_row: profileIdBoundToRow,
+    proofIdsBoundToRow,
+    proof_ids_bound_to_row: proofIdsBoundToRow,
+    evidenceRefsBoundToRow,
+    evidence_refs_bound_to_row: evidenceRefsBoundToRow,
+    rowProofIdCount: rowProofIds.size,
+    row_proof_id_count: rowProofIds.size,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function validationProfileEvidenceFacet(row = {}) {
   const supplied = rawValidationProfileEvidence(row);
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema);
   const profileId = firstText(
     supplied.profileId,
     supplied.profile_id,
@@ -705,6 +811,7 @@ function validationProfileEvidenceFacet(row = {}) {
   const source = firstText(supplied.source, supplied.evidenceSource, supplied.evidence_source);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
+  const binding = validationProfileEvidenceBindingFacet(row, supplied);
   const acceptedFlag = firstBool(
     supplied.accepted,
     supplied.profileAccepted,
@@ -714,17 +821,26 @@ function validationProfileEvidenceFacet(row = {}) {
   );
   const failedGates = compactStringList([
     Object.keys(supplied).length > 0 ? null : 'validation_profile_evidence_missing',
+    schemaVersion === VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION
+      ? null
+      : 'validation_profile_evidence_schema_missing',
     acceptedFlag === true ? null : 'validation_profile_evidence_not_explicitly_accepted',
     profileId ? null : 'validation_profile_id_missing',
     profileClass ? null : 'validation_profile_requirement_id_missing',
     source ? null : 'validation_profile_evidence_source_missing',
+    VALIDATION_PROFILE_EVIDENCE_SOURCES.has(source)
+      ? null
+      : 'validation_profile_evidence_source_not_authorized',
     evidenceRefs.length > 0 || proofIds.length > 0
       ? null
       : 'validation_profile_evidence_refs_missing',
+    ...binding.failedGates,
   ]);
   return {
     present: Object.keys(supplied).length > 0,
     accepted: failedGates.length === 0,
+    schemaVersion,
+    schema_version: schemaVersion,
     profileId,
     profile_id: profileId,
     profileClass,
@@ -734,6 +850,7 @@ function validationProfileEvidenceFacet(row = {}) {
     evidence_refs: evidenceRefs,
     proofIds,
     proof_ids: proofIds,
+    binding,
     failedGates,
     failed_gates: failedGates,
   };
