@@ -101,10 +101,18 @@ function sortedRowIds(json) {
     .sort();
 }
 
+function jsonStoredValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function assertSavedMatrixMatchesLive(name, saved, live) {
   assert.equal(live.query?.accepted, true, `${name} live matrix query must accept`);
   assert.equal(saved.json.proofId, live.proofId, `${name} saved proofId must match live aggregation`);
-  assert.deepEqual(saved.json.summary, live.summary, `${name} saved summary must match live aggregation`);
+  assert.deepEqual(
+    saved.json.summary,
+    jsonStoredValue(live.summary),
+    `${name} saved summary must match live aggregation`,
+  );
   assert.deepEqual(sortedRowIds(saved.json), sortedRowIds(live), `${name} saved row set must match live aggregation`);
 }
 
