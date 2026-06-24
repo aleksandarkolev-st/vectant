@@ -2687,12 +2687,16 @@ function parseRocmArrayAllocationPreflightOutput(output) {
       evidence_refs: ['runtime-capability-preflight:rocm:device_identity'],
     };
   }
+  const outputHash = createHash('sha256').update(text).digest('hex');
   return {
     schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+    observed: true,
     backend: 'rocm',
     api: 'hipMallocArray',
     probe: 'hip_array_allocation_preflight',
     command: 'hipcc hip_array_preflight.cpp && hip_array_preflight',
+    evidenceRefs: [`runtime-capability-preflight-output:sha256:${outputHash}`],
+    evidence_refs: [`runtime-capability-preflight-output:sha256:${outputHash}`],
     deviceCountResult: device ? Number(device[1]) : null,
     deviceCountError: device?.[2] ?? null,
     deviceCount: device ? Number(device[3]) : null,

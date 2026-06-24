@@ -1956,6 +1956,7 @@ const noDeviceRuntimeCapabilityPreflight = {
 
 const acceptedRuntimeCapabilityPreflight = {
   schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+  observed: true,
   backend: 'rocm',
   api: 'hipMallocArray',
   probe: 'hip_array_allocation_preflight',
@@ -1970,7 +1971,21 @@ const acceptedRuntimeCapabilityPreflight = {
   textureResourceMatrixTotal: 4,
   textureResourceMatrixFailureCount: 0,
   exitCode: 0,
-  evidenceRefs: ['evidence:runtime-capability-preflight:accepted'],
+  evidenceRefs: [`evidence:runtime-capability-preflight:${hashValue('accepted-runtime-capability-preflight')}`],
+};
+
+const acceptedSidecarRuntimeConsistencyNotApplicable = {
+  schemaVersion: 'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1',
+  status: 'not_applicable',
+  accepted: true,
+  notApplicable: true,
+  not_applicable: true,
+  proofAuthority: 'explicit_no_device_sidecar_in_target_contract',
+  proof_authority: 'explicit_no_device_sidecar_in_target_contract',
+  blockingGaps: [],
+  blocking_gaps: [],
+  evidenceRefs: [`evidence:sidecar-runtime-consistency:${hashValue('sidecar-not-applicable')}`],
+  evidence_refs: [`evidence:sidecar-runtime-consistency:${hashValue('sidecar-not-applicable')}`],
 };
 
 function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
@@ -1988,11 +2003,15 @@ function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
       ...camelRuntimeProofArtifact,
       runtimeCapabilityPreflight: acceptedRuntimeCapabilityPreflight,
       runtime_capability_preflight: acceptedRuntimeCapabilityPreflight,
+      realRocmSidecarRuntimeConsistency: acceptedSidecarRuntimeConsistencyNotApplicable,
+      real_rocm_sidecar_runtime_consistency: acceptedSidecarRuntimeConsistencyNotApplicable,
     },
     runtime_proof_artifact: {
       ...snakeRuntimeProofArtifact,
       runtimeCapabilityPreflight: acceptedRuntimeCapabilityPreflight,
       runtime_capability_preflight: acceptedRuntimeCapabilityPreflight,
+      realRocmSidecarRuntimeConsistency: acceptedSidecarRuntimeConsistencyNotApplicable,
+      real_rocm_sidecar_runtime_consistency: acceptedSidecarRuntimeConsistencyNotApplicable,
     },
   };
 }
@@ -3934,10 +3953,172 @@ assert.equal(acceptedRealRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dispat
 assert.equal(acceptedRealRocm.realRocmRuntimeChain.outputTargetId, 'output-target:hot_delta_1');
 assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
+assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.observed, true);
+assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.accepted, true);
+assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.notApplicable, true);
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+
+async function writeForgedRealRocmAcceptanceGateCase({
+  slug,
+  outputOracleResolution = null,
+  runtimeCapabilityPreflight = null,
+  mutateMaterials = null,
+  expectedReasons = [],
+  expectedOpenGaps = [],
+}) {
+  const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);
+  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+  await writeRgbaPng(path.join(dir, 'after-hmr-first.png'), 8, 8, (x, y) => [84 + x, 100 + y, 132, 255]);
+  await writeRgbaPng(path.join(dir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+  const materials = realRocmRuntimeProofMaterials('hot_delta_1', {
+    projectId: `real-rocm-forged-${slug}`,
+    visualRoot: dir,
+  });
+  if (runtimeCapabilityPreflight !== null) {
+    materials.runtimeCapabilityPreflight = runtimeCapabilityPreflight;
+    materials.runtime_capability_preflight = runtimeCapabilityPreflight;
+    materials.runtimeProofArtifact.runtimeCapabilityPreflight = runtimeCapabilityPreflight;
+    materials.runtimeProofArtifact.runtime_capability_preflight = runtimeCapabilityPreflight;
+    materials.runtime_proof_artifact.runtimeCapabilityPreflight = runtimeCapabilityPreflight;
+    materials.runtime_proof_artifact.runtime_capability_preflight = runtimeCapabilityPreflight;
+  }
+  if (typeof mutateMaterials === 'function') mutateMaterials(materials);
+  await writeJson(path.join(dir, `real-rocm-forged-${slug}.json`), {
+    slug: `gpu-real-rocm-forged-${slug}-20260623`,
+    real_rocm_profile: { id: `real-rocm-forged-${slug}` },
+    source_url: `https://example.invalid/rocm/forged-${slug}.git`,
+    repo_commit: 'dededededededededededededededededededede',
+    entry_file: 'src/kernels/gate_entry.hip',
+    delta_file: 'src/kernels/gate_delta.h',
+    target_name: `ForgedGate${slug}`,
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: outputOracleResolution ?? {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      sourceDerivedCandidateCount: 0,
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: false,
+      phaseRaw: 'small-oracle',
+      phase: 'small-oracle',
+      recognized: true,
+      reason: null,
+    },
+    target_progression_gates: [
+      { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+    ],
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    ...materials,
+    visual_artifact_paths: [
+      path.join(dir, 'before-hmr-first.png'),
+      path.join(dir, 'after-hmr-first.png'),
+      path.join(dir, 'before-after-diff.png'),
+    ],
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: `real-rocm-forged-${slug}-delta`,
+      editHash: hashValue(`real-rocm-forged-${slug}-delta`),
+    },
+    checks: [
+      {
+        name: 'real ROCm repo',
+        status: 'pass',
+        detail: `https://example.invalid/rocm/forged-${slug}.git @ dededede files=16000`,
+      },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  });
+  const forgedLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [dir],
+    generatedAt: '2026-06-09T00:00:02.010Z',
+    includeUnproven: true,
+  });
+  const row = forgedLedger.rows.find((entry) => entry.proofMode === 'real_rocm_repo_validation');
+  assert.equal(row?.matrixOutcome, 'unproven');
+  assert.equal(row.acceptedForGpuHmr, false);
+  assert.equal(row.runtimeProofArtifact.accepted, true);
+  assert.equal(row.ledger.gpuHmrSuccess, true);
+  for (const reason of expectedReasons) assert.ok(row.reasons.includes(reason), reason);
+  for (const gap of expectedOpenGaps) assert.ok(row.openGaps.includes(gap), gap);
+  return row;
+}
+
+const forgedUndertypedPreflightRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'undertyped-runtime-preflight',
+  runtimeCapabilityPreflight: { backend: 'rocm' },
+  expectedReasons: [
+    'real_rocm_runtime_capability_preflight_not_proven',
+    'real_rocm_runtime_capability_preflight:runtime_capability_preflight_schema_missing',
+    'real_rocm_runtime_capability_preflight:runtime_capability_preflight_not_observed',
+    'real_rocm_runtime_capability_preflight:runtime_capability_preflight_api_missing',
+    'real_rocm_runtime_capability_preflight:runtime_capability_preflight_probe_missing',
+  ],
+  expectedOpenGaps: [
+    'real_rocm_runtime_capability_preflight_failed',
+    'real_rocm_runtime_capability_preflight:runtime_capability_preflight_evidence_refs_missing',
+  ],
+});
+assert.equal(forgedUndertypedPreflightRocm.realRocmRuntimeCapabilityPreflight.accepted, false);
+
+const forgedUndertypedOutputResolutionRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'undertyped-output-resolution',
+  outputOracleResolution: {
+    selectedSource: 'profile_runtime_profile',
+  },
+  expectedReasons: ['real_rocm_output_oracle_resolution_not_accepted'],
+  expectedOpenGaps: [
+    'real_rocm_output_oracle_resolution_required',
+    'real_rocm_output_oracle_resolution_schema_missing',
+    'real_rocm_output_oracle_contract_not_explicitly_present',
+    'real_rocm_output_oracle_runtime_profile_not_explicitly_present',
+    'real_rocm_output_oracle_runtime_profile_sync_not_explicitly_proven',
+  ],
+});
+assert.equal(forgedUndertypedOutputResolutionRocm.outputOracleResolutionGate.accepted, false);
+
+const forgedMissingSidecarRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'missing-sidecar-consistency',
+  mutateMaterials(materials) {
+    delete materials.runtimeProofArtifact.realRocmSidecarRuntimeConsistency;
+    delete materials.runtimeProofArtifact.real_rocm_sidecar_runtime_consistency;
+    delete materials.runtime_proof_artifact.realRocmSidecarRuntimeConsistency;
+    delete materials.runtime_proof_artifact.real_rocm_sidecar_runtime_consistency;
+  },
+  expectedReasons: [
+    'real_rocm_sidecar_runtime_consistency_not_proven',
+    'real_rocm_sidecar_runtime_consistency:real_rocm_sidecar_runtime_consistency_missing',
+  ],
+  expectedOpenGaps: ['real_rocm_sidecar_runtime_consistency_required'],
+});
+assert.equal(forgedMissingSidecarRocm.realRocmSidecarRuntimeConsistencyGate.accepted, false);
 
 async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) {
   const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);
