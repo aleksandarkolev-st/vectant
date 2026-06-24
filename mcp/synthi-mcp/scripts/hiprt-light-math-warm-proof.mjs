@@ -2037,7 +2037,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   }
   if (sourceAdaptedProfile) {
     limitations.push({
-      code: 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr',
+      code: 'source_adapted_profile_not_no_shim_gpu_hmr',
       sourceAdaptations,
       source_adaptations: sourceAdaptations,
     });

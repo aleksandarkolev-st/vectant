@@ -2146,7 +2146,7 @@ async function hiprtWarmRow(json, filePath, context) {
     acceptanceClass: accepted
       ? 'full_runtime_gpu_hmr'
       : sourceAdaptedVisualProfileAccepted
-        ? 'hiprt_source_adapted_visual_profile_not_no_shim_hmr'
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
         : blankRegionRefusal
           ? 'hiprt_visual_blank_region_refusal'
           : 'hiprt_runtime_rejected',
@@ -2159,7 +2159,7 @@ async function hiprtWarmRow(json, filePath, context) {
     proofChain: accepted
       ? 'embedded_runtime_proof_artifact_recomputed_ledger'
       : sourceAdaptedVisualProfileAccepted
-        ? 'hiprt_source_adapted_visual_profile_not_no_shim_hmr'
+        ? 'source_adapted_visual_profile_not_no_shim_hmr'
         : blankRegionRefusal
           ? 'hiprt_oracle_region_blank_refusal'
           : 'hiprt_strict_runtime_rejected',
@@ -2182,7 +2182,7 @@ async function hiprtWarmRow(json, filePath, context) {
       editToFirstVisualMs: finiteNumber(changed.totalHostWallMs),
     },
     reasons: accepted ? [] : compactStringList([
-      sourceAdaptedVisualProfileAccepted ? 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       visual.accepted ? null : 'visual_artifacts_not_readable',
       strict.fullRuntimeProven === true ? null : 'strict_full_runtime_not_proven',
       ledger.present === true ? null : 'proof_ledger_missing',
@@ -3875,10 +3875,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && json.gpuHmrSuccess === true;
   const acceptedRuntime =
     strictRuntimeVisualProof === true
-    && !(backend === 'hiprt' && sourceAdaptedProfile === true);
+    && sourceAdaptedProfile === false;
   const sourceAdaptedVisualProfileAccepted =
     strictRuntimeVisualProfileProof === true
-    && backend === 'hiprt'
     && sourceAdaptedProfile === true;
   const acceptedCold =
     isCold
@@ -3921,7 +3920,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     acceptanceClass: acceptedRuntime
       ? 'full_runtime_gpu_hmr'
       : sourceAdaptedVisualProfileAccepted
-        ? 'hiprt_source_adapted_run_mode_visual_profile_not_no_shim_hmr'
+        ? 'source_adapted_run_mode_visual_profile_not_no_shim_hmr'
         : acceptedCold
           ? 'cold_split_visual_proof'
           : 'run_mode_proof_rejected',
@@ -3936,7 +3935,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     proofChain: acceptedRuntime
       ? 'embedded_runtime_proof_artifact_recomputed_ledger'
       : sourceAdaptedVisualProfileAccepted
-        ? 'hiprt_source_adapted_run_mode_visual_profile_not_no_shim_hmr'
+        ? 'source_adapted_run_mode_visual_profile_not_no_shim_hmr'
         : acceptedCold
           ? genericRuntimeRunMode
             ? 'runtime_initial_visual_gate'
@@ -3968,7 +3967,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     processRestarted,
     timings: compactObject(json.timings),
     reasons: matrixOutcome === 'unproven' || sourceAdaptedVisualProfileAccepted ? compactStringList([
-      sourceAdaptedVisualProfileAccepted ? 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runMode.accepted ? null : 'run_mode_timing_not_accepted',
       visual.accepted ? null : 'visual_artifacts_not_readable',
       isCold || ledger.present ? null : 'embedded_proof_ledger_missing',

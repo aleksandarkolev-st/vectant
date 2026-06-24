@@ -410,7 +410,7 @@ function runtimeProofMaterials(scope, options = {}) {
       },
     ],
     limitations: sourceAdaptedVisualProfile
-      ? [{ code: 'hiprt_source_adapted_profile_not_no_shim_gpu_hmr' }]
+      ? [{ code: 'source_adapted_profile_not_no_shim_gpu_hmr' }]
       : [],
     proofLedger,
     proofLedgerQuery,
@@ -926,6 +926,46 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
     editHash: 'sha256:hot2',
     editKind: 'different_gpu_edit',
     differentEdit: true,
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:forged-source-adapted-webgpu',
+    'gpu-runtime-proof:sha256:forged-source-adapted-webgpu',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-source-adapted-webgpu',
+  }),
+  backend: 'webgpu',
+  targetId: 'forged-source-adapted-webgpu',
+  profileId: 'forged-source-adapted-webgpu',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-source-adapted-webgpu',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runtimeProbeInstrumentation: {
+    sourceAdaptations: [
+      'runtime_capture_hook_inserted',
+      'application_render_state_reset_hook_inserted',
+    ],
+    adaptedOrAlreadyPresent: true,
+  },
+  runtime_probe_instrumentation: {
+    source_adaptations: [
+      'runtime_capture_hook_inserted',
+      'application_render_state_reset_hook_inserted',
+    ],
+    adapted_or_already_present: true,
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:forged-source-adapted-webgpu',
+    editHash: 'sha256:forged-source-adapted-webgpu',
+    editKind: 'gpu_artifact_edit',
   },
 });
 
@@ -2011,6 +2051,20 @@ assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
 
+const forgedSourceAdaptedWebGpu = ledger.rows.find((row) =>
+  row.targetId === 'forged-source-adapted-webgpu'
+);
+assert.equal(forgedSourceAdaptedWebGpu?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(forgedSourceAdaptedWebGpu.acceptedForGpuHmr, false);
+assert.equal(forgedSourceAdaptedWebGpu.gpuHmrSuccess, false);
+assert.equal(forgedSourceAdaptedWebGpu.visualProfileAccepted, true);
+assert.equal(forgedSourceAdaptedWebGpu.sourceAdaptedProfile, true);
+assert.equal(forgedSourceAdaptedWebGpu.runtimeProofArtifact.accepted, true);
+assert.equal(forgedSourceAdaptedWebGpu.ledger.gpuHmrSuccess, true);
+assert.equal(forgedSourceAdaptedWebGpu.backend, 'webgpu');
+assert.ok(forgedSourceAdaptedWebGpu.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+assert.ok(forgedSourceAdaptedWebGpu.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+
 const forgedWebGpuCompute = ledger.rows.find((row) => row.targetId === 'forged-webgpu-compute');
 assert.equal(forgedWebGpuCompute?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpuCompute.acceptedForGpuHmr, false);
@@ -2040,7 +2094,7 @@ assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.accepted, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.scope, 'hiprt_declared_visual_profile');
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.arbitraryLibraryAccepted, false);
-assert.ok(acceptedHiprt.reasons.includes('hiprt_source_adapted_profile_not_no_shim_gpu_hmr'));
+assert.ok(acceptedHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 assert.ok(acceptedHiprt.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 
 const forgedHiprtMissingInstrumentation = ledger.rows.find(
