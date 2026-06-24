@@ -602,39 +602,10 @@ function rowRequiresPerTargetRunModes(row) {
   return row.coverageObligations?.perTargetRunModes === true;
 }
 
-function broadLibraryAgnosticScopeProven(row = {}) {
-  const facet = compactObject(row.broadLibraryAgnosticProof ?? row.broad_library_agnostic_proof);
-  if (Object.keys(facet).length === 0) return false;
-  const accepted = firstBool(
-    facet.accepted,
-    facet.proven,
-    facet.scopeAccepted,
-    facet.scope_accepted,
-  );
-  const recomputedFromLedger = firstBool(
-    facet.recomputedFromLedger,
-    facet.recomputed_from_ledger,
-  );
-  const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
-  const backendScopes = compactStringList(facet.backendScopes ?? facet.backend_scopes);
-  const libraryFamilies = compactStringList(facet.libraryFamilies ?? facet.library_families);
-  const environmentClasses = compactStringList(
-    facet.environmentClasses ?? facet.environment_classes,
-  );
-  const negativeRefusalProofs = compactStringList(
-    facet.negativeRefusalProofs ?? facet.negative_refusal_proofs,
-  );
-  const outputOracleProofs = compactStringList(
-    facet.outputOracleProofs ?? facet.output_oracle_proofs,
-  );
-  return accepted === true
-    && recomputedFromLedger === true
-    && evidenceRefs.length > 0
-    && backendScopes.length > 1
-    && libraryFamilies.length > 1
-    && environmentClasses.length > 0
-    && negativeRefusalProofs.length > 0
-    && outputOracleProofs.length > 0;
+function broadLibraryAgnosticScopeProven(_row = {}) {
+  // Broad acceptance is a matrix-level generalization claim. A single row, even
+  // with a broad-looking facet, cannot authorize it.
+  return false;
 }
 
 function inferFullRuntimeAcceptanceScope(row) {
@@ -4199,6 +4170,60 @@ function fullRuntimeScopeBreakdown(rows) {
   return out;
 }
 
+function rowHasAcceptedComputeEvidence(row) {
+  return row.outputOracleFacet?.accepted === true
+    || row.output_oracle_facet?.accepted === true
+    || row.computeCardOnlyProofAccepted === true
+    || row.compute_card_only_proof_accepted === true;
+}
+
+function broadLibraryAgnosticReadiness(rows) {
+  const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
+  const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
+  const broadRuntimeRows = fullRuntimeRows.filter(rowIsBroadFullRuntime);
+  const refusalRowsForReadiness = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
+  const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
+  const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
+  const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
+  const visualTargets = compactStringList(
+    fullRuntimeRows.filter(rowHasAcceptedVisualEvidence).map((row) => row.targetId),
+  );
+  const computeTargets = compactStringList(
+    fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
+  );
+  const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
+  const openGaps = compactStringList([
+    'matrix_level_broad_generalization_proof_not_present',
+    broadRuntimeRows.length > 0 ? null : 'broad_runtime_rows_not_computed_from_matrix',
+    backends.length >= 4 ? null : 'broad_acceptance_requires_more_backend_families',
+    acceptanceScopes.length >= 4 ? null : 'broad_acceptance_requires_more_acceptance_scopes',
+    visualTargets.length > 0 ? null : 'broad_acceptance_requires_visual_oracle_rows',
+    computeTargets.length > 0 ? null : 'broad_acceptance_requires_compute_oracle_rows',
+    refusalRowsForReadiness.length >= 8 ? null : 'broad_acceptance_requires_adversarial_refusals',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.broad_library_agnostic_readiness.v1',
+    authority: 'matrix_computed_not_row_declared',
+    accepted: false,
+    broadRuntimeRows: broadRuntimeRows.length,
+    scopedRuntimeRows: scopedRuntimeRows.length,
+    acceptedFullRuntimeRows: fullRuntimeRows.length,
+    distinctBackendCount: backends.length,
+    distinctAcceptanceScopeCount: acceptanceScopes.length,
+    distinctProofModeCount: proofModes.length,
+    visualOracleTargetCount: visualTargets.length,
+    computeOracleTargetCount: computeTargets.length,
+    refusalTargetCount: refusalTargets.length,
+    backends,
+    acceptanceScopes,
+    proofModes,
+    visualTargets,
+    computeTargets,
+    refusalTargets,
+    openGaps,
+  };
+}
+
 function coverageSummary(rows) {
   const byOutcome = {};
   const byBackend = {};
@@ -4238,6 +4263,7 @@ function coverageSummary(rows) {
     preflightOnlyTargets: compactStringList(preflightRows.map((row) => row.targetId)),
     unprovenRows: unprovenRows.length,
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
+    broadLibraryAgnosticReadiness: broadLibraryAgnosticReadiness(rows),
     planCoverage: planCoverage(rows),
   };
 }

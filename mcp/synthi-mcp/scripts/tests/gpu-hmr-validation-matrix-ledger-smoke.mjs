@@ -1678,6 +1678,42 @@ assert.ok(forgedBroadScopeQuery.failedGates.some((gate) =>
 assert.ok(forgedBroadScopeQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
 ));
+assert.equal(
+  forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.authority,
+  'matrix_computed_not_row_declared',
+);
+assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.accepted, false);
+const forgedBroadScopeWithFacetQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-forged-broad-acceptance-scope-with-facet', {
+      acceptanceScope: 'broad_library_agnostic',
+      claimScope: 'broad_library_agnostic',
+      broadLibraryAgnosticProof: {
+        accepted: true,
+        recomputedFromLedger: true,
+        evidenceRefs: ['ledger:a', 'ledger:b'],
+        backendScopes: ['hip', 'hiprt', 'webgpu', 'opencl'],
+        libraryFamilies: ['generated', 'engine', 'large-rocm'],
+        environmentClasses: ['local-rocm'],
+        negativeRefusalProofs: ['refusal:a'],
+        outputOracleProofs: ['oracle:a'],
+      },
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(forgedBroadScopeWithFacetQuery.accepted, false);
+assert.equal(forgedBroadScopeWithFacetQuery.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.equal(forgedBroadScopeWithFacetQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedBroadScopeWithFacetQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_broad_library_agnostic_scope_proof'
+));
+assert.ok(forgedBroadScopeWithFacetQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
+));
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
