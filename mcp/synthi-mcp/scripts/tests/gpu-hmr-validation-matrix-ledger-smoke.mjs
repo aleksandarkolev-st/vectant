@@ -1158,9 +1158,9 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
   proofId: 'opencl-preflight-proof:sha256:synthetic',
 });
 
-await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-shader-material-rejection-proof.json'), {
+await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
-  profileId: 'bevy-wgsl-shader-material',
+  profileId: 'bevy-wgsl-name-only',
   proofMode: 'mcp_preview',
   status: 'fail',
   rejection: {
@@ -1173,7 +1173,73 @@ await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-shader-mater
       'visual_oracle_not_accepted',
     ],
   },
+  proofId: 'external-rejection-proof:sha256:synthetic-bevy-name-only',
+});
+
+await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-shader-material-rejection-proof.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+  profileId: 'explicit-bevy-wgsl-shader-material',
+  proofMode: 'mcp_preview',
+  backend: 'bevy_wgsl',
+  backendFamily: 'wgpu_vulkan',
+  libraryFamily: 'bevy',
+  runtimeEnvironment: 'mcp_preview',
+  profileClass: 'engine_asset_reload_visual_profile',
+  status: 'fail',
+  rejection: {
+    accepted: false,
+    reasons: [
+      'external_profile_failed',
+      'mcp_no_decoded_frames',
+      'mcp_request_timeout',
+      'visual_frame_missing',
+      'visual_oracle_not_accepted',
+    ],
+  },
   proofId: 'external-rejection-proof:sha256:synthetic-bevy',
+});
+
+const externalVisualDir = path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual');
+await writeRgbaPng(path.join(externalVisualDir, 'before.png'), 8, 8, () => [4, 8, 16, 255]);
+await writeRgbaPng(path.join(externalVisualDir, 'after.png'), 8, 8, (x, y) => [80 + x, 48 + y, 24, 255]);
+await writeRgbaPng(path.join(externalVisualDir, 'diff.png'), 8, 8, () => [255, 180, 64, 255]);
+await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual-report.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+  profile: {
+    id: 'explicit-external-engine-visual',
+    backend: 'webgl',
+    backendFamily: 'webgl',
+    libraryFamily: 'threejs',
+    runtimeEnvironment: 'browser_dev_server',
+    profileClass: 'external_engine_visual_profile',
+  },
+  proofMode: 'external_runtime_screenshot',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  status: 'pass',
+  visualOracleArtifacts: {
+    before_image: path.join(externalVisualDir, 'before.png'),
+    after_image: path.join(externalVisualDir, 'after.png'),
+    diff_image: path.join(externalVisualDir, 'diff.png'),
+    capture_backend: 'external_runtime_screenshot',
+  },
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 64,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  timings: {
+    totalMs: 44,
+    editToScreenshotMs: 12,
+    visualDiffMs: 3,
+  },
+  proofId: 'external-profile-report:sha256:synthetic-engine-visual',
 });
 
 const noDeviceRuntimeCapabilityPreflight = {
@@ -2128,9 +2194,25 @@ assert.equal(opencl.refusalProven, true);
 const bevy = ledger.rows.find((row) => row.backend === 'bevy_wgsl');
 assert.equal(bevy?.matrixOutcome, 'refusal_proven');
 assert.equal(bevy.acceptedForGpuHmr, false);
+assert.equal(bevy.externalProjectContract.accepted, true);
+assert.equal(bevy.externalProjectContract.profileClass, 'engine_asset_reload_visual_profile');
 assert.ok(bevy.reasons.includes('mcp_no_decoded_frames'));
 assert.ok(bevy.reasons.includes('mcp_request_timeout'));
 assert.ok(bevy.reasons.includes('visual_frame_missing'));
+
+const bevyNameOnly = ledger.rows.find((row) => row.targetId === 'bevy-wgsl-name-only');
+assert.equal(bevyNameOnly?.matrixOutcome, 'refusal_proven');
+assert.equal(bevyNameOnly.backend, 'unknown');
+assert.equal(bevyNameOnly.externalProjectContract.accepted, false);
+assert.ok(bevyNameOnly.openGaps.includes('external_backend_metadata_missing'));
+assert.ok(bevyNameOnly.openGaps.includes('external_profile_class_missing'));
+
+const externalVisual = ledger.rows.find((row) => row.targetId === 'explicit-external-engine-visual');
+assert.equal(externalVisual?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(externalVisual.backend, 'webgl');
+assert.equal(externalVisual.visual.accepted, true);
+assert.equal(externalVisual.externalProjectContract.accepted, true);
+assert.equal(externalVisual.externalProjectContract.profileClass, 'external_engine_visual_profile');
 
 const largeRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
@@ -2451,7 +2533,7 @@ assert.equal(
   Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),
   ledger.summary.allFullRuntimeGpuHmrRows,
 );
-assert.equal(ledger.summary.refusalProvenRows, 4);
+assert.equal(ledger.summary.refusalProvenRows, 5);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
@@ -2464,6 +2546,7 @@ assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing'
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_compute_runtime_readback')?.status, 'missing');
+assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
 assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
 assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);

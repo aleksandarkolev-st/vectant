@@ -3124,7 +3124,8 @@ async function hipModuleRuntimeRow(json, filePath, context) {
 
 async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
-  const backend = profileId?.includes('bevy') ? 'bevy_wgsl' : 'webgl';
+  const externalProjectContract = externalProjectContractEvidence(json);
+  const backend = externalProjectContract.backend;
   const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
   const visualDiff = compactObject(json.visualDiff ?? json.visual_diff);
   const visual = await visualArtifactEvidence(
@@ -3162,6 +3163,10 @@ async function externalProjectRow(json, filePath, context) {
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
     backend,
+    externalProjectContract,
+    external_project_contract: externalProjectContract,
+    backendEvidence: externalProjectContract,
+    backend_evidence: externalProjectContract,
     targetId: profileId,
     profileId,
     proofMode: firstText(json.proofMode, json.profile?.proofMode),
@@ -3209,11 +3214,124 @@ async function externalProjectRow(json, filePath, context) {
       visualProfileAccepted || visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
     openGaps: visualProfileAccepted
-      ? ['full_runtime_gpu_hmr_ledger_not_present']
+      ? compactStringList(['full_runtime_gpu_hmr_ledger_not_present', ...externalProjectContract.failedGates])
       : refusalProven
-        ? ['full_runtime_gpu_hmr_not_proven']
-        : ['external_profile_not_accepted'],
+        ? compactStringList(['full_runtime_gpu_hmr_not_proven', ...externalProjectContract.failedGates])
+        : compactStringList(['external_profile_not_accepted', ...externalProjectContract.failedGates]),
   });
+}
+
+function normalizeExternalBackend(value) {
+  const raw = text(value);
+  if (!raw) return null;
+  const normalized = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['bevy_wgsl', 'webgpu', 'webgl', 'hip', 'hiprt', 'opencl', 'vulkan', 'wgpu'].includes(normalized)) {
+    return normalized;
+  }
+  return normalized;
+}
+
+function externalProjectContractEvidence(json = {}) {
+  const profile = compactObject(json.profile);
+  const project = compactObject(profile.project);
+  const rejection = compactObject(json.rejection);
+  const explicitBackend = firstText(
+    json.backend,
+    json.gpu_backend,
+    json.gpuBackend,
+    json.render_backend,
+    json.renderBackend,
+    json.shader_backend,
+    json.shaderBackend,
+    profile.backend,
+    profile.gpu_backend,
+    profile.gpuBackend,
+    profile.render_backend,
+    profile.renderBackend,
+    profile.shader_backend,
+    profile.shaderBackend,
+    project.backend,
+    project.gpu_backend,
+    project.gpuBackend,
+    project.render_backend,
+    project.renderBackend,
+    rejection.backend,
+    rejection.gpu_backend,
+    rejection.gpuBackend,
+  );
+  const backendFamily = firstText(
+    json.backendFamily,
+    json.backend_family,
+    profile.backendFamily,
+    profile.backend_family,
+    project.backendFamily,
+    project.backend_family,
+    rejection.backendFamily,
+    rejection.backend_family,
+  );
+  const libraryFamily = firstText(
+    json.libraryFamily,
+    json.library_family,
+    profile.libraryFamily,
+    profile.library_family,
+    project.libraryFamily,
+    project.library_family,
+    rejection.libraryFamily,
+    rejection.library_family,
+  );
+  const runtimeEnvironment = firstText(
+    json.runtimeEnvironment,
+    json.runtime_environment,
+    profile.runtimeEnvironment,
+    profile.runtime_environment,
+    project.runtimeEnvironment,
+    project.runtime_environment,
+    rejection.runtimeEnvironment,
+    rejection.runtime_environment,
+  );
+  const profileClass = firstText(
+    json.profileClass,
+    json.profile_class,
+    profile.profileClass,
+    profile.profile_class,
+    project.profileClass,
+    project.profile_class,
+    rejection.profileClass,
+    rejection.profile_class,
+  );
+  const backend = normalizeExternalBackend(explicitBackend);
+  const accepted = Boolean(
+    backend
+    && backendFamily
+    && libraryFamily
+    && runtimeEnvironment
+    && profileClass,
+  );
+  const failedGates = compactStringList([
+    backend ? null : 'external_backend_metadata_missing',
+    backendFamily ? null : 'external_backend_family_missing',
+    libraryFamily ? null : 'external_library_family_missing',
+    runtimeEnvironment ? null : 'external_runtime_environment_missing',
+    profileClass ? null : 'external_profile_class_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_project_contract_evidence.v1',
+    accepted,
+    backend: backend ?? 'unknown',
+    rawBackend: explicitBackend ?? null,
+    raw_backend: explicitBackend ?? null,
+    backendFamily: backendFamily ?? null,
+    backend_family: backendFamily ?? null,
+    libraryFamily: libraryFamily ?? null,
+    library_family: libraryFamily ?? null,
+    runtimeEnvironment: runtimeEnvironment ?? null,
+    runtime_environment: runtimeEnvironment ?? null,
+    profileClass: profileClass ?? null,
+    profile_class: profileClass ?? null,
+    authority: accepted ? 'explicit_external_profile_contract_metadata' : 'missing_explicit_external_profile_contract_metadata',
+    failedGates,
+    failed_gates: failedGates,
+  };
 }
 
 async function readExternalRejectionProof(proofPath, repoRoot, baseDir, expectedProfileId = null) {
@@ -3238,7 +3356,8 @@ async function readExternalRejectionProof(proofPath, repoRoot, baseDir, expected
 async function externalProjectRejectionRow(json, filePath, context) {
   const profileId = firstText(json.profileId, json.profile_id, path.basename(filePath).replace(/-\d+-rejection-proof\.json$/, ''));
   if (isSelfCheckId(profileId) || isSelfCheckId(filePath)) return null;
-  const backend = profileId?.includes('bevy') ? 'bevy_wgsl' : 'webgl';
+  const externalProjectContract = externalProjectContractEvidence(json);
+  const backend = externalProjectContract.backend;
   const rejection = compactObject(json.rejection);
   const reasons = compactStringList(rejection.reasons);
   const refusalProven =
@@ -3251,6 +3370,10 @@ async function externalProjectRejectionRow(json, filePath, context) {
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
     backend,
+    externalProjectContract,
+    external_project_contract: externalProjectContract,
+    backendEvidence: externalProjectContract,
+    backend_evidence: externalProjectContract,
     targetId: profileId,
     profileId,
     proofMode: firstText(json.proofMode, json.proof_mode, 'external_rejection'),
@@ -3291,7 +3414,9 @@ async function externalProjectRejectionRow(json, filePath, context) {
     processRestarted: null,
     timings: {},
     reasons,
-    openGaps: refusalProven ? ['full_runtime_gpu_hmr_not_proven'] : ['external_rejection_artifact_not_accepted'],
+    openGaps: refusalProven
+      ? compactStringList(['full_runtime_gpu_hmr_not_proven', ...externalProjectContract.failedGates])
+      : compactStringList(['external_rejection_artifact_not_accepted', ...externalProjectContract.failedGates]),
   });
 }
 
@@ -5236,6 +5361,16 @@ function rowHasAcceptedVisualEvidence(row) {
   return row.visual?.present === true && row.visual?.accepted === true;
 }
 
+function rowHasAcceptedExternalProjectContract(row, options = {}) {
+  const contract = compactObject(row.externalProjectContract ?? row.external_project_contract);
+  if (contract.accepted !== true) return false;
+  if (options.profileClass && contract.profileClass !== options.profileClass && contract.profile_class !== options.profileClass) {
+    return false;
+  }
+  if (options.backend && row.backend !== options.backend) return false;
+  return true;
+}
+
 function refusalRows(rows, predicate) {
   return rows.filter((row) => row.matrixOutcome === 'refusal_proven' && predicate(row));
 }
@@ -5277,6 +5412,21 @@ function rowMatchesValidationProfile(row, profileId) {
     || value.includes(`\\${expected}-`)
     || value.includes(`-${expected}-`)
   );
+}
+
+function rowHasDeclaredValidationProfile(row, profileId) {
+  const expected = String(profileId ?? '').trim().toLowerCase();
+  if (!expected) return false;
+  return compactStringList([
+    row.validationProfileId,
+    row.validation_profile_id,
+    row.targetId,
+    row.target_id,
+    row.profileId,
+    row.profile_id,
+    row.fixtureId,
+    row.fixture_id,
+  ]).some((value) => value.toLowerCase() === expected);
 }
 
 function validationRunModeCoverage(rows) {
@@ -5519,20 +5669,29 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
 function planCoverage(rows) {
   const flowRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
-    && rowMatchesValidationProfile(row, 'flow')
+    && rowHasDeclaredValidationProfile(row, 'flow')
     && rowHasAcceptedVisualEvidence(row)
   );
   const rayRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
-    && rowMatchesValidationProfile(row, 'ray-light')
+    && rowHasDeclaredValidationProfile(row, 'ray-light')
     && rowHasAcceptedVisualEvidence(row)
   );
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
     && row.proofMode !== 'hip_module_runtime_readback'
   );
-  const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
-  const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
+  const hiprtRows = acceptedRows(rows, (row) =>
+    row.backend === 'hiprt'
+    && rowHasAcceptedVisualEvidence(row)
+    && row.acceptanceScope === 'hiprt_declared_visual_profile'
+    && row.runtimeProbeInstrumentation?.accepted === true
+  );
+  const webgpuRuntimeRows = acceptedRows(rows, (row) =>
+    row.backend === 'webgpu'
+    && rowHasAcceptedVisualEvidence(row)
+    && row.proofMode !== 'webgpu_wgsl_runtime_compute'
+  );
   const webgpuComputeRows = acceptedRows(rows, (row) =>
     row.backend === 'webgpu'
     && row.proofMode === 'webgpu_wgsl_runtime_compute'
@@ -5551,7 +5710,10 @@ function planCoverage(rows) {
     && row.runtimeResourceTrace?.vertexBufferCount > 0
   );
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
-  const externalVisualRows = visualProfileRows(rows, (row) => row.backend === 'webgl');
+  const externalVisualRows = visualProfileRows(rows, (row) =>
+    rowHasAcceptedVisualEvidence(row)
+    && rowHasAcceptedExternalProjectContract(row, { profileClass: 'external_engine_visual_profile' })
+  );
   const fissionRows = deterministicFissionRows(rows, () => true);
 
   return [
@@ -5648,7 +5810,15 @@ function planCoverage(rows) {
       rows,
       id: 'bevy_file_loaded_wgsl',
       requirement: 'Bevy file-loaded WGSL full-runtime proof',
-      acceptedPredicate: (row) => row.backend === 'bevy_wgsl',
+      acceptedPredicate: (row) =>
+        row.backend === 'bevy_wgsl'
+        && (
+          row.acceptedForGpuHmr === true
+          || rowHasAcceptedExternalProjectContract(row, {
+            backend: 'bevy_wgsl',
+            profileClass: 'engine_asset_reload_visual_profile',
+          })
+        ),
       missingGap: 'bevy_full_runtime_ledger_required',
     }),
     acceptedOrRefusedCoverage({

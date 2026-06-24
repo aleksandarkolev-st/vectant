@@ -52,6 +52,21 @@ function optionalString(value, field) {
   return nonEmptyString(value, field);
 }
 
+function firstOptionalString(field, ...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return nonEmptyString(value, field);
+    }
+  }
+  return null;
+}
+
+function requiredFirstString(field, ...values) {
+  const value = firstOptionalString(field, ...values);
+  if (!value) throw new Error(`external project profile ${field} must be a non-empty string`);
+  return value;
+}
+
 function stringList(value, field) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error(`external project profile ${field} must be an array`);
@@ -177,10 +192,56 @@ function normalizeProfile(rawProfile) {
   const before = nonEmptyString(source.before, 'source.before');
   const after = nonEmptyString(source.after, 'source.after');
   if (before === after) throw new Error('external project profile source.before and source.after must differ');
+  const backend = requiredFirstString(
+    'backend',
+    raw.backend,
+    raw.gpuBackend,
+    raw.gpu_backend,
+    raw.renderBackend,
+    raw.render_backend,
+    raw.shaderBackend,
+    raw.shader_backend,
+    project.backend,
+    project.gpuBackend,
+    project.gpu_backend,
+  );
+  const backendFamily = requiredFirstString(
+    'backendFamily',
+    raw.backendFamily,
+    raw.backend_family,
+    project.backendFamily,
+    project.backend_family,
+  );
+  const libraryFamily = requiredFirstString(
+    'libraryFamily',
+    raw.libraryFamily,
+    raw.library_family,
+    project.libraryFamily,
+    project.library_family,
+  );
+  const runtimeEnvironment = requiredFirstString(
+    'runtimeEnvironment',
+    raw.runtimeEnvironment,
+    raw.runtime_environment,
+    project.runtimeEnvironment,
+    project.runtime_environment,
+  );
+  const profileClass = requiredFirstString(
+    'profileClass',
+    raw.profileClass,
+    raw.profile_class,
+    project.profileClass,
+    project.profile_class,
+  );
 
   const normalized = {
     schemaVersion: raw.schemaVersion ?? SCHEMA_VERSION,
     id,
+    backend,
+    backendFamily,
+    libraryFamily,
+    runtimeEnvironment,
+    profileClass,
     project: {
       name: nonEmptyString(project.name ?? id, 'project.name'),
       repoUrl: optionalString(project.repoUrl, 'project.repoUrl'),
@@ -237,6 +298,20 @@ function normalizeProfile(rawProfile) {
     throw new Error(`unsupported external project profile schemaVersion: ${normalized.schemaVersion}`);
   }
   return normalized;
+}
+
+function profileContractFields(profile = {}) {
+  return {
+    backend: profile.backend ?? null,
+    backendFamily: profile.backendFamily ?? null,
+    backend_family: profile.backendFamily ?? null,
+    libraryFamily: profile.libraryFamily ?? null,
+    library_family: profile.libraryFamily ?? null,
+    runtimeEnvironment: profile.runtimeEnvironment ?? null,
+    runtime_environment: profile.runtimeEnvironment ?? null,
+    profileClass: profile.profileClass ?? null,
+    profile_class: profile.profileClass ?? null,
+  };
 }
 
 function mcpPreviewGpuProofGate(profile) {
@@ -1069,6 +1144,7 @@ async function writeExternalVisualProofArtifact(profile, report) {
     proofMode: report.proofMode,
     status,
     createdAt: new Date().toISOString(),
+    ...profileContractFields(profile),
     visualOracleArtifacts: report.visualOracleArtifacts ?? null,
     visualDiff: report.visualDiff ?? null,
     deterministicVisualMode: report.deterministicVisualMode ?? null,
@@ -1179,6 +1255,7 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     proofMode: report.proofMode,
     status: report.status,
     createdAt: new Date().toISOString(),
+    ...profileContractFields(profile),
     rejection: {
       accepted: false,
       reasons: externalRejectionReasons(report),
@@ -1221,6 +1298,11 @@ function profileFromReport(report) {
       ?? report?.profile_id
       ?? report?.profile?.id
       ?? 'external-project-profile',
+    backend: report?.backend ?? report?.profile?.backend ?? null,
+    backendFamily: report?.backendFamily ?? report?.backend_family ?? report?.profile?.backendFamily ?? report?.profile?.backend_family ?? null,
+    libraryFamily: report?.libraryFamily ?? report?.library_family ?? report?.profile?.libraryFamily ?? report?.profile?.library_family ?? null,
+    runtimeEnvironment: report?.runtimeEnvironment ?? report?.runtime_environment ?? report?.profile?.runtimeEnvironment ?? report?.profile?.runtime_environment ?? null,
+    profileClass: report?.profileClass ?? report?.profile_class ?? report?.profile?.profileClass ?? report?.profile?.profile_class ?? null,
     mcpPreview: report?.mcp?.visualProofGate
       ? {
           requiredGpuProofState: report.mcp.visualProofGate.requiredGpuProofState ?? null,
@@ -1582,6 +1664,7 @@ async function runProfile(profile) {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
     profile,
     proofMode: profile.proofMode,
+    ...profileContractFields(profile),
     startedAt: new Date().toISOString(),
     metric_clock: 'monotonic_ns',
     started_monotonic_ns: runStartedMonotonicNs,
