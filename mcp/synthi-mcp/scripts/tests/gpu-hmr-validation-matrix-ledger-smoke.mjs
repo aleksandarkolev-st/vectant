@@ -1122,6 +1122,33 @@ await writeJson(path.join(artifactsRoot, 'strict-runtime-ledger', 'missing-runti
   proof_ledger_query: strictMissingArtifactMaterials.proof_ledger_query,
 });
 
+const strictComputeMissingReadbackPath = path.join(
+  artifactsRoot,
+  'strict-runtime-ledger',
+  'missing-compute-readback.bin',
+);
+const strictComputeMissingReadbackMaterials = computeProofLedgerMaterials('strict-compute-missing-readback', {
+  projectId: 'strict-runtime-compute-missing-readback',
+  rawReadbackPath: strictComputeMissingReadbackPath,
+});
+await writeJson(path.join(artifactsRoot, 'strict-runtime-ledger', 'missing-compute-readback.json'), {
+  schemaVersion: 'synthi.gpu.hmr.proof.v1',
+  proofId: 'gpu-runtime-proof:sha256:strict-compute-missing-readback',
+  target_name: 'strict-runtime-compute-missing-readback',
+  gpuHmrSuccess: true,
+  fullRuntimeProven: true,
+  resultState: 'gpu-hmr-full-runtime-proven',
+  acceptanceContract: acceptanceContract('strict_compute_missing_readback', {
+    projectId: 'strict-runtime-compute-missing-readback',
+  }),
+  proofLedger: strictComputeMissingReadbackMaterials.proofLedger,
+  proof_ledger: strictComputeMissingReadbackMaterials.proof_ledger,
+  proofLedgerQuery: strictComputeMissingReadbackMaterials.proofLedgerQuery,
+  proof_ledger_query: strictComputeMissingReadbackMaterials.proof_ledger_query,
+  runtimeProofArtifact: strictComputeMissingReadbackMaterials.runtimeProofArtifact,
+  runtime_proof_artifact: strictComputeMissingReadbackMaterials.runtime_proof_artifact,
+});
+
 await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
@@ -2313,6 +2340,24 @@ assert.equal(strictMissingArtifact.runtimeProofArtifact.present, false);
 assert.equal(strictMissingArtifact.runtimeProofArtifact.accepted, false);
 assert.ok(strictMissingArtifact.reasons.includes('runtime_proof_artifact_not_strictly_accepted'));
 assert.ok(strictMissingArtifact.openGaps.includes('runtime_proof_artifact_missing'));
+
+const strictComputeMissingReadback = ledger.rows.find((row) =>
+  row.targetId === 'strict-runtime-compute-missing-readback'
+);
+assert.equal(strictComputeMissingReadback?.proofMode, 'strict_runtime_ledger');
+assert.equal(strictComputeMissingReadback.matrixOutcome, 'unproven');
+assert.equal(strictComputeMissingReadback.acceptedForGpuHmr, false);
+assert.equal(strictComputeMissingReadback.gpuHmrSuccess, false);
+assert.equal(strictComputeMissingReadback.ledger.gpuHmrSuccess, true);
+assert.equal(strictComputeMissingReadback.runtimeProofArtifact.accepted, true);
+assert.equal(strictComputeMissingReadback.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(strictComputeMissingReadback.outputOracleFacet.accepted, false);
+assert.equal(strictComputeMissingReadback.outputOracleFacet.compute.present, true);
+assert.equal(strictComputeMissingReadback.outputOracleFacet.compute.rawReadbackHashVerified, false);
+assert.ok(strictComputeMissingReadback.outputOracleFacet.compute.rawReadbackReadError);
+assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_files_not_accepted'));
+assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_raw_readback_hash_unverified'));
+assert.ok(strictComputeMissingReadback.openGaps.includes('compute_oracle_raw_readback_unreadable'));
 
 function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
   return {

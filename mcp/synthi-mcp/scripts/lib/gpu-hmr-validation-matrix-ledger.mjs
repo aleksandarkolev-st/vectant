@@ -2025,7 +2025,13 @@ async function runtimeProofRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
   const runtimeProofArtifactRaw = runtimeProofArtifactFromValue(json);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifactRaw);
-  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const proofLedger = compactObject(
+    json.proofLedger
+    ?? json.proof_ledger
+    ?? runtimeProofArtifactRaw.proofLedger
+    ?? runtimeProofArtifactRaw.proof_ledger,
+  );
+  const ledgerRecord = compactObject(proofLedger.records?.[0]);
   const sourceAdaptation = sourceAdaptationProofFacet(
     json,
     runtimeProofArtifactRaw,
@@ -2034,7 +2040,7 @@ async function runtimeProofRow(json, filePath, context) {
     contract,
   );
   const resultState = firstText(json.resultState, json.result_state);
-  const accepted =
+  const baseAccepted =
     json.gpuHmrSuccess === true
     && json.fullRuntimeProven === true
     && resultState === 'gpu-hmr-full-runtime-proven'
@@ -2101,10 +2107,20 @@ async function runtimeProofRow(json, filePath, context) {
       oracleArtifacts.visual_oracle_artifacts
       ?? oracleArtifacts.visualOracleArtifacts
       ?? oracleArtifacts.compute_oracle_artifacts
-      ?? oracleArtifacts.computeOracleArtifacts,
-    ).filter((item) => item.endsWith('.png')),
+    ?? oracleArtifacts.computeOracleArtifacts,
+  ).filter((item) => item.endsWith('.png')),
   ]);
   const visual = await visualArtifactEvidence(visualPaths, context.repoRoot, path.dirname(filePath), {}, outputKind === 'visual_oracle');
+  const outputOracleFacet = await realRocmLedgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  const accepted = baseAccepted && outputOracleFacet.accepted === true;
+  const outputOracleFailureCodes = (outputOracleFacet.failedGates ?? [])
+    .map((failure) => compactObject(failure).code);
   return finalizeRow({
     artifactSchema: json.schemaVersion,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -2125,6 +2141,8 @@ async function runtimeProofRow(json, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -2139,6 +2157,14 @@ async function runtimeProofRow(json, filePath, context) {
       ...(Array.isArray(json.limitations) ? json.limitations.map((item) => item?.degradedReason ?? item?.degraded_reason ?? item) : []),
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
+      outputOracleFacet.kind === 'compute_oracle' && outputOracleFacet.accepted !== true
+        ? 'compute_oracle_files_not_accepted'
+        : null,
+      outputOracleFacet.kind === 'visual_oracle' && outputOracleFacet.accepted !== true
+        ? 'visual_oracle_artifacts_not_accepted'
+        : null,
+      ...outputOracleFailureCodes,
       sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       ...ledger.failedInvariants.map((failure) => failure.code),
     ]),
@@ -2146,6 +2172,14 @@ async function runtimeProofRow(json, filePath, context) {
       'runtime_proof_not_accepted',
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
+      outputOracleFacet.kind === 'compute_oracle' && outputOracleFacet.accepted !== true
+        ? 'compute_oracle_files_not_accepted'
+        : null,
+      outputOracleFacet.kind === 'visual_oracle' && outputOracleFacet.accepted !== true
+        ? 'visual_oracle_artifacts_not_accepted'
+        : null,
+      ...outputOracleFailureCodes,
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
     classification: {
