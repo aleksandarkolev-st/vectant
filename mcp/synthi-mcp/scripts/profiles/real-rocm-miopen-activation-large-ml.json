@@ -39,6 +39,13 @@
   "outputOracle": {
     "profile": "none"
   },
+  "proofObligations": {
+    "acceptanceMode": "refusal_only",
+    "targetClass": "large_rocm_ml_infrastructure",
+    "requiresFullRuntimeProof": true,
+    "requiresOutputOracle": true,
+    "requiresAppHookContract": true
+  },
   "targetProgression": {
     "phase": "final-acceptance",
     "finalAcceptanceTarget": "MIOpenDriver",

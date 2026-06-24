@@ -538,6 +538,17 @@ async function selfCheckRealRocmProfiles() {
         );
       }
     }
+    const finalAcceptanceProfile = profile.targetProgression.phase === 'final-acceptance';
+    const outputOracleDisabled = outputOracleProfileModeDisabled(profile.outputOracle.profile);
+    if (
+      finalAcceptanceProfile
+      && outputOracleDisabled
+      && profile.proofObligations.refusalOnly !== true
+    ) {
+      throw new Error(
+        `real ROCm final-acceptance profile ${profile.id} disables output oracle without proofObligations.acceptanceMode=refusal_only`,
+      );
+    }
     const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
     if (existsSync(localRepoPath)) {
       for (const requiredPath of [
@@ -787,6 +798,7 @@ function targetProgressionPhaseRequirements(phase) {
         'prior_partial_reload_proof_in_target_progression_ledger',
         'prior_original_host_path_proof_in_target_progression_ledger',
         'full_runtime_proven',
+        'output_oracle_proven',
         'fresh_visual_evidence_when_rendering',
         'raw_compute_oracle_artifacts_when_compute_only',
       ];
@@ -1555,6 +1567,7 @@ function targetProgressionGateRows({
     });
   }
   if (progression.phase === 'final-acceptance') {
+    const outputOracleProven = proofHasResultState(outputProof, 'gpu-hmr-output-oracle-proven');
     if (progression.required) {
       for (const phase of FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES) {
         const ledgerPhase = targetProgressionLedgerPhaseResult(targetProgressionLedger, phase);
@@ -1576,17 +1589,23 @@ function targetProgressionGateRows({
       const acceptedVisualFrames = acceptedVisualEvidenceCount(visualEvidenceFrames);
       rows.push({
         name: 'target progression visual evidence',
-        status: acceptedVisualFrames > 0 ? 'pass' : 'fail',
-        detail: acceptedVisualFrames > 0
-          ? `fresh visual evidence frames=${acceptedVisualFrames}`
-          : 'fresh visual evidence missing for final acceptance render workflow',
+        status: outputOracleProven && acceptedVisualFrames > 0 ? 'pass' : 'fail',
+        detail: outputOracleProven && acceptedVisualFrames > 0
+          ? `gpu-hmr-output-oracle-proven; fresh visual evidence frames=${acceptedVisualFrames}`
+          : !outputOracleProven
+            ? summarizeGpuHmrOutputProof(outputProof)
+            : 'fresh visual evidence missing for final acceptance render workflow',
       });
     } else {
       const computeOracleProof = computeOracleArtifactProof(outputProof);
       rows.push({
         name: 'target progression compute oracle artifacts',
-        status: computeOracleProof.accepted ? 'pass' : 'fail',
-        detail: computeOracleProof.detail,
+        status: outputOracleProven && computeOracleProof.accepted ? 'pass' : 'fail',
+        detail: outputOracleProven && computeOracleProof.accepted
+          ? `gpu-hmr-output-oracle-proven; ${computeOracleProof.detail}`
+          : outputOracleProven
+            ? computeOracleProof.detail
+            : summarizeGpuHmrOutputProof(outputProof),
       });
     }
   }
@@ -9859,6 +9878,9 @@ int main()
       required: true,
     }),
     fullRuntimeProof: { fullRuntimeProven: true },
+    outputProof: {
+      resultState: 'gpu-hmr-output-oracle-proven',
+    },
     visualEvidenceExpected: true,
     visualEvidenceFrames: [{
       path: 'fresh.png',

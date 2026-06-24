@@ -2873,6 +2873,18 @@ await writeJson(path.join(acceptedComputeRocmDir, 'real-rocm-accepted-compute.js
   full_runtime_proof_required: true,
   full_runtime_proven: true,
   gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
   output_proof: {
     accepted: true,
     result_state: 'gpu-hmr-output-oracle-proven',
@@ -2920,6 +2932,68 @@ assert.equal(acceptedComputeRocm.outputOracleFacet.compute.deterministicSliceHas
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLength > 0, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
+
+const forgedMissingResolutionRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-resolution');
+const forgedMissingResolutionProofMaterials = computeProofLedgerMaterials('forged-missing-resolution', {
+  projectId: 'real-rocm-forged-missing-resolution',
+  rawReadbackPath: acceptedComputeRawReadback,
+  rawReadbackBytes: acceptedComputeBytes,
+});
+await writeJson(path.join(forgedMissingResolutionRocmDir, 'real-rocm-forged-missing-resolution.json'), {
+  slug: 'gpu-real-rocm-forged-missing-resolution-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-missing-resolution' },
+  source_url: 'https://example.invalid/rocm/forged-missing-resolution.git',
+  repo_commit: 'abababababababababababababababababababab',
+  entry_file: 'src/kernels/missing_resolution_entry.hip',
+  delta_file: 'src/kernels/missing_resolution_delta.h',
+  target_name: 'ForgedMissingResolutionDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedMissingResolutionProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-missing-resolution-delta',
+    editHash: hashValue('real-rocm-forged-missing-resolution-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-missing-resolution.git @ abababab files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedMissingResolutionRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedMissingResolutionRocmDir],
+  generatedAt: '2026-06-09T00:00:02.260Z',
+  includeUnproven: true,
+});
+const forgedMissingResolutionRocm = forgedMissingResolutionRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedMissingResolutionRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedMissingResolutionRocm.acceptedForGpuHmr, false);
+assert.equal(forgedMissingResolutionRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedMissingResolutionRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedMissingResolutionRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedMissingResolutionRocm.outputOracleResolutionGate.accepted, false);
+assert.ok(forgedMissingResolutionRocm.reasons.includes('real_rocm_output_oracle_resolution_missing'));
+assert.ok(forgedMissingResolutionRocm.reasons.includes('real_rocm_output_oracle_resolution_not_accepted'));
+assert.ok(forgedMissingResolutionRocm.openGaps.includes('real_rocm_output_oracle_resolution_required'));
 
 const forgedFinalNoOracleRocmDir = path.join(logsRoot, 'real-rocm-forged-final-no-oracle');
 const forgedFinalNoOracleRawReadback = path.join(forgedFinalNoOracleRocmDir, 'readback.bin');

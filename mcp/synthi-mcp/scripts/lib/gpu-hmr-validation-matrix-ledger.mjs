@@ -2954,15 +2954,16 @@ function realRocmRequiredFullRuntimeProof(json) {
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
 
-function realRocmOutputOracleResolutionGate(outputOracleResolution = {}) {
+function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { required = false } = {}) {
   const resolution = compactObject(outputOracleResolution);
   if (Object.keys(resolution).length === 0) {
+    const failedGates = required ? ['real_rocm_output_oracle_resolution_missing'] : [];
     return {
       present: false,
-      accepted: true,
+      accepted: failedGates.length === 0,
       disabled: false,
-      failedGates: [],
-      failed_gates: [],
+      failedGates,
+      failed_gates: failedGates,
     };
   }
   const requestedProfile = firstText(
@@ -3252,13 +3253,18 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.output_oracle_resolution
     ?? summary.outputOracleResolution,
   );
-  const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution);
   const targetProgression = compactObject(
     json.target_progression
     ?? json.targetProgression
     ?? summary.target_progression
     ?? summary.targetProgression,
   );
+  const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution, {
+    required: realRocmRequiredFullRuntimeProof({
+      ...json,
+      target_progression: targetProgression,
+    }),
+  });
   const targetProgressionGates = compactObjectList(
     json.target_progression_gates
     ?? json.targetProgressionGates
