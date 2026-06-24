@@ -314,6 +314,75 @@ function profileContractFields(profile = {}) {
   };
 }
 
+function compactStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : [values])
+    .flat()
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim()))];
+}
+
+function typedContractValue(profile, fieldName, value, evidenceRefs) {
+  return {
+    value: value ?? null,
+    evidenceRefs: compactStrings([
+      ...evidenceRefs,
+      `external-profile:${profile.id}:field:${fieldName}`,
+    ]),
+  };
+}
+
+function externalProjectContractForProfile(profile, profileSelection, runtimeEvidenceRefs = []) {
+  const selectionEvidenceRefs = compactStrings(profileSelection?.evidenceRefs ?? profileSelection?.evidence_refs);
+  const contractEvidenceRefs = compactStrings([
+    ...selectionEvidenceRefs,
+    `external-profile:${profile.id}:typed-contract`,
+  ]);
+  const manifestHash = profileSelection?.manifestHash ?? profileSelection?.manifest_hash ?? null;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_project_contract.v2',
+    accepted: true,
+    profileId: profile.id,
+    profile_id: profile.id,
+    backend: typedContractValue(profile, 'backend', profile.backend, contractEvidenceRefs),
+    backendFamily: typedContractValue(profile, 'backendFamily', profile.backendFamily, contractEvidenceRefs),
+    backend_family: typedContractValue(profile, 'backendFamily', profile.backendFamily, contractEvidenceRefs),
+    libraryFamily: typedContractValue(profile, 'libraryFamily', profile.libraryFamily, contractEvidenceRefs),
+    library_family: typedContractValue(profile, 'libraryFamily', profile.libraryFamily, contractEvidenceRefs),
+    runtimeEnvironment: typedContractValue(profile, 'runtimeEnvironment', profile.runtimeEnvironment, contractEvidenceRefs),
+    runtime_environment: typedContractValue(profile, 'runtimeEnvironment', profile.runtimeEnvironment, contractEvidenceRefs),
+    profileClass: typedContractValue(profile, 'profileClass', profile.profileClass, contractEvidenceRefs),
+    profile_class: typedContractValue(profile, 'profileClass', profile.profileClass, contractEvidenceRefs),
+    profileManifestHash: manifestHash,
+    profile_manifest_hash: manifestHash,
+    evidenceRefs: contractEvidenceRefs,
+    evidence_refs: contractEvidenceRefs,
+    runtimeEvidence: {
+      evidenceRefs: compactStrings(runtimeEvidenceRefs),
+      evidence_refs: compactStrings(runtimeEvidenceRefs),
+    },
+    runtime_evidence: {
+      evidenceRefs: compactStrings(runtimeEvidenceRefs),
+      evidence_refs: compactStrings(runtimeEvidenceRefs),
+    },
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+  };
+}
+
+function runtimeEvidenceRefsForReport(report = {}) {
+  return compactStrings([
+    report.visualProofArtifact?.proofId,
+    report.visualProofArtifact?.proof_id,
+    report.rejectionProofArtifact?.proofId,
+    report.rejectionProofArtifact?.proof_id,
+    ...(Array.isArray(report.proofArtifactPaths) ? report.proofArtifactPaths : []),
+    report.mcp?.before?.wait?.gpu_proof_validation?.proofLedgerValidation?.proofId,
+    report.mcp?.after?.wait?.gpu_proof_validation?.proofLedgerValidation?.proofId,
+  ]);
+}
+
 function mcpPreviewGpuProofGate(profile) {
   if (profile.proofMode !== 'mcp_preview') {
     return {
@@ -1216,6 +1285,16 @@ async function writeExternalVisualProofArtifact(profile, report) {
     status,
     createdAt: new Date().toISOString(),
     ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      runtimeEvidenceRefsForReport(report),
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      runtimeEvidenceRefsForReport(report),
+    ),
     profileSelection: report.profileSelection ?? report.profile_selection ?? null,
     profile_selection: report.profileSelection ?? report.profile_selection ?? null,
     sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
@@ -1331,6 +1410,22 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     status: report.status,
     createdAt: new Date().toISOString(),
     ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      [
+        ...runtimeEvidenceRefsForReport(report),
+        `external-rejection:${profile.id}:${report.status}`,
+      ],
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      [
+        ...runtimeEvidenceRefsForReport(report),
+        `external-rejection:${profile.id}:${report.status}`,
+      ],
+    ),
     profileSelection: report.profileSelection ?? report.profile_selection ?? null,
     profile_selection: report.profileSelection ?? report.profile_selection ?? null,
     sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
@@ -1934,6 +2029,16 @@ async function runProfile(profile, profileSelection) {
     profile,
     proofMode: profile.proofMode,
     ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      [`external-report:${profile.id}:started`],
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      [`external-report:${profile.id}:started`],
+    ),
     profileSelection,
     profile_selection: profileSelection,
     startedAt: new Date().toISOString(),
@@ -2062,6 +2167,12 @@ async function runProfile(profile, profileSelection) {
         };
       }
     }
+    report.externalProjectContract = externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      runtimeEvidenceRefsForReport(report),
+    );
+    report.external_project_contract = report.externalProjectContract;
     const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-report.json`);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`external_project_report=${outPath}`);

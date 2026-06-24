@@ -3736,10 +3736,72 @@ function normalizeExternalBackend(value) {
   return normalized;
 }
 
+function externalContractCandidate(json = {}) {
+  const profile = compactObject(json.profile);
+  const rejection = compactObject(json.rejection);
+  return compactObject(
+    json.externalProjectContract
+      ?? json.external_project_contract
+      ?? profile.externalProjectContract
+      ?? profile.external_project_contract
+      ?? rejection.externalProjectContract
+      ?? rejection.external_project_contract,
+  );
+}
+
+function typedContractField(contract, ...fieldNames) {
+  for (const fieldName of fieldNames) {
+    const field = contract[fieldName];
+    const value = typedValueField(field);
+    if (value) {
+      return {
+        value,
+        evidenceRefs: compactStringList(evidenceRefsFromValue(field)),
+      };
+    }
+  }
+  return {
+    value: null,
+    evidenceRefs: [],
+  };
+}
+
 function externalProjectContractEvidence(json = {}) {
   const profile = compactObject(json.profile);
   const project = compactObject(profile.project);
   const rejection = compactObject(json.rejection);
+  const supplied = externalContractCandidate(json);
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema);
+  const suppliedBackend = typedContractField(supplied, 'backend', 'gpuBackend', 'gpu_backend');
+  const suppliedBackendFamily = typedContractField(supplied, 'backendFamily', 'backend_family');
+  const suppliedLibraryFamily = typedContractField(supplied, 'libraryFamily', 'library_family');
+  const suppliedRuntimeEnvironment = typedContractField(supplied, 'runtimeEnvironment', 'runtime_environment');
+  const suppliedProfileClass = typedContractField(supplied, 'profileClass', 'profile_class');
+  const profileManifestHash = firstText(
+    supplied.profileManifestHash,
+    supplied.profile_manifest_hash,
+    supplied.manifestHash,
+    supplied.manifest_hash,
+  );
+  const runtimeEvidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(supplied.runtimeEvidence),
+    ...evidenceRefsFromValue(supplied.runtime_evidence),
+    ...evidenceRefsFromValue(supplied.runtimeFailureArtifact),
+    ...evidenceRefsFromValue(supplied.runtime_failure_artifact),
+    ...evidenceRefsFromValue(supplied.visualProofArtifact),
+    ...evidenceRefsFromValue(supplied.visual_proof_artifact),
+    ...evidenceRefsFromValue(supplied.rejectionProofArtifact),
+    ...evidenceRefsFromValue(supplied.rejection_proof_artifact),
+  ]);
+  const topEvidenceRefs = compactStringList(evidenceRefsFromValue(supplied));
+  const arbitraryLibraryAccepted = firstBool(
+    supplied.arbitraryLibraryAccepted,
+    supplied.arbitrary_library_accepted,
+  );
+  const arbitraryTargetRuntimeAccepted = firstBool(
+    supplied.arbitraryTargetRuntimeAccepted,
+    supplied.arbitrary_target_runtime_accepted,
+  );
   const explicitBackend = firstText(
     json.backend,
     json.gpu_backend,
@@ -3804,20 +3866,47 @@ function externalProjectContractEvidence(json = {}) {
     rejection.profileClass,
     rejection.profile_class,
   );
-  const backend = normalizeExternalBackend(explicitBackend);
+  const backend = normalizeExternalBackend(suppliedBackend.value);
   const accepted = Boolean(
-    backend
-    && backendFamily
-    && libraryFamily
-    && runtimeEnvironment
-    && profileClass,
+    schemaVersion === 'synthi.gpu_hmr.external_project_contract.v2'
+    && supplied.accepted === true
+    && backend
+    && suppliedBackendFamily.value
+    && suppliedLibraryFamily.value
+    && suppliedRuntimeEnvironment.value
+    && suppliedProfileClass.value
+    && suppliedBackend.evidenceRefs.length > 0
+    && suppliedBackendFamily.evidenceRefs.length > 0
+    && suppliedLibraryFamily.evidenceRefs.length > 0
+    && suppliedRuntimeEnvironment.evidenceRefs.length > 0
+    && suppliedProfileClass.evidenceRefs.length > 0
+    && contentAddressedSha256(profileManifestHash)
+    && topEvidenceRefs.length > 0
+    && runtimeEvidenceRefs.length > 0
+    && arbitraryLibraryAccepted === false
+    && arbitraryTargetRuntimeAccepted === false
   );
   const failedGates = compactStringList([
+    Object.keys(supplied).length > 0 ? null : 'external_contract_evidence_missing',
+    schemaVersion === 'synthi.gpu_hmr.external_project_contract.v2'
+      ? null
+      : 'external_contract_schema_missing',
+    supplied.accepted === true ? null : 'external_contract_not_explicitly_accepted',
     backend ? null : 'external_backend_metadata_missing',
-    backendFamily ? null : 'external_backend_family_missing',
-    libraryFamily ? null : 'external_library_family_missing',
-    runtimeEnvironment ? null : 'external_runtime_environment_missing',
-    profileClass ? null : 'external_profile_class_missing',
+    suppliedBackendFamily.value ? null : 'external_backend_family_missing',
+    suppliedLibraryFamily.value ? null : 'external_library_family_missing',
+    suppliedRuntimeEnvironment.value ? null : 'external_runtime_environment_missing',
+    suppliedProfileClass.value ? null : 'external_profile_class_missing',
+    suppliedBackend.evidenceRefs.length > 0 ? null : 'external_backend_field_evidence_refs_missing',
+    suppliedBackendFamily.evidenceRefs.length > 0 ? null : 'external_backend_family_field_evidence_refs_missing',
+    suppliedLibraryFamily.evidenceRefs.length > 0 ? null : 'external_library_family_field_evidence_refs_missing',
+    suppliedRuntimeEnvironment.evidenceRefs.length > 0 ? null : 'external_runtime_environment_field_evidence_refs_missing',
+    suppliedProfileClass.evidenceRefs.length > 0 ? null : 'external_profile_class_field_evidence_refs_missing',
+    contentAddressedSha256(profileManifestHash) ? null : 'external_profile_manifest_hash_missing',
+    topEvidenceRefs.length > 0 ? null : 'external_contract_evidence_refs_missing',
+    runtimeEvidenceRefs.length > 0 ? null : 'external_contract_runtime_evidence_refs_missing',
+    arbitraryLibraryAccepted === false ? null : 'external_contract_cannot_claim_arbitrary_library_acceptance',
+    arbitraryTargetRuntimeAccepted === false ? null : 'external_contract_cannot_claim_arbitrary_target_acceptance',
   ]);
   return {
     schemaVersion: 'synthi.gpu_hmr.external_project_contract_evidence.v1',
@@ -3825,15 +3914,21 @@ function externalProjectContractEvidence(json = {}) {
     backend: backend ?? 'unknown',
     rawBackend: explicitBackend ?? null,
     raw_backend: explicitBackend ?? null,
-    backendFamily: backendFamily ?? null,
-    backend_family: backendFamily ?? null,
-    libraryFamily: libraryFamily ?? null,
-    library_family: libraryFamily ?? null,
-    runtimeEnvironment: runtimeEnvironment ?? null,
-    runtime_environment: runtimeEnvironment ?? null,
-    profileClass: profileClass ?? null,
-    profile_class: profileClass ?? null,
-    authority: accepted ? 'explicit_external_profile_contract_metadata' : 'missing_explicit_external_profile_contract_metadata',
+    backendFamily: suppliedBackendFamily.value ?? null,
+    backend_family: suppliedBackendFamily.value ?? null,
+    libraryFamily: suppliedLibraryFamily.value ?? null,
+    library_family: suppliedLibraryFamily.value ?? null,
+    runtimeEnvironment: suppliedRuntimeEnvironment.value ?? null,
+    runtime_environment: suppliedRuntimeEnvironment.value ?? null,
+    profileClass: suppliedProfileClass.value ?? null,
+    profile_class: suppliedProfileClass.value ?? null,
+    profileManifestHash: profileManifestHash ?? null,
+    profile_manifest_hash: profileManifestHash ?? null,
+    evidenceRefs: topEvidenceRefs,
+    evidence_refs: topEvidenceRefs,
+    runtimeEvidenceRefs,
+    runtime_evidence_refs: runtimeEvidenceRefs,
+    authority: accepted ? 'typed_external_project_contract_v2' : 'missing_typed_external_project_contract_v2',
     failedGates,
     failed_gates: failedGates,
   };

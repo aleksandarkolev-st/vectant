@@ -1573,6 +1573,54 @@ await writeJson(path.join(schemaCorrectRawBackendPreflightDir, 'schema-correct-r
   proofId: 'vulkan-preflight-proof:sha256:schema-correct-raw-backend',
 });
 
+function externalProjectContractForTest({
+  profileId,
+  backend,
+  backendFamily,
+  libraryFamily,
+  runtimeEnvironment,
+  profileClass,
+  manifestHash,
+  runtimeEvidenceRefs,
+}) {
+  const evidenceRefs = [`test:external-contract:${profileId}`];
+  const typed = (field, value) => ({
+    value,
+    evidenceRefs: [...evidenceRefs, `test:external-contract:${profileId}:${field}`],
+  });
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_project_contract.v2',
+    accepted: true,
+    profileId,
+    profile_id: profileId,
+    backend: typed('backend', backend),
+    backendFamily: typed('backendFamily', backendFamily),
+    backend_family: typed('backendFamily', backendFamily),
+    libraryFamily: typed('libraryFamily', libraryFamily),
+    library_family: typed('libraryFamily', libraryFamily),
+    runtimeEnvironment: typed('runtimeEnvironment', runtimeEnvironment),
+    runtime_environment: typed('runtimeEnvironment', runtimeEnvironment),
+    profileClass: typed('profileClass', profileClass),
+    profile_class: typed('profileClass', profileClass),
+    profileManifestHash: manifestHash,
+    profile_manifest_hash: manifestHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    runtimeEvidence: {
+      evidenceRefs: runtimeEvidenceRefs,
+      evidence_refs: runtimeEvidenceRefs,
+    },
+    runtime_evidence: {
+      evidenceRefs: runtimeEvidenceRefs,
+      evidence_refs: runtimeEvidenceRefs,
+    },
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+  };
+}
+
 await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'bevy-wgsl-name-only',
@@ -1600,6 +1648,16 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-sha
   libraryFamily: 'bevy',
   runtimeEnvironment: 'mcp_preview',
   profileClass: 'engine_asset_reload_visual_profile',
+  externalProjectContract: externalProjectContractForTest({
+    profileId: 'explicit-bevy-wgsl-shader-material',
+    backend: 'bevy_wgsl',
+    backendFamily: 'wgpu_vulkan',
+    libraryFamily: 'bevy',
+    runtimeEnvironment: 'mcp_preview',
+    profileClass: 'engine_asset_reload_visual_profile',
+    manifestHash: hashValue('explicit-bevy-wgsl-shader-material-manifest'),
+    runtimeEvidenceRefs: ['external-rejection-proof:sha256:synthetic-bevy'],
+  }),
   status: 'fail',
   rejection: {
     accepted: false,
@@ -1671,6 +1729,16 @@ const externalVisualSourceDeltaEvidence = {
   evidenceRefs: ['source:src/material.frag:unique-before-snippet'],
   evidence_refs: ['source:src/material.frag:unique-before-snippet'],
 };
+const externalVisualProjectContract = externalProjectContractForTest({
+  profileId: 'explicit-external-engine-visual',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  manifestHash: externalVisualProfileSelection.manifestHash,
+  runtimeEvidenceRefs: ['external-visual-proof:explicit-external-engine-visual'],
+});
 const externalVisualEvidenceArtifacts = [];
 for (const artifactPath of [externalVisualBefore, externalVisualAfter, externalVisualDiff]) {
   const artifactBytes = await fs.readFile(artifactPath);
@@ -1713,6 +1781,8 @@ const externalVisualProofMaterial = {
   runtime_environment: 'browser_dev_server',
   profileClass: 'external_engine_visual_profile',
   profile_class: 'external_engine_visual_profile',
+  externalProjectContract: externalVisualProjectContract,
+  external_project_contract: externalVisualProjectContract,
   profileSelection: externalVisualProfileSelection,
   profile_selection: externalVisualProfileSelection,
   sourceDeltaEvidence: externalVisualSourceDeltaEvidence,
@@ -1770,6 +1840,8 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engi
   libraryFamily: 'threejs',
   runtimeEnvironment: 'browser_dev_server',
   profileClass: 'external_engine_visual_profile',
+  externalProjectContract: externalVisualProjectContract,
+  external_project_contract: externalVisualProjectContract,
   status: 'pass',
   profileSelection: externalVisualProfileSelection,
   profile_selection: externalVisualProfileSelection,
@@ -3138,12 +3210,13 @@ assert.equal(externalVisual.externalVisualProofArtifact.visualDiff.accepted, tru
 
 const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
 assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');
-assert.equal(forgedExternalVisual.backend, 'webgl');
+assert.equal(forgedExternalVisual.backend, 'unknown');
 assert.equal(forgedExternalVisual.visual.accepted, true);
-assert.equal(forgedExternalVisual.externalProjectContract.accepted, true);
+assert.equal(forgedExternalVisual.externalProjectContract.accepted, false);
 assert.equal(forgedExternalVisual.externalProfileSelection.accepted, false);
 assert.equal(forgedExternalVisual.externalSourceDelta.accepted, false);
 assert.equal(forgedExternalVisual.externalVisualProofArtifact.accepted, false);
+assert.ok(forgedExternalVisual.openGaps.includes('external_contract_schema_missing'));
 assert.ok(forgedExternalVisual.openGaps.includes('external_profile_selection_schema_missing'));
 assert.ok(forgedExternalVisual.openGaps.includes('external_source_delta_schema_missing'));
 assert.ok(forgedExternalVisual.openGaps.includes('external_visual_proof_artifact_path_missing'));
