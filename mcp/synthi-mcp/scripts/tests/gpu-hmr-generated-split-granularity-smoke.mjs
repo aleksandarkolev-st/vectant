@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   assessGeneratedGpuSplitGranularity,
   assertNoGeneratedSplitFissionOverclaim,
@@ -8,8 +9,89 @@ import {
   verifyGeneratedGpuSplitDeterministicFission,
   GPU_HMR_GENERATED_SPLIT_GRANULARITY_SCHEMA_VERSION,
   GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_SCHEMA_VERSION,
+  GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
 } from '../lib/gpu-hmr-generated-split-granularity.mjs';
 import { classifyGpuHmrFissionProof } from '../lib/gpu-hmr-runtime-proof.mjs';
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function sha256Address(value) {
+  return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function selectedIslandIdFor(selectedPath, selectedKernel) {
+  return `kernel:${selectedKernel}:${sha256Hex(selectedPath).slice(0, 16)}`;
+}
+
+function typedFissionEvidence(category, evidenceType, subject, payload = {}) {
+  const contentHash = sha256Address({
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    subject,
+    payload,
+  });
+  const evidenceHash = sha256Hex(stableJson({ category, evidenceType, contentHash, subject }));
+  return {
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    evidenceRefs: [`evidence:generated-split-fission:${category}:sha256:${evidenceHash}`],
+    contentHash,
+    subject,
+    payload,
+  };
+}
+
+function deterministicFissionEvidenceFor({ selectedPath, selectedKernel, selectedIslandId }) {
+  const subject = {
+    selectedPath,
+    sourcePaths: [selectedPath],
+    selectedIslandId,
+    targetSymbols: [selectedKernel],
+  };
+  return [
+    typedFissionEvidence('selected_island_binding', 'selected_island_binding', subject, {
+      binding: 'selected-generated-device-kernel',
+    }),
+    typedFissionEvidence('source_mapping', 'source_mapping', subject, {
+      mappedSource: selectedPath,
+    }),
+    typedFissionEvidence('include_closure', 'include_closure', subject, {
+      includedDependencies: [],
+    }),
+    typedFissionEvidence('symbol_ownership', 'symbol_ownership', subject, {
+      ownedSymbols: [selectedKernel],
+    }),
+    typedFissionEvidence('dependency_closure', 'dependency_closure', subject, {
+      changedPaths: [selectedPath],
+      unchangedRolesObserved: true,
+    }),
+    typedFissionEvidence('abi_membrane', 'abi_membrane', subject, {
+      compatibilityClass: 'compatible',
+    }),
+    typedFissionEvidence('compile_recipe', 'compile_proof', subject, {
+      compiler: 'hipcc',
+      arch: ['gfx1201'],
+    }),
+    typedFissionEvidence('loader_capability', 'loader_runtime_proof', subject, {
+      transport: 'runtime-loader',
+    }),
+    typedFissionEvidence('output_oracle', 'output_oracle_proof', subject, {
+      oracleKind: 'visual',
+    }),
+  ];
+}
 
 const singleRoleManifest = {
   gpu: {
@@ -110,20 +192,32 @@ const deterministicOutputOracle = {
   epoch: 7,
 };
 
+const deterministicSelectedPath = 'gpu/shading.hip';
+const deterministicSelectedKernel = 'shade';
+const deterministicSelectedIslandId = selectedIslandIdFor(
+  deterministicSelectedPath,
+  deterministicSelectedKernel,
+);
+const deterministicFissionEvidence = deterministicFissionEvidenceFor({
+  selectedPath: deterministicSelectedPath,
+  selectedKernel: deterministicSelectedKernel,
+  selectedIslandId: deterministicSelectedIslandId,
+});
+
 const deterministicArtifact = {
-  sourcePath: 'gpu/shading.hip',
+  sourcePath: deterministicSelectedPath,
   artifactId: 'artifact:sha256:2222222222222222222222222222222222222222222222222222222222222222',
   contentHash: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
-  runtimeProofAccepted: true,
   runtimeProofId: 'gpu-runtime-proof:sha256:4444444444444444444444444444444444444444444444444444444444444444',
   ledgerProofId: 'gpu-ledger-proof:sha256:5555555555555555555555555555555555555555555555555555555555555555',
 };
 
 const provenPerKernel = verifyGeneratedGpuSplitDeterministicFission({
   assessment: multiRoleAssessment,
-  selectedPath: 'gpu/shading.hip',
-  changedPaths: ['gpu/shading.hip'],
+  selectedPath: deterministicSelectedPath,
+  changedPaths: [deterministicSelectedPath],
   selectedArtifact: deterministicArtifact,
+  verificationEvidence: deterministicFissionEvidence,
   outputOracleContract: deterministicOutputOracle,
   abiCompatibilityClass: 'compatible',
   unaffectedArtifactHashesBefore: {
@@ -153,7 +247,7 @@ assert.deepEqual(
 );
 assert.equal(
   provenPerKernel.selectedIslandContract.verificationEvidenceCoverage.categories.length,
-  8,
+  9,
 );
 assert.doesNotThrow(() => assertNoGeneratedSplitFissionOverclaim(provenPerKernel));
 
@@ -161,6 +255,43 @@ const classifiedPerKernel = classifyGpuHmrFissionProof(provenPerKernel.fissionPr
 assert.equal(classifiedPerKernel.fissionProven, true);
 assert.equal(classifiedPerKernel.selectedIslandContractCoverageComplete, true);
 assert.equal(classifiedPerKernel.deterministicVerifierEvidenceObserved, true);
+
+const legacyBooleanPathOnly = verifyGeneratedGpuSplitDeterministicFission({
+  assessment: multiRoleAssessment,
+  selectedPath: deterministicSelectedPath,
+  changedPaths: [deterministicSelectedPath],
+  selectedArtifact: {
+    ...deterministicArtifact,
+    runtimeProofAccepted: true,
+    loaderProofAccepted: true,
+  },
+  outputOracleContract: deterministicOutputOracle,
+  abiCompatibilityClass: 'compatible',
+  unaffectedArtifactHashesBefore: {
+    'gpu/integrator.hip': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  },
+  unaffectedArtifactHashesAfter: {
+    'gpu/integrator.hip': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  },
+  compilerArgsHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+});
+assert.equal(legacyBooleanPathOnly.perKernelHmrProven, false);
+assert.ok(legacyBooleanPathOnly.reasonCodes.includes(
+  'generated_split.selected_island_binding_typed_evidence_missing',
+));
+assert.ok(legacyBooleanPathOnly.reasonCodes.includes(
+  'generated_split.dependency_closure_typed_evidence_missing',
+));
+assert.ok(legacyBooleanPathOnly.reasonCodes.includes(
+  'generated_split.compile_recipe_typed_evidence_missing',
+));
+assert.ok(legacyBooleanPathOnly.reasonCodes.includes(
+  'generated_split.loader_capability_typed_evidence_missing',
+));
+assert.ok(legacyBooleanPathOnly.reasonCodes.includes(
+  'generated_split.output_oracle_typed_evidence_missing',
+));
+assert.doesNotThrow(() => assertNoGeneratedSplitFissionOverclaim(legacyBooleanPathOnly));
 
 const forgedPerKernel = {
   ...provenPerKernel,
@@ -179,6 +310,7 @@ const missingOracle = verifyGeneratedGpuSplitDeterministicFission({
   selectedPath: 'gpu/shading.hip',
   changedPaths: ['gpu/shading.hip'],
   selectedArtifact: deterministicArtifact,
+  verificationEvidence: deterministicFissionEvidence,
   outputOracleContract: {},
   unaffectedArtifactHashesBefore: {
     'gpu/integrator.hip': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -197,6 +329,7 @@ const hiddenFullRebuild = verifyGeneratedGpuSplitDeterministicFission({
   selectedPath: 'gpu/shading.hip',
   changedPaths: ['gpu/shading.hip'],
   selectedArtifact: deterministicArtifact,
+  verificationEvidence: deterministicFissionEvidence,
   outputOracleContract: deterministicOutputOracle,
   fullRebuildUsed: true,
   unaffectedArtifactHashesBefore: {
@@ -215,6 +348,7 @@ const layoutChanged = verifyGeneratedGpuSplitDeterministicFission({
   selectedPath: 'gpu/shading.hip',
   changedPaths: ['gpu/shading.hip'],
   selectedArtifact: deterministicArtifact,
+  verificationEvidence: deterministicFissionEvidence,
   outputOracleContract: deterministicOutputOracle,
   abiCompatibilityClass: 'layout_changed',
   unaffectedArtifactHashesBefore: {

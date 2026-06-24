@@ -14,6 +14,7 @@ import {
 import {
   assessGeneratedGpuSplitGranularity,
   verifyGeneratedGpuSplitDeterministicFission,
+  GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
 } from '../lib/gpu-hmr-generated-split-granularity.mjs';
 import {
   buildGpuHmrProofLedger,
@@ -61,8 +62,70 @@ function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
 function hashValue(label) {
   return `sha256:${sha256Hex(label)}`;
+}
+
+function contentHashFor(value) {
+  return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function selectedIslandIdFor(selectedPath, selectedKernel) {
+  return `kernel:${selectedKernel}:${sha256Hex(selectedPath).slice(0, 16)}`;
+}
+
+function typedFissionEvidence(category, evidenceType, subject, payload = {}) {
+  const contentHash = contentHashFor({
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    subject,
+    payload,
+  });
+  return {
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    evidenceRefs: [
+      `evidence:generated-split-fission:${category}:sha256:${sha256Hex(stableJson({
+        category,
+        evidenceType,
+        contentHash,
+        subject,
+      }))}`,
+    ],
+    contentHash,
+    subject,
+    payload,
+  };
+}
+
+function deterministicFissionEvidenceFor({ selectedPath, selectedKernel, selectedIslandId }) {
+  const subject = {
+    selectedPath,
+    sourcePaths: [selectedPath],
+    selectedIslandId,
+    targetSymbols: [selectedKernel],
+  };
+  return [
+    typedFissionEvidence('selected_island_binding', 'selected_island_binding', subject),
+    typedFissionEvidence('source_mapping', 'source_mapping', subject),
+    typedFissionEvidence('include_closure', 'include_closure', subject),
+    typedFissionEvidence('symbol_ownership', 'symbol_ownership', subject),
+    typedFissionEvidence('dependency_closure', 'dependency_closure', subject),
+    typedFissionEvidence('abi_membrane', 'abi_membrane', subject),
+    typedFissionEvidence('compile_recipe', 'compile_proof', subject),
+    typedFissionEvidence('loader_capability', 'loader_runtime_proof', subject),
+    typedFissionEvidence('output_oracle', 'output_oracle_proof', subject),
+  ];
 }
 
 function hashBuffer(bytes) {
@@ -1130,20 +1193,30 @@ const fissionAssessment = assessGeneratedGpuSplitGranularity({
   manifest: fissionManifest,
   files: fissionFiles,
 });
+const fissionSelectedPath = 'gpu/shading.hip';
+const fissionSelectedKernel = 'shade';
+const fissionSelectedIslandId = selectedIslandIdFor(fissionSelectedPath, fissionSelectedKernel);
+const fissionTypedEvidence = deterministicFissionEvidenceFor({
+  selectedPath: fissionSelectedPath,
+  selectedKernel: fissionSelectedKernel,
+  selectedIslandId: fissionSelectedIslandId,
+});
 const fissionReport = verifyGeneratedGpuSplitDeterministicFission({
   assessment: fissionAssessment,
-  selectedPath: 'gpu/shading.hip',
-  changedPaths: ['gpu/shading.hip'],
+  selectedPath: fissionSelectedPath,
+  changedPaths: [fissionSelectedPath],
   selectedArtifact: {
-    sourcePath: 'gpu/shading.hip',
+    sourcePath: fissionSelectedPath,
+    artifactId: `artifact:sha256:${sha256Hex('matrix-fission-artifact-id')}`,
+    contentHash: hashValue('matrix-fission-artifact-content'),
     proofIds: [
-      'gpu-runtime-proof:sha256:synthetic-fission',
-      'gpu-ledger-proof:sha256:synthetic-fission',
+      `gpu-runtime-proof:sha256:${sha256Hex('matrix-fission-runtime-proof')}`,
+      `gpu-ledger-proof:sha256:${sha256Hex('matrix-fission-ledger-proof')}`,
     ],
-    runtimeProofAccepted: true,
   },
+  verificationEvidence: fissionTypedEvidence,
   outputOracleContract: {
-    oracleId: 'oracle:generated-split-visual:sha256:synthetic-fission',
+    oracleId: `oracle:generated-split-visual:sha256:${sha256Hex('matrix-fission-oracle')}`,
     kind: 'visual',
     target: 'framebuffer',
   },
