@@ -35,6 +35,22 @@ const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'webgpu_declared_pipeline_visual',
   'declared_profile_scoped',
 ]);
+const VALIDATION_VISUAL_PROFILE_REQUIREMENTS = [
+  {
+    id: 'flow_visual_gpu_path',
+    profileId: 'flow',
+    backend: 'hip',
+    requirement: 'Flow visual GPU path with runtime proof and visual oracle',
+    missingGap: 'flow_visual_runtime_profile_evidence_required',
+  },
+  {
+    id: 'ray_light_visual_gpu_path',
+    profileId: 'ray-light',
+    backend: 'hip',
+    requirement: 'Ray-light visual GPU path with runtime proof and visual oracle',
+    missingGap: 'ray_light_visual_runtime_profile_evidence_required',
+  },
+];
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],
   ['proofId', 'proof_id'],
@@ -648,6 +664,78 @@ function contentAddressedSha256(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
 }
 
+function rawValidationProfileEvidence(row = {}) {
+  return compactObject(
+    row.validationProfileEvidence
+      ?? row.validation_profile_evidence
+      ?? row.validationProfile
+      ?? row.validation_profile
+      ?? row.profileEvidence
+      ?? row.profile_evidence,
+  );
+}
+
+function validationProfileEvidenceFacet(row = {}) {
+  const supplied = rawValidationProfileEvidence(row);
+  const profileId = firstText(
+    supplied.profileId,
+    supplied.profile_id,
+    supplied.id,
+  );
+  const profileClass = firstText(
+    supplied.profileClass,
+    supplied.profile_class,
+    supplied.requirementId,
+    supplied.requirement_id,
+    supplied.coverageId,
+    supplied.coverage_id,
+  );
+  const source = firstText(supplied.source, supplied.evidenceSource, supplied.evidence_source);
+  const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
+  const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
+  const acceptedFlag = firstBool(
+    supplied.accepted,
+    supplied.profileAccepted,
+    supplied.profile_accepted,
+    supplied.validationProfileAccepted,
+    supplied.validation_profile_accepted,
+  );
+  const failedGates = compactStringList([
+    Object.keys(supplied).length > 0 ? null : 'validation_profile_evidence_missing',
+    acceptedFlag === true ? null : 'validation_profile_evidence_not_explicitly_accepted',
+    profileId ? null : 'validation_profile_id_missing',
+    profileClass ? null : 'validation_profile_requirement_id_missing',
+    source ? null : 'validation_profile_evidence_source_missing',
+    evidenceRefs.length > 0 || proofIds.length > 0
+      ? null
+      : 'validation_profile_evidence_refs_missing',
+  ]);
+  return {
+    present: Object.keys(supplied).length > 0,
+    accepted: failedGates.length === 0,
+    profileId,
+    profile_id: profileId,
+    profileClass,
+    profile_class: profileClass,
+    source,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofIds,
+    proof_ids: proofIds,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function rowHasValidationVisualProfileEvidence(row, requirement) {
+  const evidence = compactObject(row.validationProfileEvidence ?? row.validation_profile_evidence);
+  return evidence.accepted === true
+    && row.backend === requirement.backend
+    && evidence.profileId === requirement.profileId
+    && evidence.profileClass === requirement.id
+    && rowHasAcceptedVisualEvidence(row);
+}
+
 function ledgerRecordForRow(row = {}) {
   return compactObject(row.ledger?.record ?? row.proofLedger?.records?.[0] ?? row.proof_ledger?.records?.[0]);
 }
@@ -1191,6 +1279,8 @@ function finalizeRow(seed) {
   ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
   row.runModeCoverageSupport = runModeCoverageSupportFacet(row);
   row.run_mode_coverage_support = row.runModeCoverageSupport;
+  row.validationProfileEvidence = validationProfileEvidenceFacet(row);
+  row.validation_profile_evidence = row.validationProfileEvidence;
   row.declaredAcceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? null;
   row.declared_acceptance_scope = row.declaredAcceptanceScope;
   row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
@@ -5111,6 +5201,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       telemetry.proofId,
       telemetry.proof_id,
     ),
+    validationProfileEvidence: compactObject(
+      json.validationProfileEvidence
+        ?? json.validation_profile_evidence
+        ?? json.validationProfile
+        ?? json.validation_profile
+        ?? json.profileEvidence
+        ?? json.profile_evidence,
+    ),
     runModeCoverageSupport: compactObject(
       json.runModeCoverageSupport
         ?? json.run_mode_coverage_support
@@ -5582,6 +5680,7 @@ function rowRefs(rows) {
     proofIds: row.proofIds,
     runMode: row.runMode,
     runModeCoverageSupport: row.runModeCoverageSupport,
+    validationProfileEvidence: row.validationProfileEvidence,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
@@ -6041,16 +6140,10 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
 }
 
 function planCoverage(rows) {
-  const flowRows = acceptedRows(rows, (row) =>
-    row.backend === 'hip'
-    && rowHasDeclaredValidationProfile(row, 'flow')
-    && rowHasAcceptedVisualEvidence(row)
-  );
-  const rayRows = acceptedRows(rows, (row) =>
-    row.backend === 'hip'
-    && rowHasDeclaredValidationProfile(row, 'ray-light')
-    && rowHasAcceptedVisualEvidence(row)
-  );
+  const visualProfileRowsByRequirement = new Map(VALIDATION_VISUAL_PROFILE_REQUIREMENTS.map((requirement) => [
+    requirement.id,
+    acceptedRows(rows, (row) => rowHasValidationVisualProfileEvidence(row, requirement)),
+  ]));
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
     && row.proofMode !== 'hip_module_runtime_readback'
@@ -6101,19 +6194,17 @@ function planCoverage(rows) {
       openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
     }),
     hipModuleScopedRuntimeCoverage(rows),
-    coverageEntry({
-      id: 'flow_visual_gpu_path',
-      requirement: 'Flow visual GPU path with runtime proof and visual oracle',
-      status: flowRows.length > 0 ? 'accepted' : 'missing',
-      rows: flowRows,
-      openGaps: flowRows.length > 0 ? [] : ['flow_visual_runtime_proof_required'],
-    }),
-    coverageEntry({
-      id: 'ray_light_visual_gpu_path',
-      requirement: 'Ray-light visual GPU path with runtime proof and visual oracle',
-      status: rayRows.length > 0 ? 'accepted' : 'missing',
-      rows: rayRows,
-      openGaps: rayRows.length > 0 ? [] : ['ray_light_visual_runtime_proof_required'],
+    ...VALIDATION_VISUAL_PROFILE_REQUIREMENTS.map((requirement) => {
+      const requirementRows = visualProfileRowsByRequirement.get(requirement.id) ?? [];
+      return coverageEntry({
+        id: requirement.id,
+        requirement: requirement.requirement,
+        status: requirementRows.length > 0 ? 'accepted' : 'missing',
+        rows: requirementRows,
+        openGaps: requirementRows.length > 0 ? [] : [requirement.missingGap],
+        profileId: requirement.profileId,
+        profile_id: requirement.profileId,
+      });
     }),
     coverageEntry({
       id: 'hiprt_visual_path',

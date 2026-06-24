@@ -1003,12 +1003,31 @@ function runModeCoverageSupportFor(materials, extraProofIds = []) {
   };
 }
 
+function validationProfileEvidenceFor({ profileId, profileClass, evidenceRefs }) {
+  return {
+    schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
+    accepted: true,
+    profileId,
+    profileClass,
+    source: 'explicit_validation_matrix_profile_contract',
+    evidenceRefs,
+  };
+}
+
 const flowHot1RuntimeMaterials = runtimeProofMaterials('hot_delta_1');
 const flowHot2RuntimeMaterials = runtimeProofMaterials('hot_delta_2');
 const flowRunModeCoverageSupport = runModeCoverageSupportFor(flowHot1RuntimeMaterials, [
   'gpu-runtime-proof:sha256:synthetic-hot1',
   'agent-split-run-mode-proof:sha256:hot1',
 ]);
+const flowVisualProfileEvidence = validationProfileEvidenceFor({
+  profileId: 'flow',
+  profileClass: 'flow_visual_gpu_path',
+  evidenceRefs: [
+    'evidence:validation-profile:flow:runtime-visual',
+    flowHot1RuntimeMaterials.proofLedgerQuery.record.proofId,
+  ],
+});
 
 await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
   ...runModeProofBase,
@@ -1033,6 +1052,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot1', 'gpu-runtime-proof:sha256:synthetic-hot1'),
   ...flowHot1RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot1',
+  validationProfileEvidence: flowVisualProfileEvidence,
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
   runMode: {
@@ -1050,6 +1070,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot2', 'gpu-runtime-proof:sha256:synthetic-hot2'),
   ...flowHot2RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot2',
+  validationProfileEvidence: flowVisualProfileEvidence,
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
   runMode: {
@@ -2906,7 +2927,13 @@ assert.equal(ledger.summary.refusalProvenRows, 5);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
-assert.equal(coverageById.get('flow_visual_gpu_path')?.status, 'accepted');
+const flowVisualCoverage = coverageById.get('flow_visual_gpu_path');
+assert.equal(flowVisualCoverage?.status, 'accepted');
+assert.ok(flowVisualCoverage.rows.some((row) =>
+  row.validationProfileEvidence?.accepted === true
+  && row.validationProfileEvidence.profileId === 'flow'
+  && row.validationProfileEvidence.profileClass === 'flow_visual_gpu_path'
+));
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
@@ -2977,6 +3004,50 @@ assert.equal(forgedUnlinkedFlowCold?.matrixOutcome, 'cold_split_proven');
 assert.equal(forgedUnlinkedFlowCold.runModeCoverageSupport.accepted, false);
 assert.ok(forgedUnlinkedFlowCold.runModeCoverageSupport.failedGates.includes(
   'run_mode_support_parent_proof_id_missing',
+));
+
+const spoofNamedFlowDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-name-only-profile');
+await writeRgbaPng(path.join(spoofNamedFlowDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(spoofNamedFlowDir, 'after.png'), 8, 8, (x, y) => [80 + x, 92 + y, 120, 255]);
+await writeRgbaPng(path.join(spoofNamedFlowDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(spoofNamedFlowDir, 'hot1-name-only.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:flow-name-only-hot1', 'gpu-runtime-proof:sha256:flow-name-only-hot1'),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow',
+    visualRoot: spoofNamedFlowDir,
+  }),
+  proofId: 'agent-split-run-mode-proof:sha256:flow-name-only-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(spoofNamedFlowDir, 'before.png'),
+    afterImage: path.join(spoofNamedFlowDir, 'after.png'),
+    diffImage: path.join(spoofNamedFlowDir, 'diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-name-only-hot1',
+    editHash: 'sha256:flow-name-only-hot1',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const spoofNamedFlowLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [spoofNamedFlowDir],
+  generatedAt: '2026-06-09T00:00:01.010Z',
+  includeUnproven: true,
+});
+const spoofNamedFlowCoverage = new Map(spoofNamedFlowLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
+const spoofNamedFlowRuntime = spoofNamedFlowLedger.rows.find((row) => row.targetId === 'flow');
+assert.equal(spoofNamedFlowRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(spoofNamedFlowRuntime.validationProfileEvidence.accepted, false);
+assert.equal(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+assert.ok(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.openGaps.includes(
+  'flow_visual_runtime_profile_evidence_required',
 ));
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
