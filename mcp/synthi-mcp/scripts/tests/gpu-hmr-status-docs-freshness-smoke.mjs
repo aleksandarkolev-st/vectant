@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { collectGpuHmrValidationMatrixLedger } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const testsDir = path.dirname(__filename);
@@ -94,6 +95,19 @@ function timingTokens(artifact) {
   ];
 }
 
+function sortedRowIds(json) {
+  return (Array.isArray(json?.rows) ? json.rows : [])
+    .map((row) => row.rowId)
+    .sort();
+}
+
+function assertSavedMatrixMatchesLive(name, saved, live) {
+  assert.equal(live.query?.accepted, true, `${name} live matrix query must accept`);
+  assert.equal(saved.json.proofId, live.proofId, `${name} saved proofId must match live aggregation`);
+  assert.deepEqual(saved.json.summary, live.summary, `${name} saved summary must match live aggregation`);
+  assert.deepEqual(sortedRowIds(saved.json), sortedRowIds(live), `${name} saved row set must match live aggregation`);
+}
+
 async function readDocs() {
   const docs = [];
   for (const docPath of DOC_PATHS) {
@@ -163,6 +177,24 @@ const timing = await latestJsonArtifact(
 assert.ok(matrix.json.proofId, 'latest matrix must carry proofId');
 assert.ok(history.json.proofId, 'latest history matrix must carry proofId');
 assert.ok(Number.isInteger(timing.json.count), 'latest timing summary must carry count');
+
+const liveMatrix = await collectGpuHmrValidationMatrixLedger({
+  repoRoot,
+  mcpRoot,
+  latestPerTarget: true,
+  includeUnproven: false,
+  generatedAt: matrix.json.generatedAt,
+});
+const liveHistory = await collectGpuHmrValidationMatrixLedger({
+  repoRoot,
+  mcpRoot,
+  latestPerTarget: true,
+  includeUnproven: true,
+  generatedAt: history.json.generatedAt,
+});
+assertSavedMatrixMatchesLive('latest validation matrix', matrix, liveMatrix);
+assertSavedMatrixMatchesLive('latest history matrix', history, liveHistory);
+
 assert.equal(
   matrix.json.summary.broadFullRuntimeGpuHmrRows + matrix.json.summary.scopedFullRuntimeGpuHmrRows,
   matrix.json.summary.allFullRuntimeGpuHmrRows,
