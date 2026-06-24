@@ -2592,6 +2592,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     contract.artifact_identity?.supported_pipeline_scope,
     contract.artifactIdentity?.supportedPipelineScope,
   );
+  const declaredScopeEvidence = declaredScopeEvidenceFacet({
+    supportedPipelineScope,
+    contract,
+    backendContract: webgpuContract,
+    profile: json.profile,
+  });
   const strictVisualProofAccepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -2602,6 +2608,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && processContinuity.accepted === true
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
+    && declaredScopeEvidence.accepted === true
     && visual.accepted === true;
   const accepted =
     strictVisualProofAccepted === true
@@ -2648,6 +2655,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
     supportedPipelineScope,
     supported_pipeline_scope: supportedPipelineScope,
+    declaredScopeEvidence,
+    declared_scope_evidence: declaredScopeEvidence,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
     visual,
@@ -2673,10 +2682,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      declaredScopeEvidence.accepted === true ? null : 'webgpu_visual_declared_scope_not_evidence_backed',
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
+      ...declaredScopeEvidence.failedGates,
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
   });
@@ -5712,10 +5723,12 @@ function planCoverage(rows) {
   const webgpuEmptyLayoutRows = acceptedRows(rows, (row) =>
     row.backend === 'webgpu'
     && row.supportedPipelineScope === 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list'
+    && row.declaredScopeEvidence?.accepted === true
   );
   const webgpuProfiledLayoutRows = acceptedRows(rows, (row) =>
     row.backend === 'webgpu'
     && row.supportedPipelineScope === 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list'
+    && row.declaredScopeEvidence?.accepted === true
     && row.runtimeResourceTrace?.resourceStateHash
     && row.runtimeResourceTrace?.bindGroupCount > 0
     && row.runtimeResourceTrace?.vertexBufferCount > 0

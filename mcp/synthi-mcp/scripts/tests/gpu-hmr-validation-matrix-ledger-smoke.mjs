@@ -1597,6 +1597,14 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
   proofId: 'webgpu-runtime-visual-proof:sha256:source-adapted-forged',
   gpuHmrSuccess: true,
   profile: { id: 'forged-webgpu-source-adapted-visual' },
+  contract: {
+    artifact_identity: {
+      supported_pipeline_scope: 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list',
+    },
+    webgpu_contract: {
+      supported_pipeline_scope: 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list',
+    },
+  },
   ...runtimeProofMaterials('hot_delta_1', {
     projectId: 'forged-webgpu-source-adapted-visual',
     visualRoot: forgedWebGpuVisualDir,
@@ -2520,6 +2528,7 @@ assert.equal(forgedSourceAdaptedWebGpuVisual.visualProfileAccepted, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.sourceAdaptedProfile, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.ledger.gpuHmrSuccess, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.visual.accepted, true);
+assert.equal(forgedSourceAdaptedWebGpuVisual.declaredScopeEvidence.accepted, true);
 assert.ok(forgedSourceAdaptedWebGpuVisual.reasons.includes(
   'source_adapted_profile_not_no_shim_gpu_hmr',
 ));
