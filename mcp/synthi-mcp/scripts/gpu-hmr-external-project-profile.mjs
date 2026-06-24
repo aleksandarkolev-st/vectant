@@ -932,18 +932,36 @@ function mcpModelProvenance(cfg, ...compileResults) {
   }
   const observedSplitModels = Array.from(splitModels).sort();
   const observedDeltaModels = Array.from(deltaModels).sort();
+  const expectedModelsSeparated = Boolean(cfg.splitModel && cfg.deltaModel && cfg.splitModel !== cfg.deltaModel);
+  const observedModelEvidenceComplete = observedSplitModels.length > 0 && observedDeltaModels.length > 0;
+  const observedSplitModelMatched = observedSplitModels.includes(cfg.splitModel);
+  const observedDeltaModelMatched = observedDeltaModels.includes(cfg.deltaModel);
+  const accepted =
+    expectedModelsSeparated
+    && observedModelEvidenceComplete
+    && observedSplitModelMatched
+    && observedDeltaModelMatched;
+  const failedGates = [
+    expectedModelsSeparated ? null : 'mcp_model_pins_not_separated',
+    observedModelEvidenceComplete ? null : 'mcp_observed_model_evidence_missing',
+    observedSplitModelMatched ? null : 'mcp_observed_split_model_mismatch',
+    observedDeltaModelMatched ? null : 'mcp_observed_delta_model_mismatch',
+  ].filter(Boolean);
   return {
     schemaVersion: 'synthi.gpu.hmr.mcp_model_provenance.v1',
+    accepted,
     expectedSplitModel: cfg.splitModel,
     expectedDeltaModel: cfg.deltaModel,
-    expectedModelsSeparated: Boolean(cfg.splitModel && cfg.deltaModel && cfg.splitModel !== cfg.deltaModel),
+    expectedModelsSeparated,
     envPinsPropagatedToMcp: true,
     observedSplitModels,
     observedDeltaModels,
-    observedSplitModelMatched: observedSplitModels.length === 0 || observedSplitModels.includes(cfg.splitModel),
-    observedDeltaModelMatched: observedDeltaModels.length === 0 || observedDeltaModels.includes(cfg.deltaModel),
-    observedModelEvidenceComplete: observedSplitModels.length > 0 && observedDeltaModels.length > 0,
-    status: observedSplitModels.length > 0 && observedDeltaModels.length > 0
+    observedSplitModelMatched,
+    observedDeltaModelMatched,
+    observedModelEvidenceComplete,
+    failedGates,
+    failed_gates: failedGates,
+    status: observedModelEvidenceComplete
       ? 'observed'
       : 'configured-only',
   };
@@ -1591,6 +1609,36 @@ async function selfCheck() {
     ok: visualProofArtifact.ok,
     visualProofArtifact,
   });
+  const modelProvenanceCfg = {
+    splitModel: 'gemini-3.5-flash',
+    deltaModel: 'gemini-3.1-flash-lite',
+  };
+  const configuredOnlyModelProvenance = mcpModelProvenance(
+    modelProvenanceCfg,
+    { compile: { ok: true }, wait: { status: 'applied' } },
+  );
+  const observedModelProvenance = mcpModelProvenance(
+    modelProvenanceCfg,
+    {
+      compile: {
+        modelProvenance: {
+          splitModel: 'gemini-3.5-flash',
+          deltaModel: 'gemini-3.1-flash-lite',
+        },
+      },
+      wait: { status: 'applied' },
+    },
+  );
+  checks.push({
+    name: 'mcp-model-provenance-observed-evidence-required',
+    ok:
+      configuredOnlyModelProvenance.accepted === false
+      && configuredOnlyModelProvenance.failedGates.includes('mcp_observed_model_evidence_missing')
+      && observedModelProvenance.accepted === true
+      && observedModelProvenance.observedModelEvidenceComplete === true,
+    configuredOnlyModelProvenance,
+    observedModelProvenance,
+  });
   const rejectionProofArtifact = await writeExternalRejectionProofArtifact(
     {
       id: 'external-rejection-self-check',
@@ -1834,11 +1882,8 @@ async function runMcpPreviewProfile(profile, dir, report) {
     report.timings.afterCompileWallMs = afterCompile.compileWallMs;
     report.mcp.after = afterCompile;
     report.mcp.modelProvenance = mcpModelProvenance(mcp.cfg, beforeCompile, afterCompile);
-    if (!report.mcp.modelProvenance.expectedModelsSeparated) {
-      throw new Error(`MCP model pins are not separated: ${JSON.stringify(report.mcp.modelProvenance)}`);
-    }
-    if (!report.mcp.modelProvenance.observedSplitModelMatched || !report.mcp.modelProvenance.observedDeltaModelMatched) {
-      throw new Error(`MCP observed model provenance did not match configured pins: ${JSON.stringify(report.mcp.modelProvenance)}`);
+    if (report.mcp.modelProvenance.accepted !== true) {
+      throw new Error(`MCP observed model provenance was not accepted: ${JSON.stringify(report.mcp.modelProvenance)}`);
     }
     const after = await captureMcpPreviewScreenshot(mcp.client, profile, 'after', afterCompile.wait);
     report.timings.editToScreenshotMs = Date.now() - editStart;
