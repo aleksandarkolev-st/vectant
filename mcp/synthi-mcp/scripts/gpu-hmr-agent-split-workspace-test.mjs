@@ -1835,6 +1835,71 @@ function runModeProofIdentity(split) {
   };
 }
 
+function profileClassForFixture(fixture = CFG.fixture) {
+  const normalized = String(fixture || 'unknown')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${normalized || 'unknown'}_visual_gpu_path`;
+}
+
+function typedValidationProfileEvidence({ proof = null, split = null, visualDelta = null } = {}) {
+  const ledger = proof ? embeddedLedgerFromProof(proof) : null;
+  const recomputed = ledger ? queryGpuHmrLedgerInvariants(ledger) : null;
+  const record = recomputed?.record ?? firstLedgerRecord(ledger);
+  const splitIdentity = split ? splitProofIdentity(split) : {};
+  const evidenceRefs = [
+    `evidence:agent-split-validation-profile:${CFG.fixture}`,
+    recomputed?.proofId,
+    record?.proofId,
+    proof?.runtimeProofArtifact?.proofId,
+    proof?.runtime_proof_artifact?.proofId,
+    proof?.runtimeProofArtifact?.proof_id,
+    proof?.runtime_proof_artifact?.proof_id,
+    splitIdentity.targetId,
+    visualDelta?.diffPath,
+  ].filter(Boolean);
+  return {
+    schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
+    accepted: true,
+    profileId: CFG.fixture,
+    profile_id: CFG.fixture,
+    profileClass: profileClassForFixture(),
+    profile_class: profileClassForFixture(),
+    source: 'agent_split_fixture_runtime_visual_proof',
+    evidenceRefs: [...new Set(evidenceRefs)],
+    evidence_refs: [...new Set(evidenceRefs)],
+  };
+}
+
+function runModeCoverageSupportFromProof(proof) {
+  const ledger = embeddedLedgerFromProof(proof);
+  if (!ledger) return null;
+  const recomputed = queryGpuHmrLedgerInvariants(ledger);
+  const record = recomputed.record ?? firstLedgerRecord(ledger);
+  if (!record?.contractHash || !record?.artifactAfterHash) return null;
+  const parentProofIds = [
+    recomputed.proofId,
+    record.proofId,
+    proof?.runtimeProofArtifact?.proofId,
+    proof?.runtimeProofArtifact?.proof_id,
+    proof?.runtime_proof_artifact?.proofId,
+    proof?.runtime_proof_artifact?.proof_id,
+  ].filter(Boolean);
+  return {
+    schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
+    parentProofIds: [...new Set(parentProofIds)],
+    parent_proof_ids: [...new Set(parentProofIds)],
+    contractHash: record.contractHash,
+    contract_hash: record.contractHash,
+    artifactBeforeHash: record.artifactBeforeHash,
+    artifact_before_hash: record.artifactBeforeHash,
+    artifactAfterHash: record.artifactAfterHash,
+    artifact_after_hash: record.artifactAfterHash,
+  };
+}
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -2609,8 +2674,10 @@ async function run() {
   record('generated split granularity artifact', 'pass', granularityPath);
   await persistGeneratedSplitToWorkspace(split, granularity);
 
+  let coldSplitProofSeed = null;
+  let hotDelta1RunModeCoverageSupport = null;
   if (CFG.captureArtifacts && baselineShot) {
-    const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
+    coldSplitProofSeed = {
       ...runModeProofIdentity(split),
       coldSplitProven: true,
       cold_split_proven: true,
@@ -2640,8 +2707,7 @@ async function run() {
         visiblePixelCount: baselineShot.second?.visiblePixels ?? baselineShot.first?.visiblePixels ?? null,
         meanAbsDelta8bit: baselineShot.second?.meanLuma ?? baselineShot.first?.meanLuma ?? null,
       },
-    });
-    record('run-mode cold split proof artifact', 'pass', coldPath);
+    };
   }
 
   const hotDelta1Edit = deviceScalarEdit(split.files[split.roles.device], 0);
@@ -2728,7 +2794,25 @@ async function run() {
       afterShot,
       wait: generatedDeviceResult.wait,
     });
-    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', hotDelta1Proof);
+    hotDelta1RunModeCoverageSupport = runModeCoverageSupportFromProof(hotDelta1Proof);
+    const hotDelta1ProfileEvidence = typedValidationProfileEvidence({
+      proof: hotDelta1Proof,
+      split,
+      visualDelta,
+    });
+    if (coldSplitProofSeed && hotDelta1RunModeCoverageSupport) {
+      const coldPath = await writeRunModeProofArtifact('run-mode-cold-split', {
+        ...coldSplitProofSeed,
+        runModeCoverageSupport: hotDelta1RunModeCoverageSupport,
+        run_mode_coverage_support: hotDelta1RunModeCoverageSupport,
+      });
+      record('run-mode cold split proof artifact', 'pass', coldPath);
+    }
+    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', {
+      ...hotDelta1Proof,
+      validationProfileEvidence: hotDelta1ProfileEvidence,
+      validation_profile_evidence: hotDelta1ProfileEvidence,
+    });
     record('run-mode hot delta 1 proof artifact', 'pass', hotDelta1Path);
   }
   const deterministicFission = verifyGeneratedSplitFissionAfterRuntime({
@@ -2850,7 +2934,16 @@ async function run() {
       afterShot: afterHotDelta2Shot,
       wait: hotDelta2Result.wait,
     });
-    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', hotDelta2Proof);
+    const hotDelta2ProfileEvidence = typedValidationProfileEvidence({
+      proof: hotDelta2Proof,
+      split,
+      visualDelta: hotDelta2VisualDelta,
+    });
+    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', {
+      ...hotDelta2Proof,
+      validationProfileEvidence: hotDelta2ProfileEvidence,
+      validation_profile_evidence: hotDelta2ProfileEvidence,
+    });
     record('run-mode hot delta 2 proof artifact', 'pass', hotDelta2Path);
   }
 
@@ -2864,6 +2957,10 @@ async function run() {
     });
     const negativePath = await writeNegativeEditRefusalArtifact('negative-edit-refusal', {
       ...runModeProofIdentity(split),
+      ...(hotDelta1RunModeCoverageSupport ? {
+        runModeCoverageSupport: hotDelta1RunModeCoverageSupport,
+        run_mode_coverage_support: hotDelta1RunModeCoverageSupport,
+      } : {}),
       reasons: negativeEdit.reasons,
       unsupportedReasons: negativeEdit.reasons,
       unsupported_reasons: negativeEdit.reasons,
