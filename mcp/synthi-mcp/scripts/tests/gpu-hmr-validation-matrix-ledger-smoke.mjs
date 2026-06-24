@@ -1138,10 +1138,40 @@ const fissionReport = verifyGeneratedGpuSplitDeterministicFission({
 });
 await writeJson(path.join(visualDir, 'generated-split-deterministic-fission.json'), fissionReport);
 
+const openClPreflightEvidenceRef = 'evidence:synthetic-opencl-preflight:runtime-capability';
 await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'), {
   schema: 'synthi.gpu_hmr.opencl_preflight.v1',
   slug: 'synthetic-opencl-preflight',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'opencl',
+      evidenceRefs: [openClPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'opencl',
+      evidenceRefs: [openClPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'opencl',
+      backendFamily: 'opencl',
+      probe: 'opencl_vendor_icd_preflight',
+      evidenceRefs: [openClPreflightEvidenceRef],
+    },
+    evidenceRefs: [openClPreflightEvidenceRef],
+  },
   classification: {
+    backend: {
+      value: 'opencl',
+      evidenceRefs: [openClPreflightEvidenceRef],
+    },
+    backendFamily: 'opencl',
+    runtimeCapabilityPreflight: {
+      backend: 'opencl',
+      backendFamily: 'opencl',
+      probe: 'opencl_vendor_icd_preflight',
+      evidenceRefs: [openClPreflightEvidenceRef],
+    },
     openclAccepted: false,
     resultState: 'opencl-runtime-rejected',
     unsupportedReasons: ['opencl_vendor_icd_missing'],
@@ -1156,6 +1186,27 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
     noSymlinkApplied: true,
   },
   proofId: 'opencl-preflight-proof:sha256:synthetic',
+});
+
+const legacySchemaOnlyPreflightDir = path.join(artifactsRoot, 'legacy-schema-only-preflight');
+await writeJson(path.join(legacySchemaOnlyPreflightDir, 'schema-only-opencl-preflight.json'), {
+  schema: 'synthi.gpu_hmr.opencl_preflight.v1',
+  slug: 'legacy-schema-only-opencl-preflight',
+  classification: {
+    openclAccepted: true,
+    resultState: 'opencl-runtime-observed',
+    unsupportedReasons: [],
+  },
+  acceptance: {
+    acceptedForOpenClRuntimePreflight: true,
+    acceptedForOpenClOutputProof: false,
+    gpuHmrSuccess: false,
+    noShimApplied: true,
+    noVendorIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'opencl-preflight-proof:sha256:legacy-schema-only',
 });
 
 await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
@@ -2273,6 +2324,70 @@ assert.equal(opencl?.matrixOutcome, 'refusal_proven');
 assert.equal(opencl.acceptedForGpuHmr, false);
 assert.equal(opencl.gpuHmrSuccess, false);
 assert.equal(opencl.refusalProven, true);
+assert.equal(opencl.backendEvidence.accepted, true);
+assert.equal(opencl.backendEvidence.backend, 'opencl');
+assert.equal(opencl.backendEvidence.backendFamily, 'opencl');
+assert.deepEqual(opencl.backendEvidence.evidenceRefs, [openClPreflightEvidenceRef]);
+
+const legacySchemaOnlyPreflightLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [legacySchemaOnlyPreflightDir],
+  generatedAt: '2026-06-09T00:00:00.050Z',
+  includeUnproven: true,
+});
+const legacySchemaOnlyPreflight = legacySchemaOnlyPreflightLedger.rows.find(
+  (row) => row.targetId === 'legacy-schema-only-opencl-preflight',
+);
+assert.equal(legacySchemaOnlyPreflight?.backend, 'unknown');
+assert.equal(legacySchemaOnlyPreflight.matrixOutcome, 'unproven');
+assert.equal(legacySchemaOnlyPreflight.acceptedForGpuHmr, false);
+assert.equal(legacySchemaOnlyPreflight.proofChainAccepted, false);
+assert.equal(legacySchemaOnlyPreflight.backendEvidence.accepted, false);
+assert.ok(legacySchemaOnlyPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
+assert.ok(legacySchemaOnlyPreflight.openGaps.includes('preflight_typed_backend_evidence_required'));
+const legacySchemaOnlyPreflightCoverage = new Map(
+  legacySchemaOnlyPreflightLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(legacySchemaOnlyPreflightCoverage.get('opencl_dispatch_readback')?.status, 'missing');
+const forgedPreflightBackendCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [{
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.opencl_preflight.v1',
+    artifactPath: 'synthetic/schema-only-opencl-preflight.json',
+    updatedAt: '2026-06-09T00:00:00.050Z',
+    backend: 'opencl',
+    targetId: 'forged-schema-only-opencl-preflight',
+    profileId: 'forged-schema-only-opencl-preflight',
+    proofMode: 'runtime_preflight',
+    evidenceKind: 'runtime_preflight_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'structured_runtime_refusal',
+    proofIds: ['opencl-preflight-proof:sha256:forged-schema-only'],
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: [],
+    },
+    reasons: [],
+    openGaps: [],
+  }],
+});
+assert.equal(forgedPreflightBackendCoverageQuery.accepted, false);
+assert.ok(forgedPreflightBackendCoverageQuery.failedGates.some((gate) =>
+  gate.code === 'preflight_backend_specific_classification_requires_typed_backend_evidence'
+));
+const forgedPreflightBackendCoverage = new Map(
+  forgedPreflightBackendCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(forgedPreflightBackendCoverage.get('opencl_dispatch_readback')?.status, 'missing');
 
 const bevy = ledger.rows.find((row) => row.backend === 'bevy_wgsl');
 assert.equal(bevy?.matrixOutcome, 'refusal_proven');

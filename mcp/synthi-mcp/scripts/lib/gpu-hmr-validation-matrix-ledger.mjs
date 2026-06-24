@@ -1528,6 +1528,16 @@ function rowSafetyFailures(row) {
   if (row.matrixOutcome === 'preflight_only' && row.acceptedForGpuHmr === true) {
     failures.push({ code: 'preflight_only_row_cannot_accept_gpu_hmr' });
   }
+  if (row.proofMode === 'runtime_preflight') {
+    const backend = firstText(row.backend);
+    const backendEvidenceAccepted = preflightBackendEvidenceAccepted(row);
+    if (backend && backend !== 'unknown' && backendEvidenceAccepted !== true) {
+      failures.push({ code: 'preflight_backend_specific_classification_requires_typed_backend_evidence' });
+    }
+    if (row.matrixOutcome === 'preflight_only' && backendEvidenceAccepted !== true) {
+      failures.push({ code: 'preflight_only_requires_typed_backend_evidence' });
+    }
+  }
   return failures;
 }
 
@@ -3435,12 +3445,157 @@ async function externalProjectRejectionRow(json, filePath, context) {
   });
 }
 
-function preflightBackend(schema) {
-  if (schema.includes('oidn_preflight')) return 'oidn_hip';
-  if (schema.includes('opencl_preflight')) return 'opencl';
-  if (schema.includes('vulkan_preflight')) return 'vulkan';
-  if (schema.includes('webgpu_preflight')) return 'webgpu';
-  return 'unknown';
+function evidenceRefList(value) {
+  if (!value) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => evidenceRefList(item));
+  if (isObject(value)) return evidenceRefsFromValue(value);
+  return [];
+}
+
+function evidenceRefsFromValue(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => evidenceRefList(item));
+  if (!isObject(value)) return [];
+  return [
+    value.evidenceRef,
+    value.evidence_ref,
+    ...evidenceRefList(value.evidenceRefs),
+    ...evidenceRefList(value.evidence_refs),
+    ...evidenceRefList(value.backendEvidenceRefs),
+    ...evidenceRefList(value.backend_evidence_refs),
+    ...evidenceRefList(value.fieldEvidenceRefs),
+    ...evidenceRefList(value.field_evidence_refs),
+  ];
+}
+
+function typedValueField(value) {
+  return isObject(value) ? firstText(value.value) : firstText(value);
+}
+
+function preflightBackendEvidenceCandidates(json = {}) {
+  const classification = compactObject(json.classification);
+  const acceptance = compactObject(json.acceptance);
+  const contract = compactObject(
+    json.contract
+    ?? json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? classification.contract
+    ?? classification.acceptanceContract
+    ?? classification.acceptance_contract,
+  );
+  const profile = compactObject(
+    json.profile
+    ?? json.runtimeProfile
+    ?? json.runtime_profile
+    ?? classification.profile
+    ?? classification.runtimeProfile
+    ?? classification.runtime_profile,
+  );
+  const runtimeCapability = compactObject(
+    json.runtimeCapability
+    ?? json.runtime_capability
+    ?? json.runtimeCapabilityPreflight
+    ?? json.runtime_capability_preflight
+    ?? classification.runtimeCapability
+    ?? classification.runtime_capability
+    ?? classification.runtimeCapabilityPreflight
+    ?? classification.runtime_capability_preflight
+    ?? acceptance.runtimeCapability
+    ?? acceptance.runtime_capability
+    ?? acceptance.runtimeCapabilityPreflight
+    ?? acceptance.runtime_capability_preflight,
+  );
+  return [
+    ['backend_evidence', compactObject(json.backendEvidence ?? json.backend_evidence)],
+    ['preflight_backend_evidence', compactObject(
+      json.preflightBackendEvidence ?? json.preflight_backend_evidence,
+    )],
+    ['backend_contract', compactObject(json.backendContract ?? json.backend_contract)],
+    ['contract', contract],
+    ['classification', classification],
+    ['profile', profile],
+    ['runtime_capability', runtimeCapability],
+    ['artifact', compactObject(json)],
+  ].filter(([, candidate]) => Object.keys(candidate).length > 0);
+}
+
+function backendEvidenceFromCandidate(source, candidate) {
+  const backendField = candidate.backend ?? candidate.gpuBackend ?? candidate.gpu_backend;
+  const backendFamilyField = candidate.backendFamily ?? candidate.backend_family;
+  const profile = compactObject(candidate.profile ?? candidate.runtimeProfile ?? candidate.runtime_profile);
+  const runtimeCapability = compactObject(
+    candidate.runtimeCapability
+    ?? candidate.runtime_capability
+    ?? candidate.runtimeCapabilityPreflight
+    ?? candidate.runtime_capability_preflight,
+  );
+  const backendRaw = firstText(
+    typedValueField(backendField),
+    typedValueField(profile.backend ?? profile.gpuBackend ?? profile.gpu_backend),
+    typedValueField(runtimeCapability.backend ?? runtimeCapability.gpuBackend ?? runtimeCapability.gpu_backend),
+  );
+  const backendFamilyRaw = firstText(
+    typedValueField(backendFamilyField),
+    typedValueField(profile.backendFamily ?? profile.backend_family),
+    typedValueField(runtimeCapability.backendFamily ?? runtimeCapability.backend_family),
+  );
+  const backend = backendRaw && backendRaw !== 'unknown' ? backendRaw : null;
+  const backendFamily = backendFamilyRaw && backendFamilyRaw !== 'unknown' ? backendFamilyRaw : null;
+  const evidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(candidate),
+    ...evidenceRefsFromValue(backendField),
+    ...evidenceRefsFromValue(backendFamilyField),
+    ...evidenceRefsFromValue(profile),
+    ...evidenceRefsFromValue(runtimeCapability),
+  ]);
+  const failedGates = compactStringList([
+    backend ? null : 'preflight_backend_value_missing',
+    backendFamily ? null : 'preflight_backend_family_missing',
+    evidenceRefs.length > 0 ? null : 'preflight_backend_evidence_refs_missing',
+  ]);
+  return {
+    source,
+    backend,
+    backendFamily,
+    backend_family: backendFamily,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    accepted: failedGates.length === 0,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
+function preflightBackendEvidenceFacet(json = {}) {
+  const candidates = preflightBackendEvidenceCandidates(json)
+    .map(([source, candidate]) => backendEvidenceFromCandidate(source, candidate));
+  const accepted = candidates.find((candidate) => candidate.accepted === true);
+  const best = accepted
+    ?? candidates.find((candidate) => candidate.backend && candidate.backendFamily)
+    ?? candidates.find((candidate) => candidate.backend)
+    ?? candidates[0]
+    ?? backendEvidenceFromCandidate('missing', {});
+  const failedGates = accepted
+    ? []
+    : compactStringList(best.failedGates?.map((gate) => gate.code));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_evidence.v1',
+    accepted: accepted !== undefined,
+    source: best.source,
+    backend: accepted ? accepted.backend : null,
+    backendFamily: accepted ? accepted.backendFamily : (best.backendFamily ?? null),
+    backend_family: accepted ? accepted.backendFamily : (best.backendFamily ?? null),
+    evidenceRefs: accepted ? accepted.evidenceRefs : compactStringList(best.evidenceRefs),
+    evidence_refs: accepted ? accepted.evidenceRefs : compactStringList(best.evidenceRefs),
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
+function preflightBackendEvidenceAccepted(row = {}) {
+  const evidence = preflightBackendEvidenceFacet(row);
+  return evidence.accepted === true;
 }
 
 function preflightAcceptedField(backend, acceptance) {
@@ -3460,11 +3615,16 @@ function preflightRuntimeOnlyAccepted(backend, acceptance) {
 
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
-  const backend = preflightBackend(schema);
+  const backendEvidence = preflightBackendEvidenceFacet(json);
+  const backend = backendEvidence.accepted ? backendEvidence.backend : 'unknown';
   const acceptance = compactObject(json.acceptance);
   const classification = compactObject(json.classification);
-  const proofAccepted = preflightAcceptedField(backend, acceptance);
-  const runtimeOnlyAccepted = preflightRuntimeOnlyAccepted(backend, acceptance);
+  const proofAccepted = backendEvidence.accepted
+    ? preflightAcceptedField(backend, acceptance)
+    : false;
+  const runtimeOnlyAccepted = backendEvidence.accepted
+    ? preflightRuntimeOnlyAccepted(backend, acceptance)
+    : false;
   const unsupportedReasons = compactStringList(classification.unsupportedReasons ?? classification.unsupported_reasons);
   const noShimApplied = acceptance.noShimApplied === true;
   const noSymlinkApplied = acceptance.noSymlinkApplied === true;
@@ -3502,6 +3662,8 @@ async function preflightRow(json, filePath, context) {
     profileId: firstText(json.slug, backend),
     proofMode: 'runtime_preflight',
     evidenceKind: backend === 'webgpu' ? 'runtime_preflight_diagnostic' : 'runtime_preflight_refusal',
+    backendEvidence,
+    backend_evidence: backendEvidence,
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -3534,6 +3696,8 @@ async function preflightRow(json, filePath, context) {
       noBrowserFlagClaimedAsHmr: boolOrNull(acceptance.noBrowserFlagClaimedAsHmr),
     },
     reasons: compactStringList([
+      backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',
+      ...backendEvidence.failedGates.map((gate) => gate.code),
       ...unsupportedReasons,
       acceptance.reason,
       proofAccepted ? 'preflight_does_not_prove_required_output_or_pipeline' : null,
@@ -3542,11 +3706,15 @@ async function preflightRow(json, filePath, context) {
       ? ['shader_pipeline_or_output_oracle_not_proven']
       : refusalProven
         ? compactStringList([
+          backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',
           backend === 'opencl' ? 'real_opencl_vendor_icd_required' : null,
           backend === 'vulkan' ? 'real_vulkan_icd_required' : null,
           backend === 'oidn_hip' ? 'matching_oidn_hip_runtime_required' : null,
         ])
-        : ['runtime_preflight_not_accepted'],
+        : compactStringList([
+          backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',
+          'runtime_preflight_not_accepted',
+        ]),
   });
 }
 
@@ -5393,12 +5561,27 @@ function rowHasAcceptedExternalProjectContract(row, options = {}) {
   return true;
 }
 
+function rowCanCountBackendSpecificCoverage(row) {
+  if (row.proofMode === 'runtime_preflight') {
+    return preflightBackendEvidenceAccepted(row);
+  }
+  return true;
+}
+
 function refusalRows(rows, predicate) {
-  return rows.filter((row) => row.matrixOutcome === 'refusal_proven' && predicate(row));
+  return rows.filter((row) =>
+    row.matrixOutcome === 'refusal_proven'
+    && rowCanCountBackendSpecificCoverage(row)
+    && predicate(row)
+  );
 }
 
 function preflightOnlyRows(rows, predicate) {
-  return rows.filter((row) => row.matrixOutcome === 'preflight_only' && predicate(row));
+  return rows.filter((row) =>
+    row.matrixOutcome === 'preflight_only'
+    && rowCanCountBackendSpecificCoverage(row)
+    && predicate(row)
+  );
 }
 
 function visualProfileRows(rows, predicate) {
