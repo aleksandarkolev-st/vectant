@@ -2016,14 +2016,19 @@ const acceptedHiprt = ledger.rows.find((row) =>
   row.targetId === 'accepted-hiprt-recomputed-oracle'
   && row.proofMode === 'same-process'
 );
-assert.equal(acceptedHiprt?.matrixOutcome, 'full_runtime_gpu_hmr');
-assert.equal(acceptedHiprt.acceptedForGpuHmr, true);
+assert.equal(acceptedHiprt?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(acceptedHiprt.acceptedForGpuHmr, false);
+assert.equal(acceptedHiprt.visualProfileAccepted, true);
+assert.equal(acceptedHiprt.sourceAdaptedProfile, true);
+assert.equal(acceptedHiprt.gpuHmrSuccess, false);
 assert.equal(acceptedHiprt.oracleRegion.source, 'matrix_recomputed_png_pixels');
 assert.equal(acceptedHiprt.oracleRegion.accepted, true);
 assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.accepted, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.scope, 'hiprt_declared_visual_profile');
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.arbitraryLibraryAccepted, false);
+assert.ok(acceptedHiprt.reasons.includes('hiprt_source_adapted_profile_not_no_shim_gpu_hmr'));
+assert.ok(acceptedHiprt.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 
 const forgedHiprtMissingInstrumentation = ledger.rows.find(
   (row) => row.targetId === 'forged-hiprt-missing-instrumentation',
@@ -2065,10 +2070,11 @@ assert.equal(forgedLegacyPreview.runtimeProofArtifact.present, false);
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_recomputed_proof_ledger_missing'));
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_runtime_proof_artifact_missing'));
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 2);
 assert.equal(ledger.summary.broadFullRuntimeGpuHmrRows, 0);
-assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 4);
-assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 2);
+assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 2);
+assert.ok(ledger.summary.visualProfileAcceptedRows >= 1);
 assert.equal(
   Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),
   ledger.summary.allFullRuntimeGpuHmrRows,
@@ -2099,28 +2105,12 @@ const optedOutHiprtRunModeTarget = coverageById.get('per_target_run_modes')?.tar
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
 );
 assert.equal(optedOutHiprtRunModeTarget, undefined);
-assert.equal(coverageById.get('hiprt_run_modes')?.status, 'partial');
-assert.equal(coverageById.get('hiprt_run_modes')?.acceptedTargetCount, 0);
-assert.equal(coverageById.get('hiprt_run_modes')?.incompleteTargetCount, 1);
-const hiprtRunModeTarget = coverageById.get('hiprt_run_modes')?.targetCoverage.find(
+assert.equal(coverageById.get('hiprt_run_modes')?.status, 'missing');
+const hiprtRunModeTarget = coverageById.get('hiprt_run_modes')?.targetCoverage?.find(
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
 );
-assert.equal(hiprtRunModeTarget?.status, 'partial');
-assert.ok(hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:negative_edit_refusal_evidence_missing',
-));
-assert.ok(!hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:cold_evidence_missing',
-));
-assert.ok(!hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:hot_delta_1_evidence_missing',
-));
-assert.ok(!hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:hot_delta_2_evidence_missing',
-));
-assert.ok(!hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:hot_delta_2_different_edit_evidence_missing',
-));
+assert.equal(hiprtRunModeTarget, undefined);
+assert.ok(coverageById.get('hiprt_run_modes')?.openGaps.includes('hiprt_run_mode_proof_required'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));
