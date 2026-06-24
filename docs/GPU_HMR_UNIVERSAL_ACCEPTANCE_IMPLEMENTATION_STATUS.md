@@ -224,7 +224,7 @@ historical matrix ledger for this matrix-multiplication run: gpu-validation-matr
 visual result: compute-only target; no frame captured or counted, and the row still refuses because the runtime ledger lacks post-epoch output-oracle observation
 ```
 
-This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths above, including the scoped HIPRT CameraRays and scoped WebGPU paths.
+This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted full-runtime scope is ROCm/HIP plus the explicitly proven WebGPU visual/runtime paths above. HIPRT CameraRays and MegaKernel direct-light-gain are preserved as source-adapted visual-profile evidence only, not accepted no-shim full-runtime GPU HMR.
 
 Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, WebGPU compute/resource forms beyond the proven explicit storage/uniform float32 readback profile, WebGPU engine-owned pipeline caches, and WebGPU resource layouts beyond the proven visual/compute subsets.
 
