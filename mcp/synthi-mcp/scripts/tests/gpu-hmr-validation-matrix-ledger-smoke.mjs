@@ -1656,6 +1656,12 @@ assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
 assert.ok(acceptedFlow.ledger.proofId.startsWith('gpu-ledger-proof:sha256:'));
 assert.equal(acceptedFlow.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedFlow.runtimeProofArtifact.accepted, true);
+assert.equal(acceptedFlow.generalityClaim.schemaVersion, 'synthi.gpu_hmr.generality_claim.v1');
+assert.equal(acceptedFlow.generalityClaim.profileScopedOnly, true);
+assert.equal(acceptedFlow.generalityClaim.broadLibraryAgnosticAccepted, false);
+assert.equal(acceptedFlow.generalityClaim.arbitraryLibraryAccepted, false);
+assert.equal(acceptedFlow.generalityClaim.arbitraryTargetRuntimeAccepted, false);
+assert.ok(acceptedFlow.generalityClaim.unsupportedWithoutEvidence.length > 0);
 
 function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
   return {
@@ -1704,6 +1710,42 @@ function mutateAcceptedLedgerRecord(row, mutate) {
   mutate(cloned.ledger.record, cloned);
   return cloned;
 }
+
+const missingGeneralityClaimRow = acceptedAuthoritativeMatrixRow('accepted-missing-generality-claim');
+delete missingGeneralityClaimRow.generalityClaim;
+delete missingGeneralityClaimRow.generality_claim;
+const missingGeneralityClaimQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [missingGeneralityClaimRow],
+});
+assert.equal(missingGeneralityClaimQuery.accepted, false);
+assert.equal(missingGeneralityClaimQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(missingGeneralityClaimQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_generality_claim_facet'
+));
+
+const forgedGeneralityClaimQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedAuthoritativeMatrixRow('accepted-forged-generality-claim', {
+      generalityClaim: {
+        ...acceptedFlow.generalityClaim,
+        arbitraryLibraryAccepted: true,
+        arbitrary_library_accepted: true,
+      },
+      generality_claim: {
+        ...acceptedFlow.generalityClaim,
+        arbitraryLibraryAccepted: true,
+        arbitrary_library_accepted: true,
+      },
+    }),
+  ],
+});
+assert.equal(forgedGeneralityClaimQuery.accepted, false);
+assert.equal(forgedGeneralityClaimQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedGeneralityClaimQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_generality_claim_arbitrary_library_mismatch'
+));
 
 const missingFirewallQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
