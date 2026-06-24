@@ -1657,6 +1657,58 @@ assert.equal(unknownAcceptanceScopeQuery.accepted, false);
 assert.ok(unknownAcceptanceScopeQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
 ));
+const forgedBroadScopeQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-forged-broad-acceptance-scope', {
+      acceptanceScope: 'broad_library_agnostic',
+      claimScope: 'broad_library_agnostic',
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(forgedBroadScopeQuery.accepted, false);
+assert.equal(forgedBroadScopeQuery.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.equal(forgedBroadScopeQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedBroadScopeQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_broad_library_agnostic_scope_proof'
+));
+assert.ok(forgedBroadScopeQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
+));
+const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-scoped-summary-row', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(validScopedSummaryQuery.accepted, true);
+const inflatedSummaryQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-scoped-summary-row', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+  summary: {
+    ...validScopedSummaryQuery.summary,
+    acceptedFullRuntimeClaimScopeBreakdown: { broad_library_agnostic: 1 },
+    broadFullRuntimeGpuHmrRows: 1,
+    broadFullRuntimeTargets: ['accepted-scoped-summary-row'],
+  },
+});
+assert.equal(inflatedSummaryQuery.accepted, false);
+assert.ok(inflatedSummaryQuery.failedGates.some((gate) =>
+  gate.code === 'validation_matrix_summary_mismatch'
+));
 const missingRequiredHookSafetyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

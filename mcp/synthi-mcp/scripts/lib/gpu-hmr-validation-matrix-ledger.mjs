@@ -25,6 +25,7 @@ const MATRIX_OUTCOME_PRIORITY = new Map([
 const ACCEPTED_METRIC_SCOPES = new Set(['cold', 'warm', 'hot_delta_1', 'hot_delta_2']);
 const ACCEPTED_CACHE_STATES = new Set(['clean', 'compiler_cache_warm', 'pipeline_cache_warm']);
 const REQUIRED_FULL_TARGET_RUN_MODES = ['cold', 'hot_delta_1', 'hot_delta_2'];
+const BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE = 'broad_library_agnostic';
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -601,8 +602,48 @@ function rowRequiresPerTargetRunModes(row) {
   return row.coverageObligations?.perTargetRunModes === true;
 }
 
+function broadLibraryAgnosticScopeProven(row = {}) {
+  const facet = compactObject(row.broadLibraryAgnosticProof ?? row.broad_library_agnostic_proof);
+  if (Object.keys(facet).length === 0) return false;
+  const accepted = firstBool(
+    facet.accepted,
+    facet.proven,
+    facet.scopeAccepted,
+    facet.scope_accepted,
+  );
+  const recomputedFromLedger = firstBool(
+    facet.recomputedFromLedger,
+    facet.recomputed_from_ledger,
+  );
+  const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
+  const backendScopes = compactStringList(facet.backendScopes ?? facet.backend_scopes);
+  const libraryFamilies = compactStringList(facet.libraryFamilies ?? facet.library_families);
+  const environmentClasses = compactStringList(
+    facet.environmentClasses ?? facet.environment_classes,
+  );
+  const negativeRefusalProofs = compactStringList(
+    facet.negativeRefusalProofs ?? facet.negative_refusal_proofs,
+  );
+  const outputOracleProofs = compactStringList(
+    facet.outputOracleProofs ?? facet.output_oracle_proofs,
+  );
+  return accepted === true
+    && recomputedFromLedger === true
+    && evidenceRefs.length > 0
+    && backendScopes.length > 1
+    && libraryFamilies.length > 1
+    && environmentClasses.length > 0
+    && negativeRefusalProofs.length > 0
+    && outputOracleProofs.length > 0;
+}
+
 function inferFullRuntimeAcceptanceScope(row) {
   const declaredScope = firstText(row.acceptanceScope, row.acceptance_scope);
+  if (declaredScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE) {
+    return broadLibraryAgnosticScopeProven(row)
+      ? BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+      : 'broad_library_agnostic_unproven';
+  }
   if (declaredScope) return declaredScope;
   if (row.matrixOutcome !== 'full_runtime_gpu_hmr') return 'not_full_runtime';
   if (
@@ -633,7 +674,9 @@ function inferFullRuntimeAcceptanceScope(row) {
 }
 
 function claimScopeForAcceptanceScope(scope) {
-  if (scope === 'broad_library_agnostic') return 'broad_library_agnostic';
+  if (scope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE) {
+    return BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE;
+  }
   if (SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES.has(scope)) return 'scoped_profile';
   if (scope === 'not_full_runtime') return 'not_full_runtime';
   return 'unknown_scope';
@@ -848,6 +891,8 @@ function finalizeRow(seed) {
     row.validationTargetScope,
     row.validation_target_scope,
   ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
+  row.declaredAcceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? null;
+  row.declared_acceptance_scope = row.declaredAcceptanceScope;
   row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
   row.acceptance_scope = row.acceptanceScope;
   row.claimScope = claimScopeForAcceptanceScope(row.acceptanceScope);
@@ -1099,15 +1144,27 @@ function runtimeCapabilityPreflightFromSources({
 
 function rowSafetyFailures(row) {
   const failures = [];
+  const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
+  const declaredAcceptanceScope = firstText(
+    row.declaredAcceptanceScope,
+    row.declared_acceptance_scope,
+  );
+  const broadScopeDeclared =
+    acceptanceScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+    || declaredAcceptanceScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE;
+  const broadScopeProven = broadLibraryAgnosticScopeProven(row);
   if (row.acceptedForGpuHmr === true && row.matrixOutcome !== 'full_runtime_gpu_hmr') {
     failures.push({ code: 'gpu_hmr_success_requires_full_runtime_outcome' });
   }
+  if (row.acceptedForGpuHmr === true && broadScopeDeclared && broadScopeProven !== true) {
+    failures.push({ code: 'gpu_hmr_success_requires_broad_library_agnostic_scope_proof' });
+  }
   if (
     row.acceptedForGpuHmr === true
-    && ![
-      'broad_library_agnostic',
-      ...SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES,
-    ].includes(row.acceptanceScope)
+    && !(
+      SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES.has(acceptanceScope)
+      || (acceptanceScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE && broadScopeProven === true)
+    )
   ) {
     failures.push({ code: 'gpu_hmr_success_requires_known_acceptance_scope' });
   }
@@ -4122,7 +4179,8 @@ function rowIsScopedOnlyFullRuntime(row) {
 function rowIsBroadFullRuntime(row) {
   return acceptedFullRuntimeRow(row)
     && row.claimScope === 'broad_library_agnostic'
-    && row.acceptanceScope === 'broad_library_agnostic';
+    && row.acceptanceScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+    && broadLibraryAgnosticScopeProven(row) === true;
 }
 
 function acceptedFullRuntimeRow(row) {
@@ -4182,6 +4240,43 @@ function coverageSummary(rows) {
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
     planCoverage: planCoverage(rows),
   };
+}
+
+function dedupeFailedGates(failures) {
+  const seen = new Set();
+  const out = [];
+  for (const failure of failures) {
+    const key = stableJson(failure);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(failure);
+  }
+  return out;
+}
+
+function rowWithEvaluatedSafety(row) {
+  const suppliedFailures = row.safety?.accepted === false
+    ? Array.isArray(row.safety.failedGates) ? row.safety.failedGates : []
+    : [];
+  const failedGates = dedupeFailedGates([
+    ...rowSafetyFailures(row),
+    ...suppliedFailures,
+  ]);
+  return {
+    ...row,
+    safety: {
+      accepted: failedGates.length === 0,
+      failedGates,
+    },
+  };
+}
+
+function rowDerivedSummaryFields(summary = {}) {
+  const out = {};
+  for (const key of Object.keys(coverageSummary([]))) {
+    out[key] = summary[key];
+  }
+  return out;
 }
 
 function rowRefs(rows) {
@@ -4778,6 +4873,7 @@ function planCoverage(rows) {
 
 export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const evaluatedRows = rows.map(rowWithEvaluatedSafety);
   const failures = [];
   if (ledger.schemaVersion !== GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION) {
     failures.push({
@@ -4788,23 +4884,33 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   if (rows.length === 0) {
     failures.push({ code: 'validation_matrix_rows_empty' });
   }
-  rows.forEach((row, index) => {
+  evaluatedRows.forEach((row, index) => {
     if (row.schemaVersion !== GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION) {
       failures.push({ code: 'validation_matrix_row_schema_mismatch', row_index: index });
     }
-    for (const failure of rowSafetyFailures(row)) {
+    for (const failure of row.safety.failedGates) {
       failures.push({ ...failure, row_index: index, targetId: row.targetId });
     }
-    if (row.safety?.accepted === false) {
-      for (const failure of row.safety.failedGates ?? []) {
-        failures.push({ ...failure, row_index: index, targetId: row.targetId });
-      }
-    }
   });
+  const recomputedSummary = coverageSummary(evaluatedRows);
+  const suppliedSummary = compactObject(ledger.summary);
+  if (Object.keys(suppliedSummary).length > 0) {
+    const suppliedRowDerivedSummary = rowDerivedSummaryFields(suppliedSummary);
+    if (stableJson(suppliedRowDerivedSummary) !== stableJson(recomputedSummary)) {
+      failures.push({
+        code: 'validation_matrix_summary_mismatch',
+        suppliedSummaryHash: sha256Hex(stableJson(suppliedRowDerivedSummary)),
+        recomputedSummaryHash: sha256Hex(stableJson(recomputedSummary)),
+      });
+    }
+  }
+  const summaryForProofId = Object.keys(suppliedSummary).length > 0
+    ? ledger.summary
+    : recomputedSummary;
   const recomputedProofId = proofIdFor('gpu-validation-matrix-ledger', {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     rows: rows.map((row) => row.rowId),
-    summary: ledger.summary,
+    summary: summaryForProofId,
   });
   if (ledger.proofId && ledger.proofId !== recomputedProofId) {
     failures.push({
@@ -4818,7 +4924,7 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
     proofId: recomputedProofId,
     accepted: failures.length === 0,
     failedGates: failures,
-    summary: ledger.summary ?? coverageSummary(rows),
+    summary: Object.keys(suppliedSummary).length > 0 ? ledger.summary : recomputedSummary,
   };
 }
 
