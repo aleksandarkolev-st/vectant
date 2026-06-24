@@ -298,6 +298,10 @@ function runtimeProofMaterials(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
   const visualRoot = options.visualRoot ?? visualDir;
   const sourceAdaptedVisualProfile = options.sourceAdaptedVisualProfile === true;
+  const runtimeSessionId = options.runtimeSessionId ?? `runtime-session:${scope}`;
+  const outputRuntimeSessionId = options.outputRuntimeSessionId ?? runtimeSessionId;
+  const dispatchTableEntryId = options.dispatchTableEntryId ?? `dispatch-table-entry:${scope}`;
+  const outputTargetId = options.outputTargetId ?? `output-target:${scope}`;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
   const beforeHash = hashValue(`artifact-before:${scope}`);
   const afterHash = hashValue(`artifact-after:${scope}`);
@@ -319,20 +323,34 @@ function runtimeProofMaterials(scope, options = {}) {
     loader_event: {
       id: `loader:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      selected_loader_transport: 'ram_bytes',
+      artifact_transport: {
+        selected_loader_transport: 'ram_bytes',
+        artifact_hash: afterHash,
+        blob_digest: afterHash,
+      },
       timestamp_monotonic_ns: 1000,
       process_id: 'pid:4242',
     },
     epoch_publish_event: {
       id: `epoch-publish:${scope}`,
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
       timestamp_monotonic_ns: 2000,
       process_id: 'pid:4242',
     },
     dispatch_event: {
       id: `dispatch:${scope}`,
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      output_target_id: outputTargetId,
       timestamp_monotonic_ns: 3000,
       process_id: 'pid:4242',
     },
@@ -340,7 +358,11 @@ function runtimeProofMaterials(scope, options = {}) {
       id: `output:${scope}`,
       kind: 'visual_frame',
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: outputRuntimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      output_target_id: outputTargetId,
       after_dispatch_id: `dispatch:${scope}`,
       timestamp_monotonic_ns: 4000,
       process_id: 'pid:4242',
@@ -354,7 +376,7 @@ function runtimeProofMaterials(scope, options = {}) {
       process_id: 'pid:4242',
       proof: 'stream_event_proven',
     },
-    process_identity: { process_id: 'pid:4242' },
+    process_identity: { process_id: 'pid:4242', runtime_session_id: runtimeSessionId },
     device_identity: { device_uuid: 'gpu:synthetic-rocm', backend: 'hip' },
     oracle_artifacts: { visual_oracle_artifacts: visualArtifacts },
     deterministic_visual_mode: deterministicVisualMode,
@@ -438,6 +460,10 @@ function computeProofLedgerMaterials(scope, {
   projectId,
   rawReadbackPath,
   rawReadbackBytes = null,
+  runtimeSessionId = `runtime-session:${scope}`,
+  outputRuntimeSessionId = runtimeSessionId,
+  dispatchTableEntryId = `dispatch-table-entry:${scope}`,
+  outputTargetId = `output-target:${scope}`,
 }) {
   const beforeHash = hashValue(`compute-artifact-before:${scope}`);
   const afterHash = hashValue(`compute-artifact-after:${scope}`);
@@ -487,20 +513,34 @@ function computeProofLedgerMaterials(scope, {
     loader_event: {
       id: `loader:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      selected_loader_transport: 'ram_bytes',
+      artifact_transport: {
+        selected_loader_transport: 'ram_bytes',
+        artifact_hash: afterHash,
+        blob_digest: afterHash,
+      },
       timestamp_monotonic_ns: 1000,
       process_id: 'pid:4242',
     },
     epoch_publish_event: {
       id: `epoch-publish:${scope}`,
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
       timestamp_monotonic_ns: 2000,
       process_id: 'pid:4242',
     },
     dispatch_event: {
       id: `dispatch:${scope}`,
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: runtimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      output_target_id: outputTargetId,
       timestamp_monotonic_ns: 3000,
       process_id: 'pid:4242',
     },
@@ -508,7 +548,11 @@ function computeProofLedgerMaterials(scope, {
       id: `output:${scope}`,
       kind: 'compute_oracle',
       epoch: `epoch:${scope}`,
+      generation: `generation:${scope}`,
       artifact_hash: afterHash,
+      runtime_session_id: outputRuntimeSessionId,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      output_target_id: outputTargetId,
       after_dispatch_id: `dispatch:${scope}`,
       timestamp_monotonic_ns: 4000,
       process_id: 'pid:4242',
@@ -522,7 +566,7 @@ function computeProofLedgerMaterials(scope, {
       process_id: 'pid:4242',
       proof: 'stream_event_proven',
     },
-    process_identity: { process_id: 'pid:4242' },
+    process_identity: { process_id: 'pid:4242', runtime_session_id: runtimeSessionId },
     device_identity: { device_uuid: 'gpu:synthetic-rocm', backend: 'hip' },
     oracle_artifacts: { compute_oracle_artifacts: computeOracleArtifacts },
     metric_clock: 'monotonic_ns',
@@ -2646,6 +2690,11 @@ assert.equal(acceptedRealRocm.fullRebuildUsed, false);
 assert.equal(acceptedRealRocm.processRestarted, false);
 assert.equal(acceptedRealRocm.realRocmFirewall.accepted, true);
 assert.equal(acceptedRealRocm.realRocmFirewall.firewallEvidenceSource, 'proof_ledger_invariant_summary');
+assert.equal(acceptedRealRocm.realRocmRuntimeChain.accepted, true);
+assert.equal(acceptedRealRocm.realRocmRuntimeChain.selectedLoaderTransport, 'ram_bytes');
+assert.equal(acceptedRealRocm.realRocmRuntimeChain.runtimeSessionId, 'runtime-session:hot_delta_1');
+assert.equal(acceptedRealRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dispatch-table-entry:hot_delta_1');
+assert.equal(acceptedRealRocm.realRocmRuntimeChain.outputTargetId, 'output-target:hot_delta_1');
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
@@ -3356,6 +3405,216 @@ assert.equal(acceptedComputeRocm.outputOracleFacet.compute.deterministicSliceHas
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLength > 0, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
+assert.equal(acceptedComputeRocm.realRocmRuntimeChain.accepted, true);
+assert.equal(acceptedComputeRocm.realRocmRuntimeChain.selectedLoaderTransport, 'ram_bytes');
+assert.equal(acceptedComputeRocm.realRocmRuntimeChain.runtimeSessionId, 'runtime-session:accepted-compute-files');
+assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dispatch-table-entry:accepted-compute-files');
+assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
+
+const forgedRuntimeChainMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-runtime-chain-mismatch');
+const forgedRuntimeChainMismatchProofMaterials = computeProofLedgerMaterials(
+  'forged-runtime-chain-mismatch',
+  {
+    projectId: 'real-rocm-forged-runtime-chain-mismatch',
+    rawReadbackPath: acceptedComputeRawReadback,
+    rawReadbackBytes: acceptedComputeBytes,
+    outputRuntimeSessionId: 'runtime-session:wrong-output-session',
+  },
+);
+await writeJson(path.join(forgedRuntimeChainMismatchRocmDir, 'real-rocm-forged-runtime-chain-mismatch.json'), {
+  slug: 'gpu-real-rocm-forged-runtime-chain-mismatch-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-runtime-chain-mismatch' },
+  source_url: 'https://example.invalid/rocm/forged-runtime-chain-mismatch.git',
+  repo_commit: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'ForgedRuntimeChainMismatchDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedRuntimeChainMismatchProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-runtime-chain-mismatch-delta',
+    editHash: hashValue('real-rocm-forged-runtime-chain-mismatch-delta'),
+  },
+  checks: [
+    {
+      name: 'real ROCm repo',
+      status: 'pass',
+      detail: 'https://example.invalid/rocm/forged-runtime-chain-mismatch.git @ cdcdcdcd files=18000',
+    },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedRuntimeChainMismatchRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRuntimeChainMismatchRocmDir],
+  generatedAt: '2026-06-09T00:00:02.255Z',
+  includeUnproven: true,
+});
+const forgedRuntimeChainMismatchRocm = forgedRuntimeChainMismatchRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedRuntimeChainMismatchRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedRuntimeChainMismatchRocm.acceptedForGpuHmr, false);
+assert.equal(forgedRuntimeChainMismatchRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedRuntimeChainMismatchRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedRuntimeChainMismatchRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedRuntimeChainMismatchRocm.outputOracleResolutionGate.accepted, true);
+assert.equal(forgedRuntimeChainMismatchRocm.realRocmRuntimeChain.accepted, false);
+assert.ok(forgedRuntimeChainMismatchRocm.reasons.includes(
+  'real_rocm_runtime_chain_session_mismatch',
+));
+assert.ok(forgedRuntimeChainMismatchRocm.openGaps.includes('real_rocm_runtime_chain_required'));
+
+async function writeForgedRuntimeChainCase({ slug, mutateRecord, expectedReason }) {
+  const dir = path.join(logsRoot, `real-rocm-forged-runtime-chain-${slug}`);
+  const scope = `forged-runtime-chain-${slug}`;
+  const materials = computeProofLedgerMaterials(scope, {
+    projectId: `real-rocm-forged-runtime-chain-${slug}`,
+    rawReadbackPath: acceptedComputeRawReadback,
+    rawReadbackBytes: acceptedComputeBytes,
+  });
+  const mutatedRecord = structuredClone(materials.proofLedger.records[0]);
+  mutateRecord(mutatedRecord);
+  const proofLedger = buildGpuHmrProofLedger(mutatedRecord);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  materials.proofLedger = proofLedger;
+  materials.proof_ledger = proofLedger;
+  materials.proofLedgerQuery = proofLedgerQuery;
+  materials.proof_ledger_query = proofLedgerQuery;
+  materials.runtimeProofArtifact.proofLedger = proofLedger;
+  materials.runtimeProofArtifact.proofLedgerQuery = proofLedgerQuery;
+  materials.runtime_proof_artifact.proofLedger = proofLedger;
+  materials.runtime_proof_artifact.proofLedgerQuery = proofLedgerQuery;
+  await writeJson(path.join(dir, `real-rocm-forged-runtime-chain-${slug}.json`), {
+    slug: `gpu-real-rocm-forged-runtime-chain-${slug}-20260623`,
+    real_rocm_profile: { id: `real-rocm-forged-runtime-chain-${slug}` },
+    source_url: `https://example.invalid/rocm/forged-runtime-chain-${slug}.git`,
+    repo_commit: 'cececececececececececececececececececece',
+    entry_file: 'src/kernels/compute_entry.hip',
+    delta_file: 'src/kernels/compute_delta.h',
+    target_name: `ForgedRuntimeChain${slug}`,
+    gpu_vendor: 'rocm',
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      sourceDerivedCandidateCount: 0,
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    ...materials,
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: `real-rocm-forged-runtime-chain-${slug}-delta`,
+      editHash: hashValue(`real-rocm-forged-runtime-chain-${slug}-delta`),
+    },
+    checks: [
+      {
+        name: 'real ROCm repo',
+        status: 'pass',
+        detail: `https://example.invalid/rocm/forged-runtime-chain-${slug}.git @ cececece files=18000`,
+      },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  });
+  const ledger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [dir],
+    generatedAt: '2026-06-09T00:00:02.260Z',
+    includeUnproven: true,
+  });
+  const row = ledger.rows.find((entry) => entry.proofMode === 'real_rocm_repo_validation');
+  assert.equal(row?.matrixOutcome, 'unproven');
+  assert.equal(row.acceptedForGpuHmr, false);
+  assert.equal(row.runtimeProofArtifact.accepted, true);
+  assert.equal(row.ledger.gpuHmrSuccess, true);
+  assert.equal(row.outputOracleFacet.accepted, true);
+  assert.equal(row.outputOracleResolutionGate.accepted, true);
+  assert.equal(row.realRocmRuntimeChain.accepted, false);
+  assert.ok(row.reasons.includes(expectedReason));
+  assert.ok(row.openGaps.includes('real_rocm_runtime_chain_required'));
+  return row;
+}
+
+await writeForgedRuntimeChainCase({
+  slug: 'missing-dispatch-session',
+  expectedReason: 'real_rocm_runtime_chain_session_missing',
+  mutateRecord(record) {
+    if (record.dispatchEvent) delete record.dispatchEvent.runtime_session_id;
+    if (record.dispatch_event) delete record.dispatch_event.runtime_session_id;
+  },
+});
+await writeForgedRuntimeChainCase({
+  slug: 'missing-transport-hash',
+  expectedReason: 'real_rocm_runtime_chain_transport_hash_missing',
+  mutateRecord(record) {
+    if (record.loaderEvent?.artifact_transport) {
+      delete record.loaderEvent.artifact_transport.artifact_hash;
+      delete record.loaderEvent.artifact_transport.blob_digest;
+    }
+    if (record.loader_event?.artifact_transport) {
+      delete record.loader_event.artifact_transport.artifact_hash;
+      delete record.loader_event.artifact_transport.blob_digest;
+    }
+  },
+});
+await writeForgedRuntimeChainCase({
+  slug: 'missing-output-target',
+  expectedReason: 'real_rocm_runtime_chain_output_target_missing',
+  mutateRecord(record) {
+    if (record.outputEvent) delete record.outputEvent.output_target_id;
+    if (record.output_event) delete record.output_event.output_target_id;
+  },
+});
 
 const forgedMissingUnflaggedResolutionRocmDir = path.join(
   logsRoot,

@@ -123,6 +123,12 @@ function compactStringList(values) {
     .filter(Boolean))];
 }
 
+function stringEvidenceList(values) {
+  return (Array.isArray(values) ? values : [])
+    .map(text)
+    .filter(Boolean);
+}
+
 function compactObject(value) {
   return isObject(value) ? value : {};
 }
@@ -1501,6 +1507,15 @@ function rowSafetyFailures(row) {
       failures.push({
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_capability_preflight',
       });
+    }
+    const runtimeChain = compactObject(
+      row.realRocmRuntimeChain
+      ?? row.real_rocm_runtime_chain
+      ?? row.runtimeChain
+      ?? row.runtime_chain,
+    );
+    if (runtimeChain.accepted !== true) {
+      failures.push({ code: 'gpu_hmr_success_requires_real_rocm_runtime_chain' });
     }
   }
   if (row.matrixOutcome === 'refusal_proven' && row.acceptedForGpuHmr === true) {
@@ -3503,6 +3518,275 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
   };
 }
 
+function eventRuntimeSessionId(event) {
+  return firstText(
+    event.runtime_session_id,
+    event.runtimeSessionId,
+    event.runtime_session,
+    event.runtimeSession,
+  );
+}
+
+function eventDispatchTableEntryId(event) {
+  return firstText(
+    event.dispatch_table_entry_id,
+    event.dispatchTableEntryId,
+    event.runtime_dispatch_table_entry_id,
+    event.runtimeDispatchTableEntryId,
+  );
+}
+
+function eventOutputTargetId(event) {
+  return firstText(
+    event.output_target_id,
+    event.outputTargetId,
+    event.oracle_target_id,
+    event.oracleTargetId,
+  );
+}
+
+function eventArtifactTransport(event, record) {
+  const eventTransport = compactObject(event.artifact_transport ?? event.artifactTransport);
+  const recordTransport = compactObject(record.artifact_transport ?? record.artifactTransport);
+  return Object.keys(eventTransport).length > 0 ? eventTransport : recordTransport;
+}
+
+function selectedArtifactTransport(event, record) {
+  const transport = eventArtifactTransport(event, record);
+  return firstText(
+    event.selected_loader_transport,
+    event.selectedLoaderTransport,
+    event.loader_transport,
+    event.loaderTransport,
+    transport.selected_loader_transport,
+    transport.selectedLoaderTransport,
+    transport.loader_transport,
+    transport.loaderTransport,
+    transport.transport,
+    transport.kind,
+  );
+}
+
+function transportArtifactHash(event, record) {
+  const transport = eventArtifactTransport(event, record);
+  return firstText(
+    transport.artifact_hash,
+    transport.artifactHash,
+    transport.blob_digest,
+    transport.blobDigest,
+    event.blob_digest,
+    event.blobDigest,
+  );
+}
+
+function inMemoryArtifactTransportAccepted(event, record) {
+  const transport = eventArtifactTransport(event, record);
+  const selectedTransport = selectedArtifactTransport(event, record);
+  const selectedTransportNormalized = text(selectedTransport)?.toLowerCase() ?? '';
+  const transportClass = text(firstText(
+    transport.transport_class,
+    transport.transportClass,
+    transport.class,
+  ))?.toLowerCase();
+  const memoryResident = firstBool(
+    transport.memory_resident,
+    transport.memoryResident,
+    event.memory_resident,
+    event.memoryResident,
+  );
+  return memoryResident === true
+    || transportClass === 'in_memory'
+    || selectedTransportNormalized.startsWith('ram_')
+    || selectedTransportNormalized.startsWith('memory_')
+    || selectedTransportNormalized.startsWith('in_memory');
+}
+
+function realRocmRuntimeChainFacet({ ledger = {}, proofLedger = {} } = {}) {
+  const proofLedgerRecord = compactObject(proofLedger.records?.[0] ?? proofLedger.record);
+  const record = compactObject(ledger.record ?? proofLedgerRecord);
+  const loaderEvent = compactObject(record.loaderEvent ?? record.loader_event);
+  const epochPublishEvent = compactObject(record.epochPublishEvent ?? record.epoch_publish_event);
+  const dispatchEvent = compactObject(record.dispatchEvent ?? record.dispatch_event);
+  const outputEvent = compactObject(record.outputEvent ?? record.output_event);
+  const retirementEvent = compactObject(record.retirementEvent ?? record.retirement_event);
+  const processIdentity = compactObject(record.processIdentity ?? record.process_identity);
+  const deviceIdentity = compactObject(record.deviceIdentity ?? record.device_identity);
+  const artifactAfterHash = firstText(record.artifactAfterHash, record.artifact_after_hash);
+  const loaderArtifactHash = firstText(loaderEvent.artifact_hash, loaderEvent.artifactHash);
+  const epochArtifactHash = firstText(epochPublishEvent.artifact_hash, epochPublishEvent.artifactHash);
+  const dispatchArtifactHash = firstText(dispatchEvent.artifact_hash, dispatchEvent.artifactHash);
+  const outputArtifactHash = firstText(outputEvent.artifact_hash, outputEvent.artifactHash);
+  const selectedTransport = selectedArtifactTransport(loaderEvent, record);
+  const transportHash = transportArtifactHash(loaderEvent, record);
+  const inMemoryTransportAccepted = inMemoryArtifactTransportAccepted(loaderEvent, record);
+  const requiredRuntimeSessionEvidence = stringEvidenceList([
+    eventRuntimeSessionId(loaderEvent),
+    eventRuntimeSessionId(epochPublishEvent),
+    eventRuntimeSessionId(dispatchEvent),
+    eventRuntimeSessionId(outputEvent),
+    eventRuntimeSessionId(processIdentity),
+  ]);
+  const runtimeSessionEvidence = stringEvidenceList([
+    ...requiredRuntimeSessionEvidence,
+    eventRuntimeSessionId(retirementEvent),
+  ]);
+  const runtimeSessionIds = compactStringList(runtimeSessionEvidence);
+  const requiredProcessIdEvidence = stringEvidenceList([
+    firstText(processIdentity.process_id, processIdentity.processId),
+    firstText(loaderEvent.process_id, loaderEvent.processId),
+    firstText(epochPublishEvent.process_id, epochPublishEvent.processId),
+    firstText(dispatchEvent.process_id, dispatchEvent.processId),
+    firstText(outputEvent.process_id, outputEvent.processId),
+  ]);
+  const processIdEvidence = stringEvidenceList([
+    ...requiredProcessIdEvidence,
+    firstText(retirementEvent.process_id, retirementEvent.processId),
+  ]);
+  const processIds = compactStringList(processIdEvidence);
+  const requiredEpochEvidence = stringEvidenceList([
+    firstText(epochPublishEvent.epoch),
+    firstText(dispatchEvent.epoch),
+    firstText(outputEvent.epoch),
+  ]);
+  const epochs = compactStringList(requiredEpochEvidence);
+  const generationEvidence = stringEvidenceList([
+    firstText(epochPublishEvent.generation),
+    firstText(dispatchEvent.generation),
+    firstText(outputEvent.generation),
+  ]);
+  const generations = compactStringList(generationEvidence);
+  const requiredDispatchTableEntryEvidence = stringEvidenceList([
+    eventDispatchTableEntryId(epochPublishEvent),
+    eventDispatchTableEntryId(dispatchEvent),
+    eventDispatchTableEntryId(outputEvent),
+  ]);
+  const dispatchTableEntryIds = compactStringList(requiredDispatchTableEntryEvidence);
+  const dispatchId = firstText(dispatchEvent.id, dispatchEvent.dispatch_id, dispatchEvent.dispatchId);
+  const outputAfterDispatchId = firstText(
+    outputEvent.after_dispatch_id,
+    outputEvent.afterDispatchId,
+    outputEvent.dispatch_id,
+    outputEvent.dispatchId,
+  );
+  const requiredOutputTargetEvidence = stringEvidenceList([
+    eventOutputTargetId(dispatchEvent),
+    eventOutputTargetId(outputEvent),
+  ]);
+  const outputTargetEvidence = stringEvidenceList([
+    ...requiredOutputTargetEvidence,
+    firstText(record.outputOracleTarget, record.output_oracle_target),
+  ]);
+  const outputTargetIds = compactStringList(outputTargetEvidence);
+  const timestamps = {
+    loader: eventTimestampNs(loaderEvent),
+    epochPublish: eventTimestampNs(epochPublishEvent),
+    dispatch: eventTimestampNs(dispatchEvent),
+    output: eventTimestampNs(outputEvent),
+    retirement: eventTimestampNs(retirementEvent),
+  };
+  const timestampOrderAccepted =
+    timestamps.loader !== null
+    && timestamps.epochPublish !== null
+    && timestamps.dispatch !== null
+    && timestamps.output !== null
+    && timestamps.loader <= timestamps.epochPublish
+    && timestamps.epochPublish <= timestamps.dispatch
+    && timestamps.dispatch <= timestamps.output
+    && (timestamps.retirement === null || timestamps.output <= timestamps.retirement);
+  const requiredArtifactHashEvidence = stringEvidenceList([
+    artifactAfterHash,
+    loaderArtifactHash,
+    epochArtifactHash,
+    dispatchArtifactHash,
+    outputArtifactHash,
+    transportHash,
+  ]);
+  const artifactHashes = compactStringList(requiredArtifactHashEvidence);
+  const failedGateCodes = compactStringList([
+    Object.keys(record).length > 0 ? null : 'real_rocm_runtime_chain_ledger_record_missing',
+    requiredArtifactHashEvidence.length >= 6 ? null : 'real_rocm_runtime_chain_artifact_hash_missing',
+    requiredArtifactHashEvidence.length >= 6 && artifactHashes.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_artifact_hash_mismatch',
+    selectedTransport ? null : 'real_rocm_runtime_chain_transport_kind_missing',
+    transportHash ? null : 'real_rocm_runtime_chain_transport_hash_missing',
+    inMemoryTransportAccepted
+      ? null
+      : 'real_rocm_runtime_chain_memory_transport_missing',
+    requiredRuntimeSessionEvidence.length >= 5 ? null : 'real_rocm_runtime_chain_session_missing',
+    requiredRuntimeSessionEvidence.length >= 5 && runtimeSessionIds.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_session_mismatch',
+    requiredProcessIdEvidence.length >= 5 ? null : 'real_rocm_runtime_chain_process_identity_missing',
+    requiredProcessIdEvidence.length >= 5 && processIds.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_process_identity_mismatch',
+    requiredEpochEvidence.length >= 3 ? null : 'real_rocm_runtime_chain_epoch_missing',
+    requiredEpochEvidence.length >= 3 && epochs.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_epoch_mismatch',
+    generationEvidence.length === 0 || generations.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_generation_mismatch',
+    dispatchId ? null : 'real_rocm_runtime_chain_dispatch_id_missing',
+    dispatchId && outputAfterDispatchId === dispatchId
+      ? null
+      : 'real_rocm_runtime_chain_output_dispatch_mismatch',
+    requiredDispatchTableEntryEvidence.length >= 3
+      ? null
+      : 'real_rocm_runtime_chain_dispatch_table_entry_missing',
+    requiredDispatchTableEntryEvidence.length >= 3 && dispatchTableEntryIds.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_dispatch_table_entry_mismatch',
+    requiredOutputTargetEvidence.length >= 2 ? null : 'real_rocm_runtime_chain_output_target_missing',
+    requiredOutputTargetEvidence.length >= 2 && outputTargetIds.length === 1
+      ? null
+      : 'real_rocm_runtime_chain_output_target_mismatch',
+    timestampOrderAccepted ? null : 'real_rocm_runtime_chain_timestamp_order_invalid',
+    record.cpuHmrUsed === false || record.cpu_hmr_used === false
+      ? null
+      : 'real_rocm_runtime_chain_cpu_hmr_not_false',
+    record.fullRebuildUsed === false || record.full_rebuild_used === false
+      ? null
+      : 'real_rocm_runtime_chain_full_rebuild_not_false',
+    record.processRestarted === false || record.process_restarted === false
+      ? null
+      : 'real_rocm_runtime_chain_process_restart_not_false',
+  ]);
+  const failedGates = failedGateCodes.map((code) => ({ code }));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_chain.v1',
+    accepted: failedGates.length === 0,
+    runtimeSessionId: runtimeSessionIds[0] ?? null,
+    runtime_session_id: runtimeSessionIds[0] ?? null,
+    runtimeSessionIds,
+    runtime_session_ids: runtimeSessionIds,
+    processId: processIds[0] ?? null,
+    process_id: processIds[0] ?? null,
+    artifactHash: artifactAfterHash ?? null,
+    artifact_hash: artifactAfterHash ?? null,
+    selectedLoaderTransport: selectedTransport ?? null,
+    selected_loader_transport: selectedTransport ?? null,
+    transportHash: transportHash ?? null,
+    transport_hash: transportHash ?? null,
+    inMemoryTransportAccepted,
+    in_memory_transport_accepted: inMemoryTransportAccepted,
+    epoch: epochs[0] ?? null,
+    generation: generations[0] ?? null,
+    dispatchId: dispatchId ?? null,
+    dispatch_id: dispatchId ?? null,
+    dispatchTableEntryId: dispatchTableEntryIds[0] ?? null,
+    dispatch_table_entry_id: dispatchTableEntryIds[0] ?? null,
+    outputTargetId: outputTargetIds[0] ?? null,
+    output_target_id: outputTargetIds[0] ?? null,
+    deviceIdentity,
+    device_identity: deviceIdentity,
+    timestamps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function ledgerRecordsFromValue(ledger) {
   const records = Array.isArray(ledger.records) ? ledger.records : [ledger];
   return records.map(compactObject).filter((record) => Object.keys(record).length > 0);
@@ -3749,6 +4033,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution, {
     required: true,
   });
+  const realRocmRuntimeChain = realRocmRuntimeChainFacet({ ledger, proofLedger });
   const targetProgressionGates = compactObjectList(
     json.target_progression_gates
     ?? json.targetProgressionGates
@@ -3993,6 +4278,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeProofArtifactGate.accepted === true
     && outputOrVisualOracleAccepted === true
     && outputOracleResolutionGate.accepted === true
+    && realRocmRuntimeChain.accepted === true
     && appHookContractAccepted === true
     && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
@@ -4091,6 +4377,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       skippedFileCount: finiteNumber(json.skipped_file_count ?? json.skippedFileCount),
     },
     outputOracleResolution,
+    realRocmRuntimeChain,
+    real_rocm_runtime_chain: realRocmRuntimeChain,
     targetProgression,
     realRocmProfileProofObligations,
     real_rocm_profile_proof_obligations: realRocmProfileProofObligations,
@@ -4149,6 +4437,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       outputOracleResolutionGate.accepted ? null : 'real_rocm_output_oracle_resolution_not_accepted',
+      realRocmRuntimeChain.accepted ? null : 'real_rocm_runtime_chain_not_accepted',
+      ...realRocmRuntimeChain.failedGates.map((failure) => failure.code),
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
       runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_not_proven',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
@@ -4163,6 +4453,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       outputOracleResolutionGate.accepted ? null : 'real_rocm_output_oracle_resolution_required',
       ...outputOracleResolutionGate.failedGates,
+      realRocmRuntimeChain.accepted ? null : 'real_rocm_runtime_chain_required',
+      ...realRocmRuntimeChain.failedGates.map((failure) => failure.code),
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       ...appHookContractGate.failedGaps,
       runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_failed',
