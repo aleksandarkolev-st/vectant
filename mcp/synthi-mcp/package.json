@@ -101,7 +101,7 @@
     "proof:generated-split-granularity:self-check": "node scripts/tests/gpu-hmr-generated-split-granularity-smoke.mjs",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
-    "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run",
+    "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run --profile mcp/synthi-mcp/scripts/profiles/threejs-webgl-shader-lava.json",
     "proof:timing-metrics": "node scripts/gpu-hmr-timing-metrics-summary.mjs",
     "proof:validation-matrix": "node scripts/gpu-hmr-validation-matrix-ledger.mjs",
     "proof:validation-matrix:history": "node scripts/gpu-hmr-validation-matrix-ledger.mjs --include-unproven --output-dir .gpu-hmr-test-logs/validation-matrix-unproven-audit",

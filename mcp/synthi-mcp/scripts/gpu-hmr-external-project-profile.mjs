@@ -364,6 +364,10 @@ function parseArgs(argv) {
   return args;
 }
 
+function relativeRepoPath(targetPath) {
+  return path.relative(REPO_ROOT, targetPath).replace(/\\/g, '/');
+}
+
 function isInsideDirectory(baseDir, targetPath) {
   const relative = path.relative(baseDir, targetPath);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -592,12 +596,61 @@ async function writeSourceDelta(profile, dir) {
     throw new Error(`source.file must stay inside project directory: ${profile.source.file}`);
   }
   const original = await fs.readFile(sourcePath, 'utf8');
-  if (!original.includes(profile.source.before)) {
-    throw new Error(`source.before did not match ${profile.source.file}`);
+  const matchIndexes = [];
+  let nextIndex = original.indexOf(profile.source.before);
+  while (nextIndex !== -1) {
+    matchIndexes.push(nextIndex);
+    nextIndex = original.indexOf(profile.source.before, nextIndex + profile.source.before.length);
   }
-  const edited = original.replace(profile.source.before, profile.source.after);
+  if (matchIndexes.length !== 1) {
+    throw new Error(`source.before must match exactly once in ${profile.source.file}; match_count=${matchIndexes.length}`);
+  }
+  const matchStart = matchIndexes[0];
+  const matchEnd = matchStart + profile.source.before.length;
+  const edited = `${original.slice(0, matchStart)}${profile.source.after}${original.slice(matchEnd)}`;
+  const beforeFileHash = sha256(original);
+  const afterFileHash = sha256(edited);
+  const byteStart = Buffer.byteLength(original.slice(0, matchStart), 'utf8');
+  const byteEnd = byteStart + Buffer.byteLength(profile.source.before, 'utf8');
+  const sourceDeltaEvidence = {
+    schemaVersion: 'synthi.gpu.hmr.external_source_delta_evidence.v1',
+    accepted: true,
+    sourceFile: profile.source.file,
+    source_file: profile.source.file,
+    sourcePath: relativeRepoPath(sourcePath),
+    source_path: relativeRepoPath(sourcePath),
+    matchCount: matchIndexes.length,
+    match_count: matchIndexes.length,
+    matchStartUtf16: matchStart,
+    match_start_utf16: matchStart,
+    matchEndUtf16: matchEnd,
+    match_end_utf16: matchEnd,
+    byteRange: {
+      start: byteStart,
+      end: byteEnd,
+    },
+    byte_range: {
+      start: byteStart,
+      end: byteEnd,
+    },
+    beforeFileHash,
+    before_file_hash: beforeFileHash,
+    afterFileHash,
+    after_file_hash: afterFileHash,
+    beforeSnippetHash: sha256(profile.source.before),
+    before_snippet_hash: sha256(profile.source.before),
+    afterSnippetHash: sha256(profile.source.after),
+    after_snippet_hash: sha256(profile.source.after),
+    evidenceRefs: [`source:${profile.source.file}:unique-before-snippet`],
+    evidence_refs: [`source:${profile.source.file}:unique-before-snippet`],
+  };
   await fs.writeFile(sourcePath, edited);
-  return { sourcePath, original, editedHash: sha256(edited) };
+  return {
+    sourcePath,
+    original,
+    editedHash: afterFileHash,
+    sourceDeltaEvidence,
+  };
 }
 
 async function captureScreenshot(profile, dir, label) {
@@ -1163,6 +1216,10 @@ async function writeExternalVisualProofArtifact(profile, report) {
     status,
     createdAt: new Date().toISOString(),
     ...profileContractFields(profile),
+    profileSelection: report.profileSelection ?? report.profile_selection ?? null,
+    profile_selection: report.profileSelection ?? report.profile_selection ?? null,
+    sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
+    source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     visualOracleArtifacts: report.visualOracleArtifacts ?? null,
     visualDiff: report.visualDiff ?? null,
     deterministicVisualMode: report.deterministicVisualMode ?? null,
@@ -1274,6 +1331,10 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     status: report.status,
     createdAt: new Date().toISOString(),
     ...profileContractFields(profile),
+    profileSelection: report.profileSelection ?? report.profile_selection ?? null,
+    profile_selection: report.profileSelection ?? report.profile_selection ?? null,
+    sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
+    source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     rejection: {
       accepted: false,
       reasons: externalRejectionReasons(report),
@@ -1350,13 +1411,90 @@ async function writeRejectionProofFromReport(reportPath) {
 }
 
 async function loadProfile(args) {
-  if (args.profileJson) return normalizeProfile(JSON.parse(args.profileJson));
+  if (args.profileJson) {
+    const profile = normalizeProfile(JSON.parse(args.profileJson));
+    return {
+      profile,
+      profileSelection: {
+        schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+        accepted: true,
+        explicit: true,
+        source: 'cli_profile_json',
+        profileId: profile.id,
+        profile_id: profile.id,
+        manifestHash: sha256(args.profileJson),
+        manifest_hash: sha256(args.profileJson),
+        path: null,
+        evidenceRefs: ['cli:--profile-json'],
+        evidence_refs: ['cli:--profile-json'],
+      },
+    };
+  }
   const envJson = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON;
-  if (envJson?.trim()) return normalizeProfile(JSON.parse(envJson));
-  const profilePath = args.profilePath
-    || process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH
-    || await defaultPackagedProfilePath();
-  return normalizeProfile(JSON.parse(await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8')));
+  if (envJson?.trim()) {
+    const profile = normalizeProfile(JSON.parse(envJson));
+    return {
+      profile,
+      profileSelection: {
+        schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+        accepted: true,
+        explicit: true,
+        source: 'env_profile_json',
+        profileId: profile.id,
+        profile_id: profile.id,
+        manifestHash: sha256(envJson),
+        manifest_hash: sha256(envJson),
+        path: null,
+        evidenceRefs: ['env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON'],
+        evidence_refs: ['env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON'],
+      },
+    };
+  }
+  const cliProfilePath = args.profilePath?.trim();
+  const envProfilePath = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH?.trim();
+  const defaultProfile = !cliProfilePath && !envProfilePath
+    ? await explicitDefaultPackagedProfilePath()
+    : null;
+  const profilePath = cliProfilePath || envProfilePath || defaultProfile?.path;
+  if (!profilePath) {
+    throw new Error(
+      'external project profile selection must be explicit; use --profile, --profile-json, '
+      + 'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH, SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON, '
+      + 'or SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID',
+    );
+  }
+  const resolved = path.resolve(REPO_ROOT, profilePath);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`external project profile path must stay inside repo workspace: ${resolved}`);
+  }
+  const manifest = await fs.readFile(resolved, 'utf8');
+  const profile = normalizeProfile(JSON.parse(manifest));
+  const source = cliProfilePath
+    ? 'cli_profile_path'
+    : envProfilePath
+      ? 'env_profile_path'
+      : 'env_default_profile_id';
+  const evidenceRef = cliProfilePath
+    ? 'cli:--profile'
+    : envProfilePath
+      ? 'env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH'
+      : `env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID:${defaultProfile.id}`;
+  return {
+    profile,
+    profileSelection: {
+      schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+      accepted: true,
+      explicit: true,
+      source,
+      profileId: profile.id,
+      profile_id: profile.id,
+      manifestHash: sha256(manifest),
+      manifest_hash: sha256(manifest),
+      path: relativeRepoPath(resolved),
+      evidenceRefs: [evidenceRef],
+      evidence_refs: [evidenceRef],
+    },
+  };
 }
 
 async function discoverPackagedProfiles() {
@@ -1378,19 +1516,18 @@ async function discoverPackagedProfiles() {
   return profiles;
 }
 
-async function defaultPackagedProfilePath() {
+async function explicitDefaultPackagedProfilePath() {
   const profiles = await discoverPackagedProfiles();
   const defaultId = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID?.trim();
   if (defaultId) {
     for (const profilePath of profiles) {
       const profile = normalizeProfile(JSON.parse(await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8')));
-      if (profile.id === defaultId) return profilePath;
+      if (profile.id === defaultId) return { path: profilePath, id: defaultId };
     }
     throw new Error(`external project default profile id was not found: ${defaultId}`);
   }
-  const [first] = profiles;
-  if (!first) throw new Error(`no packaged external project profiles found in ${PROFILE_DIR}`);
-  return first;
+  if (profiles.length === 0) throw new Error(`no packaged external project profiles found in ${PROFILE_DIR}`);
+  return null;
 }
 
 async function selfCheckVisualProofArtifact() {
@@ -1603,6 +1740,90 @@ async function selfCheck() {
       deterministicVisualProfile,
     });
   }
+  const profileSelectionEnvNames = [
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON',
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH',
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID',
+  ];
+  const savedProfileSelectionEnv = Object.fromEntries(
+    profileSelectionEnvNames.map((key) => [key, process.env[key]]),
+  );
+  let implicitSelectionRejected = false;
+  let explicitProfileSelection = null;
+  try {
+    for (const key of profileSelectionEnvNames) delete process.env[key];
+    try {
+      await loadProfile({ profilePath: '', profileJson: '' });
+    } catch (error) {
+      implicitSelectionRejected = String(error?.message ?? error)
+        .includes('external project profile selection must be explicit');
+    }
+    if (profilePaths[0]) {
+      explicitProfileSelection = (await loadProfile({
+        profilePath: profilePaths[0],
+        profileJson: '',
+      })).profileSelection;
+    }
+  } finally {
+    for (const [key, value] of Object.entries(savedProfileSelectionEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  checks.push({
+    name: 'external-profile-selection-explicit-evidence-required',
+    ok:
+      implicitSelectionRejected === true
+      && explicitProfileSelection?.accepted === true
+      && explicitProfileSelection?.source === 'cli_profile_path'
+      && typeof explicitProfileSelection?.manifestHash === 'string'
+      && explicitProfileSelection.manifestHash.startsWith('sha256:'),
+    implicitSelectionRejected,
+    explicitProfileSelection,
+  });
+  await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+  const sourceDeltaDir = await fs.mkdtemp(path.join(ARTIFACT_DIR, 'source-delta-self-check-'));
+  const sourceDeltaPath = path.join(sourceDeltaDir, 'shader.wgsl');
+  await fs.writeFile(sourceDeltaPath, 'let gain = 1.0;\nlet offset = 0.0;\n');
+  const sourceDelta = await writeSourceDelta(
+    {
+      id: 'source-delta-self-check',
+      source: {
+        file: 'shader.wgsl',
+        before: 'let gain = 1.0;',
+        after: 'let gain = 2.0;',
+      },
+    },
+    sourceDeltaDir,
+  );
+  await fs.writeFile(sourceDeltaPath, 'let gain = 1.0;\nlet gain = 1.0;\n');
+  let duplicateSourceDeltaRejected = false;
+  try {
+    await writeSourceDelta(
+      {
+        id: 'source-delta-self-check-duplicate',
+        source: {
+          file: 'shader.wgsl',
+          before: 'let gain = 1.0;',
+          after: 'let gain = 2.0;',
+        },
+      },
+      sourceDeltaDir,
+    );
+  } catch (error) {
+    duplicateSourceDeltaRejected = String(error?.message ?? error).includes('match_count=2');
+  }
+  checks.push({
+    name: 'external-source-delta-unique-match-evidence-required',
+    ok:
+      sourceDelta.sourceDeltaEvidence?.accepted === true
+      && sourceDelta.sourceDeltaEvidence?.matchCount === 1
+      && sourceDelta.sourceDeltaEvidence?.beforeFileHash?.startsWith('sha256:')
+      && sourceDelta.sourceDeltaEvidence?.afterFileHash === sourceDelta.editedHash
+      && duplicateSourceDeltaRejected === true,
+    sourceDeltaEvidence: sourceDelta.sourceDeltaEvidence,
+    duplicateSourceDeltaRejected,
+  });
   const visualProofArtifact = await selfCheckVisualProofArtifact();
   checks.push({
     name: 'external-visual-proof-artifact-hashes-files',
@@ -1704,7 +1925,7 @@ async function selfCheck() {
   if (failed.length > 0) process.exitCode = 1;
 }
 
-async function runProfile(profile) {
+async function runProfile(profile, profileSelection) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const dir = projectDir(profile);
   const runStartedMonotonicNs = monotonicNowNs();
@@ -1713,6 +1934,8 @@ async function runProfile(profile) {
     profile,
     proofMode: profile.proofMode,
     ...profileContractFields(profile),
+    profileSelection,
+    profile_selection: profileSelection,
     startedAt: new Date().toISOString(),
     metric_clock: 'monotonic_ns',
     started_monotonic_ns: runStartedMonotonicNs,
@@ -1750,6 +1973,8 @@ async function runProfile(profile) {
     report.screenshots.push({ label: 'before', ...before });
     const editStart = Date.now();
     delta = await writeSourceDelta(profile, dir);
+    report.sourceDeltaEvidence = delta.sourceDeltaEvidence;
+    report.source_delta_evidence = delta.sourceDeltaEvidence;
     report.timings.sourceWriteMs = Date.now() - editStart;
     const hot = await waitForHotReload(runtime, profile, editStart);
     report.timings.editToRuntimeSignalMs = hot.elapsedMs;
@@ -1876,6 +2101,8 @@ async function runMcpPreviewProfile(profile, dir, report) {
     }
     const editStart = Date.now();
     delta = await writeSourceDelta(profile, dir);
+    report.sourceDeltaEvidence = delta.sourceDeltaEvidence;
+    report.source_delta_evidence = delta.sourceDeltaEvidence;
     report.timings.sourceWriteMs = Date.now() - editStart;
     const afterCompile = await compileViaMcp(mcp.client, profile, dir, 'after');
     report.timings.editToMcpHmrMs = Date.now() - editStart;
@@ -1942,12 +2169,14 @@ async function main() {
     await selfCheck();
     return;
   }
-  const profile = await loadProfile(args);
+  const { profile, profileSelection } = await loadProfile(args);
   if (args.dryRun) {
     const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
     console.log(JSON.stringify({
       schemaVersion: 'synthi.gpu.hmr.external_project_profile.dry_run.v1',
       profile,
+      profileSelection,
+      profile_selection: profileSelection,
       projectDir: projectDir(profile),
       mcpPreviewGpuProofGate: mcpPreviewGpuProof,
     }, null, 2));
@@ -1961,7 +2190,7 @@ async function main() {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.preflight.v1',
     adversarialPreflight,
   }, null, 2));
-  await runProfile(profile);
+  await runProfile(profile, profileSelection);
 }
 
 main().catch((error) => {
