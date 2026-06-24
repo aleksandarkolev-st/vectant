@@ -3438,6 +3438,7 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
     return {
       present: false,
       accepted: failedGates.length === 0,
+      required,
       disabled: false,
       failedGates,
       failed_gates: failedGates,
@@ -3480,6 +3481,7 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
   return {
     present: true,
     accepted: failedGates.length === 0,
+    required,
     disabled: profileDisabled,
     requestedProfile,
     requested_profile: requestedProfile,
@@ -3745,10 +3747,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.targetProgression,
   );
   const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution, {
-    required: realRocmRequiredFullRuntimeProof({
-      ...json,
-      target_progression: targetProgression,
-    }),
+    required: true,
   });
   const targetProgressionGates = compactObjectList(
     json.target_progression_gates

@@ -3357,6 +3357,84 @@ assert.equal(acceptedComputeRocm.outputOracleFacet.compute.readbackSchemaByteLen
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.decoded, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.renderedCard.format, 'png');
 
+const forgedMissingUnflaggedResolutionRocmDir = path.join(
+  logsRoot,
+  'real-rocm-forged-missing-unflagged-resolution',
+);
+const forgedMissingUnflaggedResolutionProofMaterials = computeProofLedgerMaterials(
+  'forged-missing-unflagged-resolution',
+  {
+    projectId: 'real-rocm-forged-missing-unflagged-resolution',
+    rawReadbackPath: acceptedComputeRawReadback,
+    rawReadbackBytes: acceptedComputeBytes,
+  },
+);
+await writeJson(
+  path.join(forgedMissingUnflaggedResolutionRocmDir, 'real-rocm-forged-missing-unflagged-resolution.json'),
+  {
+    slug: 'gpu-real-rocm-forged-missing-unflagged-resolution-20260623',
+    real_rocm_profile: { id: 'real-rocm-forged-missing-unflagged-resolution' },
+    source_url: 'https://example.invalid/rocm/forged-missing-unflagged-resolution.git',
+    repo_commit: 'bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc',
+    entry_file: 'src/kernels/compute_entry.hip',
+    delta_file: 'src/kernels/compute_delta.h',
+    target_name: 'ForgedMissingUnflaggedResolutionDriver',
+    gpu_vendor: 'rocm',
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    ...forgedMissingUnflaggedResolutionProofMaterials,
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: 'real-rocm-forged-missing-unflagged-resolution-delta',
+      editHash: hashValue('real-rocm-forged-missing-unflagged-resolution-delta'),
+    },
+    checks: [
+      {
+        name: 'real ROCm repo',
+        status: 'pass',
+        detail: 'https://example.invalid/rocm/forged-missing-unflagged-resolution.git @ bcbcbcbc files=18000',
+      },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  },
+);
+const forgedMissingUnflaggedResolutionRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedMissingUnflaggedResolutionRocmDir],
+  generatedAt: '2026-06-09T00:00:02.260Z',
+  includeUnproven: true,
+});
+const forgedMissingUnflaggedResolutionRocm = forgedMissingUnflaggedResolutionRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedMissingUnflaggedResolutionRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedMissingUnflaggedResolutionRocm.acceptedForGpuHmr, false);
+assert.equal(forgedMissingUnflaggedResolutionRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedMissingUnflaggedResolutionRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedMissingUnflaggedResolutionRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedMissingUnflaggedResolutionRocm.outputOracleResolutionGate.required, true);
+assert.equal(forgedMissingUnflaggedResolutionRocm.outputOracleResolutionGate.accepted, false);
+assert.ok(forgedMissingUnflaggedResolutionRocm.reasons.includes(
+  'real_rocm_output_oracle_resolution_missing',
+));
+assert.ok(forgedMissingUnflaggedResolutionRocm.openGaps.includes(
+  'real_rocm_output_oracle_resolution_required',
+));
+
 const forgedMissingResolutionRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-resolution');
 const forgedMissingResolutionProofMaterials = computeProofLedgerMaterials('forged-missing-resolution', {
   projectId: 'real-rocm-forged-missing-resolution',
