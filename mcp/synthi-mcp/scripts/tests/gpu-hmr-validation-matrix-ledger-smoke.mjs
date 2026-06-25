@@ -2365,6 +2365,8 @@ function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
     output_oracle_observed: true,
     outputTargetObserved: true,
     output_target_observed: true,
+    outputTargetMatched: true,
+    output_target_matched: true,
     outputAfterDispatchObserved: true,
     output_after_dispatch_observed: true,
     artifactEpochMatched: true,
@@ -6684,10 +6686,21 @@ await writeSameProcessOracleNegative({
     can_satisfy_runtime_proof: false,
     outputTargetObserved: false,
     output_target_observed: false,
+    outputTargetMatched: false,
+    output_target_matched: false,
     blockingGaps: ['same_process_runtime_oracle_output_target_missing'],
     blocking_gaps: ['same_process_runtime_oracle_output_target_missing'],
   },
   expectedGap: 'same_process_runtime_oracle_output_target_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-output-target-mismatch',
+  sameProcessOverrides: {
+    outputTargetMatched: false,
+    output_target_matched: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_output_target_mismatch',
 });
 
 await writeSameProcessOracleNegative({

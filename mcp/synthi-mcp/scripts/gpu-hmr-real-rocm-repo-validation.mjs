@@ -8327,7 +8327,10 @@ function realRocmSameProcessRuntimeOracleFacet({
     && Boolean(dispatchArtifact)
     && Boolean(transportedArtifact)
     && dispatchArtifact === transportedArtifact;
-  const outputTargetObserved = Boolean(oracleOutputTarget || dispatchOutputTarget);
+  const outputTargetObserved = Boolean(oracleOutputTarget && dispatchOutputTarget);
+  const outputTargetMatched =
+    outputTargetObserved
+    && oracleOutputTarget === dispatchOutputTarget;
   const outputAfterDispatchObserved =
     outputOracleObserved
     && (
@@ -8359,8 +8362,14 @@ function realRocmSameProcessRuntimeOracleFacet({
       observed: outputOracleObserved,
       outputTargetObserved,
       output_target_observed: outputTargetObserved,
+      outputTargetMatched,
+      output_target_matched: outputTargetMatched,
       outputAfterDispatchObserved,
       output_after_dispatch_observed: outputAfterDispatchObserved,
+      dispatchOutputTarget,
+      dispatch_output_target: dispatchOutputTarget,
+      oracleOutputTarget,
+      oracle_output_target: oracleOutputTarget,
     },
   };
   const blockingGaps = [];
@@ -8373,6 +8382,9 @@ function realRocmSameProcessRuntimeOracleFacet({
   if (!sameProcessIdentityObserved) blockingGaps.push('same_process_runtime_oracle_process_identity_missing');
   if (!outputOracleObserved) blockingGaps.push('same_process_runtime_oracle_output_oracle_missing');
   if (!outputTargetObserved) blockingGaps.push('same_process_runtime_oracle_output_target_missing');
+  if (outputTargetObserved && !outputTargetMatched) {
+    blockingGaps.push('same_process_runtime_oracle_output_target_mismatch');
+  }
   if (!outputAfterDispatchObserved) blockingGaps.push('same_process_runtime_oracle_after_dispatch_missing');
   if (!dispatchUsedPublishedEpoch) blockingGaps.push('same_process_runtime_oracle_dispatch_epoch_mismatch');
   if (!artifactEpochMatched) blockingGaps.push('same_process_runtime_oracle_artifact_epoch_mismatch');
@@ -8424,6 +8436,8 @@ function realRocmSameProcessRuntimeOracleFacet({
     output_oracle_observed: outputOracleObserved,
     outputTargetObserved,
     output_target_observed: outputTargetObserved,
+    outputTargetMatched,
+    output_target_matched: outputTargetMatched,
     outputAfterDispatchObserved,
     output_after_dispatch_observed: outputAfterDispatchObserved,
     artifactEpochMatched,

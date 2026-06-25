@@ -2257,6 +2257,10 @@ function realRocmSameProcessRuntimeOracleGate({
       facet.outputTargetObserved,
       facet.output_target_observed,
     ) === true,
+    outputTargetMatched: firstBool(
+      facet.outputTargetMatched,
+      facet.output_target_matched,
+    ) === true,
     outputAfterDispatchObserved: firstBool(
       facet.outputAfterDispatchObserved,
       facet.output_after_dispatch_observed,
@@ -2283,6 +2287,9 @@ function realRocmSameProcessRuntimeOracleGate({
     present && !checks.sameProcessIdentityObserved ? 'same_process_runtime_oracle_process_identity_missing' : null,
     present && !checks.outputOracleObserved ? 'same_process_runtime_oracle_output_oracle_missing' : null,
     present && !checks.outputTargetObserved ? 'same_process_runtime_oracle_output_target_missing' : null,
+    present && checks.outputTargetObserved && !checks.outputTargetMatched
+      ? 'same_process_runtime_oracle_output_target_mismatch'
+      : null,
     present && !checks.outputAfterDispatchObserved ? 'same_process_runtime_oracle_after_dispatch_missing' : null,
     present && !checks.artifactEpochMatched ? 'same_process_runtime_oracle_artifact_epoch_mismatch' : null,
     present && !checks.firewallAccepted ? 'same_process_runtime_oracle_firewall_missing' : null,
