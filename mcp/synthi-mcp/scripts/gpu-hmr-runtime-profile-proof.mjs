@@ -188,6 +188,14 @@ async function defaultPackagedRuntimeProfilePath() {
   return first;
 }
 
+function explicitRuntimeProfileSource(env) {
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()) return 'explicit_profile_json';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()) return 'explicit_hiprt_profile_json';
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH?.trim()) return 'explicit_profile_path';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_PATH?.trim()) return 'explicit_hiprt_profile_path';
+  return null;
+}
+
 async function selfCheck() {
   const checks = [];
   const packagedProfiles = await discoverPackagedRuntimeProfiles();
@@ -224,6 +232,10 @@ async function selfCheck() {
   checks.push({
     name: 'unsupported-adapter-fails-closed',
     ok: unsupportedRejected,
+  });
+  checks.push({
+    name: 'runtime-profile-selection-requires-explicit-source',
+    ok: explicitRuntimeProfileSource({}) === null,
   });
   const external = normalizeRuntimeProofProfile({
     ...baseProfile,
@@ -305,13 +317,27 @@ async function main() {
   const envForLoad = { ...process.env };
   if (args.profilePath) envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH = args.profilePath;
   if (args.profileJson) envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON = args.profileJson;
-  if (!envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()
-    && !envForLoad.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()
-    && !envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH?.trim()
-    && !envForLoad.SYNTHI_HIPRT_WARM_PROFILE_PATH?.trim()) {
+  let profileSelectionSource = explicitRuntimeProfileSource(envForLoad);
+  if (!profileSelectionSource) {
+    if (envForLoad.SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE !== '1') {
+      throw new Error(
+        'runtime profile must be selected explicitly with --profile, --profile-json, '
+        + 'SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH, or SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON; '
+        + 'set SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE=1 only for diagnostic packaged-profile runs',
+      );
+    }
     envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH = await defaultPackagedRuntimeProfilePath();
+    profileSelectionSource = 'packaged_default_opt_in';
   }
   const profile = loadRuntimeProofProfileFromEnv(envForLoad, REPO_ROOT);
+  profile.profileSelection = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_selection.v1',
+    source: profileSelectionSource,
+    profilePath: envForLoad.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH
+      ?? envForLoad.SYNTHI_HIPRT_WARM_PROFILE_PATH
+      ?? null,
+    explicit: profileSelectionSource !== 'packaged_default_opt_in',
+  };
   if (args.mode) {
     profile.runtime.mode = args.mode;
   } else if (process.env.SYNTHI_GPU_HMR_RUNTIME_MODE) {
