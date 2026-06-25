@@ -55,6 +55,23 @@ def test_generated_unshown_branch_has_no_counterfactual_strength():
     assert b.selection_outcome == SelectionOutcome.UNKNOWN
 
 
+def test_shown_but_unopened_branch_has_weak_counterfactual_strength():
+    scene = build_choice_scene(
+        run_id="run",
+        base_state_hash="base",
+        request_summary="request",
+        task_class="fix",
+        available_universe_ids=["A", "B"],
+        visible_universe_ids=["A", "B"],
+        arbiter_recommendation="A",
+        selector_action="applied",
+        selected_universe_id="B",
+    )
+    traces = annotate_traces_with_choice([_trace("A"), _trace("B")], scene)
+    a = next(t for t in traces if t.universe_id == "A")
+    assert a.counterfactual_strength == CounterfactualStrength.WEAK
+
+
 def test_opened_overridden_arbiter_winner_has_strong_signal():
     scene = build_choice_scene(
         run_id="run",

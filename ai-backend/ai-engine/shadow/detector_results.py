@@ -46,6 +46,14 @@ def detector_results_from_evidence(branch_trace_id: str, evidence: Dict[str, Any
         score=score,
         evidence_summary=summary,
     ))
+    for key, kind in [
+        ("browser_probe", DetectorKind.BROWSER_PROBE),
+        ("visual_snapshot", DetectorKind.VISUAL_SNAPSHOT),
+        ("visual_proof", DetectorKind.VISUAL_SNAPSHOT),
+    ]:
+        proof = evidence.get(key)
+        if isinstance(proof, dict):
+            results.append(_artifact_result(branch_trace_id, kind, proof))
     return results
 
 
@@ -91,6 +99,50 @@ def _status(raw: Any) -> tuple[DetectorStatus, float, str]:
         except ValueError:
             return DetectorStatus.PARTIAL, 0.5, text
     return DetectorStatus.PARTIAL, 0.5, text
+
+
+def _artifact_result(branch_trace_id: str, kind: DetectorKind, proof: Dict[str, Any]) -> DetectorResult:
+    status = _artifact_status(proof)
+    failed_gates = proof.get("failed_visual_gates") or proof.get("failed_gates") or []
+    if status == DetectorStatus.FAILED:
+        summary = f"{len(failed_gates) or 1} visual proof gate(s) failed"
+        score = 0.0
+    elif status == DetectorStatus.PASSED:
+        summary = str(proof.get("evidence_summary") or proof.get("summary") or "visual proof passed")
+        score = float(proof.get("score", 1.0) or 1.0)
+    elif status == DetectorStatus.SKIPPED:
+        summary = "visual proof skipped"
+        score = 0.0
+    else:
+        summary = str(proof.get("evidence_summary") or proof.get("summary") or "visual proof partial")
+        score = float(proof.get("score", 0.5) or 0.5)
+    raw_ref = proof.get("raw_artifact_ref") or proof.get("artifact_ref") or proof.get("screenshot_path")
+    return DetectorResult(
+        id=_detector_id(branch_trace_id, kind.value, f"{summary}:{raw_ref or ''}"),
+        branch_trace_id=branch_trace_id,
+        detector_kind=kind,
+        status=status,
+        score=score,
+        evidence_summary=summary,
+        raw_artifact_ref=str(raw_ref) if raw_ref else None,
+    )
+
+
+def _artifact_status(proof: Dict[str, Any]) -> DetectorStatus:
+    raw_status = proof.get("status")
+    if raw_status:
+        try:
+            return DetectorStatus(str(raw_status))
+        except ValueError:
+            pass
+    failed_gates = proof.get("failed_visual_gates") or proof.get("failed_gates") or []
+    if failed_gates:
+        return DetectorStatus.FAILED
+    if proof.get("skipped"):
+        return DetectorStatus.SKIPPED
+    if proof.get("screenshot_sha256") or proof.get("raw_artifact_ref") or proof.get("artifact_ref"):
+        return DetectorStatus.PASSED
+    return DetectorStatus.PARTIAL
 
 
 def _detector_id(branch_trace_id: str, kind: str, summary: str) -> str:

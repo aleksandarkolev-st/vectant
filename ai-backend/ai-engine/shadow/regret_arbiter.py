@@ -47,6 +47,8 @@ def extract_regret_lessons(
     arbiter_pick = by_id.get(choice_scene.arbiter_recommendation or "")
     if not selected or not arbiter_pick:
         return []
+    if _trace_too_ambiguous(selected) or _trace_too_ambiguous(arbiter_pick):
+        return []
     if arbiter_pick.counterfactual_strength != CounterfactualStrength.STRONG:
         return []
 
@@ -95,11 +97,35 @@ def _too_ambiguous(choice_scene: ChoiceScene) -> bool:
     blocking_flags = {
         "branch_not_visible_to_selector",
         "budget_exhausted",
+        "detector_incomplete",
+        "permission_blocked",
         "latency_abort",
+        "merge_conflict",
+        "stale_branch",
         "selector_unknown",
+        "applied_due_to_time_pressure",
         "final_selection_external",
+        "user_left_session",
     }
     return bool(blocking_flags.intersection(choice_scene.ambiguity_flags))
+
+
+def _trace_too_ambiguous(trace: BranchTrace) -> bool:
+    blocking_flags = {
+        "branch_failed_before_comparison",
+        "branch_not_visible_to_selector",
+        "budget_exhausted",
+        "detector_incomplete",
+        "latency_abort",
+        "merge_conflict",
+        "permission_blocked",
+        "stale_branch",
+        "selector_unknown",
+        "applied_due_to_time_pressure",
+        "final_selection_external",
+        "user_left_session",
+    }
+    return bool(blocking_flags.intersection(trace.ambiguity_flags))
 
 
 def _loc(trace: BranchTrace) -> int:

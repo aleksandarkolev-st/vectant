@@ -74,3 +74,41 @@ def test_cancel_before_visibility_does_not_create_taste_lesson():
     traces = annotate_traces_with_choice([_trace("A", 40), _trace("B", 5)], scene)
 
     assert extract_regret_lessons(choice_scene=scene, traces=traces, workspace_id="ws") == []
+
+
+def test_detector_incomplete_ambiguity_does_not_create_lesson():
+    scene = build_choice_scene(
+        run_id="run",
+        base_state_hash="base",
+        request_summary="request",
+        task_class="agent_feature",
+        available_universe_ids=["A", "B"],
+        visible_universe_ids=["A", "B"],
+        opened_diff_universe_ids=["A", "B"],
+        arbiter_recommendation="A",
+        selector_action="applied",
+        selected_universe_id="B",
+        ambiguity_flags=["detector_incomplete"],
+    )
+    traces = annotate_traces_with_choice([_trace("A", 40), _trace("B", 5)], scene)
+
+    assert extract_regret_lessons(choice_scene=scene, traces=traces, workspace_id="ws") == []
+
+
+def test_trace_ambiguity_does_not_create_lesson():
+    scene = build_choice_scene(
+        run_id="run",
+        base_state_hash="base",
+        request_summary="request",
+        task_class="agent_feature",
+        available_universe_ids=["A", "B"],
+        visible_universe_ids=["A", "B"],
+        opened_diff_universe_ids=["A", "B"],
+        arbiter_recommendation="A",
+        selector_action="applied",
+        selected_universe_id="B",
+    )
+    traces = annotate_traces_with_choice([_trace("A", 40), _trace("B", 5)], scene)
+    traces[0].ambiguity_flags.append("permission_blocked")
+
+    assert extract_regret_lessons(choice_scene=scene, traces=traces, workspace_id="ws") == []

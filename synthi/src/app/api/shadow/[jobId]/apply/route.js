@@ -34,7 +34,15 @@ export async function POST(request, { params }) {
             {
                 method: 'POST',
                 headers: withInternalAiAuth({ 'content-type': 'application/json' }),
-                body: JSON.stringify({ universeId: body.universeId }),
+                body: JSON.stringify({
+                    universeId: body.universeId,
+                    openedDiffUniverseIds: Array.isArray(body.openedDiffUniverseIds)
+                        ? body.openedDiffUniverseIds
+                        : [],
+                    openedExplanationUniverseIds: Array.isArray(body.openedExplanationUniverseIds)
+                        ? body.openedExplanationUniverseIds
+                        : [],
+                }),
             }
         );
         const json = await res.json().catch(() => ({}));

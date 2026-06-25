@@ -15,7 +15,12 @@ class PolicyDeltaStore:
     _by_workspace: Dict[str, List[PolicyDelta]] = field(default_factory=dict)
 
     def add(self, delta: PolicyDelta) -> None:
-        self._by_workspace.setdefault(delta.workspace_id, []).append(delta)
+        known = self._by_workspace.setdefault(delta.workspace_id, [])
+        for idx, existing in enumerate(known):
+            if existing.id == delta.id:
+                known[idx] = delta
+                return
+        known.append(delta)
 
     def delete(self, workspace_id: str, delta_id: str) -> bool:
         for delta in self._by_workspace.get(workspace_id, []):

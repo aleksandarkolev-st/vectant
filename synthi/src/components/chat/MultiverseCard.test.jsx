@@ -33,12 +33,14 @@ function renderWithVerify(verify) {
     learnedLines: [],
     policyHints: [],
     directionForecast: [],
+    reviewedUniverseIds: [],
     finished: false,
     cancelled: false,
     error: null,
     apply: vi.fn(),
     cancel: vi.fn(),
     askWhy: vi.fn(),
+    markUniverseReviewed: vi.fn(),
     ...verify,
   });
   container = document.createElement('div');
@@ -73,5 +75,64 @@ describe('MultiverseCard counterfactual notices', () => {
     expect(view.querySelector('[data-testid="counterfactual-ambiguity-note"]')?.textContent)
       .toContain('no branch rejection lesson');
     expect(view.querySelector('[data-testid="counterfactual-learned-line"]')).toBeNull();
+  });
+
+  it('renders visual proof artifact metadata for generated output', () => {
+    const view = renderWithVerify({
+      universes: {
+        A: {
+          id: 'A',
+          stage: 'done',
+          modelGen: 'gpt',
+          modelCritic: 'claude',
+          style: 'safe',
+          evidence: {
+            diagnostics: { lint: 'clean', types: 'clean', tests: '1/1 passed', runtime: 'clean' },
+            attacks: { tested: 0, survived: 0, failed: [] },
+            loc: '+1 -0',
+            score: 1,
+            visual_proof: {
+              status: 'passed',
+              screenshot_sha256: 'abcdef1234567890',
+              raw_artifact_ref: 'artifacts/shadow/A-desktop.png',
+              viewport: 'desktop',
+            },
+          },
+        },
+      },
+    });
+
+    const proof = view.querySelector('[data-testid="visual-proof-A"]');
+    expect(proof?.textContent).toContain('Visual proof passed');
+    expect(proof?.textContent).toContain('abcdef123456');
+    expect(proof?.textContent).toContain('artifacts/shadow/A-desktop.png');
+  });
+
+  it('marks a universe as reviewed before applying comparison evidence', () => {
+    const markUniverseReviewed = vi.fn();
+    const view = renderWithVerify({
+      markUniverseReviewed,
+      universes: {
+        A: {
+          id: 'A',
+          stage: 'done',
+          modelGen: 'gpt',
+          modelCritic: 'gpt',
+          style: 'safe',
+          evidence: {
+            diagnostics: { lint: 'clean', types: 'clean', tests: '1/1 passed', runtime: 'clean' },
+            attacks: { tested: 0, survived: 0, failed: [] },
+            loc: '+1 -0',
+            score: 1,
+          },
+        },
+      },
+    });
+
+    act(() => {
+      view.querySelector('.genome-universe__review').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(markUniverseReviewed).toHaveBeenCalledWith('A');
   });
 });

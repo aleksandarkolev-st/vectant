@@ -192,8 +192,7 @@ async def run_job(
         await job.emit(events.convergence_detected(downgrading_to=1))
         winner = convergence.consensus_universe_id
         eligible = _capture_counterfactual_evidence(job=job, valid=valid)
-        if not eligible:
-            winner = None
+        winner = _proof_validated_winner(job, preferred_winner=winner, eligible=eligible)
         # Skip Arbiter — consensus is its own answer.
         await job.emit(events.all_done(winner=winner))
         await job.emit_done()
@@ -321,6 +320,18 @@ def _capture_counterfactual_evidence(*, job: events.JobState, valid: List[Univer
     job.proof_verdict = proof.to_dict()
     job.selection_verdict = selection.to_dict()
     return _proof_eligible_results(job, valid)
+
+
+def _proof_validated_winner(
+    job: events.JobState,
+    *,
+    preferred_winner: Optional[str],
+    eligible: List[UniverseResult],
+) -> Optional[str]:
+    eligible_ids = {result.universe_id for result in eligible}
+    if preferred_winner in eligible_ids:
+        return preferred_winner
+    return (job.selection_verdict or {}).get("winner")
 
 
 def _proof_eligible_results(job: events.JobState, valid: List[UniverseResult]) -> List[UniverseResult]:

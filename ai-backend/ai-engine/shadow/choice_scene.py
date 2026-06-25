@@ -31,7 +31,7 @@ def build_choice_scene(
     cancel_stage: Optional[str] = None,
 ) -> ChoiceScene:
     visible = list(dict.fromkeys(visible_universe_ids))
-    opened_diff = list(dict.fromkeys(opened_diff_universe_ids or visible))
+    opened_diff = list(dict.fromkeys(opened_diff_universe_ids or []))
     opened_explanation = list(dict.fromkeys(opened_explanation_universe_ids or []))
     flags = list(ambiguity_flags or [])
     if selector_action == "cancelled" and not visible:
