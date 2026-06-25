@@ -1509,6 +1509,57 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
   proofId: 'opencl-preflight-proof:sha256:synthetic',
 });
 
+const webGpuPreflightEvidenceRef = 'evidence:synthetic-webgpu-preflight:browser-runtime-capability';
+await writeJson(path.join(artifactsRoot, 'webgpu-preflight', 'webgpu-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_preflight.v1',
+  slug: 'synthetic-webgpu-preflight',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'webgpu',
+      evidenceRefs: [webGpuPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'webgpu',
+      evidenceRefs: [webGpuPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'webgpu',
+      backendFamily: 'webgpu',
+      probe: 'webgpu_browser_runtime_preflight',
+      browserLaunched: true,
+      secureContext: true,
+      navigatorGpuPresent: true,
+      adapterFound: true,
+      deviceCreated: true,
+      renderSubmitted: true,
+      noShimApplied: true,
+      noBrowserFlagClaimedAsHmr: true,
+      noSynthesizedRuntime: true,
+      noSymlinkApplied: true,
+      evidenceRefs: [webGpuPreflightEvidenceRef],
+    },
+    evidenceRefs: [webGpuPreflightEvidenceRef],
+  },
+  classification: {
+    webgpuAccepted: true,
+    resultState: 'webgpu-runtime-preflight-accepted',
+    unsupportedReasons: [],
+    diagnosticScreenshot: null,
+  },
+  acceptance: {
+    acceptedForWebGpuRuntimePreflight: true,
+    acceptedForWebGpuPipelineProof: false,
+    gpuHmrSuccess: false,
+    reason: 'preflight_only_shader_module_pipeline_and_frame_oracle_still_required',
+    noShimApplied: true,
+    noBrowserFlagClaimedAsHmr: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'webgpu-preflight-proof:sha256:synthetic',
+});
+
 const legacySchemaOnlyPreflightDir = path.join(artifactsRoot, 'legacy-schema-only-preflight');
 await writeJson(path.join(legacySchemaOnlyPreflightDir, 'schema-only-opencl-preflight.json'), {
   schema: 'synthi.gpu_hmr.opencl_preflight.v1',
@@ -3401,6 +3452,22 @@ assert.equal(opencl.backendEvidence.backend, 'opencl');
 assert.equal(opencl.backendEvidence.backendFamily, 'opencl');
 assert.deepEqual(opencl.backendEvidence.evidenceRefs, [openClPreflightEvidenceRef]);
 
+const webgpuPreflight = ledger.rows.find((row) =>
+  row.backend === 'webgpu'
+  && row.targetId === 'synthetic-webgpu-preflight'
+);
+assert.equal(webgpuPreflight?.matrixOutcome, 'preflight_only');
+assert.equal(webgpuPreflight.acceptedForGpuHmr, false);
+assert.equal(webgpuPreflight.gpuHmrSuccess, false);
+assert.equal(webgpuPreflight.refusalProven, false);
+assert.equal(webgpuPreflight.proofChainAccepted, true);
+assert.equal(webgpuPreflight.backendEvidence.accepted, true);
+assert.equal(webgpuPreflight.backendEvidence.backend, 'webgpu');
+assert.equal(webgpuPreflight.backendEvidence.backendFamily, 'webgpu');
+assert.deepEqual(webgpuPreflight.backendEvidence.evidenceRefs, [webGpuPreflightEvidenceRef]);
+assert.ok(webgpuPreflight.openGaps.includes('shader_pipeline_or_output_oracle_not_proven'));
+assert.ok(!webgpuPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
+
 const legacySchemaOnlyPreflightLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
@@ -3929,6 +3996,10 @@ assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing'
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_compute_runtime_readback')?.status, 'missing');
+assert.equal(coverageById.get('webgpu_runtime_preflight')?.status, 'preflight_only');
+assert.ok(coverageById.get('webgpu_runtime_preflight')?.openGaps.includes(
+  'shader_pipeline_or_output_oracle_not_proven',
+));
 assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
 assert.ok(coverageById.get('external_engine_visual_profile')?.rows.every((row) =>
   row.externalProfileSelection?.accepted === true
