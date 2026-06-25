@@ -19,6 +19,9 @@ import {
 import {
   hipModuleRuntimeTimingMetrics,
 } from './lib/gpu-hmr-timing-metrics.mjs';
+import {
+  runtimeProofArtifactStrictGate,
+} from './lib/gpu-hmr-proof-strict-gates.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1534,7 +1537,195 @@ function nativeHipApiEvidence(runtimeTrace) {
   };
 }
 
-function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifacts, nativeApiEvidence }) {
+function failedGateCodes(...values) {
+  return [...new Set(values.flatMap((value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object') return entry.code;
+        return null;
+      });
+    }
+    return [];
+  }).filter((code) => typeof code === 'string' && code.trim()))];
+}
+
+function buildRuntimeProofArtifact({
+  profile,
+  compiled,
+  runtimeTrace,
+  contract,
+  contractEvaluation,
+  contractConsistency,
+  proofLedger,
+  ledger,
+  oracleArtifacts,
+  oracleValidation,
+  nativeApiEvidence,
+}) {
+  const record = proofLedger.records?.[0] ?? {};
+  const dispatchId = record.dispatch_event?.id ?? record.dispatchEvent?.id ?? runtimeTrace.dispatchEvents?.[1]?.id;
+  const proofLedgerSourceConsistency = {
+    accepted: ledger.gpuHmrSuccess === true && ledger.failedInvariants.length === 0,
+    mode: 'derived_only',
+    source: 'hip_module_runtime_recomputed',
+    proofLedgerId: proofLedger.proofId,
+    proof_ledger_id: proofLedger.proofId,
+    evidenceRefs: record.evidence_refs ?? record.evidenceRefs ?? [],
+    evidence_refs: record.evidence_refs ?? record.evidenceRefs ?? [],
+    failures: ledger.failedInvariants,
+  };
+  const processContinuity = {
+    accepted: runtimeTrace.sameProcess === true && runtimeTrace.processRestarted === false,
+    sameProcess: runtimeTrace.sameProcess === true,
+    same_process: runtimeTrace.sameProcess === true,
+    processRestarted: runtimeTrace.processRestarted === true,
+    process_restarted: runtimeTrace.processRestarted === true,
+    processId: runtimeTrace.processId,
+    process_id: runtimeTrace.processId,
+    failedGates: [
+      runtimeTrace.sameProcess === true ? null : 'same_process_not_proven',
+      runtimeTrace.processRestarted === false ? null : 'process_restarted',
+    ].filter(Boolean),
+  };
+  const artifactChanged =
+    typeof compiled.beforeHsacoHash === 'string'
+    && typeof compiled.afterHsacoHash === 'string'
+    && compiled.beforeHsacoHash !== compiled.afterHsacoHash;
+  const retirementProven = contract.epoch_retirement_proof?.value === 'stream_event_proven';
+  const limitationCodes = failedGateCodes(
+    ledger.failedInvariants,
+    contractEvaluation.failedGates,
+    contractConsistency.failedGates,
+    oracleValidation.failedGates,
+    nativeApiEvidence.failedGates,
+    processContinuity.failedGates,
+    artifactChanged ? [] : ['hip_module_artifact_hash_not_changed'],
+    retirementProven ? [] : ['hip_module_epoch_retirement_unproven'],
+  );
+  const fullRuntimeProven =
+    ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && contractEvaluation.accepted === true
+    && contractConsistency.accepted === true
+    && proofLedgerSourceConsistency.accepted === true
+    && oracleValidation.accepted === true
+    && nativeApiEvidence.accepted === true
+    && processContinuity.accepted === true
+    && artifactChanged
+    && retirementProven
+    && limitationCodes.length === 0;
+  const runtimeProofArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
+    proofId: `hip-module-runtime-proof-artifact:${sha256Text(stableJson({
+      proofLedgerId: proofLedger.proofId,
+      contractHash: contract.contract_hash,
+      artifactHashAfter: compiled.afterHsacoHash,
+      dispatchId,
+      rawReadbackHash: oracleArtifacts.raw_readback_hash,
+      nativeApiCounts: nativeApiEvidence.counts,
+    })).replace(/^sha256:/, '')}`,
+    resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : 'gpu-hmr-runtime-proof-rejected',
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    gpuHmrSuccess: fullRuntimeProven,
+    gpu_hmr_success: fullRuntimeProven,
+    stageResults: [
+      {
+        stageId: 'hip-module-hsaco-artifact',
+        status: artifactChanged ? 'passed' : 'failed',
+        evidenceRefs: [compiled.beforeHsacoHash, compiled.afterHsacoHash].filter(Boolean),
+      },
+      {
+        stageId: 'hip-module-load-symbol-epoch',
+        status:
+          nativeApiEvidence.counts?.hipModuleLoadData >= 2
+          && nativeApiEvidence.counts?.hipModuleGetFunction >= 2
+            ? 'passed'
+            : 'failed',
+        evidenceRefs: [
+          `runtime:hip-module:hipModuleLoadData:${compiled.afterHsacoHash}`,
+          `runtime:hip-module:hipModuleGetFunction:${profile.kernel.name}`,
+        ],
+      },
+      {
+        stageId: 'hip-module-post-epoch-dispatch',
+        status:
+          nativeApiEvidence.counts?.hipModuleLaunchKernel >= 2
+          && ledger.gpuHmrSuccess === true
+            ? 'passed'
+            : 'failed',
+        evidenceRefs: [dispatchId, proofLedger.proofId].filter(Boolean),
+      },
+      {
+        stageId: 'hip-module-raw-readback-oracle',
+        status: oracleValidation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [
+          oracleArtifacts.raw_readback_hash,
+          oracleArtifacts.deterministic_slice_hash,
+          oracleArtifacts.readback_schema_hash,
+        ].filter(Boolean),
+      },
+      {
+        stageId: 'hip-module-acceptance-contract',
+        status: contractEvaluation.accepted === true && contractConsistency.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [contract.contract_hash],
+      },
+      {
+        stageId: 'hip-module-process-firewall',
+        status: processContinuity.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hip-module:process-continuity:${runtimeTrace.processId}`],
+      },
+      {
+        stageId: 'hip-module-epoch-retirement',
+        status: retirementProven ? 'passed' : 'failed',
+        evidenceRefs: contract.epoch_retirement_proof?.evidence_refs ?? [],
+      },
+    ],
+    limitations: fullRuntimeProven ? [] : limitationCodes.map((code) => ({ code })),
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery: ledger,
+    proof_ledger_query: ledger,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    acceptanceContract: contract,
+    acceptance_contract: contract,
+    acceptanceContractEvaluation: contractEvaluation,
+    acceptance_contract_evaluation: contractEvaluation,
+    acceptanceContractConsistency: contractConsistency,
+    acceptance_contract_consistency: contractConsistency,
+    computeOracleArtifacts: oracleArtifacts,
+    compute_oracle_artifacts: oracleArtifacts,
+    computeOracleValidation: oracleValidation,
+    compute_oracle_validation: oracleValidation,
+    nativeHipApiEvidence: nativeApiEvidence,
+    native_hip_api_evidence: nativeApiEvidence,
+    processContinuity,
+    process_continuity: processContinuity,
+  };
+  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+  return {
+    ...runtimeProofArtifact,
+    strictGate,
+    strict_gate: strictGate,
+    fullRuntimeProven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+    full_runtime_proven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+    gpuHmrSuccess: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+    gpu_hmr_success: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+  };
+}
+
+function buildRunModeProof({
+  profile,
+  runMode,
+  ledger,
+  proofLedger,
+  oracleArtifacts,
+  nativeApiEvidence,
+  runtimeProofArtifact,
+}) {
   const record = proofLedger.records[0];
   const material = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
@@ -1542,6 +1733,10 @@ function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifa
     backend: 'hip',
     runMode,
     ledgerProofId: ledger.proofId,
+    runtimeProofArtifactId: runtimeProofArtifact?.proofId ?? null,
+    runtime_proof_artifact_id: runtimeProofArtifact?.proofId ?? null,
+    runtimeProofStrictGate: runtimeProofArtifact?.strictGate?.status ?? 'unknown',
+    runtime_proof_strict_gate: runtimeProofArtifact?.strictGate?.status ?? 'unknown',
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     nativeApiCounts: nativeApiEvidence.counts,
     dispatchId: record.dispatchEvent.id,
@@ -1549,7 +1744,7 @@ function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifa
   return {
     ...material,
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson(material)).replace(/^sha256:/, '')}`,
-    accepted: ledger.gpuHmrSuccess === true,
+    accepted: ledger.gpuHmrSuccess === true && runtimeProofArtifact?.gpuHmrSuccess === true,
     coverageObligations: {
       hipModuleRunModes: true,
       hip_module_run_modes: true,
@@ -1606,6 +1801,184 @@ function buildNegativeRefusal({ profile }) {
   return {
     ...material,
     proofId: `agent-split-negative-edit-refusal:${sha256Text(stableJson(material)).replace(/^sha256:/, '')}`,
+  };
+}
+
+function buildSyntheticRuntimeProofFixture(profile) {
+  const runMode = runModeMetadata(profile);
+  const compiled = {
+    beforeHsacoHash: sha256Text(`${profile.targetId}:before-hsaco`),
+    afterHsacoHash: sha256Text(`${profile.targetId}:after-hsaco`),
+    commands: {
+      host: ['hipcc', '-std=c++17', 'hip_module_runtime_probe.cpp'],
+      before: ['hipcc', '--genco', profile.beforePath],
+      after: ['hipcc', '--genco', profile.afterPath],
+    },
+  };
+  const dispatchBefore = 'hip-module-self-check-dispatch-1';
+  const dispatchAfter = 'hip-module-self-check-dispatch-2';
+  const runtimeTrace = {
+    processId: 'hip-module-self-check-process',
+    sameProcess: true,
+    processRestarted: false,
+    device: {
+      name: 'HIP self-check device',
+      device_uuid: 'hip-self-check-device',
+      compile_target: profile.compile.gpuArch || profile.compile.compileTarget,
+    },
+    loaderEvents: [
+      { api: 'hipModuleLoadData', epoch: '1', artifact_hash: compiled.beforeHsacoHash, start_timestamp_monotonic_ns: 10, timestamp_monotonic_ns: 20 },
+      { api: 'hipModuleLoadData', epoch: '2', artifact_hash: compiled.afterHsacoHash, start_timestamp_monotonic_ns: 110, timestamp_monotonic_ns: 120 },
+    ],
+    symbolEvents: [
+      { api: 'hipModuleGetFunction', epoch: '1', kernel_name: profile.kernel.name, timestamp_monotonic_ns: 30 },
+      { api: 'hipModuleGetFunction', epoch: '2', kernel_name: profile.kernel.name, timestamp_monotonic_ns: 130 },
+    ],
+    epochEvents: [
+      { epoch: '1', artifact_hash: compiled.beforeHsacoHash, timestamp_monotonic_ns: 40 },
+      { epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 140 },
+    ],
+    dispatchEvents: [
+      { id: dispatchBefore, launch_api: 'hipModuleLaunchKernel', epoch: '1', artifact_hash: compiled.beforeHsacoHash, timestamp_monotonic_ns: 50 },
+      { id: dispatchAfter, launch_api: 'hipModuleLaunchKernel', epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 150 },
+    ],
+    outputEvents: [
+      { id: 'hip-module-self-check-output-1', passed: true, values: profile.outputOracle.expectedBeforeValues, after_dispatch_id: dispatchBefore, epoch: '1', timestamp_monotonic_ns: 60 },
+      { id: 'hip-module-self-check-output-2', passed: true, values: profile.outputOracle.expectedAfterValues, after_dispatch_id: dispatchAfter, epoch: '2', timestamp_monotonic_ns: 160 },
+    ],
+    retirementEvent: {
+      id: 'hip-module-self-check-retire-1',
+      status: 'stream_event_proven',
+      epoch: '1',
+      timestamp_monotonic_ns: 170,
+    },
+  };
+  const expectedBytes = encodeNumericValues(profile.outputOracle.expectedAfterValues, profile.outputOracle.dataType);
+  const beforeBytes = encodeNumericValues(profile.outputOracle.expectedBeforeValues, profile.outputOracle.dataType);
+  const deterministicSliceBytes = expectedBytes.subarray(
+    profile.outputOracle.deterministicSlice.offset,
+    profile.outputOracle.deterministicSlice.offset + profile.outputOracle.deterministicSlice.length,
+  );
+  const rawReadbackHash = sha256Bytes(expectedBytes);
+  const beforeHash = sha256Bytes(beforeBytes);
+  const sliceHash = sha256Bytes(deterministicSliceBytes);
+  const oracleArtifacts = {
+    raw_readback_bin: 'self-check/after-readback.bin',
+    rawReadbackBin: 'self-check/after-readback.bin',
+    before_raw_readback_bin: 'self-check/before-readback.bin',
+    readback_schema_json: 'self-check/readback-schema.json',
+    readbackSchemaJson: 'self-check/readback-schema.json',
+    raw_readback_hash: rawReadbackHash,
+    rawReadbackHash: rawReadbackHash,
+    raw_readback_hash_verified: true,
+    raw_readback_source: 'runtime_raw_readback',
+    raw_readback_byte_length: expectedBytes.length,
+    readback_schema_hash: sha256Text(`${profile.targetId}:readback-schema`),
+    checksum_before: beforeHash,
+    checksum_after: rawReadbackHash,
+    output_change_expected: true,
+    expected_output_declared: true,
+    expected_output_required: true,
+    expected_output_data_type: profile.outputOracle.dataType,
+    expected_output_values: profile.outputOracle.expectedAfterValues,
+    expected_output_hash: sha256Bytes(expectedBytes),
+    expected_output_tolerance: profile.outputOracle.tolerance,
+    expected_output_verified: true,
+    expected_output_max_abs_delta: 0,
+    expected_output_compared: profile.outputOracle.expectedAfterValues.length,
+    expected_output_mismatches: [],
+    deterministic_slice: {
+      offset: profile.outputOracle.deterministicSlice.offset,
+      length: profile.outputOracle.deterministicSlice.length,
+      hash: sliceHash,
+      source: 'runtime_raw_readback',
+    },
+    deterministic_slice_hash: sliceHash,
+    deterministic_slice_hash_verified: true,
+    oracle_code_hash: sha256Text('hip_module_self_check_oracle_code'),
+    rendered_card_png: 'self-check/compute-card.png',
+    renderedCardPng: 'self-check/compute-card.png',
+    rendered_card_hash: sha256Text('hip_module_self_check_card'),
+    producer: 'hip_module_runtime_proof_self_check',
+    timestamp_after_dispatch: 160,
+    epoch: 2,
+    raw_readback_verification: {
+      raw_readback_hash: rawReadbackHash,
+      hash_verified: true,
+      byte_length: expectedBytes.length,
+      deterministic_slice_hash: sliceHash,
+      deterministic_slice_hash_verified: true,
+      readback_schema_hash: sha256Text(`${profile.targetId}:readback-schema`),
+    },
+  };
+  const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts });
+  const timings = timingFields({
+    staticDiscovery: 1,
+    aiContractSynthesis: 0,
+    modelAvailability: 1,
+    artifactHash: 1,
+    adapterGeneration: 0,
+    deviceCompileWall: 1,
+    artifactLoad: 10,
+    epochPublish: 10,
+    dispatchTrace: 10,
+    runtimeProbe: 100,
+    oracleAnalysis: 10,
+    triggerToVisible: 130,
+    screenshotCapture: 0,
+    dispatchToOutputProof: 20,
+    totalValidatorWall: 150,
+  }, runMode);
+  timings.loaderTimestampNs = 120;
+  timings.publishTimestampNs = 140;
+  timings.dispatchTimestampNs = 150;
+  timings.outputTimestampNs = 160;
+  timings.retirementTimestampNs = 170;
+  const contract = buildContract({ profile, compiled, runtimeTrace, runMode, oracleArtifacts });
+  const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
+  const contractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    before: contract,
+    after: contract,
+  });
+  const ledgerRecord = buildProofLedgerRecord({
+    profile,
+    compiled,
+    runtimeTrace,
+    contract,
+    runMode,
+    timings,
+    modelProvenance: modelProvenance({
+      checkedAt: '2026-06-25T00:00:00.000Z',
+      splitModel: 'gemini-3.5-flash',
+      gpuDeltaModel: 'gemini-3.1-flash-lite',
+    }),
+    oracleArtifacts,
+    oracleValidation,
+  });
+  const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
+  const ledger = queryGpuHmrLedgerInvariants(proofLedger);
+  const nativeApiEvidence = nativeHipApiEvidence(runtimeTrace);
+  const runtimeProofArtifact = buildRuntimeProofArtifact({
+    profile,
+    compiled,
+    runtimeTrace,
+    contract,
+    contractEvaluation,
+    contractConsistency,
+    proofLedger,
+    ledger,
+    oracleArtifacts,
+    oracleValidation,
+    nativeApiEvidence,
+  });
+  return {
+    runtimeProofArtifact,
+    proofLedger,
+    ledger,
+    contractEvaluation,
+    contractConsistency,
+    oracleValidation,
+    nativeApiEvidence,
   };
 }
 
@@ -1667,6 +2040,26 @@ async function selfCheck() {
     ok: (() => {
       const copy = { ...profile, validationScope: 'project-specific-hidden-branch' };
       return !isSupportedScope(copy.validationScope);
+    })(),
+  });
+  const syntheticProof = buildSyntheticRuntimeProofFixture(profile);
+  checks.push({
+    name: 'runtime-proof-artifact-strictly-accepted',
+    ok:
+      syntheticProof.runtimeProofArtifact.gpuHmrSuccess === true
+      && syntheticProof.runtimeProofArtifact.fullRuntimeProven === true
+      && syntheticProof.runtimeProofArtifact.strictGate?.status === 'pass'
+      && syntheticProof.runtimeProofArtifact.proofLedgerSourceConsistency?.mode === 'derived_only',
+  });
+  checks.push({
+    name: 'runtime-proof-artifact-rejects-forged-cpu-fallback',
+    ok: (() => {
+      const forged = JSON.parse(JSON.stringify(syntheticProof.runtimeProofArtifact));
+      forged.proofLedger.records[0].cpu_hmr_used = true;
+      forged.proof_ledger.records[0].cpu_hmr_used = true;
+      const gate = runtimeProofArtifactStrictGate(forged);
+      return gate.status === 'fail'
+        && gate.failures.some((failure) => failure === 'proof_ledger_recomputed_query_rejected');
     })(),
   });
   const failed = checks.filter((check) => !check.ok);
@@ -1775,15 +2168,22 @@ async function main() {
   const ledger = queryGpuHmrLedgerInvariants(proofLedger);
   const ledgerEvaluation = evaluateGpuHmrProofLedger(proofLedger.records[0]);
   const nativeApiEvidence = nativeHipApiEvidence(runtime.runtimeTrace);
+  const runtimeProofArtifact = buildRuntimeProofArtifact({
+    profile,
+    compiled,
+    runtimeTrace: runtime.runtimeTrace,
+    contract,
+    contractEvaluation,
+    contractConsistency,
+    proofLedger,
+    ledger,
+    oracleArtifacts,
+    oracleValidation,
+    nativeApiEvidence,
+  });
   const accepted =
-    contractEvaluation.accepted === true
-    && contractConsistency.accepted === true
-    && ledger.gpuHmrSuccess === true
-    && ledger.failedInvariants.length === 0
-    && ledgerEvaluation.gpuHmrSuccess === true
-    && oracleValidation.accepted === true
-    && nativeApiEvidence.accepted === true
-    && runtime.runtimeTrace.processRestarted === false;
+    runtimeProofArtifact.gpuHmrSuccess === true
+    && ledgerEvaluation.gpuHmrSuccess === true;
   const proofMaterial = {
     schema: SCHEMA,
     slug: runSlug,
@@ -1816,6 +2216,8 @@ async function main() {
     proofLedger,
     ledger,
     ledgerEvaluation,
+    runtimeProofArtifact,
+    runtime_proof_artifact: runtimeProofArtifact,
     modelProvenance: provenance,
     timings,
     timingMetrics: null,
@@ -1826,6 +2228,7 @@ async function main() {
       proofLedger,
       oracleArtifacts,
       nativeApiEvidence,
+      runtimeProofArtifact,
     }),
     negativeEditRefusal: buildNegativeRefusal({ profile }),
     gpuHmrSuccess: accepted,
@@ -1854,9 +2257,14 @@ async function main() {
     ledgerProofId: ledger.proofId,
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     nativeApiCounts: nativeApiEvidence.counts,
+    runtimeProofArtifactId: runtimeProofArtifact.proofId,
   })).replace(/^sha256:/, '')}`;
   proofMaterial.timingMetrics = hipModuleRuntimeTimingMetrics(proofMaterial);
   const proofPath = path.join(outDir, `${runSlug}-proof.json`);
+  const runtimeProofArtifactPath = path.join(outDir, `${runSlug}-runtime-proof-artifact.json`);
+  proofMaterial.runtimeProofArtifactPath = relRepo(runtimeProofArtifactPath);
+  proofMaterial.runtime_proof_artifact_path = relRepo(runtimeProofArtifactPath);
+  await writeFile(runtimeProofArtifactPath, `${JSON.stringify(runtimeProofArtifact, null, 2)}\n`);
   await writeFile(proofPath, `${JSON.stringify(proofMaterial, null, 2)}\n`);
   if (proofMaterial.negativeEditRefusal) {
     await writeFile(
@@ -1874,6 +2282,8 @@ async function main() {
     proofPath: relRepo(proofPath),
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     renderedCardPng: oracleArtifacts.rendered_card_png,
+    runtimeProofArtifactId: runtimeProofArtifact.proofId,
+    runtimeProofStrictGate: runtimeProofArtifact.strictGate?.status ?? null,
     ledgerProofId: ledger.proofId,
     failedLedgerInvariants: ledger.failedInvariants,
     contractAccepted: contractEvaluation.accepted,
