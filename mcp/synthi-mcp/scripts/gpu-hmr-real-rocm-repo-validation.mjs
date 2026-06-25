@@ -996,12 +996,16 @@ function cmakeMissingDependencyTokens(text) {
   const configPackageGroups = [...combined.matchAll(
     /package\s+configuration\s+file\s+provided\s+by\s+["']([^"']+)["']/gi,
   )];
+  const missingCompilerGroups = [...combined.matchAll(
+    /The\s+(CMAKE_[A-Za-z0-9_]+_COMPILER):\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*is\s+not\s+a\s+full\s+path\s+and\s+was\s+not\s+found\s+in\s+the\s+PATH\./gi,
+  )];
   return compactStringList([
     ...findPackageMissingGroups.flatMap((match) => [
       match[1],
       ...(match[2] ? match[2].split(/[\s,;]+/) : []),
     ]),
     ...configPackageGroups.map((match) => match[1]),
+    ...missingCompilerGroups.flatMap((match) => [match[1], match[2]]),
     ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)]
       .map((match) => match[1]),
   ]);
@@ -10618,6 +10622,9 @@ int main()
     'Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)',
     'Could not find a package configuration file provided by "msgpack" with any of the following names:',
     'No package "libexample" found',
+    'The CMAKE_Fortran_COMPILER:',
+    '  gfortran',
+    'is not a full path and was not found in the PATH.',
   ].join('\n'));
   if (
     !cmakeMissingDeps.includes('BZip2')
@@ -10625,6 +10632,8 @@ int main()
     || !cmakeMissingDeps.includes('BZIP2_INCLUDE_DIR')
     || !cmakeMissingDeps.includes('msgpack')
     || !cmakeMissingDeps.includes('libexample')
+    || !cmakeMissingDeps.includes('CMAKE_Fortran_COMPILER')
+    || !cmakeMissingDeps.includes('gfortran')
     || cmakeMissingDeps.includes('a')
   ) {
     throw new Error('CMake missing dependency parser self-check failed');
