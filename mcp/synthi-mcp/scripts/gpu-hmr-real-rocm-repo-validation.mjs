@@ -1165,6 +1165,9 @@ function cmakeMissingDependencyTokens(text) {
   const missingCompilerGroups = [...combined.matchAll(
     /The\s+(CMAKE_[A-Za-z0-9_]+_COMPILER):\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*is\s+not\s+a\s+full\s+path\s+and\s+was\s+not\s+found\s+in\s+the\s+PATH\./gi,
   )];
+  const missingHeaderGroups = [...combined.matchAll(
+    /fatal\s+error:\s+['<]([^'">]+)['>]\s+file\s+not\s+found/gi,
+  )];
   return compactStringList([
     ...findPackageMissingGroups.flatMap((match) => [
       match[1],
@@ -1172,6 +1175,7 @@ function cmakeMissingDependencyTokens(text) {
     ]),
     ...configPackageGroups.map((match) => match[1]),
     ...missingCompilerGroups.flatMap((match) => [match[1], match[2]]),
+    ...missingHeaderGroups.map((match) => match[1]),
     ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)]
       .map((match) => match[1]),
   ]);
@@ -3268,6 +3272,22 @@ function parseUpstreamRunExitCode(timings) {
   return match ? Number(match[1]) : null;
 }
 
+function parseLifecycleExitCodeText(timings, phase) {
+  const escapedPhase = String(phase ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`\\b${escapedPhase}_exit_code=([^\\s]+)\\b`).exec(String(timings ?? ''));
+  return match?.[1] ?? null;
+}
+
+function lifecycleExitCodeFailed(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return Boolean(text && !['0', 'skipped', 'not-run', 'not_run'].includes(text));
+}
+
+function lifecycleExitCodeSkipped(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return ['skipped', 'not-run', 'not_run'].includes(text);
+}
+
 function classifyUpstreamLifecycleFailure({
   timings = '',
   configureLog = '',
@@ -3283,20 +3303,33 @@ function classifyUpstreamLifecycleFailure({
     String(lifecycleError?.message ?? ''),
   ].join('\n');
   const runExitCodeText = /\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1] ?? null;
-  const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''));
-  const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''));
+  const configureExitCodeText = parseLifecycleExitCodeText(timings, 'configure');
+  const buildExitCodeText = parseLifecycleExitCodeText(timings, 'build');
+  const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''))
+    || lifecycleExitCodeFailed(configureExitCodeText);
+  const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''))
+    || lifecycleExitCodeFailed(buildExitCodeText);
+  const buildStageSkipped = lifecycleExitCodeSkipped(buildExitCodeText);
   const runNotStarted = runExitCodeText === 'not-run';
   const missingDependencies = cmakeMissingDependencyTokens(combined);
+  const configureLogText = String(configureLog ?? '');
+  const buildLogText = String(buildLog ?? '');
+  const configureLogSucceeded =
+    /Configuring done|Build files have been written to:/i.test(configureLogText);
   const cmakeConfigureFailed =
-    configureStageFailed || /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(combined);
-  const buildBlockedByConfigure = cmakeConfigureFailed && buildStageFailed;
+    configureStageFailed
+    || (!configureLogSucceeded && /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText));
+  const buildBlockedByConfigure = cmakeConfigureFailed && (buildStageFailed || buildStageSkipped);
   const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
   const buildFailed = !buildBlockedByConfigure
     && (
       buildStageFailed
-      || /(^|\n)(?:gmake|make|ninja|\[[0-9]+\/[0-9]+\]).*(?:error|failed)/i.test(buildLog)
+      || /fatal\s+error:.*file\s+not\s+found/i.test(buildLogText)
+      || /(^|\n)(?:gmake|make|ninja|\[[0-9]+\/[0-9]+\]).*(?:error|failed)/i.test(buildLogText)
     );
+  const runBlockedByBuild = buildFailed && runNotStarted;
   const runFailed = !runBlockedByConfigure
+    && !runBlockedByBuild
     && runExitCodeText !== null
     && runExitCodeText !== '0'
     && runExitCodeText !== 'not-run';
@@ -3306,6 +3339,7 @@ function classifyUpstreamLifecycleFailure({
     buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
     buildFailed ? 'upstream_build_failed' : null,
     runBlockedByConfigure ? 'upstream_run_not_started_after_configure_failure' : null,
+    runBlockedByBuild ? 'upstream_run_not_started_after_build_failure' : null,
     runFailed ? 'upstream_run_failed' : null,
     lifecycleError ? 'upstream_lifecycle_command_failed' : null,
   ]);
@@ -3319,12 +3353,18 @@ function classifyUpstreamLifecycleFailure({
     missing_dependencies: missingDependencies,
     cmakeConfigureFailed,
     cmake_configure_failed: cmakeConfigureFailed,
+    configureExitCodeText,
+    configure_exit_code_text: configureExitCodeText,
     buildFailed,
     build_failed: buildFailed,
     buildBlockedByConfigure,
     build_blocked_by_configure: buildBlockedByConfigure,
+    buildExitCodeText,
+    build_exit_code_text: buildExitCodeText,
     runFailed,
     run_failed: runFailed,
+    runBlockedByBuild,
+    run_blocked_by_build: runBlockedByBuild,
     runBlockedByConfigure,
     run_blocked_by_configure: runBlockedByConfigure,
     runExitCodeText,
@@ -4497,28 +4537,45 @@ ${cleanBuildCommand}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
+set +e
 cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=${shQuote(CFG.rocmPrefix)} -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
+configure_status=$?
 configured=$(date +%s%3N)
-${hiprtPostConfigureAdaptationCommand}
-if [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
+post_configure_status=skipped
+if [ "$configure_status" -eq 0 ]; then
+  ${hiprtPostConfigureAdaptationCommand}
+  post_configure_status=$?
+fi
+if [ "$configure_status" -eq 0 ] && [ "$post_configure_status" = "0" ] && [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
   cmake --build build -j2 --target ${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
-else
+  build_status=$?
+elif [ ${CFG.buildUpstream ? '1' : '0'} -eq 0 ]; then
   : > ${shQuote(`${CFG.workerTempDir}/build.log`)}
+  build_status=skipped
+else
+  printf 'upstream build skipped after configure_status=%s post_configure_status=%s\\n' "$configure_status" "$post_configure_status" > ${shQuote(`${CFG.workerTempDir}/build.log`)}
+  build_status=skipped
 fi
 built=$(date +%s%3N)
-run_status=0
-if [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
+run_status=not-run
+if [ "$configure_status" -eq 0 ] && [ "$post_configure_status" = "0" ] && [ "$build_status" = "0" ] && [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
   ${nativeLaunchObserverSetup}
   ${upstreamRunEnvironmentSetup}
-  set +e
   ${upstreamRunInvocation} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
   run_status=$?
-  set -e
-else
+elif [ ${CFG.runUpstream ? '1' : '0'} -eq 0 ]; then
   printf 'upstream run skipped by SYNTHI_REAL_ROCM_RUN_UPSTREAM=0\\n' > ${shQuote(`${CFG.workerTempDir}/run.log`)}
+  run_status=skipped
+else
+  printf 'upstream run skipped after configure_status=%s post_configure_status=%s build_status=%s\\n' "$configure_status" "$post_configure_status" "$build_status" > ${shQuote(`${CFG.workerTempDir}/run.log`)}
 fi
 ran=$(date +%s%3N)
-printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$run_status"
+printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nconfigure_exit_code=%s\\npost_configure_exit_code=%s\\nbuild_exit_code=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$configure_status" "$post_configure_status" "$build_status" "$run_status"
+if [ "$configure_status" -ne 0 ]; then exit "$configure_status"; fi
+if [ "$post_configure_status" != "0" ] && [ "$post_configure_status" != "skipped" ]; then exit "$post_configure_status"; fi
+if [ "$build_status" != "0" ] && [ "$build_status" != "skipped" ]; then exit "$build_status"; fi
+if [ "$run_status" != "0" ] && [ "$run_status" != "skipped" ] && [ "$run_status" != "not-run" ]; then exit "$run_status"; fi
+exit 0
   `;
   let timings;
   let lifecycleError = null;
@@ -4536,7 +4593,8 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
       usesCachedMetadata: lifecyclePlan.usesCachedMetadata,
       cachedMetadataAvailable: Boolean(cachedMetadata),
     });
-    timings = 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nrun_exit_code=not-run';
+    timings = String(err.output ?? '').trim()
+      || 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nconfigure_exit_code=unknown\nbuild_exit_code=unknown\nrun_exit_code=not-run';
   }
   if (CFG.hiprtRuntimeProbe) {
     const postConfigureRecords = parseHiprtRuntimeProbeAdaptationOutput(timings);
@@ -11128,6 +11186,7 @@ int main()
     'The CMAKE_Fortran_COMPILER:',
     '  gfortran',
     'is not a full path and was not found in the PATH.',
+    "fatal error: 'half/half.hpp' file not found",
   ].join('\n'));
   if (
     !cmakeMissingDeps.includes('BZip2')
@@ -11137,9 +11196,34 @@ int main()
     || !cmakeMissingDeps.includes('libexample')
     || !cmakeMissingDeps.includes('CMAKE_Fortran_COMPILER')
     || !cmakeMissingDeps.includes('gfortran')
+    || !cmakeMissingDeps.includes('half/half.hpp')
     || cmakeMissingDeps.includes('a')
   ) {
     throw new Error('CMake missing dependency parser self-check failed');
+  }
+  const buildFailureClassification = classifyUpstreamLifecycleFailure({
+    timings: [
+      'configure_ms=100',
+      'build_ms=200',
+      'run_ms=0',
+      'configure_exit_code=0',
+      'build_exit_code=2',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLog: 'Configuring done\nBuild files have been written to: /tmp/build',
+    buildLog: "fatal error: 'half/half.hpp' file not found\ngmake[3]: *** [target] Error 1",
+    runLog: 'upstream run skipped after configure_status=0 post_configure_status=0 build_status=2',
+    lifecycleError: new Error('build command failed'),
+  });
+  if (
+    buildFailureClassification.cmakeConfigureFailed
+    || !buildFailureClassification.buildFailed
+    || !buildFailureClassification.runBlockedByBuild
+    || !buildFailureClassification.reasons.includes('upstream_build_failed')
+    || buildFailureClassification.reasons.includes('cmake_configure_failed')
+    || !buildFailureClassification.missingDependencies.includes('half/half.hpp')
+  ) {
+    throw new Error('upstream lifecycle build-failure classifier self-check failed');
   }
   const arrayCapability = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
