@@ -10,6 +10,7 @@ import {
   validateDojoSkillGraph,
 } from "./types.js";
 import { normalizeDojoGuardrailPredicate } from "./guardrail_predicates.js";
+import type { RegretPlanningHint } from "../regret/types.js";
 
 export interface DojoGraphCompileResult {
   graph: DojoSkillGraph;
@@ -22,6 +23,8 @@ export function compileDojoSkillGraphForSkill(
     mode?: DojoSkillGraph["mode"];
     graph_version?: string;
     created_at?: string;
+    regret_planning_hints?: RegretPlanningHint[];
+    now?: string;
   } = {}
 ): DojoGraphCompileResult {
   const mode = input.mode ?? "production";
@@ -44,7 +47,8 @@ export function compileDojoSkillGraphForSkill(
     ],
     edges: graphEdges(skill),
   };
-  return { graph, validation: validateDojoSkillGraph(graph) };
+  const plannedGraph = applyRegretPlanningHints(graph, input.regret_planning_hints ?? [], input.now ?? input.created_at);
+  return { graph: plannedGraph, validation: validateDojoSkillGraph(plannedGraph) };
 }
 
 export function compileDojoSkillGraphFromContract(
@@ -54,6 +58,8 @@ export function compileDojoSkillGraphFromContract(
     mode?: DojoSkillGraph["mode"];
     graph_version?: string;
     created_at?: string;
+    regret_planning_hints?: RegretPlanningHint[];
+    now?: string;
   } = {}
 ): DojoGraphCompileResult {
   const skillForContract = {
@@ -84,7 +90,99 @@ export function compileDojoSkillGraphFromContract(
     ],
     edges: graphEdgesForActionSequence(skillForContract, actionNodes.map((node) => node.node_id)),
   };
-  return { graph, validation: validateDojoSkillGraph(graph) };
+  const plannedGraph = applyRegretPlanningHints(graph, input.regret_planning_hints ?? [], input.now ?? input.created_at);
+  return { graph: plannedGraph, validation: validateDojoSkillGraph(plannedGraph) };
+}
+
+function applyRegretPlanningHints(
+  graph: DojoSkillGraph,
+  hints: RegretPlanningHint[],
+  now?: string
+): DojoSkillGraph {
+  const activeHints = hints
+    .filter((hint) => hint.skillId === graph.skill_id)
+    .filter((hint) => !hint.expiresAt || !now || Date.parse(hint.expiresAt) > Date.parse(now))
+    .filter((hint) => hint.evidenceIds.length > 0);
+  if (activeHints.length === 0) return graph;
+
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.kind !== "Action") return node;
+      let planned: DojoGraphNode = {
+        ...node,
+        metadata: {
+          ...(node.metadata ?? {}),
+          regret_planning_hints: activeHints.map((hint) => ({
+            hint_kind: hint.hintKind,
+            confidence: hint.confidence,
+            task_class: hint.taskClass,
+            evidence_ids: [...hint.evidenceIds],
+            ...(hint.expiresAt ? { expires_at: hint.expiresAt } : {}),
+          })),
+        },
+      };
+      for (const hint of activeHints) {
+        planned = applyRegretPlanningHintToAction(planned, hint);
+      }
+      return planned;
+    }),
+  };
+}
+
+function applyRegretPlanningHintToAction(node: DojoGraphNode, hint: RegretPlanningHint): DojoGraphNode {
+  const hintId = regretHintId(hint);
+  switch (hint.hintKind) {
+    case "add_guardrail":
+    case "narrow_scope":
+      return {
+        ...node,
+        guardrails: [
+          ...node.guardrails,
+          {
+            guardrail_id: hintId,
+            predicate: `${hintId}_satisfied == true`,
+            severity: "block",
+          },
+        ],
+      };
+    case "add_assertion":
+    case "increase_oracle_budget":
+      return {
+        ...node,
+        assertions: [
+          ...node.assertions,
+          {
+            assertion_id: hintId,
+            description: `Regret planning hint ${hint.hintKind}`,
+            required: true,
+          },
+        ],
+      };
+    case "prefer_substrate":
+    case "avoid_substrate":
+    case "split_node":
+    case "include_mutation_trial":
+      return {
+        ...node,
+        metadata: {
+          ...(node.metadata ?? {}),
+          regret_execution_policy: {
+            hint_kind: hint.hintKind,
+            confidence: hint.confidence,
+            evidence_ids: [...hint.evidenceIds],
+          },
+        },
+      };
+  }
+}
+
+function regretHintId(hint: RegretPlanningHint): string {
+  const digest = [...hint.evidenceIds, hint.skillId, hint.taskClass, hint.hintKind]
+    .join("|")
+    .split("")
+    .reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261) >>> 0;
+  return `regret_hint_${digest.toString(16).padStart(8, "0")}`;
 }
 
 function triggerNode(): DojoGraphNode {
