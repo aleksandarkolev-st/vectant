@@ -2514,6 +2514,40 @@ const forgedWebGpuVisualDir = path.join(artifactsRoot, 'webgpu-runtime-visual-pr
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-before.png'), 8, 8, () => [0, 0, 0, 255]);
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-after.png'), 8, 8, (x, y) => [32 + x, 48 + y, 64, 255]);
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-single-screenshot.png'), 8, 8, (x, y) => [
+  16 + x,
+  32 + y,
+  64,
+  255,
+]);
+await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-single-image-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
+  proofId: 'webgpu-runtime-visual-proof:sha256:single-image-forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-single-image' },
+  contract: {
+    artifact_identity: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+    webgpu_contract: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-webgpu-single-image',
+    visualRoot: forgedWebGpuVisualDir,
+  }),
+  visualOracleArtifacts: {
+    diagnosticScreenshot: path.join(forgedWebGpuVisualDir, 'forged-single-screenshot.png'),
+  },
+  visualThresholdValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  metrics: {
+    changedPixelRatio: 0.2,
+    meanAbsDelta8bit: 12,
+  },
+});
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:query-only-forged',
@@ -3879,6 +3913,23 @@ const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu')
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpu.acceptedForGpuHmr, false);
 assert.ok(forgedWebGpu.reasons.includes('visual_artifacts_not_readable'));
+
+const forgedWebGpuSingleImage = ledger.rows.find((row) =>
+  row.targetId === 'forged-webgpu-single-image'
+);
+assert.equal(forgedWebGpuSingleImage?.matrixOutcome, 'unproven');
+assert.equal(forgedWebGpuSingleImage.acceptedForGpuHmr, false);
+assert.equal(forgedWebGpuSingleImage.visual.present, true);
+assert.equal(forgedWebGpuSingleImage.visual.allImagesAreDecodedPng, true);
+assert.equal(forgedWebGpuSingleImage.visual.hasBeforeImage, false);
+assert.equal(forgedWebGpuSingleImage.visual.hasAfterImage, false);
+assert.equal(forgedWebGpuSingleImage.visual.accepted, false);
+assert.ok(forgedWebGpuSingleImage.visual.failedGates.includes('visual_before_artifact_missing'));
+assert.ok(forgedWebGpuSingleImage.visual.failedGates.includes('visual_after_artifact_missing'));
+assert.ok(
+  forgedWebGpuSingleImage.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'),
+);
+assert.ok(forgedWebGpuSingleImage.reasons.includes('visual_artifacts_not_readable'));
 
 const forgedWebGpuQueryOnly = ledger.rows.find((row) => row.targetId === 'forged-webgpu-query-only');
 assert.equal(forgedWebGpuQueryOnly?.matrixOutcome, 'unproven');

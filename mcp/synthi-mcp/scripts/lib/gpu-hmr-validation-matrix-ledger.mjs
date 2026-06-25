@@ -638,14 +638,17 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const allImagesAreDecodedPng = allImagesArePng && allImagesDecode;
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
-  const requiresPixelProof = required === true && evidence.some((item) => item.role === 'before')
-    && evidence.some((item) => item.role === 'after');
+  const hasBeforeImage = evidence.some((item) => item.role === 'before');
+  const hasAfterImage = evidence.some((item) => item.role === 'after');
+  const requiresPixelProof = required === true;
   const failedGates = compactStringList([
     imageCount > 0 || required !== true ? null : 'visual_artifacts_missing',
     allImagesExist || imageCount === 0 ? null : 'visual_artifact_file_missing',
     allImagesArePng || imageCount === 0 ? null : 'visual_artifact_not_png',
     allImagesDecode || imageCount === 0 ? null : 'visual_artifact_decode_failed',
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
+    required === true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
+    required === true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
     requiresPixelProof && visualPair.accepted !== true ? 'visual_pair_pixel_recompute_not_accepted' : null,
   ]);
   const accepted = imageCount === 0
@@ -669,6 +672,10 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allImagesDecode,
     allImagesAreDecodedPng,
     allDeclaredHashesMatch,
+    hasBeforeImage,
+    has_before_image: hasBeforeImage,
+    hasAfterImage,
+    has_after_image: hasAfterImage,
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
