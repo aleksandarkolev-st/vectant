@@ -1833,6 +1833,143 @@ function finalizeRow(seed) {
   return row;
 }
 
+function stringListFromFields(object, ...keys) {
+  const source = compactObject(object);
+  return compactStringList(keys.flatMap((key) => {
+    const value = source[key];
+    return Array.isArray(value) ? value : [value];
+  }));
+}
+
+function enumOrText(value) {
+  if (isObject(value)) return firstText(value.value);
+  return firstText(value);
+}
+
+function firewallBoolEvidence(json, firewallEvidence, camelKey, snakeKey) {
+  return firstBool(
+    json[camelKey],
+    json[snakeKey],
+    firewallEvidence[camelKey],
+    firewallEvidence[snakeKey],
+  );
+}
+
+function negativeEditRefusalEvidenceFacet(json = {}, { runMode = {}, reasons = [] } = {}) {
+  const firewallEvidence = compactObject(json.firewallEvidence ?? json.firewall_evidence);
+  const classification = compactObject(
+    json.classification
+      ?? json.acceptanceContract?.classification
+      ?? json.acceptance_contract?.classification
+      ?? json.contract?.classification,
+  );
+  const route = enumOrText(classification.route);
+  const blockingGaps = compactStringList([
+    ...stringListFromFields(classification, 'blockingGaps', 'blocking_gaps'),
+    ...stringListFromFields(json, 'blockingGaps', 'blocking_gaps', 'unsupportedReasons', 'unsupported_reasons'),
+  ]);
+  const executableStaticCheck = compactObject(
+    json.executableStaticCheck
+      ?? json.executable_static_check,
+  );
+  const sourceOccurrenceProof = compactObject(
+    json.sourceOccurrenceProof
+      ?? json.source_occurrence_proof
+      ?? json.sourceProof
+      ?? json.source_proof
+      ?? json.sourceDeltaProof
+      ?? json.source_delta_proof,
+  );
+  const negativeEditProof = compactObject(
+    json.negativeEditProof
+      ?? json.negative_edit_proof
+      ?? json.negativeEdit
+      ?? json.negative_edit
+      ?? json.backendNegativeEdit
+      ?? json.backend_negative_edit,
+  );
+  const executableStaticEvidenceAccepted =
+    executableStaticCheck.accepted === true
+    && (
+      executableStaticCheck.signatureChanged === true
+      || executableStaticCheck.signature_changed === true
+      || Boolean(firstText(executableStaticCheck.sourceAfterHash, executableStaticCheck.source_after_hash))
+      || Boolean(firstText(executableStaticCheck.acceptedSignatureHash, executableStaticCheck.accepted_signature_hash))
+      || Boolean(firstText(executableStaticCheck.negativeSignatureHash, executableStaticCheck.negative_signature_hash))
+      || Boolean(firstText(executableStaticCheck.proofId, executableStaticCheck.proof_id))
+    );
+  const sourceOccurrenceAccepted =
+    sourceOccurrenceProof.accepted === true
+    && (
+      Boolean(firstText(sourceOccurrenceProof.proofId, sourceOccurrenceProof.proof_id))
+      || Boolean(firstText(sourceOccurrenceProof.beforeHash, sourceOccurrenceProof.before_hash))
+      || Boolean(firstText(sourceOccurrenceProof.afterHash, sourceOccurrenceProof.after_hash))
+      || Number.isFinite(finiteNumber(sourceOccurrenceProof.beforeCount ?? sourceOccurrenceProof.before_count))
+      || Number.isFinite(finiteNumber(sourceOccurrenceProof.afterCount ?? sourceOccurrenceProof.after_count))
+    );
+  const rejectClassificationAccepted =
+    route === 'reject'
+    && blockingGaps.length > 0;
+  const negativeEditProofAccepted =
+    negativeEditProof.accepted === true
+    && (
+      contentAddressedSha256(firstText(negativeEditProof.editHash, negativeEditProof.edit_hash))
+      || Boolean(firstText(negativeEditProof.proofId, negativeEditProof.proof_id))
+      || Boolean(firstText(negativeEditProof.sourceProofId, negativeEditProof.source_proof_id))
+    );
+  const typedRefusalModes = compactStringList([
+    executableStaticEvidenceAccepted ? 'executable_static_check' : null,
+    sourceOccurrenceAccepted ? 'source_occurrence_proof' : null,
+    rejectClassificationAccepted ? 'reject_classification_blocking_gaps' : null,
+    negativeEditProofAccepted ? 'negative_edit_proof_object' : null,
+  ]);
+  const cpuHmrUsed = firewallBoolEvidence(json, firewallEvidence, 'cpuHmrUsed', 'cpu_hmr_used');
+  const fullRebuildUsed = firewallBoolEvidence(json, firewallEvidence, 'fullRebuildUsed', 'full_rebuild_used');
+  const processRestarted = firewallBoolEvidence(json, firewallEvidence, 'processRestarted', 'process_restarted');
+  const failedGates = compactStringList([
+    json.gpuHmrSuccess === false && json.gpu_hmr_success !== true
+      ? null
+      : 'negative_edit_gpu_hmr_not_explicitly_false',
+    json.acceptedForGpuHmr !== true && json.accepted_for_gpu_hmr !== true
+      ? null
+      : 'negative_edit_accepted_for_gpu_hmr_true',
+    reasons.length > 0 ? null : 'negative_edit_refusal_reasons_missing',
+    runMode.accepted === true ? null : 'negative_edit_run_mode_timing_not_accepted',
+    runMode.editKind === 'negative_edit' || runMode.differentEdit === true
+      ? null
+      : 'negative_edit_run_mode_not_negative_or_different',
+    contentAddressedSha256(runMode.editHash) ? null : 'negative_edit_hash_missing_or_not_content_addressed',
+    cpuHmrUsed === false ? null : 'negative_edit_cpu_hmr_firewall_not_explicitly_false',
+    fullRebuildUsed === false ? null : 'negative_edit_full_rebuild_firewall_not_explicitly_false',
+    processRestarted === false ? null : 'negative_edit_process_restart_firewall_not_explicitly_false',
+    typedRefusalModes.length > 0 ? null : 'negative_edit_structural_refusal_proof_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.negative_edit_refusal_evidence_facet.v1',
+    accepted: failedGates.length === 0,
+    typedRefusalModes,
+    typed_refusal_modes: typedRefusalModes,
+    executableStaticEvidenceAccepted,
+    executable_static_evidence_accepted: executableStaticEvidenceAccepted,
+    sourceOccurrenceAccepted,
+    source_occurrence_accepted: sourceOccurrenceAccepted,
+    rejectClassificationAccepted,
+    reject_classification_accepted: rejectClassificationAccepted,
+    negativeEditProofAccepted,
+    negative_edit_proof_accepted: negativeEditProofAccepted,
+    cpuHmrUsed,
+    cpu_hmr_used: cpuHmrUsed,
+    fullRebuildUsed,
+    full_rebuild_used: fullRebuildUsed,
+    processRestarted,
+    process_restarted: processRestarted,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function nativeBoundaryRequiresRealRocmAppHook({
   nativeRocmLaunchBoundary = {},
   realRocmRuntimeEligibility = {},
@@ -6964,12 +7101,8 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     ...(Array.isArray(json.unsupported_reasons) ? json.unsupported_reasons : []),
     firstText(json.reason),
   ]);
-  const refusalProven =
-    json.gpuHmrSuccess === false
-    && json.gpu_hmr_success !== true
-    && json.acceptedForGpuHmr !== true
-    && json.accepted_for_gpu_hmr !== true
-    && reasons.length > 0;
+  const refusalEvidence = negativeEditRefusalEvidenceFacet(json, { runMode, reasons });
+  const refusalProven = refusalEvidence.accepted === true;
   return finalizeRow({
     artifactSchema: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
     artifactPath: relPath(filePath, context.repoRoot),
@@ -7013,12 +7146,16 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
       images: [],
     },
     runMode,
+    refusalEvidence,
+    refusal_evidence: refusalEvidence,
     cpuHmrUsed: boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used) ?? false,
     fullRebuildUsed: boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used) ?? false,
     processRestarted: boolOrNull(json.processRestarted ?? json.process_restarted) ?? false,
     timings: compactObject(json.timings),
     reasons,
-    openGaps: refusalProven ? [] : ['negative_edit_refusal_not_proven'],
+    openGaps: refusalProven
+      ? []
+      : compactStringList(['negative_edit_refusal_not_proven', ...refusalEvidence.failedGates]),
   });
 }
 

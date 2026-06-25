@@ -1362,11 +1362,39 @@ await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
     metricScope: 'hot_delta_2',
     cacheState: 'compiler_cache_warm',
     editId: 'negative-edit:abi-layout',
-    editHash: 'sha256:negative-edit',
+    editHash: `sha256:${'9'.repeat(64)}`,
     editKind: 'negative_edit',
     differentEdit: true,
   },
+  executableStaticCheck: {
+    accepted: true,
+    signatureChanged: true,
+    negativeKernelFound: true,
+    sourceAfterHash: `sha256:${'8'.repeat(64)}`,
+    acceptedSignatureHash: `sha256:${'7'.repeat(64)}`,
+    negativeSignatureHash: `sha256:${'6'.repeat(64)}`,
+  },
   reasons: ['abi_compatibility_class_layout_changed', 'gpu_hmr_rejected_before_load'],
+});
+
+await writeJson(path.join(visualDir, 'negative-edit-refusal-forged-reasons-only.json'), {
+  schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+  proofId: 'agent-split-negative-edit-refusal:sha256:forged-reasons-only',
+  backend: 'hip',
+  targetId: 'forged-negative-reasons-only',
+  profileId: 'forged-negative-reasons-only',
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'negative-edit:forged-reasons-only',
+    editHash: `sha256:${'5'.repeat(64)}`,
+    editKind: 'negative_edit',
+    differentEdit: true,
+  },
+  reasons: ['gpu_hmr_rejected_before_load'],
 });
 
 await writeJson(path.join(visualDir, 'forged-unlinked-flow-cold.json'), {
@@ -4185,9 +4213,25 @@ assert.equal(hot2RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hot2RunMode.artifactSchema, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
 assert.equal(hot2RunMode.runMode.differentEdit, true);
 
-const negativeEdit = ledger.rows.find((row) => row.proofMode === 'negative_edit');
+const negativeEdit = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-negative-edit-refusal:sha256:synthetic')
+);
 assert.equal(negativeEdit?.matrixOutcome, 'refusal_proven');
 assert.equal(negativeEdit.runModeCoverageSupport.accepted, true);
+assert.equal(negativeEdit.refusalEvidence.accepted, true);
+assert.ok(negativeEdit.refusalEvidence.typedRefusalModes.includes('executable_static_check'));
+
+const forgedReasonsOnlyNegativeEdit = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-negative-edit-refusal:sha256:forged-reasons-only')
+);
+assert.equal(forgedReasonsOnlyNegativeEdit?.matrixOutcome, 'unproven');
+assert.equal(forgedReasonsOnlyNegativeEdit.refusalEvidence.accepted, false);
+assert.ok(forgedReasonsOnlyNegativeEdit.refusalEvidence.failedGates.includes(
+  'negative_edit_cpu_hmr_firewall_not_explicitly_false',
+));
+assert.ok(forgedReasonsOnlyNegativeEdit.refusalEvidence.failedGates.includes(
+  'negative_edit_structural_refusal_proof_missing',
+));
 
 const forgedUnlinkedFlowCold = ledger.rows.find((row) =>
   row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-unlinked-flow-cold')
