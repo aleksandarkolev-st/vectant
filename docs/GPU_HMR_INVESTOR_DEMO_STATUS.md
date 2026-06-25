@@ -217,7 +217,7 @@ Fresh MIOpen large-ML rerun sequence: `gpu-real-rocm-MIOpen-20260625161446.json`
 
 Post-refresh gate hardening: every `large_rocm_ml_infrastructure` final-acceptance profile now has to declare run-mode and negative-edit obligations (`requiresRunModes=true`, `requiresNegativeEdit=true`) or the profile-obligation facet emits explicit blocking gaps. MIOpen was brought in line with Composable Kernel and hipBLASLt. This is a schema/target-class gate, not a repo-name shortcut, and it still refuses without app-hook, epoch, dispatch, host-identity, output-oracle, and row-bound runtime evidence.
 
-Current rerun blocker proof: `npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen` now fails closed at a bounded Docker daemon preflight instead of hanging. Retained artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260625130038.json` records `docker_daemon_unavailable_or_timeout`, `available=false`, `timeout_ms=8000`, and `gpu_hmr_success=false`; retained target-progression artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-MIOpen-20260625130038-final-acceptance-b8a4c4b035475cd7a7340e13b41810d1053f5df58294165951bb7fa5f23abdb0.json` records `entryStatus=fail` with five failed final-acceptance gates. This is infrastructure refusal evidence only.
+Earlier bounded Docker preflight refusal: `npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen` fails closed at a bounded Docker daemon preflight instead of hanging when the daemon is unavailable. Retained artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260625130038.json` records `docker_daemon_unavailable_or_timeout`, `available=false`, `timeout_ms=8000`, and `gpu_hmr_success=false`; retained target-progression artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-MIOpen-20260625130038-final-acceptance-b8a4c4b035475cd7a7340e13b41810d1053f5df58294165951bb7fa5f23abdb0.json` records `entryStatus=fail` with five failed final-acceptance gates. This is infrastructure refusal evidence only, not the current blocker proof.
 ```
 
 Historical MIOpen large ROCm ML caveat:
@@ -359,6 +359,10 @@ visual proof: none; compute-only target, no frame-gated visual proof, and no raw
 Latest implementation commits:
 
 ```text
+d874b3d29 docs(gpu-hmr): record refreshed large rocm refusal
+e699e9ec6 build(worker): isolate boost rocm image layer
+4b8fc32ef fix(worker): add boost components for large rocm builds
+23f3be60a fix(gpu-hmr): keep real rocm runtime refusal collection total
 65b7bb824 fix(gpu-hmr): prefer complete rocm validation evidence
 e01422bed fix(gpu-hmr): classify missing cmake compilers
 0c5fbb7d0 fix(worker): add fortran rocm build prerequisite
@@ -983,9 +987,9 @@ visual diff: 35.6061ms
 
 Do not generalize this to arbitrary WebGPU projects. The runner accepts only the implemented explicit-empty scope and the explicit-profiled uniform-buffer plus float32-vertex-buffer scope. Other bind group resource kinds, unsupported vertex formats, fixed color formats outside the preferred canvas format, non-opaque alpha mode, engine-owned caches, and untraced pipeline state still reject unless a future proof runner executes and traces those fields.
 
-## Strict ROCm/HIP Compute Ledger
+## Historical ROCm/HIP Compute Ledger
 
-Accepted full-runtime compute/readback proof:
+Historical retained compute/readback proof. This SAXPY-era artifact is not a current accepted full-runtime row in the latest validation matrix; it is retained as older compute evidence:
 
 ```text
 workspace: gpu-real-rocm-repo-20260609005300
@@ -1003,7 +1007,7 @@ Supplemental proof card:
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-real-rocm-repo-20260609005300-oracle-real-rocm-saxpy-readback-y-d6555ff7b9f8f753-compute-output-oracle.png
 ```
 
-Visual inspection confirmed the proof card is readable and shows matching expected/readback hashes. The patched summary builder also accepts this artifact with `gpu_hmr_success=true`, no limitations, accepted ledger, and accepted contract consistency.
+Local image inspection confirmed the compute-output proof card is readable and shows matching expected/readback hashes. This is not frame-gated runtime visual proof and is not counted as current full-runtime GPU HMR by the latest matrix.
 
 Rejected later reruns:
 
@@ -1146,7 +1150,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 - Focused Flow/ray-light per-target run-mode coverage is complete in the older focused 2026-06-22 matrix, and the current global matrix now also carries fresh 2026-06-25 row-bound support evidence for generated Flow, generated ray-light, WebGPU explicit-empty WGSL, and WebGPU explicit-profiled WGSL. HIPRT CameraRays/MegaKernel rows are source-adapted visual-profile evidence only, so `hiprt_run_modes` and `hiprt_visual_path` remain missing for no-shim full-runtime acceptance.
 - MIOpen large ROCm ML infrastructure is attempted under the proof harness and native observer with `vectant-ade-worker-1` running, but the selected retained run still remains refused after upstream configure failed on missing `boost_filesystem` and no accepted full ledger chain, accepted runtime proof chain, generic app-hook contract/runtime observations, epoch/dispatch proof, target-progression ledger success, or output/visual oracle proof was produced. The Boost package fix is committed as a reproducible image prerequisite, but image verification is blocked by Docker/BuildKit timeouts and is not counted as proof.
 - Composable Kernel large ROCm ML infrastructure is attempted under the same profile-driven real ROCm harness, but the latest retained run remains refused after configure generated build files without the requested example target, no upstream binary ran, and no app-hook, epoch, dispatch, host-identity, or output-oracle proof was produced.
-- hipBLASLt large ROCm ML infrastructure is attempted under the same profile-driven real ROCm harness, but the selected retained run remains refused after CMake configure failed on missing `CMAKE_Fortran_COMPILER`/`gfortran`, no upstream binary ran, and no app-hook, epoch, dispatch, host-identity, or output-oracle proof was produced. The Dockerfile prerequisite and native-observer GPU packaging fixes are committed, but image-level proof is pending until Docker Desktop serves the daemon again.
+- hipBLASLt large ROCm ML infrastructure is attempted under the same profile-driven real ROCm harness, but the selected retained run remains refused after CMake configure failed on missing `CMAKE_Fortran_COMPILER`/`gfortran`, no upstream binary ran, and no app-hook, epoch, dispatch, host-identity, or output-oracle proof was produced. New image/rerun proof is blocked by Docker/BuildKit infrastructure and is not counted as evidence.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.

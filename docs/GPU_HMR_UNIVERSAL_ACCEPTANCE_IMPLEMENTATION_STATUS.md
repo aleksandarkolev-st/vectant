@@ -225,7 +225,7 @@ Fresh large-ML rerun sequence:
 
 Post-refresh large ROCm ML gate hardening: `large_rocm_ml_infrastructure` final-acceptance profiles must now declare `proofObligations.requiresRunModes=true` and `proofObligations.requiresNegativeEdit=true` in addition to full-runtime, output-oracle, and app-hook obligations. This is keyed by profile schema fields and `targetClass`, not repo names. Missing declarations surface as `proof_obligation_run_modes_missing` and `proof_obligation_negative_edit_missing`, and the packaged MIOpen profile was updated to carry those obligations. This improves fail-closed auditability only; it does not convert the retained MIOpen, Composable Kernel, hipBLASLt, or matrix-multiplication rows into accepted GPU HMR.
 
-Docker-daemon fail-closed proof: after adding a bounded Docker daemon preflight, `npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen` on 2026-06-25 wrote `mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260625130038.json` and refused before container resolution with `docker_daemon_unavailable_or_timeout`, `available=false`, `timeout_ms=8000`, and `gpu_hmr_success=false`. The retained target-progression artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-MIOpen-20260625130038-final-acceptance-b8a4c4b035475cd7a7340e13b41810d1053f5df58294165951bb7fa5f23abdb0.json` records `entryStatus=fail`, `failureCount=5`, and failed gates for missing prior small-oracle, prior partial-reload, prior original-host-path, full runtime, and compute oracle artifacts. This artifact proves infrastructure failure is explicit and non-success; it is not MIOpen GPU HMR acceptance.
+Earlier bounded Docker preflight refusal: after adding a bounded Docker daemon preflight, `npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen` on 2026-06-25 wrote `mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260625130038.json` and refused before container resolution with `docker_daemon_unavailable_or_timeout`, `available=false`, `timeout_ms=8000`, and `gpu_hmr_success=false`. The retained target-progression artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-MIOpen-20260625130038-final-acceptance-b8a4c4b035475cd7a7340e13b41810d1053f5df58294165951bb7fa5f23abdb0.json` records `entryStatus=fail`, `failureCount=5`, and failed gates for missing prior small-oracle, prior partial-reload, prior original-host-path, full runtime, and compute oracle artifacts. This artifact proves infrastructure failure is explicit and non-success; it is not the current blocker and not MIOpen GPU HMR acceptance.
 partial-run guard: matrix selection now scores real ROCm attempt completeness before freshness, so a newer strict-runtime refusal without upstream lifecycle evidence cannot replace a retained upstream-lifecycle refusal for the same target
 ```
 
@@ -370,7 +370,7 @@ historical matrix open gaps: strict runtime proof artifact rejected, proof ledge
 visual artifacts: none; compute-only target with no frame-gated visual proof, and no raw readback/card output-oracle artifacts were produced after a Synthi epoch dispatch
 ```
 
-This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted full-runtime scope is scoped generated/profiled ROCm/HIP device-artifact rows and declared HIP module/readback rows, plus the explicitly proven scoped WebGPU visual/runtime paths above. HIPRT CameraRays and MegaKernel direct-light-gain are preserved as source-adapted visual-profile evidence only, not accepted no-shim full-runtime GPU HMR.
+This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted full-runtime scope is scoped generated/profiled ROCm/HIP preview device-artifact rows plus the explicitly proven scoped WebGPU visual and compute/readback profiles. HIP module/readback rows are retained evidence only until they carry accepted strict runtime proof artifacts. HIPRT CameraRays and MegaKernel direct-light-gain are preserved as source-adapted visual-profile evidence only, not accepted no-shim full-runtime GPU HMR.
 
 Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, real ROCm Composable Kernel full-runtime GPU HMR, real ROCm hipBLASLt full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, WebGPU compute/resource forms beyond the proven explicit storage/uniform float32 readback profile, WebGPU engine-owned pipeline caches, and WebGPU resource layouts beyond the proven visual/compute subsets.
 
@@ -385,7 +385,7 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multi
 - Large real ROCm compute-oracle rows now re-read `raw_readback_bin`, `readback_schema_json`, and `rendered_card_png` from disk and derive hash, byte-length, deterministic-slice, schema, and PNG-card proof from those files. Embedded `raw_readback_hash_verified` or `deterministic_slice_hash_verified` booleans are not authority, and compute-ledger rows cannot pass by attaching unrelated top-level visual files.
 - Real ROCm runtime output-oracle profiles now sync by configured worker container instead of MCP transport. Local MCP validation can still deliver a profile into the real worker when a profile is declared; the latest MIOpen profile declares `profile=none`, so the worker oracle file was cleared and the run correctly remained refused.
 - Real ROCm checkout reuse now verifies that an existing local path is a git worktree root with a valid HEAD and the expected origin remote before it is used. Invalid checkouts under the validator-owned `tmp/real-rocm/*` tree are quarantined for evidence-preserving reruns; custom paths are not modified and fail loudly.
-- The worker Dockerfiles now include generic large-project build prerequisites (`ninja-build`, Python development headers/tools, SQLite development files, BZip2 development files, msgpack C/C++ development files, nlohmann JSON, and gfortran). `Dockerfile.gpu` also now builds the real `/usr/local/lib/synthi-gpu-native-launch-observer.so` from `cpp_src/synthi_gpu_native_launch_observer.c`, matching the non-GPU worker image. This is not an HMR proof. The image was rebuilt and verified through BZip2/msgpack, but the nlohmann JSON, gfortran, and native-observer GPU image-level proof is pending until Docker Desktop serves the daemon again.
+- The worker Dockerfiles now include generic large-project build prerequisites (`ninja-build`, Python development headers/tools, SQLite development files, BZip2 development files, msgpack C/C++ development files, nlohmann JSON, gfortran, and Boost filesystem/program-options/system development files). `Dockerfile.gpu` also now builds the real `/usr/local/lib/synthi-gpu-native-launch-observer.so` from `cpp_src/synthi_gpu_native_launch_observer.c`, matching the non-GPU worker image. This is not an HMR proof. The nlohmann JSON, gfortran, and native-observer GPU image was rebuilt and verified in image `sha256:5ad576f3b4bbe004ae815316298022c5a9e92a17e44f109e5c4db9ae1170a711`; Boost image verification and rerun proof remain pending because Docker Desktop/BuildKit is timing out after an overlay/dpkg I/O failure.
 - Real ROCm runtime evidence is now collected from the configured worker container even when the MCP transport is local. The latest MIOpen run therefore records observed native launch-boundary evidence and the absence of Synthi dispatch, artifact transport, epoch swap, output oracle, and host-preservation proof instead of treating missing docker transport as missing evidence.
 - Native ROCm/HIP launch-boundary evidence is now a first-class refusal facet in the runtime proof artifact and derived acceptance contract. It is explicitly marked `can_satisfy_dispatch_proof=false`; observed native function resolution cannot satisfy GPU HMR without Synthi artifact transport, epoch publication, dispatch, output oracle, and host-preservation proof.
 - Large real ROCm app-hook contracts are now generic, profile-declared evidence inputs, not project branches. Matrix ingestion fails closed when native ROCm launch-boundary evidence requires an app hook but no contract/runtime observation proves artifact transport, epoch publication, dispatch trace, host identity, and output oracle stages. Profile `evidenceRefs` must resolve against collected runtime/proof evidence before they count as contract evidence.
@@ -426,6 +426,10 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multi
 Additional commits since the previous status pass:
 
 ```text
+d874b3d29 docs(gpu-hmr): record refreshed large rocm refusal
+e699e9ec6 build(worker): isolate boost rocm image layer
+4b8fc32ef fix(worker): add boost components for large rocm builds
+23f3be60a fix(gpu-hmr): keep real rocm runtime refusal collection total
 65b7bb824 fix(gpu-hmr): prefer complete rocm validation evidence
 e01422bed fix(gpu-hmr): classify missing cmake compilers
 df0530b1f fix(gpu-hmr): package native observer in gpu worker
@@ -809,9 +813,9 @@ Flow live MCP visual proof with hot-delta timing
   deterministic fission: accepted=false failure=symbol_ownership reason=selected role contains two kernels
 ```
 
-## Accepted ROCm/HIP Runtime Ledger
+## Historical ROCm/HIP Runtime Ledger
 
-Latest accepted strict runtime artifact:
+Historical retained strict runtime artifact. This SAXPY-era artifact is not a current accepted full-runtime row in the latest validation matrix; it is retained as older compute/readback evidence:
 
 ```text
 workspace: gpu-real-rocm-repo-20260609005300
@@ -826,13 +830,13 @@ runtime proof limitations: []
 output oracle: gpu-hmr-output-oracle-proven
 ```
 
-Supplemental visual proof card:
+Supplemental compute-output proof card:
 
 ```text
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-real-rocm-repo-20260609005300-oracle-real-rocm-saxpy-readback-y-d6555ff7b9f8f753-compute-output-oracle.png
 ```
 
-The visual card was inspected with the local image viewer. It is readable and shows `Runtime Compute Output Oracle`, target `HIP-Basic/saxpy/main.hip:y`, generation 3, `PASSED`, with matching expected and actual GPU readback hashes.
+The compute-output card was inspected with the local image viewer. It is readable and shows `Runtime Compute Output Oracle`, target `HIP-Basic/saxpy/main.hip:y`, generation 3, `PASSED`, with matching expected and actual GPU readback hashes. This is not frame-gated runtime visual proof and is not counted as current full-runtime GPU HMR by the latest matrix.
 
 Normalized timings from the accepted run:
 
