@@ -48,54 +48,62 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 25 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:7fab3b0be3b4a55a197f1920d2ed7997441aaa47ed24bd66214c543ad9613aad
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T075530Z.json
 global matrix summary: 57 rows, 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits, 1 deterministic fission, 4 visual profiles, 0 included unproven rows
 global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-latest global matrix after evidence-backed declared-scope gates, explicit full-runtime scope classification, broad/library-agnostic scope proof-facet rejection, exact visual-profile evidence binding, generic source-adapted proof demotion, query-time source-adaptation/no-shim safety rejection for imported or prebuilt rows, query-time summary recomputation, matrix-computed broad-readiness reporting, status-doc live aggregation checks, latest-attempt selection by canonical target/scope, scoped HIP module hardened gates, WebGPU profiled-layout proof, WebGPU compute expected-output proof, real ROCm proof-obligation, firewall, target-progression, app-hook gating, disabled output-oracle resolution gating, explicit real ROCm runtime facet gates, ROCm arch/prefix detection, OIDN path-integrity evidence, real ROCm runtime-chain correlation for artifact transport, epoch, dispatch, output target, and host identity, fail-closed OIDN HIP diagnostic refusal, recomputed visual artifact hash/pixel proof, allowed-root evidence path containment, derived row-bound visual-profile coverage, explicit runtime-profile selection requirements, the latest 2026-06-25 MIOpen worker-container-not-running refusal rerun, strict full-runtime evidence authority for runtime proof artifact or backend-native loader/dispatch/output/oracle traces, WebGPU companion run-mode support linkage, and normalized artifact-hash forms in run-mode support rows: gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
+latest global matrix after generated split run-mode support normalization, row-bound visual-profile proof binding, deterministic generated fission verifier evidence emission, real ROCm lifecycle refusal classification, current large MIOpen missing-SQLite3 configure refusal artifact, strict full-runtime evidence authority for runtime proof artifact or backend-native loader/dispatch/output/oracle traces, and normalized artifact-hash forms in run-mode support rows: gpu-validation-matrix-ledger:sha256:7fab3b0be3b4a55a197f1920d2ed7997441aaa47ed24bd66214c543ad9613aad
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T075530Z.json
 latest global matrix summary: 57 rows, 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits, 1 deterministic fission, 4 visual profiles, 0 included unproven rows
 latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, scopedRuntimeRows=18, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_not_computed_from_matrix,broad_acceptance_requires_more_backend_families
 latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-history audit matrix: gpu-validation-matrix-ledger:sha256:b304320c1c2e06c104506065892c433df7cf6b6ecd7cde6ad7a08a4f54bc8c97
-history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T070812Z.json
+history audit matrix: gpu-validation-matrix-ledger:sha256:6b409147afdd0bf81f2093ee63ef896179b4a9ad87a8ee9045b8a71ef848f161
+history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T075530Z.json
 history audit summary: 655 rows, including 598 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps; 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits
 history audit scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json, count=21; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
-global per-target run modes: partial after row-bound support restoration for WebGPU visual proof companions. Accepted run-mode targets: webgpu:webgpu-wgsl-runtime-triangle and webgpu:webgpu-wgsl-runtime-profiled-layout. Incomplete targets: hip:generated-gpu-split:3e2e1e99e0bfca5a804d336c and hip:generated-gpu-split:cceaa0a1d270bc6dbce292cc, both missing row-bound cold evidence and negative-edit refusal evidence. SAXPY remains a full-runtime evidence row outside that run-mode-suite target set.
+global per-target run modes: accepted for generated Flow, generated ray-light, WebGPU explicit-empty WGSL, and WebGPU explicit-profiled WGSL, each with cold/hot1/hot2-different-edit/negative-edit evidence. SAXPY remains a full-runtime evidence row outside that run-mode-suite target set.
 HIP module scoped run modes: accepted for hip-module-runtime-readback only as scoped module-load/readback evidence, with hot_delta_1, hot_delta_2 different edit, executable ABI-negative refusal, epoch-2 artifact hash continuity, and compute-card-only proof separation; it is not a broad HIP app/library claim.
 Broad library-agnostic full-runtime rows: 0. Every accepted full-runtime row is currently scoped by generated/profiled preview contract, declared HIP module/readback contract, or declared WebGPU pipeline/readback profile. HIPRT source-adapted visual profiles are not counted as full-runtime GPU HMR.
 Full-runtime evidence authority: accepted rows must carry either a strict runtime proof artifact or a backend-native recomputed ledger trace with loader, dispatch, output boundary, accepted oracle, and row-bound evidence refs.
 HIPRT run modes: missing for no-shim full-runtime acceptance; CameraRays and MegaKernel direct-light-gain remain source-adapted visual_profile_accepted evidence only.
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
-focused matrix historical coverage: scoped ROCm/HIP full-runtime profile rows accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, and ray-light `trace_light_rays` per-kernel/smallest-safe fission accepted in the 2026-06-22 focused matrix only. Current global plan coverage no longer carries `flow_visual_gpu_path` or `ray_light_visual_gpu_path`; those require fresh row-bound `validationProfileEvidence`. Flow remains device-translation-unit HMR only for fission because its selected device role owns two kernels.
+focused matrix historical coverage: scoped ROCm/HIP full-runtime profile rows accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, and ray-light `trace_light_rays` per-kernel/smallest-safe fission accepted in the 2026-06-22 focused matrix. The current global matrix now also carries fresh 2026-06-25 row-bound Flow/ray-light visual-profile evidence. Flow remains device-translation-unit HMR only for fission because its selected device role owns two kernels.
 ```
 
 Current live previews:
 
 ```text
-Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
-Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
-Preview frontend: http://127.0.0.1:3000 -> HTTP 200 on 2026-06-24
+Ray-light: http://localhost:3000/workspace/gpu-agent-ray-light-20260625T104554-rocm-fission-evidence -> HTTP 200
+Flow:      http://localhost:3000/workspace/gpu-agent-flow-20260625T103454-rocm-profile-bind -> HTTP 200
+Preview frontend: http://127.0.0.1:3000 -> HTTP 200 on 2026-06-25
 ```
 
 Current visual proof artifacts:
 
 ```text
-Ray-light dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
-Ray-light hot1 ledger: gpu-ledger-proof:sha256:fc798cb97c10df6099ee16d994f8829470596d6408288393da0f751d160a74f2
-Ray-light hot2 ledger: gpu-ledger-proof:sha256:a5fc66a3ef1f03824af64d2151ffa970fe57794421f3866bd0127cffdc5b50f2
+Ray-light dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-ray-light-20260625T104554-rocm-fission-evidence
+Ray-light hot1 run-mode proof: agent-split-run-mode-proof:sha256:43a20d68f57ca39b7958c49af13e6da65fd3e6ded7db652ca336b7ee4bab4dd7
+Ray-light hot1 ledger: gpu-ledger-proof:sha256:49782fb760dc55c2b4dd7dfada27cc9ce0ba32e7a2e22ac1320d4f0c9fafc7fc
+Ray-light hot1 runtime proof: gpu-runtime-proof:sha256:39a38d8d170b3986c4892886ca73ccd86041b1936c8318ae8c21803c676bbb17
+Ray-light hot2 run-mode proof: agent-split-run-mode-proof:sha256:a6e084bb0821ca942fb0e9a4b810fa28bf17093d8340600c9f0e2b02de890784
+Ray-light hot2 ledger: gpu-ledger-proof:sha256:6e7ea71df94ffcf52d0c94c6c6d1ed99736be366a667a42f7075b169aada512d
+Ray-light hot2 runtime proof: gpu-runtime-proof:sha256:3e6b2cec1bec9aa9916945df86be874d78e7d99943a33775a5329030acabe845
 Ray-light visuals: before-after-diff.png, hot-delta-2-diff.png
-Ray-light timings: hot1 total_validator_wall_time=2864084200ns, hot2 total_validator_wall_time=2930783900ns
-Ray-light visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different ray-light geometry.
+Ray-light timings: hot1 total_validator_wall_time=3051317200ns, hot2 total_validator_wall_time=2458875700ns
+Ray-light visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-25; both were visibly nonblank and showed different ray-light geometry.
 
-Flow dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260622-embedded-ledger-10
-Flow hot1 ledger: gpu-ledger-proof:sha256:82171321eac0bc7b8a4bd5177e51766931a4361600f8b14a668290cdf0ad9e98
-Flow hot2 ledger: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd47b3668462c4049dbfbc211503c
+Flow dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-flow-20260625T103454-rocm-profile-bind
+Flow hot1 run-mode proof: agent-split-run-mode-proof:sha256:0e194a090dfe31fbf9440d458a21986824ee07091a4f60ab9b25893f4f3b8897
+Flow hot1 ledger: gpu-ledger-proof:sha256:eec1b98b76252cb06bae7539f29ed4610afc6ed512ebf90b1f2c0ce4112fe80c
+Flow hot1 runtime proof: gpu-runtime-proof:sha256:7710f0df814f55ef2a5e48d82a3ce18fbd73c14a2bc69aeb56122e67fbd0f79c
+Flow hot2 run-mode proof: agent-split-run-mode-proof:sha256:42cf6c7c9b66f3991752f4a3042741054703783fd43650da80db51c5c7d9be9c
+Flow hot2 ledger: gpu-ledger-proof:sha256:803b1af2b49f981730d3c348c5cab6669ce4d87649a8b0a2d9c0d323ca9919c9
+Flow hot2 runtime proof: gpu-runtime-proof:sha256:f280297fff5a556677fff8ee8658a45b2db68712bf6dada11b487d427a480b13
 Flow visuals: before-after-diff.png, hot-delta-2-diff.png
-Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
-Flow visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different Flow particle-ring patterns.
+Flow timings: hot1 total_validator_wall_time=2911725700ns, hot2 total_validator_wall_time=2275612200ns
+Flow visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-25; both were visibly nonblank and showed different Flow particle-ring patterns.
 
 WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:87272df5a648f3e8100b9fee3e5de06238bf517b4998bbec9b01845b790a4aab
 WebGPU hot1 runtime proof: gpu-runtime-proof:sha256:a59e894be860669380b0723a67177e3ff5b94a8824c51f0d68908a7792298a9b
@@ -186,22 +194,23 @@ Current MIOpen large ROCm ML caveat:
 
 ```text
 profile: real-rocm-miopen-activation-large-ml
-result slug: gpu-real-rocm-MIOpen-20260625064138
+result slug: gpu-real-rocm-MIOpen-20260625T105445-deps
 result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
 repo: ROCm/MIOpen @ 06977176afd94476c18d5290f21cb40745bb73a9
 target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
-worker status: docker reported `vectant-ade-worker-1` container was not running during ROCm arch detection
-runtime device preflight: not accepted; the matrix carries `real_rocm_runtime_capability_preflight_required`
-runtime capability preflight matrix facet: no accepted runtime-capability preflight; the row remains refused
-upstream configure/build/run: not reached because the worker container was not running
-native evidence: observe-only native launch observer was requested, but no readiness, launch, function-resolution, argument-provenance, runtime-session, artifact-transport, epoch, dispatch, output-oracle, host-identity, or original-host-path lines were captured; observe-only interposition is diagnostic and cannot satisfy acceptance by itself
+worker status: `vectant-ade-worker-1` was running and reported ROCm/gfx1201 capability during this proof refresh
+runtime device preflight: observed but not accepted for original-host-path proof; HIP array allocation matrix failed and `hipMallocArray` returned invalid argument
+runtime capability preflight matrix facet: rejected, so the row remains refused
+upstream configure/build/run: CMake configure failed, build was blocked by configure failure, and run was not started
+upstream lifecycle refusal facet: accepted_as_refusal_evidence=true, reasons=cmake_configure_failed,missing_build_dependency,upstream_build_blocked_by_configure,upstream_run_not_started_after_configure_failure,upstream_lifecycle_command_failed, missing_dependencies=SQLite3,SQLite3_INCLUDE_DIR,SQLite3_LIBRARY
+native evidence: observe-only native launch observer was requested, but no readiness, launch, function-resolution, argument-provenance, runtime-session, artifact-transport, epoch, dispatch, output-oracle, host-identity, or original-host-path lines were captured before configure failure; observe-only interposition is diagnostic and cannot satisfy acceptance by itself
 split projection: no fresh AI split/delta calls in this rerun
-delta projection: none accepted; worker preflight failed before compile/delta proof material was collected
+delta projection: none accepted; configure failure occurred before compile/delta proof material was collected
 compile bridge facet: status=compile_bridge_missing, phase_count=0, load_device=false, device_sidecar=false, artifact_reference=false, runtime_proof_material=false, gap=compile_response_device_sidecar_bridge_not_declared
 device sidecar contract facet: no sidecar contract accepted; static candidate metadata is evidence-only and cannot satisfy runtime proof
-timings: total_validator_wall=582.0915ms, metric_clock=monotonic_ns, evidenceAuthority=timing_telemetry_only
+timings: total_validator_wall=21425.1558ms, metric_clock=monotonic_ns, evidenceAuthority=timing_telemetry_only
 accepted GPU HMR: false
-strict refusal: runtime proof artifact exists but is rejected; worker/runtime evidence and runtime proof chain are missing, full runtime proof remains unproven, proof ledger rejects, and acceptance contract rejects
+strict refusal: runtime proof artifact exists but is rejected; upstream configure/build/run did not produce usable metadata, the Synthi runtime proof chain is missing, full runtime proof remains unproven, proof ledger rejects, and acceptance contract rejects
 oracle resolution: profile=none, source_derived_candidates=0, selected_source=null, contract_present=false, runtime_profile_present=false, worker profile cleared with syncSkippedReason=runtime_profile_absent
 worker proof boundary: no synthi_gpu_launch dispatch, artifact_transport, dispatcher_epoch, output_oracle, host_identity, or original_host_path attachment evidence
 native ROCm refusal facet: status=not_observed, can_satisfy_dispatch_proof=false, native_launch_observed=false, output_oracle_profile_absent=true
@@ -210,8 +219,8 @@ real ROCm runtime eligibility facet: status=refused_missing_runtime_proof, backe
 target progression: final-acceptance, required=true, target=MIOpenDriver, failed gates=prior small-oracle, prior partial-reload, prior original-host-path, full runtime, raw compute oracle artifacts
 visual proof: no MIOpen frame captured; matrix marks visual.required=false for this compute-only target and still refuses because strict runtime ledger and raw output-oracle proof are missing
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
-refusal proof ids: gpu-ledger-proof:sha256:0710ac98edfb9ee6675f8d701b8faafc69d20135eb159c8b8a7d9898809fd4a2, gpu-runtime-proof:sha256:022ce05c97434a8642892054983d0e297db26733f37959f1c9245dde8726d971, real-rocm-validation:sha256:a48ee52db0f3ef658c58a3366a0caa07082de8314047f138a0e5e96937bbbe55
-matrix row id: gpu-validation-matrix-row:sha256:8c4a4c5cd63736520d0931c75b03df94361664de430e0fa9bf7b41cd1f14798a in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
+refusal proof ids: gpu-ledger-proof:sha256:f836f2d425f3915b09d0410b5ff8081cda17506f901a77f06f1f1a05b10ec727, gpu-runtime-proof:sha256:55adae9fe6077e29e3e70bff63fc97cb550a4bec62b4851419dec9398c65bec8, real-rocm-validation:sha256:c049ea1b1a2097ebdb593ad8e6ea799ed73fa1286b432f5e7b15e180afbed023
+matrix row id: gpu-validation-matrix-row:sha256:5e6768135e9da6997eb4f9b82a515ee99a0ae4de613c088137f244d8d19d0ffb in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T075530Z.json
 matrix open gaps: strict runtime proof artifact rejected, proof ledger success false, output or visual oracle proof missing, output oracle disabled/missing, app-hook contract/runtime observations missing, target-progression gates failed, runtime capability preflight missing, runtime chain missing, artifact transport not observed, same-process epoch missing, dispatch epoch missing, host identity not observed
 plan coverage: large_real_rocm_repo=refused
 ```
@@ -408,8 +417,8 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
-latest history audit matrix -> gpu-validation-matrix-ledger:sha256:b304320c1c2e06c104506065892c433df7cf6b6ecd7cde6ad7a08a4f54bc8c97
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:7fab3b0be3b4a55a197f1920d2ed7997441aaa47ed24bd66214c543ad9613aad
+latest history audit matrix -> gpu-validation-matrix-ledger:sha256:6b409147afdd0bf81f2093ee63ef896179b4a9ad87a8ee9045b8a71ef848f161
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
