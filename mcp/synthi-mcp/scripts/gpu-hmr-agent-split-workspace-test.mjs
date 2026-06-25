@@ -31,6 +31,7 @@ import {
   assessGeneratedGpuSplitGranularity,
   assertNoGeneratedSplitFissionOverclaim,
   verifyGeneratedGpuSplitDeterministicFission,
+  GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
 } from './lib/gpu-hmr-generated-split-granularity.mjs';
 import {
   buildGpuHmrRunModeCoverageSupport,
@@ -1353,6 +1354,148 @@ function roleHashMap(files, rolePaths, selectedPath = null) {
   return out;
 }
 
+function selectedFissionRole(granularity, selectedPath) {
+  const normalized = cleanRel(selectedPath);
+  return (granularity?.roleReports ?? [])
+    .find((role) => cleanRel(role?.path) === normalized) ?? null;
+}
+
+function selectedFissionKernel(granularity, selectedPath) {
+  const role = selectedFissionRole(granularity, selectedPath);
+  return role?.kernelCount === 1 ? role.kernelSymbols?.[0] ?? null : null;
+}
+
+function selectedFissionIslandId(selectedPath, selectedKernel) {
+  return selectedKernel
+    ? `kernel:${selectedKernel}:${sha256Hex(cleanRel(selectedPath)).slice(0, 16)}`
+    : `device-role:${sha256Hex(cleanRel(selectedPath)).slice(0, 16)}`;
+}
+
+function generatedFissionEvidenceRecord(category, evidenceType, subject, payload = {}) {
+  const contentHash = `sha256:${sha256Hex(stableJson({
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    subject,
+    payload,
+  }))}`;
+  const evidenceHash = sha256Hex(stableJson({
+    category,
+    evidenceType,
+    contentHash,
+    subject,
+  }));
+  return {
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    schema_version: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    category,
+    evidenceType,
+    evidence_type: evidenceType,
+    evidenceRefs: [`evidence:generated-split-fission:${category}:sha256:${evidenceHash}`],
+    evidence_refs: [`evidence:generated-split-fission:${category}:sha256:${evidenceHash}`],
+    contentHash,
+    content_hash: contentHash,
+    subject,
+    payload,
+  };
+}
+
+function deterministicFissionEvidenceForRuntime({
+  granularity,
+  selectedPath,
+  changedPaths,
+  selectedArtifact,
+  outputOracleContract,
+  abiCompatibilityClass,
+  includedDependencies,
+  unaffectedArtifactHashesBefore,
+  unaffectedArtifactHashesAfter,
+  compilerArgsHash,
+  compileTarget,
+  fullDeviceFallback,
+  hostRelinked,
+  fullRebuildUsed,
+  processRestarted,
+}) {
+  const normalizedSelectedPath = cleanRel(selectedPath);
+  const selectedKernel = selectedFissionKernel(granularity, normalizedSelectedPath);
+  if (!normalizedSelectedPath || !selectedKernel) return [];
+  const selectedIslandId = selectedFissionIslandId(normalizedSelectedPath, selectedKernel);
+  const subject = {
+    selectedPath: normalizedSelectedPath,
+    selected_path: normalizedSelectedPath,
+    sourcePaths: [normalizedSelectedPath],
+    source_paths: [normalizedSelectedPath],
+    selectedIslandId,
+    selected_island_id: selectedIslandId,
+    targetSymbols: [selectedKernel],
+    target_symbols: [selectedKernel],
+  };
+  const proofIds = selectedArtifact?.proofIds ?? selectedArtifact?.proof_ids ?? [];
+  return [
+    generatedFissionEvidenceRecord('selected_island_binding', 'selected_island_binding', subject, {
+      binding: 'generated_device_kernel',
+      sourcePath: normalizedSelectedPath,
+      source_path: normalizedSelectedPath,
+    }),
+    generatedFissionEvidenceRecord('source_mapping', 'source_mapping', subject, {
+      mappedSource: normalizedSelectedPath,
+      mapped_source: normalizedSelectedPath,
+      sourceHashBefore: selectedArtifact?.sourceHashBefore ?? null,
+      source_hash_before: selectedArtifact?.sourceHashBefore ?? null,
+      sourceHashAfter: selectedArtifact?.sourceHashAfter ?? null,
+      source_hash_after: selectedArtifact?.sourceHashAfter ?? null,
+    }),
+    generatedFissionEvidenceRecord('include_closure', 'include_closure', subject, {
+      includedDependencies,
+      included_dependencies: includedDependencies,
+    }),
+    generatedFissionEvidenceRecord('symbol_ownership', 'symbol_ownership', subject, {
+      ownedSymbols: [selectedKernel],
+      owned_symbols: [selectedKernel],
+      roleReports: granularity?.roleReports ?? [],
+      role_reports: granularity?.roleReports ?? [],
+    }),
+    generatedFissionEvidenceRecord('dependency_closure', 'dependency_closure', subject, {
+      changedPaths,
+      changed_paths: changedPaths,
+      unaffectedArtifactHashesBefore,
+      unaffected_artifact_hashes_before: unaffectedArtifactHashesBefore,
+      unaffectedArtifactHashesAfter,
+      unaffected_artifact_hashes_after: unaffectedArtifactHashesAfter,
+    }),
+    generatedFissionEvidenceRecord('abi_membrane', 'abi_membrane', subject, {
+      abiCompatibilityClass,
+      abi_compatibility_class: abiCompatibilityClass,
+    }),
+    generatedFissionEvidenceRecord('compile_recipe', 'compile_proof', subject, {
+      compiler: selectedFissionRole(granularity, normalizedSelectedPath)?.compiler ?? null,
+      compileTarget,
+      compile_target: compileTarget,
+      compilerArgsHash,
+      compiler_args_hash: compilerArgsHash,
+    }),
+    generatedFissionEvidenceRecord('loader_capability', 'loader_runtime_proof', subject, {
+      runtimeProofAccepted: selectedArtifact?.runtimeProofAccepted === true,
+      runtime_proof_accepted: selectedArtifact?.runtimeProofAccepted === true,
+      proofIds,
+      proof_ids: proofIds,
+      fullDeviceFallback,
+      full_device_fallback: fullDeviceFallback,
+      hostRelinked,
+      host_relinked: hostRelinked,
+      fullRebuildUsed,
+      full_rebuild_used: fullRebuildUsed,
+      processRestarted,
+      process_restarted: processRestarted,
+    }),
+    generatedFissionEvidenceRecord('output_oracle', 'output_oracle_proof', subject, {
+      outputOracleContract,
+      output_oracle_contract: outputOracleContract,
+    }),
+  ];
+}
+
 function verifyGeneratedSplitFissionAfterRuntime({
   split,
   granularity,
@@ -1399,22 +1542,47 @@ function verifyGeneratedSplitFissionAfterRuntime({
     wait,
     selectedPath,
   });
-  const report = verifyGeneratedGpuSplitDeterministicFission({
-    assessment: granularity,
+  const changedPaths = [selectedPath].map(cleanRel).filter(Boolean);
+  const unaffectedArtifactHashesBefore = roleHashMap(split.files, rolePaths, selectedPath);
+  const unaffectedArtifactHashesAfter = roleHashMap(split.files, rolePaths, selectedPath);
+  const includedDependencies = [];
+  const compilerArgsHash = `sha256:${sha256Hex(stableJson({
+    compileManifest: split.manifest,
+    gpuArch: CFG.gpuArch ?? null,
     selectedPath,
-    changedPaths: [selectedPath],
+  }))}`;
+  const compileTarget = CFG.gpuArch ?? split.manifest?.gpu?.arch?.[0] ?? null;
+  const deterministicFissionEvidence = deterministicFissionEvidenceForRuntime({
+    granularity,
+    selectedPath,
+    changedPaths,
     selectedArtifact,
     outputOracleContract,
     abiCompatibilityClass: 'compatible',
-    unaffectedArtifactHashesBefore: roleHashMap(split.files, rolePaths, selectedPath),
-    unaffectedArtifactHashesAfter: roleHashMap(split.files, rolePaths, selectedPath),
+    includedDependencies,
+    unaffectedArtifactHashesBefore,
+    unaffectedArtifactHashesAfter,
+    compilerArgsHash,
+    compileTarget,
+    fullDeviceFallback: false,
+    hostRelinked: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  });
+  const report = verifyGeneratedGpuSplitDeterministicFission({
+    assessment: granularity,
+    selectedPath,
+    changedPaths,
+    selectedArtifact,
+    verificationEvidence: deterministicFissionEvidence,
+    outputOracleContract,
+    abiCompatibilityClass: 'compatible',
+    unaffectedArtifactHashesBefore,
+    unaffectedArtifactHashesAfter,
     excludedHostSources: [split.roles.core, split.roles.gui, split.roles.host_runner].map(cleanRel),
-    compilerArgsHash: `sha256:${sha256Hex(stableJson({
-      compileManifest: split.manifest,
-      gpuArch: CFG.gpuArch ?? null,
-      selectedPath,
-    }))}`,
-    compileTarget: CFG.gpuArch ?? split.manifest?.gpu?.arch?.[0] ?? null,
+    includedDependencies,
+    compilerArgsHash,
+    compileTarget,
     fullDeviceFallback: false,
     hostRelinked: false,
     fullRebuildUsed: false,
