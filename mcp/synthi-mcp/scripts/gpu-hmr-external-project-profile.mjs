@@ -1381,6 +1381,9 @@ function externalRejectionReasons(report) {
   if (report.mcp?.visualProofGate && report.mcp.visualProofGate.satisfied !== true) {
     reasons.add('mcp_visual_proof_gate_unsatisfied');
   }
+  if (report.profileSelectionRecovery && report.profileSelectionRecovery.accepted !== true) {
+    reasons.add('profile_selection_recovery_rejected');
+  }
   if (report.proofMode === 'mcp_preview' && !(Array.isArray(report.screenshots) && report.screenshots.length > 0)) {
     reasons.add('visual_frame_missing');
   }
@@ -1428,6 +1431,8 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     ),
     profileSelection: report.profileSelection ?? report.profile_selection ?? null,
     profile_selection: report.profileSelection ?? report.profile_selection ?? null,
+    profileSelectionRecovery: report.profileSelectionRecovery ?? report.profile_selection_recovery ?? null,
+    profile_selection_recovery: report.profileSelectionRecovery ?? report.profile_selection_recovery ?? null,
     sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     rejection: {
@@ -1464,19 +1469,164 @@ async function writeExternalRejectionProofArtifact(profile, report) {
   };
 }
 
-function profileFromReport(report) {
-  if (report?.profile && typeof report.profile === 'object') return report.profile;
+function hasExternalContractFields(profile = {}) {
+  return Boolean(
+    profile?.backend
+    && (profile?.backendFamily ?? profile?.backend_family)
+    && (profile?.libraryFamily ?? profile?.library_family)
+    && (profile?.runtimeEnvironment ?? profile?.runtime_environment)
+    && (profile?.profileClass ?? profile?.profile_class),
+  );
+}
+
+const EXTERNAL_CONTRACT_FIELD_ALIASES = [
+  ['backend', ['backend']],
+  ['backendFamily', ['backendFamily', 'backend_family']],
+  ['libraryFamily', ['libraryFamily', 'library_family']],
+  ['runtimeEnvironment', ['runtimeEnvironment', 'runtime_environment']],
+  ['profileClass', ['profileClass', 'profile_class']],
+];
+
+function profileContractFieldValue(profile = {}, canonicalField) {
+  const aliases = EXTERNAL_CONTRACT_FIELD_ALIASES
+    .find(([field]) => field === canonicalField)?.[1] ?? [canonicalField];
+  for (const alias of aliases) {
+    const value = profile?.[alias];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function externalContractFieldConflicts(candidate = {}, packagedProfile = {}, candidateSource = 'report') {
+  const conflicts = [];
+  for (const [field] of EXTERNAL_CONTRACT_FIELD_ALIASES) {
+    const candidateValue = profileContractFieldValue(candidate, field);
+    const packagedValue = profileContractFieldValue(packagedProfile, field);
+    if (candidateValue && packagedValue && candidateValue !== packagedValue) {
+      conflicts.push({
+        field,
+        candidateValue,
+        candidate_value: candidateValue,
+        packagedValue,
+        packaged_value: packagedValue,
+        candidateSource,
+        candidate_source: candidateSource,
+      });
+    }
+  }
+  return conflicts;
+}
+
+function externalContractFieldConflictsForReport(report = {}, packagedProfile = {}) {
+  const reportProfile = report?.profile && typeof report.profile === 'object' ? report.profile : {};
+  return [
+    ...externalContractFieldConflicts(reportProfile, packagedProfile, 'report.profile'),
+    ...externalContractFieldConflicts(report, packagedProfile, 'report'),
+  ];
+}
+
+function profileWithContractFieldAliases(profile = {}, fallback = {}) {
   return {
-    id:
-      report?.profileId
-      ?? report?.profile_id
-      ?? report?.profile?.id
-      ?? 'external-project-profile',
-    backend: report?.backend ?? report?.profile?.backend ?? null,
-    backendFamily: report?.backendFamily ?? report?.backend_family ?? report?.profile?.backendFamily ?? report?.profile?.backend_family ?? null,
-    libraryFamily: report?.libraryFamily ?? report?.library_family ?? report?.profile?.libraryFamily ?? report?.profile?.library_family ?? null,
-    runtimeEnvironment: report?.runtimeEnvironment ?? report?.runtime_environment ?? report?.profile?.runtimeEnvironment ?? report?.profile?.runtime_environment ?? null,
-    profileClass: report?.profileClass ?? report?.profile_class ?? report?.profile?.profileClass ?? report?.profile?.profile_class ?? null,
+    ...profile,
+    backend: profile.backend ?? fallback.backend ?? null,
+    backendFamily: profile.backendFamily ?? profile.backend_family ?? fallback.backendFamily ?? fallback.backend_family ?? null,
+    backend_family: profile.backend_family ?? profile.backendFamily ?? fallback.backendFamily ?? fallback.backend_family ?? null,
+    libraryFamily: profile.libraryFamily ?? profile.library_family ?? fallback.libraryFamily ?? fallback.library_family ?? null,
+    library_family: profile.library_family ?? profile.libraryFamily ?? fallback.libraryFamily ?? fallback.library_family ?? null,
+    runtimeEnvironment: profile.runtimeEnvironment ?? profile.runtime_environment ?? fallback.runtimeEnvironment ?? fallback.runtime_environment ?? null,
+    runtime_environment: profile.runtime_environment ?? profile.runtimeEnvironment ?? fallback.runtimeEnvironment ?? fallback.runtime_environment ?? null,
+    profileClass: profile.profileClass ?? profile.profile_class ?? fallback.profileClass ?? fallback.profile_class ?? null,
+    profile_class: profile.profile_class ?? profile.profileClass ?? fallback.profileClass ?? fallback.profile_class ?? null,
+    mcpPreview: profile.mcpPreview ?? fallback.mcpPreview ?? {},
+    id: profile.id ?? fallback.id ?? 'external-project-profile',
+  };
+}
+
+async function packagedProfileRecordById(profileId) {
+  const id = typeof profileId === 'string' && profileId.trim() ? profileId.trim() : null;
+  if (!id) return null;
+  for (const profilePath of await discoverPackagedProfiles()) {
+    const absolutePath = path.resolve(REPO_ROOT, profilePath);
+    const manifest = await fs.readFile(absolutePath, 'utf8');
+    const profile = normalizeProfile(JSON.parse(manifest));
+    if (profile.id === id) {
+      return {
+        profile,
+        path: profilePath,
+        manifestHash: sha256(manifest),
+      };
+    }
+  }
+  return null;
+}
+
+async function packagedProfileById(profileId) {
+  return (await packagedProfileRecordById(profileId))?.profile ?? null;
+}
+
+function recoveredProfileSelectionFromPackagedRecord(profileId, record) {
+  if (!record) return null;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+    accepted: true,
+    explicit: false,
+    recovered: true,
+    recoverySource: 'report_profile_id_packaged_manifest',
+    recovery_source: 'report_profile_id_packaged_manifest',
+    source: 'packaged_profile_recovered_from_report_profile_id',
+    profileId,
+    profile_id: profileId,
+    manifestHash: record.manifestHash,
+    manifest_hash: record.manifestHash,
+    path: record.path,
+    evidenceRefs: [
+      `report:profile_id:${profileId}`,
+      `packaged-profile:${profileId}`,
+    ],
+    evidence_refs: [
+      `report:profile_id:${profileId}`,
+      `packaged-profile:${profileId}`,
+    ],
+  };
+}
+
+async function profileFromReport(report, options = {}) {
+  const reportProfile = report?.profile && typeof report.profile === 'object' ? report.profile : {};
+  const reportProfileId =
+    report?.profileId
+    ?? report?.profile_id
+    ?? reportProfile.id
+    ?? 'external-project-profile';
+  const packagedProfile = await packagedProfileById(reportProfileId);
+  if (options.preferPackagedContractFields && packagedProfile) {
+    return profileWithContractFieldAliases({
+      ...reportProfile,
+      id: reportProfile.id ?? packagedProfile.id,
+      backend: packagedProfile.backend,
+      backendFamily: packagedProfile.backendFamily,
+      backend_family: packagedProfile.backendFamily,
+      libraryFamily: packagedProfile.libraryFamily,
+      library_family: packagedProfile.libraryFamily,
+      runtimeEnvironment: packagedProfile.runtimeEnvironment,
+      runtime_environment: packagedProfile.runtimeEnvironment,
+      profileClass: packagedProfile.profileClass,
+      profile_class: packagedProfile.profileClass,
+      mcpPreview: reportProfile.mcpPreview ?? packagedProfile.mcpPreview,
+    }, packagedProfile);
+  }
+  if (packagedProfile && !hasExternalContractFields(reportProfile)) {
+    return profileWithContractFieldAliases(reportProfile, packagedProfile);
+  }
+  if (Object.keys(reportProfile).length > 0) {
+    return profileWithContractFieldAliases(reportProfile, { id: reportProfileId });
+  }
+  return profileWithContractFieldAliases({
+    id: reportProfileId,
+    backend: report?.backend ?? packagedProfile?.backend ?? null,
+    backendFamily: report?.backendFamily ?? report?.backend_family ?? packagedProfile?.backendFamily ?? null,
+    libraryFamily: report?.libraryFamily ?? report?.library_family ?? packagedProfile?.libraryFamily ?? null,
+    runtimeEnvironment: report?.runtimeEnvironment ?? report?.runtime_environment ?? packagedProfile?.runtimeEnvironment ?? null,
+    profileClass: report?.profileClass ?? report?.profile_class ?? packagedProfile?.profileClass ?? null,
     mcpPreview: report?.mcp?.visualProofGate
       ? {
           requiredGpuProofState: report.mcp.visualProofGate.requiredGpuProofState ?? null,
@@ -1484,7 +1634,59 @@ function profileFromReport(report) {
           hmrModule: report.mcp.visualProofGate.hmrModule ?? null,
         }
       : {},
-  };
+  });
+}
+
+async function rejectionProofInputsFromReport(report) {
+  let profile = await profileFromReport(report);
+  const reportForProof = { ...report };
+  if (!reportForProof.profileSelection && !reportForProof.profile_selection) {
+    const record = await packagedProfileRecordById(profile.id);
+    if (record) {
+      const conflicts = externalContractFieldConflictsForReport(report, record.profile);
+      if (conflicts.length === 0) {
+        profile = await profileFromReport(report, { preferPackagedContractFields: true });
+        const recoveredSelection = recoveredProfileSelectionFromPackagedRecord(profile.id, record);
+        reportForProof.profileSelection = recoveredSelection;
+        reportForProof.profile_selection = recoveredSelection;
+        reportForProof.profileSelectionRecovery = {
+          accepted: true,
+          recovered: true,
+          source: recoveredSelection.source,
+          profileId: profile.id,
+          profile_id: profile.id,
+          manifestHash: record.manifestHash,
+          manifest_hash: record.manifestHash,
+          conflicts: [],
+          evidenceRefs: recoveredSelection.evidenceRefs,
+          evidence_refs: recoveredSelection.evidence_refs,
+        };
+        reportForProof.profile_selection_recovery = reportForProof.profileSelectionRecovery;
+      } else {
+        reportForProof.profileSelectionRecovery = {
+          accepted: false,
+          recovered: false,
+          source: 'packaged_profile_recovered_from_report_profile_id',
+          profileId: profile.id,
+          profile_id: profile.id,
+          manifestHash: record.manifestHash,
+          manifest_hash: record.manifestHash,
+          reason: 'legacy_report_contract_fields_conflict_with_packaged_profile',
+          conflicts,
+          evidenceRefs: [
+            `report:profile_id:${profile.id}`,
+            `packaged-profile:${profile.id}`,
+          ],
+          evidence_refs: [
+            `report:profile_id:${profile.id}`,
+            `packaged-profile:${profile.id}`,
+          ],
+        };
+        reportForProof.profile_selection_recovery = reportForProof.profileSelectionRecovery;
+      }
+    }
+  }
+  return { profile, reportForProof };
 }
 
 async function writeRejectionProofFromReport(reportPath) {
@@ -1496,7 +1698,8 @@ async function writeRejectionProofFromReport(reportPath) {
   if (report.status === 'pass') {
     throw new Error(`external rejection proof requires a non-passing report: ${resolved}`);
   }
-  const artifact = await writeExternalRejectionProofArtifact(profileFromReport(report), report);
+  const { profile, reportForProof } = await rejectionProofInputsFromReport(report);
+  const artifact = await writeExternalRejectionProofArtifact(profile, reportForProof);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.external_project_rejection_from_report.v1',
     reportPath: resolved,
@@ -1876,6 +2079,94 @@ async function selfCheck() {
     implicitSelectionRejected,
     explicitProfileSelection,
   });
+  let legacyRecoveryCheck = {
+    name: 'external-rejection-report-profile-contract-recovery',
+    ok: false,
+    reason: 'no packaged profile with complete external contract fields was discovered',
+  };
+  const legacyRecoveryResults = [];
+  let conflictRecoveryRejected = false;
+  for (const profilePath of profilePaths) {
+    const manifest = await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8');
+    const packagedProfile = normalizeProfile(JSON.parse(manifest));
+    if (!hasExternalContractFields(packagedProfile)) continue;
+    const legacyReport = {
+      status: 'fail',
+      proofMode: packagedProfile.proofMode,
+      profileId: packagedProfile.id,
+      profile: {
+        schemaVersion: packagedProfile.schemaVersion,
+        id: packagedProfile.id,
+        proofMode: packagedProfile.proofMode,
+      },
+      error: { message: 'gpu_hmr_proof_insufficient' },
+      mcp: {
+        visualProofGate: { required: true, satisfied: true },
+      },
+    };
+    const { profile: recoveredProfile, reportForProof: recoveredReport } =
+      await rejectionProofInputsFromReport(legacyReport);
+    const recoveredSelection = recoveredReport.profileSelection;
+    const recoveredContract = externalProjectContractForProfile(
+      recoveredProfile,
+      recoveredSelection,
+      [`external-rejection:${recoveredProfile.id}:fail`],
+    );
+    legacyRecoveryResults.push({
+      packagedProfileId: packagedProfile.id,
+      ok:
+        recoveredProfile.backend === packagedProfile.backend
+        && recoveredProfile.backendFamily === packagedProfile.backendFamily
+        && recoveredProfile.libraryFamily === packagedProfile.libraryFamily
+        && recoveredProfile.runtimeEnvironment === packagedProfile.runtimeEnvironment
+        && recoveredProfile.profileClass === packagedProfile.profileClass
+        && recoveredSelection?.accepted === true
+        && recoveredSelection?.explicit === false
+        && recoveredSelection?.recovered === true
+        && recoveredSelection?.manifestHash === sha256(manifest)
+        && recoveredContract.profileManifestHash === sha256(manifest)
+        && recoveredContract.backend?.evidenceRefs?.includes(
+          `external-profile:${packagedProfile.id}:field:backend`,
+        )
+        && recoveredContract.runtimeEvidence?.evidenceRefs?.includes(
+          `external-rejection:${packagedProfile.id}:fail`,
+        ),
+      recoveredBackend: recoveredProfile.backend,
+      recoveredLibraryFamily: recoveredProfile.libraryFamily,
+      profileManifestHash: recoveredContract.profileManifestHash,
+      recoveredContractEvidenceRefs: recoveredContract.evidenceRefs,
+    });
+    if (!conflictRecoveryRejected) {
+      const conflictingReport = {
+        ...legacyReport,
+        profile: {
+          ...legacyReport.profile,
+          backend: `${packagedProfile.backend}-conflict`,
+        },
+      };
+      const { reportForProof: conflictReportForProof } =
+        await rejectionProofInputsFromReport(conflictingReport);
+      conflictRecoveryRejected =
+        !conflictReportForProof.profileSelection
+        && conflictReportForProof.profileSelectionRecovery?.accepted === false
+        && Array.isArray(conflictReportForProof.profileSelectionRecovery.conflicts)
+        && conflictReportForProof.profileSelectionRecovery.conflicts.some(
+          (conflict) => conflict.field === 'backend',
+        );
+    }
+  }
+  if (legacyRecoveryResults.length > 0) {
+    legacyRecoveryCheck = {
+      name: 'external-rejection-report-profile-contract-recovery',
+      ok:
+        legacyRecoveryResults.every((result) => result.ok)
+        && conflictRecoveryRejected === true,
+      recoveredProfileCount: legacyRecoveryResults.length,
+      conflictRecoveryRejected,
+      legacyRecoveryResults,
+    };
+  }
+  checks.push(legacyRecoveryCheck);
   await fs.mkdir(ARTIFACT_DIR, { recursive: true });
   const sourceDeltaDir = await fs.mkdtemp(path.join(ARTIFACT_DIR, 'source-delta-self-check-'));
   const sourceDeltaPath = path.join(sourceDeltaDir, 'shader.wgsl');
