@@ -2727,14 +2727,19 @@ function classifyUpstreamLifecycleFailure({
     String(runLog ?? ''),
     String(lifecycleError?.message ?? ''),
   ].join('\n');
-  const missingFieldTokens = [...combined.matchAll(/\bmissing:\s+([^\n)]+)/gi)]
-    .flatMap((match) => match[1].split(/[\s,;]+/));
+  const cmakeMissingGroups = [...combined.matchAll(
+    /Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)(?:[^\n]*?\(missing:\s+([^)]+)\))?/gi,
+  )];
+  const missingFieldTokens = cmakeMissingGroups
+    .flatMap((match) => [
+      match[1],
+      ...(match[2] ? match[2].split(/[\s,;]+/) : []),
+    ]);
   const runExitCodeText = /\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1] ?? null;
   const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''));
   const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''));
   const runNotStarted = runExitCodeText === 'not-run';
   const missingDependencies = compactStringList([
-    ...[...combined.matchAll(/Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)/g)].map((match) => match[1]),
     ...missingFieldTokens,
     ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)].map((match) => match[1]),
   ]);
