@@ -2161,15 +2161,15 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
   });
 }
 
-async function resolveDockerContainer(configured, service) {
-  const composeId = await execText(
+async function resolveDockerContainer(configured, service, execTextImpl = execText) {
+  const composeId = await execTextImpl(
     'docker',
     ['compose', '--project-directory', REPO_ROOT, 'ps', '-q', service],
     8000,
   );
   const id = String(composeId || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
   if (id) return id;
-  const labelIds = await execText(
+  const labelIds = await execTextImpl(
     'docker',
     ['ps', '-q', '--filter', `label=com.docker.compose.service=${service}`],
     8000,
@@ -2179,15 +2179,18 @@ async function resolveDockerContainer(configured, service) {
 }
 
 async function resolveDockerContainers() {
-  if (CFG.mcpTransport !== 'docker') return;
-  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
   CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
   CFG.aiEngineContainer = await resolveDockerContainer(CFG.aiEngineContainer, 'ai-engine');
+  if (!CFG.workerContainer) {
+    throw new Error(
+      'Real ROCm validation requires a worker container from WORKER_CONTAINER, '
+      + 'SYNTHI_WORKER_CONTAINER, or docker compose service discovery',
+    );
+  }
+  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
+  if (CFG.mcpTransport !== 'docker') return;
   if (!CFG.mcpContainer) {
     throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
-  }
-  if (!CFG.workerContainer) {
-    throw new Error('MCP_TRANSPORT=docker requires a worker container from WORKER_CONTAINER, SYNTHI_WORKER_CONTAINER, or docker compose service discovery');
   }
   if (!CFG.mcpSignalingUrl) {
     throw new Error('MCP_TRANSPORT=docker requires explicit MCP_SIGNALING_URL or SYNTHI_MCP_SIGNALING_URL');
@@ -8586,6 +8589,25 @@ async function selfCheckRuntimeDispatchEvidence() {
     || localMissingWorkerAccess.reason !== 'transport_local_worker_container_missing'
   ) {
     throw new Error('local worker runtime access did not fail closed without worker container');
+  }
+  const discoveredComposeWorker = await resolveDockerContainer(null, 'worker', async (_cmd, args) => {
+    const joined = args.join(' ');
+    if (joined.includes('compose') && joined.includes('ps -q worker')) return 'worker-compose-id\n';
+    return '';
+  });
+  const discoveredLabelWorker = await resolveDockerContainer(null, 'worker', async (_cmd, args) => {
+    const joined = args.join(' ');
+    if (joined.includes('compose') && joined.includes('ps -q worker')) return '';
+    if (joined.includes('label=com.docker.compose.service=worker')) return 'worker-label-id\n';
+    return '';
+  });
+  const discoveredConfiguredWorker = await resolveDockerContainer('worker-configured', 'worker', async () => '');
+  if (
+    discoveredComposeWorker !== 'worker-compose-id'
+    || discoveredLabelWorker !== 'worker-label-id'
+    || discoveredConfiguredWorker !== 'worker-configured'
+  ) {
+    throw new Error('worker container discovery self-check failed');
   }
   const localWorkerOracleSync = runtimeOutputOracleProfileSyncPlan({
     profile: { profileId: 'self-check-runtime-oracle' },
