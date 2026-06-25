@@ -986,8 +986,13 @@ function waitProofValidation(proofId, runtimeProofId) {
   };
 }
 
-function runModeCoverageSupportFor(materials, extraProofIds = []) {
+function runModeCoverageSupportFor(materials, extraProofIds = [], options = {}) {
   const record = materials.proofLedgerQuery?.record ?? materials.proofLedger?.records?.[0] ?? {};
+  const artifactAfterHash = record.artifactAfterHash ?? record.artifact_after_hash;
+  const namespaceArtifactAfterHash = options.namespaceArtifactAfterHash !== false;
+  const selectedArtifactAfterHash = namespaceArtifactAfterHash && String(artifactAfterHash ?? '').startsWith('sha256:')
+    ? `artifact:${artifactAfterHash}`
+    : artifactAfterHash;
   return {
     schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
     parentProofIds: [...new Set([
@@ -1001,7 +1006,7 @@ function runModeCoverageSupportFor(materials, extraProofIds = []) {
     ].filter(Boolean))],
     contractHash: record.contractHash ?? record.contract_hash,
     artifactBeforeHash: record.artifactBeforeHash ?? record.artifact_before_hash,
-    artifactAfterHash: record.artifactAfterHash ?? record.artifact_after_hash,
+    artifactAfterHash: selectedArtifactAfterHash,
   };
 }
 
@@ -1029,6 +1034,7 @@ const flowRunModeCoverageSupport = runModeCoverageSupportFor(flowHot1RuntimeMate
   'gpu-runtime-proof:sha256:synthetic-hot1',
   'agent-split-run-mode-proof:sha256:hot1',
 ]);
+assert.match(flowRunModeCoverageSupport.artifactAfterHash, /^artifact:sha256:[a-f0-9]{64}$/);
 const flowHot1VisualProfileEvidence = validationProfileEvidenceFor({
   profileId: 'flow',
   profileClass: 'flow_visual_gpu_path',
@@ -3825,6 +3831,188 @@ assert.equal(forgedUnlinkedFlowCold?.matrixOutcome, 'cold_split_proven');
 assert.equal(forgedUnlinkedFlowCold.runModeCoverageSupport.accepted, false);
 assert.ok(forgedUnlinkedFlowCold.runModeCoverageSupport.failedGates.includes(
   'run_mode_support_parent_proof_id_missing',
+));
+
+const reverseArtifactNamespaceDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-artifact-namespace-reverse',
+);
+await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'), 8, 8, (x, y) => [92 + x, 104 + y, 132, 255]);
+await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const reverseArtifactNamespaceMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'artifact-namespace-reverse',
+  visualRoot: reverseArtifactNamespaceDir,
+});
+const reverseArtifactNamespaceAfterHash = reverseArtifactNamespaceMaterials.proofLedgerQuery.record.artifactAfterHash
+  ?? reverseArtifactNamespaceMaterials.proofLedgerQuery.record.artifact_after_hash;
+const reverseArtifactNamespaceSupport = runModeCoverageSupportFor(
+  reverseArtifactNamespaceMaterials,
+  ['agent-split-run-mode-proof:sha256:artifact-namespace-reverse-hot1'],
+  { namespaceArtifactAfterHash: false },
+);
+assert.match(reverseArtifactNamespaceSupport.artifactAfterHash, /^sha256:[a-f0-9]{64}$/);
+await writeJson(path.join(reverseArtifactNamespaceDir, 'hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:artifact-namespace-reverse-hot1',
+    'gpu-runtime-proof:sha256:artifact-namespace-reverse-hot1',
+  ),
+  ...reverseArtifactNamespaceMaterials,
+  targetId: 'artifact-namespace-reverse',
+  profileId: 'artifact-namespace-reverse',
+  proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-reverse-hot1',
+  artifactAfterHash: `artifact:${reverseArtifactNamespaceAfterHash}`,
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
+    afterImage: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
+    diffImage: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:artifact-namespace-reverse-hot1',
+    editHash: 'sha256:artifact-namespace-reverse-hot1',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+await writeJson(path.join(reverseArtifactNamespaceDir, 'cold.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  targetId: 'artifact-namespace-reverse',
+  profileId: 'artifact-namespace-reverse',
+  proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-reverse-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  runModeCoverageSupport: reverseArtifactNamespaceSupport,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  visualArtifacts: {
+    beforeImage: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
+    afterImage: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
+    diffImage: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split:artifact-namespace-reverse',
+    editHash: 'sha256:artifact-namespace-reverse-cold',
+  },
+});
+const reverseArtifactNamespaceLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [reverseArtifactNamespaceDir],
+  generatedAt: '2026-06-09T00:00:01.005Z',
+  includeUnproven: true,
+});
+const reverseArtifactNamespaceCoverage = new Map(
+  reverseArtifactNamespaceLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const reverseArtifactNamespaceTarget = reverseArtifactNamespaceCoverage
+  .get('per_target_run_modes')?.targetCoverage.find(
+    (entry) => entry.targetKey === 'hip:artifact-namespace-reverse',
+  );
+assert.ok(reverseArtifactNamespaceTarget?.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:artifact-namespace-reverse-cold')
+  && row.runModeCoverageSupport?.accepted === true
+));
+
+const mismatchedArtifactNamespaceDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-artifact-namespace-mismatch',
+);
+await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
+await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const mismatchedArtifactNamespaceMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'artifact-namespace-mismatch',
+  visualRoot: mismatchedArtifactNamespaceDir,
+});
+const mismatchedArtifactNamespaceSupport = {
+  ...runModeCoverageSupportFor(
+    mismatchedArtifactNamespaceMaterials,
+    ['agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-hot1'],
+    { namespaceArtifactAfterHash: false },
+  ),
+  artifactAfterHash: hashValue('different-artifact-namespace-mismatch-after'),
+};
+await writeJson(path.join(mismatchedArtifactNamespaceDir, 'hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:artifact-namespace-mismatch-hot1',
+    'gpu-runtime-proof:sha256:artifact-namespace-mismatch-hot1',
+  ),
+  ...mismatchedArtifactNamespaceMaterials,
+  targetId: 'artifact-namespace-mismatch',
+  profileId: 'artifact-namespace-mismatch',
+  proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
+    afterImage: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
+    diffImage: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:artifact-namespace-mismatch-hot1',
+    editHash: 'sha256:artifact-namespace-mismatch-hot1',
+    editKind: 'gpu_artifact_edit',
+  },
+});
+await writeJson(path.join(mismatchedArtifactNamespaceDir, 'cold.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  targetId: 'artifact-namespace-mismatch',
+  profileId: 'artifact-namespace-mismatch',
+  proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  runModeCoverageSupport: mismatchedArtifactNamespaceSupport,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  visualArtifacts: {
+    beforeImage: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
+    afterImage: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
+    diffImage: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split:artifact-namespace-mismatch',
+    editHash: 'sha256:artifact-namespace-mismatch-cold',
+  },
+});
+const mismatchedArtifactNamespaceLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [mismatchedArtifactNamespaceDir],
+  generatedAt: '2026-06-09T00:00:01.006Z',
+  includeUnproven: true,
+});
+const mismatchedArtifactNamespaceCoverage = new Map(
+  mismatchedArtifactNamespaceLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const mismatchedArtifactNamespaceTarget = mismatchedArtifactNamespaceCoverage
+  .get('per_target_run_modes')?.targetCoverage.find(
+    (entry) => entry.targetKey === 'hip:artifact-namespace-mismatch',
+  );
+assert.ok(!mismatchedArtifactNamespaceTarget?.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-cold')
+));
+assert.ok(mismatchedArtifactNamespaceCoverage.get('per_target_run_modes')?.unlinkedSupportRowCount >= 1);
+assert.ok(mismatchedArtifactNamespaceTarget?.openGaps.includes(
+  'hip:artifact-namespace-mismatch:cold_evidence_missing',
 ));
 
 const spoofNamedFlowDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-name-only-profile');

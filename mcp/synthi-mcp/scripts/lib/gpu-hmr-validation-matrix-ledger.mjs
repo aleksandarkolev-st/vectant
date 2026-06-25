@@ -932,6 +932,16 @@ function contentAddressedSha256(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
 }
 
+function contentAddressedArtifactHash(value) {
+  return /^(?:artifact:)?sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
+}
+
+function normalizedArtifactHash(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  const match = raw.match(/^(?:artifact:)?(sha256:[a-f0-9]{64})$/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 function rawValidationProfileEvidence(row = {}) {
   return compactObject(
     row.validationProfileEvidence
@@ -1181,7 +1191,7 @@ function fullRuntimeCoverageIdentity(row = {}) {
   return {
     accepted: proofIds.length > 0
       && contentAddressedSha256(contractHash)
-      && contentAddressedSha256(artifactAfterHash),
+      && contentAddressedArtifactHash(artifactAfterHash),
     proofIds,
     proof_ids: proofIds,
     contractHash,
@@ -1223,7 +1233,7 @@ function runModeCoverageSupportFacet(row = {}) {
   const failedGates = compactStringList([
     parentProofIds.length > 0 ? null : 'run_mode_support_parent_proof_id_missing',
     contentAddressedSha256(contractHash) ? null : 'run_mode_support_contract_hash_missing_or_not_content_addressed',
-    contentAddressedSha256(artifactAfterHash) ? null : 'run_mode_support_artifact_hash_missing_or_not_content_addressed',
+    contentAddressedArtifactHash(artifactAfterHash) ? null : 'run_mode_support_artifact_hash_missing_or_not_content_addressed',
   ]);
   return {
     present: Object.keys(supplied).length > 0,
@@ -1245,11 +1255,13 @@ function rowHasLinkedRunModeCoverageSupport(row, fullRuntimeRows) {
   const supportParentProofIds = compactStringList(support.parentProofIds ?? support.parent_proof_ids);
   const supportContractHash = firstText(support.contractHash, support.contract_hash);
   const supportArtifactAfterHash = firstText(support.artifactAfterHash, support.artifact_after_hash);
+  const normalizedSupportArtifactAfterHash = normalizedArtifactHash(supportArtifactAfterHash);
   return fullRuntimeRows.some((fullRuntimeRow) => {
     const identity = fullRuntimeCoverageIdentity(fullRuntimeRow);
     if (identity.accepted !== true) return false;
     return supportContractHash === identity.contractHash
-      && supportArtifactAfterHash === identity.artifactAfterHash
+      && normalizedSupportArtifactAfterHash !== null
+      && normalizedSupportArtifactAfterHash === normalizedArtifactHash(identity.artifactAfterHash)
       && supportParentProofIds.some((proofId) => identity.proofIds.includes(proofId));
   });
 }
