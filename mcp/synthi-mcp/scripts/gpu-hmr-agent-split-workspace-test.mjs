@@ -32,7 +32,10 @@ import {
   assertNoGeneratedSplitFissionOverclaim,
   verifyGeneratedGpuSplitDeterministicFission,
 } from './lib/gpu-hmr-generated-split-granularity.mjs';
-import { queryGpuHmrLedgerInvariants } from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  buildGpuHmrRunModeCoverageSupport,
+  queryGpuHmrLedgerInvariants,
+} from './lib/gpu-hmr-proof-ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1874,30 +1877,31 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
 }
 
 function runModeCoverageSupportFromProof(proof) {
-  const ledger = embeddedLedgerFromProof(proof);
-  if (!ledger) return null;
-  const recomputed = queryGpuHmrLedgerInvariants(ledger);
-  const record = recomputed.record ?? firstLedgerRecord(ledger);
-  if (!record?.contractHash || !record?.artifactAfterHash) return null;
-  const parentProofIds = [
-    recomputed.proofId,
-    record.proofId,
-    proof?.runtimeProofArtifact?.proofId,
-    proof?.runtimeProofArtifact?.proof_id,
-    proof?.runtime_proof_artifact?.proofId,
-    proof?.runtime_proof_artifact?.proof_id,
-  ].filter(Boolean);
-  return {
-    schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
-    parentProofIds: [...new Set(parentProofIds)],
-    parent_proof_ids: [...new Set(parentProofIds)],
-    contractHash: record.contractHash,
-    contract_hash: record.contractHash,
-    artifactBeforeHash: record.artifactBeforeHash,
-    artifact_before_hash: record.artifactBeforeHash,
-    artifactAfterHash: record.artifactAfterHash,
-    artifact_after_hash: record.artifactAfterHash,
-  };
+  const runtimeProofArtifact = isRecord(proof?.runtimeProofArtifact)
+    ? proof.runtimeProofArtifact
+    : isRecord(proof?.runtime_proof_artifact)
+      ? proof.runtime_proof_artifact
+      : null;
+  return buildGpuHmrRunModeCoverageSupport({
+    proofLedger: embeddedLedgerFromProof(proof),
+    proofLedgerQuery:
+      proof?.proofLedgerQuery
+      ?? proof?.proof_ledger_query
+      ?? runtimeProofArtifact?.proofLedgerQuery
+      ?? runtimeProofArtifact?.proof_ledger_query,
+    runtimeProofArtifact,
+    parentProofIds: [
+      proof?.proofId,
+      proof?.proof_id,
+      proof?.gpuProofValidation?.proofId,
+      proof?.gpu_proof_validation?.proof_id,
+      proof?.gpuProofValidation?.proofLedgerValidation?.proofId,
+      proof?.gpu_proof_validation?.proofLedgerValidation?.proof_id,
+      proof?.gpuProofValidation?.proofLedgerValidation?.proof_id,
+      proof?.gpu_proof_validation?.proof_ledger_validation?.proofId,
+      proof?.gpu_proof_validation?.proof_ledger_validation?.proof_id,
+    ],
+  });
 }
 
 function isRecord(value) {
