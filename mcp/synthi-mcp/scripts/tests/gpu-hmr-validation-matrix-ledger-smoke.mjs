@@ -6122,6 +6122,58 @@ assert.equal(forgedRealRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedRealRocm.visual.present, false);
 assert.ok(forgedRealRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 
+const realRocmCompletenessDir = path.join(logsRoot, 'real-rocm-completeness-selection');
+const olderCompleteRefusalPath = path.join(realRocmCompletenessDir, 'real-rocm-complete-refusal.json');
+const newerWeakRefusalPath = path.join(realRocmCompletenessDir, 'real-rocm-weak-refusal.json');
+const completenessBaseArtifact = {
+  real_rocm_profile: { id: 'real-rocm-completeness-selection' },
+  source_url: 'https://example.invalid/rocm/completeness.git',
+  repo_commit: '0123456789abcdef0123456789abcdef01234567',
+  entry_file: 'src/kernels/completeness_entry.hip',
+  delta_file: 'src/kernels/completeness_delta.h',
+  target_name: 'CompletenessDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  strict_proof_gates: {
+    accepted: false,
+    failures: ['runtime_full_proof_not_proven'],
+  },
+  checks: [
+    {
+      name: 'strict real ROCm runtime proof artifact acceptance',
+      status: 'fail',
+      detail: 'failures=runtime_full_proof_not_proven',
+    },
+  ],
+};
+await writeJson(olderCompleteRefusalPath, {
+  ...completenessBaseArtifact,
+  slug: 'gpu-real-rocm-completeness-selection-older-complete',
+  upstream_lifecycle_failure: {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    accepted_as_refusal_evidence: true,
+    reasons: ['cmake_configure_failed'],
+  },
+});
+await writeJson(newerWeakRefusalPath, {
+  ...completenessBaseArtifact,
+  slug: 'gpu-real-rocm-completeness-selection-newer-weak',
+});
+await fs.utimes(olderCompleteRefusalPath, new Date('2026-06-09T00:00:00.000Z'), new Date('2026-06-09T00:00:00.000Z'));
+await fs.utimes(newerWeakRefusalPath, new Date('2026-06-09T00:05:00.000Z'), new Date('2026-06-09T00:05:00.000Z'));
+const completenessSelectionLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [realRocmCompletenessDir],
+  generatedAt: '2026-06-09T00:05:01.000Z',
+});
+const completenessSelectionRow = completenessSelectionLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.ok(completenessSelectionRow?.artifactPath.endsWith('real-rocm-complete-refusal.json'));
+assert.equal(completenessSelectionRow.attemptCompleteness.score, 80);
+assert.equal(completenessSelectionRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, true);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

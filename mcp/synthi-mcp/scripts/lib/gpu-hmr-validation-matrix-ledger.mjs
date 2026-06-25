@@ -1696,6 +1696,51 @@ function generalityClaimFailures(row) {
   return failures.map((code) => ({ code }));
 }
 
+function realRocmAttemptCompletenessFacet({
+  accepted = false,
+  upstreamLifecycleFailure = {},
+  runtimeProofArtifact = {},
+  strictGateFailures = [],
+  ledger = {},
+} = {}) {
+  const upstreamPresent = Object.keys(compactObject(upstreamLifecycleFailure)).length > 0;
+  const upstreamAccepted = firstBool(
+    upstreamLifecycleFailure.acceptedAsRefusalEvidence,
+    upstreamLifecycleFailure.accepted_as_refusal_evidence,
+  ) === true;
+  const runtimeProofPresent = runtimeProofArtifact.present === true;
+  const ledgerPresent = ledger.present === true;
+  const score = accepted
+    ? 100
+    : upstreamAccepted
+      ? 80
+      : upstreamPresent
+        ? 60
+        : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
+          ? 30
+          : runtimeProofPresent
+            ? 20
+            : ledgerPresent
+              ? 10
+              : 0;
+  return {
+    accepted: score >= 80,
+    score,
+    upstreamLifecyclePresent: upstreamPresent,
+    upstream_lifecycle_present: upstreamPresent,
+    upstreamLifecycleAcceptedAsRefusalEvidence: upstreamAccepted,
+    upstream_lifecycle_accepted_as_refusal_evidence: upstreamAccepted,
+    runtimeProofArtifactPresent: runtimeProofPresent,
+    runtime_proof_artifact_present: runtimeProofPresent,
+    ledgerPresent,
+    ledger_present: ledgerPresent,
+    failedGates: compactStringList([
+      upstreamAccepted || accepted ? null : 'upstream_lifecycle_refusal_evidence_not_accepted',
+      upstreamPresent || accepted ? null : 'upstream_lifecycle_evidence_missing',
+    ]),
+  };
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -5829,6 +5874,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.strictProofGates,
   );
   const strictGateFailures = compactStringList(strictGates.failures);
+  const upstreamLifecycleFailure = compactObject(
+    json.upstream_lifecycle_failure
+    ?? json.upstreamLifecycleFailure
+    ?? summary.upstream_lifecycle_failure
+    ?? summary.upstreamLifecycleFailure
+    ?? runtimeProofArtifact.upstream_lifecycle_failure
+    ?? runtimeProofArtifact.upstreamLifecycleFailure,
+  );
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
     ?? json.outputOracleResolution
@@ -6116,6 +6169,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && gpuHmrSuccess !== true
     && fullRuntimeProven !== true
     && (strictRuntimeGateFailed || proofStateMissing);
+  const attemptCompleteness = realRocmAttemptCompletenessFacet({
+    accepted,
+    upstreamLifecycleFailure,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    strictGateFailures,
+    ledger,
+  });
   const matrixOutcome = accepted
     ? 'full_runtime_gpu_hmr'
     : refusalProven
@@ -6191,6 +6251,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       seededFileCount: finiteNumber(json.seeded_file_count ?? json.seededFileCount),
       skippedFileCount: finiteNumber(json.skipped_file_count ?? json.skippedFileCount),
     },
+    upstreamLifecycleFailure,
+    upstream_lifecycle_failure: upstreamLifecycleFailure,
+    attemptCompleteness,
+    attempt_completeness: attemptCompleteness,
     outputOracleResolution,
     realRocmRuntimeChain,
     real_rocm_runtime_chain: realRocmRuntimeChain,
@@ -6728,6 +6792,13 @@ function rowPriority(row) {
   return MATRIX_OUTCOME_PRIORITY.get(row.matrixOutcome) ?? 0;
 }
 
+function rowAttemptCompletenessScore(row) {
+  return finiteNumber(
+    row.attemptCompleteness?.score
+    ?? row.attempt_completeness?.score,
+  ) ?? 0;
+}
+
 function rowUpdatedAtMs(row) {
   const parsed = Date.parse(String(row.updatedAt ?? ''));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -6742,13 +6813,26 @@ function selectBestRows(rows) {
       selected.set(key, row);
       continue;
     }
-    const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
     const priorityDelta = rowPriority(row) - rowPriority(existing);
+    const completenessDelta = rowAttemptCompletenessScore(row) - rowAttemptCompletenessScore(existing);
+    const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
     if (
-      updatedDelta > 0
+      priorityDelta > 0
       || (
-        updatedDelta === 0
-        && (priorityDelta > 0 || String(row.artifactPath) > String(existing.artifactPath))
+        priorityDelta === 0
+        && (
+          completenessDelta > 0
+          || (
+            completenessDelta === 0
+            && (
+              updatedDelta > 0
+              || (
+                updatedDelta === 0
+                && String(row.artifactPath) > String(existing.artifactPath)
+              )
+            )
+          )
+        )
       )
     ) {
       selected.set(key, row);
