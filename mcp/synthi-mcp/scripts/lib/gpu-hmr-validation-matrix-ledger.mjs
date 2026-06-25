@@ -460,30 +460,102 @@ function normalizeSha256(value) {
   return raw;
 }
 
+function inferredVisualArtifactRole(value, index, count) {
+  const raw = text(value) ?? '';
+  const lower = raw.toLowerCase();
+  if (lower.includes('before') || lower.includes('baseline')) return 'before';
+  if (lower.includes('after') || lower.includes('changed')) return 'after';
+  if (lower.includes('diff') || lower.includes('delta')) return 'diff';
+  if (count === 3 && index === 0) return 'before';
+  if (count === 3 && index === 1) return 'after';
+  if (count === 3 && index === 2) return 'diff';
+  return 'artifact';
+}
+
+function visualArtifactRole(value, sourcePath, index, count) {
+  const role = text(value)?.toLowerCase().replace(/[\s-]+/g, '_');
+  if (['before', 'baseline'].includes(role)) return 'before';
+  if (['after', 'changed'].includes(role)) return 'after';
+  if (['diff', 'delta'].includes(role)) return 'diff';
+  return inferredVisualArtifactRole(sourcePath, index, count);
+}
+
+function visualArtifactHashForRole(object, role) {
+  return normalizeSha256(firstText(
+    object.expectedHash,
+    object.expected_hash,
+    object.contentHash,
+    object.content_hash,
+    object.sha256,
+    object.imageSha256,
+    object.image_sha256,
+    object.hash,
+    role === 'before' ? object.before_image_hash : null,
+    role === 'before' ? object.beforeImageHash : null,
+    role === 'after' ? object.after_image_hash : null,
+    role === 'after' ? object.afterImageHash : null,
+    role === 'diff' ? object.diff_image_hash : null,
+    role === 'diff' ? object.diffImageHash : null,
+  ));
+}
+
 function visualArtifactEntries(input) {
   if (Array.isArray(input)) {
-    const values = compactStringList(input);
-    return values.map((value, index) => {
-      const lower = value.toLowerCase();
-      const role = lower.includes('before') || lower.includes('baseline')
-        ? 'before'
-        : lower.includes('after') || lower.includes('changed')
-          ? 'after'
-          : lower.includes('diff') || lower.includes('delta')
-            ? 'diff'
-            : values.length === 3 && index === 0
-              ? 'before'
-              : values.length === 3 && index === 1
-                ? 'after'
-                : values.length === 3 && index === 2
-                  ? 'diff'
-                  : 'artifact';
-      return { role, sourcePath: value, expectedHash: null };
+    return input.flatMap((value, index) => {
+      if (typeof value === 'string') {
+        return [{
+          role: inferredVisualArtifactRole(value, index, input.length),
+          sourcePath: value,
+          expectedHash: null,
+        }];
+      }
+      if (!isObject(value)) return [];
+      const sourcePath = firstText(
+        value.path,
+        value.sourcePath,
+        value.source_path,
+        value.localPath,
+        value.local_path,
+        value.absolutePath,
+        value.absolute_path,
+        value.filePath,
+        value.file_path,
+        value.file,
+        value.uri,
+      );
+      if (!sourcePath) return visualArtifactEntries(value);
+      const role = visualArtifactRole(value.role ?? value.artifactRole ?? value.artifact_role, sourcePath, index, input.length);
+      return [{
+        role,
+        sourcePath,
+        expectedHash: visualArtifactHashForRole(value, role),
+      }];
     });
   }
   const object = compactObject(input);
   if (Object.keys(object).length === 0) return [];
   const entries = [];
+  const directSourcePath = firstText(
+    object.path,
+    object.sourcePath,
+    object.source_path,
+    object.localPath,
+    object.local_path,
+    object.absolutePath,
+    object.absolute_path,
+    object.filePath,
+    object.file_path,
+    object.file,
+    object.uri,
+  );
+  if (directSourcePath) {
+    const role = visualArtifactRole(object.role ?? object.artifactRole ?? object.artifact_role, directSourcePath, 0, 1);
+    entries.push({
+      role,
+      sourcePath: directSourcePath,
+      expectedHash: visualArtifactHashForRole(object, role),
+    });
+  }
   const push = (role, pathValues, hashValues = []) => {
     const sourcePath = firstText(...pathValues);
     if (!sourcePath) return;
@@ -501,6 +573,33 @@ function visualArtifactEntries(input) {
   push('artifact', [object.rendered_card_png, object.renderedCardPng]);
   push('artifact', [object.diagnostic_screenshot, object.diagnosticScreenshot]);
   return entries;
+}
+
+function visualArtifactEvidenceOptions(required) {
+  if (isObject(required)) {
+    return {
+      required: firstBool(required.required, required.visualRequired, required.visual_required) === true,
+      requireDeclaredHashes:
+        firstBool(
+          required.requireDeclaredHashes,
+          required.require_declared_hashes,
+          required.requireContentHashes,
+          required.require_content_hashes,
+        ) === true,
+      requireDiff:
+        firstBool(
+          required.requireDiff,
+          required.require_diff,
+          required.requireDiffImage,
+          required.require_diff_image,
+        ) === true,
+    };
+  }
+  return {
+    required: required === true,
+    requireDeclaredHashes: false,
+    requireDiff: false,
+  };
 }
 
 function preferredVisualImage(images, role) {
@@ -620,6 +719,7 @@ async function recomputeVisualPairEvidence(images) {
 }
 
 async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, required = false) {
+  const options = visualArtifactEvidenceOptions(required);
   const entries = visualArtifactEntries(paths);
   const resolvedEntries = entries
     .map((entry) => ({
@@ -668,29 +768,40 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
   const allImagesDecode = imageCount > 0 && decodedImageCount === imageCount;
   const allImagesAreDecodedPng = allImagesArePng && allImagesDecode;
+  const allRequiredHashesDeclared = !options.requireDeclaredHashes
+    || (imageCount > 0 && declaredHashCount === imageCount);
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
   const hasBeforeImage = evidence.some((item) => item.role === 'before');
   const hasAfterImage = evidence.some((item) => item.role === 'after');
-  const requiresPixelProof = required === true;
+  const hasDiffImage = evidence.some((item) => item.role === 'diff');
+  const requiresPixelProof = options.required === true;
   const failedGates = compactStringList([
-    imageCount > 0 || required !== true ? null : 'visual_artifacts_missing',
+    imageCount > 0 || options.required !== true ? null : 'visual_artifacts_missing',
     allImagesExist || imageCount === 0 ? null : 'visual_artifact_file_missing',
     allImagesArePng || imageCount === 0 ? null : 'visual_artifact_not_png',
     allImagesDecode || imageCount === 0 ? null : 'visual_artifact_decode_failed',
+    allRequiredHashesDeclared ? null : 'visual_artifact_declared_hash_missing',
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
-    required === true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
-    required === true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
+    options.required === true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
+    options.required === true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
+    options.requireDiff === true && !hasDiffImage ? 'visual_diff_artifact_missing' : null,
     requiresPixelProof && visualPair.accepted !== true ? 'visual_pair_pixel_recompute_not_accepted' : null,
   ]);
   const accepted = imageCount === 0
-    ? required !== true
+    ? options.required !== true
     : allImagesExist
       && allImagesAreDecodedPng
+      && allRequiredHashesDeclared
       && allDeclaredHashesMatch
+      && (options.requireDiff !== true || hasDiffImage)
       && (!requiresPixelProof || visualPair.accepted === true);
   return {
-    required,
+    required: options.required,
+    requireDeclaredHashes: options.requireDeclaredHashes,
+    require_declared_hashes: options.requireDeclaredHashes,
+    requireDiff: options.requireDiff,
+    require_diff: options.requireDiff,
     present: imageCount > 0,
     accepted,
     imageCount,
@@ -699,6 +810,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     decodedImageCount,
     declaredHashCount,
     hashMatchedCount,
+    allRequiredHashesDeclared,
+    all_required_hashes_declared: allRequiredHashesDeclared,
     allImagesExist,
     allImagesArePng,
     allImagesDecode,
@@ -708,6 +821,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     has_before_image: hasBeforeImage,
     hasAfterImage,
     has_after_image: hasAfterImage,
+    hasDiffImage,
+    has_diff_image: hasDiffImage,
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
@@ -6477,22 +6592,28 @@ async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseD
       detail: `compute oracle artifacts unverified: ${compute.failedGates.map((gate) => gate.code).join(',')}`,
     };
   }
-  const visualArtifacts = compactObjectList(
-    entry.visualEvidenceArtifacts
-    ?? entry.visual_evidence_artifacts,
-  );
-  const visualPaths = compactStringList([
-    ...artifactPathsFromValue(visualArtifacts),
+  const visualArtifactsRaw = entry.visualEvidenceArtifacts ?? entry.visual_evidence_artifacts;
+  const visualArtifacts = Array.isArray(visualArtifactsRaw)
+    ? visualArtifactsRaw.filter((artifact) => typeof artifact === 'string' || isObject(artifact))
+    : Object.keys(compactObject(visualArtifactsRaw)).length > 0
+      ? [visualArtifactsRaw]
+      : [];
+  const visualRefs = compactStringList([
     ...(Array.isArray(entry.visualEvidenceRefs) ? entry.visualEvidenceRefs : []),
     ...(Array.isArray(entry.visual_evidence_refs) ? entry.visual_evidence_refs : []),
   ]);
-  if (visualPaths.length > 0) {
-    const visual = await visualArtifactEvidence(visualPaths, repoRoot, baseDir, {}, true);
+  const visualInputs = visualArtifacts.length > 0 ? visualArtifacts : visualRefs;
+  if (visualInputs.length > 0) {
+    const visual = await visualArtifactEvidence(visualInputs, repoRoot, baseDir, {}, {
+      required: true,
+      requireDeclaredHashes: true,
+      requireDiff: true,
+    });
     return {
       accepted: visual.accepted === true,
       detail: visual.accepted === true
         ? `visual oracle artifacts verified count=${visual.images?.length ?? 0}`
-        : `visual oracle artifacts unverified: ${visual.reason ?? 'not_accepted'}`,
+        : `visual oracle artifacts unverified: ${visual.failedGates?.join(',') || visual.reason || 'not_accepted'}`,
     };
   }
   return {
@@ -6505,6 +6626,7 @@ async function targetProgressionLedgerPhaseResult(ledger, phase, { repoRoot, bas
   const normalizedPhase = normalizeTargetProgressionPhase(phase).phase;
   const entries = targetProgressionLedgerEntries(ledger)
     .filter((entry) => normalizedTargetProgressionEntryPhase(entry) === normalizedPhase);
+  const failureDetails = [];
   for (const entry of entries) {
     const resultState = firstText(entry.resultState, entry.result_state);
     const structuredReference = hasTargetProgressionStructuredProofReference(entry);
@@ -6516,6 +6638,17 @@ async function targetProgressionLedgerPhaseResult(ledger, phase, { repoRoot, bas
         repoRoot,
         baseDir,
       );
+      if (!structuredReference) {
+        failureDetails.push('small-oracle structured proof reference missing');
+      } else if (oracleEvidence.accepted !== true) {
+        failureDetails.push(oracleEvidence.detail);
+      } else if (
+        resultState !== 'gpu-hmr-output-oracle-proven'
+        && firstBool(entry.outputOracleProven, entry.output_oracle_proven) !== true
+        && !statusPassedWithStructuredProof
+      ) {
+        failureDetails.push('small-oracle output-oracle success state missing');
+      }
       if (
         structuredReference
         && oracleEvidence.accepted
@@ -6560,7 +6693,9 @@ async function targetProgressionLedgerPhaseResult(ledger, phase, { repoRoot, bas
   }
   return {
     passed: false,
-    detail: `prior phase ${normalizedPhase ?? phase} proof missing from target progression ledger`,
+    detail: failureDetails.length > 0
+      ? `prior phase ${normalizedPhase ?? phase} proof rejected: ${compactStringList(failureDetails).join('; ')}`
+      : `prior phase ${normalizedPhase ?? phase} proof missing from target progression ledger`,
   };
 }
 

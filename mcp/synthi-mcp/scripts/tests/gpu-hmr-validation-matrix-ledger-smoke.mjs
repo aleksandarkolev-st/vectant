@@ -6665,6 +6665,152 @@ assert.ok(forgedTargetProgressionRocm.reasons.includes(
 ));
 assert.ok(forgedTargetProgressionRocm.openGaps.includes('target_progression_gates_failed'));
 
+const forgedVisualPriorRocmDir = path.join(logsRoot, 'real-rocm-forged-visual-prior-hash');
+const forgedVisualPriorBefore = path.join(forgedVisualPriorRocmDir, 'prior-before.png');
+const forgedVisualPriorAfter = path.join(forgedVisualPriorRocmDir, 'prior-after.png');
+const forgedVisualPriorDiff = path.join(forgedVisualPriorRocmDir, 'prior-diff.png');
+const forgedVisualPriorReadback = path.join(forgedVisualPriorRocmDir, 'readback.bin');
+const forgedVisualPriorBytes = Buffer.from([7, 14, 21, 28, 35, 42, 49, 56]);
+await writeRgbaPng(forgedVisualPriorBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(forgedVisualPriorAfter, 8, 8, (x, y) => [72 + x, 88 + y, 120, 255]);
+await writeRgbaPng(forgedVisualPriorDiff, 8, 8, () => [255, 255, 255, 255]);
+await fs.writeFile(forgedVisualPriorReadback, forgedVisualPriorBytes);
+await writeJson(`${forgedVisualPriorReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedVisualPriorBytes.length,
+  shape: [forgedVisualPriorBytes.length],
+});
+await writeRgbaPng(`${forgedVisualPriorReadback}.card.png`, 8, 8, (x, y) => [
+  forgedVisualPriorBytes[(x + y) % forgedVisualPriorBytes.length],
+  80 + x,
+  120 + y,
+  255,
+]);
+const forgedVisualPriorProofMaterials = realRocmComputeProofLedgerMaterials('forged-visual-prior-hash', {
+  projectId: 'real-rocm-forged-visual-prior-hash',
+  rawReadbackPath: forgedVisualPriorReadback,
+  rawReadbackBytes: forgedVisualPriorBytes,
+});
+await writeJson(path.join(forgedVisualPriorRocmDir, 'real-rocm-forged-visual-prior-hash.json'), {
+  slug: 'gpu-real-rocm-forged-visual-prior-hash-20260625',
+  real_rocm_profile: { id: 'real-rocm-forged-visual-prior-hash' },
+  source_url: 'https://example.invalid/rocm/forged-visual-prior.git',
+  repo_commit: 'dddddddddddddddddddddddddddddddddddddddd',
+  entry_file: 'src/kernels/visual_prior_entry.hip',
+  delta_file: 'src/kernels/visual_prior_delta.h',
+  target_name: 'ForgedVisualPriorDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedVisualPriorDriver',
+    finalAcceptanceTarget: 'ForgedVisualPriorDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+  },
+  target_progression_ledger: {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    provided: true,
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        resultState: 'gpu-hmr-output-oracle-proven',
+        outputOracleProven: true,
+        proofId: 'visual-prior-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        schemaVersion: 'synthi.gpu_hmr.visual_prior_oracle.v1',
+        visualEvidenceArtifacts: [
+          { role: 'before', path: forgedVisualPriorBefore, contentHash: hashValue('wrong-prior-before') },
+          { role: 'after', path: forgedVisualPriorAfter, contentHash: hashValue('wrong-prior-after') },
+          { role: 'diff', path: forgedVisualPriorDiff, contentHash: hashValue('wrong-prior-diff') },
+        ],
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'visual-prior-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+        partialReloadProven: true,
+        fissionProven: true,
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'visual-prior-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+        originalHostPathProven: true,
+        attachmentProven: true,
+        hostPreservationProven: true,
+        dispatchSafeProven: true,
+      },
+    ],
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedVisualPriorProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-visual-prior-hash-delta',
+    editHash: hashValue('real-rocm-forged-visual-prior-hash-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-visual-prior.git @ dddddddd files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedVisualPriorRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedVisualPriorRocmDir],
+  generatedAt: '2026-06-25T00:00:02.450Z',
+  includeUnproven: true,
+});
+const forgedVisualPriorRocm = forgedVisualPriorRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+const forgedVisualPriorSmallOracleGate = forgedVisualPriorRocm?.targetProgressionGates.find(
+  (gate) => gate.name === 'target progression prior small-oracle',
+);
+assert.equal(forgedVisualPriorRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedVisualPriorRocm.acceptedForGpuHmr, false);
+assert.equal(forgedVisualPriorSmallOracleGate?.status, 'fail');
+assert.match(forgedVisualPriorSmallOracleGate?.detail ?? '', /visual_artifact_hash_mismatch/);
+assert.ok(forgedVisualPriorRocm.reasons.includes(
+  'target_progression_gate_failed:target progression prior small-oracle',
+));
+assert.ok(forgedVisualPriorRocm.openGaps.includes('target_progression_gates_failed'));
+
 const forgedComputeRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-missing-raw');
 const forgedComputeRawReadback = path.join(forgedComputeRocmDir, 'missing-readback.bin');
 const forgedComputeProofMaterials = realRocmComputeProofLedgerMaterials('forged-compute-missing-raw', {
