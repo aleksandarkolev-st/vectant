@@ -34,22 +34,6 @@ const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'webgpu_declared_compute_readback',
   'webgpu_declared_pipeline_visual',
 ]);
-const VALIDATION_VISUAL_PROFILE_REQUIREMENTS = [
-  {
-    id: 'flow_visual_gpu_path',
-    profileId: 'flow',
-    backend: 'hip',
-    requirement: 'Flow visual GPU path with runtime proof and visual oracle',
-    missingGap: 'flow_visual_runtime_profile_evidence_required',
-  },
-  {
-    id: 'ray_light_visual_gpu_path',
-    profileId: 'ray-light',
-    backend: 'hip',
-    requirement: 'Ray-light visual GPU path with runtime proof and visual oracle',
-    missingGap: 'ray_light_visual_runtime_profile_evidence_required',
-  },
-];
 const VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_profile_evidence.v1';
 const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
@@ -1076,6 +1060,7 @@ function validationProfileEvidenceFacet(row = {}) {
     supplied.coverage_id,
   );
   const source = firstText(supplied.source, supplied.evidenceSource, supplied.evidence_source);
+  const requirement = firstText(supplied.requirement, supplied.description);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
   const binding = validationProfileEvidenceBindingFacet(row, supplied);
@@ -1112,6 +1097,7 @@ function validationProfileEvidenceFacet(row = {}) {
     profile_id: profileId,
     profileClass,
     profile_class: profileClass,
+    requirement,
     source,
     evidenceRefs,
     evidence_refs: evidenceRefs,
@@ -1123,13 +1109,42 @@ function validationProfileEvidenceFacet(row = {}) {
   };
 }
 
-function rowHasValidationVisualProfileEvidence(row, requirement) {
-  const evidence = compactObject(row.validationProfileEvidence ?? row.validation_profile_evidence);
-  return evidence.accepted === true
-    && row.backend === requirement.backend
-    && evidence.profileId === requirement.profileId
-    && evidence.profileClass === requirement.id
-    && rowHasAcceptedVisualEvidence(row);
+function validationProfileCoverageEntries(rows) {
+  const rowsByProfileClass = new Map();
+  for (const row of acceptedRows(rows, (candidate) => {
+    const evidence = compactObject(candidate.validationProfileEvidence ?? candidate.validation_profile_evidence);
+    return evidence.accepted === true
+      && Boolean(evidence.profileClass ?? evidence.profile_class)
+      && Boolean(evidence.profileId ?? evidence.profile_id)
+      && rowHasAcceptedVisualEvidence(candidate);
+  })) {
+    const evidence = compactObject(row.validationProfileEvidence ?? row.validation_profile_evidence);
+    const profileClass = firstText(evidence.profileClass, evidence.profile_class);
+    if (!profileClass) continue;
+    if (!rowsByProfileClass.has(profileClass)) rowsByProfileClass.set(profileClass, []);
+    rowsByProfileClass.get(profileClass).push(row);
+  }
+  return [...rowsByProfileClass.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([profileClass, profileRows]) => {
+      const firstEvidence = compactObject(
+        profileRows[0]?.validationProfileEvidence
+        ?? profileRows[0]?.validation_profile_evidence,
+      );
+      const profileId = firstText(firstEvidence.profileId, firstEvidence.profile_id);
+      return coverageEntry({
+        id: profileClass,
+        requirement: firstText(
+          firstEvidence.requirement,
+          firstEvidence.description,
+          `Declared validation profile ${profileClass}`,
+        ),
+        status: 'accepted',
+        rows: profileRows,
+        profileId,
+        profile_id: profileId,
+      });
+    });
 }
 
 function ledgerRecordForRow(row = {}) {
@@ -7352,10 +7367,6 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
 }
 
 function planCoverage(rows) {
-  const visualProfileRowsByRequirement = new Map(VALIDATION_VISUAL_PROFILE_REQUIREMENTS.map((requirement) => [
-    requirement.id,
-    acceptedRows(rows, (row) => rowHasValidationVisualProfileEvidence(row, requirement)),
-  ]));
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
     && row.proofMode !== 'hip_module_runtime_readback'
@@ -7406,18 +7417,7 @@ function planCoverage(rows) {
       openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
     }),
     hipModuleScopedRuntimeCoverage(rows),
-    ...VALIDATION_VISUAL_PROFILE_REQUIREMENTS.map((requirement) => {
-      const requirementRows = visualProfileRowsByRequirement.get(requirement.id) ?? [];
-      return coverageEntry({
-        id: requirement.id,
-        requirement: requirement.requirement,
-        status: requirementRows.length > 0 ? 'accepted' : 'missing',
-        rows: requirementRows,
-        openGaps: requirementRows.length > 0 ? [] : [requirement.missingGap],
-        profileId: requirement.profileId,
-        profile_id: requirement.profileId,
-      });
-    }),
+    ...validationProfileCoverageEntries(rows),
     coverageEntry({
       id: 'hiprt_visual_path',
       requirement: 'HIPRT same-process ray-traced visual path',

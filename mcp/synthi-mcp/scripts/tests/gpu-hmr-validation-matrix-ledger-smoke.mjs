@@ -3866,10 +3866,7 @@ const spoofNamedFlowCoverage = new Map(spoofNamedFlowLedger.summary.planCoverage
 const spoofNamedFlowRuntime = spoofNamedFlowLedger.rows.find((row) => row.targetId === 'flow');
 assert.equal(spoofNamedFlowRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(spoofNamedFlowRuntime.validationProfileEvidence.accepted, false);
-assert.equal(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.status, 'missing');
-assert.ok(spoofNamedFlowCoverage.get('flow_visual_gpu_path')?.openGaps.includes(
-  'flow_visual_runtime_profile_evidence_required',
-));
+assert.equal(spoofNamedFlowCoverage.get('flow_visual_gpu_path'), undefined);
 
 const forgedAcceptedProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-non-flow-forged-profile');
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
@@ -3936,7 +3933,7 @@ assert.equal(forgedAcceptedProfileRuntime.validationProfileEvidence.accepted, fa
 assert.ok(forgedAcceptedProfileRuntime.validationProfileEvidence.failedGates.includes(
   'validation_profile_id_not_bound_to_runtime_identity',
 ));
-assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
 const substringOnlyProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-substring-only-profile');
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
@@ -3998,7 +3995,7 @@ assert.equal(substringOnlyProfileRuntime.validationProfileEvidence.accepted, fal
 assert.ok(substringOnlyProfileRuntime.validationProfileEvidence.failedGates.includes(
   'validation_profile_evidence_refs_not_bound_to_row',
 ));
-assert.equal(substringOnlyProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+assert.equal(substringOnlyProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
 const explicitContractSourceProfileDir = path.join(
   logsRoot,
@@ -4068,7 +4065,7 @@ assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.binding
 assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.failedGates.includes(
   'validation_profile_evidence_source_not_authorized',
 ));
-assert.equal(explicitContractSourceProfileCoverage.get('flow_visual_gpu_path')?.status, 'missing');
+assert.equal(explicitContractSourceProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
