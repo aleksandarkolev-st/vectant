@@ -2939,8 +2939,14 @@ const nativeAuthorityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [nativeAuthorityRow],
 });
-assert.equal(nativeAuthorityQuery.accepted, true, JSON.stringify(nativeAuthorityQuery.failedGates));
-assert.equal(nativeAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 1);
+assert.equal(nativeAuthorityQuery.accepted, false);
+assert.equal(nativeAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(nativeAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_strict_runtime_proof_artifact'
+));
+assert.ok(nativeAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'full_runtime_authority_strict_runtime_proof_artifact_missing'
+));
 
 const nativeAuthorityMissingLoaderRow = withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('native-authority-missing-loader', {
   proofMode: 'hip_module_runtime_readback',
@@ -2967,6 +2973,9 @@ assert.equal(nativeAuthorityMissingLoaderQuery.accepted, false);
 assert.equal(nativeAuthorityMissingLoaderQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
 assert.ok(nativeAuthorityMissingLoaderQuery.failedGates.some((gate) =>
   gate.code === 'full_runtime_authority_native_runtime_trace_missing'
+));
+assert.ok(nativeAuthorityMissingLoaderQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_strict_runtime_proof_artifact'
 ));
 
 const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');

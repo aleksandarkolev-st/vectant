@@ -2311,24 +2311,25 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
     && row.proofChainAccepted === true
     && outputOracleAccepted
     && nativeRuntimeTrace.accepted === true;
-  const accepted = strictRuntimeArtifactAccepted || nativeRuntimeAuthorityAccepted;
+  const accepted = strictRuntimeArtifactAccepted;
   const failedGates = accepted
     ? []
     : compactStringList([
       ledgerAccepted ? null : 'full_runtime_authority_recomputed_ledger_missing',
       row.proofChainAccepted === true ? null : 'full_runtime_authority_proof_chain_not_accepted',
       outputOracleAccepted ? null : 'full_runtime_authority_output_oracle_not_accepted',
-      strictRuntimeArtifactAccepted || nativeRuntimeTrace.accepted
+      nativeRuntimeTrace.accepted === true
         ? null
         : 'full_runtime_authority_native_runtime_trace_missing',
-      'full_runtime_authority_requires_strict_artifact_or_native_runtime_trace',
+      strictRuntimeArtifactAccepted ? null : 'full_runtime_authority_strict_runtime_proof_artifact_missing',
+      'full_runtime_authority_requires_strict_runtime_proof_artifact',
     ]);
   return {
     accepted,
     authority: strictRuntimeArtifactAccepted
       ? 'strict_runtime_proof_artifact'
       : nativeRuntimeAuthorityAccepted
-        ? 'backend_native_recomputed_ledger_trace'
+        ? 'backend_native_recomputed_ledger_trace_supporting_only'
         : 'unproven',
     strictRuntimeArtifactAccepted,
     strict_runtime_artifact_accepted: strictRuntimeArtifactAccepted,
@@ -2393,6 +2394,9 @@ function rowSafetyFailures(row) {
     if (fullRuntimeAuthority.accepted !== true) {
       failures.push(...fullRuntimeAuthority.failedGates);
     }
+    if (row.runtimeProofArtifact?.accepted !== true) {
+      failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
+    }
     const sourceAdaptation = sourceAdaptationProofFacet(row);
     if (sourceAdaptation.acceptedForNoShimHmr !== true) {
       failures.push(...sourceAdaptation.failedGates);
@@ -2421,19 +2425,6 @@ function rowSafetyFailures(row) {
   }
   if (row.acceptedForGpuHmr === true && row.visual?.required === true && row.visual.accepted !== true) {
     failures.push({ code: 'visual_gpu_hmr_success_requires_readable_visual_artifacts' });
-  }
-  if (
-    row.acceptedForGpuHmr === true
-    && (
-      row.proofMode === 'run_mode_proof'
-      || row.proofMode === 'real_rocm_repo_validation'
-      || row.proofMode === 'mcp_preview_visual'
-      || row.proofMode === 'strict_runtime_ledger'
-    )
-  ) {
-    if (row.runtimeProofArtifact?.accepted !== true) {
-      failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
-    }
   }
   if (row.acceptedForGpuHmr === true && row.proofMode === 'real_rocm_repo_validation') {
     const appHookGate = realRocmAppHookContractGate({
@@ -3573,6 +3564,8 @@ async function hiprtWarmRow(json, filePath, context) {
 }
 
 async function webGpuRuntimeVisualRow(json, filePath, context) {
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
   const visualArtifacts = compactObject(
     json.visualOracleArtifacts
     ?? json.visual_oracle_artifacts
@@ -3629,6 +3622,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
     && declaredScopeEvidence.accepted === true
+    && runtimeProofArtifactGate.accepted === true
     && visual.accepted === true;
   const accepted =
     strictVisualProofAccepted === true
@@ -3667,8 +3661,10 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       : sourceAdaptedVisualProfileAccepted
         ? 'source_adapted_visual_profile_not_no_shim_hmr'
         : 'webgpu_runtime_visual_chain_rejected',
-    proofIds: proofIdsFrom(json, ledger),
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifact),
     ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -3702,8 +3698,10 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       declaredScopeEvidence.accepted === true ? null : 'webgpu_visual_declared_scope_not_evidence_backed',
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
@@ -3715,6 +3713,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
 
 async function webGpuRuntimeComputeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
@@ -3806,6 +3806,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && nativeApiEvidence.accepted === true
     && declaredScopeEvidence.accepted === true
     && webGpuComputeRuntimeProfileAccepted === true
+    && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
@@ -3824,8 +3825,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     refusalProven: false,
     proofChainAccepted: accepted,
     proofChain: accepted ? 'webgpu_ledger_process_native_compute_readback_chain' : 'webgpu_runtime_compute_chain_rejected',
-    proofIds: proofIdsFrom(json, ledger),
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifact),
     ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -3876,6 +3879,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
       expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       declaredScopeEvidence.accepted === true
         ? null
@@ -3883,6 +3887,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
       webGpuComputeRuntimeProfileAccepted === true
         ? null
         : 'webgpu_compute_runtime_profile_trace_not_accepted',
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_compute_readback_proof_not_accepted',
@@ -3893,6 +3898,8 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
 
 async function hipModuleRuntimeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
@@ -4041,6 +4048,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     && runtimeTimestampProofAccepted
     && epoch2ArtifactHashProofAccepted
     && computeCardOnlyProofAccepted
+    && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
@@ -4059,8 +4067,10 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     refusalProven: false,
     proofChainAccepted: accepted,
     proofChain: accepted ? 'hip_module_ledger_native_api_readback_chain' : 'hip_module_runtime_chain_rejected',
-    proofIds: proofIdsFrom(json, ledger),
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifact),
     ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -4137,6 +4147,7 @@ async function hipModuleRuntimeRow(json, filePath, context) {
       computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
       computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
       expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runtimeTrace.sameProcess === true ? null : 'same_process_not_accepted',
       runtimeTrace.processRestarted === false ? null : 'process_continuity_not_accepted',
