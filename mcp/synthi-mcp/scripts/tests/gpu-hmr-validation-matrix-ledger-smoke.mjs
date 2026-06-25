@@ -4777,10 +4777,10 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
     phase: 'small-oracle',
     recognized: true,
     reason: null,
-    targetName: 'AcceptedRocmDriver',
+    targetName: 'AcceptedRocmSmallOracle',
     finalAcceptanceTarget: 'AcceptedRocmDriver',
     finalAcceptanceTargetDeclared: true,
-    targetMatchesFinalAcceptance: true,
+    targetMatchesFinalAcceptance: false,
     nonFinalPhase: true,
     nonFinalTargetRequired: true,
     requirements: ['target_must_not_be_final_acceptance_target_when_declared', 'output_oracle_proven'],
@@ -4789,7 +4789,7 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
     {
       name: 'target progression phase',
       status: 'pass',
-      detail: 'phase=small-oracle target=AcceptedRocmDriver final_target=AcceptedRocmDriver',
+      detail: 'phase=small-oracle target=AcceptedRocmSmallOracle final_target=AcceptedRocmDriver',
     },
   ],
   output_proof: {
@@ -4832,8 +4832,11 @@ const acceptedRealRocmLedger = await collectGpuHmrValidationMatrixLedger({
   includeUnproven: true,
 });
 const acceptedRealRocm = acceptedRealRocmLedger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
-assert.equal(acceptedRealRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
-assert.equal(acceptedRealRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedRealRocm?.matrixOutcome, 'target_progression_evidence');
+assert.equal(acceptedRealRocm.acceptedForGpuHmr, false);
+assert.equal(acceptedRealRocm.gpuHmrSuccess, false);
+assert.equal(acceptedRealRocm.targetProgressionEvidence, true);
+assert.equal(acceptedRealRocm.proofChainAccepted, true);
 assert.equal(acceptedRealRocm.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedRealRocm.runtimeProofArtifact.accepted, true);
 assert.equal(acceptedRealRocm.visual.present, true);
@@ -4842,6 +4845,7 @@ assert.equal(acceptedRealRocm.outputOracleResolution.selectedSource, 'profile_ru
 assert.equal(acceptedRealRocm.outputOracleResolution.contractPresent, true);
 assert.equal(acceptedRealRocm.targetProgression.phase, 'small-oracle');
 assert.equal(acceptedRealRocm.targetProgressionGates[0]?.status, 'pass');
+assert.ok(!acceptedRealRocm.targetProgressionGates.some((gate) => gate.status === 'fail'));
 assert.equal(acceptedRealRocm.coverageObligations.perTargetRunModes, false);
 assert.equal(acceptedRealRocm.validationTargetScope, 'evidence_row');
 assert.equal(acceptedRealRocm.cpuHmrUsed, false);
@@ -4860,11 +4864,22 @@ assert.equal(acceptedRealRocm.realRocmRuntimeCapabilityPreflight.observed, true)
 assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.accepted, true);
 assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.notApplicable, true);
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
-assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
-assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo:real-rocm-accepted-lib')?.status, 'accepted');
-assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo:real-rocm-accepted-lib')?.rowCount, 1);
+assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'missing');
+assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo:real-rocm-accepted-lib'), undefined);
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+const acceptedRealRocmDefaultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedRealRocmDir],
+  generatedAt: '2026-06-09T00:00:02.001Z',
+  includeUnproven: false,
+});
+assert.ok(acceptedRealRocmDefaultLedger.rows.some((row) =>
+  row.proofMode === 'real_rocm_repo_validation'
+  && row.matrixOutcome === 'target_progression_evidence'
+  && row.acceptedForGpuHmr === false
+));
 
 const acceptedRealRocmSidecarDir = path.join(logsRoot, 'real-rocm-accepted-sidecar');
 await writeRgbaPng(path.join(acceptedRealRocmSidecarDir, 'before-hmr-first.png'), 8, 8, () => [8, 12, 16, 255]);
@@ -4903,10 +4918,10 @@ await writeJson(path.join(acceptedRealRocmSidecarDir, 'real-rocm-accepted-sideca
     phase: 'small-oracle',
     recognized: true,
     reason: null,
-    targetName: 'AcceptedSidecarDriver',
+    targetName: 'AcceptedSidecarSmallOracle',
     finalAcceptanceTarget: 'AcceptedSidecarDriver',
     finalAcceptanceTargetDeclared: true,
-    targetMatchesFinalAcceptance: true,
+    targetMatchesFinalAcceptance: false,
     nonFinalPhase: true,
     nonFinalTargetRequired: true,
     requirements: ['target_must_not_be_final_acceptance_target_when_declared', 'output_oracle_proven'],
@@ -4915,7 +4930,7 @@ await writeJson(path.join(acceptedRealRocmSidecarDir, 'real-rocm-accepted-sideca
     {
       name: 'target progression phase',
       status: 'pass',
-      detail: 'phase=small-oracle target=AcceptedSidecarDriver final_target=AcceptedSidecarDriver',
+      detail: 'phase=small-oracle target=AcceptedSidecarSmallOracle final_target=AcceptedSidecarDriver',
     },
   ],
   output_proof: {
@@ -4970,8 +4985,10 @@ const acceptedRealRocmSidecarLedger = await collectGpuHmrValidationMatrixLedger(
 const acceptedRealRocmSidecar = acceptedRealRocmSidecarLedger.rows.find(
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
-assert.equal(acceptedRealRocmSidecar?.matrixOutcome, 'full_runtime_gpu_hmr');
-assert.equal(acceptedRealRocmSidecar.acceptedForGpuHmr, true);
+assert.equal(acceptedRealRocmSidecar?.matrixOutcome, 'target_progression_evidence');
+assert.equal(acceptedRealRocmSidecar.acceptedForGpuHmr, false);
+assert.equal(acceptedRealRocmSidecar.gpuHmrSuccess, false);
+assert.equal(acceptedRealRocmSidecar.targetProgressionEvidence, true);
 assert.equal(acceptedRealRocmSidecar.realRocmSidecarRuntimeConsistencyGate.accepted, true);
 assert.equal(acceptedRealRocmSidecar.realRocmSidecarRuntimeConsistencyGate.notApplicable, false);
 assert.equal(acceptedRealRocmSidecar.realRocmSidecarRuntimeConsistency.status, 'sidecar_runtime_consistency_proven');
@@ -4984,6 +5001,7 @@ async function writeForgedRealRocmAcceptanceGateCase({
   outputOracleResolution = null,
   runtimeCapabilityPreflight = null,
   mutateMaterials = null,
+  expectedMatrixOutcome = 'target_progression_evidence',
   expectedReasons = [],
   expectedOpenGaps = [],
 }) {
@@ -5080,8 +5098,9 @@ async function writeForgedRealRocmAcceptanceGateCase({
     includeUnproven: true,
   });
   const row = forgedLedger.rows.find((entry) => entry.proofMode === 'real_rocm_repo_validation');
-  assert.equal(row?.matrixOutcome, 'unproven');
+  assert.equal(row?.matrixOutcome, expectedMatrixOutcome);
   assert.equal(row.acceptedForGpuHmr, false);
+  assert.equal(row.gpuHmrSuccess, false);
   assert.equal(row.runtimeProofArtifact.accepted, true);
   assert.equal(row.ledger.gpuHmrSuccess, true);
   for (const reason of expectedReasons) assert.ok(row.reasons.includes(reason), reason);
@@ -5473,8 +5492,10 @@ const forgedSidecarMismatchLedger = await collectGpuHmrValidationMatrixLedger({
 const forgedSidecarMismatch = forgedSidecarMismatchLedger.rows.find(
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
-assert.equal(forgedSidecarMismatch?.matrixOutcome, 'unproven');
+assert.equal(forgedSidecarMismatch?.matrixOutcome, 'target_progression_evidence');
 assert.equal(forgedSidecarMismatch.acceptedForGpuHmr, false);
+assert.equal(forgedSidecarMismatch.gpuHmrSuccess, false);
+assert.equal(forgedSidecarMismatch.targetProgressionEvidence, true);
 assert.equal(forgedSidecarMismatch.runtimeProofArtifact.accepted, true);
 assert.equal(forgedSidecarMismatch.ledger.gpuHmrSuccess, true);
 assert.equal(forgedSidecarMismatch.outputOracleFacet.accepted, true);
@@ -5623,8 +5644,10 @@ const forgedRequiredHookRocmLedger = await collectGpuHmrValidationMatrixLedger({
 const forgedRequiredHookRocm = forgedRequiredHookRocmLedger.rows.find(
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
-assert.equal(forgedRequiredHookRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedRequiredHookRocm?.matrixOutcome, 'target_progression_evidence');
 assert.equal(forgedRequiredHookRocm.acceptedForGpuHmr, false);
+assert.equal(forgedRequiredHookRocm.gpuHmrSuccess, false);
+assert.equal(forgedRequiredHookRocm.targetProgressionEvidence, true);
 assert.equal(forgedRequiredHookRocm.runtimeProofArtifact.accepted, true);
 assert.equal(forgedRequiredHookRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedRequiredHookRocm.outputOracleFacet.accepted, true);
@@ -5741,8 +5764,10 @@ const forgedMissingHookFacetRocmLedger = await collectGpuHmrValidationMatrixLedg
 const forgedMissingHookFacetRocm = forgedMissingHookFacetRocmLedger.rows.find(
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
-assert.equal(forgedMissingHookFacetRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedMissingHookFacetRocm?.matrixOutcome, 'target_progression_evidence');
 assert.equal(forgedMissingHookFacetRocm.acceptedForGpuHmr, false);
+assert.equal(forgedMissingHookFacetRocm.gpuHmrSuccess, false);
+assert.equal(forgedMissingHookFacetRocm.targetProgressionEvidence, true);
 assert.equal(forgedMissingHookFacetRocm.runtimeProofArtifact.accepted, true);
 assert.equal(forgedMissingHookFacetRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedMissingHookFacetRocm.outputOracleFacet.accepted, true);
@@ -5974,7 +5999,9 @@ const forgedFinalMissingFixturesRocm = forgedFinalMissingFixturesRocmLedger.rows
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
 assert.equal(forgedFinalMissingFixturesRocm?.matrixOutcome, 'unproven');
+assert.notEqual(forgedFinalMissingFixturesRocm.matrixOutcome, 'target_progression_evidence');
 assert.equal(forgedFinalMissingFixturesRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalMissingFixturesRocm.targetProgressionEvidence, false);
 assert.equal(forgedFinalMissingFixturesRocm.runtimeProofArtifact.accepted, true);
 assert.equal(forgedFinalMissingFixturesRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedFinalMissingFixturesRocm.outputOracleFacet.accepted, true);
@@ -6444,7 +6471,9 @@ const forgedFinalNoOracleRocm = forgedFinalNoOracleRocmLedger.rows.find(
   (row) => row.proofMode === 'real_rocm_repo_validation',
 );
 assert.equal(forgedFinalNoOracleRocm?.matrixOutcome, 'unproven');
+assert.notEqual(forgedFinalNoOracleRocm.matrixOutcome, 'target_progression_evidence');
 assert.equal(forgedFinalNoOracleRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalNoOracleRocm.targetProgressionEvidence, false);
 assert.equal(forgedFinalNoOracleRocm.runtimeProofArtifact.accepted, true);
 assert.equal(forgedFinalNoOracleRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedFinalNoOracleRocm.outputOracleFacet.accepted, true);
