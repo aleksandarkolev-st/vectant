@@ -1428,7 +1428,7 @@ latest result state: webgpu-runtime-preflight-accepted
 latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260625-typed-backend-evidence-proof.json
 latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260625-typed-backend-evidence-summary.txt
 latest diagnostic screenshot: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-preflight/webgpu-preflight-20260625-typed-backend-evidence-diagnostic.png
-latest matrix row id: gpu-validation-matrix-row:sha256:1955a1b37a034028bb85b708e131c2c0a656d814eb97f84566afe918d0769b8f
+latest matrix row id: gpu-validation-matrix-row:sha256:a957a5fefca8993b8f45fc5078427fa17bbc78b8ff15b004faffd0ef0f584591
 ```
 
 The live browser accepted WebGPU runtime preflight:
@@ -1582,7 +1582,7 @@ ThreeJS WebGL shader lava now has current typed external-contract visual-profile
 
 ```text
 profile: threejs-webgl-shader-lava
-matrix row id: gpu-validation-matrix-row:sha256:527a13fe8f1fd9e3cb5632f2be7303095b080eb5c54692a8601ac8e7e8eaf103
+matrix row id: gpu-validation-matrix-row:sha256:3076197fef19408d480c51e49581b00a66dae7cc0655a8f26e9bb89dfd5ed13f
 latest report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1782385221065-report.json
 latest visual proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1782385220865-visual-proof.json
 latest proof id: external-visual-proof:9c7199b7184421f878378da9436e6fe305c1b2c44ae86c43d80ba565fa56b7f3

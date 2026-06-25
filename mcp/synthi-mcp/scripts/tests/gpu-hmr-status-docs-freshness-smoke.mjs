@@ -165,6 +165,42 @@ function assertScopedBoundaryLanguage(doc) {
   );
 }
 
+function assertCurrentMatrixRowReferencesResolve(doc, matrixArtifact) {
+  const latestRowIds = new Set(sortedRowIds(matrixArtifact.json));
+  const latestMatrixPath = repoPath(matrixArtifact.filePath);
+  const lines = doc.text.split(/\r?\n/);
+  let checkedCount = 0;
+
+  lines.forEach((line, index) => {
+    const lower = line.toLowerCase();
+    if (!lower.includes('matrix row id:') || lower.includes('historical')) return;
+
+    checkedCount += 1;
+    const rowId = line.match(/gpu-validation-matrix-row:sha256:[a-f0-9]+/i)?.[0];
+    assert.ok(
+      rowId,
+      `${repoPath(doc.path)}:${index + 1} has a current matrix row reference without a row id`,
+    );
+    assert.ok(
+      latestRowIds.has(rowId),
+      `${repoPath(doc.path)}:${index + 1} references row ${rowId}, which is absent from latest matrix ${latestMatrixPath}`,
+    );
+
+    const normalizedLine = line.split(path.sep).join('/');
+    if (normalizedLine.includes('mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/')) {
+      assert.ok(
+        normalizedLine.includes(latestMatrixPath),
+        `${repoPath(doc.path)}:${index + 1} references stale matrix artifact path; expected ${latestMatrixPath}`,
+      );
+    }
+  });
+
+  assert.ok(
+    checkedCount > 0,
+    `${repoPath(doc.path)} must include at least one current matrix row id reference to validate`,
+  );
+}
+
 const validationMatrixDir = path.join(mcpRoot, '.gpu-hmr-test-logs', 'validation-matrix');
 const validationHistoryDir = path.join(mcpRoot, '.gpu-hmr-test-logs', 'validation-matrix-unproven-audit');
 const timingDir = path.join(mcpRoot, '.gpu-hmr-test-logs', 'timing-metrics');
@@ -223,6 +259,7 @@ for (const doc of docs) {
   assertTokensPresent(doc, normalTokens);
   assertTokensPresent(doc, historyTokens);
   assertTokensPresent(doc, latestTimingTokens);
+  assertCurrentMatrixRowReferencesResolve(doc, matrix);
 }
 
 for (const doc of docs) {

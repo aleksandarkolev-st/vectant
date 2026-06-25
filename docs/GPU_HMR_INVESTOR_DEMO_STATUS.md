@@ -1032,7 +1032,7 @@ ThreeJS WebGL shader lava passed as a typed external runtime screenshot proof. T
 
 ```text
 profile: threejs-webgl-shader-lava
-matrix row id: gpu-validation-matrix-row:sha256:527a13fe8f1fd9e3cb5632f2be7303095b080eb5c54692a8601ac8e7e8eaf103
+matrix row id: gpu-validation-matrix-row:sha256:3076197fef19408d480c51e49581b00a66dae7cc0655a8f26e9bb89dfd5ed13f
 report: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1782385221065-report.json
 visual proof: mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/threejs-webgl-shader-lava-1782385220865-visual-proof.json
 proof id: external-visual-proof:9c7199b7184421f878378da9436e6fe305c1b2c44ae86c43d80ba565fa56b7f3
