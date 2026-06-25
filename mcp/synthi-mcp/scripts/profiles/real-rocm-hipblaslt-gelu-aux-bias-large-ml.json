@@ -34,7 +34,22 @@
   },
   "sourceDelta": {
     "before": "    const int                        request_solutions = 1;",
-    "after": "    const int                        request_solutions = 2;"
+    "after": "    const int                        request_solutions = 2;",
+    "second": {
+      "file": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+      "before": "    const int                        request_solutions = 2;",
+      "after": "    const int                        request_solutions = 3;"
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+        "before": "    const int                        request_solutions = 3;",
+        "after": "    const std::array<int, 2>          request_solutions = {3, 4};"
+      }
+    ]
   },
   "outputOracle": {
     "profile": "none"

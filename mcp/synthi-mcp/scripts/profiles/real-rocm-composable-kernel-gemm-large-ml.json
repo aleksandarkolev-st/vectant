@@ -34,7 +34,22 @@
   },
   "sourceDelta": {
     "before": "        64, 64, ",
-    "after": "        64, 128, "
+    "after": "        64, 128, ",
+    "second": {
+      "file": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+      "before": "        64, 128, ",
+      "after": "        128, 128, "
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+        "before": "        128, 128, ",
+        "after": "        \"layout_breaking\", 128, "
+      }
+    ]
   },
   "outputOracle": {
     "profile": "none"

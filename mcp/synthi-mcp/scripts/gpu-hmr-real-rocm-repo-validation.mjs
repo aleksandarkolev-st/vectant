@@ -568,6 +568,17 @@ async function selfCheckRealRocmProfiles() {
           `large ROCm ML final-acceptance profile ${profile.id} must declare proofObligations.requiresNegativeEdit=true`,
         );
       }
+      const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile);
+      if (sourceDeltaFixtures.hotDelta2Declared !== true) {
+        throw new Error(
+          `large ROCm ML final-acceptance profile ${profile.id} must configure an executable hot_delta_2 source delta fixture`,
+        );
+      }
+      if (sourceDeltaFixtures.negativeEditDeclared !== true) {
+        throw new Error(
+          `large ROCm ML final-acceptance profile ${profile.id} must configure an executable negative_edit source delta fixture`,
+        );
+      }
     }
     const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
     if (existsSync(localRepoPath)) {
@@ -833,6 +844,94 @@ function isLargeRocmMlFinalAcceptance({ declared, targetProgression = {} } = {})
     && targetProgression.phase === 'final-acceptance';
 }
 
+function sourceDeltaFallbackFile(profile = {}) {
+  return profile.target?.deltaFile || profile.target?.entryFile || '';
+}
+
+function sourceDeltaEntryFile(entry = {}, profile = {}) {
+  return String(entry.file ?? entry.path ?? sourceDeltaFallbackFile(profile) ?? '')
+    .replace(/\\/g, '/')
+    .trim();
+}
+
+function sourceDeltaEntryIsConfiguredExecutableCandidate(entry = {}, profile = {}) {
+  const before = typeof entry.before === 'string' ? entry.before : '';
+  const after = typeof entry.after === 'string' ? entry.after : '';
+  return Boolean(sourceDeltaEntryFile(entry, profile) && before && after && before !== after);
+}
+
+function sourceDeltaEntryKind(entry = {}) {
+  return cleanIdentifier(
+    entry.kind
+    ?? entry.editKind
+    ?? entry.edit_kind
+    ?? entry.label
+    ?? '',
+  ).toLowerCase().replace(/[-.]+/g, '_');
+}
+
+function realRocmSourceDeltaFixtures(profile = {}) {
+  const sourceDelta = profile.sourceDelta && typeof profile.sourceDelta === 'object'
+    ? profile.sourceDelta
+    : profile.source_delta && typeof profile.source_delta === 'object'
+      ? profile.source_delta
+      : {};
+  const second = sourceDelta.second && typeof sourceDelta.second === 'object'
+    ? sourceDelta.second
+    : sourceDelta.secondDelta && typeof sourceDelta.secondDelta === 'object'
+      ? sourceDelta.secondDelta
+      : {};
+  const extraDeltas = Array.isArray(sourceDelta.extraDeltas)
+    ? sourceDelta.extraDeltas
+    : Array.isArray(sourceDelta.extra_deltas)
+      ? sourceDelta.extra_deltas
+      : [];
+  const executableExtraDeltas = extraDeltas.filter((entry) =>
+    sourceDeltaEntryIsConfiguredExecutableCandidate(entry, profile)
+  );
+  const hotDelta2Extras = executableExtraDeltas.filter((entry) => {
+    const kind = sourceDeltaEntryKind(entry);
+    return kind === 'hot_delta_2'
+      || kind === 'hot2'
+      || kind === 'second'
+      || kind.includes('hot_delta_2');
+  });
+  const negativeEditExtras = executableExtraDeltas.filter((entry) => {
+    const kind = sourceDeltaEntryKind(entry);
+    return kind === 'negative_edit'
+      || kind === 'negative'
+      || kind.includes('negative')
+      || entry.expectedRefusal === true
+      || entry.expected_refusal === true;
+  });
+  const secondDeclared = sourceDeltaEntryIsConfiguredExecutableCandidate(second, profile);
+  const hotDelta2Declared = secondDeclared || hotDelta2Extras.length > 0;
+  const negativeEditDeclared = negativeEditExtras.length > 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_fixtures.v1',
+    proofAuthority: 'profile_configuration_only_not_runtime_proof',
+    proof_authority: 'profile_configuration_only_not_runtime_proof',
+    hotDelta2Declared,
+    hot_delta_2_declared: hotDelta2Declared,
+    secondDeltaDeclared: secondDeclared,
+    second_delta_declared: secondDeclared,
+    negativeEditDeclared,
+    negative_edit_declared: negativeEditDeclared,
+    fallbackFile: sourceDeltaFallbackFile(profile),
+    fallback_file: sourceDeltaFallbackFile(profile),
+    hotDelta2PhaseExecuted: false,
+    hot_delta_2_phase_executed: false,
+    negativeEditPhaseExecuted: false,
+    negative_edit_phase_executed: false,
+    executableExtraDeltaCount: executableExtraDeltas.length,
+    executable_extra_delta_count: executableExtraDeltas.length,
+    hotDelta2FixtureCount: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    hot_delta_2_fixture_count: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    negativeEditFixtureCount: negativeEditExtras.length,
+    negative_edit_fixture_count: negativeEditExtras.length,
+  };
+}
+
 function realRocmProfileProofObligationsFacet({
   profile = {},
   targetProgression = {},
@@ -877,6 +976,7 @@ function realRocmProfileProofObligationsFacet({
     || Boolean(outputOracleContract)
     || Boolean(outputOracleRuntimeProfile);
   const appHookContractDeclared = profile.appHookContract?.declared === true;
+  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile);
   const refusalOnly = declared.refusalOnly === true || declared.refusal_only === true;
   const blockingGaps = [];
   if (refusalOnly) {
@@ -900,6 +1000,12 @@ function realRocmProfileProofObligationsFacet({
   }
   if (requiresNegativeEdit && !explicitRequiresNegativeEdit) {
     blockingGaps.push('proof_obligation_negative_edit_missing');
+  }
+  if (requiresRunModes && !sourceDeltaFixtures.hotDelta2Declared) {
+    blockingGaps.push('proof_obligation_hot_delta_2_fixture_missing');
+  }
+  if (requiresNegativeEdit && !sourceDeltaFixtures.negativeEditDeclared) {
+    blockingGaps.push('proof_obligation_negative_edit_fixture_missing');
   }
   const status = blockingGaps.length === 0
     ? 'profile_proof_obligations_satisfied_by_configuration'
@@ -950,6 +1056,8 @@ function realRocmProfileProofObligationsFacet({
     requires_negative_edit: requiresNegativeEdit,
     requiresNegativeEditDeclared: explicitRequiresNegativeEdit,
     requires_negative_edit_declared: explicitRequiresNegativeEdit,
+    sourceDeltaFixtures,
+    source_delta_fixtures: sourceDeltaFixtures,
     outputOracleProfile: outputOracleProfile || null,
     output_oracle_profile: outputOracleProfile || null,
     blockingGaps: compactStringList(blockingGaps),
@@ -967,6 +1075,7 @@ function realRocmProfileProofObligationsFacet({
       explicitRequiresRunModes,
       requiresNegativeEdit,
       explicitRequiresNegativeEdit,
+      sourceDeltaFixtures,
     })).digest('hex')}`,
     contract_hash: `sha256:${createHash('sha256').update(stableJson({
       declared,
@@ -979,6 +1088,7 @@ function realRocmProfileProofObligationsFacet({
       explicitRequiresRunModes,
       requiresNegativeEdit,
       explicitRequiresNegativeEdit,
+      sourceDeltaFixtures,
     })).digest('hex')}`,
   };
 }
@@ -6907,6 +7017,8 @@ function parseExtraDeltas() {
     }
     deltas.push({
       label: safePhaseLabel(entry.label, index),
+      kind: cleanIdentifier(entry.kind ?? entry.editKind ?? entry.edit_kind ?? entry.label ?? 'extra_delta'),
+      expectedRefusal: entry.expectedRefusal === true || entry.expected_refusal === true,
       file,
       before,
       after,
@@ -10796,6 +10908,9 @@ int main()
   const largeMlDeclaredRunModeObligations = realRocmProfileProofObligationsFacet({
     profile: {
       id: 'profile-large-ml-declared-run-modes',
+      target: {
+        deltaFile: 'src/kernels/large_ml_delta.h',
+      },
       proofObligations: normalizeRealRocmProofObligations({
         acceptanceMode: 'refusal_only',
         targetClass: 'large_rocm_ml_infrastructure',
@@ -10805,6 +10920,21 @@ int main()
         requiresRunModes: true,
         requiresNegativeEdit: true,
       }),
+      sourceDelta: {
+        second: {
+          before: 'value = value + 1;',
+          after: 'value = value + 2;',
+        },
+        extraDeltas: [
+          {
+            label: 'Negative Edit',
+            kind: 'Negative Edit',
+            expectedRefusal: true,
+            before: 'float value = 1.0f;',
+            after: 'float value = make_layout_breaking_edit();',
+          },
+        ],
+      },
       appHookContract: normalizeRealRocmAppHookContract(null),
     },
     targetProgression: buildTargetProgressionMetadata({
@@ -10928,10 +11058,16 @@ int main()
     || largeMlMissingRunModeObligations.requiresNegativeEdit !== true
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_run_modes_missing')
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_missing')
+    || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_hot_delta_2_fixture_missing')
+    || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_fixture_missing')
     || largeMlDeclaredRunModeObligations.requiresRunModesDeclared !== true
     || largeMlDeclaredRunModeObligations.requiresNegativeEditDeclared !== true
+    || largeMlDeclaredRunModeObligations.sourceDeltaFixtures.hotDelta2Declared !== true
+    || largeMlDeclaredRunModeObligations.sourceDeltaFixtures.negativeEditDeclared !== true
     || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_run_modes_missing')
     || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_missing')
+    || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_hot_delta_2_fixture_missing')
+    || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_fixture_missing')
     || smallOracleProfileObligations.blocking_gaps.length !== 0
     || requiredAppHookMissingObligations.status !== 'profile_proof_obligations_unmet'
     || !requiredAppHookMissingObligations.requiresAppHookContract
@@ -12887,6 +13023,8 @@ async function run() {
   const extraDeltas = parseExtraDeltas();
   report.extra_deltas = extraDeltas.map((delta) => ({
     label: delta.label,
+    kind: delta.kind ?? null,
+    expected_refusal: delta.expectedRefusal === true,
     file: delta.file,
     before_sha256: createHash('sha256').update(delta.before).digest('hex'),
     after_sha256: createHash('sha256').update(delta.after).digest('hex'),

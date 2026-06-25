@@ -5803,6 +5803,151 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-ta
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
 
+const forgedFinalMissingFixturesRocmDir = path.join(logsRoot, 'real-rocm-forged-final-missing-fixtures');
+const forgedFinalMissingFixturesReadback = path.join(forgedFinalMissingFixturesRocmDir, 'readback.bin');
+const forgedFinalMissingFixturesBytes = Buffer.from([2, 4, 8, 16, 32, 64, 128, 255]);
+await fs.mkdir(forgedFinalMissingFixturesRocmDir, { recursive: true });
+await fs.writeFile(forgedFinalMissingFixturesReadback, forgedFinalMissingFixturesBytes);
+await writeJson(`${forgedFinalMissingFixturesReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedFinalMissingFixturesBytes.length,
+  shape: [forgedFinalMissingFixturesBytes.length],
+});
+await writeRgbaPng(`${forgedFinalMissingFixturesReadback}.card.png`, 8, 8, (x, y) => [
+  forgedFinalMissingFixturesBytes[(x + y) % forgedFinalMissingFixturesBytes.length],
+  72 + x,
+  108 + y,
+  255,
+]);
+const forgedFinalMissingFixturesProofMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-final-missing-fixtures',
+  {
+    projectId: 'real-rocm-forged-final-missing-fixtures',
+    rawReadbackPath: forgedFinalMissingFixturesReadback,
+    rawReadbackBytes: forgedFinalMissingFixturesBytes,
+  },
+);
+await writeJson(path.join(forgedFinalMissingFixturesRocmDir, 'real-rocm-forged-final-missing-fixtures.json'), {
+  slug: 'gpu-real-rocm-forged-final-missing-fixtures-20260625',
+  real_rocm_profile: {
+    id: 'real-rocm-forged-final-missing-fixtures',
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    targetClass: 'large_rocm_ml_infrastructure',
+    target: {
+      entryFile: 'src/kernels/final_fixture_entry.hip',
+      deltaFile: 'src/kernels/final_fixture_delta.h',
+    },
+    sourceDelta: {
+      before: 'value = value + 1;',
+      after: 'value = value + 2;',
+    },
+    proofObligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requiresOutputOracle: true,
+      requiresRunModes: true,
+      requiresNegativeEdit: true,
+    },
+  },
+  source_url: 'https://example.invalid/rocm/forged-final-missing-fixtures.git',
+  repo_commit: 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1',
+  entry_file: 'src/kernels/final_fixture_entry.hip',
+  delta_file: 'src/kernels/final_fixture_delta.h',
+  target_name: 'ForgedFinalMissingFixturesDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedFinalMissingFixturesDriver',
+    finalAcceptanceTarget: 'ForgedFinalMissingFixturesDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    requirements: ['output_oracle_proven'],
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedFinalMissingFixturesProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-final-missing-fixtures-delta',
+    editHash: hashValue('real-rocm-forged-final-missing-fixtures-delta'),
+  },
+  checks: [
+    {
+      name: 'real ROCm repo',
+      status: 'pass',
+      detail: 'https://example.invalid/rocm/forged-final-missing-fixtures.git @ f1f1f1f1 files=18000',
+    },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedFinalMissingFixturesRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedFinalMissingFixturesRocmDir],
+  generatedAt: '2026-06-25T00:00:02.400Z',
+  includeUnproven: true,
+});
+const forgedFinalMissingFixturesRocm = forgedFinalMissingFixturesRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedFinalMissingFixturesRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedFinalMissingFixturesRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalMissingFixturesRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedFinalMissingFixturesRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedFinalMissingFixturesRocm.outputOracleFacet.accepted, true);
+assert.equal(forgedFinalMissingFixturesRocm.outputOracleResolutionGate.accepted, true);
+assert.equal(forgedFinalMissingFixturesRocm.realRocmProfileProofObligations.requiresRunModesDeclared, true);
+assert.equal(forgedFinalMissingFixturesRocm.realRocmProfileProofObligations.requiresNegativeEditDeclared, true);
+assert.equal(forgedFinalMissingFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2Declared, false);
+assert.equal(forgedFinalMissingFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditDeclared, false);
+assert.ok(forgedFinalMissingFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_fixture_missing',
+));
+assert.ok(forgedFinalMissingFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_fixture_missing',
+));
+assert.ok(forgedFinalMissingFixturesRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_fixture_missing',
+));
+assert.ok(forgedFinalMissingFixturesRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_fixture_missing',
+));
+
 const forgedRuntimeChainMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-runtime-chain-mismatch');
 const forgedRuntimeChainMismatchProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-runtime-chain-mismatch',

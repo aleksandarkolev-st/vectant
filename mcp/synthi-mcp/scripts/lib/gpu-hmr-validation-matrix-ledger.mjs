@@ -5305,6 +5305,88 @@ function realRocmRequiredFullRuntimeProof(json) {
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
 
+function realRocmSourceDeltaFallbackFile(profile = {}) {
+  const target = compactObject(profile.target);
+  return firstText(target.deltaFile, target.delta_file, target.entryFile, target.entry_file) ?? '';
+}
+
+function realRocmSourceDeltaEntryFile(entry = {}, profile = {}) {
+  return firstText(entry.file, entry.path, realRocmSourceDeltaFallbackFile(profile)) ?? '';
+}
+
+function realRocmSourceDeltaEntryConfiguredExecutableCandidate(entry = {}, profile = {}) {
+  const before = text(entry.before);
+  const after = text(entry.after);
+  return Boolean(realRocmSourceDeltaEntryFile(entry, profile) && before && after && before !== after);
+}
+
+function realRocmSourceDeltaEntryKind(entry = {}) {
+  return firstText(
+    entry.kind,
+    entry.editKind,
+    entry.edit_kind,
+    entry.label,
+  )?.toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/[-.]+/g, '_')
+    || '';
+}
+
+function realRocmSourceDeltaFixtures(profile = {}) {
+  const sourceDelta = compactObject(profile.sourceDelta ?? profile.source_delta);
+  const second = compactObject(sourceDelta.second ?? sourceDelta.secondDelta ?? sourceDelta.second_delta);
+  const extraDeltas = Array.isArray(sourceDelta.extraDeltas)
+    ? sourceDelta.extraDeltas
+    : Array.isArray(sourceDelta.extra_deltas)
+      ? sourceDelta.extra_deltas
+      : [];
+  const executableExtraDeltas = extraDeltas.filter((entry) =>
+    realRocmSourceDeltaEntryConfiguredExecutableCandidate(entry, profile)
+  );
+  const hotDelta2Extras = executableExtraDeltas.filter((entry) => {
+    const kind = realRocmSourceDeltaEntryKind(entry);
+    return kind === 'hot_delta_2'
+      || kind === 'hot2'
+      || kind === 'second'
+      || kind.includes('hot_delta_2');
+  });
+  const negativeEditExtras = executableExtraDeltas.filter((entry) => {
+    const kind = realRocmSourceDeltaEntryKind(entry);
+    return kind === 'negative_edit'
+      || kind === 'negative'
+      || kind.includes('negative')
+      || entry.expectedRefusal === true
+      || entry.expected_refusal === true;
+  });
+  const secondDeclared = realRocmSourceDeltaEntryConfiguredExecutableCandidate(second, profile);
+  const hotDelta2Declared = secondDeclared || hotDelta2Extras.length > 0;
+  const negativeEditDeclared = negativeEditExtras.length > 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_fixtures.v1',
+    proofAuthority: 'profile_configuration_only_not_runtime_proof',
+    proof_authority: 'profile_configuration_only_not_runtime_proof',
+    hotDelta2Declared,
+    hot_delta_2_declared: hotDelta2Declared,
+    secondDeltaDeclared: secondDeclared,
+    second_delta_declared: secondDeclared,
+    negativeEditDeclared,
+    negative_edit_declared: negativeEditDeclared,
+    fallbackFile: realRocmSourceDeltaFallbackFile(profile),
+    fallback_file: realRocmSourceDeltaFallbackFile(profile),
+    hotDelta2PhaseExecuted: false,
+    hot_delta_2_phase_executed: false,
+    negativeEditPhaseExecuted: false,
+    negative_edit_phase_executed: false,
+    executableExtraDeltaCount: executableExtraDeltas.length,
+    executable_extra_delta_count: executableExtraDeltas.length,
+    hotDelta2FixtureCount: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    hot_delta_2_fixture_count: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    negativeEditFixtureCount: negativeEditExtras.length,
+    negative_edit_fixture_count: negativeEditExtras.length,
+  };
+}
+
 function realRocmProfileProofObligationsMatrixFacet({
   profile = {},
   targetProgression = {},
@@ -5396,6 +5478,7 @@ function realRocmProfileProofObligationsMatrixFacet({
     || resolution.runtime_profile_present === true
     || Object.keys(oracleContract).length > 0
     || Object.keys(runtimeProfile).length > 0;
+  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile);
   const blockingGaps = compactStringList([
     ...serializedGaps,
     finalAcceptance && !rawDeclared
@@ -5418,6 +5501,12 @@ function realRocmProfileProofObligationsMatrixFacet({
       : null,
     requiresNegativeEdit && !explicitRequiresNegativeEdit
       ? 'proof_obligation_negative_edit_missing'
+      : null,
+    requiresRunModes && !sourceDeltaFixtures.hotDelta2Declared
+      ? 'proof_obligation_hot_delta_2_fixture_missing'
+      : null,
+    requiresNegativeEdit && !sourceDeltaFixtures.negativeEditDeclared
+      ? 'proof_obligation_negative_edit_fixture_missing'
       : null,
   ]);
   const status = blockingGaps.length === 0
@@ -5459,6 +5548,8 @@ function realRocmProfileProofObligationsMatrixFacet({
     requires_negative_edit: requiresNegativeEdit,
     requiresNegativeEditDeclared: explicitRequiresNegativeEdit,
     requires_negative_edit_declared: explicitRequiresNegativeEdit,
+    sourceDeltaFixtures,
+    source_delta_fixtures: sourceDeltaFixtures,
     blockingGaps,
     blocking_gaps: blockingGaps,
   };

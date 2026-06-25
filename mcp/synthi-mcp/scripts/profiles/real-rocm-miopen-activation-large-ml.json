@@ -34,7 +34,22 @@
   },
   "sourceDelta": {
     "before": "res[i] = data[i] * (data[i] > 0);",
-    "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);"
+    "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);",
+    "second": {
+      "file": "src/kernels/activation_functions.h",
+      "before": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);",
+      "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.50f);"
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "src/kernels/activation_functions.h",
+        "before": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.50f);",
+        "after": "res[i] = data[i] * miopen_layout_breaking_probe(data[i]);"
+      }
+    ]
   },
   "outputOracle": {
     "profile": "none"
