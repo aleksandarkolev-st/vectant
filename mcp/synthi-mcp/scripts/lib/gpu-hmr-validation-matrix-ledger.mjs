@@ -4515,8 +4515,15 @@ async function externalProjectRow(json, filePath, context) {
     visualDiff,
     json.status === 'pass',
   );
-  const deterministicAccepted = json.deterministicVisualModeEvaluation?.accepted === true
-    || json.deterministic_visual_mode_evaluation?.accepted === true;
+  const declaredDeterministicMode = compactObject(
+    json.deterministicVisualMode
+    ?? json.deterministic_visual_mode
+    ?? externalVisualProofArtifact.deterministicVisualMode
+    ?? externalVisualProofArtifact.deterministic_visual_mode,
+  );
+  const deterministicVisualModeEvaluation =
+    evaluateGpuHmrDeterministicVisualMode(declaredDeterministicMode);
+  const deterministicAccepted = deterministicVisualModeEvaluation.accepted === true;
   const visualProfileAccepted =
     json.status === 'pass'
     && visual.accepted === true
@@ -4554,6 +4561,8 @@ async function externalProjectRow(json, filePath, context) {
     external_source_delta: externalSourceDelta,
     externalVisualProofArtifact,
     external_visual_proof_artifact: externalVisualProofArtifact,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     backendEvidence: externalProjectContract,
     backend_evidence: externalProjectContract,
     targetId: profileId,
@@ -4601,6 +4610,8 @@ async function externalProjectRow(json, filePath, context) {
       ...rejectionReasons,
       json.error?.message ? 'external_profile_failed' : null,
       visualProfileAccepted || visual.accepted ? null : 'visual_artifacts_not_readable',
+      deterministicAccepted ? null : 'deterministic_visual_mode_not_accepted',
+      ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
       externalProfileSelection.accepted === true ? null : 'external_profile_selection_not_accepted',
       externalSourceDelta.accepted === true ? null : 'external_source_delta_not_accepted',
       externalVisualProofArtifact.accepted === true ? null : 'external_visual_proof_artifact_not_accepted',
@@ -4612,6 +4623,8 @@ async function externalProjectRow(json, filePath, context) {
         : compactStringList([
           'external_profile_not_accepted',
           ...externalProjectContract.failedGates,
+          ...(deterministicAccepted ? [] : ['deterministic_visual_mode_not_accepted']),
+          ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
           ...externalProfileSelection.failedGates,
           ...externalSourceDelta.failedGates,
           ...externalVisualProofArtifact.failedGates,
@@ -5092,9 +5105,13 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     && requiredContentHashes.length >= 3
     && requiredContentHashes.every((hash) => acceptedArtifactHashes.has(hash));
   const visualDiff = await visualPairDiffEvidence(requiredRolePaths.before, requiredRolePaths.after);
-  const deterministicAccepted =
-    json.deterministicVisualModeEvaluation?.accepted === true
-    || json.deterministic_visual_mode_evaluation?.accepted === true;
+  const deterministicVisualMode = compactObject(
+    json.deterministicVisualMode
+    ?? json.deterministic_visual_mode,
+  );
+  const deterministicVisualModeEvaluation =
+    evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode);
+  const deterministicAccepted = deterministicVisualModeEvaluation.accepted === true;
   const mcpPreviewRequiresFullProof = firstText(json.proofMode, json.proof_mode) === 'mcp_preview';
   const mcpPreviewFullProofAccepted = !mcpPreviewRequiresFullProof;
   const accepted = Boolean(
@@ -5124,6 +5141,7 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     allRequiredHashesAccepted ? null : 'external_visual_proof_artifact_required_hashes_not_accepted',
     visualDiff.accepted === true ? null : 'external_visual_proof_artifact_pair_diff_not_accepted',
     deterministicAccepted ? null : 'external_visual_proof_artifact_deterministic_mode_not_accepted',
+    ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
     mcpPreviewFullProofAccepted ? null : 'external_visual_proof_artifact_mcp_preview_full_runtime_proof_missing',
     ...visualDiff.failedGates,
   ]);
@@ -5145,6 +5163,10 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     accepted_artifact_hash_count: acceptedArtifactHashes.size,
     visualDiff,
     visual_diff: visualDiff,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministicAccepted,
     deterministic_accepted: deterministicAccepted,
     profileSelection: compactObject(json.profileSelection ?? json.profile_selection),

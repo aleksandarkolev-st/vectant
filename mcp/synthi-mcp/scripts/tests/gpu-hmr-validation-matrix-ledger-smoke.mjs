@@ -1889,16 +1889,7 @@ const externalVisualProofMaterial = {
     meanAbsDelta8bit: 24,
     visiblePixelCount: 76800,
   },
-  deterministicVisualMode: {
-    frozen_camera: true,
-    fixed_resolution: true,
-    frame_capture_after_epoch_dispatch: true,
-    presentation_fence_or_frame_boundary: true,
-    seed_policy_fixed: true,
-    temporal_accumulation_not_applicable: true,
-    taa_not_applicable: true,
-    denoiser_not_applicable: true,
-  },
+  deterministicVisualMode: deterministicMode('explicit-external-engine-visual'),
   deterministicVisualModeEvaluation: {
     accepted: true,
   },
@@ -1967,6 +1958,120 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engi
     visualDiffMs: 3,
   },
   proofId: 'external-profile-report:sha256:synthetic-engine-visual',
+});
+
+const seedlessExternalVisualProfileId = 'forged-external-engine-seedless-visual';
+const seedlessExternalVisualProfileSelection = {
+  ...externalVisualProfileSelection,
+  profileId: seedlessExternalVisualProfileId,
+  profile_id: seedlessExternalVisualProfileId,
+  manifestHash: hashValue(`${seedlessExternalVisualProfileId}-manifest`),
+  manifest_hash: hashValue(`${seedlessExternalVisualProfileId}-manifest`),
+  path: `profiles/${seedlessExternalVisualProfileId}.json`,
+  evidenceRefs: [`test:external-profile-selection:${seedlessExternalVisualProfileId}`],
+  evidence_refs: [`test:external-profile-selection:${seedlessExternalVisualProfileId}`],
+};
+const seedlessExternalVisualSourceDeltaEvidence = {
+  ...externalVisualSourceDeltaEvidence,
+  beforeFileHash: hashValue(`${seedlessExternalVisualProfileId}-before-file`),
+  before_file_hash: hashValue(`${seedlessExternalVisualProfileId}-before-file`),
+  afterFileHash: hashValue(`${seedlessExternalVisualProfileId}-after-file`),
+  after_file_hash: hashValue(`${seedlessExternalVisualProfileId}-after-file`),
+  evidenceRefs: [`source:src/material.frag:${seedlessExternalVisualProfileId}`],
+  evidence_refs: [`source:src/material.frag:${seedlessExternalVisualProfileId}`],
+};
+const seedlessExternalVisualProjectContract = externalProjectContractForTest({
+  profileId: seedlessExternalVisualProfileId,
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  manifestHash: seedlessExternalVisualProfileSelection.manifestHash,
+  runtimeEvidenceRefs: [`external-visual-proof:${seedlessExternalVisualProfileId}`],
+});
+const seedlessExternalVisualMode = {
+  ...deterministicMode(seedlessExternalVisualProfileId),
+  fixed_seed: false,
+  seed_policy_fixed: false,
+  seed_policy_hash: null,
+};
+const seedlessExternalVisualProofMaterial = {
+  ...externalVisualProofMaterial,
+  profileId: seedlessExternalVisualProfileId,
+  externalProjectContract: seedlessExternalVisualProjectContract,
+  external_project_contract: seedlessExternalVisualProjectContract,
+  profileSelection: seedlessExternalVisualProfileSelection,
+  profile_selection: seedlessExternalVisualProfileSelection,
+  sourceDeltaEvidence: seedlessExternalVisualSourceDeltaEvidence,
+  source_delta_evidence: seedlessExternalVisualSourceDeltaEvidence,
+  deterministicVisualMode: seedlessExternalVisualMode,
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+};
+const seedlessExternalVisualProofArtifact = {
+  ...seedlessExternalVisualProofMaterial,
+  proofId: `external-visual-proof:${sha256Hex(stableJson(seedlessExternalVisualProofMaterial))}`,
+};
+const seedlessExternalVisualProofArtifactPath = path.join(
+  logsRoot,
+  'external-projects',
+  'forged-external-engine-seedless-visual-proof.json',
+);
+await writeJson(seedlessExternalVisualProofArtifactPath, seedlessExternalVisualProofArtifact);
+await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine-seedless-visual-report.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+  profile: {
+    id: seedlessExternalVisualProfileId,
+    backend: 'webgl',
+    backendFamily: 'webgl',
+    libraryFamily: 'threejs',
+    runtimeEnvironment: 'browser_dev_server',
+    profileClass: 'external_engine_visual_profile',
+  },
+  proofMode: 'external_runtime_screenshot',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  externalProjectContract: seedlessExternalVisualProjectContract,
+  external_project_contract: seedlessExternalVisualProjectContract,
+  status: 'pass',
+  profileSelection: seedlessExternalVisualProfileSelection,
+  profile_selection: seedlessExternalVisualProfileSelection,
+  sourceDeltaEvidence: seedlessExternalVisualSourceDeltaEvidence,
+  source_delta_evidence: seedlessExternalVisualSourceDeltaEvidence,
+  visualOracleArtifacts: {
+    before_image: externalVisualBefore,
+    after_image: externalVisualAfter,
+    diff_image: externalVisualDiff,
+    capture_backend: 'external_runtime_screenshot',
+  },
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 76800,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  visualProofArtifact: {
+    schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    proofId: seedlessExternalVisualProofArtifact.proofId,
+    path: seedlessExternalVisualProofArtifactPath,
+    visualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    acceptedVisualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    contentHashes: externalVisualEvidenceArtifacts.map((artifact) => artifact.contentHash),
+  },
+  proofArtifactPaths: [seedlessExternalVisualProofArtifactPath],
+  timings: {
+    totalMs: 44,
+    editToScreenshotMs: 12,
+    visualDiffMs: 3,
+  },
+  proofId: 'external-profile-report:sha256:forged-seedless-engine-visual',
 });
 
 const forgedExternalVisualDir = path.join(logsRoot, 'external-projects', 'forged-external-engine-visual');
@@ -3773,6 +3878,22 @@ assert.equal(externalVisual.externalSourceDelta.matchCount, 1);
 assert.equal(externalVisual.externalVisualProofArtifact.accepted, true);
 assert.equal(externalVisual.externalVisualProofArtifact.requiredContentHashes.length, 3);
 assert.equal(externalVisual.externalVisualProofArtifact.visualDiff.accepted, true);
+assert.equal(externalVisual.deterministicVisualModeEvaluation.accepted, true);
+
+const seedlessExternalVisual = ledger.rows.find(
+  (row) => row.targetId === 'forged-external-engine-seedless-visual',
+);
+assert.equal(seedlessExternalVisual?.matrixOutcome, 'unproven');
+assert.equal(seedlessExternalVisual.visual.accepted, true);
+assert.equal(seedlessExternalVisual.externalProjectContract.accepted, true);
+assert.equal(seedlessExternalVisual.externalProfileSelection.accepted, true);
+assert.equal(seedlessExternalVisual.externalSourceDelta.accepted, true);
+assert.equal(seedlessExternalVisual.externalVisualProofArtifact.accepted, false);
+assert.equal(seedlessExternalVisual.externalVisualProofArtifact.deterministicAccepted, false);
+assert.equal(seedlessExternalVisual.deterministicVisualModeEvaluation.accepted, false);
+assert.ok(seedlessExternalVisual.reasons.includes('seed_policy_unproven'));
+assert.ok(seedlessExternalVisual.openGaps.includes('deterministic_visual_mode_not_accepted'));
+assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('seed_policy_unproven'));
 
 const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
 assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');
