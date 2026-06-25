@@ -562,6 +562,8 @@ function computeProofLedgerMaterials(scope, {
     raw_readback_hash_verified: true,
     raw_readback_byte_length: actualRawReadbackBytes?.length ?? 4,
     raw_readback_source: 'runtime_raw_readback',
+    expected_output_verified: true,
+    expected_output_source: 'runtime_checksum_oracle',
     output_change_expected: true,
   };
   const proofLedger = buildGpuHmrProofLedger({
@@ -2199,6 +2201,19 @@ function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
       real_rocm_sidecar_runtime_consistency: acceptedSidecarRuntimeConsistencyNotApplicable,
     },
   };
+}
+
+function stripExpectedOutputVerified(value) {
+  if (Array.isArray(value)) {
+    value.forEach(stripExpectedOutputVerified);
+    return value;
+  }
+  if (value && typeof value === 'object') {
+    delete value.expected_output_verified;
+    delete value.expectedOutputVerified;
+    for (const nested of Object.values(value)) stripExpectedOutputVerified(nested);
+  }
+  return value;
 }
 
 function realRocmRuntimeProofMaterials(scope, options = {}) {
@@ -5919,6 +5934,8 @@ assert.equal(acceptedComputeRocm.ledger.gpuHmrSuccess, true);
 assert.equal(acceptedComputeRocm.visual.present, false);
 assert.equal(acceptedComputeRocm.outputOracleFacet.kind, 'compute_oracle');
 assert.equal(acceptedComputeRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.semanticAccepted, true);
+assert.equal(acceptedComputeRocm.outputOracleFacet.compute.expectedOutputVerified, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.rawReadbackHashVerified, true);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.rawReadbackByteLength, acceptedComputeBytes.length);
 assert.equal(acceptedComputeRocm.outputOracleFacet.compute.deterministicSliceHashVerified, true);
@@ -5932,6 +5949,170 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dis
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
+
+const forgedComputeSemanticRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-semantic');
+const forgedComputeSemanticReadback = path.join(forgedComputeSemanticRocmDir, 'readback.bin');
+const forgedComputeSemanticBytes = Buffer.from([5, 10, 15, 20, 25, 30, 35, 40]);
+await fs.mkdir(forgedComputeSemanticRocmDir, { recursive: true });
+await fs.writeFile(forgedComputeSemanticReadback, forgedComputeSemanticBytes);
+await writeJson(`${forgedComputeSemanticReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedComputeSemanticBytes.length,
+  shape: [forgedComputeSemanticBytes.length],
+});
+await writeRgbaPng(`${forgedComputeSemanticReadback}.card.png`, 8, 8, (x, y) => [
+  forgedComputeSemanticBytes[(x + y) % forgedComputeSemanticBytes.length],
+  64 + x,
+  96 + y,
+  255,
+]);
+const forgedComputeSemanticProofMaterials = stripExpectedOutputVerified(
+  realRocmComputeProofLedgerMaterials('forged-compute-semantic', {
+    projectId: 'real-rocm-forged-compute-semantic',
+    rawReadbackPath: forgedComputeSemanticReadback,
+    rawReadbackBytes: forgedComputeSemanticBytes,
+  }),
+);
+const forgedComputeSemanticSliceLength = Math.min(4, forgedComputeSemanticBytes.length);
+const forgedComputeSemanticPriorArtifacts = {
+  raw_readback_bin: forgedComputeSemanticReadback,
+  readback_schema_json: `${forgedComputeSemanticReadback}.schema.json`,
+  checksum_before: hashValue('forged-compute-semantic-prior-before'),
+  checksum_after: hashValue('forged-compute-semantic-prior-after'),
+  deterministic_slice: {
+    offset: 0,
+    length: forgedComputeSemanticSliceLength,
+    hash: hashBuffer(forgedComputeSemanticBytes.subarray(0, forgedComputeSemanticSliceLength)),
+  },
+  deterministic_slice_hash: hashBuffer(forgedComputeSemanticBytes.subarray(0, forgedComputeSemanticSliceLength)),
+  deterministic_slice_hash_verified: true,
+  oracle_code_hash: hashValue('forged-compute-semantic-prior-oracle'),
+  rendered_card_png: `${forgedComputeSemanticReadback}.card.png`,
+  producer: 'synthetic_compute_oracle',
+  timestamp_after_dispatch: 4000,
+  epoch: 'epoch:forged-compute-semantic',
+  raw_readback_hash: hashBuffer(forgedComputeSemanticBytes),
+  raw_readback_hash_verified: true,
+  raw_readback_byte_length: forgedComputeSemanticBytes.length,
+  raw_readback_source: 'runtime_raw_readback',
+  output_change_expected: true,
+};
+await writeJson(path.join(forgedComputeSemanticRocmDir, 'real-rocm-forged-compute-semantic.json'), {
+  slug: 'gpu-real-rocm-forged-compute-semantic-20260625',
+  real_rocm_profile: { id: 'real-rocm-forged-compute-semantic' },
+  source_url: 'https://example.invalid/rocm/forged-compute-semantic.git',
+  repo_commit: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+  entry_file: 'src/kernels/compute_semantic_entry.hip',
+  delta_file: 'src/kernels/compute_semantic_delta.h',
+  target_name: 'ForgedComputeSemanticDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedComputeSemanticDriver',
+    finalAcceptanceTarget: 'ForgedComputeSemanticDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+  },
+  target_progression_ledger: {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    provided: true,
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        resultState: 'gpu-hmr-output-oracle-proven',
+        outputOracleProven: true,
+        proofId: 'compute-semantic-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+        compute_oracle_artifacts: forgedComputeSemanticPriorArtifacts,
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'compute-semantic-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+        partialReloadProven: true,
+        fissionProven: true,
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'compute-semantic-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+        originalHostPathProven: true,
+        attachmentProven: true,
+        hostPreservationProven: true,
+        dispatchSafeProven: true,
+      },
+    ],
+  },
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedComputeSemanticProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-compute-semantic-delta',
+    editHash: hashValue('real-rocm-forged-compute-semantic-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-compute-semantic.git @ cdcdcdcd files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedComputeSemanticLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedComputeSemanticRocmDir],
+  generatedAt: '2026-06-25T00:00:02.300Z',
+  includeUnproven: true,
+});
+const forgedComputeSemanticRocm = forgedComputeSemanticLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+const forgedComputeSemanticSmallOracleGate = forgedComputeSemanticRocm?.targetProgressionGates.find(
+  (gate) => gate.name === 'target progression prior small-oracle',
+);
+assert.equal(forgedComputeSemanticRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedComputeSemanticRocm.acceptedForGpuHmr, false);
+assert.equal(forgedComputeSemanticRocm.outputOracleFacet.kind, 'ledger_rejected');
+assert.equal(forgedComputeSemanticSmallOracleGate?.status, 'fail');
+assert.match(forgedComputeSemanticSmallOracleGate?.detail ?? '', /compute_oracle_expected_output_not_verified/);
+assert.ok(forgedComputeSemanticRocm.reasons.includes(
+  'target_progression_gate_failed:target progression prior small-oracle',
+));
+assert.ok(forgedComputeSemanticRocm.openGaps.includes('target_progression_gates_failed'));
 
 const forgedFinalMissingFixturesRocmDir = path.join(logsRoot, 'real-rocm-forged-final-missing-fixtures');
 const forgedFinalMissingFixturesReadback = path.join(forgedFinalMissingFixturesRocmDir, 'readback.bin');

@@ -6297,10 +6297,10 @@ function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
 }
 
 async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir) {
-  const computeArtifacts = ledgerRecordsFromValue(proofLedger)
-    .map(ledgerRecordComputeOracleArtifacts)
-    .find((artifacts) => Object.keys(artifacts).length > 0);
-  if (!computeArtifacts) {
+  const computeRecord = ledgerRecordsFromValue(proofLedger)
+    .find((record) => Object.keys(ledgerRecordComputeOracleArtifacts(record)).length > 0);
+  const computeArtifacts = computeRecord ? ledgerRecordComputeOracleArtifacts(computeRecord) : {};
+  if (Object.keys(computeArtifacts).length === 0) {
     return {
       present: false,
       accepted: false,
@@ -6361,7 +6361,62 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
   const deterministicSliceHashVerified =
     verification.deterministic_slice_hash_verified === true
     || verification.deterministicSliceHashVerified === true;
-  const failedGates = compactStringList([
+  const outputEvent = compactObject(computeRecord?.output_event ?? computeRecord?.outputEvent);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const declaredRawReadbackHash = firstText(
+    resolvedArtifacts.raw_readback_hash,
+    resolvedArtifacts.rawReadbackHash,
+  );
+  const schemaHash = firstText(
+    enriched?.readback_schema_hash,
+    enriched?.readbackSchemaHash,
+    verification.readback_schema_hash,
+    verification.readbackSchemaHash,
+  );
+  const deterministicSliceHash = firstText(
+    enriched?.deterministic_slice_hash,
+    enriched?.deterministicSliceHash,
+    enriched?.deterministic_slice?.hash,
+    enriched?.deterministicSlice?.hash,
+    verification.deterministic_slice_hash,
+    verification.deterministicSliceHash,
+  );
+  const checksumBefore = firstText(enriched?.checksum_before, enriched?.checksumBefore);
+  const checksumAfter = firstText(enriched?.checksum_after, enriched?.checksumAfter);
+  const outputChangeExpected =
+    firstBool(enriched?.output_change_expected, enriched?.outputChangeExpected) !== false;
+  const expectedOutputVerified = firstBool(
+    enriched?.expected_output_verified,
+    enriched?.expectedOutputVerified,
+    verification.expected_output_verified,
+    verification.expectedOutputVerified,
+    outputEvent.expected_output_verified,
+    outputEvent.expectedOutputVerified,
+    outputOracle.expected_output_verified,
+    outputOracle.expectedOutputVerified,
+  ) === true;
+  const timestampAfterDispatch = finiteNumber(
+    enriched?.timestamp_after_dispatch
+    ?? enriched?.timestampAfterDispatch,
+  );
+  const artifactEpoch = firstText(enriched?.epoch, enriched?.epoch_id, enriched?.epochId);
+  const outputEpoch = firstText(outputEvent.epoch, outputEvent.epoch_id, outputEvent.epochId);
+  const epochMatches = artifactEpoch && outputEpoch ? artifactEpoch === outputEpoch : Boolean(artifactEpoch);
+  const semanticFailedGates = compactStringList([
+    declaredRawReadbackHash ? null : 'compute_oracle_raw_readback_hash_declared_missing',
+    schemaHash ? null : 'compute_oracle_readback_schema_hash_missing',
+    deterministicSliceHash ? null : 'compute_oracle_deterministic_slice_hash_missing',
+    checksumBefore ? null : 'compute_oracle_checksum_before_missing',
+    checksumAfter ? null : 'compute_oracle_checksum_after_missing',
+    outputChangeExpected && checksumBefore && checksumAfter && checksumBefore === checksumAfter
+      ? 'compute_oracle_checksum_unchanged'
+      : null,
+    expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
+    timestampAfterDispatch !== null ? null : 'compute_oracle_timestamp_after_dispatch_missing',
+    artifactEpoch ? null : 'compute_oracle_epoch_missing',
+    epochMatches ? null : 'compute_oracle_epoch_mismatch',
+  ]).map((code) => ({ code }));
+  const fileFailedGates = compactStringList([
     rawReadbackPath ? null : 'compute_oracle_raw_readback_path_missing',
     hashVerified ? null : 'compute_oracle_raw_readback_hash_unverified',
     rawReadbackByteLength && rawReadbackByteLength > 0 ? null : 'compute_oracle_raw_readback_bytes_missing',
@@ -6374,15 +6429,35 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     renderedCard.decoded ? null : 'compute_oracle_rendered_card_decode_failed',
     renderedCard.decoded && renderedCard.format === 'png' ? null : 'compute_oracle_rendered_card_not_png',
   ]).map((code) => ({ code }));
+  const failedGates = [...fileFailedGates, ...semanticFailedGates];
   return {
     present: true,
     accepted: failedGates.length === 0,
     source: 'matrix_verified_compute_oracle_files',
     failedGates,
+    fileIntegrityAccepted: fileFailedGates.length === 0,
+    file_integrity_accepted: fileFailedGates.length === 0,
+    semanticAccepted: semanticFailedGates.length === 0,
+    semantic_accepted: semanticFailedGates.length === 0,
     rawReadbackHash: firstText(enriched?.raw_readback_hash, enriched?.rawReadbackHash),
     rawReadbackByteLength,
     rawReadbackHashVerified: hashVerified,
+    rawReadbackHashDeclared: Boolean(declaredRawReadbackHash),
+    raw_readback_hash_declared: Boolean(declaredRawReadbackHash),
+    readbackSchemaHash: schemaHash,
+    readback_schema_hash: schemaHash,
     deterministicSliceHashVerified,
+    deterministicSliceHash,
+    deterministic_slice_hash: deterministicSliceHash,
+    checksumBefore,
+    checksum_before: checksumBefore,
+    checksumAfter,
+    checksum_after: checksumAfter,
+    expectedOutputVerified,
+    expected_output_verified: expectedOutputVerified,
+    timestampAfterDispatch,
+    timestamp_after_dispatch: timestampAfterDispatch,
+    epoch: artifactEpoch ?? null,
     readbackSchemaByteLength: schemaByteLength,
     readbackSchemaReadError: firstText(verification.readback_schema_read_error, verification.readbackSchemaReadError),
     renderedCard,
