@@ -60,6 +60,11 @@ export async function updateProgramSession(id, patch) {
   return prisma.programSession.update({ where: { id }, data: patch });
 }
 
+export async function deleteProgramSession(id) {
+  // ProgramRuntimeEvent rows cascade-delete with the session (schema onDelete: Cascade).
+  return prisma.programSession.delete({ where: { id } });
+}
+
 export async function listProgramSessions(workspaceSlug, { stateIn = null, limit = 20 } = {}) {
   return prisma.programSession.findMany({
     where: {

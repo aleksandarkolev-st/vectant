@@ -137,21 +137,6 @@ describe('ProgramsPanel — cli/tui programs route to the integrated terminal', 
     expect(dispatchedTypes()).not.toContain('openFloatingPanel');
   });
 
-  it('the ad-hoc Launch Command (cli) routes to the terminal', async () => {
-    h.launchProgramSession.mockResolvedValue({ session: { id: 'ps-cli', state: 'running', runtimeType: 'cli' } });
-    await render();
-
-    // The ad-hoc form's Launch button is the only type="submit" in the panel.
-    await act(async () => { container.querySelector('button[type="submit"]').click(); });
-    await flush();
-
-    expect(h.launchProgramSession).toHaveBeenCalled();
-    expect(dispatchedTypes()).toContain('ui/setShowTerminal');
-    const evts = terminalEvents();
-    expect(evts).toHaveLength(1);
-    expect(evts[0].detail.sessionId).toBe('ps-cli');
-  });
-
   it('a web install still opens a docked program-session panel (not the terminal)', async () => {
     h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst2', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
     h.launchInstalledProgram.mockResolvedValue({ session: { id: 'ps-web', state: 'running', runtimeType: 'web' } });

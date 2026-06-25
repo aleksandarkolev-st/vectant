@@ -265,7 +265,7 @@ test('runtime pod requests a GPU + tolerates the GPU taint only when metadata.gp
   const base = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
   let spec = buildRuntimeDeployment(base).spec.template.spec;
   let runtime = spec.containers.find((c) => c.name === 'runtime');
-  assert.ok(!runtime.resources, 'no GPU resources by default');
+  assert.ok(!(runtime.resources.limits || {})['nvidia.com/gpu'], 'no GPU limit by default');
   assert.ok(!(spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu'), 'no GPU toleration by default');
 
   spec = buildRuntimeDeployment({ ...base, metadata: { ...base.metadata, gpu: true } }).spec.template.spec;
@@ -273,4 +273,41 @@ test('runtime pod requests a GPU + tolerates the GPU taint only when metadata.gp
   assert.equal(runtime.resources.limits['nvidia.com/gpu'], '1', 'requests 1 GPU');
   assert.ok((spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu' && t.effect === 'NoSchedule'), 'tolerates the GPU node taint');
   assert.ok((spec.tolerations || []).some((t) => t.key === 'workload' && t.value === 'sysbox'), 'keeps the sysbox toleration');
+});
+
+// Cost predictability + node protection: the runtime container declares CPU/memory
+// requests (so the cluster autoscaler bin-packs by need, not pod count — without
+// them requests=0 → every pod looks "free" → overcommit/node OOM) and limits (so a
+// single workspace can't starve the node). Defaults sized for 1–2 programs on an
+// n2-standard-4; env-overridable, read at call time.
+test('runtime container declares CPU/memory requests and limits by default', () => {
+  const dep = buildRuntimeDeployment({ sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } });
+  const runtime = dep.spec.template.spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(runtime.resources, 'has a resources block');
+  assert.equal(runtime.resources.requests.cpu, '500m');
+  assert.equal(runtime.resources.requests.memory, '1Gi');
+  assert.equal(runtime.resources.limits.cpu, '2');
+  assert.equal(runtime.resources.limits.memory, '4Gi');
+});
+
+test('runtime CPU/memory requests + limits are env-overridable (read at call time)', () => {
+  const keys = ['RUNTIME_CPU_REQUEST', 'RUNTIME_MEMORY_REQUEST', 'RUNTIME_CPU_LIMIT', 'RUNTIME_MEMORY_LIMIT'];
+  const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    process.env.RUNTIME_CPU_REQUEST = '250m';
+    process.env.RUNTIME_MEMORY_REQUEST = '512Mi';
+    process.env.RUNTIME_CPU_LIMIT = '1';
+    process.env.RUNTIME_MEMORY_LIMIT = '2Gi';
+    const runtime = buildRuntimeDeployment({ sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } })
+      .spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.equal(runtime.resources.requests.cpu, '250m');
+    assert.equal(runtime.resources.requests.memory, '512Mi');
+    assert.equal(runtime.resources.limits.cpu, '1');
+    assert.equal(runtime.resources.limits.memory, '2Gi');
+  } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  }
 });

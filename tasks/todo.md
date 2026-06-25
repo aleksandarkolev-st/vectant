@@ -1492,3 +1492,31 @@ const attribution = attributeSessionPorts({
 - **Spec coverage:** §2 mechanism → T1+T5; §3 6-file conflicts → T2/T3/T4; §4 pre-merge cleanup → T1; §5 infra-port filter → T6; §6 verify (suites + live) → T5 + T7; §7 rollback → T1 + Conventions; §8 audit → T8. No gap.
 - **Placeholders:** none — conflict tasks name the exact symbols each side must keep; the filter task carries real test + impl.
 - **Type consistency:** `parseInfraPorts`/`infraPorts`/`RUNTIME_INFRA_PORTS`, `recomputeRuntimeScopePorts(scope, ports)`, `$PRE_MERGE_SHA` used consistently across tasks.
+
+---
+
+# Task: Programs panel — post-overhaul refinement round (2026-06-24, feat/docker-sysbox-engine)
+
+Live-review feedback after the Library/Store overhaul. Corrective slices on the existing design (no new spec). TDD from `synthi/`; commit per slice.
+
+## Done this round
+- [x] R0 Panel background = `var(--bg-sidebar)` (#06060a — matches every docked panel; dropped the custom gray gradient + the clipped outer border/drop-shadow). Store search field re-tiered to `var(--bg-panel)` so it doesn't vanish into the now-darker base. `programTokens.test.js` updated to assert the token (not the old gradient). 53/53 programs tests green. Lesson recorded.
+
+## Sensible defaults (proceeding unless told otherwise)
+- Removing a session = HARD-DELETE the `ProgramSession` row; for a *running* session, stop the runtime first (after the confirm), then delete. (User: "removing and deleting the session".)
+- Orphaned active session (DB state active, no live runtime) → present as **stopped**. Show **crashed** only when the DB state is explicitly `crashed` (or `lastHealthState` = unhealthy). We don't fabricate a crash we never recorded.
+
+## Slices (TDD, commit per slice)
+- [x] R1 State reconciliation + 3-way separation. `mergeProgramSession`: no live runtime + active state → `stopped` (kills zombie "all-running"). `buildProgramSessionSections` → `{running, stopped, crashed}`. `LibraryView` renders Running/Stopped/Crashed sections; only running cards use the glow shell + a live thumbnail (stopped = muted surface, crashed = red), which also removes most of the scroll-lag. TDD: routeHelpers +3, programSessionSections rewritten, libraryView +5; 166 programs+lib tests green.
+- [x] R2 (folded into R1) Program name as card title, session id as subtitle. `programLabelFromPackageId` + `LibraryView.nameFor` join `installId → packageId` (fallback `session.title`/"Program").
+- [x] R3 X-to-remove + confirm dialog. Backend: `DELETE /program-sessions/[sessionId]` (owner/admin; stop-if-running, then delete row; events cascade) + `store.deleteProgramSession` + `routeHelpers.isActiveSessionState` + `programsClient.deleteProgramSession` (commit `ed7eb0f08`; 4 route tests). Frontend: standalone `ConfirmDialog` mirroring the terminal paste-modal chrome (brand hairline, icon plate, title/subtitle, Cancel/Confirm footer) MINUS the `<pre>` preview box + trust checkbox (framer-motion dropped — vitest transform snag; animation is cosmetic). Every card gains an X (`session-remove-<id>`); `ProgramsPanel.handleRemove` → running session opens the confirm ("Stop & remove") then DELETEs; stopped/crashed delete immediately. TDD: ConfirmDialog +2, libraryView +2, programsPanelInstall +2; 64 programs-component tests green.
+- [x] R4 Perf polish. `content-visibility:auto` + `contain-intrinsic-size` on session cards so the browser skips painting offscreen cards (cheap scrolling for long stopped/crashed lists). The bulk of the lag was already gone after R1 (only genuinely-running cards glow). Also fixed a latent gap: the live thumbnail never rendered in prod because `mergeProgramSession` dropped the runtime's `webGui` flag (DB rows don't store it) — now surfaced, so running KasmVNC cards show their snapshot. 173 programs+lib tests green.
+
+## Round status — R0–R4 all landed (commits 31457a5e4, 6c1b71b06, ed7eb0f08, adf2512cd, + R4). Covers user points #1 (names), #2 (X-remove), #3 (running-remove confirm), #4 (perf), #5 (state separation). #6 (scale-to-zero) answered. Env note: C: drive at ~0.1 GB free — vitest workers OOM/crash; ran single-fork with TEMP redirected to D:\synthi-tmp. Surface to user.
+
+## Follow-up asks (same round)
+- [x] R5 One session per program: `handleLaunchInstall` reuses the live session instead of spawning a duplicate; the tile reads "Open" vs "Launch". Zombie-safe (uses reconciled session state). Commit `7c592f264`.
+- [x] R6 Real program logos: `ProgramIcon` + generated `programLogos.js` (inline single-path brand SVGs from simple-icons/CC0 for the 9 built-ins — Next.js, Vite, Flask, Node, Git, DBeaver, Postman, Portainer, Docker — keyed by the @vectant slug) replace the empty icon plates in Installed + marketplace tiles; deterministic colored monogram fallback for community programs. Inlined → no external requests under COEP/CSP.
+
+## Already answered (no code)
+- Scale-to-zero: prod Sysbox runtime is a per-workspace Deployment (`replicas:1`), app-managed **idle-cull → on-demand respawn** (not k8s HPA-to-zero); optional warm image cache via `RUNTIME_PERSIST_DOCKER_DATA`.
