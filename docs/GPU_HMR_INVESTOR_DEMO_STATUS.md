@@ -333,6 +333,7 @@ visual proof: none; compute-only target, no frame-gated visual proof, and no raw
 Latest implementation commits:
 
 ```text
+d78b2275b fix(worker): add generic rocm build prerequisites
 52cd7ae91 fix(gpu-hmr): quarantine invalid real rocm checkouts
 6e3f7e759 test(gpu-hmr): add hipblaslt large rocm profile
 9b5712ee8 docs(gpu-hmr): record composable kernel refusal proof
@@ -455,6 +456,7 @@ The ROCm examples matrix multiplication result records oracle resolution explici
 The Composable Kernel result records oracle resolution explicitly: profile `none`, no selected oracle source, no contract, no runtime profile, candidate HIP source-bridge metadata only, and strict refusal because no target binary, Synthi epoch/dispatch/output proof, app-hook contract, or host-preservation evidence is present.
 The hipBLASLt result records oracle resolution explicitly: profile `none`, no selected oracle source, no contract, no runtime profile, candidate HIP source-bridge metadata only, and strict refusal because configure is blocked by missing Python development/module components and no target binary, Synthi epoch/dispatch/output proof, app-hook contract, or host-preservation evidence is present.
 Real ROCm checkout reuse now validates git worktree root, HEAD, and origin remote before reuse. Invalid default `tmp/real-rocm/*` checkouts are quarantined for reruns, while custom paths fail loudly instead of being modified.
+The worker Dockerfile now includes generic large ROCm project build prerequisites (`ninja-build`, Python development headers/tools, SQLite development files). Do not claim this changes retained MIOpen/hipBLASLt results until the worker image is rebuilt and those profiles rerun.
 Real ROCm output-oracle profiles now require declared native launch symbols, and runtime eligibility filters native placeholder symbols such as `unknown`; the matrix multiplication candidate artifact records `matrix_multiplication_kernel`.
 The MIOpen large-ML profile now requires `targetProgression.phase=final-acceptance`; the latest run fails the missing prior small-oracle, partial-reload, original-host-path, full-runtime, and raw-compute-oracle-artifact gates instead of leaving the target undeclared.
 The ROCm examples matrix multiplication profile is now a required `small-oracle` progression phase for the larger `MIOpenDriver` final-acceptance ladder. It still fails closed because the small-oracle gate requires real runtime output proof after Synthi dispatch, not only a derived checksum contract.
