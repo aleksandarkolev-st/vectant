@@ -540,6 +540,9 @@ async function selfCheckRealRocmProfiles() {
       }
     }
     const finalAcceptanceProfile = profile.targetProgression.phase === 'final-acceptance';
+    const largeRocmMlFinalAcceptance =
+      finalAcceptanceProfile
+      && profile.proofObligations.targetClass === 'large_rocm_ml_infrastructure';
     const outputOracleDisabled = outputOracleProfileModeDisabled(profile.outputOracle.profile);
     if (
       finalAcceptanceProfile
@@ -549,6 +552,18 @@ async function selfCheckRealRocmProfiles() {
       throw new Error(
         `real ROCm final-acceptance profile ${profile.id} disables output oracle without proofObligations.acceptanceMode=refusal_only`,
       );
+    }
+    if (largeRocmMlFinalAcceptance) {
+      if (profile.proofObligations.requiresRunModes !== true) {
+        throw new Error(
+          `large ROCm ML final-acceptance profile ${profile.id} must declare proofObligations.requiresRunModes=true`,
+        );
+      }
+      if (profile.proofObligations.requiresNegativeEdit !== true) {
+        throw new Error(
+          `large ROCm ML final-acceptance profile ${profile.id} must declare proofObligations.requiresNegativeEdit=true`,
+        );
+      }
     }
     const localRepoPath = path.resolve(REPO_ROOT, `tmp/real-rocm/${repoNameFromUrl(profile.repo.url)}`);
     if (existsSync(localRepoPath)) {
@@ -808,6 +823,12 @@ function targetProgressionPhaseRequirements(phase) {
   }
 }
 
+function isLargeRocmMlFinalAcceptance({ declared, targetProgression = {} } = {}) {
+  const targetClass = declared?.targetClass ?? declared?.target_class ?? null;
+  return targetClass === 'large_rocm_ml_infrastructure'
+    && targetProgression.phase === 'final-acceptance';
+}
+
 function realRocmProfileProofObligationsFacet({
   profile = {},
   targetProgression = {},
@@ -830,6 +851,11 @@ function realRocmProfileProofObligationsFacet({
     || declared.requires_output_oracle === true;
   const explicitRequiresAppHookContract = declared.requiresAppHookContract === true
     || declared.requires_app_hook_contract === true;
+  const explicitRequiresRunModes = declared.requiresRunModes === true
+    || declared.requires_run_modes === true;
+  const explicitRequiresNegativeEdit = declared.requiresNegativeEdit === true
+    || declared.requires_negative_edit === true;
+  const largeMlFinalAcceptance = isLargeRocmMlFinalAcceptance({ declared, targetProgression });
   const requiresFullRuntimeProof =
     explicitRequiresFullRuntime
     || progressionRequired
@@ -840,6 +866,8 @@ function realRocmProfileProofObligationsFacet({
     || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
     || finalAcceptance;
   const requiresAppHookContract = explicitRequiresAppHookContract;
+  const requiresRunModes = explicitRequiresRunModes || largeMlFinalAcceptance;
+  const requiresNegativeEdit = explicitRequiresNegativeEdit || largeMlFinalAcceptance;
   const outputOraclePresent =
     !outputOracleProfileModeDisabled(outputOracleProfile)
     || Boolean(outputOracleContract)
@@ -862,6 +890,12 @@ function realRocmProfileProofObligationsFacet({
   }
   if (requiresAppHookContract && !appHookContractDeclared) {
     blockingGaps.push('proof_obligation_app_hook_contract_missing');
+  }
+  if (requiresRunModes && !explicitRequiresRunModes) {
+    blockingGaps.push('proof_obligation_run_modes_missing');
+  }
+  if (requiresNegativeEdit && !explicitRequiresNegativeEdit) {
+    blockingGaps.push('proof_obligation_negative_edit_missing');
   }
   const status = blockingGaps.length === 0
     ? 'profile_proof_obligations_satisfied_by_configuration'
@@ -890,6 +924,8 @@ function realRocmProfileProofObligationsFacet({
     progression_required: progressionRequired,
     finalAcceptance,
     final_acceptance: finalAcceptance,
+    largeMlFinalAcceptance,
+    large_ml_final_acceptance: largeMlFinalAcceptance,
     requiresFullRuntimeProof,
     requires_full_runtime_proof: requiresFullRuntimeProof,
     fullRuntimeProofRequested: requireFullRuntimeProof === true,
@@ -902,6 +938,14 @@ function realRocmProfileProofObligationsFacet({
     requires_app_hook_contract: requiresAppHookContract,
     appHookContractDeclared,
     app_hook_contract_declared: appHookContractDeclared,
+    requiresRunModes,
+    requires_run_modes: requiresRunModes,
+    requiresRunModesDeclared: explicitRequiresRunModes,
+    requires_run_modes_declared: explicitRequiresRunModes,
+    requiresNegativeEdit,
+    requires_negative_edit: requiresNegativeEdit,
+    requiresNegativeEditDeclared: explicitRequiresNegativeEdit,
+    requires_negative_edit_declared: explicitRequiresNegativeEdit,
     outputOracleProfile: outputOracleProfile || null,
     output_oracle_profile: outputOracleProfile || null,
     blockingGaps: compactStringList(blockingGaps),
@@ -915,6 +959,10 @@ function realRocmProfileProofObligationsFacet({
       outputOraclePresent,
       appHookContractDeclared,
       requireFullRuntimeProof,
+      requiresRunModes,
+      explicitRequiresRunModes,
+      requiresNegativeEdit,
+      explicitRequiresNegativeEdit,
     })).digest('hex')}`,
     contract_hash: `sha256:${createHash('sha256').update(stableJson({
       declared,
@@ -923,6 +971,10 @@ function realRocmProfileProofObligationsFacet({
       outputOraclePresent,
       appHookContractDeclared,
       requireFullRuntimeProof,
+      requiresRunModes,
+      explicitRequiresRunModes,
+      requiresNegativeEdit,
+      explicitRequiresNegativeEdit,
     })).digest('hex')}`,
   };
 }
@@ -10549,6 +10601,50 @@ int main()
     outputOracleProfile: 'none',
     requireFullRuntimeProof: true,
   });
+  const largeMlMissingRunModeObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-large-ml-missing-run-modes',
+      proofObligations: normalizeRealRocmProofObligations({
+        acceptanceMode: 'refusal_only',
+        targetClass: 'large_rocm_ml_infrastructure',
+        requiresFullRuntimeProof: true,
+        requiresOutputOracle: true,
+        requiresAppHookContract: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final-acceptance',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'none',
+    requireFullRuntimeProof: true,
+  });
+  const largeMlDeclaredRunModeObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-large-ml-declared-run-modes',
+      proofObligations: normalizeRealRocmProofObligations({
+        acceptanceMode: 'refusal_only',
+        targetClass: 'large_rocm_ml_infrastructure',
+        requiresFullRuntimeProof: true,
+        requiresOutputOracle: true,
+        requiresAppHookContract: true,
+        requiresRunModes: true,
+        requiresNegativeEdit: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final-acceptance',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'none',
+    requireFullRuntimeProof: true,
+  });
   const smallOracleProfileObligations = realRocmProfileProofObligationsFacet({
     profile: {
       id: 'profile-small-oracle',
@@ -10656,6 +10752,15 @@ int main()
     || finalAcceptanceRefusalOnlyObligations.status !== 'profile_declared_refusal_only'
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_profile')
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_output_oracle_absent')
+    || largeMlMissingRunModeObligations.largeMlFinalAcceptance !== true
+    || largeMlMissingRunModeObligations.requiresRunModes !== true
+    || largeMlMissingRunModeObligations.requiresNegativeEdit !== true
+    || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_run_modes_missing')
+    || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_missing')
+    || largeMlDeclaredRunModeObligations.requiresRunModesDeclared !== true
+    || largeMlDeclaredRunModeObligations.requiresNegativeEditDeclared !== true
+    || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_run_modes_missing')
+    || largeMlDeclaredRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_missing')
     || smallOracleProfileObligations.blocking_gaps.length !== 0
     || requiredAppHookMissingObligations.status !== 'profile_proof_obligations_unmet'
     || !requiredAppHookMissingObligations.requiresAppHookContract

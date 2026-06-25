@@ -44,7 +44,9 @@
     "targetClass": "large_rocm_ml_infrastructure",
     "requiresFullRuntimeProof": true,
     "requiresOutputOracle": true,
-    "requiresAppHookContract": true
+    "requiresAppHookContract": true,
+    "requiresRunModes": true,
+    "requiresNegativeEdit": true
   },
   "targetProgression": {
     "phase": "final-acceptance",

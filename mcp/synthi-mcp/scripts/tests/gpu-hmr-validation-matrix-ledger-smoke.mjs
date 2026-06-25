@@ -2277,12 +2277,16 @@ const largeRocmLatestReport = {
     proofAuthority: 'profile_configuration_gate_not_runtime_proof',
     proof_authority: 'profile_configuration_gate_not_runtime_proof',
     declared: false,
+    targetClass: 'large_rocm_ml_infrastructure',
+    target_class: 'large_rocm_ml_infrastructure',
     refusalOnly: false,
     refusal_only: false,
     progressionRequired: true,
     progression_required: true,
     finalAcceptance: true,
     final_acceptance: true,
+    largeMlFinalAcceptance: true,
+    large_ml_final_acceptance: true,
     requiresFullRuntimeProof: true,
     requires_full_runtime_proof: true,
     fullRuntimeProofRequested: true,
@@ -2291,8 +2295,24 @@ const largeRocmLatestReport = {
     requires_output_oracle: true,
     outputOraclePresent: false,
     output_oracle_present: false,
-    blockingGaps: ['proof_obligation_output_oracle_profile_missing'],
-    blocking_gaps: ['proof_obligation_output_oracle_profile_missing'],
+    requiresRunModes: true,
+    requires_run_modes: true,
+    requiresRunModesDeclared: false,
+    requires_run_modes_declared: false,
+    requiresNegativeEdit: true,
+    requires_negative_edit: true,
+    requiresNegativeEditDeclared: false,
+    requires_negative_edit_declared: false,
+    blockingGaps: [
+      'proof_obligation_output_oracle_profile_missing',
+      'proof_obligation_run_modes_missing',
+      'proof_obligation_negative_edit_missing',
+    ],
+    blocking_gaps: [
+      'proof_obligation_output_oracle_profile_missing',
+      'proof_obligation_run_modes_missing',
+      'proof_obligation_negative_edit_missing',
+    ],
   },
   real_rocm_app_hook_contract: {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
@@ -3648,6 +3668,12 @@ assert.equal(largeRocm.realRocmProfileProofObligations.status, 'profile_proof_ob
 assert.ok(largeRocm.realRocmProfileProofObligations.blockingGaps.includes(
   'proof_obligation_output_oracle_profile_missing',
 ));
+assert.ok(largeRocm.realRocmProfileProofObligations.blockingGaps.includes(
+  'proof_obligation_run_modes_missing',
+));
+assert.ok(largeRocm.realRocmProfileProofObligations.blockingGaps.includes(
+  'proof_obligation_negative_edit_missing',
+));
 assert.equal(largeRocm.realRocmAppHookContract.status, 'required_app_hook_contract_missing');
 assert.equal(largeRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
 assert.equal(largeRocm.realRocmDeviceSidecarContract.status, 'derived_device_sidecar_candidate_not_runtime_proof');
@@ -3660,6 +3686,12 @@ assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 assert.ok(largeRocm.reasons.includes('target_progression_gate_failed:target progression phase'));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_run_modes_missing',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_missing',
 ));
 assert.ok(largeRocm.reasons.includes('real_rocm_app_hook_contract:app_hook_contract_not_declared'));
 assert.ok(largeRocm.reasons.includes(
@@ -3683,6 +3715,12 @@ assert.ok(largeRocm.openGaps.includes(
 assert.ok(largeRocm.openGaps.includes('real_rocm_profile_proof_obligations_required'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_run_modes_missing',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_missing',
 ));
 assert.equal(largeRocm.cpuHmrUsed, null);
 assert.equal(largeRocm.fullRebuildUsed, null);
