@@ -211,6 +211,8 @@ hipBLASLt proof ids: gpu-ledger-proof:sha256:a37b91f0d0d8e8dcfbc78629af6716a4845
 investor-safe conclusion: large ROCm ML validation is serious-project refusal evidence only. It proves fail-closed classification and evidence discipline, not MIOpen or hipBLASLt full-runtime GPU HMR acceptance.
 
 Post-refresh gate hardening: every `large_rocm_ml_infrastructure` final-acceptance profile now has to declare run-mode and negative-edit obligations (`requiresRunModes=true`, `requiresNegativeEdit=true`) or the profile-obligation facet emits explicit blocking gaps. MIOpen was brought in line with Composable Kernel and hipBLASLt. This is a schema/target-class gate, not a repo-name shortcut, and it still refuses without app-hook, epoch, dispatch, host-identity, output-oracle, and row-bound runtime evidence.
+
+Current rerun blocker proof: `npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen` now fails closed at a bounded Docker daemon preflight instead of hanging. Retained artifact `mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260625122447.json` records `docker_daemon_unavailable_or_timeout`, `available=false`, and `timeout_ms=8000`; this is infrastructure refusal evidence only.
 ```
 
 Historical MIOpen large ROCm ML caveat:
