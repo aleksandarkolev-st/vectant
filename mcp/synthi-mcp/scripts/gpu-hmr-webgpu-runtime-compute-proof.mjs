@@ -17,6 +17,7 @@ import {
   evaluateGpuHmrAcceptanceContract,
   evaluateGpuHmrAcceptanceContractConsistency,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
+import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   webGpuRuntimeComputeTimingMetrics,
 } from './lib/gpu-hmr-timing-metrics.mjs';
@@ -1563,7 +1564,147 @@ function buildProofLedgerRecord({
   };
 }
 
-function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifacts, nativeApiEvidence }) {
+function buildRuntimeProofArtifact({
+  profile,
+  trace,
+  contract,
+  contractEvaluation,
+  contractConsistency,
+  proofLedger,
+  ledger,
+  oracleArtifacts,
+  oracleValidation,
+  nativeApiEvidence,
+  processContinuity,
+}) {
+  const proofLedgerSourceConsistency = {
+    accepted: ledger.gpuHmrSuccess === true && ledger.failedInvariants.length === 0,
+    mode: 'derived_only',
+    source: 'webgpu_runtime_compute_recomputed',
+    proofLedgerId: proofLedger.proofId,
+    proof_ledger_id: proofLedger.proofId,
+    evidenceRefs: proofLedger.records?.[0]?.evidence_refs ?? [],
+    evidence_refs: proofLedger.records?.[0]?.evidence_refs ?? [],
+    failures: ledger.failedInvariants,
+  };
+  const limitationCodes = [
+    ...(ledger.failedInvariants ?? []).map((failure) => failure.code),
+    ...(contractEvaluation.failedGates ?? []).map((failure) => failure.code),
+    ...(contractConsistency.failedGates ?? []).map((failure) => failure.code),
+    ...(oracleValidation.failedGates ?? []),
+    ...(nativeApiEvidence.failedGates ?? []),
+    ...(processContinuity.failedGates ?? []),
+  ].filter(Boolean);
+  const fullRuntimeProven =
+    ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && contractEvaluation.accepted === true
+    && contractConsistency.accepted === true
+    && proofLedgerSourceConsistency.accepted === true
+    && oracleValidation.accepted === true
+    && nativeApiEvidence.accepted === true
+    && processContinuity.accepted === true
+    && limitationCodes.length === 0;
+  const limitations = fullRuntimeProven
+    ? []
+    : [...new Set(limitationCodes)].map((code) => ({ code }));
+  const runtimeProofArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
+    proofId: `webgpu-compute-runtime-proof:${sha256Text(stableJson({
+      proofLedgerId: proofLedger.proofId,
+      contractHash: contract.contract_hash,
+      dispatchId: trace.after.dispatchId,
+      epoch: trace.after.epoch,
+      rawReadbackHash: oracleArtifacts.raw_readback_hash,
+      pipelineStateHash: profile.pipeline.pipelineStateHash,
+    })).replace(/^sha256:/, '')}`,
+    resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : 'gpu-hmr-runtime-proof-rejected',
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    gpuHmrSuccess: fullRuntimeProven,
+    gpu_hmr_success: fullRuntimeProven,
+    stageResults: [
+      {
+        stageId: 'webgpu-compute-wgsl-artifact',
+        status: profile.beforeHash && profile.afterHash && profile.beforeHash !== profile.afterHash ? 'passed' : 'failed',
+        evidenceRefs: [profile.beforeHash, profile.afterHash].filter(Boolean),
+      },
+      {
+        stageId: 'webgpu-compute-pipeline-epoch',
+        status: nativeApiEvidence.accepted === true && trace.after.epoch && trace.after.pipelineId ? 'passed' : 'failed',
+        evidenceRefs: [
+          `runtime:webgpu-compute:createShaderModule:${trace.after.epoch}`,
+          `runtime:webgpu-compute:createComputePipeline:${trace.after.pipelineId}`,
+        ],
+      },
+      {
+        stageId: 'webgpu-compute-post-epoch-dispatch',
+        status: ledger.gpuHmrSuccess === true ? 'passed' : 'failed',
+        evidenceRefs: [trace.after.dispatchId, proofLedger.proofId],
+      },
+      {
+        stageId: 'webgpu-compute-raw-readback-oracle',
+        status: oracleValidation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [
+          oracleArtifacts.raw_readback_hash,
+          oracleArtifacts.deterministic_slice_hash,
+          oracleArtifacts.readback_schema_hash,
+        ].filter(Boolean),
+      },
+      {
+        stageId: 'webgpu-compute-acceptance-contract',
+        status: contractEvaluation.accepted === true && contractConsistency.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [contract.contract_hash],
+      },
+      {
+        stageId: 'webgpu-compute-process-firewall',
+        status: processContinuity.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:webgpu-compute:process:${processContinuity.processIdAfter}`],
+      },
+    ],
+    limitations,
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery: ledger,
+    proof_ledger_query: ledger,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    acceptanceContract: contract,
+    acceptance_contract: contract,
+    acceptanceContractEvaluation: contractEvaluation,
+    acceptance_contract_evaluation: contractEvaluation,
+    acceptanceContractConsistency: contractConsistency,
+    acceptance_contract_consistency: contractConsistency,
+    computeOracleArtifacts: oracleArtifacts,
+    compute_oracle_artifacts: oracleArtifacts,
+    computeOracleValidation: oracleValidation,
+    compute_oracle_validation: oracleValidation,
+    nativeWebGpuApiEvidence: nativeApiEvidence,
+    native_webgpu_api_evidence: nativeApiEvidence,
+    processContinuity,
+    process_continuity: processContinuity,
+  };
+  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+  return {
+    ...runtimeProofArtifact,
+    strictGate,
+    strict_gate: strictGate,
+    fullRuntimeProven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+    full_runtime_proven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+    gpuHmrSuccess: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+    gpu_hmr_success: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+  };
+}
+
+function buildRunModeProof({
+  profile,
+  runMode,
+  ledger,
+  proofLedger,
+  oracleArtifacts,
+  nativeApiEvidence,
+  runtimeProofArtifact,
+}) {
   const record = proofLedger.records[0];
   const material = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
@@ -1571,6 +1712,10 @@ function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifa
     backend: 'webgpu',
     runMode,
     ledgerProofId: ledger.proofId,
+    runtimeProofArtifactId: runtimeProofArtifact?.proofId ?? null,
+    runtime_proof_artifact_id: runtimeProofArtifact?.proofId ?? null,
+    runtimeProofStrictGate: runtimeProofArtifact?.strictGate?.status ?? 'unknown',
+    runtime_proof_strict_gate: runtimeProofArtifact?.strictGate?.status ?? 'unknown',
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     nativeApiCounts: nativeApiEvidence.counts,
     dispatchId: record.dispatchEvent.id,
@@ -1578,7 +1723,7 @@ function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifa
   return {
     ...material,
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson(material)).replace(/^sha256:/, '')}`,
-    accepted: ledger.gpuHmrSuccess === true,
+    accepted: ledger.gpuHmrSuccess === true && runtimeProofArtifact?.gpuHmrSuccess === true,
     coverageObligations: {
       webgpuComputeRunModes: true,
       webgpu_compute_run_modes: true,
@@ -1710,15 +1855,22 @@ async function main() {
   const ledger = queryGpuHmrLedgerInvariants(proofLedger);
   const ledgerEvaluation = evaluateGpuHmrProofLedger(proofLedger.records[0]);
   const nativeApiEvidence = nativeWebGpuApiEvidence(trace);
+  const runtimeProofArtifact = buildRuntimeProofArtifact({
+    profile,
+    trace,
+    contract,
+    contractEvaluation,
+    contractConsistency,
+    proofLedger,
+    ledger,
+    oracleArtifacts,
+    oracleValidation,
+    nativeApiEvidence,
+    processContinuity,
+  });
   const accepted =
-    contractEvaluation.accepted === true
-    && contractConsistency.accepted === true
-    && ledger.gpuHmrSuccess === true
-    && ledger.failedInvariants.length === 0
-    && ledgerEvaluation.gpuHmrSuccess === true
-    && oracleValidation.accepted === true
-    && nativeApiEvidence.accepted === true
-    && processContinuity.accepted === true;
+    runtimeProofArtifact.gpuHmrSuccess === true
+    && ledgerEvaluation.gpuHmrSuccess === true;
   const proofMaterial = {
     schema: SCHEMA,
     slug: runSlug,
@@ -1743,6 +1895,8 @@ async function main() {
     proofLedger,
     ledger,
     ledgerEvaluation,
+    runtimeProofArtifact,
+    runtime_proof_artifact: runtimeProofArtifact,
     modelProvenance: provenance,
     timings,
     timingMetrics: null,
@@ -1753,6 +1907,7 @@ async function main() {
       proofLedger,
       oracleArtifacts,
       nativeApiEvidence,
+      runtimeProofArtifact,
     }),
     negativeEditRefusal: buildNegativeRefusal({ profile }),
     gpuHmrSuccess: accepted,
@@ -1767,9 +1922,14 @@ async function main() {
     ledgerProofId: ledger.proofId,
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     nativeApiCounts: nativeApiEvidence.counts,
+    runtimeProofArtifactId: runtimeProofArtifact.proofId,
   })).replace(/^sha256:/, '')}`;
   proofMaterial.timingMetrics = webGpuRuntimeComputeTimingMetrics(proofMaterial);
   const proofPath = path.join(outDir, `${runSlug}-proof.json`);
+  const runtimeProofArtifactPath = path.join(outDir, `${runSlug}-runtime-proof-artifact.json`);
+  proofMaterial.runtimeProofArtifactPath = relRepo(runtimeProofArtifactPath);
+  proofMaterial.runtime_proof_artifact_path = relRepo(runtimeProofArtifactPath);
+  await writeFile(runtimeProofArtifactPath, `${JSON.stringify(runtimeProofArtifact, null, 2)}\n`);
   await writeFile(proofPath, `${JSON.stringify(proofMaterial, null, 2)}\n`);
   if (proofMaterial.negativeEditRefusal) {
     await writeFile(
@@ -1787,6 +1947,8 @@ async function main() {
     proofPath: relRepo(proofPath),
     rawReadbackHash: oracleArtifacts.raw_readback_hash,
     renderedCardPng: oracleArtifacts.rendered_card_png,
+    runtimeProofArtifactId: runtimeProofArtifact.proofId,
+    runtimeProofStrictGate: runtimeProofArtifact.strictGate?.status ?? null,
     ledgerProofId: ledger.proofId,
     failedLedgerInvariants: ledger.failedInvariants,
     contractAccepted: contractEvaluation.accepted,
