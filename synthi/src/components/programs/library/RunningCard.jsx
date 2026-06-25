@@ -58,7 +58,7 @@ export default function RunningCard({ session, slug, programName, onOpen, onStop
 
       {active && session?.webGui ? (
         <div className="mt-2" data-testid={`thumb-${session.id}`}>
-          <ProgramThumbnail slug={slug} port={session.webPort || null} />
+          <ProgramThumbnail slug={slug} port={session.webPort || null} startedAt={session.startedAt} />
         </div>
       ) : null}
 
