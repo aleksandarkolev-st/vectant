@@ -2246,6 +2246,12 @@ const report = {
   timingMetrics: null,
 };
 
+const runtimeEvidenceContext = {
+  files: [],
+  buildMetadata: {},
+  sourceSnapshotAvailable: false,
+};
+
 report.real_rocm_profile_proof_obligations = realRocmProfileProofObligationsFacet({
   profile: CFG.realRocmProfile,
   targetProgression: report.target_progression,
@@ -11488,7 +11494,7 @@ int main()
   console.log('runtime dispatch evidence self-check passed');
 }
 
-async function collectRuntimeEvidence() {
+async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   if (report.docker?.daemon_preflight?.available === false) {
     record(
       'runtime evidence collected',
@@ -11574,6 +11580,18 @@ async function collectRuntimeEvidence() {
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
     epochProof: runtimeEpochSwap.proof,
   });
+  const runtimeSourceFiles = Array.isArray(context?.files) ? context.files : [];
+  const runtimeBuildMetadata =
+    context?.buildMetadata && typeof context.buildMetadata === 'object' && !Array.isArray(context.buildMetadata)
+      ? context.buildMetadata
+      : {};
+  if (context?.sourceSnapshotAvailable !== true) {
+    record(
+      'runtime sidecar source snapshot',
+      'warn',
+      'source/build metadata unavailable before runtime evidence collection; sidecar contract remains build-metadata-unproven',
+    );
+  }
   const upstreamGpuRunPhase = report.phases
     .filter((phase) => phase?.name === 'upstream_gpu_build_run')
     .at(-1) ?? null;
@@ -12027,8 +12045,8 @@ async function collectRuntimeEvidence() {
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
-    files,
-    buildMetadata,
+    files: runtimeSourceFiles,
+    buildMetadata: runtimeBuildMetadata,
     runtimeEvidence: {
       artifactTransportObserved: Number(runtimeArtifactTransport.total_count ?? runtimeArtifactTransport.matched_count ?? 0) > 0,
       epochObserved:
@@ -12847,6 +12865,9 @@ async function run() {
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);
+  runtimeEvidenceContext.buildMetadata = buildMetadata;
+  runtimeEvidenceContext.files = files;
+  runtimeEvidenceContext.sourceSnapshotAvailable = true;
   const fileContentByPath = new Map(files.map((file) => [file.path, file.content]));
   const updateFileContent = (filePath, content) => {
     const normalized = String(filePath ?? '').replace(/\\/g, '/');
@@ -13013,7 +13034,7 @@ if (process.argv.includes('--self-check')) {
       if (mcpState?.proc) {
         try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
       }
-      await collectRuntimeEvidence().catch((err) => {
+      await collectRuntimeEvidence(runtimeEvidenceContext).catch((err) => {
         record('runtime evidence collected', 'warn', err.stack || err.message);
       });
       await writeResults().catch((err) => console.error(err));
