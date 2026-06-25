@@ -5250,7 +5250,10 @@ function compileResponseBridgeSummary(compile) {
   };
 }
 
-function realRocmCompileBridgeFacet(phases = []) {
+function realRocmCompileBridgeFacet(phases = [], {
+  runtimeProofAccepted = false,
+  runtimeEvidenceRefs = [],
+} = {}) {
   const summaries = (Array.isArray(phases) ? phases : [])
     .filter((phase) => /compile|hmr/i.test(String(phase?.name ?? '')))
     .map((phase) => ({
@@ -5265,7 +5268,11 @@ function realRocmCompileBridgeFacet(phases = []) {
     entry.summary.status === 'compile_bridge_incomplete_not_runtime_proof'
   );
   const blockingGaps = [];
-  if (anyCandidate) {
+  const linkedToRuntimeProof = runtimeProofAccepted === true && anyCandidate;
+  if (linkedToRuntimeProof) {
+    // The compile response is still not authority by itself; it can only be a
+    // link once the runtime proof chain has already accepted.
+  } else if (anyCandidate) {
     blockingGaps.push('compile_response_bridge_candidate_not_runtime_proof');
   } else if (anyIncomplete) {
     blockingGaps.push('compile_response_bridge_incomplete_not_runtime_proof');
@@ -5274,21 +5281,29 @@ function realRocmCompileBridgeFacet(phases = []) {
   }
   return {
     schemaVersion: 'synthi.real_rocm.compile_bridge_facet.v1',
-    status: anyCandidate
+    status: linkedToRuntimeProof
+      ? 'compile_bridge_linked_to_runtime_proof'
+      : anyCandidate
       ? 'compile_bridge_candidate_observed_not_runtime_proof'
       : anyIncomplete
         ? 'compile_bridge_incomplete_not_runtime_proof'
         : 'compile_bridge_missing',
-    proofAuthority: 'compile_response_evidence_only_not_gpu_hmr_success',
-    proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
+    proofAuthority: linkedToRuntimeProof
+      ? 'compile_response_linked_to_runtime_proof_artifact'
+      : 'compile_response_evidence_only_not_gpu_hmr_success',
+    proof_authority: linkedToRuntimeProof
+      ? 'compile_response_linked_to_runtime_proof_artifact'
+      : 'compile_response_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: linkedToRuntimeProof,
+    can_satisfy_runtime_proof: linkedToRuntimeProof,
     phaseCount: summaries.length,
     phase_count: summaries.length,
     phaseSummaries: summaries,
     phase_summaries: summaries,
     blockingGaps,
     blocking_gaps: blockingGaps,
+    runtimeEvidenceRefs: compactStringList(runtimeEvidenceRefs),
+    runtime_evidence_refs: compactStringList(runtimeEvidenceRefs),
   };
 }
 
@@ -7663,10 +7678,18 @@ function realRocmDeviceSidecarCoverage(files, buildMetadata, focusPath) {
   };
 }
 
-function realRocmDeviceSidecarContractFacet({ files = [], buildMetadata = {} } = {}) {
-  const declaredContract = CFG.deviceSidecarContract && typeof CFG.deviceSidecarContract === 'object'
-    ? CFG.deviceSidecarContract
-    : normalizeRealRocmDeviceSidecarContract(null);
+function realRocmDeviceSidecarContractFacet({
+  files = [],
+  buildMetadata = {},
+  runtimeEvidence = {},
+  declaredContractOverride = null,
+} = {}) {
+  const declaredContract =
+    declaredContractOverride && typeof declaredContractOverride === 'object' && !Array.isArray(declaredContractOverride)
+      ? normalizeRealRocmDeviceSidecarContract(declaredContractOverride)
+      : CFG.deviceSidecarContract && typeof CFG.deviceSidecarContract === 'object'
+        ? CFG.deviceSidecarContract
+        : normalizeRealRocmDeviceSidecarContract(null);
   const focusSourcePaths = compactStringList([
     CFG.entryFile,
     CFG.deltaFile,
@@ -7770,13 +7793,38 @@ function realRocmDeviceSidecarContractFacet({ files = [], buildMetadata = {} } =
   if (derivedBackend === 'cuda') {
     blockingGaps.push('device_sidecar_cuda_not_provable_on_rocm_host');
   }
-  blockingGaps.push(
-    'device_sidecar_artifact_transport_runtime_not_observed',
-    'device_sidecar_epoch_publication_runtime_not_observed',
-    'device_sidecar_dispatch_trace_runtime_not_observed',
-    'device_sidecar_output_oracle_runtime_not_observed',
-    'device_sidecar_host_identity_runtime_not_observed',
-  );
+  const runtimeObservedByStage = {
+    artifactTransport: runtimeEvidence.artifactTransportObserved === true,
+    epochPublication: runtimeEvidence.epochObserved === true,
+    dispatchTrace: runtimeEvidence.dispatchObserved === true,
+    outputOracle: runtimeEvidence.outputOracleObserved === true,
+    hostIdentity: runtimeEvidence.hostIdentityObserved === true,
+  };
+  const runtimeObservationComplete = Object.values(runtimeObservedByStage).every(Boolean);
+  if (!runtimeObservedByStage.artifactTransport) {
+    blockingGaps.push('device_sidecar_artifact_transport_runtime_not_observed');
+  }
+  if (!runtimeObservedByStage.epochPublication) {
+    blockingGaps.push('device_sidecar_epoch_publication_runtime_not_observed');
+  }
+  if (!runtimeObservedByStage.dispatchTrace) {
+    blockingGaps.push('device_sidecar_dispatch_trace_runtime_not_observed');
+  }
+  if (!runtimeObservedByStage.outputOracle) {
+    blockingGaps.push('device_sidecar_output_oracle_runtime_not_observed');
+  }
+  if (!runtimeObservedByStage.hostIdentity) {
+    blockingGaps.push('device_sidecar_host_identity_runtime_not_observed');
+  }
+  const fullRuntimeProofAccepted = runtimeEvidence.fullRuntimeProofAccepted === true;
+  if (runtimeObservationComplete && !fullRuntimeProofAccepted) {
+    blockingGaps.push('device_sidecar_full_runtime_proof_not_accepted');
+  }
+  const canSatisfyRuntimeProof =
+    contractEvidenceComplete
+    && runtimeObservationComplete
+    && fullRuntimeProofAccepted
+    && derivedBackend !== 'cuda';
   const evidenceRefs = compactStringList([
     `profile:${CFG.realRocmProfile.id}`,
     `build-metadata:target:${CFG.targetName}`,
@@ -7785,15 +7833,19 @@ function realRocmDeviceSidecarContractFacet({ files = [], buildMetadata = {} } =
       .filter((entry) => entry.covered)
       .map((entry) => `build-metadata:coverage:${entry.focus_path}:${entry.reason}`),
     ...entryPoints.map((entryPoint) => `profile:native_launch_symbol:${entryPoint}`),
+    ...(Array.isArray(runtimeEvidence.evidenceRefs) ? runtimeEvidence.evidenceRefs : []),
+    ...(Array.isArray(runtimeEvidence.evidence_refs) ? runtimeEvidence.evidence_refs : []),
     ...(Array.isArray(declaredContract.evidenceRefs) ? declaredContract.evidenceRefs : []),
     ...(Array.isArray(declaredContract.evidence_refs) ? declaredContract.evidence_refs : []),
   ]);
-  const status = declaredContract.declared
+  const status = canSatisfyRuntimeProof
+    ? 'device_sidecar_runtime_proof_evidence'
+    : declaredContract.declared
     ? contractEvidenceComplete
-      ? 'declared_device_sidecar_contract_not_runtime_proof'
+      ? 'declared_device_sidecar_contract_pending_runtime_proof'
       : 'declared_device_sidecar_contract_incomplete'
     : contractEvidenceComplete
-      ? 'derived_device_sidecar_candidate_not_runtime_proof'
+      ? 'derived_device_sidecar_candidate_pending_runtime_proof'
       : derivedSourcePaths.length > 0
         ? 'derived_device_sidecar_candidate_incomplete'
         : 'device_sidecar_contract_not_derived';
@@ -7802,16 +7854,24 @@ function realRocmDeviceSidecarContractFacet({ files = [], buildMetadata = {} } =
     declared: declaredContract.declared === true,
     required: declaredContract.required === true,
     status,
-    proofAuthority: 'build_metadata_candidate_only_not_gpu_hmr_success',
-    proof_authority: 'build_metadata_candidate_only_not_gpu_hmr_success',
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
-    canSatisfyDispatchProof: false,
-    can_satisfy_dispatch_proof: false,
+    proofAuthority: canSatisfyRuntimeProof
+      ? 'runtime_observed_sidecar_contract_evidence'
+      : 'build_metadata_candidate_only_not_gpu_hmr_success',
+    proof_authority: canSatisfyRuntimeProof
+      ? 'runtime_observed_sidecar_contract_evidence'
+      : 'build_metadata_candidate_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof,
+    canSatisfyDispatchProof: canSatisfyRuntimeProof,
+    can_satisfy_dispatch_proof: canSatisfyRuntimeProof,
     contractEvidenceComplete,
     contract_evidence_complete: contractEvidenceComplete,
-    runtimeObservationComplete: false,
-    runtime_observation_complete: false,
+    runtimeObservationComplete,
+    runtime_observation_complete: runtimeObservationComplete,
+    runtimeObservedByStage,
+    runtime_observed_by_stage: runtimeObservedByStage,
+    fullRuntimeProofAccepted,
+    full_runtime_proof_accepted: fullRuntimeProofAccepted,
     sourceCoverageComplete,
     source_coverage_complete: sourceCoverageComplete,
     sourceCoverage,
@@ -8128,6 +8188,9 @@ function realRocmSidecarRuntimeConsistencyFacet({
   const sidecarRuntimeObservationComplete =
     sidecar.runtimeObservationComplete === true
     || sidecar.runtime_observation_complete === true;
+  const sidecarCanSatisfyRuntimeProof =
+    sidecar.canSatisfyRuntimeProof === true
+    || sidecar.can_satisfy_runtime_proof === true;
   const runtimeObserved =
     eligibility.observed === true
     || eligibility.nativeLaunchBoundaryObserved === true
@@ -8162,11 +8225,24 @@ function realRocmSidecarRuntimeConsistencyFacet({
   if (sidecarPresent && !sidecarRuntimeObservationComplete) {
     blockingGaps.push('sidecar_runtime_sidecar_observation_missing');
   }
-  const status = !sidecarPresent
-    ? 'sidecar_runtime_consistency_not_applicable'
-    : backendConsistent
-      ? 'sidecar_runtime_backend_consistent_not_runtime_proof'
-      : 'sidecar_runtime_backend_inconsistent_or_unproven';
+  if (sidecarPresent && !sidecarCanSatisfyRuntimeProof) {
+    blockingGaps.push('sidecar_runtime_sidecar_not_runtime_proof');
+  }
+  const accepted =
+    sidecarPresent
+    && Boolean(backendConsistent)
+    && sidecarEvidenceComplete
+    && sidecarRuntimeObservationComplete
+    && sidecarCanSatisfyRuntimeProof
+    && blockingGaps.length === 0;
+  const notApplicable = !sidecarPresent;
+  const status = notApplicable
+    ? 'not_applicable'
+    : accepted
+      ? 'sidecar_runtime_consistency_proven'
+      : backendConsistent
+        ? 'sidecar_runtime_backend_consistent_not_runtime_proof'
+        : 'sidecar_runtime_backend_inconsistent_or_unproven';
   const evidenceRefs = compactStringList([
     ...(Array.isArray(sidecar.evidenceRefs) ? sidecar.evidenceRefs : []),
     ...(Array.isArray(sidecar.evidence_refs) ? sidecar.evidence_refs : []),
@@ -8183,12 +8259,25 @@ function realRocmSidecarRuntimeConsistencyFacet({
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1',
     status,
-    proofAuthority: 'evidence_only_not_gpu_hmr_success',
-    proof_authority: 'evidence_only_not_gpu_hmr_success',
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
-    canSatisfyDispatchProof: false,
-    can_satisfy_dispatch_proof: false,
+    accepted,
+    runtimeConsistencyAccepted: accepted,
+    runtime_consistency_accepted: accepted,
+    notApplicable,
+    not_applicable: notApplicable,
+    proofAuthority: accepted
+      ? 'sidecar_backend_runtime_consistency_evidence'
+      : notApplicable
+        ? 'explicit_no_device_sidecar_applicable'
+        : 'evidence_only_not_gpu_hmr_success',
+    proof_authority: accepted
+      ? 'sidecar_backend_runtime_consistency_evidence'
+      : notApplicable
+        ? 'explicit_no_device_sidecar_applicable'
+        : 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: accepted,
+    can_satisfy_runtime_proof: accepted,
+    canSatisfyDispatchProof: accepted,
+    can_satisfy_dispatch_proof: accepted,
     sidecarBackend: sidecarBackend || null,
     sidecar_backend: sidecarBackend || null,
     runtimeBackendCandidates,
@@ -8199,6 +8288,8 @@ function realRocmSidecarRuntimeConsistencyFacet({
     sidecar_evidence_complete: sidecarEvidenceComplete,
     sidecarRuntimeObservationComplete,
     sidecar_runtime_observation_complete: sidecarRuntimeObservationComplete,
+    sidecarCanSatisfyRuntimeProof,
+    sidecar_can_satisfy_runtime_proof: sidecarCanSatisfyRuntimeProof,
     runtimeObserved,
     runtime_observed: runtimeObserved,
     blockingGaps: compactStringList(blockingGaps),
@@ -10769,6 +10860,19 @@ int main()
       },
     }) },
   ]);
+  const runtimeLinkedCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
+      ok: true,
+      device_sidecar: {
+        command: 'load_device rocm /tmp/kernel.hsaco kernel',
+        artifact_hash: `sha256:${'3'.repeat(64)}`,
+        runtime_proof: { proof_id: `gpu-runtime-proof:sha256:${'4'.repeat(64)}` },
+      },
+    }) },
+  ], {
+    runtimeProofAccepted: true,
+    runtimeEvidenceRefs: ['gpu-runtime-proof:sha256:self-check-runtime'],
+  });
   if (
     missingCompileBridge.status !== 'compile_bridge_missing'
     || missingCompileBridge.canSatisfyRuntimeProof !== false
@@ -10778,6 +10882,9 @@ int main()
     || candidateCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
     || candidateCompileBridge.can_satisfy_runtime_proof !== false
     || !candidateCompileBridge.blocking_gaps.includes('compile_response_bridge_candidate_not_runtime_proof')
+    || runtimeLinkedCompileBridge.status !== 'compile_bridge_linked_to_runtime_proof'
+    || runtimeLinkedCompileBridge.can_satisfy_runtime_proof !== true
+    || runtimeLinkedCompileBridge.blocking_gaps.length !== 0
   ) {
     throw new Error('compile response bridge evidence self-check failed');
   }
@@ -10802,6 +10909,28 @@ int main()
     files: sidecarSelfCheckFiles,
     buildMetadata: sidecarSelfCheckMetadata,
   });
+  const sidecarRuntimeProofFacet = realRocmDeviceSidecarContractFacet({
+    files: sidecarSelfCheckFiles,
+    buildMetadata: sidecarSelfCheckMetadata,
+    declaredContractOverride: {
+      declared: true,
+      sourcePaths: [CFG.entryFile],
+      artifactKind: 'hsaco',
+      entryPoints: ['self_check_kernel'],
+      compileTarget: 'gfx1201',
+      compiler: '/opt/rocm/llvm/bin/amdclang++',
+      evidenceRefs: ['evidence:self-check-sidecar-contract'],
+    },
+    runtimeEvidence: {
+      artifactTransportObserved: true,
+      epochObserved: true,
+      dispatchObserved: true,
+      outputOracleObserved: true,
+      hostIdentityObserved: true,
+      fullRuntimeProofAccepted: true,
+      evidenceRefs: ['gpu-runtime-proof:sha256:self-check-sidecar'],
+    },
+  });
   if (
     sidecarFacet.canSatisfyRuntimeProof !== false
     || sidecarFacet.can_satisfy_runtime_proof !== false
@@ -10810,6 +10939,10 @@ int main()
     || !sidecarFacet.evidence_refs.some((ref) => ref.startsWith('build-metadata:coverage:'))
     || !sidecarFacet.blocking_gaps.includes('device_sidecar_artifact_transport_runtime_not_observed')
     || !sidecarFacet.blocking_gaps.includes('device_sidecar_dispatch_trace_runtime_not_observed')
+    || sidecarRuntimeProofFacet.status !== 'device_sidecar_runtime_proof_evidence'
+    || sidecarRuntimeProofFacet.can_satisfy_runtime_proof !== true
+    || sidecarRuntimeProofFacet.runtime_observation_complete !== true
+    || sidecarRuntimeProofFacet.blocking_gaps.length !== 0
   ) {
     throw new Error('real ROCm device sidecar contract self-check failed');
   }
@@ -10830,6 +10963,13 @@ int main()
       backend_candidates: ['hip'],
     },
   });
+  const sidecarRuntimeAccepted = realRocmSidecarRuntimeConsistencyFacet({
+    deviceSidecarContract: sidecarRuntimeProofFacet,
+    runtimeEligibility: {
+      observed: true,
+      backend_candidates: ['hip'],
+    },
+  });
   if (
     sidecarRuntimeConsistent.status !== 'sidecar_runtime_backend_consistent_not_runtime_proof'
     || sidecarRuntimeConsistent.canSatisfyRuntimeProof !== false
@@ -10838,6 +10978,10 @@ int main()
     || sidecarRuntimeMismatch.status !== 'sidecar_runtime_backend_inconsistent_or_unproven'
     || sidecarRuntimeMismatch.backend_consistent !== false
     || !sidecarRuntimeMismatch.blocking_gaps.includes('sidecar_runtime_backend_mismatch')
+    || sidecarRuntimeAccepted.status !== 'sidecar_runtime_consistency_proven'
+    || sidecarRuntimeAccepted.can_satisfy_runtime_proof !== true
+    || sidecarRuntimeAccepted.accepted !== true
+    || sidecarRuntimeAccepted.not_applicable !== false
   ) {
     throw new Error('real ROCm sidecar/runtime consistency self-check failed');
   }
@@ -11538,6 +11682,14 @@ async function collectRuntimeEvidence() {
     fullRuntimeProof: report.full_runtime_proof,
   });
   report.evidence.native_rocm_launch_boundary = report.native_rocm_launch_boundary;
+  const realRocmAvailableEvidenceRefs = availableRealRocmEvidenceRefs({
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+    proofArtifactRecords,
+  });
   report.real_rocm_app_hook_contract = realRocmAppHookContractFacet({
     appHookContract: CFG.appHookContract,
     nativeBoundary: report.native_rocm_launch_boundary,
@@ -11548,18 +11700,34 @@ async function collectRuntimeEvidence() {
     runtimeOutputOracle,
     runtimeHostPreservation,
     fullRuntimeProof: report.full_runtime_proof,
-    availableEvidenceRefs: availableRealRocmEvidenceRefs({
-      runtimeDispatch,
-      runtimeArtifactTransport,
-      runtimeEpochSwap,
-      runtimeOutputOracle,
-      runtimeHostPreservation,
-      proofArtifactRecords,
-    }),
+    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
   });
   report.realRocmAppHookContract = report.real_rocm_app_hook_contract;
   report.evidence.real_rocm_app_hook_contract = report.real_rocm_app_hook_contract;
-  report.real_rocm_compile_bridge = realRocmCompileBridgeFacet(report.phases);
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
+    files,
+    buildMetadata,
+    runtimeEvidence: {
+      artifactTransportObserved: Number(runtimeArtifactTransport.total_count ?? runtimeArtifactTransport.matched_count ?? 0) > 0,
+      epochObserved:
+        Number(epochEvidence.total_count ?? 0) > 0
+        || Number(epochEvidence.published_count ?? 0) > 0
+        || runtimeEpochSwap?.proof?.resultState === 'gpu-hmr-epoch-swap-proven',
+      dispatchObserved: Number(runtimeDispatch.success_count ?? 0) > 0,
+      outputOracleObserved: Number(runtimeOutputOracle.total_count ?? 0) > 0,
+      hostIdentityObserved: Number(hostEvidence.total_count ?? 0) > 0,
+      fullRuntimeProofAccepted: report.full_runtime_proof?.fullRuntimeProven === true,
+      evidenceRefs: realRocmAvailableEvidenceRefs,
+    },
+  });
+  report.realRocmDeviceSidecarContract = report.real_rocm_device_sidecar_contract;
+  report.evidence.real_rocm_device_sidecar_contract = report.real_rocm_device_sidecar_contract;
+  report.real_rocm_compile_bridge = realRocmCompileBridgeFacet(report.phases, {
+    runtimeProofAccepted: report.full_runtime_proof?.fullRuntimeProven === true,
+    runtimeEvidenceRefs: realRocmAvailableEvidenceRefs,
+  });
   report.realRocmCompileBridge = report.real_rocm_compile_bridge;
   report.evidence.real_rocm_compile_bridge = report.real_rocm_compile_bridge;
   report.real_rocm_runtime_eligibility = realRocmRuntimeEligibilityFacet({
@@ -11624,7 +11792,7 @@ async function collectRuntimeEvidence() {
       ].join(' '),
     );
   }
-  if (report.real_rocm_sidecar_runtime_consistency.status !== 'sidecar_runtime_consistency_not_applicable') {
+  if (report.real_rocm_sidecar_runtime_consistency.notApplicable !== true) {
     record(
       'real ROCm sidecar runtime consistency facet',
       report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
