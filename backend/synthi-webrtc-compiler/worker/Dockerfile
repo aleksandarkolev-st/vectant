@@ -89,7 +89,7 @@ ARG ROCDXG_VERSION=1.2.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     # C/C++ — GCC 15 for C++26
-    gcc-15 g++-15 clang make cmake ninja-build git pkg-config \
+    gcc-15 g++-15 gfortran clang make cmake ninja-build git pkg-config \
     # Java — full JDK (NOT -headless): GUI apps (AWT/Swing) need
     # libawt_xawt.so + its X11 runtime deps (libxrender1, libxtst6,
     # fontconfig, …) which the -headless variant omits.
