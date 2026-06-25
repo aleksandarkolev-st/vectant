@@ -432,6 +432,10 @@ function normalizeRealRocmProfile(rawProfile, source) {
       upstreamRunCommand: optionalProfileString(target.upstreamRunCommand, 'target.upstreamRunCommand'),
       buildUpstream: optionalProfileBoolean(target.buildUpstream, 'target.buildUpstream'),
       runUpstream: optionalProfileBoolean(target.runUpstream, 'target.runUpstream'),
+      hiprtRuntimeProbe: optionalProfileBoolean(
+        target.hiprtRuntimeProbe ?? target.hiprt_runtime_probe,
+        'target.hiprtRuntimeProbe',
+      ),
       nativeLaunchSymbols: optionalProfileStringArray(
         target.nativeLaunchSymbols ?? target.native_launch_symbols,
         'target.nativeLaunchSymbols',
@@ -1920,7 +1924,7 @@ const CFG = {
   hiprtRuntimeProbe:
     process.env.SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE !== undefined
       ? booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE', false)
-      : /hiprt/i.test(`${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? ''}`),
+      : REAL_ROCM_PROFILE.target.hiprtRuntimeProbe === true,
   hiprtRuntimeProbeWidth: positiveIntegerFromEnv(
     process.env,
     'SYNTHI_REAL_ROCM_HIPRT_RUNTIME_WIDTH',
@@ -2102,6 +2106,11 @@ const report = {
   adversarial_preflight: null,
   hiprt_runtime_probe: {
     enabled: CFG.hiprtRuntimeProbe,
+    enabled_source: process.env.SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE !== undefined
+      ? 'env:SYNTHI_REAL_ROCM_HIPRT_RUNTIME_PROBE'
+      : REAL_ROCM_PROFILE.target.hiprtRuntimeProbe === true
+        ? 'profile:target.hiprtRuntimeProbe'
+        : 'disabled_by_default',
     capture_worker_path: null,
     capture_artifact_path: null,
     native_launch_symbols: CFG.nativeLaunchSymbols,
@@ -4287,8 +4296,6 @@ async function prepareUpstreamBuild() {
     : ':';
   const upstreamRunCommand = CFG.upstreamRunCommand
     ? CFG.upstreamRunCommand
-    : CFG.hiprtRuntimeProbe && CFG.targetName === 'HIPRTPathTracer'
-      ? hiprtRuntimeProbeRunCommand()
     : `./build/${shQuote(CFG.targetName)}`;
   const observedUpstreamRunCommand = CFG.nativeLaunchObserver
     ? [
@@ -10135,6 +10142,49 @@ int main()
     || profileRuntimeOracleContract.kernelSymbol !== 'custom_kernel'
   ) {
     throw new Error('profile runtime output oracle contract self-check failed');
+  }
+  const hiprtProbeDeclaredProfile = normalizeRealRocmProfile({
+    schemaVersion: REAL_ROCM_PROFILE_SCHEMA_VERSION,
+    id: 'self-check-hiprt-probe-declared',
+    repo: {
+      url: 'https://example.invalid/rocm/hiprt.git',
+      name: 'HIPRT-Path-Tracer',
+    },
+    target: {
+      entryFile: 'src/Device/kernels/CameraRays.h',
+      deltaFile: 'src/Device/kernels/CameraRays.h',
+      targetName: 'HIPRTPathTracer',
+      buildSubdir: '.',
+      hiprtRuntimeProbe: true,
+    },
+    sourceDelta: {
+      before: 'before',
+      after: 'after',
+    },
+  }, 'self-check:hiprt-probe-declared');
+  const hiprtProbeNameOnlyProfile = normalizeRealRocmProfile({
+    schemaVersion: REAL_ROCM_PROFILE_SCHEMA_VERSION,
+    id: 'self-check-hiprt-probe-name-only',
+    repo: {
+      url: 'https://example.invalid/rocm/hiprt.git',
+      name: 'HIPRT-Path-Tracer',
+    },
+    target: {
+      entryFile: 'src/Device/kernels/CameraRays.h',
+      deltaFile: 'src/Device/kernels/CameraRays.h',
+      targetName: 'HIPRTPathTracer',
+      buildSubdir: '.',
+    },
+    sourceDelta: {
+      before: 'before',
+      after: 'after',
+    },
+  }, 'self-check:hiprt-probe-name-only');
+  if (
+    hiprtProbeDeclaredProfile.target.hiprtRuntimeProbe !== true
+    || hiprtProbeNameOnlyProfile.target.hiprtRuntimeProbe !== null
+  ) {
+    throw new Error('HIPRT runtime probe profile declaration self-check failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
