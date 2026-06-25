@@ -2034,7 +2034,7 @@ function realRocmComputeProofLedgerMaterials(scope, options = {}) {
   return withAcceptedRuntimeCapabilityPreflight(computeProofLedgerMaterials(scope, options));
 }
 
-await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
+const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
     id: 'real-rocm-large-lib',
@@ -2231,6 +2231,34 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       })}`,
     },
     { name: 'strict runtime proof artifact presence', status: 'fail', detail: 'failures=runtime_proof_artifact_missing' },
+  ],
+};
+await writeJson(path.join(logsRoot, 'real-rocm-results.json'), largeRocmLatestReport);
+const retainedRealRocmDir = path.join(logsRoot, 'real-rocm-results');
+await writeJson(
+  path.join(retainedRealRocmDir, 'gpu-real-rocm-large-lib-20260623.json'),
+  largeRocmLatestReport,
+);
+await writeJson(path.join(retainedRealRocmDir, 'gpu-real-rocm-second-lib-20260623.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-second-lib-20260623',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-second-lib',
+    source: 'scripts/profiles/real-rocm-second-lib.json',
+  },
+  source_url: 'https://example.invalid/rocm/second-lib.git',
+  entry_file: 'src/kernels/second_entry.hip',
+  delta_file: 'src/kernels/second_delta.h',
+  target_name: 'SecondRocmDriver',
+  timingMetrics: {
+    ...largeRocmLatestReport.timingMetrics,
+    editId: 'real-rocm-second-lib-delta',
+    editHash: hashValue('real-rocm-second-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/second-lib.git @ 0123456789ab files=8000' },
+    ...largeRocmLatestReport.checks.slice(1),
   ],
 });
 
@@ -3474,6 +3502,16 @@ assert.ok(largeRocm.openGaps.includes(
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
 ));
+const retainedRealRocmRows = ledger.rows.filter((row) => row.proofMode === 'real_rocm_repo_validation');
+assert.equal(
+  retainedRealRocmRows.filter((row) => row.targetId === 'real-rocm-large-lib').length,
+  1,
+  'latest alias plus retained real ROCm report must not double-count one target',
+);
+const retainedSecondRocm = retainedRealRocmRows.find((row) => row.targetId === 'real-rocm-second-lib');
+assert.equal(retainedSecondRocm?.matrixOutcome, 'refusal_proven');
+assert.equal(retainedSecondRocm.backend, 'hip');
+assert.equal(retainedSecondRocm.proofChain, 'real_rocm_strict_runtime_refusal');
 
 const originalHostPreflightRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
@@ -3736,7 +3774,10 @@ assert.equal(
   Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),
   ledger.summary.allFullRuntimeGpuHmrRows,
 );
-assert.equal(ledger.summary.refusalProvenRows, 5);
+const retainedRealRocmRefusalCount = retainedRealRocmRows
+  .filter((row) => row.matrixOutcome === 'refusal_proven').length;
+assert.equal(retainedRealRocmRefusalCount, 2);
+assert.equal(ledger.summary.refusalProvenRows, 4 + retainedRealRocmRefusalCount);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));

@@ -1963,6 +1963,7 @@ const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
 const RESULTS_JSON = path.join(LOG_DIR, 'real-rocm-results.json');
 const RESULTS_TXT = path.join(LOG_DIR, 'real-rocm-results.txt');
+const RETAINED_RESULTS_DIR = path.join(LOG_DIR, 'real-rocm-results');
 const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
   '/tmp/synthi-gpu-hmr-runtime-output-oracle.json';
 
@@ -11901,9 +11902,31 @@ async function writeResults() {
   report.docker_image_ids = report.validation_proof_summary.docker_image_ids;
   report.proof_states = report.validation_proof_summary.proof_states;
   report.limitations = report.validation_proof_summary.limitations;
+  await mkdir(RETAINED_RESULTS_DIR, { recursive: true });
+  const retainedBaseName = cleanIdentifier(report.slug ?? CFG.slug ?? 'real-rocm-result');
+  const retainedResultsJson = path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.json`);
+  const retainedResultsTxt = path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.txt`);
+  report.result_artifacts = {
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_result_artifacts.v1',
+    retainedJson: retainedResultsJson,
+    retained_json: retainedResultsJson,
+    retainedTxt: retainedResultsTxt,
+    retained_txt: retainedResultsTxt,
+    latestJson: RESULTS_JSON,
+    latest_json: RESULTS_JSON,
+    latestTxt: RESULTS_TXT,
+    latest_txt: RESULTS_TXT,
+    latestAliasOnly: false,
+    latest_alias_only: false,
+  };
+  await writeFile(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
   await writeFile(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
   const lines = [
     `slug: ${report.slug}`,
+    `retained_results_json: ${retainedResultsJson}`,
+    `retained_results_txt: ${retainedResultsTxt}`,
+    `latest_results_json: ${RESULTS_JSON}`,
+    `latest_results_txt: ${RESULTS_TXT}`,
     `source_url: ${report.source_url}`,
     `repo_commit: ${report.repo_commit}`,
     `entry_file: ${report.entry_file}`,
@@ -11964,7 +11987,9 @@ async function writeResults() {
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];
+  await writeFile(retainedResultsTxt, lines.join('\n') + '\n');
   await writeFile(RESULTS_TXT, lines.join('\n') + '\n');
+  console.log(`retained results: ${retainedResultsTxt}`);
   console.log(`results: ${RESULTS_TXT}`);
 }
 
