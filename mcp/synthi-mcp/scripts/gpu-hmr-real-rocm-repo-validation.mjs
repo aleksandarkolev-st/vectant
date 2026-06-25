@@ -1367,10 +1367,11 @@ function acceptedVisualEvidenceCount(visualEvidenceFrames = []) {
     .filter((frame) => {
       if (typeof frame === 'string') return false;
       if (!frame || typeof frame !== 'object') return false;
-      if (frame.accepted_as_visual_evidence === false) return false;
+      const accepted = frame.accepted_as_visual_evidence ?? frame.acceptedAsVisualEvidence;
+      if (accepted === false) return false;
       const epochCorrelated = frame.frame_capture_after_epoch_dispatch === true
         || frame.frameCaptureAfterEpochDispatch === true;
-      return frame.accepted_as_visual_evidence === true && epochCorrelated;
+      return accepted === true && epochCorrelated;
     })
     .length;
 }
@@ -1692,6 +1693,43 @@ function targetProgressionGateRows({
   return rows;
 }
 
+function targetProgressionGateStatusRank(status) {
+  if (status === 'fail') return 3;
+  if (status === 'warn') return 2;
+  if (status === 'pass') return 1;
+  if (status === 'skip') return 0;
+  return -1;
+}
+
+function mergeTargetProgressionGateRows(reportedRows = [], derivedRows = []) {
+  const merged = [];
+  const byName = new Map();
+  for (const row of [
+    ...(Array.isArray(derivedRows) ? derivedRows : []),
+    ...(Array.isArray(reportedRows) ? reportedRows : []),
+  ]) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const name = typeof row.name === 'string' && row.name.trim()
+      ? row.name.trim()
+      : `target progression unnamed ${merged.length + 1}`;
+    const normalized = { ...row, name };
+    const existingIndex = byName.get(name);
+    if (existingIndex === undefined) {
+      byName.set(name, merged.length);
+      merged.push(normalized);
+      continue;
+    }
+    const existing = merged[existingIndex];
+    if (
+      targetProgressionGateStatusRank(normalized.status)
+      > targetProgressionGateStatusRank(existing.status)
+    ) {
+      merged[existingIndex] = normalized;
+    }
+  }
+  return merged;
+}
+
 function buildTargetProgressionLedgerEntry({
   report,
   visualArtifactPaths = [],
@@ -1699,13 +1737,36 @@ function buildTargetProgressionLedgerEntry({
 } = {}) {
   const progression = report?.target_progression;
   if (!progression?.phase) return null;
-  const gateRows = Array.isArray(report.target_progression_gates)
+  const reportedGateRows = Array.isArray(report.target_progression_gates)
     ? report.target_progression_gates
     : [];
-  const failedGates = gateRows.filter((row) => row?.status === 'fail');
-  const runtimeProofArtifact = report.runtime_proof_artifact ?? {};
   const visualArtifacts = (Array.isArray(visualEvidenceArtifacts) ? visualEvidenceArtifacts : [])
     .filter((artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact));
+  const visualEvidenceExpected =
+    compactStringList(visualArtifactPaths).length > 0
+    || visualArtifacts.length > 0
+    || report.output_proof?.visualEvidenceRequired === true
+    || report.output_proof?.renderVisualEvidenceRequired === true;
+  const derivedGateRows = targetProgressionGateRows({
+    targetProgression: progression,
+    targetProgressionLedger: report.target_progression_ledger,
+    sourceProofs: report.source_proofs,
+    fissionProof: report.fission_proof,
+    dispatchProof: report.dispatch_proof,
+    outputProof: report.output_proof,
+    hostPreservationProof: report.host_preservation_proof,
+    originalHostPathProof: report.original_host_path_proof,
+    fullRuntimeProof: report.full_runtime_proof,
+    visualEvidenceExpected,
+    visualEvidenceFrames: visualArtifacts.length > 0
+      ? visualArtifacts
+      : Array.isArray(report.screenshots)
+        ? report.screenshots
+        : [],
+  });
+  const gateRows = mergeTargetProgressionGateRows(reportedGateRows, derivedGateRows);
+  const failedGates = gateRows.filter((row) => row?.status === 'fail');
+  const runtimeProofArtifact = report.runtime_proof_artifact ?? {};
   const visualContentHashes = compactStringList(
     visualArtifacts.map((artifact) => artifact.contentHash ?? artifact.content_hash),
   );
@@ -11310,8 +11371,12 @@ int main()
       target_progression: {
         phase: 'final-acceptance',
         phaseRaw: 'final-acceptance',
+        recognized: true,
         targetName: 'self-check-target',
         finalAcceptanceTarget: 'self-check-target',
+        finalAcceptanceTargetDeclared: true,
+        targetMatchesFinalAcceptance: true,
+        nonFinalTargetRequired: false,
       },
       target_progression_gates: [],
       runtime_proof_artifact: {
@@ -11378,6 +11443,44 @@ int main()
       || rejectedLedgerEntry.visualEvidenceReadErrorCount !== 0
     ) {
       throw new Error('target progression ledger self-check did not retain rejected visual file bytes');
+    }
+    const forgedFinalAcceptanceReport = {
+      ...ledgerReport,
+      target_progression: {
+        ...ledgerReport.target_progression,
+        required: true,
+      },
+      target_progression_gates: [{
+        name: 'target progression full runtime',
+        status: 'pass',
+        detail: 'forged pass must not override derived proof state',
+      }],
+      target_progression_ledger: {
+        schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+        provided: false,
+        entries: [],
+      },
+      runtime_proof_artifact: null,
+      full_runtime_proof: { fullRuntimeProven: false },
+      output_proof: null,
+      original_host_path_proof: { attachmentProven: false },
+      host_preservation_proof: null,
+      dispatch_proof: null,
+    };
+    const forgedFinalAcceptanceEntry = buildTargetProgressionLedgerEntry({
+      report: forgedFinalAcceptanceReport,
+      visualArtifactPaths: [],
+      visualEvidenceArtifacts: [],
+    });
+    if (
+      forgedFinalAcceptanceEntry?.status !== 'fail'
+      || forgedFinalAcceptanceEntry.failureCount <= 0
+      || !forgedFinalAcceptanceEntry.gateRows.some((row) =>
+        row.name === 'target progression full runtime' && row.status === 'fail')
+      || !forgedFinalAcceptanceEntry.gateRows.some((row) =>
+        row.name === 'target progression compute oracle artifacts' && row.status === 'fail')
+    ) {
+      throw new Error('target progression ledger self-check accepted forged final-acceptance pass');
     }
   } finally {
     await rm(visualSelfCheckDir, { recursive: true, force: true });
