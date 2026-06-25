@@ -2713,6 +2713,47 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
   },
 });
 
+await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-seedless-visual-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
+  proofId: 'webgpu-runtime-visual-proof:sha256:seedless-forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-seedless-visual' },
+  contract: {
+    artifact_identity: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+    webgpu_contract: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-webgpu-seedless-visual',
+    visualRoot: forgedWebGpuVisualDir,
+  }),
+  deterministicVisualMode: {
+    ...deterministicMode('hot_delta_1'),
+    fixed_seed: false,
+    seed_policy_fixed: false,
+    seed_policy_hash: null,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+    forgedByFixture: true,
+  },
+  visualOracleArtifacts: {
+    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  },
+  visualThresholdValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  metrics: {
+    changedPixelRatio: 0.2,
+    meanAbsDelta8bit: 12,
+  },
+});
+
 await writeJson(path.join(artifactsRoot, 'webgpu-runtime-compute-proof', 'forged-webgpu-compute-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_compute_proof.v1',
   proofId: 'webgpu-runtime-compute-proof:sha256:forged',
@@ -4037,6 +4078,22 @@ assert.ok(forgedSourceAdaptedWebGpuVisual.reasons.includes(
 assert.ok(forgedSourceAdaptedWebGpuVisual.openGaps.includes(
   'source_adapted_profile_not_no_shim_gpu_hmr',
 ));
+
+const forgedSeedlessWebGpuVisual = ledger.rows.find((row) =>
+  row.targetId === 'forged-webgpu-seedless-visual'
+);
+assert.equal(forgedSeedlessWebGpuVisual?.proofMode, 'webgpu_wgsl_runtime_visual');
+assert.equal(forgedSeedlessWebGpuVisual.matrixOutcome, 'unproven');
+assert.equal(forgedSeedlessWebGpuVisual.acceptedForGpuHmr, false);
+assert.equal(forgedSeedlessWebGpuVisual.ledger.gpuHmrSuccess, true);
+assert.equal(forgedSeedlessWebGpuVisual.visual.accepted, true);
+assert.equal(forgedSeedlessWebGpuVisual.deterministicVisualModeEvaluation.accepted, false);
+assert.ok(forgedSeedlessWebGpuVisual.deterministicVisualModeEvaluation.failedGates.some(
+  (failure) => failure.code === 'seed_policy_unproven',
+));
+assert.ok(forgedSeedlessWebGpuVisual.reasons.includes('deterministic_visual_mode_not_accepted'));
+assert.ok(forgedSeedlessWebGpuVisual.reasons.includes('seed_policy_unproven'));
+assert.ok(forgedSeedlessWebGpuVisual.openGaps.includes('seed_policy_unproven'));
 
 const forgedWebGpuCompute = ledger.rows.find((row) => row.targetId === 'forged-webgpu-compute');
 assert.equal(forgedWebGpuCompute?.matrixOutcome, 'unproven');

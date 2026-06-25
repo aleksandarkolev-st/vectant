@@ -6,6 +6,7 @@ import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
+import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
@@ -3894,6 +3895,12 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
+  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
+    json.deterministicVisualMode
+    ?? json.deterministic_visual_mode
+    ?? runtimeProofArtifact.deterministicVisualMode
+    ?? runtimeProofArtifact.deterministic_visual_mode,
+  );
   const sourceAdaptation = sourceAdaptationProofFacet(
     json,
     json.runtimeProofArtifact,
@@ -3932,7 +3939,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && nativeApiEvidence.accepted === true
     && declaredScopeEvidence.accepted === true
     && runtimeProofArtifactGate.accepted === true
-    && visual.accepted === true;
+    && visual.accepted === true
+    && deterministicVisualModeEvaluation.accepted === true;
   const accepted =
     strictVisualProofAccepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
@@ -3982,6 +3990,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     supported_pipeline_scope: supportedPipelineScope,
     declaredScopeEvidence,
     declared_scope_evidence: declaredScopeEvidence,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
     visual,
@@ -4009,12 +4019,15 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       declaredScopeEvidence.accepted === true ? null : 'webgpu_visual_declared_scope_not_evidence_backed',
+      deterministicVisualModeEvaluation.accepted === true ? null : 'deterministic_visual_mode_not_accepted',
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
       ...declaredScopeEvidence.failedGates,
+      ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
   });
