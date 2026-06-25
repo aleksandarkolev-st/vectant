@@ -6211,7 +6211,13 @@ assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_runt
 assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_runtime_profile_not_synced'));
 assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_source_missing'));
 assert.ok(forgedFinalNoOracleRocm.reasons.includes('real_rocm_output_oracle_resolution_not_accepted'));
+assert.ok(forgedFinalNoOracleRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_raw_profile_declaration_missing',
+));
 assert.ok(forgedFinalNoOracleRocm.openGaps.includes('real_rocm_output_oracle_resolution_required'));
+assert.ok(forgedFinalNoOracleRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_raw_profile_declaration_missing',
+));
 
 const forgedMissingRequiredHookRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-required-hook');
 const forgedMissingRequiredHookRawReadback = path.join(forgedMissingRequiredHookRocmDir, 'readback.bin');

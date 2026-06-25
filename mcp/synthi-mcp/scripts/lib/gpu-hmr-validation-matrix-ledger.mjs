@@ -5298,6 +5298,165 @@ function realRocmRequiredFullRuntimeProof(json) {
     || json.command?.env?.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF === '1';
 }
 
+function realRocmProfileProofObligationsMatrixFacet({
+  profile = {},
+  targetProgression = {},
+  outputOracleResolution = {},
+  outputOracleContract = {},
+  outputOracleRuntimeProfile = {},
+  appHookContract = {},
+  serialized = {},
+  fullRuntimeProofRequired = false,
+} = {}) {
+  const rawProfile = compactObject(profile);
+  const declared = compactObject(rawProfile.proofObligations ?? rawProfile.proof_obligations);
+  const serializedFacet = compactObject(serialized);
+  const serializedGaps = compactStringList([
+    ...(Array.isArray(serializedFacet.blockingGaps) ? serializedFacet.blockingGaps : []),
+    ...(Array.isArray(serializedFacet.blocking_gaps) ? serializedFacet.blocking_gaps : []),
+  ]);
+  const targetClass = firstText(
+    declared.targetClass,
+    declared.target_class,
+    rawProfile.targetClass,
+    rawProfile.target_class,
+    serializedFacet.targetClass,
+    serializedFacet.target_class,
+  );
+  const acceptanceMode = firstText(
+    declared.acceptanceMode,
+    declared.acceptance_mode,
+    serializedFacet.acceptanceMode,
+    serializedFacet.acceptance_mode,
+  );
+  const refusalOnly =
+    acceptanceMode === 'refusal_only'
+    || declared.refusalOnly === true
+    || declared.refusal_only === true;
+  const progressionRequired = targetProgression.required === true;
+  const finalAcceptance = targetProgression.phase === 'final-acceptance';
+  const requirements = Array.isArray(targetProgression.requirements)
+    ? targetProgression.requirements
+    : [];
+  const rawDeclared = Object.keys(declared).length > 0;
+  const explicitRequiresFullRuntime =
+    declared.requiresFullRuntimeProof === true
+    || declared.requires_full_runtime_proof === true
+    || serializedFacet.requiresFullRuntimeProof === true
+    || serializedFacet.requires_full_runtime_proof === true;
+  const explicitRequiresOutputOracle =
+    declared.requiresOutputOracle === true
+    || declared.requires_output_oracle === true
+    || serializedFacet.requiresOutputOracle === true
+    || serializedFacet.requires_output_oracle === true;
+  const explicitRequiresAppHookContract =
+    declared.requiresAppHookContract === true
+    || declared.requires_app_hook_contract === true
+    || serializedFacet.requiresAppHookContract === true
+    || serializedFacet.requires_app_hook_contract === true;
+  const explicitRequiresRunModes =
+    declared.requiresRunModes === true
+    || declared.requires_run_modes === true;
+  const explicitRequiresNegativeEdit =
+    declared.requiresNegativeEdit === true
+    || declared.requires_negative_edit === true;
+  const largeMlFinalAcceptance =
+    targetClass === 'large_rocm_ml_infrastructure'
+    && finalAcceptance;
+  const requiresFullRuntimeProof =
+    explicitRequiresFullRuntime
+    || progressionRequired
+    || finalAcceptance;
+  const requiresOutputOracle =
+    explicitRequiresOutputOracle
+    || requirements.includes('output_oracle_proven')
+    || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
+    || finalAcceptance;
+  const requiresAppHookContract = explicitRequiresAppHookContract;
+  const requiresRunModes = explicitRequiresRunModes || largeMlFinalAcceptance;
+  const requiresNegativeEdit = explicitRequiresNegativeEdit || largeMlFinalAcceptance;
+  const resolution = compactObject(outputOracleResolution);
+  const oracleContract = compactObject(outputOracleContract);
+  const runtimeProfile = compactObject(outputOracleRuntimeProfile);
+  const hookContract = compactObject(appHookContract);
+  const appHookContractDeclared =
+    hookContract.declared === true
+    || Object.keys(hookContract).length > 0;
+  const outputOraclePresent =
+    resolution.contractPresent === true
+    || resolution.contract_present === true
+    || resolution.runtimeProfilePresent === true
+    || resolution.runtime_profile_present === true
+    || Object.keys(oracleContract).length > 0
+    || Object.keys(runtimeProfile).length > 0;
+  const blockingGaps = compactStringList([
+    ...serializedGaps,
+    finalAcceptance && !rawDeclared
+      ? 'proof_obligation_raw_profile_declaration_missing'
+      : null,
+    refusalOnly ? 'proof_obligation_refusal_only_profile' : null,
+    requiresFullRuntimeProof && fullRuntimeProofRequired !== true
+      ? 'proof_obligation_full_runtime_not_requested'
+      : null,
+    requiresOutputOracle && !outputOraclePresent
+      ? refusalOnly
+        ? 'proof_obligation_refusal_only_output_oracle_absent'
+        : 'proof_obligation_output_oracle_profile_missing'
+      : null,
+    requiresAppHookContract && !appHookContractDeclared
+      ? 'proof_obligation_app_hook_contract_missing'
+      : null,
+    requiresRunModes && !explicitRequiresRunModes
+      ? 'proof_obligation_run_modes_missing'
+      : null,
+    requiresNegativeEdit && !explicitRequiresNegativeEdit
+      ? 'proof_obligation_negative_edit_missing'
+      : null,
+  ]);
+  const status = blockingGaps.length === 0
+    ? 'profile_proof_obligations_met'
+    : 'profile_proof_obligations_unmet';
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations_facet.v1',
+    status,
+    proofAuthority: 'matrix_recomputed_profile_configuration_gate_not_runtime_proof',
+    proof_authority: 'matrix_recomputed_profile_configuration_gate_not_runtime_proof',
+    declared: rawDeclared,
+    serializedFacetPresent: Object.keys(serializedFacet).length > 0,
+    serialized_facet_present: Object.keys(serializedFacet).length > 0,
+    targetClass,
+    target_class: targetClass,
+    refusalOnly,
+    refusal_only: refusalOnly,
+    progressionRequired,
+    progression_required: progressionRequired,
+    finalAcceptance,
+    final_acceptance: finalAcceptance,
+    largeMlFinalAcceptance,
+    large_ml_final_acceptance: largeMlFinalAcceptance,
+    requiresFullRuntimeProof,
+    requires_full_runtime_proof: requiresFullRuntimeProof,
+    fullRuntimeProofRequested: fullRuntimeProofRequired === true,
+    full_runtime_proof_requested: fullRuntimeProofRequired === true,
+    requiresOutputOracle,
+    requires_output_oracle: requiresOutputOracle,
+    outputOraclePresent,
+    output_oracle_present: outputOraclePresent,
+    requiresAppHookContract,
+    requires_app_hook_contract: requiresAppHookContract,
+    requiresRunModes,
+    requires_run_modes: requiresRunModes,
+    requiresRunModesDeclared: explicitRequiresRunModes,
+    requires_run_modes_declared: explicitRequiresRunModes,
+    requiresNegativeEdit,
+    requires_negative_edit: requiresNegativeEdit,
+    requiresNegativeEditDeclared: explicitRequiresNegativeEdit,
+    requires_negative_edit_declared: explicitRequiresNegativeEdit,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { required = false } = {}) {
   const resolution = compactObject(outputOracleResolution);
   if (Object.keys(resolution).length === 0) {
@@ -5903,6 +6062,22 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.output_oracle_resolution
     ?? summary.outputOracleResolution,
   );
+  const outputOracleContract = compactObject(
+    json.output_oracle_contract
+    ?? json.outputOracleContract
+    ?? summary.output_oracle_contract
+    ?? summary.outputOracleContract
+    ?? runtimeProofArtifact.output_oracle_contract
+    ?? runtimeProofArtifact.outputOracleContract,
+  );
+  const outputOracleRuntimeProfile = compactObject(
+    json.output_oracle_runtime_profile
+    ?? json.outputOracleRuntimeProfile
+    ?? summary.output_oracle_runtime_profile
+    ?? summary.outputOracleRuntimeProfile
+    ?? runtimeProofArtifact.output_oracle_runtime_profile
+    ?? runtimeProofArtifact.outputOracleRuntimeProfile,
+  );
   const targetProgression = compactObject(
     json.target_progression
     ?? json.targetProgression
@@ -5943,7 +6118,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.native_runtime_eligibility
     ?? runtimeProofArtifact.nativeRuntimeEligibility,
   );
-  const realRocmProfileProofObligations = compactObject(
+  const serializedRealRocmProfileProofObligations = compactObject(
     json.real_rocm_profile_proof_obligations
     ?? json.realRocmProfileProofObligations
     ?? json.profile_proof_obligations
@@ -5971,6 +6146,16 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_contract
     ?? runtimeProofArtifact.appHookContract,
   );
+  const realRocmProfileProofObligations = realRocmProfileProofObligationsMatrixFacet({
+    profile,
+    targetProgression,
+    outputOracleResolution,
+    outputOracleContract,
+    outputOracleRuntimeProfile,
+    appHookContract: realRocmAppHookContract,
+    serialized: serializedRealRocmProfileProofObligations,
+    fullRuntimeProofRequired: realRocmRequiredFullRuntimeProof(json),
+  });
   const realRocmDeviceSidecarContract = compactObject(
     json.real_rocm_device_sidecar_contract
     ?? json.realRocmDeviceSidecarContract
