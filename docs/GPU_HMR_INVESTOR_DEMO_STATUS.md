@@ -52,25 +52,25 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 25 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:90b12b125eb3da83a3bf96ca812875c3faed19e9e1c6b78983cfebd5c0371d3c
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T130825Z.json
-global matrix summary: 54 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 30 refusals, 3 cold splits, 1 deterministic fission, 5 visual profiles, 1 preflight-only row, 0 included unproven rows
-global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_pipeline_visual: 8
-latest global matrix after strict runtime-artifact, no-shim source-oracle, declared HIPRT probe, recomputed real-ROCm obligation gates, target-progression ledger rederivation, and required visual before/after pixel recompute: gpu-validation-matrix-ledger:sha256:90b12b125eb3da83a3bf96ca812875c3faed19e9e1c6b78983cfebd5c0371d3c
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T130825Z.json
-latest global matrix summary: 54 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 30 refusals, 3 cold splits, 1 deterministic fission, 5 visual profiles, 1 preflight-only row, 0 included unproven rows
-latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, scopedRuntimeRows=14, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_not_computed_from_matrix,broad_acceptance_requires_more_backend_families,broad_acceptance_requires_compute_oracle_rows
-latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_pipeline_visual: 8
-history audit matrix: gpu-validation-matrix-ledger:sha256:a8c96dd11e75c32d061c98b3600652cbbe05fad77d2ed76914728185cb814694
-history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T130826Z.json
-history audit summary: 660 rows, including 606 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps; 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 30 refusals, 3 cold splits, 5 visual profiles, 1 preflight-only row
-history audit scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_pipeline_visual: 8
+global matrix: gpu-validation-matrix-ledger:sha256:c94732013acd0b5fdd4ed549a96cab593931375f8130e69c1f5e964e3c829e8e
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T160256Z.json
+global matrix summary: 56 rows, 16 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 16 scoped full-runtime GPU HMR, 16 all full-runtime rows, 30 refusals, 3 cold splits, 1 deterministic fission, 5 visual profiles, 1 preflight-only row, 0 included unproven rows
+global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
+latest global matrix after strict runtime-artifact, no-shim source-oracle, declared HIPRT probe, recomputed real-ROCm obligation gates, target-progression ledger rederivation, required visual before/after pixel recompute, and strict WebGPU compute runtime proof artifacts: gpu-validation-matrix-ledger:sha256:c94732013acd0b5fdd4ed549a96cab593931375f8130e69c1f5e964e3c829e8e
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T160256Z.json
+latest global matrix summary: 56 rows, 16 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 16 scoped full-runtime GPU HMR, 16 all full-runtime rows, 30 refusals, 3 cold splits, 1 deterministic fission, 5 visual profiles, 1 preflight-only row, 0 included unproven rows
+latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, scopedRuntimeRows=16, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_not_computed_from_matrix,broad_acceptance_requires_more_backend_families,broad_acceptance_requires_more_acceptance_scopes
+latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
+history audit matrix: gpu-validation-matrix-ledger:sha256:ce2998a6bd0e67b35575271d6bc33f5e06415e1c308b76915eec2dd3c856b2f6
+history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T160256Z.json
+history audit summary: 662 rows, including 606 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps; 16 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 16 scoped full-runtime GPU HMR, 16 all full-runtime rows, 30 refusals, 3 cold splits, 5 visual profiles, 1 preflight-only row
+history audit scope breakdown: generated_rocm_hip_preview_visual: 6, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json, count=21; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 Bevy typed external refusal: external-rejection-proof:543387dc31d8a1a92e79c58a0dcc137a3eede776be7f0ac5f03881e5f3feaeec, row=gpu-validation-matrix-row:sha256:1477362d02794a9cf3c790b0e7ce6fb2d5bd6376a47549818d4b42be617d856f, profile selection recovered from packaged manifest with explicit=false/recovered=true; still not full-runtime GPU HMR
 Large ROCm per-target coverage entries: large_real_rocm_repo:real-rocm-composable-kernel-gemm-large-ml=refused, large_real_rocm_repo:real-rocm-hipblaslt-gelu-aux-bias-large-ml=refused, large_real_rocm_repo:real-rocm-matrix-multiplication=refused, large_real_rocm_repo:real-rocm-miopen-activation-large-ml=refused
 global per-target run modes: accepted for generated Flow, generated ray-light, WebGPU explicit-empty WGSL, and WebGPU explicit-profiled WGSL, each with cold/hot1/hot2-different-edit/negative-edit evidence. SAXPY is not a current accepted full-runtime row in the latest default matrix; historical SAXPY rows remain unproven/not-full-runtime in the history audit.
 HIP module scoped run modes: retained for hip-module-runtime-readback only as scoped module-load/readback evidence, with hot_delta_1, hot_delta_2 different edit, executable ABI-negative refusal, epoch-2 artifact hash continuity, and compute-card-only proof separation; it is not a broad HIP app/library claim and is no longer counted as current full-runtime GPU HMR until the row carries an accepted strict runtime proof artifact. The probe implementation now packs launch arguments from declared ABI params, typed buffers, typed scalar values, and extracted before/after source signatures, and self-checks a second uint32/reordered declared profile. That hardening is not counted as a new accepted runtime row until a live HIP rerun succeeds; the current host attempt failed early because `hipcc` is not on PATH.
-Broad library-agnostic full-runtime rows: 0. Every accepted full-runtime row is currently scoped by generated/profiled preview contract or declared WebGPU pipeline visual profile. HIPRT source-adapted visual profiles, HIP module readback artifacts, and WebGPU compute/readback artifacts are not counted as full-runtime GPU HMR without accepted strict runtime proof artifacts.
+Broad library-agnostic full-runtime rows: 0. Every accepted full-runtime row is currently scoped by generated/profiled preview contract, declared WebGPU pipeline visual profile, or declared WebGPU compute/readback profile. HIPRT source-adapted visual profiles and HIP module readback artifacts are not counted as full-runtime GPU HMR without accepted strict runtime proof artifacts.
 Full-runtime evidence authority: accepted rows must carry a strict runtime proof artifact. Backend-native recomputed ledger traces remain supporting evidence only and cannot authorize GPU HMR success by themselves.
 No-shim audit fixes: source-derived real ROCm output-oracle instrumentation is marked as source adaptation, HIPRT real-ROCm probing is explicit env/profile config instead of target-name routing, real-ROCm profile obligations are recomputed by the matrix from raw profile/target-progression evidence, and retained target-progression ledger entries rederive mandatory proof gates before they can report pass.
 HIPRT run modes: missing for no-shim full-runtime acceptance; CameraRays and MegaKernel direct-light-gain remain source-adapted visual_profile_accepted evidence only.
@@ -148,21 +148,23 @@ WebGPU profiled hot2 timing: total_validator_wall_time=636983100ns, trigger_to_v
 WebGPU profiled visual inspection: hot1 diff `webgpu-runtime-visual-20260625070636-webgpu-wgsl-runtime-profiled-layout-diff.png` and hot2 diff `webgpu-runtime-visual-20260625070654-webgpu-wgsl-runtime-profiled-layout-hot2-diff.png` opened with the local image tool; both were visibly nonblank and the diffs were post-epoch image changes
 
 WebGPU compute scope: explicit-compute-profiled-layout-storage-uniform-float32-readback
-WebGPU compute hot1 proof id: webgpu-runtime-compute-proof:a4b48ea7208308a6dcf88098902101a489f861b59c53c11e39741b4753eee0d9
-WebGPU compute hot1 ledger: gpu-ledger-proof:sha256:a568b06e613d67045b755700f254054596449f064bcfae7a2a3e555f2a60656a
-WebGPU compute hot1 run-mode proof: runtime-run-mode-proof:ae6bf71527f69adb317abe88e3e499e242bc38e4867d3679217a29f42f86d200
+WebGPU compute hot1 proof id: webgpu-runtime-compute-proof:5550fdf2044e56986e75183dc81ef679d78f966ef22b4c1bc1c8f278d2e12236
+WebGPU compute hot1 ledger: gpu-ledger-proof:sha256:fd67f29a4b1096d5ccd2b07e7a9eac7d2f2ccf8ff273dd5023305925a44a411e
+WebGPU compute hot1 runtime proof artifact: webgpu-compute-runtime-proof:3852ebc9e362e9bd3b0f46eb4200ce1b64a7fb015c0c9cb2148aeab77114f56f
+WebGPU compute hot1 run-mode proof: runtime-run-mode-proof:a8ca6cfad9c96af677432cad38224999a2dbd1e498a71de01152f3a19ec127a9
 WebGPU compute hot1 raw/expected hash: sha256:5b2915f7ad17941e9b1b457a6a276c362edaabb974da6af1daef06f267d77657
 WebGPU compute hot1 expected output verified: true, max_abs_delta=0
-WebGPU compute hot1 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260623215748-webgpu-wgsl-runtime-compute-storage/webgpu-wgsl-runtime-compute-storage-compute-card.png
-WebGPU compute hot1 timing: total_validator_wall_time=703692800ns, dispatch_to_output_proof_time=698975400ns
-WebGPU compute hot2 proof id: webgpu-runtime-compute-proof:657f5953dd49f22db02d7faee7614221a104090fe1829db73d017291baec895d
-WebGPU compute hot2 ledger: gpu-ledger-proof:sha256:c58667d2a420faeb939f12ee8dc7f922e085b2b16f0b8bdf613d010d6209873b
-WebGPU compute hot2 run-mode proof: runtime-run-mode-proof:8d872d2ac487207580b1b977ab3736701ed01d372009619f318b7985183ac7bd
+WebGPU compute hot1 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260625131945-webgpu-wgsl-runtime-compute-storage/webgpu-wgsl-runtime-compute-storage-compute-card.png
+WebGPU compute hot1 timing: total_validator_wall_time=703811600ns, dispatch_to_output_proof_time=701237300ns
+WebGPU compute hot2 proof id: webgpu-runtime-compute-proof:f1a068328b522bd1bba6997d442a78e0a9e86acf1716f6e0ad76363c5c636af1
+WebGPU compute hot2 ledger: gpu-ledger-proof:sha256:ef7ce371282952c00c4f8a0a2b47039417a9aae95e44eac9034b5f8d1bc1ca8d
+WebGPU compute hot2 runtime proof artifact: webgpu-compute-runtime-proof:03c025aa0cb9293cb97f41cac61515b16a3a48835fc9ea8bf415356c34be8832
+WebGPU compute hot2 run-mode proof: runtime-run-mode-proof:5b0942f6c0be03ac75cc0cc1c3feab40cc9875cbcd563db47d34b3d253049101
 WebGPU compute hot2 raw/expected hash: sha256:25e6442aa7b6a1c025719aaec529c2c815c3c0590618ade8607ab2e99f9ba5b5
 WebGPU compute hot2 expected output verified: true, max_abs_delta=0
-WebGPU compute hot2 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260623215754-webgpu-wgsl-runtime-compute-storage-hot2/webgpu-wgsl-runtime-compute-storage-hot2-compute-card.png
-WebGPU compute hot2 timing: total_validator_wall_time=684121000ns, dispatch_to_output_proof_time=681865500ns
-WebGPU compute-card image inspection: hot1 and hot2 compute cards opened with the local image tool; both display mapped GPU readback values and `expected output verified: true`. They are compute/readback evidence, not runtime frame visual proof; current timing rows report `screenshotCount=0`, `reportedVisualAccepted=false`, and `reportedComputeCardAccepted=true`.
+WebGPU compute hot2 card: mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/webgpu-runtime-compute-20260625131953-webgpu-wgsl-runtime-compute-storage-hot2/webgpu-wgsl-runtime-compute-storage-hot2-compute-card.png
+WebGPU compute hot2 timing: total_validator_wall_time=694453900ns, dispatch_to_output_proof_time=689318200ns
+WebGPU compute-card image inspection: hot1 and hot2 compute cards opened with the local image tool on 2026-06-25; both display mapped GPU readback values and `expected output verified: true`. They are compute/readback evidence, not runtime frame visual proof; matrix acceptance comes from raw readback files, recomputed ledger, native WebGPU compute API trace, and accepted strict runtime proof artifacts.
 
 HIPRT hot1 proof id: hiprt-warm-runtime-proof:sha256:d0a8b4ca701d855e96ce0c6b812c668a4307901d13b232948e5c629fe7b0384b
 HIPRT hot1 runtime proof: gpu-runtime-proof:sha256:41cfc3ac84b5d95ee667711bcbb52e76a6fc4c2be96905d95f3fac4e7ce4b355
@@ -547,8 +549,8 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:90b12b125eb3da83a3bf96ca812875c3faed19e9e1c6b78983cfebd5c0371d3c
-latest history audit matrix -> gpu-validation-matrix-ledger:sha256:a8c96dd11e75c32d061c98b3600652cbbe05fad77d2ed76914728185cb814694
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:c94732013acd0b5fdd4ed549a96cab593931375f8130e69c1f5e964e3c829e8e
+latest history audit matrix -> gpu-validation-matrix-ledger:sha256:ce2998a6bd0e67b35575271d6bc33f5e06415e1c308b76915eec2dd3c856b2f6
 historical focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -578,7 +580,7 @@ Headless Chrome page-level captures showed only the dark app shell and are not c
 
 ## Ray-Light Preview Proof
 
-Historical focused proof is `ray-light-gpu-hmr-proof-20260622-embedded-ledger-10`; the current June 25 live preview/proof slug is `gpu-agent-ray-light-20260625T104554-rocm-fission-evidence`, and the aggregate authority is the current global matrix `gpu-validation-matrix-ledger:sha256:90b12b125eb3da83a3bf96ca812875c3faed19e9e1c6b78983cfebd5c0371d3c`. The older June 9 timing-matrix block below is retained as historical context.
+Historical focused proof is `ray-light-gpu-hmr-proof-20260622-embedded-ledger-10`; the current June 25 live preview/proof slug is `gpu-agent-ray-light-20260625T104554-rocm-fission-evidence`, and the aggregate authority is the current global matrix `gpu-validation-matrix-ledger:sha256:c94732013acd0b5fdd4ed549a96cab593931375f8130e69c1f5e964e3c829e8e`. The older June 9 timing-matrix block below is retained as historical context.
 
 ```text
 workspace slug: ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
@@ -634,7 +636,7 @@ Visual inspection: before renders a ray/light scene with ground grid and ray bun
 
 ## Flow Preview Proof
 
-Historical focused proof is `flow-gpu-hmr-proof-20260622-embedded-ledger-10`; the current June 25 live preview/proof slug is `gpu-agent-flow-20260625T103454-rocm-profile-bind`, and the aggregate authority is the current global matrix `gpu-validation-matrix-ledger:sha256:90b12b125eb3da83a3bf96ca812875c3faed19e9e1c6b78983cfebd5c0371d3c`. The older June 9 timing-matrix block below is retained as historical context.
+Historical focused proof is `flow-gpu-hmr-proof-20260622-embedded-ledger-10`; the current June 25 live preview/proof slug is `gpu-agent-flow-20260625T103454-rocm-profile-bind`, and the aggregate authority is the current global matrix `gpu-validation-matrix-ledger:sha256:c94732013acd0b5fdd4ed549a96cab593931375f8130e69c1f5e964e3c829e8e`. The older June 9 timing-matrix block below is retained as historical context.
 
 ```text
 workspace slug: flow-gpu-hmr-proof-20260622-embedded-ledger-10
