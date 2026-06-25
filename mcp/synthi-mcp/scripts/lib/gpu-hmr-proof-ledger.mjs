@@ -1788,6 +1788,58 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
   };
 }
 
+export function buildGpuHmrRunModeCoverageSupport({
+  proofLedger = null,
+  proofLedgerQuery = null,
+  runtimeProofArtifact = null,
+  parentProofIds = [],
+} = {}) {
+  const runtimeArtifact = asObject(runtimeProofArtifact);
+  const embeddedLedger = proofLedger ?? runtimeArtifact.proofLedger ?? runtimeArtifact.proof_ledger;
+  const ledger = asObject(embeddedLedger);
+  const suppliedQuery = asObject(proofLedgerQuery);
+  const recomputed = Object.keys(suppliedQuery).length > 0
+    ? suppliedQuery
+    : Object.keys(ledger).length > 0
+      ? queryGpuHmrLedgerInvariants(ledger)
+      : {};
+  const record = asObject(
+    recomputed.record
+      ?? recomputed.ledgerRecord
+      ?? recomputed.ledger_record
+      ?? (Array.isArray(ledger.records) ? ledger.records[ledger.records.length - 1] : null)
+      ?? ledger.record
+      ?? ledger,
+  );
+  const contractHash = firstText(record.contractHash, record.contract_hash);
+  const artifactAfterHash = firstText(record.artifactAfterHash, record.artifact_after_hash);
+  if (!contractHash || !artifactAfterHash) return null;
+  const artifactBeforeHash = firstText(record.artifactBeforeHash, record.artifact_before_hash);
+  const linkedParentProofIds = [...new Set(compactStringList([
+    ...parentProofIds,
+    recomputed.proofId,
+    recomputed.proof_id,
+    ledger.proofId,
+    ledger.proof_id,
+    record.proofId,
+    record.proof_id,
+    runtimeArtifact.proofId,
+    runtimeArtifact.proof_id,
+  ]))];
+  return {
+    schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
+    schema_version: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
+    parentProofIds: linkedParentProofIds,
+    parent_proof_ids: linkedParentProofIds,
+    contractHash,
+    contract_hash: contractHash,
+    artifactBeforeHash,
+    artifact_before_hash: artifactBeforeHash,
+    artifactAfterHash,
+    artifact_after_hash: artifactAfterHash,
+  };
+}
+
 export function assertGpuHmrProofLedgerSuccess(input = {}) {
   const result = queryGpuHmrLedgerInvariants(input);
   if (!result.gpuHmrSuccess) {

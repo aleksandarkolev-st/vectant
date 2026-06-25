@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { chromium } from 'playwright-core';
 import {
   buildGpuHmrProofLedger,
+  buildGpuHmrRunModeCoverageSupport,
   evaluateGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
@@ -1663,7 +1664,13 @@ function webgpuRunModeCoverageObligations(profile) {
   };
 }
 
-async function writeColdRuntimeRunModeProof({ filePath, profile, proof, artifacts }) {
+async function writeColdRuntimeRunModeProof({
+  filePath,
+  profile,
+  proof,
+  artifacts,
+  runModeCoverageSupport = null,
+}) {
   const runMode = coldRuntimeRunModeMetadata(profile);
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const artifact = {
@@ -1706,6 +1713,10 @@ async function writeColdRuntimeRunModeProof({ filePath, profile, proof, artifact
     source_proof_id: proof.proofId,
     evidenceKind: 'cold_runtime_initial_visual_oracle',
     evidence_kind: 'cold_runtime_initial_visual_oracle',
+    ...(runModeCoverageSupport ? {
+      runModeCoverageSupport,
+      run_mode_coverage_support: runModeCoverageSupport,
+    } : {}),
     coverageObligations,
     coverage_obligations: coverageObligations,
     validationTargetScope: 'webgpu_run_mode_target',
@@ -1956,7 +1967,13 @@ async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts
   return artifact;
 }
 
-async function writeWebgpuNegativeEditRefusal({ filePath, profile, proof, runMode }) {
+async function writeWebgpuNegativeEditRefusal({
+  filePath,
+  profile,
+  proof,
+  runMode,
+  runModeCoverageSupport = null,
+}) {
   if (!profile.negativeEdit) return null;
   const negativeRunMode = {
     metric_clock: 'monotonic_ns',
@@ -2020,6 +2037,10 @@ async function writeWebgpuNegativeEditRefusal({ filePath, profile, proof, runMod
     source_proof_id: proof.proofId,
     evidenceKind: 'negative_edit',
     evidence_kind: 'negative_edit',
+    ...(runModeCoverageSupport ? {
+      runModeCoverageSupport,
+      run_mode_coverage_support: runModeCoverageSupport,
+    } : {}),
     coverageObligations: webgpuRunModeCoverageObligations(profile),
     coverage_obligations: webgpuRunModeCoverageObligations(profile),
     validationTargetScope: 'webgpu_run_mode_target',
@@ -2433,12 +2454,19 @@ async function runProof() {
     proof.resultState = proof.gpuHmrSuccess
       ? 'webgpu-hmr-full-runtime-proven'
       : 'webgpu-hmr-rejected';
+    const runModeCoverageSupport = buildGpuHmrRunModeCoverageSupport({
+      proofLedger,
+      proofLedgerQuery: ledgerQuery,
+      runtimeProofArtifact: proof.runtimeProofArtifact,
+      parentProofIds: [proof.proofId],
+    });
 
     const coldRunModeProof = await writeColdRuntimeRunModeProof({
       filePath: coldRunModeProofPath,
       profile,
       proof,
       artifacts,
+      runModeCoverageSupport,
     });
     const hotRunModeProof = await writeHotRuntimeRunModeProof({
       filePath: hotRunModeProofPath,
@@ -2453,6 +2481,7 @@ async function runProof() {
       profile,
       proof,
       runMode,
+      runModeCoverageSupport,
     });
     proof.runModeCompanionArtifacts = {
       coldRuntimeInitial: coldRunModeProofPath,

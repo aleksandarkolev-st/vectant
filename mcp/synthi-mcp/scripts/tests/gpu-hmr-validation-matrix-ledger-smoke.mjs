@@ -19,6 +19,7 @@ import {
 } from '../lib/gpu-hmr-generated-split-granularity.mjs';
 import {
   buildGpuHmrProofLedger,
+  buildGpuHmrRunModeCoverageSupport,
   queryGpuHmrLedgerInvariants,
 } from '../lib/gpu-hmr-proof-ledger.mjs';
 import {
@@ -988,25 +989,21 @@ function waitProofValidation(proofId, runtimeProofId) {
 
 function runModeCoverageSupportFor(materials, extraProofIds = [], options = {}) {
   const record = materials.proofLedgerQuery?.record ?? materials.proofLedger?.records?.[0] ?? {};
+  const support = buildGpuHmrRunModeCoverageSupport({
+    proofLedger: materials.proofLedger,
+    proofLedgerQuery: materials.proofLedgerQuery,
+    runtimeProofArtifact: materials.runtimeProofArtifact,
+    parentProofIds: extraProofIds,
+  });
   const artifactAfterHash = record.artifactAfterHash ?? record.artifact_after_hash;
   const namespaceArtifactAfterHash = options.namespaceArtifactAfterHash !== false;
   const selectedArtifactAfterHash = namespaceArtifactAfterHash && String(artifactAfterHash ?? '').startsWith('sha256:')
     ? `artifact:${artifactAfterHash}`
     : artifactAfterHash;
   return {
-    schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
-    parentProofIds: [...new Set([
-      materials.proofLedger?.proofId,
-      materials.proofLedger?.proof_id,
-      record.proofId,
-      record.proof_id,
-      materials.runtimeProofArtifact?.proofId,
-      materials.runtimeProofArtifact?.proof_id,
-      ...extraProofIds,
-    ].filter(Boolean))],
-    contractHash: record.contractHash ?? record.contract_hash,
-    artifactBeforeHash: record.artifactBeforeHash ?? record.artifact_before_hash,
+    ...support,
     artifactAfterHash: selectedArtifactAfterHash,
+    artifact_after_hash: selectedArtifactAfterHash,
   };
 }
 
