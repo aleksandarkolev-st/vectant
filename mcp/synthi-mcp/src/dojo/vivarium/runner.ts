@@ -10,6 +10,13 @@ import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
 import { evaluateDojoScenarioOracle, type DojoScenarioOracleEvaluation, type DojoScenarioOracleStatus } from "./oracle.js";
 import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.js";
+import type {
+  BranchTrace,
+  CounterfactualRun,
+  MutationTrial,
+  RegretBranchKind,
+} from "../regret/types.js";
+import { uniqueRegretStrings } from "../regret/types.js";
 import {
   startDojoApiFaultServer,
   type DojoApiFaultBehavior,
@@ -78,6 +85,24 @@ export interface DojoFixtureResetResult {
   reset_profile_id: string;
   reset_seed: string;
   materialization_hash: string;
+  blocked_by: string[];
+}
+
+export interface DojoVivariumCounterfactualBranchInput {
+  branch_id: string;
+  branch_kind: RegretBranchKind;
+  inputs?: Record<string, unknown>;
+  substrate_executor?: DojoSubstrateExecutor;
+  mutation_trial?: boolean;
+}
+
+export interface DojoVivariumCounterfactualRunResult {
+  schema_version: "synthi.dojo.vivariumCounterfactualRun.v1";
+  counterfactual_run: CounterfactualRun;
+  branch_traces: BranchTrace[];
+  scenario_runs: DojoScenarioRunResult[];
+  mutation_trials: MutationTrial[];
+  reset_results: DojoFixtureResetResult[];
   blocked_by: string[];
 }
 
@@ -256,6 +281,160 @@ export class DojoVivariumRunner {
       blocked_by: ok ? [] : ["fixture_reset_not_deterministic"],
     };
   }
+
+  async runCounterfactualBranches(input: {
+    materialized: DojoMaterializedScenario;
+    graph: DojoSkillGraph;
+    branches: DojoVivariumCounterfactualBranchInput[];
+    tenant?: DojoTenantContext;
+    runtime?: DojoSkillGraphRuntime;
+    budget?: DojoScenarioBudget;
+    observed_evidence?: string[];
+    now?: string;
+  }): Promise<DojoVivariumCounterfactualRunResult> {
+    const now = input.now ?? new Date().toISOString();
+    const branchInputs = input.branches.filter((branch) => branch.branch_id.trim());
+    const resetResults: DojoFixtureResetResult[] = [];
+    const scenarioRuns: DojoScenarioRunResult[] = [];
+    const branchTraces: BranchTrace[] = [];
+    const mutationTrials: MutationTrial[] = [];
+    const blockedBy: string[] = [];
+    const counterfactualRunId = `counterfactual_vivarium_${shortHash([
+      input.materialized.materialized_id,
+      input.materialized.fixture.materialization_hash,
+      input.graph.graph_id,
+      branchInputs.map((branch) => `${branch.branch_id}:${branch.branch_kind}`).sort().join(","),
+    ].join("|"))}`;
+
+    for (const branch of branchInputs) {
+      const reset = this.reset({ materialized: input.materialized });
+      resetResults.push(reset);
+      if (!reset.ok) {
+        blockedBy.push(...reset.blocked_by);
+        continue;
+      }
+      const run = await this.run({
+        materialized: input.materialized,
+        graph: input.graph,
+        tenant: input.tenant,
+        runtime: input.runtime,
+        substrate_executor: branch.substrate_executor,
+        run_id: `${input.materialized.definition.scenario_id}_${branch.branch_id}`,
+        budget: input.budget,
+        inputs: branch.inputs,
+        observed_evidence: input.observed_evidence,
+        now,
+      });
+      scenarioRuns.push(run);
+      const trace = branchTraceForScenarioRun({
+        run,
+        branch,
+        counterfactual_run_id: counterfactualRunId,
+        materialized: input.materialized,
+        graph: input.graph,
+        now,
+      });
+      branchTraces.push(trace);
+      if (branch.mutation_trial === true || branch.branch_kind === "mutation_trial") {
+        mutationTrials.push(mutationTrialForBranchTrace({
+          trace,
+          run,
+          materialized: input.materialized,
+          now,
+        }));
+      }
+    }
+
+    const evidenceIds = uniqueRegretStrings([
+      ...scenarioRuns.flatMap((run) => run.evidence_refs),
+      ...branchTraces.flatMap((trace) => trace.evidence_ids),
+    ]);
+    return {
+      schema_version: "synthi.dojo.vivariumCounterfactualRun.v1",
+      counterfactual_run: {
+        schema_version: "synthi.dojo.regret.counterfactualRun.v1",
+        counterfactual_run_id: counterfactualRunId,
+        run_kind: "vivarium",
+        tenant_id: input.tenant?.tenant_id ?? input.materialized.tenant_context?.tenant_id ?? "",
+        workspace_id: input.tenant?.workspace_id ?? input.materialized.tenant_context?.workspace_id ?? "",
+        skill_id: input.materialized.skill_id,
+        vivarium_run_id: input.materialized.materialized_id,
+        task_class: input.materialized.definition.mutation_kind,
+        base_state_hash: input.materialized.fixture.materialization_hash,
+        branch_ids: branchTraces.map((trace) => trace.branch_id),
+        evidence_ids: evidenceIds,
+        created_at: now,
+        retention_policy: "ephemeral_trace",
+      },
+      branch_traces: branchTraces,
+      scenario_runs: scenarioRuns,
+      mutation_trials: mutationTrials,
+      reset_results: resetResults,
+      blocked_by: uniqueRegretStrings(blockedBy),
+    };
+  }
+}
+
+function branchTraceForScenarioRun(input: {
+  run: DojoScenarioRunResult;
+  branch: DojoVivariumCounterfactualBranchInput;
+  counterfactual_run_id: string;
+  materialized: DojoMaterializedScenario;
+  graph: DojoSkillGraph;
+  now: string;
+}): BranchTrace {
+  return {
+    schema_version: "synthi.dojo.regret.branchTrace.v1",
+    branch_id: input.branch.branch_id,
+    counterfactual_run_id: input.counterfactual_run_id,
+    branch_kind: input.branch.branch_kind,
+    status: input.run.status === "passed" ? "passed" : input.run.status === "failed" ? "failed" : "blocked",
+    graph_mode: input.run.graph_result.mode,
+    tenant_id: input.run.tenant_context?.tenant_id ?? input.materialized.tenant_context?.tenant_id ?? "",
+    workspace_id: input.run.tenant_context?.workspace_id ?? input.materialized.tenant_context?.workspace_id ?? "",
+    skill_id: input.materialized.skill_id,
+    vivarium_run_id: input.run.run_id,
+    task_class: input.materialized.definition.mutation_kind,
+    base_state_hash: input.materialized.fixture.materialization_hash,
+    blocked_by: uniqueRegretStrings(input.run.graph_result.blocked_by),
+    detector_evidence_ids: uniqueRegretStrings(input.run.graph_result.evidence_refs),
+    oracle_evidence_ids: [`dojo-oracle://${input.run.run_id}/${input.run.oracle_result.oracle_id}`],
+    selection_evidence_ids: [],
+    evidence_ids: uniqueRegretStrings(input.run.evidence_refs),
+    summary: `${input.graph.graph_id} ${input.branch.branch_kind} branch ${input.run.status}.`,
+    created_at: input.now,
+    retention_policy: "ephemeral_trace",
+  };
+}
+
+function mutationTrialForBranchTrace(input: {
+  trace: BranchTrace;
+  run: DojoScenarioRunResult;
+  materialized: DojoMaterializedScenario;
+  now: string;
+}): MutationTrial {
+  return {
+    schema_version: "synthi.dojo.regret.mutationTrial.v1",
+    mutation_trial_id: `mutation_trial_${shortHash([
+      input.trace.counterfactual_run_id,
+      input.trace.branch_id,
+      input.run.fixture_materialization_hash,
+    ].join("|"))}`,
+    counterfactual_run_id: input.trace.counterfactual_run_id,
+    branch_id: input.trace.branch_id,
+    tenant_id: input.trace.tenant_id,
+    workspace_id: input.trace.workspace_id,
+    skill_id: input.trace.skill_id,
+    vivarium_run_id: input.run.run_id,
+    task_class: input.materialized.definition.mutation_kind,
+    base_state_hash: input.materialized.fixture.materialization_hash,
+    quarantine: true,
+    auto_apply_allowed: false,
+    proof_passed: input.run.status === "passed" && input.run.graph_result.ok,
+    novelty_score: noveltyScoreForScenario(input.materialized.definition.mutation_kind),
+    evidence_ids: [...input.trace.evidence_ids],
+    created_at: input.now,
+  };
 }
 
 function blockedScenarioRunResult(input: {
@@ -780,4 +959,16 @@ function createScenarioRunId(materialized: DojoMaterializedScenario, graph: Dojo
     .digest("hex")
     .slice(0, 12);
   return `scenario_run_${materialized.definition.scenario_id}_${digest}`;
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
+}
+
+function noveltyScoreForScenario(mutationKind: string): number {
+  const normalized = mutationKind.trim().toLowerCase();
+  if (!normalized) return 0;
+  const uncommonSignals = ["evil", "mutation", "fault", "rollback", "drift", "duplicate", "stale", "injection"];
+  const matches = uncommonSignals.filter((signal) => normalized.includes(signal)).length;
+  return Math.min(1, 0.25 + matches * 0.15);
 }
