@@ -2197,6 +2197,121 @@ function realRocmAppHookContractGate({
   };
 }
 
+function realRocmSameProcessRuntimeOracleGate({
+  required = false,
+  realRocmSameProcessRuntimeOracle = {},
+  realRocmAppHookContractGate: appHookGate = {},
+  runtimeProofArtifactGate = {},
+} = {}) {
+  const facet = compactObject(realRocmSameProcessRuntimeOracle);
+  const present = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const requiredByFacet =
+    facet.required === true
+    || facet.declared === true
+    || facet.appHookRequired === true
+    || facet.app_hook_required === true;
+  const actuallyRequired = required || appHookGate.required === true || requiredByFacet;
+  const acceptedFlag = firstBool(
+    facet.accepted,
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const checks = {
+    schemaAccepted: schemaVersion === 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    appHookContractAccepted: firstBool(
+      facet.appHookContractAccepted,
+      facet.app_hook_contract_accepted,
+    ) === true,
+    artifactTransportObserved: firstBool(
+      facet.artifactTransportObserved,
+      facet.artifact_transport_observed,
+    ) === true,
+    epochPublicationObserved: firstBool(
+      facet.epochPublicationObserved,
+      facet.epoch_publication_observed,
+    ) === true,
+    dispatchTraceObserved: firstBool(
+      facet.dispatchTraceObserved,
+      facet.dispatch_trace_observed,
+    ) === true,
+    dispatchUsedPublishedEpoch: firstBool(
+      facet.dispatchUsedPublishedEpoch,
+      facet.dispatch_used_published_epoch,
+    ) === true,
+    sameProcessIdentityObserved: firstBool(
+      facet.sameProcessIdentityObserved,
+      facet.same_process_identity_observed,
+      facet.processIdentityObserved,
+      facet.process_identity_observed,
+    ) === true,
+    outputOracleObserved: firstBool(
+      facet.outputOracleObserved,
+      facet.output_oracle_observed,
+    ) === true,
+    outputTargetObserved: firstBool(
+      facet.outputTargetObserved,
+      facet.output_target_observed,
+    ) === true,
+    outputAfterDispatchObserved: firstBool(
+      facet.outputAfterDispatchObserved,
+      facet.output_after_dispatch_observed,
+    ) === true,
+    artifactEpochMatched: firstBool(
+      facet.artifactEpochMatched,
+      facet.artifact_epoch_matched,
+    ) === true,
+    firewallAccepted: firstBool(facet.firewallAccepted, facet.firewall_accepted) === true,
+    cpuHmrFalse: firstBool(facet.cpuHmrUsed, facet.cpu_hmr_used) === false,
+    fullRebuildFalse: firstBool(facet.fullRebuildUsed, facet.full_rebuild_used) === false,
+    processRestartFalse: firstBool(facet.processRestarted, facet.process_restarted) === false,
+    runtimeProofArtifactAccepted: runtimeProofArtifactGate.accepted === true,
+  };
+  const failedGates = compactStringList([
+    actuallyRequired && !present ? 'same_process_runtime_oracle_contract_missing' : null,
+    present && !checks.schemaAccepted ? 'same_process_runtime_oracle_contract_schema_missing' : null,
+    present && acceptedFlag !== true ? 'same_process_runtime_oracle_contract_not_accepted' : null,
+    present && !checks.appHookContractAccepted ? 'same_process_runtime_oracle_app_hook_contract_unproven' : null,
+    present && !checks.artifactTransportObserved ? 'same_process_runtime_oracle_artifact_transport_missing' : null,
+    present && !checks.epochPublicationObserved ? 'same_process_runtime_oracle_epoch_publication_missing' : null,
+    present && !checks.dispatchTraceObserved ? 'same_process_runtime_oracle_dispatch_trace_missing' : null,
+    present && !checks.dispatchUsedPublishedEpoch ? 'same_process_runtime_oracle_dispatch_epoch_mismatch' : null,
+    present && !checks.sameProcessIdentityObserved ? 'same_process_runtime_oracle_process_identity_missing' : null,
+    present && !checks.outputOracleObserved ? 'same_process_runtime_oracle_output_oracle_missing' : null,
+    present && !checks.outputTargetObserved ? 'same_process_runtime_oracle_output_target_missing' : null,
+    present && !checks.outputAfterDispatchObserved ? 'same_process_runtime_oracle_after_dispatch_missing' : null,
+    present && !checks.artifactEpochMatched ? 'same_process_runtime_oracle_artifact_epoch_mismatch' : null,
+    present && !checks.firewallAccepted ? 'same_process_runtime_oracle_firewall_missing' : null,
+    present && !checks.cpuHmrFalse ? 'same_process_runtime_oracle_cpu_hmr_false_missing' : null,
+    present && !checks.fullRebuildFalse ? 'same_process_runtime_oracle_full_rebuild_false_missing' : null,
+    present && !checks.processRestartFalse ? 'same_process_runtime_oracle_process_restart_false_missing' : null,
+    present && !checks.runtimeProofArtifactAccepted
+      ? 'same_process_runtime_oracle_strict_runtime_proof_artifact_missing'
+      : null,
+    ...blockingGaps,
+  ]);
+  const accepted =
+    !actuallyRequired
+    || (
+      present
+      && failedGates.length === 0
+    );
+  return {
+    required: actuallyRequired,
+    present,
+    accepted,
+    proven: accepted && actuallyRequired,
+    status: present ? firstText(facet.status, facet.reason) : null,
+    checks,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function realRocmSidecarRuntimeConsistencyGate(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -2767,6 +2882,26 @@ function rowSafetyFailures(row) {
         code: appHookGate.missing
           ? 'gpu_hmr_success_requires_real_rocm_app_hook_contract'
           : 'gpu_hmr_success_requires_proven_real_rocm_app_hook_contract',
+      });
+    }
+    const sameProcessOracleGate = realRocmSameProcessRuntimeOracleGate({
+      realRocmSameProcessRuntimeOracle: compactObject(
+        row.realRocmSameProcessRuntimeOracle
+        ?? row.real_rocm_same_process_runtime_oracle
+        ?? row.sameProcessRuntimeOracle
+        ?? row.same_process_runtime_oracle,
+      ),
+      realRocmAppHookContractGate: appHookGate,
+      runtimeProofArtifactGate: compactObject(
+        row.runtimeProofArtifact
+        ?? row.runtime_proof_artifact,
+      ),
+    });
+    if (sameProcessOracleGate.required && !sameProcessOracleGate.accepted) {
+      failures.push({
+        code: sameProcessOracleGate.present
+          ? 'gpu_hmr_success_requires_proven_same_process_runtime_oracle'
+          : 'gpu_hmr_success_requires_same_process_runtime_oracle_contract',
       });
     }
     const runtimeCapabilityPreflight = compactObject(
@@ -7382,6 +7517,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_contract
     ?? runtimeProofArtifact.appHookContract,
   );
+  const realRocmSameProcessRuntimeOracle = compactObject(
+    json.real_rocm_same_process_runtime_oracle
+    ?? json.realRocmSameProcessRuntimeOracle
+    ?? json.same_process_runtime_oracle
+    ?? json.sameProcessRuntimeOracle
+    ?? summary.real_rocm_same_process_runtime_oracle
+    ?? summary.realRocmSameProcessRuntimeOracle
+    ?? summary.same_process_runtime_oracle
+    ?? summary.sameProcessRuntimeOracle
+    ?? runtimeProofArtifact.real_rocm_same_process_runtime_oracle
+    ?? runtimeProofArtifact.realRocmSameProcessRuntimeOracle
+    ?? runtimeProofArtifact.same_process_runtime_oracle
+    ?? runtimeProofArtifact.sameProcessRuntimeOracle,
+  );
   const realRocmProfileProofObligations = realRocmProfileProofObligationsMatrixFacet({
     profile,
     targetProgression,
@@ -7465,6 +7614,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
   ]);
+  const realRocmSameProcessRuntimeOracleGaps = compactStringList([
+    ...(Array.isArray(realRocmSameProcessRuntimeOracle.blockingGaps)
+      ? realRocmSameProcessRuntimeOracle.blockingGaps
+      : []),
+    ...(Array.isArray(realRocmSameProcessRuntimeOracle.blocking_gaps)
+      ? realRocmSameProcessRuntimeOracle.blocking_gaps
+      : []),
+  ]);
   const realRocmDeviceSidecarContractGaps = compactStringList([
     ...(Array.isArray(realRocmDeviceSidecarContract.blockingGaps) ? realRocmDeviceSidecarContract.blockingGaps : []),
     ...(Array.isArray(realRocmDeviceSidecarContract.blocking_gaps) ? realRocmDeviceSidecarContract.blocking_gaps : []),
@@ -7500,6 +7657,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmAppHookContractReason =
     Object.keys(realRocmAppHookContract).length > 0
       ? firstText(realRocmAppHookContract.status, realRocmAppHookContract.reason)
+      : null;
+  const realRocmSameProcessRuntimeOracleReason =
+    Object.keys(realRocmSameProcessRuntimeOracle).length > 0
+      ? firstText(realRocmSameProcessRuntimeOracle.status, realRocmSameProcessRuntimeOracle.reason)
       : null;
   const realRocmDeviceSidecarContractReason =
     Object.keys(realRocmDeviceSidecarContract).length > 0
@@ -7576,6 +7737,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmProfile: profile,
   });
   const appHookContractAccepted = appHookContractGate.accepted === true;
+  const sameProcessRuntimeOracleGate = realRocmSameProcessRuntimeOracleGate({
+    realRocmSameProcessRuntimeOracle,
+    realRocmAppHookContractGate: appHookContractGate,
+    runtimeProofArtifactGate,
+  });
+  const sameProcessRuntimeOracleAccepted = sameProcessRuntimeOracleGate.accepted === true;
   const runtimeCapabilityPreflightPresent = realRocmRuntimeCapabilityPreflight.present === true;
   const runtimeCapabilityPreflightAccepted =
     runtimeCapabilityPreflightPresent
@@ -7660,6 +7827,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && outputOracleResolutionGate.accepted === true
     && realRocmRuntimeChain.accepted === true
     && appHookContractAccepted === true
+    && sameProcessRuntimeOracleAccepted === true
     && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
     && profileProofObligationsAccepted === true
@@ -7805,6 +7973,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_app_hook_contract: realRocmAppHookContract,
     realRocmAppHookContractGate: appHookContractGate,
     real_rocm_app_hook_contract_gate: appHookContractGate,
+    realRocmSameProcessRuntimeOracle,
+    real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
+    same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    realRocmSameProcessRuntimeOracleGate: sameProcessRuntimeOracleGate,
+    real_rocm_same_process_runtime_oracle_gate: sameProcessRuntimeOracleGate,
     realRocmDeviceSidecarContract,
     real_rocm_device_sidecar_contract: realRocmDeviceSidecarContract,
     realRocmSidecarRuntimeConsistency,
@@ -7832,6 +8006,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...appHookContractGate.failedGaps,
+      realRocmSameProcessRuntimeOracleReason
+        ? `real_rocm_same_process_runtime_oracle:${realRocmSameProcessRuntimeOracleReason}`
+        : null,
+      ...realRocmSameProcessRuntimeOracleGaps.map((gap) =>
+        `real_rocm_same_process_runtime_oracle:${gap}`
+      ),
+      ...sameProcessRuntimeOracleGate.failedGates.map((gap) =>
+        `real_rocm_same_process_runtime_oracle:${gap}`
+      ),
       !accepted && realRocmDeviceSidecarContractReason
         ? `real_rocm_device_sidecar_contract:${realRocmDeviceSidecarContractReason}`
         : null,
@@ -7880,6 +8063,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmRuntimeChain.failedGates.map((failure) => failure.code),
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       ...appHookContractGate.failedGaps,
+      sameProcessRuntimeOracleAccepted ? null : 'real_rocm_same_process_runtime_oracle_required',
+      ...sameProcessRuntimeOracleGate.failedGates.map((gap) =>
+        `real_rocm_same_process_runtime_oracle:${gap}`
+      ),
       runtimeCapabilityPreflightAccepted
         ? null
         : runtimeCapabilityPreflightPresent
@@ -7899,6 +8086,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
       ...realRocmSourceDeltaExecutionReportGaps.map((gap) => `real_rocm_source_delta_execution:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      ...realRocmSameProcessRuntimeOracleGaps.map((gap) =>
+        `real_rocm_same_process_runtime_oracle:${gap}`
+      ),
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
@@ -9187,6 +9377,14 @@ function realRocmRepositoryTargetCoverage(rows) {
       const accepted = targetRows.filter((row) => acceptedFullRuntimeRow(row));
       const refused = targetRows.filter((row) => row.matrixOutcome === 'refusal_proven');
       const status = accepted.length > 0 ? 'accepted' : refused.length > 0 ? 'refused' : 'missing';
+      const sameProcessRuntimeOracleRows = targetRows.filter((row) =>
+        row.realRocmSameProcessRuntimeOracleGate?.required === true
+        || row.real_rocm_same_process_runtime_oracle_gate?.required === true
+      );
+      const sameProcessRuntimeOracleProven = sameProcessRuntimeOracleRows.some((row) =>
+        row.realRocmSameProcessRuntimeOracleGate?.accepted === true
+        || row.real_rocm_same_process_runtime_oracle_gate?.accepted === true
+      );
       return coverageEntry({
         id: `large_real_rocm_repo:${targetId}`,
         requirement: `Large real ROCm repository target ${targetId} validation with full-runtime proof gating`,
@@ -9195,6 +9393,24 @@ function realRocmRepositoryTargetCoverage(rows) {
         openGaps: status === 'accepted'
           ? []
           : compactStringList(refused.flatMap((row) => row.openGaps)),
+        sameProcessRuntimeOracleContract: {
+          required: sameProcessRuntimeOracleRows.length > 0,
+          proven: sameProcessRuntimeOracleProven,
+          status: sameProcessRuntimeOracleProven
+            ? 'contract_proven'
+            : sameProcessRuntimeOracleRows.length > 0
+              ? 'contract_missing_or_unproven'
+              : 'not_required',
+        },
+        same_process_runtime_oracle_contract: {
+          required: sameProcessRuntimeOracleRows.length > 0,
+          proven: sameProcessRuntimeOracleProven,
+          status: sameProcessRuntimeOracleProven
+            ? 'contract_proven'
+            : sameProcessRuntimeOracleRows.length > 0
+              ? 'contract_missing_or_unproven'
+              : 'not_required',
+        },
         targetId,
         target_id: targetId,
       });

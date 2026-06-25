@@ -923,6 +923,18 @@ function realRocmAppHookContractSnapshot(input = {}, validationContext = null) {
     ?? null;
 }
 
+function realRocmSameProcessRuntimeOracleSnapshot(input = {}, validationContext = null) {
+  return objectOrNull(input.realRocmSameProcessRuntimeOracle)
+    ?? objectOrNull(input.real_rocm_same_process_runtime_oracle)
+    ?? objectOrNull(input.sameProcessRuntimeOracle)
+    ?? objectOrNull(input.same_process_runtime_oracle)
+    ?? objectOrNull(validationContext?.realRocmSameProcessRuntimeOracle)
+    ?? objectOrNull(validationContext?.real_rocm_same_process_runtime_oracle)
+    ?? objectOrNull(validationContext?.sameProcessRuntimeOracle)
+    ?? objectOrNull(validationContext?.same_process_runtime_oracle)
+    ?? null;
+}
+
 function realRocmAppHookContractLimitations(contract) {
   if (!objectOrNull(contract)) return [];
   const required = contract.required === true
@@ -954,6 +966,52 @@ function realRocmAppHookContractLimitations(contract) {
     observed_state: observedState,
     degradedState: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
     degraded_state: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
+function realRocmSameProcessRuntimeOracleLimitations(contract) {
+  if (!objectOrNull(contract)) return [];
+  const required = contract.required === true
+    || contract.declared === true
+    || contract.appHookRequired === true
+    || contract.app_hook_required === true;
+  const proven = contract.accepted === true
+    || contract.canSatisfyRuntimeProof === true
+    || contract.can_satisfy_runtime_proof === true;
+  if (!required || proven) return [];
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(contract.blockingGaps) ? contract.blockingGaps : []),
+    ...(Array.isArray(contract.blocking_gaps) ? contract.blocking_gaps : []),
+  ]);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(contract.evidenceRefs) ? contract.evidenceRefs : []),
+    ...(Array.isArray(contract.evidence_refs) ? contract.evidence_refs : []),
+  ]);
+  const observedState = firstString(
+    contract.status,
+    contract.reason,
+    'same_process_runtime_oracle_contract_unproven',
+  );
+  return [{
+    stageId: 'real-rocm-same-process-runtime-oracle',
+    stage_id: 'real-rocm-same-process-runtime-oracle',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-same-process-runtime-oracle-proven',
+    required_state: 'gpu-hmr-same-process-runtime-oracle-proven',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-same-process-runtime-oracle-unproven',
+    degraded_state: 'gpu-hmr-same-process-runtime-oracle-unproven',
     degradedReason: observedState,
     degraded_reason: observedState,
     blockingGaps,
@@ -2506,6 +2564,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
   const realRocmAppHookContract = realRocmAppHookContractSnapshot(input, validationContext);
+  const realRocmSameProcessRuntimeOracle =
+    realRocmSameProcessRuntimeOracleSnapshot(input, validationContext);
   const adversarialPreflight = adversarialPreflightFacet(
     adversarialPreflightFromInput(input, validationContext),
   );
@@ -2604,6 +2664,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...realRocmAppHookContractLimitations(realRocmAppHookContract),
+    ...realRocmSameProcessRuntimeOracleLimitations(realRocmSameProcessRuntimeOracle),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -2615,6 +2676,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(targetProgressionLedger),
     ...evidenceStringsFromValue(adversarialPreflight),
     ...evidenceStringsFromValue(realRocmAppHookContract),
+    ...evidenceStringsFromValue(realRocmSameProcessRuntimeOracle),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
@@ -2651,6 +2713,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionGates,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmSameProcessRuntimeOracle,
+    real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
+    same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2683,6 +2749,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionLedger,
     targetProgressionGates,
     realRocmAppHookContract,
+    realRocmSameProcessRuntimeOracle,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2743,6 +2810,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_gates: targetProgressionGates,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmSameProcessRuntimeOracle,
+    real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
+    same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     adversarialPreflight,
     adversarial_preflight: adversarialPreflight,
     acceptanceContract,

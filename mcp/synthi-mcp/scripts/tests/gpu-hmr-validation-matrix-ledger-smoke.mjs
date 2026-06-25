@@ -2280,6 +2280,253 @@ function acceptedRealRocmSidecarRuntimeConsistency(scope, overrides = {}) {
   };
 }
 
+function acceptedRealRocmAppHookContract(scope, overrides = {}) {
+  const stageNames = [
+    'artifact_transport',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+  ];
+  const stageResults = Object.fromEntries(stageNames.flatMap((stage) => {
+    const result = {
+      stage,
+      declared: true,
+      required: true,
+      contractEvidencePresent: true,
+      contract_evidence_present: true,
+      runtimeObserved: true,
+      runtime_observed: true,
+      evidenceRefs: [`evidence:app-hook:${scope}:${stage}`],
+      evidence_refs: [`evidence:app-hook:${scope}:${stage}`],
+      unresolvedEvidenceRefs: [],
+      unresolved_evidence_refs: [],
+      status: 'contract_and_runtime_observed',
+    };
+    const camel = stage.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    return [[stage, result], [camel, result]];
+  }));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
+    declared: true,
+    required: true,
+    status: 'supplemental_app_hook_runtime_proof_evidence',
+    proofAuthority: 'evidence_only_not_gpu_hmr_success',
+    proof_authority: 'evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+    nativeLaunchBoundaryObserved: true,
+    native_launch_boundary_observed: true,
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    runtimeObservationComplete: true,
+    runtime_observation_complete: true,
+    stageResults,
+    stage_results: stageResults,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: stageNames.map((stage) => `evidence:app-hook:${scope}:${stage}`),
+    evidence_refs: stageNames.map((stage) => `evidence:app-hook:${scope}:${stage}`),
+    contractHash: hashValue(`app-hook-contract:${scope}`),
+    contract_hash: hashValue(`app-hook-contract:${scope}`),
+    ...overrides,
+  };
+}
+
+function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    declared: true,
+    required: true,
+    status: 'same_process_runtime_oracle_contract_proven',
+    proofAuthority: 'runtime_stage_evidence_not_serialized_claim',
+    proof_authority: 'runtime_stage_evidence_not_serialized_claim',
+    accepted: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+    appHookContractAccepted: true,
+    app_hook_contract_accepted: true,
+    artifactTransportObserved: true,
+    artifact_transport_observed: true,
+    epochPublicationObserved: true,
+    epoch_publication_observed: true,
+    dispatchTraceObserved: true,
+    dispatch_trace_observed: true,
+    dispatchUsedPublishedEpoch: true,
+    dispatch_used_published_epoch: true,
+    sameProcessIdentityObserved: true,
+    same_process_identity_observed: true,
+    outputOracleObserved: true,
+    output_oracle_observed: true,
+    outputTargetObserved: true,
+    output_target_observed: true,
+    outputAfterDispatchObserved: true,
+    output_after_dispatch_observed: true,
+    artifactEpochMatched: true,
+    artifact_epoch_matched: true,
+    firewallAccepted: true,
+    firewall_accepted: true,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: [`evidence:same-process-runtime-oracle:${scope}`],
+    evidence_refs: [`evidence:same-process-runtime-oracle:${scope}`],
+    contractHash: hashValue(`same-process-runtime-oracle:${scope}`),
+    contract_hash: hashValue(`same-process-runtime-oracle:${scope}`),
+    ...overrides,
+  };
+}
+
+function acceptedLargeRocmSourceDeltaExecution(scope) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution.v1',
+    phases: [
+      ['hot_delta_1', 'real_repo_user_source_delta_hmr'],
+      ['hot_delta_2', 'real_repo_second_user_source_delta_hmr'],
+      ['negative_edit', 'real_repo_negative-edit_user_source_delta_hmr'],
+    ].map(([kind, phaseName], index) => ({
+      label: `${kind}:${scope}`,
+      phaseName,
+      phase_name: phaseName,
+      phaseKind: kind,
+      phase_kind: kind,
+      metricScope: kind,
+      metric_scope: kind,
+      file: `src/${scope}/kernel_${index}.hip`,
+      editHash: hashValue(`${scope}:${kind}:edit`),
+      edit_hash: hashValue(`${scope}:${kind}:edit`),
+      sourceBeforeHash: hashValue(`${scope}:${kind}:before`),
+      source_before_hash: hashValue(`${scope}:${kind}:before`),
+      sourceAfterHash: hashValue(`${scope}:${kind}:after`),
+      source_after_hash: hashValue(`${scope}:${kind}:after`),
+      sourceWriteObserved: true,
+      source_write_observed: true,
+      compileCallAttempted: true,
+      compile_call_attempted: true,
+      compileCallCompleted: kind !== 'negative_edit',
+      compile_call_completed: kind !== 'negative_edit',
+      expectedRefusal: kind === 'negative_edit',
+      expected_refusal: kind === 'negative_edit',
+    })),
+  };
+}
+
+function acceptedLargeRocmProfileObligations(scope) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations_facet.v1',
+    status: 'profile_proof_obligations_met',
+    proofAuthority: 'profile_configuration_gate_not_runtime_proof',
+    proof_authority: 'profile_configuration_gate_not_runtime_proof',
+    declared: true,
+    targetClass: 'large_rocm_ml_infrastructure',
+    target_class: 'large_rocm_ml_infrastructure',
+    finalAcceptance: true,
+    final_acceptance: true,
+    largeMlFinalAcceptance: true,
+    large_ml_final_acceptance: true,
+    requiresFullRuntimeProof: true,
+    requires_full_runtime_proof: true,
+    requiresOutputOracle: true,
+    requires_output_oracle: true,
+    outputOraclePresent: true,
+    output_oracle_present: true,
+    requiresRunModes: true,
+    requires_run_modes: true,
+    requiresRunModesDeclared: true,
+    requires_run_modes_declared: true,
+    requiresNegativeEdit: true,
+    requires_negative_edit: true,
+    requiresNegativeEditDeclared: true,
+    requires_negative_edit_declared: true,
+    hotDelta2FixtureDeclared: true,
+    hot_delta_2_fixture_declared: true,
+    negativeEditFixtureDeclared: true,
+    negative_edit_fixture_declared: true,
+    sourceDeltaExecutionAccepted: true,
+    source_delta_execution_accepted: true,
+    appHookContractDeclared: true,
+    app_hook_contract_declared: true,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: [`evidence:large-rocm-profile-obligations:${scope}`],
+    evidence_refs: [`evidence:large-rocm-profile-obligations:${scope}`],
+  };
+}
+
+function largeRocmMlProfile(scope) {
+  return {
+    id: scope,
+    targetClass: 'large_rocm_ml_infrastructure',
+    target_class: 'large_rocm_ml_infrastructure',
+    proofObligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      target_class: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requires_full_runtime_proof: true,
+      requiresOutputOracle: true,
+      requires_output_oracle: true,
+      requiresAppHookContract: true,
+      requires_app_hook_contract: true,
+      requiresRunModes: true,
+      requires_run_modes: true,
+      requiresNegativeEdit: true,
+      requires_negative_edit: true,
+    },
+    proof_obligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      target_class: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requires_full_runtime_proof: true,
+      requiresOutputOracle: true,
+      requires_output_oracle: true,
+      requiresAppHookContract: true,
+      requires_app_hook_contract: true,
+      requiresRunModes: true,
+      requires_run_modes: true,
+      requiresNegativeEdit: true,
+      requires_negative_edit: true,
+    },
+    sourceDelta: {
+      second: {
+        file: `src/${scope}/kernel_hot2.hip`,
+        before: 'return x + y;',
+        after: 'return x + y + 1;',
+      },
+      extraDeltas: [{
+        kind: 'negative_edit',
+        file: `src/${scope}/kernel_negative.hip`,
+        before: 'kernel(a, b, c);',
+        after: 'kernel(a, c, b);',
+        expectedRefusal: true,
+      }],
+    },
+    source_delta: {
+      second: {
+        file: `src/${scope}/kernel_hot2.hip`,
+        before: 'return x + y;',
+        after: 'return x + y + 1;',
+      },
+      extra_deltas: [{
+        kind: 'negative_edit',
+        file: `src/${scope}/kernel_negative.hip`,
+        before: 'kernel(a, b, c);',
+        after: 'kernel(a, c, b);',
+        expected_refusal: true,
+      }],
+    },
+  };
+}
+
 function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
   const camelRuntimeProofArtifact = materials.runtimeProofArtifact && typeof materials.runtimeProofArtifact === 'object'
     ? materials.runtimeProofArtifact
@@ -6070,6 +6317,420 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dis
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
+
+const acceptedLargeMlRocmDir = path.join(logsRoot, 'real-rocm-accepted-large-ml-generic-hook');
+const acceptedLargeMlRawReadback = path.join(acceptedLargeMlRocmDir, 'readback.bin');
+const acceptedLargeMlBytes = Buffer.from([3, 5, 8, 13, 21, 34, 55, 89]);
+await fs.mkdir(acceptedLargeMlRocmDir, { recursive: true });
+await fs.writeFile(acceptedLargeMlRawReadback, acceptedLargeMlBytes);
+await writeJson(`${acceptedLargeMlRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: acceptedLargeMlBytes.length,
+  shape: [acceptedLargeMlBytes.length],
+});
+await writeRgbaPng(`${acceptedLargeMlRawReadback}.card.png`, 8, 8, (x, y) => [
+  acceptedLargeMlBytes[(x + y) % acceptedLargeMlBytes.length],
+  70 + x,
+  130 + y,
+  255,
+]);
+const acceptedLargeMlProofMaterials = realRocmComputeProofLedgerMaterials(
+  'accepted-large-ml-generic-hook',
+  {
+    projectId: 'real-rocm-accepted-large-ml-generic-hook',
+    rawReadbackPath: acceptedLargeMlRawReadback,
+    rawReadbackBytes: acceptedLargeMlBytes,
+  },
+);
+const acceptedLargeMlAppHook = acceptedRealRocmAppHookContract('accepted-large-ml-generic-hook');
+const acceptedLargeMlSameProcessOracle =
+  acceptedSameProcessRuntimeOracle('accepted-large-ml-generic-hook');
+const acceptedLargeMlPriorArtifacts = acceptedLargeMlProofMaterials.computeOracleArtifacts;
+await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-generic-hook.json'), {
+  slug: 'gpu-real-rocm-accepted-large-ml-generic-hook-20260625',
+  real_rocm_profile: largeRocmMlProfile('real-rocm-accepted-large-ml-generic-hook'),
+  source_url: 'https://example.invalid/rocm/accepted-large-ml-generic-hook.git',
+  repo_commit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  entry_file: 'src/kernels/generic_large_ml_entry.hip',
+  delta_file: 'src/kernels/generic_large_ml_delta.h',
+  target_name: 'AcceptedLargeMlGenericHookDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'AcceptedLargeMlGenericHookDriver',
+    finalAcceptanceTarget: 'AcceptedLargeMlGenericHookDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+  },
+  target_progression_ledger: {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    provided: true,
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        resultState: 'gpu-hmr-output-oracle-proven',
+        outputOracleProven: true,
+        proofId: 'large-ml-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+        compute_oracle_artifacts: acceptedLargeMlPriorArtifacts,
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'large-ml-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+        partialReloadProven: true,
+        fissionProven: true,
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'large-ml-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+        originalHostPathProven: true,
+        attachmentProven: true,
+        hostPreservationProven: true,
+        dispatchSafeProven: true,
+      },
+    ],
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  real_rocm_profile_proof_obligations:
+    acceptedLargeRocmProfileObligations('accepted-large-ml-generic-hook'),
+  real_rocm_source_delta_execution:
+    acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
+  real_rocm_app_hook_contract: acceptedLargeMlAppHook,
+  real_rocm_same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
+  runtime_proof_artifact: {
+    ...acceptedLargeMlProofMaterials.runtime_proof_artifact,
+    realRocmAppHookContract: acceptedLargeMlAppHook,
+    real_rocm_app_hook_contract: acceptedLargeMlAppHook,
+    realRocmSameProcessRuntimeOracle: acceptedLargeMlSameProcessOracle,
+    real_rocm_same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
+    sameProcessRuntimeOracle: acceptedLargeMlSameProcessOracle,
+    same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
+    realRocmProfileProofObligations:
+      acceptedLargeRocmProfileObligations('accepted-large-ml-generic-hook'),
+    real_rocm_profile_proof_obligations:
+      acceptedLargeRocmProfileObligations('accepted-large-ml-generic-hook'),
+    realRocmSourceDeltaExecution:
+      acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
+    real_rocm_source_delta_execution:
+      acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
+  },
+  proof_ledger: acceptedLargeMlProofMaterials.proof_ledger,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-large-ml-generic-hook-delta',
+    editHash: hashValue('real-rocm-accepted-large-ml-generic-hook-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-large-ml-generic-hook.git @ eeeeeeee files=30000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedLargeMlRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedLargeMlRocmDir],
+  generatedAt: '2026-06-25T00:00:02.275Z',
+  includeUnproven: true,
+});
+const acceptedLargeMlRocm = acceptedLargeMlRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedLargeMlRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedLargeMlRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedLargeMlRocm.realRocmAppHookContractGate.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmSameProcessRuntimeOracleGate.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmSameProcessRuntimeOracleGate.proven, true);
+assert.equal(acceptedLargeMlRocm.realRocmSourceDeltaExecution.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmSourceDeltaExecution.hotDelta2PhaseExecuted, true);
+assert.equal(acceptedLargeMlRocm.realRocmSourceDeltaExecution.negativeEditPhaseExecuted, true);
+assert.equal(acceptedLargeMlRocm.realRocmProfileProofObligations.blockingGaps.length, 0);
+assert.equal(acceptedLargeMlRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(acceptedLargeMlRocm.outputOracleFacet.accepted, true);
+
+async function writeSameProcessOracleNegative({
+  scope,
+  appHookOverrides = {},
+  sameProcessOverrides = {},
+  expectedGap,
+}) {
+  const dir = path.join(logsRoot, scope);
+  const rawReadback = path.join(dir, 'readback.bin');
+  const bytes = Buffer.from([11, 22, 33, 44, 55, 66, 77, 88]);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(rawReadback, bytes);
+  await writeJson(`${rawReadback}.schema.json`, {
+    schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+    elementType: 'u8',
+    byteLength: bytes.length,
+    shape: [bytes.length],
+  });
+  await writeRgbaPng(`${rawReadback}.card.png`, 8, 8, (x, y) => [
+    bytes[(x + y) % bytes.length],
+    50 + x,
+    90 + y,
+    255,
+  ]);
+  const materials = realRocmComputeProofLedgerMaterials(scope, {
+    projectId: scope,
+    rawReadbackPath: rawReadback,
+    rawReadbackBytes: bytes,
+  });
+  const appHook = acceptedRealRocmAppHookContract(scope, appHookOverrides);
+  const sameProcessOracle = acceptedSameProcessRuntimeOracle(scope, sameProcessOverrides);
+  await writeJson(path.join(dir, `${scope}.json`), {
+    slug: `gpu-${scope}-20260625`,
+    real_rocm_profile: largeRocmMlProfile(scope),
+    source_url: `https://example.invalid/rocm/${scope}.git`,
+    repo_commit: 'abababababababababababababababababababab',
+    entry_file: `src/${scope}/entry.hip`,
+    delta_file: `src/${scope}/delta.h`,
+    target_name: `${scope}-driver`,
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      selectedSource: 'profile_runtime_profile',
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: true,
+      phaseRaw: 'final-acceptance',
+      phase: 'final-acceptance',
+      recognized: true,
+      targetName: `${scope}-driver`,
+      finalAcceptanceTarget: `${scope}-driver`,
+      finalAcceptanceTargetDeclared: true,
+      targetMatchesFinalAcceptance: true,
+    },
+    target_progression_ledger: {
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: true,
+      entries: [
+        {
+          phase: 'small-oracle',
+          status: 'pass',
+          resultState: 'gpu-hmr-output-oracle-proven',
+          outputOracleProven: true,
+          proofId: `${scope}-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+          compute_oracle_artifacts: materials.computeOracleArtifacts,
+        },
+        {
+          phase: 'partial-reload',
+          status: 'pass',
+          proofId: `${scope}-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`,
+          schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+          partialReloadProven: true,
+          fissionProven: true,
+        },
+        {
+          phase: 'original-host-path',
+          status: 'pass',
+          proofId: `${scope}-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc`,
+          schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+          originalHostPathProven: true,
+          attachmentProven: true,
+          hostPreservationProven: true,
+          dispatchSafeProven: true,
+        },
+      ],
+    },
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    real_rocm_profile_proof_obligations: acceptedLargeRocmProfileObligations(scope),
+    real_rocm_source_delta_execution: acceptedLargeRocmSourceDeltaExecution(scope),
+    real_rocm_app_hook_contract: appHook,
+    real_rocm_same_process_runtime_oracle: sameProcessOracle,
+    runtime_proof_artifact: {
+      ...materials.runtime_proof_artifact,
+      realRocmAppHookContract: appHook,
+      real_rocm_app_hook_contract: appHook,
+      realRocmSameProcessRuntimeOracle: sameProcessOracle,
+      real_rocm_same_process_runtime_oracle: sameProcessOracle,
+      sameProcessRuntimeOracle: sameProcessOracle,
+      same_process_runtime_oracle: sameProcessOracle,
+      realRocmProfileProofObligations: acceptedLargeRocmProfileObligations(scope),
+      real_rocm_profile_proof_obligations: acceptedLargeRocmProfileObligations(scope),
+      realRocmSourceDeltaExecution: acceptedLargeRocmSourceDeltaExecution(scope),
+      real_rocm_source_delta_execution: acceptedLargeRocmSourceDeltaExecution(scope),
+    },
+    proof_ledger: materials.proof_ledger,
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: `${scope}-delta`,
+      editHash: hashValue(`${scope}-delta`),
+    },
+    checks: [
+      { name: 'real ROCm repo', status: 'pass', detail: `https://example.invalid/rocm/${scope}.git @ abababab files=30000` },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  });
+  const negativeLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [dir],
+    generatedAt: '2026-06-25T00:00:02.276Z',
+    includeUnproven: true,
+  });
+  const row = negativeLedger.rows.find((candidate) =>
+    candidate.proofMode === 'real_rocm_repo_validation'
+  );
+  assert.equal(row?.matrixOutcome, 'unproven');
+  assert.equal(row.acceptedForGpuHmr, false);
+  assert.equal(row.realRocmSameProcessRuntimeOracleGate.accepted, false);
+  assert.ok(row.openGaps.includes('real_rocm_same_process_runtime_oracle_required'));
+  assert.ok(row.openGaps.includes(`real_rocm_same_process_runtime_oracle:${expectedGap}`));
+}
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-hook',
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    appHookContractAccepted: false,
+    app_hook_contract_accepted: false,
+    blockingGaps: ['same_process_runtime_oracle_app_hook_contract_unproven'],
+    blocking_gaps: ['same_process_runtime_oracle_app_hook_contract_unproven'],
+  },
+  expectedGap: 'same_process_runtime_oracle_app_hook_contract_unproven',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-unresolved-hook-ref',
+  appHookOverrides: {
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: 'declared_app_hook_contract_incomplete',
+    blockingGaps: ['app_hook_epoch_publication_evidence_ref_unresolved'],
+    blocking_gaps: ['app_hook_epoch_publication_evidence_ref_unresolved'],
+  },
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    appHookContractAccepted: false,
+    app_hook_contract_accepted: false,
+    blockingGaps: ['same_process_runtime_oracle_app_hook_contract_unproven'],
+    blocking_gaps: ['same_process_runtime_oracle_app_hook_contract_unproven'],
+  },
+  expectedGap: 'same_process_runtime_oracle_app_hook_contract_unproven',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-output-target',
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    outputTargetObserved: false,
+    output_target_observed: false,
+    blockingGaps: ['same_process_runtime_oracle_output_target_missing'],
+    blocking_gaps: ['same_process_runtime_oracle_output_target_missing'],
+  },
+  expectedGap: 'same_process_runtime_oracle_output_target_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-process-mismatch',
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sameProcessIdentityObserved: false,
+    same_process_identity_observed: false,
+    blockingGaps: ['same_process_runtime_oracle_process_identity_missing'],
+    blocking_gaps: ['same_process_runtime_oracle_process_identity_missing'],
+  },
+  expectedGap: 'same_process_runtime_oracle_process_identity_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-oracle-before-dispatch',
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    outputAfterDispatchObserved: false,
+    output_after_dispatch_observed: false,
+    blockingGaps: ['same_process_runtime_oracle_after_dispatch_missing'],
+    blocking_gaps: ['same_process_runtime_oracle_after_dispatch_missing'],
+  },
+  expectedGap: 'same_process_runtime_oracle_after_dispatch_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-artifact-mismatch',
+  sameProcessOverrides: {
+    accepted: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    artifactEpochMatched: false,
+    artifact_epoch_matched: false,
+    blockingGaps: ['same_process_runtime_oracle_artifact_epoch_mismatch'],
+    blocking_gaps: ['same_process_runtime_oracle_artifact_epoch_mismatch'],
+  },
+  expectedGap: 'same_process_runtime_oracle_artifact_epoch_mismatch',
+});
 
 const forgedComputeSemanticRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-semantic');
 const forgedComputeSemanticReadback = path.join(forgedComputeSemanticRocmDir, 'readback.bin');

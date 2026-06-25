@@ -8223,6 +8223,254 @@ function realRocmAppHookContractFacet({
   };
 }
 
+function firstRuntimeText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function realRocmSameProcessRuntimeOracleFacet({
+  appHookContractFacet = {},
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+  fullRuntimeProof = {},
+  firewallEvidence = {},
+  availableEvidenceRefs = [],
+} = {}) {
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  const artifactTransportObserved = Number(
+    runtimeArtifactTransport.total_count ?? runtimeArtifactTransport.matched_count ?? 0,
+  ) > 0;
+  const epochPublicationObserved =
+    Number(epochEvidence.total_count ?? 0) > 0
+    || Number(epochEvidence.published_count ?? 0) > 0
+    || runtimeEpochSwap?.proof?.resultState === 'gpu-hmr-epoch-swap-proven';
+  const dispatchTraceObserved = Number(runtimeDispatch.success_count ?? 0) > 0;
+  const outputOracleObserved = Number(runtimeOutputOracle.total_count ?? 0) > 0;
+  const hostIdentityObserved = Number(hostEvidence.total_count ?? 0) > 0;
+  const appHookRequired =
+    appHookContractFacet.required === true
+    || appHookContractFacet.declared === true;
+  const appHookContractAccepted =
+    appHookContractFacet.canSatisfyRuntimeProof === true
+    || appHookContractFacet.can_satisfy_runtime_proof === true;
+  const dispatchEpoch = firstRuntimeText(
+    runtimeDispatch.epoch,
+    ...(Array.isArray(runtimeDispatch.epochs) ? runtimeDispatch.epochs : []),
+  );
+  const publishedEpoch = firstRuntimeText(
+    epochEvidence.epoch,
+    epochEvidence.published_epoch,
+    epochEvidence.active_epoch,
+    runtimeEpochSwap?.proof?.epoch,
+  );
+  const dispatchArtifact = firstRuntimeText(
+    runtimeDispatch.runtime_artifact_id,
+    ...(Array.isArray(runtimeDispatch.runtime_artifact_ids) ? runtimeDispatch.runtime_artifact_ids : []),
+  );
+  const transportedArtifact = firstRuntimeText(
+    runtimeArtifactTransport.artifact_id,
+    runtimeArtifactTransport.artifact_hash,
+    runtimeArtifactTransport.blob_digest,
+    runtimeArtifactTransport.selected_artifact_id,
+  );
+  const dispatchOutputTarget = firstRuntimeText(
+    runtimeDispatch.output_target_id,
+    ...(Array.isArray(runtimeDispatch.output_target_ids) ? runtimeDispatch.output_target_ids : []),
+  );
+  const oracleOutputTarget = firstRuntimeText(
+    runtimeOutputOracle.output_target_id,
+    runtimeOutputOracle.latest?.output_target_id,
+    runtimeOutputOracle.output_oracle?.output_target_id,
+    runtimeOutputOracle.output_oracle?.target_id,
+  );
+  const dispatchId = firstRuntimeText(
+    runtimeDispatch.dispatch_id,
+    ...(Array.isArray(runtimeDispatch.dispatch_ids) ? runtimeDispatch.dispatch_ids : []),
+  );
+  const oracleAfterDispatchId = firstRuntimeText(
+    runtimeOutputOracle.after_dispatch_id,
+    runtimeOutputOracle.latest?.after_dispatch_id,
+    runtimeOutputOracle.output_oracle?.after_dispatch_id,
+  );
+  const dispatchTimestamp = Number(
+    Array.isArray(runtimeDispatch.dispatch_timestamps)
+      ? runtimeDispatch.dispatch_timestamps.at(-1)
+      : runtimeDispatch.dispatch_timestamp,
+  );
+  const oracleTimestamp = Number(
+    runtimeOutputOracle.timestamp_after_dispatch
+    ?? runtimeOutputOracle.latest?.timestamp_after_dispatch
+    ?? runtimeOutputOracle.output_oracle?.timestamp_after_dispatch,
+  );
+  const sameProcessIdentityObserved =
+    hostIdentityObserved
+    && (runtimeHostPreservation?.proof?.resultState === 'gpu-hmr-host-preservation-proven'
+      || hostEvidence.process_preserved === true
+      || hostEvidence.same_process === true
+      || Number(hostEvidence.preserved_count ?? hostEvidence.total_count ?? 0) > 0);
+  const dispatchUsedPublishedEpoch =
+    dispatchTraceObserved
+    && epochPublicationObserved
+    && Boolean(dispatchEpoch)
+    && Boolean(publishedEpoch)
+    && dispatchEpoch === publishedEpoch;
+  const artifactEpochMatched =
+    artifactTransportObserved
+    && dispatchTraceObserved
+    && Boolean(dispatchArtifact)
+    && Boolean(transportedArtifact)
+    && dispatchArtifact === transportedArtifact;
+  const outputTargetObserved = Boolean(oracleOutputTarget || dispatchOutputTarget);
+  const outputAfterDispatchObserved =
+    outputOracleObserved
+    && (
+      (Boolean(dispatchId) && oracleAfterDispatchId === dispatchId)
+      || (
+        Number.isFinite(dispatchTimestamp)
+        && Number.isFinite(oracleTimestamp)
+        && oracleTimestamp >= dispatchTimestamp
+      )
+    );
+  const firewallAccepted =
+    firewallEvidence.cpu_hmr_used === false
+    && firewallEvidence.full_rebuild_used === false
+    && firewallEvidence.process_restarted === false;
+  const stageResults = {
+    artifact_transport: { observed: artifactTransportObserved },
+    epoch_publication: { observed: epochPublicationObserved },
+    dispatch_trace: {
+      observed: dispatchTraceObserved,
+      dispatchUsedPublishedEpoch,
+      dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
+    },
+    host_identity: {
+      observed: hostIdentityObserved,
+      sameProcessIdentityObserved,
+      same_process_identity_observed: sameProcessIdentityObserved,
+    },
+    output_oracle: {
+      observed: outputOracleObserved,
+      outputTargetObserved,
+      output_target_observed: outputTargetObserved,
+      outputAfterDispatchObserved,
+      output_after_dispatch_observed: outputAfterDispatchObserved,
+    },
+  };
+  const blockingGaps = [];
+  if (appHookRequired && !appHookContractAccepted) {
+    blockingGaps.push('same_process_runtime_oracle_app_hook_contract_unproven');
+  }
+  if (!artifactTransportObserved) blockingGaps.push('same_process_runtime_oracle_artifact_transport_missing');
+  if (!epochPublicationObserved) blockingGaps.push('same_process_runtime_oracle_epoch_publication_missing');
+  if (!dispatchTraceObserved) blockingGaps.push('same_process_runtime_oracle_dispatch_trace_missing');
+  if (!sameProcessIdentityObserved) blockingGaps.push('same_process_runtime_oracle_process_identity_missing');
+  if (!outputOracleObserved) blockingGaps.push('same_process_runtime_oracle_output_oracle_missing');
+  if (!outputTargetObserved) blockingGaps.push('same_process_runtime_oracle_output_target_missing');
+  if (!outputAfterDispatchObserved) blockingGaps.push('same_process_runtime_oracle_after_dispatch_missing');
+  if (!dispatchUsedPublishedEpoch) blockingGaps.push('same_process_runtime_oracle_dispatch_epoch_mismatch');
+  if (!artifactEpochMatched) blockingGaps.push('same_process_runtime_oracle_artifact_epoch_mismatch');
+  if (fullRuntimeProof?.fullRuntimeProven !== true) {
+    blockingGaps.push('same_process_runtime_oracle_full_runtime_proof_missing');
+  }
+  if (!firewallAccepted) {
+    blockingGaps.push('same_process_runtime_oracle_firewall_missing');
+  }
+  const accepted =
+    appHookRequired
+    && appHookContractAccepted
+    && blockingGaps.length === 0;
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(appHookContractFacet.evidenceRefs) ? appHookContractFacet.evidenceRefs : []),
+    ...(Array.isArray(appHookContractFacet.evidence_refs) ? appHookContractFacet.evidence_refs : []),
+    ...availableEvidenceRefs,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    declared: appHookContractFacet.declared === true,
+    required: appHookRequired,
+    status: accepted
+      ? 'same_process_runtime_oracle_contract_proven'
+      : appHookRequired
+        ? 'same_process_runtime_oracle_contract_unproven'
+        : 'not_required',
+    proofAuthority: 'runtime_stage_evidence_not_serialized_claim',
+    proof_authority: 'runtime_stage_evidence_not_serialized_claim',
+    accepted,
+    canSatisfyRuntimeProof: accepted,
+    can_satisfy_runtime_proof: accepted,
+    canSatisfyDispatchProof: accepted,
+    can_satisfy_dispatch_proof: accepted,
+    appHookContractAccepted,
+    app_hook_contract_accepted: appHookContractAccepted,
+    artifactTransportObserved,
+    artifact_transport_observed: artifactTransportObserved,
+    epochPublicationObserved,
+    epoch_publication_observed: epochPublicationObserved,
+    dispatchTraceObserved,
+    dispatch_trace_observed: dispatchTraceObserved,
+    dispatchUsedPublishedEpoch,
+    dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
+    sameProcessIdentityObserved,
+    same_process_identity_observed: sameProcessIdentityObserved,
+    outputOracleObserved,
+    output_oracle_observed: outputOracleObserved,
+    outputTargetObserved,
+    output_target_observed: outputTargetObserved,
+    outputAfterDispatchObserved,
+    output_after_dispatch_observed: outputAfterDispatchObserved,
+    artifactEpochMatched,
+    artifact_epoch_matched: artifactEpochMatched,
+    firewallAccepted,
+    firewall_accepted: firewallAccepted,
+    cpuHmrUsed: firewallEvidence.cpu_hmr_used ?? null,
+    cpu_hmr_used: firewallEvidence.cpu_hmr_used ?? null,
+    fullRebuildUsed: firewallEvidence.full_rebuild_used ?? null,
+    full_rebuild_used: firewallEvidence.full_rebuild_used ?? null,
+    processRestarted: firewallEvidence.process_restarted ?? null,
+    process_restarted: firewallEvidence.process_restarted ?? null,
+    stageResults,
+    stage_results: stageResults,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    availableEvidenceRefs: compactStringList(availableEvidenceRefs),
+    available_evidence_refs: compactStringList(availableEvidenceRefs),
+    contractHash: `sha256:${createHash('sha256').update(stableJson({
+      appHookContractHash: appHookContractFacet.contractHash ?? appHookContractFacet.contract_hash ?? null,
+      dispatchEpoch,
+      publishedEpoch,
+      dispatchArtifact,
+      transportedArtifact,
+      dispatchOutputTarget,
+      oracleOutputTarget,
+      dispatchId,
+      oracleAfterDispatchId,
+      stageResults,
+    })).digest('hex')}`,
+    contract_hash: `sha256:${createHash('sha256').update(stableJson({
+      appHookContractHash: appHookContractFacet.contractHash ?? appHookContractFacet.contract_hash ?? null,
+      dispatchEpoch,
+      publishedEpoch,
+      dispatchArtifact,
+      transportedArtifact,
+      dispatchOutputTarget,
+      oracleOutputTarget,
+      dispatchId,
+      oracleAfterDispatchId,
+      stageResults,
+    })).digest('hex')}`,
+  };
+}
+
 function sourceDialectFromPath(filePath) {
   const ext = path.extname(String(filePath ?? '').toLowerCase());
   if (ext === '.cl') return 'opencl_c';
@@ -12550,6 +12798,22 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   });
   report.realRocmAppHookContract = report.real_rocm_app_hook_contract;
   report.evidence.real_rocm_app_hook_contract = report.real_rocm_app_hook_contract;
+  report.real_rocm_same_process_runtime_oracle = realRocmSameProcessRuntimeOracleFacet({
+    appHookContractFacet: report.real_rocm_app_hook_contract,
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+    fullRuntimeProof: report.full_runtime_proof,
+    firewallEvidence: report.firewall_evidence,
+    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
+  });
+  report.realRocmSameProcessRuntimeOracle = report.real_rocm_same_process_runtime_oracle;
+  report.sameProcessRuntimeOracle = report.real_rocm_same_process_runtime_oracle;
+  report.same_process_runtime_oracle = report.real_rocm_same_process_runtime_oracle;
+  report.evidence.real_rocm_same_process_runtime_oracle =
+    report.real_rocm_same_process_runtime_oracle;
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
@@ -12591,6 +12855,25 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeBackend: runtimeProofBackend(),
     compiler: runtimeProofCompiler(),
   });
+  report.real_rocm_runtime_eligibility.sameProcessRuntimeOracleStatus =
+    report.real_rocm_same_process_runtime_oracle.status;
+  report.real_rocm_runtime_eligibility.same_process_runtime_oracle_status =
+    report.real_rocm_same_process_runtime_oracle.status;
+  report.real_rocm_runtime_eligibility.sameProcessRuntimeOracleAccepted =
+    report.real_rocm_same_process_runtime_oracle.accepted === true;
+  report.real_rocm_runtime_eligibility.same_process_runtime_oracle_accepted =
+    report.real_rocm_same_process_runtime_oracle.accepted === true;
+  report.real_rocm_runtime_eligibility.blockingGaps = compactStringList([
+    ...(Array.isArray(report.real_rocm_runtime_eligibility.blockingGaps)
+      ? report.real_rocm_runtime_eligibility.blockingGaps
+      : []),
+    ...(report.real_rocm_same_process_runtime_oracle.required === true
+      && report.real_rocm_same_process_runtime_oracle.accepted !== true
+      ? report.real_rocm_same_process_runtime_oracle.blocking_gaps
+      : []),
+  ]);
+  report.real_rocm_runtime_eligibility.blocking_gaps =
+    report.real_rocm_runtime_eligibility.blockingGaps;
   report.evidence.real_rocm_runtime_eligibility = report.real_rocm_runtime_eligibility;
   report.real_rocm_sidecar_runtime_consistency = realRocmSidecarRuntimeConsistencyFacet({
     deviceSidecarContract: report.real_rocm_device_sidecar_contract,
@@ -12635,6 +12918,22 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
         `contract_complete=${report.real_rocm_app_hook_contract.contract_evidence_complete}`,
         `runtime_complete=${report.real_rocm_app_hook_contract.runtime_observation_complete}`,
         `gaps=${report.real_rocm_app_hook_contract.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
+  if (
+    report.real_rocm_same_process_runtime_oracle.required
+    || report.real_rocm_same_process_runtime_oracle.declared
+  ) {
+    record(
+      'real ROCm same-process runtime oracle contract facet',
+      report.real_rocm_same_process_runtime_oracle.accepted ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_same_process_runtime_oracle.status}`,
+        `app_hook=${report.real_rocm_same_process_runtime_oracle.app_hook_contract_accepted}`,
+        `dispatch_epoch=${report.real_rocm_same_process_runtime_oracle.dispatch_used_published_epoch}`,
+        `output_after_dispatch=${report.real_rocm_same_process_runtime_oracle.output_after_dispatch_observed}`,
+        `gaps=${report.real_rocm_same_process_runtime_oracle.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
@@ -13033,6 +13332,10 @@ async function writeResults() {
     real_rocm_app_hook_contract: report.real_rocm_app_hook_contract,
     appHookContract: report.real_rocm_app_hook_contract,
     app_hook_contract: report.real_rocm_app_hook_contract,
+    realRocmSameProcessRuntimeOracle: report.real_rocm_same_process_runtime_oracle,
+    real_rocm_same_process_runtime_oracle: report.real_rocm_same_process_runtime_oracle,
+    sameProcessRuntimeOracle: report.real_rocm_same_process_runtime_oracle,
+    same_process_runtime_oracle: report.real_rocm_same_process_runtime_oracle,
     realRocmDeviceSidecarContract: report.real_rocm_device_sidecar_contract,
     real_rocm_device_sidecar_contract: report.real_rocm_device_sidecar_contract,
     deviceSidecarContract: report.real_rocm_device_sidecar_contract,
