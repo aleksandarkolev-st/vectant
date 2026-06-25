@@ -1664,6 +1664,64 @@ function webgpuRunModeCoverageObligations(profile) {
   };
 }
 
+function webgpuCompanionFirewallEvidence(proof) {
+  const ledgerRecord = proof?.proofLedger?.records?.[0] ?? proof?.proofLedgerQuery?.record ?? {};
+  const ledgerFirewall = ledgerRecord.firewall_evidence ?? ledgerRecord.firewallEvidence ?? {};
+  const processContinuity = proof?.browser?.processContinuity ?? {};
+  const processRestarted =
+    typeof processContinuity.processRestarted === 'boolean'
+      ? processContinuity.processRestarted
+      : typeof ledgerFirewall.process_restarted === 'boolean'
+        ? ledgerFirewall.process_restarted
+        : typeof ledgerRecord.process_restarted === 'boolean'
+          ? ledgerRecord.process_restarted
+          : true;
+  const cpuHmrUsed =
+    typeof ledgerRecord.cpu_hmr_used === 'boolean'
+      ? ledgerRecord.cpu_hmr_used
+      : ledgerFirewall.cpu_hmr_used === true;
+  const fullRebuildUsed =
+    typeof ledgerRecord.full_rebuild_used === 'boolean'
+      ? ledgerRecord.full_rebuild_used
+      : ledgerFirewall.full_rebuild_used === true;
+  const evidence = {
+    authority: 'runtime_proof_ledger_and_browser_process_continuity',
+    cpuHmrUsed,
+    cpu_hmr_used: cpuHmrUsed,
+    fullRebuildUsed,
+    full_rebuild_used: fullRebuildUsed,
+    processRestarted,
+    process_restarted: processRestarted,
+    processIdBefore: processContinuity.processIdBefore ?? ledgerFirewall.process_id_before ?? null,
+    process_id_before: processContinuity.processIdBefore ?? ledgerFirewall.process_id_before ?? null,
+    processIdAfter: processContinuity.processIdAfter ?? ledgerFirewall.process_id_after ?? null,
+    process_id_after: processContinuity.processIdAfter ?? ledgerFirewall.process_id_after ?? null,
+    processIdentitySourceBefore:
+      processContinuity.sourceBefore ?? ledgerFirewall.process_identity_source_before ?? null,
+    process_identity_source_before:
+      processContinuity.sourceBefore ?? ledgerFirewall.process_identity_source_before ?? null,
+    processIdentitySourceAfter:
+      processContinuity.sourceAfter ?? ledgerFirewall.process_identity_source_after ?? null,
+    process_identity_source_after:
+      processContinuity.sourceAfter ?? ledgerFirewall.process_identity_source_after ?? null,
+    proofLedgerId: proof?.proofLedger?.proofId ?? null,
+    proof_ledger_id: proof?.proofLedger?.proofId ?? null,
+    runtimeProofArtifactId: proof?.runtimeProofArtifact?.proofId ?? null,
+    runtime_proof_artifact_id: proof?.runtimeProofArtifact?.proofId ?? null,
+    failedGates: [
+      ...(processContinuity.failedGates ?? []),
+      ...(
+        proof?.proofLedgerQuery?.failedInvariants
+          ?.map((failure) => failure.code)
+          .filter((code) => code === 'process_restarted' || code === 'cpu_hmr_used' || code === 'full_rebuild_used')
+        ?? []
+      ),
+    ],
+  };
+  evidence.failed_gates = evidence.failedGates;
+  return evidence;
+}
+
 async function writeColdRuntimeRunModeProof({
   filePath,
   profile,
@@ -1673,6 +1731,7 @@ async function writeColdRuntimeRunModeProof({
 }) {
   const runMode = coldRuntimeRunModeMetadata(profile);
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
+  const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1693,12 +1752,14 @@ async function writeColdRuntimeRunModeProof({
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
-    cpuHmrUsed: false,
-    cpu_hmr_used: false,
-    fullRebuildUsed: false,
-    full_rebuild_used: false,
-    processRestarted: false,
-    process_restarted: false,
+    cpuHmrUsed: firewallEvidence.cpuHmrUsed,
+    cpu_hmr_used: firewallEvidence.cpu_hmr_used,
+    fullRebuildUsed: firewallEvidence.fullRebuildUsed,
+    full_rebuild_used: firewallEvidence.full_rebuild_used,
+    processRestarted: firewallEvidence.processRestarted,
+    process_restarted: firewallEvidence.process_restarted,
+    firewallEvidence,
+    firewall_evidence: firewallEvidence,
     visualRequired: true,
     visual_required: true,
     visualArtifacts: {
@@ -1900,6 +1961,7 @@ function buildRuntimeProofArtifact({
 
 async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts, metrics, runMode }) {
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
+  const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1921,12 +1983,14 @@ async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts
     accepted_for_gpu_hmr: proof.gpuHmrSuccess === true,
     gpuHmrSuccess: proof.gpuHmrSuccess === true,
     gpu_hmr_success: proof.gpuHmrSuccess === true,
-    cpuHmrUsed: false,
-    cpu_hmr_used: false,
-    fullRebuildUsed: false,
-    full_rebuild_used: false,
-    processRestarted: false,
-    process_restarted: false,
+    cpuHmrUsed: firewallEvidence.cpuHmrUsed,
+    cpu_hmr_used: firewallEvidence.cpu_hmr_used,
+    fullRebuildUsed: firewallEvidence.fullRebuildUsed,
+    full_rebuild_used: firewallEvidence.full_rebuild_used,
+    processRestarted: firewallEvidence.processRestarted,
+    process_restarted: firewallEvidence.process_restarted,
+    firewallEvidence,
+    firewall_evidence: firewallEvidence,
     visualRequired: true,
     visual_required: true,
     visualArtifacts: visualArtifactsForWebgpuRunMode(artifacts),
@@ -1991,6 +2055,7 @@ async function writeWebgpuNegativeEditRefusal({
     different_edit: true,
     differentEdit: true,
   };
+  const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
   const seed = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
     backend: 'webgpu',
@@ -2002,12 +2067,14 @@ async function writeWebgpuNegativeEditRefusal({
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
-    cpuHmrUsed: false,
-    cpu_hmr_used: false,
-    fullRebuildUsed: false,
-    full_rebuild_used: false,
-    processRestarted: false,
-    process_restarted: false,
+    cpuHmrUsed: firewallEvidence.cpuHmrUsed,
+    cpu_hmr_used: firewallEvidence.cpu_hmr_used,
+    fullRebuildUsed: firewallEvidence.fullRebuildUsed,
+    full_rebuild_used: firewallEvidence.full_rebuild_used,
+    processRestarted: firewallEvidence.processRestarted,
+    process_restarted: firewallEvidence.process_restarted,
+    firewallEvidence,
+    firewall_evidence: firewallEvidence,
     route: 'reject',
     classification: {
       project_kind: 'gpu_project',
