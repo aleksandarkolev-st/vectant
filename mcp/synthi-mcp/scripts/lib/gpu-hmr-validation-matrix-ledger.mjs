@@ -7927,6 +7927,75 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
   });
 }
 
+const ROCM_LOCAL_BACKENDS = new Set(['hip', 'hiprt', 'oidn_hip']);
+
+function rowCarriesRocmEvidence(row) {
+  if (ROCM_LOCAL_BACKENDS.has(row.backend)) return true;
+  const deviceIdentity = compactObject(row.deviceIdentity ?? row.device_identity);
+  const runtimeCapability = compactObject(row.runtimeCapabilityPreflight ?? row.runtime_capability_preflight);
+  const backendEvidence = compactObject(row.typedBackendEvidence ?? row.typed_backend_evidence);
+  const raw = [
+    row.backend,
+    row.proofMode,
+    deviceIdentity.backend,
+    deviceIdentity.vendor,
+    deviceIdentity.device_uuid,
+    deviceIdentity.deviceUuid,
+    deviceIdentity.gpu_arch,
+    deviceIdentity.gpuArch,
+    deviceIdentity.compile_target,
+    deviceIdentity.compileTarget,
+    runtimeCapability.backend,
+    runtimeCapability.backendFamily,
+    runtimeCapability.backend_family,
+    runtimeCapability.vendor,
+    backendEvidence.backend,
+    backendEvidence.backendFamily,
+    backendEvidence.backend_family,
+  ].map((value) => String(value ?? '').toLowerCase());
+  return raw.some((value) =>
+    value.includes('rocm')
+    || value.includes('hip')
+    || /^gfx[0-9][0-9a-z]*$/u.test(value)
+  );
+}
+
+function cudaRuntimeCoverage(rows) {
+  const cudaRows = rows.filter((row) => row.backend === 'cuda');
+  if (cudaRows.length > 0) {
+    return acceptedOrRefusedCoverage({
+      rows,
+      id: 'cuda_runtime',
+      requirement: 'CUDA runtime proof on CUDA hardware',
+      acceptedPredicate: (row) => row.backend === 'cuda',
+      missingGap: 'cuda_hardware_required',
+    });
+  }
+  const rocmEvidenceRows = rows.filter(rowCarriesRocmEvidence);
+  if (rocmEvidenceRows.length > 0) {
+    return coverageEntry({
+      id: 'cuda_runtime',
+      requirement: 'CUDA runtime proof on CUDA hardware',
+      status: 'not_applicable',
+      rows: rocmEvidenceRows,
+      openGaps: [],
+      notApplicable: true,
+      not_applicable: true,
+      hardwareScope: 'rocm_amd_local_run',
+      hardware_scope: 'rocm_amd_local_run',
+      reason: 'cuda_requires_cuda_hardware_and_this_matrix_contains_rocm_amd_evidence',
+      observedBackends: [...new Set(rocmEvidenceRows.map((row) => row.backend).filter(Boolean))].sort(),
+      observed_backends: [...new Set(rocmEvidenceRows.map((row) => row.backend).filter(Boolean))].sort(),
+    });
+  }
+  return coverageEntry({
+    id: 'cuda_runtime',
+    requirement: 'CUDA runtime proof on CUDA hardware',
+    status: 'missing',
+    openGaps: ['cuda_hardware_required'],
+  });
+}
+
 function realRocmRepositoryTargetCoverage(rows) {
   const candidates = rows.filter((row) =>
     row.proofMode === 'real_rocm_repo_validation'
@@ -8116,13 +8185,7 @@ function planCoverage(rows) {
       acceptedPredicate: (row) => row.backend === 'vulkan',
       missingGap: 'vulkan_pipeline_frame_proof_required',
     }),
-    acceptedOrRefusedCoverage({
-      rows,
-      id: 'cuda_runtime',
-      requirement: 'CUDA runtime proof on CUDA hardware',
-      acceptedPredicate: (row) => row.backend === 'cuda',
-      missingGap: 'cuda_hardware_required',
-    }),
+    cudaRuntimeCoverage(rows),
     coverageEntry({
       id: 'per_kernel_smallest_safe_fission',
       requirement: 'Per-kernel or smallest-safe fission verifier proof',

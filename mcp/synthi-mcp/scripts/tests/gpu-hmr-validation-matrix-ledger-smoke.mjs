@@ -4137,6 +4137,10 @@ assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.ok(!coverageById.get('opencl_dispatch_readback')?.rows.some((row) =>
   row.targetId === 'forged-generic-opencl-label'
 ));
+assert.equal(coverageById.get('cuda_runtime')?.status, 'not_applicable');
+assert.equal(coverageById.get('cuda_runtime')?.not_applicable, true);
+assert.equal(coverageById.get('cuda_runtime')?.hardwareScope, 'rocm_amd_local_run');
+assert.deepEqual(coverageById.get('cuda_runtime')?.openGaps, []);
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));

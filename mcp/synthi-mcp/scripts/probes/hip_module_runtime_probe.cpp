@@ -524,6 +524,7 @@ void write_runtime_json(
   const std::string& session,
   const std::string& device_name,
   const std::string& device_uuid,
+  const std::string& device_arch,
   int process_id) {
   std::ofstream out(path);
   if (!out) throw std::runtime_error("cannot write runtime json " + path);
@@ -532,7 +533,9 @@ void write_runtime_json(
   out << "  \"runtimeSessionId\":" << json_string(session) << ",\n";
   out << "  \"processId\":" << json_string(std::to_string(process_id)) << ",\n";
   out << "  \"device\":{\"backend\":\"hip\",\"name\":" << json_string(device_name)
-      << ",\"device_uuid\":" << json_string(device_uuid) << ",\"compile_target\":"
+      << ",\"device_uuid\":" << json_string(device_uuid)
+      << ",\"gpu_arch\":" << json_string(device_arch)
+      << ",\"gcn_arch_name\":" << json_string(device_arch) << ",\"compile_target\":"
       << json_string(plan.compile_target) << "},\n";
   out << "  \"loaderEvents\":[\n";
   out << "    {\"id\":\"hip-module-loader-1\",\"artifact_hash\":" << json_string(plan.artifact_hash_before)
@@ -606,6 +609,7 @@ int main(int argc, char** argv) {
     hipDeviceProp_t props{};
     hip_check(hipGetDeviceProperties(&props, 0), "hipGetDeviceProperties");
     const std::string device_name = props.name;
+    const std::string device_arch = props.gcnArchName;
     const std::string device_uuid = std::string("hip-device:") + props.gcnArchName + ":" + std::to_string(props.pciBusID) + ":" + std::to_string(props.pciDeviceID);
     const int process_id = current_pid();
     const std::string session = std::string("hip-module-runtime:pid:") + std::to_string(process_id);
@@ -618,7 +622,7 @@ int main(int argc, char** argv) {
     hip_check(hipDeviceSynchronize(), "hipDeviceSynchronize retirement");
     hip_check(hipModuleUnload(before_module.module), "hipModuleUnload before");
     hip_check(hipModuleUnload(after_module.module), "hipModuleUnload after");
-    write_runtime_json(argv[5], plan, before, after, session, device_name, device_uuid, process_id);
+    write_runtime_json(argv[5], plan, before, after, session, device_name, device_uuid, device_arch, process_id);
     return before.passed && after.passed ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << "hip_module_runtime_probe error: " << error.what() << "\n";

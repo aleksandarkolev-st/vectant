@@ -229,7 +229,10 @@ function ledgerRecord(overrides = {}) {
       process_id: 'pid-1',
     },
     device_identity: {
-      device_uuid: 'device-1',
+      backend: 'hip',
+      device_uuid: 'hip-device:gfx1201:1:0',
+      gpu_arch: 'gfx1201',
+      compile_target: 'gfx1201',
     },
     cpu_hmr_used: false,
     full_rebuild_used: false,
@@ -413,8 +416,23 @@ function runtimeArtifact(overrides = {}) {
   const proofLedger = buildGpuHmrProofLedger(ledgerRecord());
   const contract = acceptanceContract();
   const contractEvaluation = evaluateGpuHmrAcceptanceContract(contract);
+  const hardwareTargetEvidence = {
+    schemaVersion: 'synthi.gpu_hmr.hip_module_hardware_target_evidence.v1',
+    accepted: true,
+    backend: 'hip',
+    gpuArch: 'gfx1201',
+    gpu_arch: 'gfx1201',
+    compileTarget: 'gfx1201',
+    compile_target: 'gfx1201',
+    deviceUuid: 'hip-device:gfx1201:1:0',
+    device_uuid: 'hip-device:gfx1201:1:0',
+    evidenceRefs: ['runtime:hip-module:device:hip-device:gfx1201:1:0'],
+    evidence_refs: ['runtime:hip-module:device:hip-device:gfx1201:1:0'],
+    failedGates: [],
+    failed_gates: [],
+  };
   return {
-    proofId: 'proof-pass',
+    proofId: 'hip-module-runtime-proof-artifact:proof-pass',
     fullRuntimeProven: true,
     gpuHmrSuccess: true,
     stageResults: [{
@@ -433,6 +451,8 @@ function runtimeArtifact(overrides = {}) {
     acceptanceContract: contract,
     acceptanceContractEvaluation: contractEvaluation,
     acceptanceContractConsistency: { accepted: true },
+    hardwareTargetEvidence,
+    hardware_target_evidence: hardwareTargetEvidence,
     ...overrides,
   };
 }
@@ -586,6 +606,36 @@ assert.match(
     },
   }).detail,
   /proof_ledger_source_consistency_rejected/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    hardwareTargetEvidence: null,
+    hardware_target_evidence: null,
+  }).detail,
+  /hip_module_hardware_target_evidence_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...passingArtifact,
+    hardwareTargetEvidence: {
+      ...passingArtifact.hardwareTargetEvidence,
+      accepted: false,
+      gpuArch: null,
+      gpu_arch: null,
+      compileTarget: 'rocm-default',
+      compile_target: 'rocm-default',
+    },
+    hardware_target_evidence: {
+      ...passingArtifact.hardware_target_evidence,
+      accepted: false,
+      gpuArch: null,
+      gpu_arch: null,
+      compileTarget: 'rocm-default',
+      compile_target: 'rocm-default',
+    },
+  }).detail,
+  /hip_module_hardware_gfx_arch_missing/,
 );
 assert.match(
   runtimeProofArtifactStrictGate({

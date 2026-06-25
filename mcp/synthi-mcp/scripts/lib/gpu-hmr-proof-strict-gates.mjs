@@ -88,6 +88,81 @@ function normalizedText(...values) {
   return null;
 }
 
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (isObject(value) && typeof value.value === 'string' && value.value.trim()) {
+      return value.value.trim();
+    }
+  }
+  return null;
+}
+
+function isGfxArch(value) {
+  return /^gfx[0-9][0-9a-z]*$/iu.test(String(value ?? '').trim());
+}
+
+function hipModuleHardwareTargetFailures({ artifact, acceptanceContract, proofLedger }) {
+  const proofId = firstString(artifact?.proofId, artifact?.proof_id) ?? '';
+  const hardware = firstObject(
+    artifact?.hardwareTargetEvidence,
+    artifact?.hardware_target_evidence,
+  );
+  const requiresHipModuleHardware =
+    proofId.startsWith('hip-module-runtime-proof-artifact:')
+    || normalizedText(hardware?.schemaVersion, hardware?.schema_version)
+      === 'synthi.gpu_hmr.hip_module_hardware_target_evidence.v1';
+  if (!requiresHipModuleHardware) return [];
+
+  const record = ledgerRecords(proofLedger)[0] ?? {};
+  const device = firstObject(record.device_identity, record.deviceIdentity) ?? {};
+  const adapter = firstObject(device.adapter_info, device.adapterInfo) ?? {};
+  const artifactIdentity = firstObject(
+    acceptanceContract?.artifact_identity,
+    acceptanceContract?.artifactIdentity,
+  ) ?? {};
+  const backend = normalizedText(
+    acceptanceContract?.backend,
+    record.backend,
+    hardware?.backend,
+    device.backend,
+    adapter.backend,
+  );
+  const compileTarget = firstString(
+    hardware?.gpuArch,
+    hardware?.gpu_arch,
+    hardware?.compileTarget,
+    hardware?.compile_target,
+    artifactIdentity.compile_target,
+    artifactIdentity.compileTarget,
+    device.gpu_arch,
+    device.gpuArch,
+    device.gcn_arch_name,
+    device.gcnArchName,
+    device.compile_target,
+    device.compileTarget,
+    adapter.gpu_arch,
+    adapter.gpuArch,
+    adapter.gcn_arch_name,
+    adapter.gcnArchName,
+  );
+  const deviceUuid = firstString(
+    hardware?.deviceUuid,
+    hardware?.device_uuid,
+    device.device_uuid,
+    device.deviceUuid,
+    adapter.device_uuid,
+    adapter.deviceUuid,
+  );
+  return compactStrings([
+    hardware ? null : 'hip_module_hardware_target_evidence_missing',
+    hardware?.accepted === true ? null : 'hip_module_hardware_target_not_accepted',
+    backend === 'hip' ? null : 'hip_module_hardware_backend_not_hip',
+    isGfxArch(compileTarget) ? null : 'hip_module_hardware_gfx_arch_missing',
+    deviceUuid ? null : 'hip_module_hardware_device_identity_missing',
+  ]);
+}
+
 function visualArtifactsPresent(record) {
   const oracleArtifacts = firstObject(record.oracle_artifacts, record.oracleArtifacts);
   const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
@@ -223,6 +298,11 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       || artifact.gpu_hmr_success === true;
     const visualLedgerRequiresDeterministicMode =
       proofLedger && ledgerRequiresDeterministicVisualMode(proofLedger);
+    failures.push(...hipModuleHardwareTargetFailures({
+      artifact,
+      acceptanceContract,
+      proofLedger,
+    }));
 
     if (artifact.fullRuntimeProven !== true && artifact.full_runtime_proven !== true) {
       failures.push('runtime_full_proof_not_proven');

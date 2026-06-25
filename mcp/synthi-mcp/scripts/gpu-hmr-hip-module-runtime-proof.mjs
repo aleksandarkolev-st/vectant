@@ -106,6 +106,10 @@ function firstText(...values) {
   return null;
 }
 
+function isGfxArch(value) {
+  return /^gfx[0-9][0-9a-z]*$/iu.test(String(value ?? '').trim());
+}
+
 function objectOrEmpty(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -593,6 +597,13 @@ async function loadProfile(profilePath) {
     negativeSourceAfter,
     kernelName,
   });
+  const compileTarget = firstText(compile.compileTarget, compile.compile_target) ?? 'rocm-hip-module-hsaco';
+  const gpuArch = firstText(
+    compile.gpuArch,
+    compile.gpu_arch,
+    CFG.gpuArch,
+    isGfxArch(compileTarget) ? compileTarget : null,
+  ) ?? '';
   return {
     raw,
     schemaVersion: firstText(raw.schemaVersion, raw.schema_version) ?? PROFILE_SCHEMA,
@@ -611,8 +622,8 @@ async function loadProfile(profilePath) {
     afterHash,
     compile: {
       compiler: firstText(compile.compiler) ?? CFG.hipcc,
-      compileTarget: firstText(compile.compileTarget, compile.compile_target) ?? 'rocm-hip-module-hsaco',
-      gpuArch: firstText(compile.gpuArch, compile.gpu_arch, CFG.gpuArch) ?? '',
+      compileTarget,
+      gpuArch,
     },
     kernel: {
       name: kernelName,
@@ -1551,6 +1562,55 @@ function failedGateCodes(...values) {
   }).filter((code) => typeof code === 'string' && code.trim()))];
 }
 
+function hipModuleHardwareTargetEvidence({ profile, runtimeTrace, contract }) {
+  const device = objectOrEmpty(runtimeTrace.device);
+  const adapter = objectOrEmpty(device.adapter_info);
+  const contractArtifact = objectOrEmpty(contract.artifact_identity);
+  const compileTarget = firstText(
+    profile.compile.gpuArch,
+    device.gpu_arch,
+    device.gcn_arch_name,
+    adapter.gpu_arch,
+    adapter.gcn_arch_name,
+    adapter.gcnArchName,
+    contractArtifact.compile_target,
+    device.compile_target,
+    profile.compile.compileTarget,
+  );
+  const deviceBackend = firstText(device.backend, adapter.backend);
+  const deviceUuid = firstText(device.device_uuid, device.deviceUuid, adapter.device_uuid, adapter.deviceUuid);
+  const deviceName = firstText(device.name, adapter.name);
+  const failedGates = [
+    deviceBackend === 'hip' ? null : 'hip_module_device_backend_not_hip',
+    isGfxArch(compileTarget) ? null : 'hip_module_gpu_arch_not_proven',
+    deviceUuid || deviceName ? null : 'hip_module_device_identity_missing',
+  ].filter(Boolean);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.hip_module_hardware_target_evidence.v1',
+    accepted: failedGates.length === 0,
+    backend: deviceBackend ?? null,
+    gpuArch: isGfxArch(compileTarget) ? compileTarget : null,
+    gpu_arch: isGfxArch(compileTarget) ? compileTarget : null,
+    compileTarget: compileTarget ?? null,
+    compile_target: compileTarget ?? null,
+    deviceUuid: deviceUuid ?? null,
+    device_uuid: deviceUuid ?? null,
+    deviceName: deviceName ?? null,
+    device_name: deviceName ?? null,
+    source: 'hip_runtime_trace_and_profile_compile_target',
+    evidenceRefs: [
+      deviceUuid ? `runtime:hip-module:device:${deviceUuid}` : null,
+      compileTarget ? `runtime:hip-module:compile-target:${compileTarget}` : null,
+    ].filter(Boolean),
+    evidence_refs: [
+      deviceUuid ? `runtime:hip-module:device:${deviceUuid}` : null,
+      compileTarget ? `runtime:hip-module:compile-target:${compileTarget}` : null,
+    ].filter(Boolean),
+    failedGates,
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 function buildRuntimeProofArtifact({
   profile,
   compiled,
@@ -1594,12 +1654,14 @@ function buildRuntimeProofArtifact({
     && typeof compiled.afterHsacoHash === 'string'
     && compiled.beforeHsacoHash !== compiled.afterHsacoHash;
   const retirementProven = contract.epoch_retirement_proof?.value === 'stream_event_proven';
+  const hardwareTargetEvidence = hipModuleHardwareTargetEvidence({ profile, runtimeTrace, contract });
   const limitationCodes = failedGateCodes(
     ledger.failedInvariants,
     contractEvaluation.failedGates,
     contractConsistency.failedGates,
     oracleValidation.failedGates,
     nativeApiEvidence.failedGates,
+    hardwareTargetEvidence.failedGates,
     processContinuity.failedGates,
     artifactChanged ? [] : ['hip_module_artifact_hash_not_changed'],
     retirementProven ? [] : ['hip_module_epoch_retirement_unproven'],
@@ -1612,6 +1674,7 @@ function buildRuntimeProofArtifact({
     && proofLedgerSourceConsistency.accepted === true
     && oracleValidation.accepted === true
     && nativeApiEvidence.accepted === true
+    && hardwareTargetEvidence.accepted === true
     && processContinuity.accepted === true
     && artifactChanged
     && retirementProven
@@ -1668,6 +1731,11 @@ function buildRuntimeProofArtifact({
         ].filter(Boolean),
       },
       {
+        stageId: 'hip-module-hardware-target',
+        status: hardwareTargetEvidence.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: hardwareTargetEvidence.evidenceRefs,
+      },
+      {
         stageId: 'hip-module-acceptance-contract',
         status: contractEvaluation.accepted === true && contractConsistency.accepted === true ? 'passed' : 'failed',
         evidenceRefs: [contract.contract_hash],
@@ -1702,6 +1770,8 @@ function buildRuntimeProofArtifact({
     compute_oracle_validation: oracleValidation,
     nativeHipApiEvidence: nativeApiEvidence,
     native_hip_api_evidence: nativeApiEvidence,
+    hardwareTargetEvidence,
+    hardware_target_evidence: hardwareTargetEvidence,
     processContinuity,
     process_continuity: processContinuity,
   };
@@ -1822,8 +1892,11 @@ function buildSyntheticRuntimeProofFixture(profile) {
     sameProcess: true,
     processRestarted: false,
     device: {
+      backend: 'hip',
       name: 'HIP self-check device',
       device_uuid: 'hip-self-check-device',
+      gpu_arch: profile.compile.gpuArch,
+      gcn_arch_name: profile.compile.gpuArch,
       compile_target: profile.compile.gpuArch || profile.compile.compileTarget,
     },
     loaderEvents: [
@@ -1985,6 +2058,8 @@ function buildSyntheticRuntimeProofFixture(profile) {
 async function selfCheck() {
   const profile = await loadProfile(DEFAULT_PROFILE_PATH);
   const declaredProfile = await loadProfile(DECLARED_PROFILE_PATH);
+  profile.compile.gpuArch = profile.compile.gpuArch || 'gfx000';
+  declaredProfile.compile.gpuArch = declaredProfile.compile.gpuArch || 'gfx000';
   const runMode = runModeMetadata(profile);
   const checks = [];
   checks.push({
@@ -2050,6 +2125,7 @@ async function selfCheck() {
       && syntheticProof.runtimeProofArtifact.fullRuntimeProven === true
       && syntheticProof.runtimeProofArtifact.strictGate?.status === 'pass'
       && syntheticProof.runtimeProofArtifact.proofLedgerSourceConsistency?.mode === 'derived_only',
+    detail: syntheticProof.runtimeProofArtifact.strictGate,
   });
   checks.push({
     name: 'runtime-proof-artifact-rejects-forged-cpu-fallback',
@@ -2084,6 +2160,9 @@ async function main() {
   }
   if (profile.abi.signatureValidation?.matched !== true) {
     throw new Error(`HIP module profile ABI does not match source signatures: ${profile.abi.signatureValidation?.blockingGaps?.join(',') || 'unknown_gap'}`);
+  }
+  if (!isGfxArch(profile.compile.gpuArch)) {
+    throw new Error('HIP module runtime proof requires explicit gfx* GPU arch evidence; set compile.gpuArch, SYNTHI_HIP_MODULE_GPU_ARCH, or SYNTHI_GPU_ARCH');
   }
   const staticEnd = process.hrtime.bigint();
   const modelStart = process.hrtime.bigint();
