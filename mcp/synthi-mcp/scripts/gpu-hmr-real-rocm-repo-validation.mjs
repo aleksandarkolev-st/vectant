@@ -2727,20 +2727,36 @@ function classifyUpstreamLifecycleFailure({
     String(runLog ?? ''),
     String(lifecycleError?.message ?? ''),
   ].join('\n');
+  const missingFieldTokens = [...combined.matchAll(/\bmissing:\s+([^\n)]+)/gi)]
+    .flatMap((match) => match[1].split(/[\s,;]+/));
+  const runExitCodeText = /\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1] ?? null;
+  const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''));
+  const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''));
+  const runNotStarted = runExitCodeText === 'not-run';
   const missingDependencies = compactStringList([
     ...[...combined.matchAll(/Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)/g)].map((match) => match[1]),
-    ...[...combined.matchAll(/\bmissing:\s+([A-Za-z0-9_.:+-]+)/gi)].map((match) => match[1]),
+    ...missingFieldTokens,
     ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)].map((match) => match[1]),
   ]);
   const cmakeConfigureFailed =
-    /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(combined);
-  const buildFailed = /cmake --build|build_ms=failed|\bbuild\.log\b/i.test(String(lifecycleError?.message ?? ''))
-    || /(^|\n)(?:gmake|make|ninja|\[[0-9]+\/[0-9]+\]).*(?:error|failed)/i.test(buildLog);
-  const runFailed = /\brun_exit_code=(?!0\b)[^\s]+/.test(String(timings ?? ''));
+    configureStageFailed || /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(combined);
+  const buildBlockedByConfigure = cmakeConfigureFailed && buildStageFailed;
+  const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
+  const buildFailed = !buildBlockedByConfigure
+    && (
+      buildStageFailed
+      || /(^|\n)(?:gmake|make|ninja|\[[0-9]+\/[0-9]+\]).*(?:error|failed)/i.test(buildLog)
+    );
+  const runFailed = !runBlockedByConfigure
+    && runExitCodeText !== null
+    && runExitCodeText !== '0'
+    && runExitCodeText !== 'not-run';
   const reasons = compactStringList([
     cmakeConfigureFailed ? 'cmake_configure_failed' : null,
     missingDependencies.length > 0 ? 'missing_build_dependency' : null,
+    buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
     buildFailed ? 'upstream_build_failed' : null,
+    runBlockedByConfigure ? 'upstream_run_not_started_after_configure_failure' : null,
     runFailed ? 'upstream_run_failed' : null,
     lifecycleError ? 'upstream_lifecycle_command_failed' : null,
   ]);
@@ -2756,8 +2772,14 @@ function classifyUpstreamLifecycleFailure({
     cmake_configure_failed: cmakeConfigureFailed,
     buildFailed,
     build_failed: buildFailed,
+    buildBlockedByConfigure,
+    build_blocked_by_configure: buildBlockedByConfigure,
     runFailed,
     run_failed: runFailed,
+    runBlockedByConfigure,
+    run_blocked_by_configure: runBlockedByConfigure,
+    runExitCodeText,
+    run_exit_code_text: runExitCodeText,
     timings,
     configureLogTail: String(configureLog ?? '').slice(-4000),
     configure_log_tail: String(configureLog ?? '').slice(-4000),
