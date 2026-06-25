@@ -10,7 +10,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -92,6 +92,7 @@ import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-c
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const DEFAULT_REAL_ROCM_REPO_PARENT = path.resolve(REPO_ROOT, 'tmp/real-rocm');
 const PROFILE_DIR = existsSync(path.join(__dirname, 'profiles'))
   ? path.join(__dirname, 'profiles')
   : path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
@@ -2422,6 +2423,216 @@ function gitLongPathArgs(args = []) {
   return ['-c', 'core.longpaths=true', ...args];
 }
 
+function pathIsInside(parentPath, childPath) {
+  const parent = path.resolve(parentPath);
+  const child = path.resolve(childPath);
+  const relative = path.relative(parent, child);
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeGitRemoteUrl(url) {
+  return String(url ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/g, '')
+    .replace(/\.git$/i, '')
+    .toLowerCase();
+}
+
+function gitRemoteMatches(actual, expected) {
+  const normalizedActual = normalizeGitRemoteUrl(actual);
+  const normalizedExpected = normalizeGitRemoteUrl(expected);
+  return Boolean(normalizedActual && normalizedExpected && normalizedActual === normalizedExpected);
+}
+
+async function localGitCheckoutState(repoPath, expectedRemoteUrl = '') {
+  const resolvedRepoPath = path.resolve(repoPath);
+  let repoStat = null;
+  try {
+    repoStat = await stat(resolvedRepoPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        exists: false,
+        usable: false,
+        reason: 'repo_path_missing',
+        repoPath: resolvedRepoPath,
+        repo_path: resolvedRepoPath,
+      };
+    }
+    return {
+      exists: false,
+      usable: false,
+      reason: 'repo_path_stat_failed',
+      error: error?.message ?? String(error),
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+    };
+  }
+  if (!repoStat.isDirectory()) {
+    return {
+      exists: true,
+      usable: false,
+      reason: 'repo_path_not_directory',
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+    };
+  }
+  const insideWorkTree = await execText(
+    'git',
+    gitLongPathArgs(['-C', resolvedRepoPath, 'rev-parse', '--is-inside-work-tree']),
+    30000,
+    false,
+  );
+  if (String(insideWorkTree ?? '').trim() !== 'true') {
+    return {
+      exists: true,
+      usable: false,
+      reason: 'repo_path_not_git_worktree',
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+    };
+  }
+  const worktreeRoot = await execText(
+    'git',
+    gitLongPathArgs(['-C', resolvedRepoPath, 'rev-parse', '--show-toplevel']),
+    30000,
+    false,
+  );
+  const resolvedWorktreeRoot = path.resolve(String(worktreeRoot ?? '').trim() || resolvedRepoPath);
+  if (path.relative(resolvedWorktreeRoot, resolvedRepoPath) !== '') {
+    return {
+      exists: true,
+      usable: false,
+      reason: 'repo_path_not_worktree_root',
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+      worktreeRoot: resolvedWorktreeRoot,
+      worktree_root: resolvedWorktreeRoot,
+    };
+  }
+  const headCommit = String(await execText(
+    'git',
+    gitLongPathArgs(['-C', resolvedRepoPath, 'rev-parse', '--verify', 'HEAD^{commit}']),
+    30000,
+    false,
+  ) ?? '').trim();
+  if (!headCommit) {
+    return {
+      exists: true,
+      usable: false,
+      reason: 'repo_head_missing',
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+      worktreeRoot: resolvedWorktreeRoot,
+      worktree_root: resolvedWorktreeRoot,
+    };
+  }
+  const originUrl = String(await execText(
+    'git',
+    gitLongPathArgs(['-C', resolvedRepoPath, 'remote', 'get-url', 'origin']),
+    30000,
+    false,
+  ) ?? '').trim();
+  if (String(expectedRemoteUrl ?? '').trim() && !gitRemoteMatches(originUrl, expectedRemoteUrl)) {
+    return {
+      exists: true,
+      usable: false,
+      reason: originUrl ? 'repo_origin_url_mismatch' : 'repo_origin_url_missing',
+      repoPath: resolvedRepoPath,
+      repo_path: resolvedRepoPath,
+      worktreeRoot: resolvedWorktreeRoot,
+      worktree_root: resolvedWorktreeRoot,
+      originUrl: originUrl || null,
+      origin_url: originUrl || null,
+      expectedOriginUrl: expectedRemoteUrl,
+      expected_origin_url: expectedRemoteUrl,
+    };
+  }
+  return {
+    exists: true,
+    usable: true,
+    reason: 'usable_git_worktree',
+    repoPath: resolvedRepoPath,
+    repo_path: resolvedRepoPath,
+    worktreeRoot: resolvedWorktreeRoot,
+    worktree_root: resolvedWorktreeRoot,
+    headCommit,
+    head_commit: headCommit,
+    originUrl: originUrl || null,
+    origin_url: originUrl || null,
+  };
+}
+
+function invalidRepoCheckoutRecoveryPlan({
+  repoPath,
+  state,
+  defaultRepoParent = DEFAULT_REAL_ROCM_REPO_PARENT,
+  timestamp = new Date(),
+} = {}) {
+  const resolvedRepoPath = path.resolve(repoPath ?? '');
+  const resolvedDefaultParent = path.resolve(defaultRepoParent);
+  const canAutoQuarantine =
+    pathIsInside(resolvedDefaultParent, resolvedRepoPath)
+    && path.relative(resolvedDefaultParent, resolvedRepoPath) !== '';
+  const stamp = timestamp.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+  const suffixHash = createHash('sha256')
+    .update(stableJson({
+      repoPath: resolvedRepoPath,
+      reason: state?.reason ?? 'invalid_repo_checkout',
+      originUrl: state?.originUrl ?? state?.origin_url ?? null,
+    }))
+    .digest('hex')
+    .slice(0, 12);
+  const quarantinePath = canAutoQuarantine
+    ? path.join(
+      path.dirname(resolvedRepoPath),
+      `${path.basename(resolvedRepoPath)}.invalid-${stamp}-${suffixHash}`,
+    )
+    : null;
+  const safeQuarantinePath =
+    quarantinePath && pathIsInside(resolvedDefaultParent, quarantinePath)
+      ? quarantinePath
+      : null;
+  return {
+    canAutoQuarantine: Boolean(canAutoQuarantine && safeQuarantinePath),
+    can_auto_quarantine: Boolean(canAutoQuarantine && safeQuarantinePath),
+    repoPath: resolvedRepoPath,
+    repo_path: resolvedRepoPath,
+    defaultRepoParent: resolvedDefaultParent,
+    default_repo_parent: resolvedDefaultParent,
+    quarantinePath: safeQuarantinePath,
+    quarantine_path: safeQuarantinePath,
+    reason: state?.reason ?? 'invalid_repo_checkout',
+    state,
+  };
+}
+
+async function quarantineInvalidRepoCheckout(repoPath, state) {
+  const plan = invalidRepoCheckoutRecoveryPlan({ repoPath, state });
+  report.repo_checkout_recovery = plan;
+  report.repo_checkout_recovery_plan = plan;
+  if (!plan.canAutoQuarantine) {
+    record(
+      'local repo checkout validation',
+      'fail',
+      `invalid checkout at custom path=${plan.repoPath} reason=${plan.reason}`,
+    );
+    throw new Error(
+      `Existing real ROCm repo path is not a usable checkout for ${CFG.repoUrl}: `
+      + `${plan.reason}. Refusing to alter custom path ${plan.repoPath}.`,
+    );
+  }
+  await mkdir(path.dirname(plan.quarantinePath), { recursive: true });
+  await rename(plan.repoPath, plan.quarantinePath);
+  record(
+    'local repo checkout recovery',
+    'warn',
+    `quarantined invalid checkout reason=${plan.reason} from=${plan.repoPath} to=${plan.quarantinePath}`,
+  );
+  return plan;
+}
+
 async function gitCommitExists(repoPath, commit) {
   if (!String(commit ?? '').trim()) return false;
   const found = await execText(
@@ -2663,12 +2874,46 @@ async function httpJson(method, url, body, headers = {}) {
 }
 
 async function ensureRepo() {
-  if (!existsSync(CFG.repoPath)) {
+  let checkoutState = await localGitCheckoutState(CFG.repoPath, CFG.repoUrl);
+  report.repo_checkout_state = checkoutState;
+  report.repoCheckoutState = checkoutState;
+  if (checkoutState.exists && !checkoutState.usable) {
+    await quarantineInvalidRepoCheckout(CFG.repoPath, checkoutState);
+    checkoutState = await localGitCheckoutState(CFG.repoPath, CFG.repoUrl);
+    report.repo_checkout_state_after_recovery = checkoutState;
+    report.repoCheckoutStateAfterRecovery = checkoutState;
+  }
+  if (!checkoutState.exists) {
     await mkdir(path.dirname(CFG.repoPath), { recursive: true });
     const cloneArgs = CFG.repoCommit
       ? ['clone', CFG.repoUrl, CFG.repoPath]
       : ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath];
-    await execText('git', gitLongPathArgs(cloneArgs), 300000, true);
+    try {
+      await execText('git', gitLongPathArgs(cloneArgs), 300000, true);
+    } catch (error) {
+      const failedCloneState = await localGitCheckoutState(CFG.repoPath, CFG.repoUrl);
+      report.repo_checkout_failed_clone_state = failedCloneState;
+      report.repoCheckoutFailedCloneState = failedCloneState;
+      if (failedCloneState.exists && !failedCloneState.usable) {
+        try {
+          await quarantineInvalidRepoCheckout(CFG.repoPath, failedCloneState);
+        } catch (recoveryError) {
+          report.repo_checkout_failed_clone_recovery_error =
+            recoveryError?.message ?? String(recoveryError);
+          report.repoCheckoutFailedCloneRecoveryError =
+            recoveryError?.message ?? String(recoveryError);
+        }
+      }
+      throw error;
+    }
+    checkoutState = await localGitCheckoutState(CFG.repoPath, CFG.repoUrl);
+    report.repo_checkout_state_after_clone = checkoutState;
+    report.repoCheckoutStateAfterClone = checkoutState;
+    if (!checkoutState.usable) {
+      throw new Error(
+        `Cloned real ROCm repo is not a usable checkout for ${CFG.repoUrl}: ${checkoutState.reason}`,
+      );
+    }
   }
   if (CFG.repoCommit) {
     const localCommitAvailable = await gitCommitExists(CFG.repoPath, CFG.repoCommit);
@@ -10326,6 +10571,40 @@ int main()
   }
   if (shouldFetchRequestedCommit({ requestedCommit: '', localCommitAvailable: false })) {
     throw new Error('fetch decision self-check should not fetch without a requested commit');
+  }
+  if (
+    normalizeGitRemoteUrl('https://github.com/ROCm/hipBLASLt.git/')
+    !== normalizeGitRemoteUrl('https://github.com/ROCm/hipBLASLt')
+    || !gitRemoteMatches('https://github.com/ROCm/hipBLASLt.git', 'https://github.com/ROCm/hipBLASLt')
+    || gitRemoteMatches('https://github.com/ROCm/MIOpen.git', 'https://github.com/ROCm/hipBLASLt.git')
+  ) {
+    throw new Error('git remote normalization self-check failed');
+  }
+  const checkoutPlanTimestamp = new Date('2026-06-25T00:00:00.000Z');
+  const ownedInvalidCheckoutPlan = invalidRepoCheckoutRecoveryPlan({
+    repoPath: path.join(DEFAULT_REAL_ROCM_REPO_PARENT, 'broken-checkout'),
+    state: { reason: 'repo_path_not_git_worktree' },
+    timestamp: checkoutPlanTimestamp,
+  });
+  const customInvalidCheckoutPlan = invalidRepoCheckoutRecoveryPlan({
+    repoPath: path.resolve(REPO_ROOT, '..', 'custom-real-rocm-checkout'),
+    state: { reason: 'repo_origin_url_mismatch' },
+    timestamp: checkoutPlanTimestamp,
+  });
+  const rootInvalidCheckoutPlan = invalidRepoCheckoutRecoveryPlan({
+    repoPath: DEFAULT_REAL_ROCM_REPO_PARENT,
+    state: { reason: 'repo_path_not_git_worktree' },
+    timestamp: checkoutPlanTimestamp,
+  });
+  if (
+    !pathIsInside(DEFAULT_REAL_ROCM_REPO_PARENT, path.join(DEFAULT_REAL_ROCM_REPO_PARENT, 'child'))
+    || pathIsInside(DEFAULT_REAL_ROCM_REPO_PARENT, path.resolve(REPO_ROOT, '..', 'outside'))
+    || !ownedInvalidCheckoutPlan.canAutoQuarantine
+    || !path.basename(ownedInvalidCheckoutPlan.quarantinePath).startsWith('broken-checkout.invalid-20260625000000-')
+    || customInvalidCheckoutPlan.canAutoQuarantine
+    || rootInvalidCheckoutPlan.canAutoQuarantine
+  ) {
+    throw new Error('repo checkout recovery safety self-check failed');
   }
   const arrayCapability = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
