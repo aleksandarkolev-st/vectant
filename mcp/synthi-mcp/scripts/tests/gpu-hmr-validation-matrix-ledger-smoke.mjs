@@ -6382,6 +6382,306 @@ assert.ok(forgedFinalMissingFixturesRocm.openGaps.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_fixture_missing',
 ));
 
+const forgedFinalUnexecutedFixturesRocmDir = path.join(logsRoot, 'real-rocm-forged-final-unexecuted-fixtures');
+const forgedFinalUnexecutedFixturesProofMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-final-unexecuted-fixtures',
+  {
+    projectId: 'real-rocm-forged-final-unexecuted-fixtures',
+    rawReadbackPath: forgedFinalMissingFixturesReadback,
+    rawReadbackBytes: forgedFinalMissingFixturesBytes,
+  },
+);
+await writeJson(path.join(forgedFinalUnexecutedFixturesRocmDir, 'real-rocm-forged-final-unexecuted-fixtures.json'), {
+  slug: 'gpu-real-rocm-forged-final-unexecuted-fixtures-20260625',
+  real_rocm_profile: {
+    id: 'real-rocm-forged-final-unexecuted-fixtures',
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    target: {
+      entryFile: 'src/kernels/final_fixture_entry.hip',
+      deltaFile: 'src/kernels/final_fixture_delta.h',
+    },
+    sourceDelta: {
+      before: 'value = value + 1;',
+      after: 'value = value + 2;',
+      second: {
+        file: 'src/kernels/final_fixture_delta.h',
+        before: 'value = value + 2;',
+        after: 'value = value + 3;',
+      },
+      extraDeltas: [{
+        label: 'negative-edit',
+        kind: 'negative_edit',
+        expectedRefusal: true,
+        file: 'src/kernels/final_fixture_delta.h',
+        before: 'value = value + 3;',
+        after: 'value = layout_breaking(value);',
+      }],
+    },
+    proofObligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requiresOutputOracle: true,
+      requiresRunModes: true,
+      requiresNegativeEdit: true,
+    },
+  },
+  source_url: 'https://example.invalid/rocm/forged-final-unexecuted-fixtures.git',
+  repo_commit: 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1',
+  entry_file: 'src/kernels/final_fixture_entry.hip',
+  delta_file: 'src/kernels/final_fixture_delta.h',
+  target_name: 'ForgedFinalUnexecutedFixturesDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedFinalUnexecutedFixturesDriver',
+    finalAcceptanceTarget: 'ForgedFinalUnexecutedFixturesDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    requirements: ['output_oracle_proven'],
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedFinalUnexecutedFixturesProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-final-unexecuted-fixtures-delta',
+    editHash: hashValue('real-rocm-forged-final-unexecuted-fixtures-delta'),
+  },
+  checks: [
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+  ],
+});
+const forgedFinalUnexecutedFixturesRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedFinalUnexecutedFixturesRocmDir],
+  generatedAt: '2026-06-25T00:00:02.500Z',
+  includeUnproven: true,
+});
+const forgedFinalUnexecutedFixturesRocm = forgedFinalUnexecutedFixturesRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedFinalUnexecutedFixturesRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedFinalUnexecutedFixturesRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalUnexecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2Declared, true);
+assert.equal(forgedFinalUnexecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditDeclared, true);
+assert.equal(forgedFinalUnexecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2PhaseExecuted, false);
+assert.equal(forgedFinalUnexecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditPhaseExecuted, false);
+assert.ok(forgedFinalUnexecutedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_phase_not_executed',
+));
+assert.ok(forgedFinalUnexecutedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_phase_not_executed',
+));
+assert.ok(forgedFinalUnexecutedFixturesRocm.reasons.includes(
+  'real_rocm_source_delta_execution:source_delta_execution_missing',
+));
+assert.ok(forgedFinalUnexecutedFixturesRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_phase_not_executed',
+));
+assert.ok(forgedFinalUnexecutedFixturesRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_phase_not_executed',
+));
+
+const forgedFinalExecutedFixturesRocmDir = path.join(logsRoot, 'real-rocm-forged-final-executed-fixtures');
+const forgedFinalExecutedFixturesProofMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-final-executed-fixtures',
+  {
+    projectId: 'real-rocm-forged-final-executed-fixtures',
+    rawReadbackPath: forgedFinalMissingFixturesReadback,
+    rawReadbackBytes: forgedFinalMissingFixturesBytes,
+  },
+);
+await writeJson(path.join(forgedFinalExecutedFixturesRocmDir, 'real-rocm-forged-final-executed-fixtures.json'), {
+  slug: 'gpu-real-rocm-forged-final-executed-fixtures-20260625',
+  real_rocm_profile: {
+    id: 'real-rocm-forged-final-executed-fixtures',
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    target: {
+      entryFile: 'src/kernels/final_fixture_entry.hip',
+      deltaFile: 'src/kernels/final_fixture_delta.h',
+    },
+    sourceDelta: {
+      before: 'value = value + 1;',
+      after: 'value = value + 2;',
+      second: {
+        file: 'src/kernels/final_fixture_delta.h',
+        before: 'value = value + 2;',
+        after: 'value = value + 3;',
+      },
+      extraDeltas: [{
+        label: 'negative-edit',
+        kind: 'negative_edit',
+        expectedRefusal: true,
+        file: 'src/kernels/final_fixture_delta.h',
+        before: 'value = value + 3;',
+        after: 'value = layout_breaking(value);',
+      }],
+    },
+    proofObligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requiresOutputOracle: true,
+      requiresRunModes: true,
+      requiresNegativeEdit: true,
+      requiresAppHookContract: true,
+    },
+  },
+  source_url: 'https://example.invalid/rocm/forged-final-executed-fixtures.git',
+  repo_commit: 'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1',
+  entry_file: 'src/kernels/final_fixture_entry.hip',
+  delta_file: 'src/kernels/final_fixture_delta.h',
+  target_name: 'ForgedFinalExecutedFixturesDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  source_delta_execution: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution.v1',
+    phases: [
+      {
+        label: 'second',
+        phaseKind: 'hot_delta_2',
+        phaseName: 'real_repo_second_user_source_delta_hmr',
+        file: 'src/kernels/final_fixture_delta.h',
+        editHash: hashValue('executed-fixtures-hot-delta-2-edit'),
+        sourceBeforeHash: hashValue('executed-fixtures-hot-delta-2-before'),
+        sourceAfterHash: hashValue('executed-fixtures-hot-delta-2-after'),
+        sourceWriteObserved: true,
+        compileCallAttempted: true,
+        compileCallCompleted: true,
+        hmrWaitStatus: 'applied',
+      },
+      {
+        label: 'negative-edit',
+        phaseKind: 'negative_edit',
+        phaseName: 'real_repo_negative-edit_user_source_delta_hmr',
+        file: 'src/kernels/final_fixture_delta.h',
+        editHash: hashValue('executed-fixtures-negative-edit'),
+        sourceBeforeHash: hashValue('executed-fixtures-negative-before'),
+        sourceAfterHash: hashValue('executed-fixtures-negative-after'),
+        sourceWriteObserved: true,
+        compileCallAttempted: true,
+        compileCallCompleted: true,
+        hmrWaitStatus: 'rejected',
+        expectedRefusal: true,
+      },
+    ],
+  },
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'ForgedFinalExecutedFixturesDriver',
+    finalAcceptanceTarget: 'ForgedFinalExecutedFixturesDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    requirements: ['output_oracle_proven'],
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedFinalExecutedFixturesProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-final-executed-fixtures-delta',
+    editHash: hashValue('real-rocm-forged-final-executed-fixtures-delta'),
+  },
+  checks: [
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+  ],
+});
+const forgedFinalExecutedFixturesRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedFinalExecutedFixturesRocmDir],
+  generatedAt: '2026-06-25T00:00:02.600Z',
+  includeUnproven: true,
+});
+const forgedFinalExecutedFixturesRocm = forgedFinalExecutedFixturesRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedFinalExecutedFixturesRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedFinalExecutedFixturesRocm.acceptedForGpuHmr, false);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmSourceDeltaExecution.present, true);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmSourceDeltaExecution.accepted, true);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2Declared, true);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditDeclared, true);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2PhaseExecuted, true);
+assert.equal(forgedFinalExecutedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditPhaseExecuted, true);
+assert.ok(!forgedFinalExecutedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_phase_not_executed',
+));
+assert.ok(!forgedFinalExecutedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_phase_not_executed',
+));
+assert.ok(!forgedFinalExecutedFixturesRocm.openGaps.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_phase_not_executed',
+));
+assert.ok(forgedFinalExecutedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_app_hook_contract_missing',
+));
+
 const forgedRuntimeChainMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-runtime-chain-mismatch');
 const forgedRuntimeChainMismatchProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-runtime-chain-mismatch',

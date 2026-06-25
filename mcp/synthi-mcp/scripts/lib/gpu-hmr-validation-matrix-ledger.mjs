@@ -76,6 +76,8 @@ const REAL_ROCM_OUTPUT_ORACLE_RESOLUTION_SCHEMA_VERSION =
   'synthi.real_rocm.output_oracle_resolution.v1';
 const REAL_ROCM_SIDECAR_RUNTIME_CONSISTENCY_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1';
+const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
   'profile_runtime_profile',
   'source_derived_profile',
@@ -5666,7 +5668,150 @@ function realRocmSourceDeltaEntryKind(entry = {}) {
     || '';
 }
 
-function realRocmSourceDeltaFixtures(profile = {}) {
+function realRocmSourceDeltaExecutionPhaseKind(entry = {}) {
+  const raw = firstText(
+    entry.phaseKind,
+    entry.phase_kind,
+    entry.kind,
+    entry.editKind,
+    entry.edit_kind,
+    entry.label,
+    entry.metricScope,
+    entry.metric_scope,
+  ) ?? '';
+  const normalized = raw.toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/[-.]+/g, '_');
+  if (
+    normalized === 'hot_delta_2'
+    || normalized === 'hot2'
+    || normalized === 'second'
+    || normalized.includes('hot_delta_2')
+  ) {
+    return 'hot_delta_2';
+  }
+  if (normalized === 'negative_edit' || normalized === 'negative' || normalized.includes('negative')) {
+    return 'negative_edit';
+  }
+  if (
+    normalized === 'hot_delta_1'
+    || normalized === 'primary'
+    || normalized.includes('hot_delta_1')
+  ) {
+    return 'hot_delta_1';
+  }
+  return normalized || 'source_delta';
+}
+
+function realRocmSourceDeltaExecutionFacet(raw = {}) {
+  const source = compactObject(raw);
+  const phases = compactObjectList(source.phases ?? source.phaseRows ?? source.phase_rows);
+  const normalizedPhases = phases.map((phase, index) => {
+    const phaseKind = realRocmSourceDeltaExecutionPhaseKind(phase);
+    const editHash = firstText(phase.editHash, phase.edit_hash);
+    const sourceBeforeHash = firstText(phase.sourceBeforeHash, phase.source_before_hash);
+    const sourceAfterHash = firstText(phase.sourceAfterHash, phase.source_after_hash);
+    const sourceWriteObserved =
+      phase.sourceWriteObserved === true
+      || phase.source_write_observed === true;
+    const compileCallAttempted =
+      phase.compileCallAttempted === true
+      || phase.compile_call_attempted === true;
+    const phaseExecuted =
+      sourceWriteObserved
+      && compileCallAttempted
+      && contentAddressedSha256(editHash);
+    return {
+      index,
+      label: firstText(phase.label, phase.phaseName, phase.phase_name) ?? `phase-${index + 1}`,
+      phaseName: firstText(phase.phaseName, phase.phase_name) ?? null,
+      phase_name: firstText(phase.phaseName, phase.phase_name) ?? null,
+      phaseKind,
+      phase_kind: phaseKind,
+      metricScope: firstText(phase.metricScope, phase.metric_scope) ?? null,
+      metric_scope: firstText(phase.metricScope, phase.metric_scope) ?? null,
+      file: firstText(phase.file, phase.path) ?? null,
+      editHash: editHash ?? null,
+      edit_hash: editHash ?? null,
+      sourceBeforeHash: sourceBeforeHash ?? null,
+      source_before_hash: sourceBeforeHash ?? null,
+      sourceAfterHash: sourceAfterHash ?? null,
+      source_after_hash: sourceAfterHash ?? null,
+      sourceWriteObserved,
+      source_write_observed: sourceWriteObserved,
+      compileCallAttempted,
+      compile_call_attempted: compileCallAttempted,
+      compileCallCompleted:
+        phase.compileCallCompleted === true
+        || phase.compile_call_completed === true,
+      compile_call_completed:
+        phase.compileCallCompleted === true
+        || phase.compile_call_completed === true,
+      hmrWaitStatus: firstText(phase.hmrWaitStatus, phase.hmr_wait_status) ?? null,
+      hmr_wait_status: firstText(phase.hmrWaitStatus, phase.hmr_wait_status) ?? null,
+      expectedRefusal: phase.expectedRefusal === true || phase.expected_refusal === true,
+      expected_refusal: phase.expectedRefusal === true || phase.expected_refusal === true,
+      phaseExecuted,
+      phase_executed: phaseExecuted,
+    };
+  });
+  const hotDelta2PhaseExecuted = normalizedPhases.some((phase) =>
+    phase.phaseKind === 'hot_delta_2' && phase.phaseExecuted === true
+  );
+  const negativeEditPhaseExecuted = normalizedPhases.some((phase) =>
+    phase.phaseKind === 'negative_edit' && phase.phaseExecuted === true
+  );
+  const primaryHotDeltaPhaseExecuted = normalizedPhases.some((phase) =>
+    phase.phaseKind === 'hot_delta_1' && phase.phaseExecuted === true
+  );
+  const schemaVersion = firstText(source.schemaVersion, source.schema_version, source.schema);
+  const present = Object.keys(source).length > 0;
+  const failedGates = compactStringList([
+    !present ? 'source_delta_execution_missing' : null,
+    present && schemaVersion !== REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION
+      ? 'source_delta_execution_schema_mismatch'
+      : null,
+    present && normalizedPhases.length === 0 ? 'source_delta_execution_phases_missing' : null,
+    ...normalizedPhases.flatMap((phase) => [
+      contentAddressedSha256(phase.editHash)
+        ? null
+        : `source_delta_execution_edit_hash_missing_or_invalid:${phase.label}`,
+      contentAddressedSha256(phase.sourceBeforeHash)
+        ? null
+        : `source_delta_execution_before_hash_missing_or_invalid:${phase.label}`,
+      contentAddressedSha256(phase.sourceAfterHash)
+        ? null
+        : `source_delta_execution_after_hash_missing_or_invalid:${phase.label}`,
+      phase.sourceWriteObserved ? null : `source_delta_execution_source_write_missing:${phase.label}`,
+      phase.compileCallAttempted ? null : `source_delta_execution_compile_call_missing:${phase.label}`,
+    ]),
+  ]);
+  return {
+    schemaVersion: REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION,
+    present,
+    accepted: failedGates.length === 0,
+    proofId: firstText(source.proofId, source.proof_id) ?? null,
+    proof_id: firstText(source.proofId, source.proof_id) ?? null,
+    proofAuthority: 'matrix_recomputed_runner_phase_evidence',
+    proof_authority: 'matrix_recomputed_runner_phase_evidence',
+    phaseCount: normalizedPhases.length,
+    phase_count: normalizedPhases.length,
+    executedPhaseCount: normalizedPhases.filter((phase) => phase.phaseExecuted).length,
+    executed_phase_count: normalizedPhases.filter((phase) => phase.phaseExecuted).length,
+    primaryHotDeltaPhaseExecuted,
+    primary_hot_delta_phase_executed: primaryHotDeltaPhaseExecuted,
+    hotDelta2PhaseExecuted,
+    hot_delta_2_phase_executed: hotDelta2PhaseExecuted,
+    negativeEditPhaseExecuted,
+    negative_edit_phase_executed: negativeEditPhaseExecuted,
+    phases: normalizedPhases,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}) {
   const sourceDelta = compactObject(profile.sourceDelta ?? profile.source_delta);
   const second = compactObject(sourceDelta.second ?? sourceDelta.secondDelta ?? sourceDelta.second_delta);
   const extraDeltas = Array.isArray(sourceDelta.extraDeltas)
@@ -5695,10 +5840,17 @@ function realRocmSourceDeltaFixtures(profile = {}) {
   const secondDeclared = realRocmSourceDeltaEntryConfiguredExecutableCandidate(second, profile);
   const hotDelta2Declared = secondDeclared || hotDelta2Extras.length > 0;
   const negativeEditDeclared = negativeEditExtras.length > 0;
+  const execution = compactObject(sourceDeltaExecution);
+  const hotDelta2PhaseExecuted =
+    execution.hotDelta2PhaseExecuted === true
+    || execution.hot_delta_2_phase_executed === true;
+  const negativeEditPhaseExecuted =
+    execution.negativeEditPhaseExecuted === true
+    || execution.negative_edit_phase_executed === true;
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_fixtures.v1',
-    proofAuthority: 'profile_configuration_only_not_runtime_proof',
-    proof_authority: 'profile_configuration_only_not_runtime_proof',
+    proofAuthority: 'profile_configuration_plus_runner_execution_evidence',
+    proof_authority: 'profile_configuration_plus_runner_execution_evidence',
     hotDelta2Declared,
     hot_delta_2_declared: hotDelta2Declared,
     secondDeltaDeclared: secondDeclared,
@@ -5707,10 +5859,14 @@ function realRocmSourceDeltaFixtures(profile = {}) {
     negative_edit_declared: negativeEditDeclared,
     fallbackFile: realRocmSourceDeltaFallbackFile(profile),
     fallback_file: realRocmSourceDeltaFallbackFile(profile),
-    hotDelta2PhaseExecuted: false,
-    hot_delta_2_phase_executed: false,
-    negativeEditPhaseExecuted: false,
-    negative_edit_phase_executed: false,
+    hotDelta2PhaseExecuted,
+    hot_delta_2_phase_executed: hotDelta2PhaseExecuted,
+    negativeEditPhaseExecuted,
+    negative_edit_phase_executed: negativeEditPhaseExecuted,
+    executionProofId: firstText(execution.proofId, execution.proof_id) ?? null,
+    execution_proof_id: firstText(execution.proofId, execution.proof_id) ?? null,
+    executionAccepted: execution.accepted === true,
+    execution_accepted: execution.accepted === true,
     executableExtraDeltaCount: executableExtraDeltas.length,
     executable_extra_delta_count: executableExtraDeltas.length,
     hotDelta2FixtureCount: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
@@ -5727,6 +5883,7 @@ function realRocmProfileProofObligationsMatrixFacet({
   outputOracleContract = {},
   outputOracleRuntimeProfile = {},
   appHookContract = {},
+  sourceDeltaExecution = {},
   serialized = {},
   fullRuntimeProofRequired = false,
 } = {}) {
@@ -5811,7 +5968,8 @@ function realRocmProfileProofObligationsMatrixFacet({
     || resolution.runtime_profile_present === true
     || Object.keys(oracleContract).length > 0
     || Object.keys(runtimeProfile).length > 0;
-  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile);
+  const sourceDeltaExecutionFacet = realRocmSourceDeltaExecutionFacet(sourceDeltaExecution);
+  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile, sourceDeltaExecutionFacet);
   const blockingGaps = compactStringList([
     ...serializedGaps,
     finalAcceptance && !rawDeclared
@@ -5840,6 +5998,16 @@ function realRocmProfileProofObligationsMatrixFacet({
       : null,
     requiresNegativeEdit && !sourceDeltaFixtures.negativeEditDeclared
       ? 'proof_obligation_negative_edit_fixture_missing'
+      : null,
+    requiresRunModes
+      && sourceDeltaFixtures.hotDelta2Declared
+      && !sourceDeltaFixtures.hotDelta2PhaseExecuted
+      ? 'proof_obligation_hot_delta_2_phase_not_executed'
+      : null,
+    requiresNegativeEdit
+      && sourceDeltaFixtures.negativeEditDeclared
+      && !sourceDeltaFixtures.negativeEditPhaseExecuted
+      ? 'proof_obligation_negative_edit_phase_not_executed'
       : null,
   ]);
   const status = blockingGaps.length === 0
@@ -5883,6 +6051,8 @@ function realRocmProfileProofObligationsMatrixFacet({
     requires_negative_edit_declared: explicitRequiresNegativeEdit,
     sourceDeltaFixtures,
     source_delta_fixtures: sourceDeltaFixtures,
+    sourceDeltaExecution: sourceDeltaExecutionFacet,
+    source_delta_execution: sourceDeltaExecutionFacet,
     blockingGaps,
     blocking_gaps: blockingGaps,
   };
@@ -7184,6 +7354,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.profile_proof_obligations
     ?? runtimeProofArtifact.profileProofObligations,
   );
+  const realRocmSourceDeltaExecution = realRocmSourceDeltaExecutionFacet(compactObject(
+    json.real_rocm_source_delta_execution
+    ?? json.realRocmSourceDeltaExecution
+    ?? json.source_delta_execution
+    ?? json.sourceDeltaExecution
+    ?? summary.real_rocm_source_delta_execution
+    ?? summary.realRocmSourceDeltaExecution
+    ?? summary.source_delta_execution
+    ?? summary.sourceDeltaExecution
+    ?? runtimeProofArtifact.real_rocm_source_delta_execution
+    ?? runtimeProofArtifact.realRocmSourceDeltaExecution
+    ?? runtimeProofArtifact.source_delta_execution
+    ?? runtimeProofArtifact.sourceDeltaExecution,
+  ));
   const realRocmAppHookContract = compactObject(
     json.real_rocm_app_hook_contract
     ?? json.realRocmAppHookContract
@@ -7205,6 +7389,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     outputOracleContract,
     outputOracleRuntimeProfile,
     appHookContract: realRocmAppHookContract,
+    sourceDeltaExecution: realRocmSourceDeltaExecution,
     serialized: serializedRealRocmProfileProofObligations,
     fullRuntimeProofRequired: realRocmRequiredFullRuntimeProof(json),
   });
@@ -7263,6 +7448,19 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmProfileProofObligations.blockingGaps) ? realRocmProfileProofObligations.blockingGaps : []),
     ...(Array.isArray(realRocmProfileProofObligations.blocking_gaps) ? realRocmProfileProofObligations.blocking_gaps : []),
   ]);
+  const realRocmSourceDeltaExecutionGaps = compactStringList([
+    ...(Array.isArray(realRocmSourceDeltaExecution.failedGates) ? realRocmSourceDeltaExecution.failedGates : []),
+    ...(Array.isArray(realRocmSourceDeltaExecution.failed_gates) ? realRocmSourceDeltaExecution.failed_gates : []),
+  ]);
+  const realRocmSourceDeltaExecutionRelevant =
+    realRocmProfileProofObligations.requiresRunModes === true
+    || realRocmProfileProofObligations.requires_run_modes === true
+    || realRocmProfileProofObligations.requiresNegativeEdit === true
+    || realRocmProfileProofObligations.requires_negative_edit === true
+    || realRocmSourceDeltaExecution.present === true;
+  const realRocmSourceDeltaExecutionReportGaps = realRocmSourceDeltaExecutionRelevant
+    ? realRocmSourceDeltaExecutionGaps
+    : [];
   const realRocmAppHookContractGaps = compactStringList([
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
@@ -7596,6 +7794,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     target_progression_evidence: targetProgressionEvidence,
     realRocmProfileProofObligations,
     real_rocm_profile_proof_obligations: realRocmProfileProofObligations,
+    realRocmSourceDeltaExecution,
+    real_rocm_source_delta_execution: realRocmSourceDeltaExecution,
     targetProgressionGates,
     nativeRocmLaunchBoundary,
     native_rocm_launch_boundary: nativeRocmLaunchBoundary,
@@ -7628,6 +7828,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       realRocmProfileProofObligationsReason ? `real_rocm_profile_proof_obligations:${realRocmProfileProofObligationsReason}` : null,
       ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
+      ...realRocmSourceDeltaExecutionReportGaps.map((gap) => `real_rocm_source_delta_execution:${gap}`),
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...appHookContractGate.failedGaps,
@@ -7696,6 +7897,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
       ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
+      ...realRocmSourceDeltaExecutionReportGaps.map((gap) => `real_rocm_source_delta_execution:${gap}`),
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),

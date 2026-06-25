@@ -2222,6 +2222,8 @@ const RESULTS_TXT = path.join(LOG_DIR, 'real-rocm-results.txt');
 const RETAINED_RESULTS_DIR = path.join(LOG_DIR, 'real-rocm-results');
 const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
   '/tmp/synthi-gpu-hmr-runtime-output-oracle.json';
+const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
 
 const report = {
   slug: CFG.slug,
@@ -2324,6 +2326,8 @@ const report = {
   real_rocm_device_sidecar_contract: null,
   realRocmDeviceSidecarContract: null,
   output_oracle_adaptations: [],
+  source_delta_execution: null,
+  real_rocm_source_delta_execution: null,
   output_oracle_runtime_profile_path: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
   output_oracle_runtime_profile: null,
   output_oracle_resolution: {
@@ -7102,6 +7106,7 @@ function parseExtraDeltas() {
     }
     deltas.push({
       label: 'second',
+      kind: 'hot_delta_2',
       file: CFG.secondDeltaFile,
       before: CFG.secondDeltaBefore,
       after: CFG.secondDeltaAfter,
@@ -7138,6 +7143,214 @@ function parseExtraDeltas() {
     });
   });
   return deltas;
+}
+
+function sha256Text(value) {
+  return `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
+}
+
+function sourceDeltaPhaseKind({ kind = '', label = '', metricScope = '' } = {}) {
+  const normalized = cleanIdentifier(kind || label || metricScope || 'source_delta')
+    .toLowerCase()
+    .replace(/[-.]+/g, '_');
+  if (
+    normalized === 'hot_delta_2'
+    || normalized === 'hot2'
+    || normalized === 'second'
+    || normalized.includes('hot_delta_2')
+  ) {
+    return 'hot_delta_2';
+  }
+  if (normalized === 'negative_edit' || normalized === 'negative' || normalized.includes('negative')) {
+    return 'negative_edit';
+  }
+  if (normalized === 'hot_delta_1' || normalized === 'hmr_delta' || normalized.includes('hot_delta_1')) {
+    return 'hot_delta_1';
+  }
+  return normalized || 'source_delta';
+}
+
+function sourceDeltaExecutionProofId(phases = []) {
+  return `real-rocm-source-delta-execution:sha256:${createHash('sha256')
+    .update(stableJson({
+      schemaVersion: REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION,
+      phases: phases.map((phase) => ({
+        phaseName: phase.phaseName,
+        phase_name: phase.phase_name,
+        phaseKind: phase.phaseKind,
+        phase_kind: phase.phase_kind,
+        file: phase.file,
+        editHash: phase.editHash,
+        edit_hash: phase.edit_hash,
+        sourceBeforeHash: phase.sourceBeforeHash,
+        source_before_hash: phase.source_before_hash,
+        sourceAfterHash: phase.sourceAfterHash,
+        source_after_hash: phase.source_after_hash,
+        sourceWriteObserved: phase.sourceWriteObserved,
+        source_write_observed: phase.source_write_observed,
+        compileCallAttempted: phase.compileCallAttempted,
+        compile_call_attempted: phase.compile_call_attempted,
+        compileCallCompleted: phase.compileCallCompleted,
+        compile_call_completed: phase.compile_call_completed,
+        hmrWaitStatus: phase.hmrWaitStatus,
+        hmr_wait_status: phase.hmr_wait_status,
+        expectedRefusal: phase.expectedRefusal,
+        expected_refusal: phase.expected_refusal,
+      })),
+    }))
+    .digest('hex')}`;
+}
+
+function refreshSourceDeltaExecutionFacet() {
+  const phases = Array.isArray(report.source_delta_execution?.phases)
+    ? report.source_delta_execution.phases
+    : [];
+  const executedPhases = phases.filter((phase) => phase.phaseExecuted === true);
+  const hotDelta2PhaseExecuted = executedPhases.some((phase) => phase.phaseKind === 'hot_delta_2');
+  const negativeEditPhaseExecuted = executedPhases.some((phase) => phase.phaseKind === 'negative_edit');
+  const primaryHotDeltaPhaseExecuted = executedPhases.some((phase) => phase.phaseKind === 'hot_delta_1');
+  const failedGates = compactStringList([
+    phases.length === 0 ? 'source_delta_execution_phases_missing' : null,
+    ...phases.flatMap((phase) => [
+      phase.editHash ? null : `source_delta_execution_edit_hash_missing:${phase.phaseName}`,
+      phase.sourceWriteObserved === true ? null : `source_delta_execution_source_write_missing:${phase.phaseName}`,
+      phase.compileCallAttempted === true ? null : `source_delta_execution_compile_call_missing:${phase.phaseName}`,
+    ]),
+  ]);
+  const facet = {
+    schemaVersion: REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION,
+    proofAuthority: 'runner_observed_source_delta_phase_evidence',
+    proof_authority: 'runner_observed_source_delta_phase_evidence',
+    proofId: sourceDeltaExecutionProofId(phases),
+    proof_id: sourceDeltaExecutionProofId(phases),
+    accepted: failedGates.length === 0,
+    phaseCount: phases.length,
+    phase_count: phases.length,
+    executedPhaseCount: executedPhases.length,
+    executed_phase_count: executedPhases.length,
+    primaryHotDeltaPhaseExecuted,
+    primary_hot_delta_phase_executed: primaryHotDeltaPhaseExecuted,
+    hotDelta2PhaseExecuted,
+    hot_delta_2_phase_executed: hotDelta2PhaseExecuted,
+    negativeEditPhaseExecuted,
+    negative_edit_phase_executed: negativeEditPhaseExecuted,
+    phases,
+    failedGates,
+    failed_gates: failedGates,
+  };
+  report.source_delta_execution = facet;
+  report.real_rocm_source_delta_execution = facet;
+  if (report.evidence && typeof report.evidence === 'object') {
+    report.evidence.source_delta_execution = facet;
+    report.evidence.real_rocm_source_delta_execution = facet;
+  }
+  return facet;
+}
+
+function beginSourceDeltaExecutionPhase({
+  label,
+  kind,
+  file,
+  before,
+  after,
+  phaseName,
+  metricScope,
+  expectedRefusal = false,
+} = {}) {
+  if (!report.source_delta_execution) {
+    report.source_delta_execution = {
+      schemaVersion: REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION,
+      proofAuthority: 'runner_observed_source_delta_phase_evidence',
+      proof_authority: 'runner_observed_source_delta_phase_evidence',
+      phases: [],
+    };
+  }
+  const phaseKind = sourceDeltaPhaseKind({ kind, label, metricScope });
+  const sourceBeforeHash = sha256Text(before);
+  const sourceAfterHash = sha256Text(after);
+  const editHash = `sha256:${createHash('sha256').update(stableJson({
+    phaseName,
+    phaseKind,
+    file,
+    sourceBeforeHash,
+    sourceAfterHash,
+    expectedRefusal,
+  })).digest('hex')}`;
+  const phase = {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution_phase.v1',
+    label: label ?? phaseName,
+    phaseName,
+    phase_name: phaseName,
+    phaseKind,
+    phase_kind: phaseKind,
+    metricScope: metricScope ?? null,
+    metric_scope: metricScope ?? null,
+    file,
+    sourceBeforeHash,
+    source_before_hash: sourceBeforeHash,
+    sourceAfterHash,
+    source_after_hash: sourceAfterHash,
+    editHash,
+    edit_hash: editHash,
+    expectedRefusal: expectedRefusal === true,
+    expected_refusal: expectedRefusal === true,
+    sourceWriteObserved: false,
+    source_write_observed: false,
+    compileCallAttempted: false,
+    compile_call_attempted: false,
+    compileCallCompleted: false,
+    compile_call_completed: false,
+    phaseExecuted: false,
+    phase_executed: false,
+    hmrWaitStatus: null,
+    hmr_wait_status: null,
+    compileOk: null,
+    compile_ok: null,
+    screenshotPath: null,
+    screenshot_path: null,
+    error: null,
+    startedAt: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    finishedAt: null,
+    finished_at: null,
+  };
+  report.source_delta_execution.phases.push(phase);
+  refreshSourceDeltaExecutionFacet();
+  return phase;
+}
+
+function markSourceDeltaWriteObserved(phase) {
+  if (!phase) return;
+  phase.sourceWriteObserved = true;
+  phase.source_write_observed = true;
+  refreshSourceDeltaExecutionFacet();
+}
+
+function markSourceDeltaCompileAttempted(phase) {
+  if (!phase) return;
+  phase.compileCallAttempted = true;
+  phase.compile_call_attempted = true;
+  refreshSourceDeltaExecutionFacet();
+}
+
+function finishSourceDeltaExecutionPhase(phase, { compileResult = null, screenshot = null, error = null } = {}) {
+  if (!phase) return;
+  const compile = compileResult?.compile ?? null;
+  const wait = compileResult?.wait ?? null;
+  phase.compileCallCompleted = Boolean(compileResult);
+  phase.compile_call_completed = phase.compileCallCompleted;
+  phase.compileOk = compile?.ok === true;
+  phase.compile_ok = phase.compileOk;
+  phase.hmrWaitStatus = wait?.status ?? null;
+  phase.hmr_wait_status = phase.hmrWaitStatus;
+  phase.phaseExecuted = phase.sourceWriteObserved === true && phase.compileCallAttempted === true;
+  phase.phase_executed = phase.phaseExecuted;
+  phase.screenshotPath = screenshot?.path ?? null;
+  phase.screenshot_path = phase.screenshotPath;
+  phase.error = error ? String(error?.message ?? error).slice(0, 1000) : null;
+  phase.finishedAt = new Date().toISOString();
+  phase.finished_at = phase.finishedAt;
+  refreshSourceDeltaExecutionFacet();
 }
 
 function evidenceLines(text, pattern) {
@@ -12804,6 +13017,10 @@ async function writeResults() {
     real_rocm_profile_proof_obligations: report.real_rocm_profile_proof_obligations,
     profileProofObligations: report.real_rocm_profile_proof_obligations,
     profile_proof_obligations: report.real_rocm_profile_proof_obligations,
+    realRocmSourceDeltaExecution: report.real_rocm_source_delta_execution,
+    real_rocm_source_delta_execution: report.real_rocm_source_delta_execution,
+    sourceDeltaExecution: report.source_delta_execution,
+    source_delta_execution: report.source_delta_execution,
     target_progression_ledger: report.target_progression_ledger,
     target_progression_ledger_entry: report.target_progression_ledger_entry,
     target_progression_ledger_artifact: report.target_progression_ledger_artifact,
@@ -13069,6 +13286,7 @@ async function writeResults() {
     `target_progression_ledger_entry: ${JSON.stringify(report.target_progression_ledger_entry)}`,
     `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
+    `source_delta_execution: ${JSON.stringify(report.source_delta_execution)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `real_rocm_device_sidecar_contract: ${JSON.stringify(report.real_rocm_device_sidecar_contract)}`,
     `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
@@ -13236,68 +13454,39 @@ async function run() {
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
   await captureScreenshot('first-compile', { required: false, wait: firstCompileResult.wait });
 
-  const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
-  const hmrAdditionalFiles = buildCompileProjection(
-    files,
-    CFG.deltaFile,
-    buildMetadata,
-    'real_repo_user_source_delta_hmr',
-  );
-  await httpJson(
-    'POST',
-    `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
-    { files: [{ path: CFG.deltaFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
-    { 'x-user-id': CFG.hostId },
-  );
-  updateFileContent(CFG.deltaFile, edited);
-  const hmrCompileResult = await compileViaMcp({
-    language: 'cpp',
-    filename: CFG.deltaFile,
-    source: edited,
-    ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
-    is_gui: CFG.renderPreview,
-    use_ai_split: true,
-    bypass_ai_split_cache: CFG.requireFreshAiSplit,
-    user_requested_ai: false,
-    force_gpu_ai_delta: CFG.forceGpuAiDelta,
-    prefer_gpu_pipeline: true,
-    gpu_mode: CFG.gpuMode,
-    gpu_arch: CFG.gpuArch,
-    slug: CFG.slug,
-    width: CFG.width,
-    height: CFG.height,
-  }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
-  await captureScreenshot('post-hmr', { required: CFG.expectScreenshot, wait: hmrCompileResult.wait });
-
-  for (let index = 0; index < extraDeltas.length; index += 1) {
-    const delta = extraDeltas[index];
-    const label = safePhaseLabel(delta.label, index);
-    const phaseName = `real_repo_${label}_user_source_delta_hmr`;
-    const screenshotLabel = `post-${label}-hmr`;
-    const editedSource = editSource(
-      contentForPath(delta.file),
-      delta.before,
-      delta.after,
-      `${label} configured`,
-    );
-    const additionalFiles = buildCompileProjection(
+  const primaryDeltaPhase = beginSourceDeltaExecutionPhase({
+    label: 'primary',
+    kind: 'hot_delta_1',
+    file: CFG.deltaFile,
+    before: CFG.deltaBefore,
+    after: CFG.deltaAfter,
+    phaseName: 'real_repo_user_source_delta_hmr',
+    metricScope: 'hot_delta_1',
+  });
+  let hmrCompileResult = null;
+  let hmrScreenshot = null;
+  try {
+    const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
+    const hmrAdditionalFiles = buildCompileProjection(
       files,
-      delta.file,
+      CFG.deltaFile,
       buildMetadata,
-      phaseName,
+      'real_repo_user_source_delta_hmr',
     );
     await httpJson(
       'POST',
       `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
-      { files: [{ path: delta.file, encoding: 'utf8', content: editedSource }], syncToGcs: CFG.syncToGcs },
+      { files: [{ path: CFG.deltaFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
       { 'x-user-id': CFG.hostId },
     );
-    updateFileContent(delta.file, editedSource);
-    const extraCompileResult = await compileViaMcp({
+    markSourceDeltaWriteObserved(primaryDeltaPhase);
+    updateFileContent(CFG.deltaFile, edited);
+    markSourceDeltaCompileAttempted(primaryDeltaPhase);
+    hmrCompileResult = await compileViaMcp({
       language: 'cpp',
-      filename: delta.file,
-      source: editedSource,
-      ...compileProjectionRequestArgs(additionalFiles, phaseName),
+      filename: CFG.deltaFile,
+      source: edited,
+      ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
       is_gui: CFG.renderPreview,
       use_ai_split: true,
       bypass_ai_split_cache: CFG.requireFreshAiSplit,
@@ -13309,8 +13498,96 @@ async function run() {
       slug: CFG.slug,
       width: CFG.width,
       height: CFG.height,
-    }, CFG.hmrTimeoutMs, phaseName);
-    await captureScreenshot(screenshotLabel, { required: CFG.expectScreenshot, wait: extraCompileResult.wait });
+    }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
+    hmrScreenshot = await captureScreenshot('post-hmr', {
+      required: CFG.expectScreenshot,
+      wait: hmrCompileResult.wait,
+    });
+    finishSourceDeltaExecutionPhase(primaryDeltaPhase, {
+      compileResult: hmrCompileResult,
+      screenshot: hmrScreenshot,
+    });
+  } catch (err) {
+    finishSourceDeltaExecutionPhase(primaryDeltaPhase, {
+      compileResult: hmrCompileResult,
+      screenshot: hmrScreenshot,
+      error: err,
+    });
+    throw err;
+  }
+
+  for (let index = 0; index < extraDeltas.length; index += 1) {
+    const delta = extraDeltas[index];
+    const label = safePhaseLabel(delta.label, index);
+    const phaseName = `real_repo_${label}_user_source_delta_hmr`;
+    const screenshotLabel = `post-${label}-hmr`;
+    const extraDeltaPhase = beginSourceDeltaExecutionPhase({
+      label,
+      kind: delta.kind,
+      file: delta.file,
+      before: delta.before,
+      after: delta.after,
+      phaseName,
+      metricScope: sourceDeltaPhaseKind(delta),
+      expectedRefusal: delta.expectedRefusal === true,
+    });
+    let extraCompileResult = null;
+    let extraScreenshot = null;
+    try {
+      const editedSource = editSource(
+        contentForPath(delta.file),
+        delta.before,
+        delta.after,
+        `${label} configured`,
+      );
+      const additionalFiles = buildCompileProjection(
+        files,
+        delta.file,
+        buildMetadata,
+        phaseName,
+      );
+      await httpJson(
+        'POST',
+        `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
+        { files: [{ path: delta.file, encoding: 'utf8', content: editedSource }], syncToGcs: CFG.syncToGcs },
+        { 'x-user-id': CFG.hostId },
+      );
+      markSourceDeltaWriteObserved(extraDeltaPhase);
+      updateFileContent(delta.file, editedSource);
+      markSourceDeltaCompileAttempted(extraDeltaPhase);
+      extraCompileResult = await compileViaMcp({
+        language: 'cpp',
+        filename: delta.file,
+        source: editedSource,
+        ...compileProjectionRequestArgs(additionalFiles, phaseName),
+        is_gui: CFG.renderPreview,
+        use_ai_split: true,
+        bypass_ai_split_cache: CFG.requireFreshAiSplit,
+        user_requested_ai: false,
+        force_gpu_ai_delta: CFG.forceGpuAiDelta,
+        prefer_gpu_pipeline: true,
+        gpu_mode: CFG.gpuMode,
+        gpu_arch: CFG.gpuArch,
+        slug: CFG.slug,
+        width: CFG.width,
+        height: CFG.height,
+      }, CFG.hmrTimeoutMs, phaseName);
+      extraScreenshot = await captureScreenshot(screenshotLabel, {
+        required: CFG.expectScreenshot,
+        wait: extraCompileResult.wait,
+      });
+      finishSourceDeltaExecutionPhase(extraDeltaPhase, {
+        compileResult: extraCompileResult,
+        screenshot: extraScreenshot,
+      });
+    } catch (err) {
+      finishSourceDeltaExecutionPhase(extraDeltaPhase, {
+        compileResult: extraCompileResult,
+        screenshot: extraScreenshot,
+        error: err,
+      });
+      throw err;
+    }
   }
 }
 
