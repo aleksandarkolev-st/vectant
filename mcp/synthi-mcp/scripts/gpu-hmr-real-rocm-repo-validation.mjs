@@ -6759,6 +6759,14 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     profileId: profile.id,
     profileLabel: profile.label,
     kind: 'source_derived_buffer_checksum',
+    sourceAdaptedProfile: true,
+    source_adapted_profile: true,
+    sourceAdaptations: [
+      `source-derived output oracle instrumentation:${profile.id}`,
+    ],
+    source_adaptations: [
+      `source-derived output oracle instrumentation:${profile.id}`,
+    ],
     file: CFG.deltaFile,
     oracleId: oracle.oracleId,
     baselineSha256: oracle.baselineSha256,
@@ -6770,6 +6778,12 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
     probeEvidenceRef: oracle.probeEvidenceRef,
     runtimeProbeMode: oracle.runtimeProfile?.probeMode ?? null,
     runtimeProbeEvidenceRef: oracle.runtimeProfile?.probeEvidenceRef ?? null,
+    failedGates: [
+      { code: 'source_adapted_profile_not_no_shim_gpu_hmr' },
+    ],
+    failed_gates: [
+      { code: 'source_adapted_profile_not_no_shim_gpu_hmr' },
+    ],
   });
   record(
     'source-derived output oracle profile',

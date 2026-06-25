@@ -3300,6 +3300,28 @@ assert.equal(sourceAdaptedFirewallQuery.summary.acceptedFullRuntimeGpuHmrRows, 0
 assert.ok(sourceAdaptedFirewallQuery.failedGates.some((gate) =>
   gate.code === 'source_adapted_profile_not_no_shim_gpu_hmr'
 ));
+const sourceDerivedOracleAdaptationQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-source-derived-oracle-adapted-row', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+      output_oracle_adaptations: [
+        {
+          kind: 'source_derived_buffer_checksum',
+          profileId: 'hip.generic.readback.v1',
+          oracleId: 'oracle:generic',
+        },
+      ],
+    }),
+  ],
+});
+assert.equal(sourceDerivedOracleAdaptationQuery.accepted, false);
+assert.equal(sourceDerivedOracleAdaptationQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(sourceDerivedOracleAdaptationQuery.failedGates.some((gate) =>
+  gate.code === 'source_adapted_profile_not_no_shim_gpu_hmr'
+));
 const unknownAcceptanceScopeQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

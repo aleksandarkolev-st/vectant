@@ -1559,6 +1559,7 @@ function objectsForSourceAdaptationFacet(...sources) {
     compactObject(source.sourceAdaptation ?? source.source_adaptation),
     compactObject(source.derivedProofLedgerRecord ?? source.derived_proof_ledger_record),
     compactObject(source.proofLedger?.records?.[0] ?? source.proof_ledger?.records?.[0]),
+    ...compactObjectList(source.outputOracleAdaptations ?? source.output_oracle_adaptations),
     ...compactObjectList(source.records),
     ...compactObjectList(source.limitations),
     ...compactObjectList(source.failedGates ?? source.failed_gates),
@@ -1571,6 +1572,9 @@ function sourceAdaptationProofFacet(...sources) {
   const sourceAdaptations = compactStringList(objects.flatMap((source) => [
     ...(Array.isArray(source.sourceAdaptations) ? source.sourceAdaptations : []),
     ...(Array.isArray(source.source_adaptations) ? source.source_adaptations : []),
+    /^source_derived_/i.test(firstText(source.kind) ?? '')
+      ? `source-derived-output-oracle:${firstText(source.profileId, source.profile_id, source.oracleId, source.oracle_id) ?? 'unknown'}`
+      : null,
   ]));
   const adaptedFlags = objects
     .map((source) => firstBool(
