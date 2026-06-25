@@ -61,7 +61,10 @@ export type DojoGovernanceRbacAction =
   | "source_drift_expiry"
   | "api_tool_prepare"
   | "api_tool_publish"
-  | "hosted_runtime_session_create";
+  | "hosted_runtime_session_create"
+  | "regret_policy_view"
+  | "regret_policy_review"
+  | "regret_policy_delete";
 
 export interface DojoGovernanceRbacPolicy {
   administrator_roles?: string[];
@@ -112,6 +115,9 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     api_tool_prepare: ["dojo:api-tool:prepare", "dojo:source:review", "source-registry"],
     api_tool_publish: ["dojo:api-tool:publish", "dojo:source:apply"],
     hosted_runtime_session_create: ["dojo:runtime:create"],
+    regret_policy_view: ["dojo:regret:view", "dojo:governance:view", "dojo:auditor"],
+    regret_policy_review: ["dojo:regret:review", "dojo:governance:view"],
+    regret_policy_delete: ["dojo:regret:delete", "dojo:operator"],
   },
 };
 
@@ -1983,6 +1989,18 @@ function normalizeGovernanceRbacPolicy(
       hosted_runtime_session_create: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.hosted_runtime_session_create,
         ...(policy.action_roles?.hosted_runtime_session_create ?? []),
+      ]),
+      regret_policy_view: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.regret_policy_view,
+        ...(policy.action_roles?.regret_policy_view ?? []),
+      ]),
+      regret_policy_review: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.regret_policy_review,
+        ...(policy.action_roles?.regret_policy_review ?? []),
+      ]),
+      regret_policy_delete: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.regret_policy_delete,
+        ...(policy.action_roles?.regret_policy_delete ?? []),
       ]),
     },
   };
