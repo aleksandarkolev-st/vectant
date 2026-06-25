@@ -988,6 +988,25 @@ function compactKnownStringList(values = []) {
   });
 }
 
+function cmakeMissingDependencyTokens(text) {
+  const combined = String(text ?? '');
+  const findPackageMissingGroups = [...combined.matchAll(
+    /Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)(?:[^\n]*?\(missing:\s+([^)]+)\))?/g,
+  )];
+  const configPackageGroups = [...combined.matchAll(
+    /package\s+configuration\s+file\s+provided\s+by\s+["']([^"']+)["']/gi,
+  )];
+  return compactStringList([
+    ...findPackageMissingGroups.flatMap((match) => [
+      match[1],
+      ...(match[2] ? match[2].split(/[\s,;]+/) : []),
+    ]),
+    ...configPackageGroups.map((match) => match[1]),
+    ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)]
+      .map((match) => match[1]),
+  ]);
+}
+
 function availableRealRocmEvidenceRefs({
   runtimeDispatch = {},
   runtimeArtifactTransport = {},
@@ -2992,22 +3011,11 @@ function classifyUpstreamLifecycleFailure({
     String(runLog ?? ''),
     String(lifecycleError?.message ?? ''),
   ].join('\n');
-  const cmakeMissingGroups = [...combined.matchAll(
-    /Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)(?:[^\n]*?\(missing:\s+([^)]+)\))?/gi,
-  )];
-  const missingFieldTokens = cmakeMissingGroups
-    .flatMap((match) => [
-      match[1],
-      ...(match[2] ? match[2].split(/[\s,;]+/) : []),
-    ]);
   const runExitCodeText = /\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1] ?? null;
   const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''));
   const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''));
   const runNotStarted = runExitCodeText === 'not-run';
-  const missingDependencies = compactStringList([
-    ...missingFieldTokens,
-    ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)].map((match) => match[1]),
-  ]);
+  const missingDependencies = cmakeMissingDependencyTokens(combined);
   const cmakeConfigureFailed =
     configureStageFailed || /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(combined);
   const buildBlockedByConfigure = cmakeConfigureFailed && buildStageFailed;
@@ -10605,6 +10613,21 @@ int main()
     || rootInvalidCheckoutPlan.canAutoQuarantine
   ) {
     throw new Error('repo checkout recovery safety self-check failed');
+  }
+  const cmakeMissingDeps = cmakeMissingDependencyTokens([
+    'Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)',
+    'Could not find a package configuration file provided by "msgpack" with any of the following names:',
+    'No package "libexample" found',
+  ].join('\n'));
+  if (
+    !cmakeMissingDeps.includes('BZip2')
+    || !cmakeMissingDeps.includes('BZIP2_LIBRARIES')
+    || !cmakeMissingDeps.includes('BZIP2_INCLUDE_DIR')
+    || !cmakeMissingDeps.includes('msgpack')
+    || !cmakeMissingDeps.includes('libexample')
+    || cmakeMissingDeps.includes('a')
+  ) {
+    throw new Error('CMake missing dependency parser self-check failed');
   }
   const arrayCapability = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',
