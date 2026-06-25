@@ -173,18 +173,16 @@ function assertCurrentMatrixRowReferencesResolve(doc, matrixArtifact) {
 
   lines.forEach((line, index) => {
     const lower = line.toLowerCase();
-    if (!lower.includes('matrix row id:') || lower.includes('historical')) return;
+    if (!lower.includes('gpu-validation-matrix-row:sha256:') || lower.includes('historical')) return;
 
-    checkedCount += 1;
-    const rowId = line.match(/gpu-validation-matrix-row:sha256:[a-f0-9]+/i)?.[0];
-    assert.ok(
-      rowId,
-      `${repoPath(doc.path)}:${index + 1} has a current matrix row reference without a row id`,
-    );
-    assert.ok(
-      latestRowIds.has(rowId),
-      `${repoPath(doc.path)}:${index + 1} references row ${rowId}, which is absent from latest matrix ${latestMatrixPath}`,
-    );
+    const rowIds = line.match(/gpu-validation-matrix-row:sha256:[a-f0-9]+/gi) ?? [];
+    checkedCount += rowIds.length;
+    for (const rowId of rowIds) {
+      assert.ok(
+        latestRowIds.has(rowId),
+        `${repoPath(doc.path)}:${index + 1} references row ${rowId}, which is absent from latest matrix ${latestMatrixPath}`,
+      );
+    }
 
     const normalizedLine = line.split(path.sep).join('/');
     if (normalizedLine.includes('mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/')) {
