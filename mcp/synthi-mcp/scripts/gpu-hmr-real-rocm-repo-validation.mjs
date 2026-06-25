@@ -1975,6 +1975,7 @@ const CFG = {
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 20 * 60 * 1000),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
+  dockerPreflightTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_DOCKER_PREFLIGHT_TIMEOUT_MS', 8000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
@@ -2236,6 +2237,34 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
       resolve(err ? undefined : text);
     });
   });
+}
+
+async function dockerDaemonPreflight(execTextImpl = execText) {
+  const startedAt = Date.now();
+  const output = await execTextImpl(
+    'docker',
+    ['version', '--format', '{{json .Server.Version}}'],
+    CFG.dockerPreflightTimeoutMs,
+  );
+  const elapsedMs = Date.now() - startedAt;
+  const serverVersion = String(output ?? '').trim();
+  const available = serverVersion.length > 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_docker_daemon_preflight.v1',
+    available,
+    status: available ? 'docker_daemon_available' : 'docker_daemon_unavailable_or_timeout',
+    command: 'docker version --format {{json .Server.Version}}',
+    timeoutMs: CFG.dockerPreflightTimeoutMs,
+    timeout_ms: CFG.dockerPreflightTimeoutMs,
+    elapsedMs,
+    elapsed_ms: elapsedMs,
+    serverVersion: available ? serverVersion : null,
+    server_version: available ? serverVersion : null,
+    proofAuthority: 'infrastructure_preflight_not_gpu_hmr_proof',
+    proof_authority: 'infrastructure_preflight_not_gpu_hmr_proof',
+    blockingGaps: available ? [] : ['docker_daemon_unavailable_or_timeout'],
+    blocking_gaps: available ? [] : ['docker_daemon_unavailable_or_timeout'],
+  };
 }
 
 async function resolveDockerContainer(configured, service, execTextImpl = execText) {
@@ -9121,6 +9150,17 @@ async function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('local worker runtime access did not fail closed without worker container');
   }
+  const dockerPreflightPass = await dockerDaemonPreflight(async () => '"28.0.0"');
+  const dockerPreflightFail = await dockerDaemonPreflight(async () => undefined);
+  if (
+    dockerPreflightPass.available !== true
+    || dockerPreflightPass.status !== 'docker_daemon_available'
+    || dockerPreflightFail.available !== false
+    || dockerPreflightFail.status !== 'docker_daemon_unavailable_or_timeout'
+    || !dockerPreflightFail.blocking_gaps.includes('docker_daemon_unavailable_or_timeout')
+  ) {
+    throw new Error('docker daemon preflight self-check failed');
+  }
   const discoveredComposeWorker = await resolveDockerContainer(null, 'worker', async (_cmd, args) => {
     const joined = args.join(' ');
     if (joined.includes('compose') && joined.includes('ps -q worker')) return 'worker-compose-id\n';
@@ -11282,6 +11322,14 @@ int main()
 }
 
 async function collectRuntimeEvidence() {
+  if (report.docker?.daemon_preflight?.available === false) {
+    record(
+      'runtime evidence collected',
+      'warn',
+      'docker daemon preflight failed; docker log and inspect collection skipped',
+    );
+    return;
+  }
   const workerAccess = runtimeWorkerContainerAccess();
   if (!workerAccess.available) {
     record('runtime evidence collected', 'warn', `${workerAccess.detail}; worker log collection skipped`);
@@ -12599,6 +12647,16 @@ async function writeResults() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  report.docker.daemon_preflight = await dockerDaemonPreflight();
+  report.docker.daemonPreflight = report.docker.daemon_preflight;
+  record(
+    'docker daemon preflight',
+    report.docker.daemon_preflight.available ? 'pass' : 'fail',
+    `status=${report.docker.daemon_preflight.status} timeout_ms=${report.docker.daemon_preflight.timeout_ms}`,
+  );
+  if (!report.docker.daemon_preflight.available) {
+    throw new Error('Docker daemon unavailable or timed out before real ROCm validation could resolve worker containers');
+  }
   await resolveDockerContainers();
   await ensureRocmBuildConfig();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
