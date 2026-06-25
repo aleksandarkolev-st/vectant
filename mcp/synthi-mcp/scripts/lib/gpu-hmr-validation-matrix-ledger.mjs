@@ -8154,6 +8154,101 @@ function selectBestRows(rows) {
   return [...selected.values()];
 }
 
+function selectLatestAttemptRows(rows) {
+  const selected = new Map();
+  for (const row of rows) {
+    const key = row.attemptKey ?? rowAttemptKey(row);
+    const existing = selected.get(key);
+    if (!existing) {
+      selected.set(key, row);
+      continue;
+    }
+    const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
+    if (
+      updatedDelta > 0
+      || (
+        updatedDelta === 0
+        && String(row.artifactPath) > String(existing.artifactPath)
+      )
+    ) {
+      selected.set(key, row);
+    }
+  }
+  return [...selected.values()];
+}
+
+function attemptHistoryRowRef(row) {
+  if (!row) return null;
+  return compactObject({
+    rowId: row.rowId,
+    row_id: row.rowId,
+    artifactPath: row.artifactPath,
+    artifact_path: row.artifactPath,
+    updatedAt: row.updatedAt,
+    updated_at: row.updatedAt,
+    backend: row.backend,
+    targetId: row.targetId,
+    target_id: row.targetId,
+    profileId: row.profileId,
+    profile_id: row.profileId,
+    proofMode: row.proofMode,
+    proof_mode: row.proofMode,
+    evidenceKind: row.evidenceKind,
+    evidence_kind: row.evidenceKind,
+    matrixOutcome: row.matrixOutcome,
+    matrix_outcome: row.matrixOutcome,
+    attemptCompletenessScore: rowAttemptCompletenessScore(row),
+    attempt_completeness_score: rowAttemptCompletenessScore(row),
+    openGaps: row.openGaps,
+    open_gaps: row.openGaps,
+    reasons: row.reasons,
+  });
+}
+
+function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
+  const selectedByAttemptKey = new Map();
+  for (const row of selectedRows) {
+    selectedByAttemptKey.set(row.attemptKey ?? rowAttemptKey(row), row);
+  }
+  const attempts = enabled
+    ? selectLatestAttemptRows(rows)
+      .map((latestRow) => {
+        const attemptKey = latestRow.attemptKey ?? rowAttemptKey(latestRow);
+        const selectedRow = selectedByAttemptKey.get(attemptKey) ?? null;
+        const latestSelected = Boolean(selectedRow && selectedRow.rowId === latestRow.rowId);
+        return compactObject({
+          attemptKey,
+          attempt_key: attemptKey,
+          selectedIsLatest: latestSelected,
+          selected_is_latest: latestSelected,
+          latestAttemptIsUnselected: Boolean(selectedRow && !latestSelected),
+          latest_attempt_is_unselected: Boolean(selectedRow && !latestSelected),
+          latest: attemptHistoryRowRef(latestRow),
+          selected: attemptHistoryRowRef(selectedRow),
+        });
+      })
+      .sort((left, right) => String(left.attemptKey).localeCompare(String(right.attemptKey)))
+    : [];
+  const latestUnselectedAttemptCount = attempts.filter((attempt) =>
+    attempt.latestAttemptIsUnselected === true
+  ).length;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
+    schema_version: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
+    enabled,
+    authority: enabled ? 'collector_file_mtime' : 'disabled_without_unproven_rows',
+    selectionPolicy: 'priority_then_attempt_completeness_then_updated_at_then_artifact_path',
+    selection_policy: 'priority_then_attempt_completeness_then_updated_at_then_artifact_path',
+    latestPolicy: 'updated_at_then_artifact_path',
+    latest_policy: 'updated_at_then_artifact_path',
+    attemptCount: attempts.length,
+    attempt_count: attempts.length,
+    latestUnselectedAttemptCount,
+    latest_unselected_attempt_count: latestUnselectedAttemptCount,
+    attempts,
+  };
+}
+
 function rowIsScopedOnlyFullRuntime(row) {
   return acceptedFullRuntimeRow(row)
     && row.claimScope === 'scoped_profile'
@@ -9120,10 +9215,12 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   const summaryForProofId = Object.keys(suppliedSummary).length > 0
     ? ledger.summary
     : recomputedSummary;
+  const suppliedAttemptHistory = compactObject(ledger.attemptHistory ?? ledger.attempt_history);
   const recomputedProofId = proofIdFor('gpu-validation-matrix-ledger', {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     rows: rows.map((row) => row.rowId),
     summary: summaryForProofId,
+    attemptHistory: suppliedAttemptHistory,
   });
   if (ledger.proofId && ledger.proofId !== recomputedProofId) {
     failures.push({
@@ -9138,6 +9235,8 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
     accepted: failures.length === 0,
     failedGates: failures,
     summary: Object.keys(suppliedSummary).length > 0 ? ledger.summary : recomputedSummary,
+    attemptHistory: suppliedAttemptHistory,
+    attempt_history: suppliedAttemptHistory,
   };
 }
 
@@ -9154,6 +9253,9 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     includeUnproven: options.includeUnproven === true,
     omittedUnprovenRows,
   };
+  const attemptHistory = validationAttemptHistory(safetyEvaluatedRows, selectedRows, {
+    enabled: options.includeUnproven === true,
+  });
   const seed = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
@@ -9161,12 +9263,15 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     includeUnproven: options.includeUnproven === true,
     sourceRoots: options.sourceRoots ?? [],
     summary,
+    attemptHistory,
+    attempt_history: attemptHistory,
     rows: includedRows,
   };
   const proofId = proofIdFor('gpu-validation-matrix-ledger', {
     schemaVersion: seed.schemaVersion,
     rows: includedRows.map((row) => row.rowId),
     summary,
+    attemptHistory,
   });
   const ledger = {
     ...seed,

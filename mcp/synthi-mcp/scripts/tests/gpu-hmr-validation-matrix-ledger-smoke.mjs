@@ -7228,6 +7228,31 @@ assert.ok(completenessSelectionRow?.artifactPath.endsWith('real-rocm-complete-re
 assert.equal(completenessSelectionRow.attemptCompleteness.score, 80);
 assert.equal(completenessSelectionRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, true);
 
+const completenessSelectionLedgerWithHistory = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [realRocmCompletenessDir],
+  generatedAt: '2026-06-09T00:05:01.000Z',
+  includeUnproven: true,
+});
+const completenessSelectionRowWithHistory = completenessSelectionLedgerWithHistory.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.ok(completenessSelectionRowWithHistory?.artifactPath.endsWith('real-rocm-complete-refusal.json'));
+const completenessAttemptHistory = completenessSelectionLedgerWithHistory.attemptHistory.attempts.find(
+  (attempt) => attempt.selected?.artifactPath?.endsWith('real-rocm-complete-refusal.json'),
+);
+assert.ok(completenessAttemptHistory);
+assert.equal(completenessAttemptHistory.selectedIsLatest, false);
+assert.equal(completenessAttemptHistory.latestAttemptIsUnselected, true);
+assert.ok(completenessAttemptHistory.latest.artifactPath.endsWith('real-rocm-weak-refusal.json'));
+assert.ok(completenessAttemptHistory.selected.artifactPath.endsWith('real-rocm-complete-refusal.json'));
+assert.equal(completenessSelectionLedgerWithHistory.attemptHistory.latestUnselectedAttemptCount, 1);
+assert.equal(
+  completenessSelectionLedgerWithHistory.query.attemptHistory.latestUnselectedAttemptCount,
+  1,
+);
+
 const workerTransferRefusalDir = path.join(logsRoot, 'real-rocm-worker-transfer-refusal');
 await writeJson(path.join(workerTransferRefusalDir, 'real-rocm-worker-transfer-refusal.json'), {
   slug: 'gpu-real-rocm-worker-transfer-refusal-20260625',
