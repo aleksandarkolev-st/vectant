@@ -560,13 +560,13 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
   if (mode.fixed_swapchain_image_count !== true) {
     addGate(failedGates, 'fixed_swapchain_image_count_unproven');
   }
-  if (!seedPolicyFixed(mode) && !convergenceAccepted) {
-    addGate(failedGates, 'seed_policy_unproven');
-  }
-  if (!seedPolicyFixed(mode) && convergenceAccepted) {
-    warnings.push({
-      code: 'convergence_window_without_fixed_seed_policy',
-    });
+  if (!seedPolicyFixed(mode)) {
+    addGate(
+      failedGates,
+      convergenceAccepted
+        ? 'convergence_window_seed_policy_unproven'
+        : 'seed_policy_unproven',
+    );
   }
   if (mode.convergence_window.frame_start !== null || mode.convergence_window.frame_end !== null) {
     const window = mode.convergence_window;
