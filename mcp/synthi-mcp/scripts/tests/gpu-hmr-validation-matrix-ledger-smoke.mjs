@@ -3992,6 +3992,12 @@ assert.ok(!coverageById.get('opencl_dispatch_readback')?.rows.some((row) =>
 assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));
+assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-large-lib')?.status, 'refused');
+assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-large-lib')?.rowCount, 1);
+assert.ok(coverageById.get('large_real_rocm_repo:real-rocm-large-lib')?.openGaps.includes(
+  'output_or_visual_oracle_proof_required',
+));
+assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-second-lib')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
@@ -4687,6 +4693,8 @@ assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.accepted, tr
 assert.equal(acceptedRealRocm.realRocmSidecarRuntimeConsistencyGate.notApplicable, true);
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
+assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo:real-rocm-accepted-lib')?.status, 'accepted');
+assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo:real-rocm-accepted-lib')?.rowCount, 1);
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
 

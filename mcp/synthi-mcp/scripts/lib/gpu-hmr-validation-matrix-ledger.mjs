@@ -7462,6 +7462,39 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
   });
 }
 
+function realRocmRepositoryTargetCoverage(rows) {
+  const candidates = rows.filter((row) =>
+    row.proofMode === 'real_rocm_repo_validation'
+    && (acceptedFullRuntimeRow(row) || row.matrixOutcome === 'refusal_proven')
+  );
+  const byTarget = new Map();
+  for (const row of candidates) {
+    const targetId = firstText(row.targetId, row.profileId, row.artifactPath);
+    if (!targetId) continue;
+    const targetRows = byTarget.get(targetId) ?? [];
+    targetRows.push(row);
+    byTarget.set(targetId, targetRows);
+  }
+  return [...byTarget.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([targetId, targetRows]) => {
+      const accepted = targetRows.filter((row) => acceptedFullRuntimeRow(row));
+      const refused = targetRows.filter((row) => row.matrixOutcome === 'refusal_proven');
+      const status = accepted.length > 0 ? 'accepted' : refused.length > 0 ? 'refused' : 'missing';
+      return coverageEntry({
+        id: `large_real_rocm_repo:${targetId}`,
+        requirement: `Large real ROCm repository target ${targetId} validation with full-runtime proof gating`,
+        status,
+        rows: accepted.length > 0 ? accepted : refused,
+        openGaps: status === 'accepted'
+          ? []
+          : compactStringList(refused.flatMap((row) => row.openGaps)),
+        targetId,
+        target_id: targetId,
+      });
+    });
+}
+
 function planCoverage(rows) {
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
@@ -7581,6 +7614,7 @@ function planCoverage(rows) {
       acceptedPredicate: (row) => row.proofMode === 'real_rocm_repo_validation',
       missingGap: 'large_real_rocm_repo_validation_required',
     }),
+    ...realRocmRepositoryTargetCoverage(rows),
     acceptedOrRefusedCoverage({
       rows,
       id: 'bevy_file_loaded_wgsl',
