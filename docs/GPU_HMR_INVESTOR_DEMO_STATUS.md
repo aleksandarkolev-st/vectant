@@ -48,21 +48,21 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 25 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:4ac74ddd9c90400079337f49b9d5d87488e02f73ce1ed5d2c2a8bbff8407a5a2
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T064253Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
 global matrix summary: 57 rows, 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits, 1 deterministic fission, 4 visual profiles, 0 included unproven rows
 global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-latest global matrix after evidence-backed declared-scope gates, explicit full-runtime scope classification, broad/library-agnostic scope proof-facet rejection, exact visual-profile evidence binding, generic source-adapted proof demotion, query-time source-adaptation/no-shim safety rejection for imported or prebuilt rows, query-time summary recomputation, matrix-computed broad-readiness reporting, status-doc live aggregation checks, latest-attempt selection by canonical target/scope, scoped HIP module hardened gates, WebGPU profiled-layout proof, WebGPU compute expected-output proof, real ROCm proof-obligation, firewall, target-progression, app-hook gating, disabled output-oracle resolution gating, explicit real ROCm runtime facet gates, ROCm arch/prefix detection, OIDN path-integrity evidence, real ROCm runtime-chain correlation for artifact transport, epoch, dispatch, output target, and host identity, fail-closed OIDN HIP diagnostic refusal, recomputed visual artifact hash/pixel proof, allowed-root evidence path containment, derived row-bound visual-profile coverage, explicit runtime-profile selection requirements, the latest 2026-06-25 MIOpen worker-container-not-running refusal rerun, and strict full-runtime evidence authority for runtime proof artifact or backend-native loader/dispatch/output/oracle traces: gpu-validation-matrix-ledger:sha256:4ac74ddd9c90400079337f49b9d5d87488e02f73ce1ed5d2c2a8bbff8407a5a2
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T064253Z.json
+latest global matrix after evidence-backed declared-scope gates, explicit full-runtime scope classification, broad/library-agnostic scope proof-facet rejection, exact visual-profile evidence binding, generic source-adapted proof demotion, query-time source-adaptation/no-shim safety rejection for imported or prebuilt rows, query-time summary recomputation, matrix-computed broad-readiness reporting, status-doc live aggregation checks, latest-attempt selection by canonical target/scope, scoped HIP module hardened gates, WebGPU profiled-layout proof, WebGPU compute expected-output proof, real ROCm proof-obligation, firewall, target-progression, app-hook gating, disabled output-oracle resolution gating, explicit real ROCm runtime facet gates, ROCm arch/prefix detection, OIDN path-integrity evidence, real ROCm runtime-chain correlation for artifact transport, epoch, dispatch, output target, and host identity, fail-closed OIDN HIP diagnostic refusal, recomputed visual artifact hash/pixel proof, allowed-root evidence path containment, derived row-bound visual-profile coverage, explicit runtime-profile selection requirements, the latest 2026-06-25 MIOpen worker-container-not-running refusal rerun, strict full-runtime evidence authority for runtime proof artifact or backend-native loader/dispatch/output/oracle traces, WebGPU companion run-mode support linkage, and normalized artifact-hash forms in run-mode support rows: gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
 latest global matrix summary: 57 rows, 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits, 1 deterministic fission, 4 visual profiles, 0 included unproven rows
 latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, scopedRuntimeRows=18, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_not_computed_from_matrix,broad_acceptance_requires_more_backend_families
 latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-history audit matrix: gpu-validation-matrix-ledger:sha256:fa6cc8a45c25fe5b5fdbf41aa5ba33922e2023b41b9abb4ba2247e39002f4b5d
-history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T064305Z.json
+history audit matrix: gpu-validation-matrix-ledger:sha256:b304320c1c2e06c104506065892c433df7cf6b6ecd7cde6ad7a08a4f54bc8c97
+history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260625T070812Z.json
 history audit summary: 655 rows, including 598 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps; 18 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 18 scoped full-runtime GPU HMR, 18 all full-runtime rows, 26 refusals, 8 cold splits
 history audit scope breakdown: generated_rocm_hip_preview_visual: 6, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json, count=21; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
-global per-target run modes: missing after removal of hardcoded support coverage; individual scoped run-mode rows remain, but plan-level support now requires row-bound evidence and reports cold/negative-edit gaps for generated Flow/ray-light and scoped WebGPU targets. SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
+global per-target run modes: partial after row-bound support restoration for WebGPU visual proof companions. Accepted run-mode targets: webgpu:webgpu-wgsl-runtime-triangle and webgpu:webgpu-wgsl-runtime-profiled-layout. Incomplete targets: hip:generated-gpu-split:3e2e1e99e0bfca5a804d336c and hip:generated-gpu-split:cceaa0a1d270bc6dbce292cc, both missing row-bound cold evidence and negative-edit refusal evidence. SAXPY remains a full-runtime evidence row outside that run-mode-suite target set.
 HIP module scoped run modes: accepted for hip-module-runtime-readback only as scoped module-load/readback evidence, with hot_delta_1, hot_delta_2 different edit, executable ABI-negative refusal, epoch-2 artifact hash continuity, and compute-card-only proof separation; it is not a broad HIP app/library claim.
 Broad library-agnostic full-runtime rows: 0. Every accepted full-runtime row is currently scoped by generated/profiled preview contract, declared HIP module/readback contract, or declared WebGPU pipeline/readback profile. HIPRT source-adapted visual profiles are not counted as full-runtime GPU HMR.
 Full-runtime evidence authority: accepted rows must carry either a strict runtime proof artifact or a backend-native recomputed ledger trace with loader, dispatch, output boundary, accepted oracle, and row-bound evidence refs.
@@ -97,40 +97,40 @@ Flow visuals: before-after-diff.png, hot-delta-2-diff.png
 Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
 Flow visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different Flow particle-ring patterns.
 
-WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:23db4d987cd865c25a728ec8dfabde136e2beabc40e1efc3392e4a35f9cebcf5
-WebGPU hot1 runtime proof: gpu-runtime-proof:sha256:dddf2ab49fb6186c6f9fe2a9ac8af62715b5ccf0ee42e6e7df472e1caeb5fe75
-WebGPU hot1 ledger: gpu-ledger-proof:sha256:15207b3d1aa84dbc99987d215febea180ee2af3e685a099c683bb0026d034088
-WebGPU hot1 run-mode proof: runtime-run-mode-proof:sha256:5844ac8c28275ac4ea0c20d7d02a0b2b3ae4c215d03a17da5b89587815d707cf
-WebGPU hot1 cold proof: runtime-run-mode-proof:sha256:24f695eb8fcd196bf2a03be1e00804b2284809700e8475c427e60c9f974d6fae
-WebGPU hot1 negative refusal: agent-split-negative-edit-refusal:sha256:cbc271bf659eb4dab952718ee934dbd2da5928c087ce9b2ec48b391d3e9cb6f4
-WebGPU hot1 timing: total_validator_wall_time=659548400ns, trigger_to_visible_time=49171800ns, changed_pixel_ratio=0.29389322916666666
-WebGPU hot2 proof id: webgpu-runtime-visual-proof:sha256:2405506bb17e93b3cd5e446a36dcb283bfd932b26c72620fb6287eebcb15ee2e
-WebGPU hot2 runtime proof: gpu-runtime-proof:sha256:c13b0ee0fb8d7f7f8dc93e30a3de298c3d8d26e211e3f1051bba3911ee03b80f
-WebGPU hot2 ledger: gpu-ledger-proof:sha256:24dcb8fed9f53514ecacf0ede46fdc27db0f4f936100602c186b1c592781253d
-WebGPU hot2 run-mode proof: runtime-run-mode-proof:sha256:9f437e19d7120fd3dbcb39e48059f8dbc30f790ed68e3e33b8658573afb86455
-WebGPU hot2 cold proof: runtime-run-mode-proof:sha256:f4262a8772e9955440beea19813e2c593dee6200f6ff4c5127c9ee9ebad53c43
-WebGPU hot2 negative refusal: agent-split-negative-edit-refusal:sha256:5ed8608701aeea8e7507fec667b5f9a559b0c6a4cb4148e54a0abe1979b6b1cc
-WebGPU hot2 timing: total_validator_wall_time=667988100ns, trigger_to_visible_time=49841900ns, changed_pixel_ratio=0.32245225694444446
+WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:87272df5a648f3e8100b9fee3e5de06238bf517b4998bbec9b01845b790a4aab
+WebGPU hot1 runtime proof: gpu-runtime-proof:sha256:a59e894be860669380b0723a67177e3ff5b94a8824c51f0d68908a7792298a9b
+WebGPU hot1 ledger: gpu-ledger-proof:sha256:8eb15f7a22156c14df0d947ed0c4ac4a1b14b52b45d3c2884e216a975b57e28b
+WebGPU hot1 run-mode proof: runtime-run-mode-proof:sha256:176195d21868cc476531698aca6aa004a2eaa6f0177b5de03bf03f7669565196
+WebGPU hot1 cold proof: runtime-run-mode-proof:sha256:682324fcd59276545d18f56e3ae6785ea99e3070de0ab98fb52cd09d562c759a
+WebGPU hot1 negative refusal: agent-split-negative-edit-refusal:sha256:db53d10719363bc9dacfb0518a2170745ba537ad3e6b7c79eb332a8854f72cfc
+WebGPU hot1 timing: total_validator_wall_time=1247829300ns, trigger_to_visible_time=70794700ns, changed_pixel_ratio=0.29389322916666666
+WebGPU hot2 proof id: webgpu-runtime-visual-proof:sha256:893dba543fddb66ac2369a10ce89f8bc07518aa0ddb949cccb891b859c7ec3f0
+WebGPU hot2 runtime proof: gpu-runtime-proof:sha256:983e347e834c914d32c7b1478fe00d7515238274fe32a6a902f2c38e1b55f625
+WebGPU hot2 ledger: gpu-ledger-proof:sha256:441ee9299dc073bfb86700af70342e42b06dce5fe970ff198a20667422c3ee90
+WebGPU hot2 run-mode proof: runtime-run-mode-proof:sha256:b0e6dafa96d31ed5b196c6dfa37d76968e0f7b23fa800bcd2b1f9282f34c7fd1
+WebGPU hot2 cold proof: runtime-run-mode-proof:sha256:a60b981a40599d14d2bad985c94d3b433472232f2ab14b400d414049e251c758
+WebGPU hot2 negative refusal: agent-split-negative-edit-refusal:sha256:7c69db3629fc77cd0a2de79b375b646834d66f5407177ee8a0ca10a00d6e0272
+WebGPU hot2 timing: total_validator_wall_time=613256000ns, trigger_to_visible_time=57775800ns, changed_pixel_ratio=0.32245225694444446
 WebGPU negative refusal reasons: bind_group_layouts_not_supported_by_runner, webgpu_pipeline_layout_or_binding_abi_changed, gpu_hmr_rejected_before_load
-WebGPU visual inspection: hot1 after yellow inverted triangle with nonblank diff; hot2 after green rotated triangle with nonblank diff, opened with the local image tool
+WebGPU visual inspection: hot1 diff `webgpu-runtime-visual-20260625070636-webgpu-wgsl-runtime-triangle-diff.png` and hot2 diff `webgpu-runtime-visual-20260625070706-webgpu-wgsl-runtime-triangle-hot2-diff.png` opened with the local image tool; both were visibly nonblank
 
 WebGPU profiled scope: explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list
 WebGPU profiled resource trace: bind_group_count=1, uniform binding 0 bytes=32, vertex_buffer_count=1, vertex bytes=48, resource_state_hash=sha256:febd60767177cf5ba103734735eba5e2f083a4b5131c5fab915567e9a843b2f3
-WebGPU profiled hot1 proof id: webgpu-runtime-visual-proof:sha256:8d94cd439ac99621306ae61e5a18b7dbf5f56b91d6f2987145fed66dafbe67da
-WebGPU profiled hot1 runtime proof: gpu-runtime-proof:sha256:470fb0ec6bfa136668d7aff0f15172a6af81bd21ca05f8ed16d7e55ade88185c
-WebGPU profiled hot1 ledger: gpu-ledger-proof:sha256:cdcc04ec9a057c64f0efed4025c66edbba461220c6023bd00160e2a4b0b9b5d9
-WebGPU profiled hot1 run-mode proof: runtime-run-mode-proof:sha256:06af47d8287b451e133be6e506361d4cf80dd0b257f89aab3867b0efab2b0fa0
-WebGPU profiled hot1 cold proof: runtime-run-mode-proof:sha256:0a2ec2786ef5170781996b2ab2db685eaf3137746cd0c13af52d7bc4e0e85934
-WebGPU profiled hot1 negative refusal: agent-split-negative-edit-refusal:sha256:ef5c2543eb5bfdbef5046484fdda9c32b2c78a33c6273e011093dce6bf54d7ca
-WebGPU profiled hot1 timing: total_validator_wall_time=931537200ns, trigger_to_visible_time=122562400ns, changed_pixel_ratio=0.23291666666666666
-WebGPU profiled hot2 proof id: webgpu-runtime-visual-proof:sha256:ebbf8c0f8811befb7b65a6bf9a522afb16f0a51dffeea1800caace1c53d59f80
-WebGPU profiled hot2 runtime proof: gpu-runtime-proof:sha256:d4e424a459c2f5887484a9b583ac9aca06a3f8791a1cde02706c169c53f5b76a
-WebGPU profiled hot2 ledger: gpu-ledger-proof:sha256:cbc9fdc9f8fe40feb89254bc4102756c6e310dbec84ac6f45f19771196ded890
-WebGPU profiled hot2 run-mode proof: runtime-run-mode-proof:sha256:8e66ce0e816b0cc9367baf98db27505fe92794d137bcad1f6fca5331a431e2b0
-WebGPU profiled hot2 cold proof: runtime-run-mode-proof:sha256:a0072433e1aaee79da0c15b3760a8bccb9f05d215e6f09ebd71d3e0f1ce9b4b2
-WebGPU profiled hot2 negative refusal: agent-split-negative-edit-refusal:sha256:db00663cbc41045c1fb17475d6ee2f5eaa254baf65ae0539b0ccada63f1c2e23
-WebGPU profiled hot2 timing: total_validator_wall_time=923131800ns, trigger_to_visible_time=123553700ns, changed_pixel_ratio=0.24441840277777777
-WebGPU profiled visual inspection: hot1 and hot2 after/diff PNGs opened with the local image tool; both were visibly nonblank and the diffs were post-epoch image changes
+WebGPU profiled hot1 proof id: webgpu-runtime-visual-proof:sha256:4a437069aff6eb30cf898de6633c16e428f0d72688a8f67eb0152117d993c333
+WebGPU profiled hot1 runtime proof: gpu-runtime-proof:sha256:327c5814b847eebb41aef8af3d202ba31835f95354515c455da82613ccfb8ca3
+WebGPU profiled hot1 ledger: gpu-ledger-proof:sha256:5b86d4fc2c7b403b3cb561e3f1b778da835462b2d50763e16539bcadeb95c1ee
+WebGPU profiled hot1 run-mode proof: runtime-run-mode-proof:sha256:614b7689891e2ebbdc87188ac9ff5e7515bfdd3e3bd38e5e9947d4eb119063e0
+WebGPU profiled hot1 cold proof: runtime-run-mode-proof:sha256:140755d546ba7a5cc0dcf0a5a76ce9402b69f022dd1d46bf6ddfc9d391b21043
+WebGPU profiled hot1 negative refusal: agent-split-negative-edit-refusal:sha256:43c0eef8fed58418d27f44736a706064926dc4991d9ce5518e3a2da63136eac2
+WebGPU profiled hot1 timing: total_validator_wall_time=1145767400ns, trigger_to_visible_time=70909600ns, changed_pixel_ratio=0.23291666666666666
+WebGPU profiled hot2 proof id: webgpu-runtime-visual-proof:sha256:de18b154e927f7f6afe0a6a5f8766539b87032dcdc2347a9821db5f2e95b28de
+WebGPU profiled hot2 runtime proof: gpu-runtime-proof:sha256:7c1e65e0bf337b2c26ad8021f1c2da57c67fb66f9522dcda5b75ec40d284e982
+WebGPU profiled hot2 ledger: gpu-ledger-proof:sha256:62fd846d75844bab4c4b943613fd71b7412c3887b8f695678ce6f674e97725e1
+WebGPU profiled hot2 run-mode proof: runtime-run-mode-proof:sha256:e60a28a51e069e0856cf52972b8c693889a1ba19ae9da52d22c7a0c79e935f78
+WebGPU profiled hot2 cold proof: runtime-run-mode-proof:sha256:15a3a586271ad18613deafebbfbb9b672185b44719f3d70820ba4f78cd992d06
+WebGPU profiled hot2 negative refusal: agent-split-negative-edit-refusal:sha256:77245a6d0819b9f5bf9394b23c49ce0969a5bcb8b566c2e5c5e1b88b7db909d8
+WebGPU profiled hot2 timing: total_validator_wall_time=636983100ns, trigger_to_visible_time=58872800ns, changed_pixel_ratio=0.24441840277777777
+WebGPU profiled visual inspection: hot1 diff `webgpu-runtime-visual-20260625070636-webgpu-wgsl-runtime-profiled-layout-diff.png` and hot2 diff `webgpu-runtime-visual-20260625070654-webgpu-wgsl-runtime-profiled-layout-hot2-diff.png` opened with the local image tool; both were visibly nonblank and the diffs were post-epoch image changes
 
 WebGPU compute scope: explicit-compute-profiled-layout-storage-uniform-float32-readback
 WebGPU compute hot1 proof id: webgpu-runtime-compute-proof:a4b48ea7208308a6dcf88098902101a489f861b59c53c11e39741b4753eee0d9
@@ -211,7 +211,7 @@ target progression: final-acceptance, required=true, target=MIOpenDriver, failed
 visual proof: no MIOpen frame captured; matrix marks visual.required=false for this compute-only target and still refuses because strict runtime ledger and raw output-oracle proof are missing
 matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
 refusal proof ids: gpu-ledger-proof:sha256:0710ac98edfb9ee6675f8d701b8faafc69d20135eb159c8b8a7d9898809fd4a2, gpu-runtime-proof:sha256:022ce05c97434a8642892054983d0e297db26733f37959f1c9245dde8726d971, real-rocm-validation:sha256:a48ee52db0f3ef658c58a3366a0caa07082de8314047f138a0e5e96937bbbe55
-matrix row id: gpu-validation-matrix-row:sha256:8c4a4c5cd63736520d0931c75b03df94361664de430e0fa9bf7b41cd1f14798a in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T064253Z.json
+matrix row id: gpu-validation-matrix-row:sha256:8c4a4c5cd63736520d0931c75b03df94361664de430e0fa9bf7b41cd1f14798a in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260625T070719Z.json
 matrix open gaps: strict runtime proof artifact rejected, proof ledger success false, output or visual oracle proof missing, output oracle disabled/missing, app-hook contract/runtime observations missing, target-progression gates failed, runtime capability preflight missing, runtime chain missing, artifact transport not observed, same-process epoch missing, dispatch epoch missing, host identity not observed
 plan coverage: large_real_rocm_repo=refused
 ```
@@ -249,6 +249,12 @@ historical matrix ledger for this matrix-multiplication run: gpu-validation-matr
 Latest implementation commits:
 
 ```text
+43f91dc78 fix(gpu-hmr): link webgpu run-mode support
+346ab5366 fix(gpu-hmr): normalize run-mode artifact hashes
+13e3dc497 docs(gpu-hmr): refresh matrix proof status
+0e261cfdf fix(gpu-hmr): require explicit runtime profiles
+757503e1f fix(gpu-hmr): derive visual profile coverage
+05dbbfcf5 fix(gpu-hmr): recompute visual proof artifacts
 98f949bbf chore(gpu-hmr): add validation matrix history proof script
 3e524e72e test(gpu-hmr): surface ROCm runtime preflight failures
 56ab9db70 test(gpu-hmr): require explicit firewall safety fields
@@ -402,8 +408,8 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:4ac74ddd9c90400079337f49b9d5d87488e02f73ce1ed5d2c2a8bbff8407a5a2
-latest history audit matrix -> gpu-validation-matrix-ledger:sha256:fa6cc8a45c25fe5b5fdbf41aa5ba33922e2023b41b9abb4ba2247e39002f4b5d
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:267836eb676af5caf730a7e8ad94cacd68a8dc6cc390f2760eff6f2d7b8207b6
+latest history audit matrix -> gpu-validation-matrix-ledger:sha256:b304320c1c2e06c104506065892c433df7cf6b6ecd7cde6ad7a08a4f54bc8c97
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
