@@ -2713,6 +2713,63 @@ function parseUpstreamRunExitCode(timings) {
   return match ? Number(match[1]) : null;
 }
 
+function classifyUpstreamLifecycleFailure({
+  timings = '',
+  configureLog = '',
+  buildLog = '',
+  runLog = '',
+  lifecycleError = null,
+} = {}) {
+  const combined = [
+    String(timings ?? ''),
+    String(configureLog ?? ''),
+    String(buildLog ?? ''),
+    String(runLog ?? ''),
+    String(lifecycleError?.message ?? ''),
+  ].join('\n');
+  const missingDependencies = compactStringList([
+    ...[...combined.matchAll(/Could\s+NOT\s+find\s+([A-Za-z0-9_.:+-]+)/g)].map((match) => match[1]),
+    ...[...combined.matchAll(/\bmissing:\s+([A-Za-z0-9_.:+-]+)/gi)].map((match) => match[1]),
+    ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)].map((match) => match[1]),
+  ]);
+  const cmakeConfigureFailed =
+    /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(combined);
+  const buildFailed = /cmake --build|build_ms=failed|\bbuild\.log\b/i.test(String(lifecycleError?.message ?? ''))
+    || /(^|\n)(?:gmake|make|ninja|\[[0-9]+\/[0-9]+\]).*(?:error|failed)/i.test(buildLog);
+  const runFailed = /\brun_exit_code=(?!0\b)[^\s]+/.test(String(timings ?? ''));
+  const reasons = compactStringList([
+    cmakeConfigureFailed ? 'cmake_configure_failed' : null,
+    missingDependencies.length > 0 ? 'missing_build_dependency' : null,
+    buildFailed ? 'upstream_build_failed' : null,
+    runFailed ? 'upstream_run_failed' : null,
+    lifecycleError ? 'upstream_lifecycle_command_failed' : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    acceptedAsRefusalEvidence: reasons.length > 0,
+    accepted_as_refusal_evidence: reasons.length > 0,
+    reasons,
+    missingDependencies,
+    missing_dependencies: missingDependencies,
+    cmakeConfigureFailed,
+    cmake_configure_failed: cmakeConfigureFailed,
+    buildFailed,
+    build_failed: buildFailed,
+    runFailed,
+    run_failed: runFailed,
+    timings,
+    configureLogTail: String(configureLog ?? '').slice(-4000),
+    configure_log_tail: String(configureLog ?? '').slice(-4000),
+    buildLogTail: String(buildLog ?? '').slice(-4000),
+    build_log_tail: String(buildLog ?? '').slice(-4000),
+    runLogTail: String(runLog ?? '').slice(-4000),
+    run_log_tail: String(runLog ?? '').slice(-4000),
+    lifecycleErrorMessage: lifecycleError?.message ?? null,
+    lifecycle_error_message: lifecycleError?.message ?? null,
+  };
+}
+
 function parseRocmArrayAllocationPreflightOutput(output) {
   const text = String(output ?? '');
   const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
@@ -3893,9 +3950,10 @@ else
 fi
 ran=$(date +%s%3N)
 printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$run_status"
-`;
+  `;
   let timings;
   let lifecycleError = null;
+  let lifecycleCanContinueWithCachedMetadata = false;
   try {
     timings = await execText(
       'docker',
@@ -3905,12 +3963,10 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     );
   } catch (err) {
     lifecycleError = err;
-    if (!canContinueWithCachedMetadataAfterLifecycleFailure({
+    lifecycleCanContinueWithCachedMetadata = canContinueWithCachedMetadataAfterLifecycleFailure({
       usesCachedMetadata: lifecyclePlan.usesCachedMetadata,
       cachedMetadataAvailable: Boolean(cachedMetadata),
-    })) {
-      throw err;
-    }
+    });
     timings = 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nrun_exit_code=not-run';
   }
   if (CFG.hiprtRuntimeProbe) {
@@ -3931,6 +3987,20 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
   report.logs.upstream_run = runLog;
   report.logs.upstream_configure = configureLog ?? '';
   report.logs.upstream_build = buildLog ?? '';
+  const upstreamLifecycleFailure = lifecycleError
+    ? classifyUpstreamLifecycleFailure({
+        timings,
+        configureLog,
+        buildLog,
+        runLog,
+        lifecycleError,
+      })
+    : null;
+  if (upstreamLifecycleFailure) {
+    report.upstream_lifecycle_failure = upstreamLifecycleFailure;
+    report.upstream_lifecycle_failure_facet = upstreamLifecycleFailure;
+    report.evidence.upstream_lifecycle_failure = upstreamLifecycleFailure;
+  }
   const phase = {
     name: 'upstream_gpu_build_run',
     timings,
@@ -3946,11 +4016,12 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
     cached_metadata_dir: lifecyclePlan.cachedMetadataDir,
     lifecycle_error: lifecycleError
       ? {
-          recovered_with_cached_metadata: true,
+          recovered_with_cached_metadata: lifecycleCanContinueWithCachedMetadata,
           message: lifecycleError.message,
           output: String(lifecycleError.output ?? '').slice(-2000),
         }
       : null,
+    upstream_lifecycle_failure: upstreamLifecycleFailure,
     upstream_run_environment: upstreamRunLaunch,
     runtime_capability_preflight: report.runtime_capability_preflight,
     native_launch_observer: CFG.nativeLaunchObserver
@@ -3966,9 +4037,22 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nrun_exit_code=%s\\n' "$((con
   if (lifecycleError) {
     record(
       'upstream GPU target lifecycle',
-      'warn',
-      `failed; continuing with cached_metadata=${CFG.buildMetadataDir}`,
+      lifecycleCanContinueWithCachedMetadata ? 'warn' : 'fail',
+      lifecycleCanContinueWithCachedMetadata
+        ? `failed; continuing with cached_metadata=${CFG.buildMetadataDir}`
+        : [
+            'failed without usable cached metadata',
+            `reasons=${upstreamLifecycleFailure?.reasons?.join('|') || 'unknown'}`,
+            `missing_dependencies=${upstreamLifecycleFailure?.missingDependencies?.join('|') || 'none'}`,
+          ].join(' '),
     );
+  }
+  if (lifecycleError && !lifecycleCanContinueWithCachedMetadata) {
+    throw new Error([
+      'upstream_configure_build_failed_without_metadata',
+      `reasons=${upstreamLifecycleFailure?.reasons?.join('|') || 'unknown'}`,
+      `missing_dependencies=${upstreamLifecycleFailure?.missingDependencies?.join('|') || 'none'}`,
+    ].join(' '));
   }
   if (CFG.runUpstream) {
     record(
