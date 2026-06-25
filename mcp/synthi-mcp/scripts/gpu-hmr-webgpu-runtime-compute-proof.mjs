@@ -56,6 +56,7 @@ const WEBGPU_LAUNCH_ARGS = Object.freeze([
   '--enable-features=Vulkan,WebGPU,UseSkiaRenderer',
   '--disable-gpu-sandbox',
 ]);
+const NUMERIC_DATA_TYPES = new Set(['float32', 'uint32', 'int32']);
 
 const CFG = {
   slug: process.env.SLUG ?? `webgpu-runtime-compute-${nowSlugDate()}`,
@@ -141,16 +142,77 @@ function finiteNumberArrayOrNull(value) {
   return values.every((entry) => entry !== null) ? values : null;
 }
 
-function encodeExpectedFloat32(values) {
-  const array = new Float32Array(values);
-  return Buffer.from(array.buffer.slice(0));
+function normalizeDataType(value, context, unsupported = null) {
+  const dataType = firstText(value)?.toLowerCase() ?? 'float32';
+  if (!NUMERIC_DATA_TYPES.has(dataType)) {
+    if (unsupported) {
+      unsupported.push(`${context}_resource_data_type_unsupported:${dataType}`);
+      return 'float32';
+    }
+    throw new Error(`${context} uses unsupported data type ${dataType}`);
+  }
+  return dataType;
 }
 
-function normalizeFloat32(values) {
-  return Array.from(new Float32Array(values));
+function byteWidthForDataType(dataType) {
+  if (NUMERIC_DATA_TYPES.has(dataType)) return 4;
+  throw new Error(`unsupported data type ${dataType}`);
 }
 
-function compareFloat32Values(actual, expected, tolerance) {
+function normalizeNumericValues(rawValues, context, dataType, unsupported = null) {
+  const values = Array.isArray(rawValues) ? rawValues.map(Number) : [];
+  if (values.length === 0) {
+    if (unsupported) unsupported.push(`${context}_${dataType}_values_missing`);
+    else throw new Error(`${context} must declare ${dataType} values`);
+    return [];
+  }
+  const invalidIndex = values.findIndex((value) => !Number.isFinite(value));
+  if (invalidIndex >= 0) {
+    if (unsupported) unsupported.push(`${context}_${dataType}_value_not_finite:${invalidIndex}`);
+    else throw new Error(`${context}[${invalidIndex}] must be finite`);
+    return values;
+  }
+  if (dataType === 'uint32') {
+    const bad = values.findIndex((value) => !Number.isInteger(value) || value < 0 || value > 0xffffffff);
+    if (bad >= 0 && unsupported) unsupported.push(`${context}_uint32_value_out_of_range:${bad}`);
+    else if (bad >= 0) throw new Error(`${context}[${bad}] must be a uint32`);
+  }
+  if (dataType === 'int32') {
+    const bad = values.findIndex((value) => !Number.isInteger(value) || value < -2147483648 || value > 2147483647);
+    if (bad >= 0 && unsupported) unsupported.push(`${context}_int32_value_out_of_range:${bad}`);
+    else if (bad >= 0) throw new Error(`${context}[${bad}] must be an int32`);
+  }
+  return values;
+}
+
+function encodeNumericValues(values, dataType) {
+  const width = byteWidthForDataType(dataType);
+  const buffer = Buffer.alloc(values.length * width);
+  values.forEach((value, index) => {
+    const offset = index * width;
+    if (dataType === 'float32') buffer.writeFloatLE(Number(value), offset);
+    else if (dataType === 'uint32') buffer.writeUInt32LE(Number(value), offset);
+    else if (dataType === 'int32') buffer.writeInt32LE(Number(value), offset);
+    else throw new Error(`unsupported data type ${dataType}`);
+  });
+  return buffer;
+}
+
+function decodeNumericValues(bytes, dataType) {
+  const width = byteWidthForDataType(dataType);
+  if (bytes.length % width !== 0) {
+    throw new Error(`readback byte length ${bytes.length} is not aligned to ${dataType}`);
+  }
+  const out = [];
+  for (let offset = 0; offset + width <= bytes.length; offset += width) {
+    if (dataType === 'float32') out.push(bytes.readFloatLE(offset));
+    else if (dataType === 'uint32') out.push(bytes.readUInt32LE(offset));
+    else if (dataType === 'int32') out.push(bytes.readInt32LE(offset));
+  }
+  return out;
+}
+
+function compareNumericValues(actual, expected, tolerance, dataType) {
   if (!Array.isArray(expected) || expected.length === 0) {
     return {
       declared: false,
@@ -160,7 +222,9 @@ function compareFloat32Values(actual, expected, tolerance) {
       mismatches: [],
     };
   }
-  const normalizedExpected = normalizeFloat32(expected);
+  const normalizedExpected = dataType === 'float32'
+    ? decodeNumericValues(encodeNumericValues(expected, dataType), dataType)
+    : expected.map(Number);
   const compared = Math.min(actual.length, normalizedExpected.length);
   const mismatches = [];
   let maxAbsDelta = 0;
@@ -213,33 +277,6 @@ function durationNs(startNs, endNs) {
   return Number(endNs - startNs);
 }
 
-function encodeFloat32(values) {
-  const buffer = Buffer.alloc(values.length * 4);
-  values.forEach((value, index) => buffer.writeFloatLE(Number(value), index * 4));
-  return buffer;
-}
-
-function decodeFloat32(bytes) {
-  const out = [];
-  for (let offset = 0; offset + 4 <= bytes.length; offset += 4) {
-    out.push(bytes.readFloatLE(offset));
-  }
-  return out;
-}
-
-function normalizeFloat32Values(rawValues, context, unsupported) {
-  const values = Array.isArray(rawValues) ? rawValues.map(Number) : [];
-  if (values.length === 0) {
-    unsupported.push(`${context}_float32_values_missing`);
-    return [];
-  }
-  const invalidIndex = values.findIndex((value) => !Number.isFinite(value));
-  if (invalidIndex >= 0) {
-    unsupported.push(`${context}_float32_value_not_finite:${invalidIndex}`);
-  }
-  return values;
-}
-
 function normalizeVisibilityTokens(rawVisibility, context, unsupported) {
   const rawTokens = Array.isArray(rawVisibility)
     ? rawVisibility
@@ -273,19 +310,20 @@ function normalizeComputeBufferResource(rawEntry, layoutEntry, context, unsuppor
   if (!expectedKinds.has(kind)) {
     unsupported.push(`${context}_resource_kind_unsupported:${kind}`);
   }
-  const dataType = firstText(resource.dataType, resource.data_type, resource.typeName, resource.type_name)
-    ?? 'float32';
-  if (dataType !== 'float32') {
-    unsupported.push(`${context}_resource_data_type_unsupported:${dataType}`);
-  }
-  const values = normalizeFloat32Values(
-    resource.values ?? resource.float32 ?? resource.data,
+  const dataType = normalizeDataType(
+    resource.dataType ?? resource.data_type ?? resource.typeName ?? resource.type_name,
     context,
+    unsupported,
+  );
+  const values = normalizeNumericValues(
+    resource.values ?? resource[dataType] ?? resource.float32 ?? resource.data,
+    context,
+    dataType,
     unsupported,
   );
   const access = firstText(resource.access, resource.accessMode, resource.access_mode)
     ?? (layoutType === 'read-only-storage' ? 'read_only' : layoutType === 'uniform' ? 'read_only' : 'read_write');
-  const byteLength = values.length * 4;
+  const byteLength = values.length * byteWidthForDataType(dataType);
   const minBindingSize = nonNegativeIntegerOrNull(layoutBuffer.minBindingSize ?? layoutBuffer.min_binding_size) ?? 0;
   if (minBindingSize > 0 && byteLength < minBindingSize) {
     unsupported.push(`${context}_resource_smaller_than_min_binding_size`);
@@ -293,7 +331,7 @@ function normalizeComputeBufferResource(rawEntry, layoutEntry, context, unsuppor
   const normalized = {
     kind: layoutType === 'uniform' ? 'uniform_buffer' : 'storage_buffer',
     layoutType,
-    dataType: 'float32',
+    dataType,
     access,
     values,
     byteLength,
@@ -391,6 +429,7 @@ function normalizeComputeBindGroups(pipeline, unsupported) {
           group: groupIndex,
           binding: entry.binding,
           byteLength: entry.resource.byteLength,
+          dataType: entry.resource.dataType,
           resourceHash: entry.resource.resourceHash,
         });
       }
@@ -449,8 +488,17 @@ function normalizeComputePipeline(rawPipeline = {}, rawShader = {}) {
     resourceStateHash,
     dispatchWorkgroups,
   }));
+  const dataTypes = [...new Set(bindGroups.bindGroups.flatMap((group) =>
+    group.entries.map((entry) => entry.resource.dataType)
+  ))].sort();
+  const readbackDataTypes = [...new Set(bindGroups.readbackResources.map((resource) => resource.dataType))].sort();
+  const scopeDataType = dataTypes.length === 1 ? dataTypes[0] : 'mixed-numeric';
+  const readbackScope = readbackDataTypes.length === 1 ? readbackDataTypes[0] : 'mixed-numeric';
+  const scopeSuffix = scopeDataType === readbackScope
+    ? `${scopeDataType}-readback`
+    : `${scopeDataType}-${readbackScope}-readback`;
   return {
-    scope: 'explicit-compute-profiled-layout-storage-uniform-float32-readback',
+    scope: `explicit-compute-profiled-layout-storage-uniform-${scopeSuffix}`,
     layout,
     entryPoint,
     bindGroupLayouts: bindGroups.bindGroupLayouts,
@@ -571,6 +619,18 @@ async function loadProfile(profilePath) {
       ?? oracle.floatTolerance ?? oracle.float_tolerance,
     0.00001,
   ));
+  const expectedOutputDataType = normalizeDataType(
+    firstText(expectedOutput.dataType, expectedOutput.data_type) ?? readbackResource.dataType,
+    'compute_oracle_expected_output',
+  );
+  if (expectedOutputDataType !== readbackResource.dataType) {
+    throw new Error(
+      `compute oracle expected output data type ${expectedOutputDataType} does not match readback resource ${readbackResource.dataType}`,
+    );
+  }
+  const normalizedExpectedAfterValues = expectedAfterValues
+    ? normalizeNumericValues(expectedAfterValues, 'compute_oracle_expected_output', expectedOutputDataType)
+    : null;
   return {
     raw,
     schemaVersion: firstText(raw.schemaVersion, raw.schema_version) ?? 'synthi.gpu.hmr.webgpu_compute_profile.v1',
@@ -597,8 +657,8 @@ async function loadProfile(profilePath) {
       readbackResource,
       expectedOutputChange: oracle.expectedOutputChange !== false && oracle.expected_output_change !== false,
       expectedOutput: {
-        dataType: firstText(expectedOutput.dataType, expectedOutput.data_type) ?? 'float32',
-        values: expectedAfterValues,
+        dataType: expectedOutputDataType,
+        values: normalizedExpectedAfterValues,
         tolerance: floatTolerance,
         required: expectedOutput.required !== false && oracle.expected_output_required !== false,
       },
@@ -702,9 +762,17 @@ async function runBrowserCompute(profile) {
         if (readback) usage |= GPUBufferUsage.COPY_SRC;
         return usage;
       };
-      const makeFloat32Bytes = (values) => {
-        const array = new Float32Array(values);
-        return new Uint8Array(array.buffer.slice(0));
+      const makeNumericBytes = (values, dataType) => {
+        const buffer = new ArrayBuffer(values.length * 4);
+        const view = new DataView(buffer);
+        values.forEach((value, index) => {
+          const offset = index * 4;
+          if (dataType === 'float32') view.setFloat32(offset, Number(value), true);
+          else if (dataType === 'uint32') view.setUint32(offset, Number(value), true);
+          else if (dataType === 'int32') view.setInt32(offset, Number(value), true);
+          else throw new Error(`unsupported numeric resource data type: ${dataType}`);
+        });
+        return new Uint8Array(buffer);
       };
       const bindGroupLayouts = profileForPage.pipeline.bindGroupLayouts.map((layout, layoutIndex) => {
         markApi('createBindGroupLayout', { layoutIndex });
@@ -726,7 +794,7 @@ async function runBrowserCompute(profile) {
       const bindGroups = profileForPage.pipeline.bindGroups.map((group, groupIndex) => {
         const entries = group.entries.map((entry) => {
           const resource = entry.resource;
-          const bytes = makeFloat32Bytes(resource.values);
+          const bytes = makeNumericBytes(resource.values, resource.dataType);
           const buffer = device.createBuffer({
             label: `compute-buffer-g${groupIndex}-b${entry.binding}`,
             size: bytes.byteLength,
@@ -1279,19 +1347,21 @@ async function renderComputeCard({ filePath, profile, beforeValues, afterValues,
 }
 
 async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
+  const dataType = profile.computeOracle.expectedOutput.dataType;
   const beforeBytes = Buffer.from(trace.before.readbackBytes);
   const afterBytes = Buffer.from(trace.after.readbackBytes);
-  const beforeValues = decodeFloat32(beforeBytes);
-  const afterValues = decodeFloat32(afterBytes);
+  const beforeValues = decodeNumericValues(beforeBytes, dataType);
+  const afterValues = decodeNumericValues(afterBytes, dataType);
   const rawHash = sha256Bytes(afterBytes);
   const beforeHash = sha256Bytes(beforeBytes);
   const expectedValues = profile.computeOracle.expectedOutput.values;
-  const expectedVerification = compareFloat32Values(
+  const expectedVerification = compareNumericValues(
     afterValues,
     expectedValues,
     profile.computeOracle.expectedOutput.tolerance,
+    dataType,
   );
-  const expectedBytes = expectedVerification.declared ? encodeExpectedFloat32(expectedValues) : null;
+  const expectedBytes = expectedVerification.declared ? encodeNumericValues(expectedValues, dataType) : null;
   const expectedHash = expectedBytes ? sha256Bytes(expectedBytes) : null;
   const slice = profile.computeOracle.deterministicSlice;
   const boundedSlice = {
@@ -1309,7 +1379,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
   const readbackSchema = {
     schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
     producer: 'webgpu_runtime_compute_proof',
-    dataType: 'float32',
+    dataType,
     byteLength: afterBytes.length,
     elementCount: afterValues.length,
     readbackResource: profile.computeOracle.readbackResource,
@@ -1982,6 +2052,34 @@ async function selfCheck() {
   if (supported.scope !== 'explicit-compute-profiled-layout-storage-uniform-float32-readback') {
     throw new Error('self-check failed to accept supported compute pipeline');
   }
+  const supportedUint32 = normalizeComputePipeline({
+    layout: 'explicit-compute-profiled',
+    bindGroupLayouts: [{
+      entries: [
+        { binding: 0, visibility: 'compute', buffer: { type: 'read-only-storage', minBindingSize: 16 } },
+        { binding: 1, visibility: 'compute', buffer: { type: 'storage', minBindingSize: 16 } },
+      ],
+    }],
+    bindGroups: [{
+      entries: [
+        { binding: 0, resource: { kind: 'storage_buffer', dataType: 'uint32', values: [1, 2, 3, 4] } },
+        { binding: 1, readback: true, resetBeforeDispatch: true, resource: { kind: 'storage_buffer', dataType: 'uint32', values: [0, 0, 0, 0] } },
+      ],
+    }],
+    dispatchWorkgroups: [1, 1, 1],
+  }, { entryPoint: 'main' });
+  if (
+    supportedUint32.scope !== 'explicit-compute-profiled-layout-storage-uniform-uint32-readback'
+    || supportedUint32.readbackResources[0]?.dataType !== 'uint32'
+    || supportedUint32.readbackResources[0]?.byteLength !== 16
+  ) {
+    throw new Error('self-check failed to accept typed uint32 compute pipeline');
+  }
+  const uint32Values = [0, 1, 4294967295];
+  const decodedUint32 = decodeNumericValues(encodeNumericValues(uint32Values, 'uint32'), 'uint32');
+  if (decodedUint32.join(',') !== uint32Values.join(',')) {
+    throw new Error('self-check failed to round-trip uint32 oracle bytes');
+  }
   let rejected = false;
   try {
     normalizeComputePipeline({
@@ -1999,6 +2097,22 @@ async function selfCheck() {
       && error.unsupportedReasons.some((reason) => reason.includes('buffer_type_unsupported'));
   }
   if (!rejected) throw new Error('self-check failed to reject unsupported compute resource');
+  let rejectedDataType = false;
+  try {
+    normalizeComputePipeline({
+      layout: 'explicit-compute-profiled',
+      bindGroupLayouts: [{
+        entries: [{ binding: 0, visibility: 'compute', buffer: { type: 'storage', minBindingSize: 4 } }],
+      }],
+      bindGroups: [{
+        entries: [{ binding: 0, readback: true, resource: { kind: 'storage_buffer', dataType: 'float16', values: [1] } }],
+      }],
+    }, { entryPoint: 'main' });
+  } catch (error) {
+    rejectedDataType = Array.isArray(error.unsupportedReasons)
+      && error.unsupportedReasons.some((reason) => reason.includes('resource_data_type_unsupported:float16'));
+  }
+  if (!rejectedDataType) throw new Error('self-check failed to reject unsupported compute data type');
   const fakeArtifact = 'sha256:' + 'a'.repeat(64);
   const fakeRecord = {
     project_id: 'webgpu-compute-self-check',
@@ -2041,6 +2155,7 @@ async function selfCheck() {
   console.log(JSON.stringify({
     ok: true,
     supportedScope: supported.scope,
+    supportedUint32Scope: supportedUint32.scope,
     forgedLedgerFailedGate: 'compute_oracle_artifacts_missing',
   }, null, 2));
 }
