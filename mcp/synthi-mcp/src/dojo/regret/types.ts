@@ -51,6 +51,7 @@ export interface RegretScope {
   vivarium_run_id?: string;
   checkride_run_id?: string;
   task_class: string;
+  base_state_hash: string;
 }
 
 export interface CounterfactualRun extends RegretScope {
