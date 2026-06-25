@@ -438,9 +438,32 @@ function runtimeArtifact(overrides = {}) {
 }
 
 const passingArtifact = runtimeArtifact();
+const webgpuComputeOnlyLedger = buildGpuHmrProofLedger(ledgerRecord({
+  backend: 'webgpu',
+  output_event: {
+    id: 'output-webgpu-compute-1',
+    kind: 'compute_readback',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    after_dispatch_id: 'dispatch-1',
+    passed: true,
+    timestamp_monotonic_ns: 400,
+  },
+  output_oracle_target: {
+    kind: 'compute',
+    target_id: 'storage-buffer-1',
+    compute_only_target_verified: true,
+    evidence_refs: ['runtime:webgpu-compute-readback'],
+  },
+}));
 
 assert.equal(adversarialPreflightStrictGate(passingPreflight).status, 'pass');
 assert.equal(runtimeProofArtifactStrictGate(passingArtifact).status, 'pass');
+assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
+  proofLedger: webgpuComputeOnlyLedger,
+  proofLedgerQuery: webgpuComputeOnlyLedger.query,
+})).status, 'pass');
 assert.equal(strictProofGateFailures([
   adversarialPreflightStrictGate(passingPreflight),
   runtimeProofArtifactStrictGate(passingArtifact),

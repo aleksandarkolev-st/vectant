@@ -108,11 +108,35 @@ function visualArtifactsPresent(record) {
   ].some(isObject);
 }
 
+function outputOracleTarget(record) {
+  const outputEvent = firstObject(record?.output_event, record?.outputEvent) ?? {};
+  const outputOracle = firstObject(outputEvent.output_oracle, outputEvent.outputOracle) ?? {};
+  return firstObject(
+    record?.output_oracle_target,
+    record?.outputOracleTarget,
+    outputEvent.output_oracle_target,
+    outputEvent.outputOracleTarget,
+    outputOracle.output_oracle_target,
+    outputOracle.outputOracleTarget,
+  );
+}
+
+function outputOracleTargetKind(target) {
+  return normalizedText(target?.kind, target?.target_kind, target?.targetKind);
+}
+
+function computeOnlyOutputTargetVerified(record) {
+  const target = outputOracleTarget(record);
+  return outputOracleTargetKind(target) === 'compute'
+    && (target.compute_only_target_verified === true || target.computeOnlyTargetVerified === true);
+}
+
 function recordRequiresDeterministicVisualMode(record) {
   const backend = normalizedText(record.backend);
   const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
   const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
-  return VISUAL_OR_ENGINE_BACKENDS.has(backend)
+  const computeOnlyOutput = computeOnlyOutputTargetVerified(record);
+  return (!computeOnlyOutput && VISUAL_OR_ENGINE_BACKENDS.has(backend))
     || kind.includes('visual')
     || kind.includes('render')
     || kind.includes('frame')
