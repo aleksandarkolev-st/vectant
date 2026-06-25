@@ -3381,6 +3381,41 @@ function classifyUpstreamLifecycleFailure({
   };
 }
 
+function workerRepoTransferFailureFacet({
+  operation,
+  sourcePath,
+  destinationPath,
+  workerContainer,
+  error,
+} = {}) {
+  const message = String(error?.stack || error?.message || error || '');
+  const failed = message.length > 0;
+  const reasons = compactStringList([
+    failed ? 'worker_repo_transfer_failed' : null,
+    /docker\s+cp/i.test(message) || operation === 'docker_cp' ? 'docker_copy_failed' : null,
+    /input\/output\s+error/i.test(message) ? 'filesystem_io_error' : null,
+    /\bchmod\b/i.test(message) ? 'chmod_failed' : null,
+    /no\s+space\s+left/i.test(message) ? 'filesystem_no_space_left' : null,
+    /permission\s+denied/i.test(message) ? 'filesystem_permission_denied' : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.real_rocm.worker_repo_transfer_failure.v1',
+    schema_version: 'synthi.real_rocm.worker_repo_transfer_failure.v1',
+    acceptedAsRefusalEvidence: failed,
+    accepted_as_refusal_evidence: failed,
+    operation: operation ?? 'unknown',
+    sourcePath: sourcePath ?? null,
+    source_path: sourcePath ?? null,
+    destinationPath: destinationPath ?? null,
+    destination_path: destinationPath ?? null,
+    workerContainer: workerContainer ?? null,
+    worker_container: workerContainer ?? null,
+    reasons,
+    errorMessage: message.slice(0, 4000),
+    error_message: message.slice(0, 4000),
+  };
+}
+
 function parseRocmArrayAllocationPreflightOutput(output) {
   const text = String(output ?? '');
   const device = /\bdevice_count result=(\d+)\s+error=(.*?)\s+count=(\d+)/.exec(text);
@@ -4423,7 +4458,27 @@ async function prepareUpstreamBuild() {
       `mkdir -p ${shQuote(CFG.workerTempDir)}`,
     ].join('; ');
     await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
-    await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
+    const destination = `${CFG.workerContainer}:${CFG.workerRepoPath}`;
+    try {
+      await execText('docker', ['cp', CFG.repoPath, destination], 180000, true);
+    } catch (err) {
+      const transferFailure = workerRepoTransferFailureFacet({
+        operation: 'docker_cp',
+        sourcePath: CFG.repoPath,
+        destinationPath: destination,
+        workerContainer: CFG.workerContainer,
+        error: err,
+      });
+      report.worker_repo_transfer_failure = transferFailure;
+      report.workerRepoTransferFailure = transferFailure;
+      report.evidence.worker_repo_transfer_failure = transferFailure;
+      record(
+        'worker repo transfer',
+        'fail',
+        `operation=docker_cp reasons=${transferFailure.reasons.join(',') || 'unknown'} source=${CFG.repoPath} destination=${destination}`,
+      );
+      throw err;
+    }
     if (CFG.reuseWorkerRepo) {
       record(
         'worker repo warm reuse',
@@ -11224,6 +11279,26 @@ int main()
     || !buildFailureClassification.missingDependencies.includes('half/half.hpp')
   ) {
     throw new Error('upstream lifecycle build-failure classifier self-check failed');
+  }
+  const transferFailure = workerRepoTransferFailureFacet({
+    operation: 'docker_cp',
+    sourcePath: '/tmp/source',
+    destinationPath: 'worker:/tmp/dest',
+    workerContainer: 'worker',
+    error: new Error(
+      'Command failed: docker cp /tmp/source worker:/tmp/dest\n'
+      + 'Error response from daemon: chmod /tmp/dest/file.yaml: input/output error',
+    ),
+  });
+  if (
+    transferFailure.acceptedAsRefusalEvidence !== true
+    || !transferFailure.reasons.includes('worker_repo_transfer_failed')
+    || !transferFailure.reasons.includes('docker_copy_failed')
+    || !transferFailure.reasons.includes('filesystem_io_error')
+    || !transferFailure.reasons.includes('chmod_failed')
+    || transferFailure.operation !== 'docker_cp'
+  ) {
+    throw new Error('worker repo transfer failure classifier self-check failed');
   }
   const arrayCapability = parseRocmArrayAllocationPreflightOutput([
     'device_count result=0 error=no error count=1',

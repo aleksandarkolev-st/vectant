@@ -1710,6 +1710,7 @@ function generalityClaimFailures(row) {
 function realRocmAttemptCompletenessFacet({
   accepted = false,
   upstreamLifecycleFailure = {},
+  workerRepoTransferFailure = {},
   runtimeProofArtifact = {},
   strictGateFailures = [],
   ledger = {},
@@ -1719,14 +1720,23 @@ function realRocmAttemptCompletenessFacet({
     upstreamLifecycleFailure.acceptedAsRefusalEvidence,
     upstreamLifecycleFailure.accepted_as_refusal_evidence,
   ) === true;
+  const transferPresent = Object.keys(compactObject(workerRepoTransferFailure)).length > 0;
+  const transferAccepted = firstBool(
+    workerRepoTransferFailure.acceptedAsRefusalEvidence,
+    workerRepoTransferFailure.accepted_as_refusal_evidence,
+  ) === true;
   const runtimeProofPresent = runtimeProofArtifact.present === true;
   const ledgerPresent = ledger.present === true;
   const score = accepted
     ? 100
     : upstreamAccepted
       ? 80
+      : transferAccepted
+        ? 70
       : upstreamPresent
         ? 60
+        : transferPresent
+          ? 50
         : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
           ? 30
           : runtimeProofPresent
@@ -1741,13 +1751,17 @@ function realRocmAttemptCompletenessFacet({
     upstream_lifecycle_present: upstreamPresent,
     upstreamLifecycleAcceptedAsRefusalEvidence: upstreamAccepted,
     upstream_lifecycle_accepted_as_refusal_evidence: upstreamAccepted,
+    workerRepoTransferPresent: transferPresent,
+    worker_repo_transfer_present: transferPresent,
+    workerRepoTransferAcceptedAsRefusalEvidence: transferAccepted,
+    worker_repo_transfer_accepted_as_refusal_evidence: transferAccepted,
     runtimeProofArtifactPresent: runtimeProofPresent,
     runtime_proof_artifact_present: runtimeProofPresent,
     ledgerPresent,
     ledger_present: ledgerPresent,
     failedGates: compactStringList([
-      upstreamAccepted || accepted ? null : 'upstream_lifecycle_refusal_evidence_not_accepted',
-      upstreamPresent || accepted ? null : 'upstream_lifecycle_evidence_missing',
+      upstreamAccepted || transferAccepted || accepted ? null : 'real_rocm_refusal_evidence_not_accepted',
+      upstreamPresent || transferPresent || accepted ? null : 'real_rocm_attempt_evidence_missing',
     ]),
   };
 }
@@ -6154,6 +6168,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.upstream_lifecycle_failure
     ?? runtimeProofArtifact.upstreamLifecycleFailure,
   );
+  const workerRepoTransferFailure = compactObject(
+    json.worker_repo_transfer_failure
+    ?? json.workerRepoTransferFailure
+    ?? summary.worker_repo_transfer_failure
+    ?? summary.workerRepoTransferFailure
+    ?? runtimeProofArtifact.worker_repo_transfer_failure
+    ?? runtimeProofArtifact.workerRepoTransferFailure,
+  );
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
     ?? json.outputOracleResolution
@@ -6470,6 +6492,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const attemptCompleteness = realRocmAttemptCompletenessFacet({
     accepted,
     upstreamLifecycleFailure,
+    workerRepoTransferFailure,
     runtimeProofArtifact: runtimeProofArtifactGate,
     strictGateFailures,
     ledger,
@@ -6551,6 +6574,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     },
     upstreamLifecycleFailure,
     upstream_lifecycle_failure: upstreamLifecycleFailure,
+    workerRepoTransferFailure,
+    worker_repo_transfer_failure: workerRepoTransferFailure,
     attemptCompleteness,
     attempt_completeness: attemptCompleteness,
     outputOracleResolution,

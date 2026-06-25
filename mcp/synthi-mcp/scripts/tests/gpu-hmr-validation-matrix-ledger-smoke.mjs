@@ -6767,6 +6767,101 @@ assert.ok(completenessSelectionRow?.artifactPath.endsWith('real-rocm-complete-re
 assert.equal(completenessSelectionRow.attemptCompleteness.score, 80);
 assert.equal(completenessSelectionRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, true);
 
+const workerTransferRefusalDir = path.join(logsRoot, 'real-rocm-worker-transfer-refusal');
+await writeJson(path.join(workerTransferRefusalDir, 'real-rocm-worker-transfer-refusal.json'), {
+  slug: 'gpu-real-rocm-worker-transfer-refusal-20260625',
+  real_rocm_profile: { id: 'real-rocm-worker-transfer-refusal-generic' },
+  source_url: 'https://example.invalid/rocm/generic-worker-transfer.git',
+  repo_commit: '1111111111111111111111111111111111111111',
+  entry_file: 'src/gpu/generic_entry.hip',
+  delta_file: 'src/gpu/generic_delta.h',
+  target_name: 'GenericRocmDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: false,
+  gpu_hmr_success: false,
+  strict_proof_gates: {
+    accepted: false,
+    failures: ['runtime_full_proof_not_proven'],
+  },
+  runtime_proof_artifact: {
+    proofId: 'runtime-proof-artifact:worker-transfer-refusal',
+    fullRuntimeProven: false,
+    full_runtime_proven: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    stageResults: [
+      { stageId: 'worker-repo-transfer', status: 'failed' },
+    ],
+    limitations: [{ code: 'worker_repo_transfer_failed' }],
+  },
+  worker_repo_transfer_failure: {
+    schemaVersion: 'synthi.real_rocm.worker_repo_transfer_failure.v1',
+    schema_version: 'synthi.real_rocm.worker_repo_transfer_failure.v1',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    operation: 'docker_cp',
+    sourcePath: '/tmp/generic-real-rocm-source',
+    source_path: '/tmp/generic-real-rocm-source',
+    destinationPath: 'worker:/tmp/generic-real-rocm-repo',
+    destination_path: 'worker:/tmp/generic-real-rocm-repo',
+    workerContainer: 'generic-rocm-worker',
+    worker_container: 'generic-rocm-worker',
+    reasons: [
+      'worker_repo_transfer_failed',
+      'docker_copy_failed',
+      'filesystem_io_error',
+    ],
+    errorMessage: 'Command failed: docker cp /tmp/generic-real-rocm-source worker:/tmp/generic-real-rocm-repo: input/output error',
+    error_message: 'Command failed: docker cp /tmp/generic-real-rocm-source worker:/tmp/generic-real-rocm-repo: input/output error',
+  },
+  checks: [
+    {
+      name: 'worker repo transfer',
+      status: 'fail',
+      detail: 'operation=docker_cp reasons=worker_repo_transfer_failed,docker_copy_failed,filesystem_io_error',
+    },
+    {
+      name: 'strict real ROCm runtime proof artifact acceptance',
+      status: 'fail',
+      detail: 'failures=runtime_full_proof_not_proven',
+    },
+  ],
+});
+const workerTransferRefusalLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [workerTransferRefusalDir],
+  generatedAt: '2026-06-09T00:06:00.000Z',
+});
+const workerTransferRefusalRow = workerTransferRefusalLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(workerTransferRefusalRow?.matrixOutcome, 'refusal_proven');
+assert.equal(workerTransferRefusalRow.acceptanceClass, 'large_real_rocm_repo_refusal');
+assert.equal(workerTransferRefusalRow.acceptedForGpuHmr, false);
+assert.equal(workerTransferRefusalRow.gpuHmrSuccess, false);
+assert.equal(workerTransferRefusalRow.refusalProven, true);
+assert.equal(workerTransferRefusalRow.proofChainAccepted, true);
+assert.equal(workerTransferRefusalRow.proofChain, 'real_rocm_strict_runtime_refusal');
+assert.equal(workerTransferRefusalRow.runtimeProofArtifact.present, true);
+assert.equal(workerTransferRefusalRow.runtimeProofArtifact.accepted, false);
+assert.ok(workerTransferRefusalRow.runtimeProofArtifact.failedGates.some(
+  (failure) => failure.code === 'runtime_full_proof_not_proven',
+));
+assert.equal(workerTransferRefusalRow.workerRepoTransferFailure.schemaVersion,
+  'synthi.real_rocm.worker_repo_transfer_failure.v1');
+assert.equal(workerTransferRefusalRow.workerRepoTransferFailure.acceptedAsRefusalEvidence, true);
+assert.equal(workerTransferRefusalRow.workerRepoTransferFailure.operation, 'docker_cp');
+assert.ok(workerTransferRefusalRow.workerRepoTransferFailure.reasons.includes('worker_repo_transfer_failed'));
+assert.ok(workerTransferRefusalRow.workerRepoTransferFailure.reasons.includes('docker_copy_failed'));
+assert.ok(workerTransferRefusalRow.workerRepoTransferFailure.reasons.includes('filesystem_io_error'));
+assert.equal(workerTransferRefusalRow.attemptCompleteness.score, 70);
+assert.equal(workerTransferRefusalRow.attemptCompleteness.workerRepoTransferPresent, true);
+assert.equal(workerTransferRefusalRow.attemptCompleteness.workerRepoTransferAcceptedAsRefusalEvidence, true);
+assert.equal(workerTransferRefusalRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, false);
+assert.equal(workerTransferRefusalRow.attemptCompleteness.accepted, false);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
