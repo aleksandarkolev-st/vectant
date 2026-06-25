@@ -19,6 +19,7 @@ function fail(message) {
 const packageJson = await readJson('package.json');
 const profile = await readJson('scripts/profiles/hip-module-runtime-readback.json');
 const hot2Profile = await readJson('scripts/profiles/hip-module-runtime-readback-hot2.json');
+const declaredProfile = await readJson('scripts/profiles/hip-module-runtime-uint32-reordered.json');
 
 if (!packageJson.scripts['proof:hip-module:runtime']) {
   fail('proof:hip-module:runtime script missing');
@@ -38,8 +39,14 @@ if (profile.validationScope !== 'explicit-hip-module-float32-readback') {
 if (hot2Profile.validationScope !== 'explicit-hip-module-float32-readback') {
   fail('hot2 HIP module profile scope is not explicit');
 }
+if (declaredProfile.validationScope !== 'explicit-hip-module-declared-readback') {
+  fail('declared HIP module profile scope is not explicit');
+}
 if (profile.kernel?.launchApi !== 'hipModuleLaunchKernel') {
   fail('default HIP module profile must use hipModuleLaunchKernel');
+}
+if (declaredProfile.kernel?.launchApi !== 'hipModuleLaunchKernel') {
+  fail('declared HIP module profile must use hipModuleLaunchKernel');
 }
 if (hot2Profile.runMode?.metricScope !== 'hot_delta_2') {
   fail('hot2 profile must declare hot_delta_2');
@@ -50,9 +57,18 @@ if (!Array.isArray(profile.outputOracle?.expectedAfterValues) || profile.outputO
 if (!Array.isArray(hot2Profile.outputOracle?.expectedAfterValues) || hot2Profile.outputOracle.expectedAfterValues.length === 0) {
   fail('hot2 HIP module profile must declare expected output');
 }
+if (!Array.isArray(declaredProfile.outputOracle?.expectedAfterValues) || declaredProfile.outputOracle.expectedAfterValues.length === 0) {
+  fail('declared HIP module profile must declare expected output');
+}
+if (declaredProfile.buffers?.find((buffer) => buffer.role === 'readback')?.dataType !== 'uint32') {
+  fail('declared HIP module profile must prove non-float readback metadata');
+}
+if (declaredProfile.abi?.params?.map((param) => param.name).join(',') !== 'input,n,increment,output') {
+  fail('declared HIP module profile must preserve reordered ABI metadata');
+}
 
 console.log(JSON.stringify({
   schema: 'synthi.gpu_hmr.hip_module_runtime_smoke.v1',
   passed: true,
-  profiles: [profile.id, hot2Profile.id],
+  profiles: [profile.id, hot2Profile.id, declaredProfile.id],
 }, null, 2));

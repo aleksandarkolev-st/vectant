@@ -26,11 +26,14 @@ const REPO_ROOT = path.resolve(__dirname, '../../..');
 const MCP_ROOT = path.resolve(__dirname, '..');
 const ARTIFACT_DIR = path.join(MCP_ROOT, '.gpu-hmr-test-artifacts/hip-module-runtime-proof');
 const DEFAULT_PROFILE_PATH = path.join(__dirname, 'profiles/hip-module-runtime-readback.json');
+const DECLARED_PROFILE_PATH = path.join(__dirname, 'profiles/hip-module-runtime-uint32-reordered.json');
 const PROBE_SOURCE_PATH = path.join(__dirname, 'probes/hip_module_runtime_probe.cpp');
 const SCHEMA = 'synthi.gpu_hmr.hip_module_runtime_proof.v1';
 const PROFILE_SCHEMA = 'synthi.gpu.hmr.hip_module_runtime_profile.v1';
 const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
-const SUPPORTED_SCOPE = 'explicit-hip-module-float32-readback';
+const LEGACY_SUPPORTED_SCOPE = 'explicit-hip-module-float32-readback';
+const DECLARED_CONTRACT_SCOPE = 'explicit-hip-module-declared-readback';
+const SUPPORTED_SCOPES = new Set([LEGACY_SUPPORTED_SCOPE, DECLARED_CONTRACT_SCOPE]);
 
 const MODEL_REGISTRY = Object.freeze({
   'gemini-3.5-flash': {
@@ -144,28 +147,66 @@ function durationNs(startNs, endNs) {
   return Number(endNs - startNs);
 }
 
-function encodeFloat32(values) {
-  const buffer = Buffer.alloc(values.length * 4);
-  values.forEach((value, index) => buffer.writeFloatLE(Number(value), index * 4));
-  return buffer;
-}
-
-function decodeFloat32(bytes) {
-  const out = [];
-  for (let offset = 0; offset + 4 <= bytes.length; offset += 4) {
-    out.push(bytes.readFloatLE(offset));
+function normalizeDataType(value, field) {
+  const dataType = firstText(value) ?? 'float32';
+  if (!['float32', 'uint32', 'int32'].includes(dataType)) {
+    throw new Error(`${field} uses unsupported data type ${dataType}`);
   }
-  return out;
+  return dataType;
 }
 
-function normalizeFloat32Values(rawValues, field) {
+function byteWidthForDataType(dataType) {
+  if (dataType === 'float32' || dataType === 'uint32' || dataType === 'int32') return 4;
+  throw new Error(`unsupported data type ${dataType}`);
+}
+
+function normalizeNumericValues(rawValues, field, dataType = 'float32') {
   if (!Array.isArray(rawValues) || rawValues.length === 0) {
-    throw new Error(`${field} must be a non-empty float array`);
+    throw new Error(`${field} must be a non-empty numeric array`);
   }
   const values = rawValues.map(Number);
   const invalidIndex = values.findIndex((value) => !Number.isFinite(value));
   if (invalidIndex >= 0) throw new Error(`${field}[${invalidIndex}] must be finite`);
+  if (dataType === 'uint32') {
+    const bad = values.findIndex((value) => !Number.isInteger(value) || value < 0 || value > 0xffffffff);
+    if (bad >= 0) throw new Error(`${field}[${bad}] must be a uint32`);
+  }
+  if (dataType === 'int32') {
+    const bad = values.findIndex((value) => !Number.isInteger(value) || value < -2147483648 || value > 2147483647);
+    if (bad >= 0) throw new Error(`${field}[${bad}] must be an int32`);
+  }
   return values;
+}
+
+function encodeNumericValues(values, dataType) {
+  const width = byteWidthForDataType(dataType);
+  const buffer = Buffer.alloc(values.length * width);
+  values.forEach((value, index) => {
+    const offset = index * width;
+    if (dataType === 'float32') buffer.writeFloatLE(Number(value), offset);
+    else if (dataType === 'uint32') buffer.writeUInt32LE(Number(value), offset);
+    else if (dataType === 'int32') buffer.writeInt32LE(Number(value), offset);
+    else throw new Error(`unsupported data type ${dataType}`);
+  });
+  return buffer;
+}
+
+function decodeNumericValues(bytes, dataType) {
+  const width = byteWidthForDataType(dataType);
+  if (bytes.length % width !== 0) {
+    throw new Error(`readback byte length ${bytes.length} is not aligned to ${dataType}`);
+  }
+  const out = [];
+  for (let offset = 0; offset + width <= bytes.length; offset += width) {
+    if (dataType === 'float32') out.push(bytes.readFloatLE(offset));
+    else if (dataType === 'uint32') out.push(bytes.readUInt32LE(offset));
+    else if (dataType === 'int32') out.push(bytes.readInt32LE(offset));
+  }
+  return out;
+}
+
+function isSupportedScope(scope) {
+  return SUPPORTED_SCOPES.has(scope);
 }
 
 function regexEscape(value) {
@@ -221,7 +262,7 @@ function normalizeDim(raw, fallback = {}) {
   };
 }
 
-function compareFloat32Values(actual, expected, tolerance) {
+function compareNumericValues(actual, expected, tolerance) {
   const mismatches = [];
   const compared = Math.min(actual.length, expected.length);
   let maxAbsDelta = 0;
@@ -341,6 +382,137 @@ function afterEpochTraceEvents(runtimeTrace) {
   };
 }
 
+function normalizeProfileBuffer(buffer, field) {
+  const raw = objectOrEmpty(buffer);
+  const dataType = normalizeDataType(raw.dataType ?? raw.data_type, `${field}.dataType`);
+  const values = Array.isArray(raw.values)
+    ? normalizeNumericValues(raw.values, `${field}.values`, dataType)
+    : [];
+  const byteLength = positiveInteger(
+    raw.byteLength ?? raw.byte_length,
+    values.length > 0 ? values.length * byteWidthForDataType(dataType) : null,
+  );
+  if (!byteLength) throw new Error(`${field}.byteLength is required when values are not declared`);
+  return {
+    name: firstText(raw.name) ?? field,
+    role: firstText(raw.role) ?? 'storage',
+    dataType,
+    byteLength,
+    values,
+  };
+}
+
+function normalizedParamKind(param) {
+  const valueKind = firstText(param.valueKind, param.value_kind) ?? 'unknown';
+  const type = firstText(param.type) ?? 'unknown';
+  if (valueKind === 'global_buffer' || valueKind === 'buffer' || type.includes('*')) return 'buffer';
+  if (valueKind === 'by_value' || valueKind === 'scalar') return 'scalar';
+  return 'unsupported';
+}
+
+function scalarDataTypeFromParam(param) {
+  const rawType = String(firstText(param.type) ?? '').replace(/\s+/g, ' ').trim();
+  if (/^(const\s+)?float$/u.test(rawType)) return 'float32';
+  if (/^(const\s+)?unsigned\s+int$/u.test(rawType) || /^(const\s+)?uint32_t$/u.test(rawType)) return 'uint32';
+  if (/^(const\s+)?int$/u.test(rawType) || /^(const\s+)?int32_t$/u.test(rawType)) return 'int32';
+  throw new Error(`unsupported HIP module scalar parameter type ${rawType || 'unknown'} for ${firstText(param.name) ?? 'arg'}`);
+}
+
+function bufferForParam(param, buffers) {
+  const explicitName = firstText(param.buffer, param.bufferName, param.buffer_name);
+  if (explicitName) {
+    const explicit = buffers.find((buffer) => buffer.name === explicitName);
+    if (!explicit) throw new Error(`kernel param ${param.name} references missing buffer ${explicitName}`);
+    return explicit;
+  }
+  const name = firstText(param.name);
+  if (name) {
+    const direct = buffers.find((buffer) => buffer.name === name);
+    if (direct) return direct;
+  }
+  const access = firstText(param.access) ?? 'unknown';
+  if (access === 'write') {
+    const writeBuffer = buffers.find((buffer) => buffer.role === 'readback' || buffer.role === 'output');
+    if (writeBuffer) return writeBuffer;
+  }
+  if (access === 'read') {
+    const readBuffer = buffers.find((buffer) => buffer.role === 'input');
+    if (readBuffer) return readBuffer;
+  }
+  throw new Error(`kernel param ${name ?? 'arg'} must map to a declared buffer`);
+}
+
+function normalizeAbiParams(rawParams, buffers, constants, elementCount) {
+  const params = firstArray(rawParams);
+  if (params.length === 0) throw new Error('abi.params must declare kernel launch parameters');
+  return params.map((rawParam, index) => {
+    const param = objectOrEmpty(rawParam);
+    const kind = normalizedParamKind(param);
+    if (kind === 'unsupported') {
+      throw new Error(`kernel param ${firstText(param.name) ?? index} has unsupported value kind`);
+    }
+    const base = {
+      name: firstText(param.name) ?? `arg${index}`,
+      type: firstText(param.type) ?? 'unknown',
+      size: nonNegativeInteger(param.size, null),
+      offset: nonNegativeInteger(param.offset, null),
+      value_kind: firstText(param.valueKind, param.value_kind) ?? (kind === 'buffer' ? 'global_buffer' : 'by_value'),
+      access: firstText(param.access) ?? 'unknown',
+      address_space: firstText(param.addressSpace, param.address_space) ?? (kind === 'buffer' ? 'global' : 'private'),
+      source: firstText(param.source) ?? 'profile_runtime_trace_contract',
+    };
+    if (kind === 'buffer') {
+      const buffer = bufferForParam({ ...param, ...base }, buffers);
+      return {
+        ...base,
+        launch_kind: 'buffer',
+        buffer: buffer.name,
+        data_type: buffer.dataType,
+      };
+    }
+    const scalarType = normalizeDataType(
+      firstText(param.scalarDataType, param.scalar_data_type) ?? scalarDataTypeFromParam(base),
+      `abi.params[${index}].scalarDataType`,
+    );
+    const scalarValue = finiteNumber(
+      param.value ?? param.scalarValue ?? param.scalar_value ?? constants[base.name],
+      base.name === 'n' ? elementCount : null,
+    );
+    if (scalarValue === null) throw new Error(`scalar kernel param ${base.name} must declare a value or matching constant`);
+    normalizeNumericValues([scalarValue], `abi.params[${index}].scalarValue`, scalarType);
+    return {
+      ...base,
+      launch_kind: 'scalar',
+      scalar_type: scalarType,
+      scalar_value: scalarValue,
+    };
+  });
+}
+
+function validateProfileAbiSignatures({ abiParams, beforeSource, afterSource, negativeSourceAfter, kernelName }) {
+  const declared = abiSignature(abiParams);
+  const before = extractKernelSignature(beforeSource, kernelName);
+  const after = extractKernelSignature(afterSource, kernelName);
+  const negative = negativeSourceAfter ? extractKernelSignature(negativeSourceAfter, kernelName) : null;
+  const matched = before.found === true
+    && after.found === true
+    && before.signatureHash === declared.signatureHash
+    && after.signatureHash === declared.signatureHash;
+  return {
+    declared,
+    before,
+    after,
+    negative,
+    matched,
+    blockingGaps: [
+      before.found === true ? null : 'before_kernel_signature_missing',
+      after.found === true ? null : 'after_kernel_signature_missing',
+      before.signatureHash === declared.signatureHash ? null : 'before_kernel_signature_mismatch',
+      after.signatureHash === declared.signatureHash ? null : 'after_kernel_signature_mismatch',
+    ].filter(Boolean),
+  };
+}
+
 async function loadProfile(profilePath) {
   const resolvedPath = path.resolve(profilePath);
   const profileDir = path.dirname(resolvedPath);
@@ -364,26 +536,32 @@ async function loadProfile(profilePath) {
     compile.after_path,
   ));
   if (!beforePath || !afterPath) throw new Error('profile compile.sourceBeforePath and compile.sourceAfterPath are required');
-  const buffers = firstArray(raw.buffers);
-  const inputBuffer = buffers.find((buffer) => objectOrEmpty(buffer).role === 'input')
-    ?? buffers.find((buffer) => firstText(objectOrEmpty(buffer).name) === 'input');
-  const readbackBuffer = buffers.find((buffer) => objectOrEmpty(buffer).role === 'readback')
-    ?? buffers.find((buffer) => firstText(objectOrEmpty(buffer).name) === firstText(oracle.readbackBuffer, oracle.readback_buffer));
+  const buffers = firstArray(raw.buffers).map((buffer, index) => normalizeProfileBuffer(buffer, `buffers[${index}]`));
+  const inputBuffer = buffers.find((buffer) => buffer.role === 'input')
+    ?? buffers.find((buffer) => buffer.name === 'input');
+  const readbackBuffer = buffers.find((buffer) => buffer.role === 'readback')
+    ?? buffers.find((buffer) => buffer.name === firstText(oracle.readbackBuffer, oracle.readback_buffer));
   if (!inputBuffer || !readbackBuffer) throw new Error('profile must declare input and readback buffers');
-  const inputValues = normalizeFloat32Values(inputBuffer.values, 'buffers[input].values');
-  const expectedBeforeValues = normalizeFloat32Values(
+  const readbackDataType = readbackBuffer.dataType;
+  const expectedBeforeValues = normalizeNumericValues(
     firstArray(oracle.expectedBeforeValues, oracle.expected_before_values),
     'outputOracle.expectedBeforeValues',
+    readbackDataType,
   );
-  const expectedAfterValues = normalizeFloat32Values(
+  const expectedAfterValues = normalizeNumericValues(
     firstArray(oracle.expectedAfterValues, oracle.expected_after_values, oracle.expectedValues, oracle.expected_values),
     'outputOracle.expectedAfterValues',
+    readbackDataType,
   );
   if (oracle.expectedOutputRequired === false || oracle.expected_output_required === false) {
     throw new Error('outputOracle.expectedOutputRequired must be true for HIP module runtime acceptance');
   }
-  if (inputValues.length !== expectedBeforeValues.length || inputValues.length !== expectedAfterValues.length) {
-    throw new Error('input, expected-before, and expected-after arrays must have the same length');
+  const elementCount = expectedAfterValues.length;
+  if (expectedBeforeValues.length !== elementCount) {
+    throw new Error('expected-before and expected-after arrays must have the same length');
+  }
+  if (readbackBuffer.byteLength !== elementCount * byteWidthForDataType(readbackDataType)) {
+    throw new Error('readback byte length must match expected output data type and length');
   }
   const [beforeSource, afterSource, beforeHash, afterHash] = await Promise.all([
     readFile(beforePath, 'utf8'),
@@ -395,6 +573,9 @@ async function loadProfile(profilePath) {
   const deterministicSlice = objectOrEmpty(oracle.deterministicSlice ?? oracle.deterministic_slice);
   const runMode = objectOrEmpty(raw.runMode ?? raw.run_mode);
   const negativeEdit = objectOrEmpty(raw.negativeEdit ?? raw.negative_edit);
+  const constantsRecord = Object.fromEntries(Object.entries(constants).map(([key, value]) => [key, Number(value)]));
+  const kernelName = firstText(kernel.name, kernel.kernelName, kernel.kernel_name) ?? 'synthi_hmr_float32_epoch_kernel';
+  const abiParams = normalizeAbiParams(firstArray(abi.params, abi.args), buffers, constantsRecord, elementCount);
   const negativeSourceAfterPath = resolveRelative(profileDir, firstText(
     negativeEdit.sourceAfterPath,
     negativeEdit.source_after_path,
@@ -402,12 +583,13 @@ async function loadProfile(profilePath) {
     negativeEdit.after_path,
   ));
   const negativeSourceAfter = negativeSourceAfterPath ? await readFile(negativeSourceAfterPath, 'utf8') : null;
-  const negativeSourceAfterSignature = negativeSourceAfter
-    ? extractKernelSignature(
-      negativeSourceAfter,
-      firstText(kernel.name, kernel.kernelName, kernel.kernel_name) ?? 'synthi_hmr_float32_epoch_kernel',
-    )
-    : null;
+  const signatureValidation = validateProfileAbiSignatures({
+    abiParams,
+    beforeSource,
+    afterSource,
+    negativeSourceAfter,
+    kernelName,
+  });
   return {
     raw,
     schemaVersion: firstText(raw.schemaVersion, raw.schema_version) ?? PROFILE_SCHEMA,
@@ -415,7 +597,7 @@ async function loadProfile(profilePath) {
     targetId,
     projectName: firstText(raw.project?.name, raw.name) ?? targetId,
     projectKind: firstText(raw.project?.kind, raw.project_kind) ?? 'gpu_project',
-    validationScope: firstText(raw.validationScope, raw.validation_scope) ?? SUPPORTED_SCOPE,
+    validationScope: firstText(raw.validationScope, raw.validation_scope) ?? LEGACY_SUPPORTED_SCOPE,
     profilePath: resolvedPath,
     profileHash: sha256Text(stableJson(raw)),
     beforePath,
@@ -430,8 +612,8 @@ async function loadProfile(profilePath) {
       gpuArch: firstText(compile.gpuArch, compile.gpu_arch, CFG.gpuArch) ?? '',
     },
     kernel: {
-      name: firstText(kernel.name, kernel.kernelName, kernel.kernel_name) ?? 'synthi_hmr_float32_epoch_kernel',
-      entryPoint: firstText(kernel.entryPoint, kernel.entry_point, kernel.name) ?? 'synthi_hmr_float32_epoch_kernel',
+      name: kernelName,
+      entryPoint: firstText(kernel.entryPoint, kernel.entry_point, kernel.name) ?? kernelName,
       launchApi: firstText(kernel.launchApi, kernel.launch_api) ?? 'hipModuleLaunchKernel',
     },
     launch: {
@@ -442,33 +624,24 @@ async function loadProfile(profilePath) {
     },
     abi: {
       class: firstText(abi.class, abi.value, abi.abiCompatibilityClass, abi.abi_compatibility_class) ?? 'compatible',
-      params: firstArray(abi.params, abi.args).map((param) => ({
-        name: firstText(param.name) ?? 'arg',
-        type: firstText(param.type) ?? 'unknown',
-        size: nonNegativeInteger(param.size, null),
-        offset: nonNegativeInteger(param.offset, null),
-        value_kind: firstText(param.valueKind, param.value_kind) ?? 'unknown',
-        access: firstText(param.access) ?? 'unknown',
-        address_space: firstText(param.addressSpace, param.address_space) ?? 'unknown',
-        source: firstText(param.source) ?? 'profile_runtime_trace_contract',
-      })),
+      params: abiParams,
+      signatureValidation,
     },
     buffers: {
+      all: buffers,
       input: {
-        name: firstText(inputBuffer.name) ?? 'input',
-        dataType: firstText(inputBuffer.dataType, inputBuffer.data_type) ?? 'float32',
-        values: inputValues,
+        name: inputBuffer.name,
+        dataType: inputBuffer.dataType,
+        byteLength: inputBuffer.byteLength,
+        values: inputBuffer.values,
       },
       readback: {
-        name: firstText(readbackBuffer.name) ?? 'output',
-        dataType: firstText(readbackBuffer.dataType, readbackBuffer.data_type) ?? 'float32',
-        byteLength: positiveInteger(readbackBuffer.byteLength ?? readbackBuffer.byte_length, inputValues.length * 4),
+        name: readbackBuffer.name,
+        dataType: readbackBuffer.dataType,
+        byteLength: readbackBuffer.byteLength,
       },
     },
-    constants: {
-      scale: finiteNumber(constants.scale, 1.0),
-      bias: finiteNumber(constants.bias, 0.0),
-    },
+    constants: constantsRecord,
     outputOracle: {
       kind: firstText(oracle.kind) ?? 'buffer_checksum',
       expectedBeforeValues,
@@ -476,9 +649,10 @@ async function loadProfile(profilePath) {
       expectedOutputRequired: true,
       expectedOutputChange: oracle.expectedOutputChange !== false && oracle.expected_output_change !== false,
       tolerance: Math.max(0, finiteNumber(oracle.tolerance, 0.00001)),
+      dataType: readbackDataType,
       deterministicSlice: {
         offset: nonNegativeInteger(deterministicSlice.offset ?? deterministicSlice.byte_offset, 0),
-        length: positiveInteger(deterministicSlice.length ?? deterministicSlice.byte_length, inputValues.length * 4),
+        length: positiveInteger(deterministicSlice.length ?? deterministicSlice.byte_length, readbackBuffer.byteLength),
       },
     },
     runMode: {
@@ -497,7 +671,7 @@ async function loadProfile(profilePath) {
       ) ?? 'layout_changed',
       sourceAfterPath: negativeSourceAfterPath,
       sourceAfterHash: negativeSourceAfter ? sha256Text(negativeSourceAfter) : null,
-      sourceAfterSignature: negativeSourceAfterSignature,
+      sourceAfterSignature: signatureValidation.negative,
     } : null,
   };
 }
@@ -685,12 +859,37 @@ function csv(values) {
 
 async function writeProbePlan({ profile, outDir, beforeHsacoHash, afterHsacoHash }) {
   const planPath = path.join(outDir, `${safeSlug(profile.targetId)}-probe-plan.env`);
+  const bufferLines = profile.buffers.all.flatMap((buffer, index) => [
+    `buffer_${index}_name=${buffer.name}`,
+    `buffer_${index}_role=${buffer.role}`,
+    `buffer_${index}_data_type=${buffer.dataType}`,
+    `buffer_${index}_byte_length=${buffer.byteLength}`,
+    `buffer_${index}_values=${csv(buffer.values)}`,
+  ]);
+  const paramLines = profile.abi.params.flatMap((param, index) => {
+    const base = [
+      `param_${index}_name=${param.name}`,
+      `param_${index}_type=${param.type}`,
+      `param_${index}_value_kind=${param.value_kind}`,
+      `param_${index}_access=${param.access}`,
+    ];
+    if (param.launch_kind === 'buffer') {
+      return [...base, `param_${index}_buffer=${param.buffer}`];
+    }
+    return [
+      ...base,
+      `param_${index}_scalar_type=${param.scalar_type}`,
+      `param_${index}_scalar_value=${param.scalar_value}`,
+    ];
+  });
   const lines = [
     `kernel_name=${profile.kernel.name}`,
     `artifact_hash_before=${beforeHsacoHash}`,
     `artifact_hash_after=${afterHsacoHash}`,
     `dispatch_binding=hip-module-function-slot:${profile.kernel.name}`,
     `compile_target=${profile.compile.gpuArch || profile.compile.compileTarget}`,
+    `readback_buffer=${profile.buffers.readback.name}`,
+    `readback_data_type=${profile.buffers.readback.dataType}`,
     `grid_x=${profile.launch.gridDim.x}`,
     `grid_y=${profile.launch.gridDim.y}`,
     `grid_z=${profile.launch.gridDim.z}`,
@@ -698,10 +897,12 @@ async function writeProbePlan({ profile, outDir, beforeHsacoHash, afterHsacoHash
     `block_y=${profile.launch.blockDim.y}`,
     `block_z=${profile.launch.blockDim.z}`,
     `shared_mem_bytes=${profile.launch.sharedMemBytes}`,
-    `element_count=${profile.buffers.input.values.length}`,
-    `scale=${profile.constants.scale}`,
-    `bias=${profile.constants.bias}`,
-    `input_values=${csv(profile.buffers.input.values)}`,
+    `element_count=${profile.outputOracle.expectedAfterValues.length}`,
+    `tolerance=${profile.outputOracle.tolerance}`,
+    `buffer_count=${profile.buffers.all.length}`,
+    ...bufferLines,
+    `param_count=${profile.abi.params.length}`,
+    ...paramLines,
     `expected_before_values=${csv(profile.outputOracle.expectedBeforeValues)}`,
     `expected_after_values=${csv(profile.outputOracle.expectedAfterValues)}`,
   ];
@@ -814,19 +1015,20 @@ async function renderComputeCard({
 }
 
 async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawAfterPath }) {
+  const dataType = profile.outputOracle.dataType;
   const afterBytes = await readFile(rawAfterPath);
-  const afterValues = decodeFloat32(afterBytes);
+  const afterValues = decodeNumericValues(afterBytes, dataType);
   const beforeValues = runtimeTrace.outputEvents?.[0]?.values ?? profile.outputOracle.expectedBeforeValues;
-  const beforeBytes = encodeFloat32(beforeValues);
+  const beforeBytes = encodeNumericValues(beforeValues, dataType);
   const beforeRawPath = path.join(outDir, `${safeSlug(profile.targetId)}-before-readback.bin`);
   const schemaPath = path.join(outDir, `${safeSlug(profile.targetId)}-readback-schema.json`);
   const cardPath = path.join(outDir, `${safeSlug(profile.targetId)}-compute-card.png`);
   await writeFile(beforeRawPath, beforeBytes);
   const rawHash = sha256Bytes(afterBytes);
   const beforeHash = sha256Bytes(beforeBytes);
-  const expectedBytes = encodeFloat32(profile.outputOracle.expectedAfterValues);
+  const expectedBytes = encodeNumericValues(profile.outputOracle.expectedAfterValues, dataType);
   const expectedHash = sha256Bytes(expectedBytes);
-  const expectedVerification = compareFloat32Values(
+  const expectedVerification = compareNumericValues(
     afterValues,
     profile.outputOracle.expectedAfterValues,
     profile.outputOracle.tolerance,
@@ -838,7 +1040,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
   const readbackSchema = {
     schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
     producer: 'hip_module_runtime_proof',
-    dataType: 'float32',
+    dataType,
     byteLength: afterBytes.length,
     elementCount: afterValues.length,
     readbackResource: profile.buffers.readback.name,
@@ -846,7 +1048,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     epoch: 2,
     rawReadbackHash: rawHash,
     expectedOutput: {
-      dataType: 'float32',
+      dataType,
       values: profile.outputOracle.expectedAfterValues,
       tolerance: profile.outputOracle.tolerance,
       expectedHash,
@@ -891,7 +1093,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, runtimeTrace, rawA
     output_change_expected: profile.outputOracle.expectedOutputChange,
     expected_output_declared: true,
     expected_output_required: profile.outputOracle.expectedOutputRequired,
-    expected_output_data_type: 'float32',
+    expected_output_data_type: dataType,
     expected_output_values: profile.outputOracle.expectedAfterValues,
     expected_output_hash: expectedHash,
     expected_output_tolerance: profile.outputOracle.tolerance,
@@ -1409,20 +1611,43 @@ function buildNegativeRefusal({ profile }) {
 
 async function selfCheck() {
   const profile = await loadProfile(DEFAULT_PROFILE_PATH);
+  const declaredProfile = await loadProfile(DECLARED_PROFILE_PATH);
   const runMode = runModeMetadata(profile);
   const checks = [];
   checks.push({
     name: 'default-profile-normalizes',
     ok:
       profile.schemaVersion === PROFILE_SCHEMA
-      && profile.validationScope === SUPPORTED_SCOPE
+      && isSupportedScope(profile.validationScope)
       && profile.kernel.launchApi === 'hipModuleLaunchKernel',
+  });
+  checks.push({
+    name: 'declared-profile-abi-signature-validated',
+    ok:
+      profile.abi.signatureValidation?.matched === true
+      && profile.abi.signatureValidation?.blockingGaps?.length === 0,
+  });
+  checks.push({
+    name: 'profile-params-drive-launch-plan',
+    ok:
+      profile.abi.params.some((param) => param.launch_kind === 'buffer' && param.buffer === profile.buffers.readback.name)
+      && profile.abi.params.some((param) => param.launch_kind === 'scalar' && param.scalar_type),
+  });
+  checks.push({
+    name: 'declared-contract-profile-supports-reordered-uint32-abi',
+    ok:
+      declaredProfile.validationScope === DECLARED_CONTRACT_SCOPE
+      && declaredProfile.outputOracle.dataType === 'uint32'
+      && declaredProfile.abi.signatureValidation?.matched === true
+      && declaredProfile.abi.params.map((param) => param.name).join(',') === 'input,n,increment,output'
+      && declaredProfile.abi.params[1]?.launch_kind === 'scalar'
+      && declaredProfile.abi.params[3]?.buffer === declaredProfile.buffers.readback.name,
   });
   checks.push({
     name: 'profile-declares-expected-output',
     ok:
       profile.outputOracle.expectedOutputRequired === true
-      && profile.outputOracle.expectedAfterValues.length === profile.buffers.input.values.length,
+      && profile.outputOracle.expectedAfterValues.length * byteWidthForDataType(profile.outputOracle.dataType) === profile.buffers.readback.byteLength,
   });
   checks.push({
     name: 'run-mode-derived-from-profile',
@@ -1441,7 +1666,7 @@ async function selfCheck() {
     name: 'unsupported-scope-fails-self-check',
     ok: (() => {
       const copy = { ...profile, validationScope: 'project-specific-hidden-branch' };
-      return copy.validationScope !== SUPPORTED_SCOPE;
+      return !isSupportedScope(copy.validationScope);
     })(),
   });
   const failed = checks.filter((check) => !check.ok);
@@ -1461,8 +1686,11 @@ async function main() {
   const totalStart = process.hrtime.bigint();
   const staticStart = process.hrtime.bigint();
   const profile = await loadProfile(CFG.profilePath);
-  if (profile.validationScope !== SUPPORTED_SCOPE) {
+  if (!isSupportedScope(profile.validationScope)) {
     throw new Error(`unsupported HIP module validation scope: ${profile.validationScope}`);
+  }
+  if (profile.abi.signatureValidation?.matched !== true) {
+    throw new Error(`HIP module profile ABI does not match source signatures: ${profile.abi.signatureValidation?.blockingGaps?.join(',') || 'unknown_gap'}`);
   }
   const staticEnd = process.hrtime.bigint();
   const modelStart = process.hrtime.bigint();
@@ -1604,7 +1832,8 @@ async function main() {
     accepted,
     claimBoundary: {
       proofAuthority: 'scoped_native_hip_module_runtime_trace',
-      acceptedScope: SUPPORTED_SCOPE,
+      acceptedScope: profile.validationScope,
+      supportedScopes: [...SUPPORTED_SCOPES],
       executionBoundary: 'standalone_hip_module_probe',
       arbitraryTargetRuntimeAccepted: false,
       arbitraryLibraryAccepted: false,

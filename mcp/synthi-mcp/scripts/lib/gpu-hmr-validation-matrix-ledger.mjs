@@ -7090,11 +7090,16 @@ function acceptedRows(rows, predicate) {
   return rows.filter((row) => acceptedFullRuntimeRow(row) && predicate(row));
 }
 
+function hipModuleScopedScopeAccepted(scope) {
+  return scope === 'explicit-hip-module-float32-readback'
+    || scope === 'explicit-hip-module-declared-readback';
+}
+
 function hipModuleScopedRuntimeCoverage(rows) {
   const hipModuleRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
     && row.proofMode === 'hip_module_runtime_readback'
-    && row.supportedPipelineScope === 'explicit-hip-module-float32-readback'
+    && hipModuleScopedScopeAccepted(row.supportedPipelineScope)
     && row.claimBoundaryAccepted === true
     && row.negativeAbiRefusalAccepted === true
     && row.runtimeTimestampProof?.accepted === true

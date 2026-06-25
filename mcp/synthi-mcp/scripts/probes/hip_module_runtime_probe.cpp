@@ -1,5 +1,6 @@
 #include <hip/hip_runtime_api.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -8,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -36,21 +38,41 @@ struct Dim3 {
   unsigned z = 1;
 };
 
+struct BufferPlan {
+  std::string name;
+  std::string role;
+  std::string data_type;
+  std::size_t byte_length = 0;
+  std::vector<double> values;
+};
+
+struct ParamPlan {
+  std::string name;
+  std::string type;
+  std::string value_kind;
+  std::string access;
+  std::string buffer;
+  std::string scalar_type;
+  double scalar_value = 0.0;
+};
+
 struct Plan {
   std::string kernel_name;
   std::string artifact_hash_before;
   std::string artifact_hash_after;
   std::string dispatch_binding;
   std::string compile_target;
+  std::string readback_buffer;
+  std::string readback_data_type;
   Dim3 grid_dim;
   Dim3 block_dim;
   unsigned shared_mem_bytes = 0;
   std::size_t element_count = 0;
-  float scale = 1.0f;
-  float bias = 0.0f;
-  std::vector<float> input_values;
-  std::vector<float> expected_before;
-  std::vector<float> expected_after;
+  double tolerance = 0.00001;
+  std::vector<BufferPlan> buffers;
+  std::vector<ParamPlan> params;
+  std::vector<double> expected_before;
+  std::vector<double> expected_after;
 };
 
 struct DispatchResult {
@@ -65,7 +87,8 @@ struct DispatchResult {
   std::uint64_t output_readback_ns = 0;
   float gpu_ms = 0.0f;
   bool passed = false;
-  std::vector<float> values;
+  std::vector<unsigned char> readback_bytes;
+  std::vector<double> values;
 };
 
 void hip_check(hipError_t result, const char* call) {
@@ -120,10 +143,10 @@ std::vector<char> read_binary(const std::string& path) {
   return bytes;
 }
 
-void write_binary(const std::string& path, const std::vector<float>& values) {
+void write_binary(const std::string& path, const std::vector<unsigned char>& bytes) {
   std::ofstream out(path, std::ios::binary);
   if (!out) throw std::runtime_error("cannot write " + path);
-  out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
+  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
   if (!out) throw std::runtime_error("cannot flush " + path);
 }
 
@@ -156,19 +179,30 @@ unsigned parse_unsigned(const std::map<std::string, std::string>& plan, const st
   return static_cast<unsigned>(std::stoul(found->second));
 }
 
-float parse_float(const std::map<std::string, std::string>& plan, const std::string& key, float fallback) {
+double parse_double(const std::map<std::string, std::string>& plan, const std::string& key, double fallback) {
   const auto found = plan.find(key);
   if (found == plan.end() || found->second.empty()) return fallback;
-  return std::stof(found->second);
+  return std::stod(found->second);
 }
 
-std::vector<float> parse_float_list(const std::string& value) {
-  std::vector<float> out;
+std::vector<double> parse_number_list(const std::string& value) {
+  std::vector<double> out;
   std::stringstream stream(value);
   std::string token;
   while (std::getline(stream, token, ',')) {
     const std::string cleaned = trim(token);
-    if (!cleaned.empty()) out.push_back(std::stof(cleaned));
+    if (!cleaned.empty()) out.push_back(std::stod(cleaned));
+  }
+  return out;
+}
+
+std::vector<std::string> parse_string_list(const std::string& value) {
+  std::vector<std::string> out;
+  std::stringstream stream(value);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    const std::string cleaned = trim(token);
+    if (!cleaned.empty()) out.push_back(cleaned);
   }
   return out;
 }
@@ -181,6 +215,87 @@ Dim3 parse_dim(const std::map<std::string, std::string>& plan, const std::string
   };
 }
 
+std::string optional_string(const std::map<std::string, std::string>& plan, const std::string& key, const std::string& fallback = "") {
+  const auto found = plan.find(key);
+  if (found == plan.end() || found->second.empty()) return fallback;
+  return found->second;
+}
+
+std::size_t data_type_size(const std::string& data_type) {
+  if (data_type == "float32") return 4;
+  if (data_type == "uint32") return 4;
+  if (data_type == "int32") return 4;
+  throw std::runtime_error("unsupported data type " + data_type);
+}
+
+template <typename T>
+void append_scalar_bytes(std::vector<unsigned char>& bytes, T value) {
+  const auto* raw = reinterpret_cast<const unsigned char*>(&value);
+  bytes.insert(bytes.end(), raw, raw + sizeof(T));
+}
+
+std::vector<unsigned char> encode_values(const std::string& data_type, const std::vector<double>& values) {
+  std::vector<unsigned char> bytes;
+  bytes.reserve(values.size() * data_type_size(data_type));
+  for (const double value : values) {
+    if (data_type == "float32") {
+      append_scalar_bytes(bytes, static_cast<float>(value));
+    } else if (data_type == "uint32") {
+      if (value < 0 || value > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error("uint32 value out of range");
+      }
+      append_scalar_bytes(bytes, static_cast<std::uint32_t>(value));
+    } else if (data_type == "int32") {
+      if (value < static_cast<double>(std::numeric_limits<std::int32_t>::min())
+          || value > static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::runtime_error("int32 value out of range");
+      }
+      append_scalar_bytes(bytes, static_cast<std::int32_t>(value));
+    } else {
+      throw std::runtime_error("unsupported data type " + data_type);
+    }
+  }
+  return bytes;
+}
+
+template <typename T>
+T read_scalar(const std::vector<unsigned char>& bytes, std::size_t offset) {
+  T value{};
+  std::memcpy(&value, bytes.data() + offset, sizeof(T));
+  return value;
+}
+
+std::vector<double> decode_values(const std::string& data_type, const std::vector<unsigned char>& bytes) {
+  const std::size_t width = data_type_size(data_type);
+  if (bytes.size() % width != 0) {
+    throw std::runtime_error("readback byte length is not aligned to " + data_type);
+  }
+  std::vector<double> values;
+  values.reserve(bytes.size() / width);
+  for (std::size_t offset = 0; offset < bytes.size(); offset += width) {
+    if (data_type == "float32") {
+      values.push_back(static_cast<double>(read_scalar<float>(bytes, offset)));
+    } else if (data_type == "uint32") {
+      values.push_back(static_cast<double>(read_scalar<std::uint32_t>(bytes, offset)));
+    } else if (data_type == "int32") {
+      values.push_back(static_cast<double>(read_scalar<std::int32_t>(bytes, offset)));
+    } else {
+      throw std::runtime_error("unsupported data type " + data_type);
+    }
+  }
+  return values;
+}
+
+std::vector<unsigned char> encode_scalar_value(const std::string& scalar_type, double value) {
+  return encode_values(scalar_type, {value});
+}
+
+bool is_buffer_param(const ParamPlan& param) {
+  return param.value_kind == "global_buffer"
+    || param.value_kind == "buffer"
+    || param.type.find('*') != std::string::npos;
+}
+
 Plan load_plan(const std::string& path) {
   const auto map = read_plan_map(path);
   Plan plan;
@@ -189,25 +304,73 @@ Plan load_plan(const std::string& path) {
   plan.artifact_hash_after = required(map, "artifact_hash_after");
   plan.dispatch_binding = required(map, "dispatch_binding");
   plan.compile_target = required(map, "compile_target");
+  plan.readback_buffer = required(map, "readback_buffer");
+  plan.readback_data_type = required(map, "readback_data_type");
   plan.grid_dim = parse_dim(map, "grid");
   plan.block_dim = parse_dim(map, "block");
   plan.shared_mem_bytes = parse_unsigned(map, "shared_mem_bytes", 0);
   plan.element_count = static_cast<std::size_t>(parse_unsigned(map, "element_count", 0));
-  plan.scale = parse_float(map, "scale", 1.0f);
-  plan.bias = parse_float(map, "bias", 0.0f);
-  plan.input_values = parse_float_list(required(map, "input_values"));
-  plan.expected_before = parse_float_list(required(map, "expected_before_values"));
-  plan.expected_after = parse_float_list(required(map, "expected_after_values"));
-  if (plan.element_count == 0) plan.element_count = plan.input_values.size();
-  if (plan.input_values.size() != plan.element_count
-      || plan.expected_before.size() != plan.element_count
+  plan.tolerance = parse_double(map, "tolerance", 0.00001);
+
+  const unsigned buffer_count = parse_unsigned(map, "buffer_count", 0);
+  if (buffer_count == 0) throw std::runtime_error("plan must declare at least one buffer");
+  for (unsigned i = 0; i < buffer_count; ++i) {
+    const std::string prefix = "buffer_" + std::to_string(i) + "_";
+    BufferPlan buffer;
+    buffer.name = required(map, prefix + "name");
+    buffer.role = optional_string(map, prefix + "role", "storage");
+    buffer.data_type = required(map, prefix + "data_type");
+    const auto values_text = optional_string(map, prefix + "values");
+    if (!values_text.empty()) buffer.values = parse_number_list(values_text);
+    const std::size_t encoded_length = buffer.values.size() * data_type_size(buffer.data_type);
+    buffer.byte_length = static_cast<std::size_t>(parse_unsigned(
+      map,
+      prefix + "byte_length",
+      static_cast<unsigned>(encoded_length)));
+    if (buffer.byte_length == 0) throw std::runtime_error("buffer " + buffer.name + " byte length must be positive");
+    if (!buffer.values.empty() && encoded_length != buffer.byte_length) {
+      throw std::runtime_error("buffer " + buffer.name + " values do not match byte length");
+    }
+    plan.buffers.push_back(buffer);
+  }
+
+  const unsigned param_count = parse_unsigned(map, "param_count", 0);
+  if (param_count == 0) throw std::runtime_error("plan must declare kernel params");
+  for (unsigned i = 0; i < param_count; ++i) {
+    const std::string prefix = "param_" + std::to_string(i) + "_";
+    ParamPlan param;
+    param.name = required(map, prefix + "name");
+    param.type = required(map, prefix + "type");
+    param.value_kind = required(map, prefix + "value_kind");
+    param.access = optional_string(map, prefix + "access", "unknown");
+    if (is_buffer_param(param)) {
+      param.buffer = required(map, prefix + "buffer");
+    } else {
+      param.scalar_type = required(map, prefix + "scalar_type");
+      param.scalar_value = parse_double(map, prefix + "scalar_value", 0.0);
+    }
+    plan.params.push_back(param);
+  }
+
+  plan.expected_before = parse_number_list(required(map, "expected_before_values"));
+  plan.expected_after = parse_number_list(required(map, "expected_after_values"));
+  if (plan.element_count == 0) plan.element_count = plan.expected_after.size();
+  if (plan.expected_before.size() != plan.element_count
       || plan.expected_after.size() != plan.element_count) {
-    throw std::runtime_error("plan vector lengths must match element_count");
+    throw std::runtime_error("expected vector lengths must match element_count");
+  }
+  const auto readback = std::find_if(plan.buffers.begin(), plan.buffers.end(), [&](const BufferPlan& buffer) {
+    return buffer.name == plan.readback_buffer;
+  });
+  if (readback == plan.buffers.end()) throw std::runtime_error("readback buffer not declared");
+  if (readback->data_type != plan.readback_data_type) throw std::runtime_error("readback data type mismatch");
+  if (readback->byte_length != plan.expected_after.size() * data_type_size(plan.readback_data_type)) {
+    throw std::runtime_error("readback byte length does not match expected values");
   }
   return plan;
 }
 
-bool float_vectors_match(const std::vector<float>& actual, const std::vector<float>& expected, float tolerance) {
+bool numeric_vectors_match(const std::vector<double>& actual, const std::vector<double>& expected, double tolerance) {
   if (actual.size() != expected.size()) return false;
   for (std::size_t i = 0; i < actual.size(); ++i) {
     if (std::fabs(actual[i] - expected[i]) > tolerance) return false;
@@ -215,7 +378,7 @@ bool float_vectors_match(const std::vector<float>& actual, const std::vector<flo
   return true;
 }
 
-std::string float_array_json(const std::vector<float>& values) {
+std::string number_array_json(const std::vector<double>& values) {
   std::ostringstream out;
   out << "[";
   for (std::size_t i = 0; i < values.size(); ++i) {
@@ -252,6 +415,19 @@ ModuleEntry load_module(const std::string& hsaco_path, const Plan& plan) {
   return entry;
 }
 
+struct BufferRuntime {
+  BufferPlan plan;
+  void* device = nullptr;
+  std::vector<unsigned char> host_output;
+};
+
+BufferRuntime* find_buffer(std::vector<BufferRuntime>& buffers, const std::string& name) {
+  for (auto& buffer : buffers) {
+    if (buffer.plan.name == name) return &buffer;
+  }
+  return nullptr;
+}
+
 DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int epoch, const std::string& artifact_hash) {
   DispatchResult result;
   result.epoch = epoch;
@@ -262,27 +438,45 @@ DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int e
   result.symbol_resolve_ns = entry.symbol_resolve_ns;
   result.epoch_publish_ns = monotonic_ns();
 
-  float* device_input = nullptr;
-  float* device_output = nullptr;
   hipStream_t stream = nullptr;
   hipEvent_t start = nullptr;
   hipEvent_t stop = nullptr;
 
-  const std::size_t byte_count = plan.element_count * sizeof(float);
-  result.values.assign(plan.element_count, 0.0f);
+  std::vector<BufferRuntime> buffers;
+  buffers.reserve(plan.buffers.size());
+  for (const auto& buffer_plan : plan.buffers) {
+    buffers.push_back({buffer_plan, nullptr, std::vector<unsigned char>(buffer_plan.byte_length)});
+  }
 
   hip_check(hipStreamCreate(&stream), "hipStreamCreate");
   hip_check(hipEventCreate(&start), "hipEventCreate start");
   hip_check(hipEventCreate(&stop), "hipEventCreate stop");
-  hip_check(hipMalloc(&device_input, byte_count), "hipMalloc input");
-  hip_check(hipMalloc(&device_output, byte_count), "hipMalloc output");
-  hip_check(hipMemcpyAsync(device_input, plan.input_values.data(), byte_count, hipMemcpyHostToDevice, stream), "hipMemcpyAsync input");
-  hip_check(hipMemsetAsync(device_output, 0, byte_count, stream), "hipMemsetAsync output");
+  for (auto& buffer : buffers) {
+    hip_check(hipMalloc(&buffer.device, buffer.plan.byte_length), ("hipMalloc " + buffer.plan.name).c_str());
+    if (!buffer.plan.values.empty()) {
+      const auto encoded = encode_values(buffer.plan.data_type, buffer.plan.values);
+      hip_check(
+        hipMemcpyAsync(buffer.device, encoded.data(), encoded.size(), hipMemcpyHostToDevice, stream),
+        ("hipMemcpyAsync " + buffer.plan.name).c_str());
+    } else {
+      hip_check(hipMemsetAsync(buffer.device, 0, buffer.plan.byte_length, stream), ("hipMemsetAsync " + buffer.plan.name).c_str());
+    }
+  }
 
-  unsigned int n = static_cast<unsigned int>(plan.element_count);
-  float scale = plan.scale;
-  float bias = plan.bias;
-  void* args[] = {&device_output, &device_input, &scale, &bias, &n};
+  std::vector<std::vector<unsigned char>> scalar_storage;
+  scalar_storage.reserve(plan.params.size());
+  std::vector<void*> args;
+  args.reserve(plan.params.size());
+  for (const auto& param : plan.params) {
+    if (is_buffer_param(param)) {
+      auto* buffer = find_buffer(buffers, param.buffer);
+      if (!buffer) throw std::runtime_error("param " + param.name + " references missing buffer " + param.buffer);
+      args.push_back(&buffer->device);
+    } else {
+      scalar_storage.push_back(encode_scalar_value(param.scalar_type, param.scalar_value));
+      args.push_back(scalar_storage.back().data());
+    }
+  }
 
   hip_check(hipEventRecord(start, stream), "hipEventRecord start");
   result.dispatch_start_ns = monotonic_ns();
@@ -293,22 +487,29 @@ DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int e
       plan.block_dim.x, plan.block_dim.y, plan.block_dim.z,
       plan.shared_mem_bytes,
       stream,
-      args,
+      args.data(),
       nullptr),
     "hipModuleLaunchKernel");
   hip_check(hipEventRecord(stop, stream), "hipEventRecord stop");
-  hip_check(hipMemcpyAsync(result.values.data(), device_output, byte_count, hipMemcpyDeviceToHost, stream), "hipMemcpyAsync output");
+  auto* readback = find_buffer(buffers, plan.readback_buffer);
+  if (!readback) throw std::runtime_error("missing readback buffer " + plan.readback_buffer);
+  hip_check(
+    hipMemcpyAsync(readback->host_output.data(), readback->device, readback->host_output.size(), hipMemcpyDeviceToHost, stream),
+    "hipMemcpyAsync readback");
   hip_check(hipStreamSynchronize(stream), "hipStreamSynchronize");
   result.output_readback_ns = monotonic_ns();
   hip_check(hipEventElapsedTime(&result.gpu_ms, start, stop), "hipEventElapsedTime");
 
-  result.passed = float_vectors_match(
+  result.readback_bytes = readback->host_output;
+  result.values = decode_values(plan.readback_data_type, result.readback_bytes);
+  result.passed = numeric_vectors_match(
     result.values,
     epoch == 1 ? plan.expected_before : plan.expected_after,
-    0.00001f);
+    plan.tolerance);
 
-  hip_check(hipFree(device_input), "hipFree input");
-  hip_check(hipFree(device_output), "hipFree output");
+  for (auto& buffer : buffers) {
+    hip_check(hipFree(buffer.device), ("hipFree " + buffer.plan.name).c_str());
+  }
   hip_check(hipEventDestroy(start), "hipEventDestroy start");
   hip_check(hipEventDestroy(stop), "hipEventDestroy stop");
   hip_check(hipStreamDestroy(stream), "hipStreamDestroy");
@@ -372,12 +573,12 @@ void write_runtime_json(
       << ",\"epoch\":1,\"artifact_hash\":" << json_string(before.artifact_hash)
       << ",\"passed\":" << (before.passed ? "true" : "false")
       << ",\"timestamp_monotonic_ns\":" << before.output_readback_ns
-      << ",\"values\":" << float_array_json(before.values) << "},\n";
+      << ",\"values\":" << number_array_json(before.values) << "},\n";
   out << "    {\"id\":\"hip-module-output-2\",\"after_dispatch_id\":" << json_string(after.dispatch_id)
       << ",\"epoch\":2,\"artifact_hash\":" << json_string(after.artifact_hash)
       << ",\"passed\":" << (after.passed ? "true" : "false")
       << ",\"timestamp_monotonic_ns\":" << after.output_readback_ns
-      << ",\"values\":" << float_array_json(after.values) << "}\n";
+      << ",\"values\":" << number_array_json(after.values) << "}\n";
   out << "  ],\n";
   out << "  \"retirementEvent\":{\"id\":\"hip-module-retire-1\",\"retired_epoch\":1,\"status\":\"stream_event_proven\",\"api\":\"hipEventRecord+hipStreamSynchronize+hipModuleUnload\",\"timestamp_monotonic_ns\":" << monotonic_ns() << "},\n";
   out << "  \"processRestarted\":false,\n";
@@ -413,7 +614,7 @@ int main(int argc, char** argv) {
     DispatchResult before = dispatch_module(before_module, plan, 1, plan.artifact_hash_before);
     ModuleEntry after_module = load_module(argv[3], plan);
     DispatchResult after = dispatch_module(after_module, plan, 2, plan.artifact_hash_after);
-    write_binary(argv[4], after.values);
+    write_binary(argv[4], after.readback_bytes);
     hip_check(hipDeviceSynchronize(), "hipDeviceSynchronize retirement");
     hip_check(hipModuleUnload(before_module.module), "hipModuleUnload before");
     hip_check(hipModuleUnload(after_module.module), "hipModuleUnload after");
