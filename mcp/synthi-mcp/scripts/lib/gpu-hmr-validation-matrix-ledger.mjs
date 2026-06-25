@@ -302,12 +302,29 @@ function normalizeMaybeWindowsPath(value) {
   return raw.replace(/\\/g, path.sep);
 }
 
+function pathInside(childPath, parentPath) {
+  if (!childPath || !parentPath) return false;
+  const child = path.resolve(childPath);
+  const parent = path.resolve(parentPath);
+  const relative = path.relative(parent, child);
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function resolveEvidencePath(value, repoRoot, baseDir = repoRoot) {
   const normalized = normalizeMaybeWindowsPath(value);
   if (!normalized) return null;
-  if (path.isAbsolute(normalized)) return path.resolve(normalized);
+  const roots = [repoRoot, baseDir]
+    .map((root) => (root ? path.resolve(root) : null))
+    .filter(Boolean);
+  const isAllowed = (candidate) => roots.some((root) => pathInside(candidate, root));
+  if (path.isAbsolute(normalized)) {
+    const resolved = path.resolve(normalized);
+    return isAllowed(resolved) ? resolved : null;
+  }
   const repoResolved = path.resolve(repoRoot, normalized);
-  return repoResolved.startsWith(repoRoot) ? repoResolved : path.resolve(baseDir, normalized);
+  if (isAllowed(repoResolved)) return repoResolved;
+  const baseResolved = path.resolve(baseDir, normalized);
+  return isAllowed(baseResolved) ? baseResolved : null;
 }
 
 async function pathExists(filePath) {
@@ -343,6 +360,8 @@ async function pngEvidence(filePath) {
   }
   try {
     const stat = await fs.stat(filePath);
+    const fileBuffer = await fs.readFile(filePath);
+    const fileHash = sha256BufferHash(fileBuffer);
     let decodeEvidence = {
       decoded: false,
       decodeError: null,
@@ -394,6 +413,7 @@ async function pngEvidence(filePath) {
         path: filePath,
         exists: true,
         sizeBytes: stat.size,
+        sha256: fileHash,
         pngSignatureValid,
         ...decodeEvidence,
       };
@@ -405,6 +425,7 @@ async function pngEvidence(filePath) {
       path: filePath,
       exists: false,
       sizeBytes: null,
+      sha256: null,
       pngSignatureValid: false,
       decoded: false,
       decodeError: 'file_not_found_or_unreadable',
@@ -415,43 +436,262 @@ async function pngEvidence(filePath) {
   }
 }
 
+function normalizeSha256(value) {
+  const raw = text(value);
+  if (!raw) return null;
+  if (/^sha256:[a-f0-9]{64}$/i.test(raw)) return raw.toLowerCase();
+  if (/^[a-f0-9]{64}$/i.test(raw)) return `sha256:${raw.toLowerCase()}`;
+  return raw;
+}
+
+function visualArtifactEntries(input) {
+  if (Array.isArray(input)) {
+    const values = compactStringList(input);
+    return values.map((value, index) => {
+      const lower = value.toLowerCase();
+      const role = lower.includes('before') || lower.includes('baseline')
+        ? 'before'
+        : lower.includes('after') || lower.includes('changed')
+          ? 'after'
+          : lower.includes('diff') || lower.includes('delta')
+            ? 'diff'
+            : values.length === 3 && index === 0
+              ? 'before'
+              : values.length === 3 && index === 1
+                ? 'after'
+                : values.length === 3 && index === 2
+                  ? 'diff'
+                  : 'artifact';
+      return { role, sourcePath: value, expectedHash: null };
+    });
+  }
+  const object = compactObject(input);
+  if (Object.keys(object).length === 0) return [];
+  const entries = [];
+  const push = (role, pathValues, hashValues = []) => {
+    const sourcePath = firstText(...pathValues);
+    if (!sourcePath) return;
+    entries.push({
+      role,
+      sourcePath,
+      expectedHash: normalizeSha256(firstText(...hashValues)),
+    });
+  };
+  push('before', [object.before_image, object.beforeImage], [object.before_image_hash, object.beforeImageHash]);
+  push('after', [object.after_image, object.afterImage], [object.after_image_hash, object.afterImageHash]);
+  push('diff', [object.diff_image, object.diffImage], [object.diff_image_hash, object.diffImageHash]);
+  push('before', [object.baseline_image, object.baselineImage, object.baselineCapturePath, object.baseline_capture_path]);
+  push('after', [object.changed_image, object.changedImage, object.changedCapturePath, object.changed_capture_path]);
+  push('artifact', [object.rendered_card_png, object.renderedCardPng]);
+  push('artifact', [object.diagnostic_screenshot, object.diagnosticScreenshot]);
+  return entries;
+}
+
+function preferredVisualImage(images, role) {
+  return images.find((item) => item.role === role && item.exists && item.decoded)
+    ?? images.find((item) => item.role === role);
+}
+
+async function recomputeVisualPairEvidence(images) {
+  const before = preferredVisualImage(images, 'before');
+  const after = preferredVisualImage(images, 'after');
+  const diff = preferredVisualImage(images, 'diff');
+  if (!before || !after) {
+    return {
+      present: false,
+      accepted: false,
+      source: 'matrix_recomputed_png_pixels',
+      failedGates: [{ code: 'visual_pair_before_after_missing' }],
+    };
+  }
+  if (!before.decoded || !after.decoded) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'matrix_recomputed_png_pixels',
+      failedGates: [{ code: 'visual_pair_before_after_not_decoded' }],
+    };
+  }
+  try {
+    const beforePixels = await sharp(before.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const afterPixels = await sharp(after.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const sameResolution =
+      beforePixels.info.width === afterPixels.info.width
+      && beforePixels.info.height === afterPixels.info.height;
+    if (!sameResolution) {
+      return {
+        present: true,
+        accepted: false,
+        source: 'matrix_recomputed_png_pixels',
+        failedGates: [{ code: 'visual_pair_dimension_mismatch' }],
+      };
+    }
+    const pixelCount = beforePixels.info.width * beforePixels.info.height;
+    let changedPixelsThreshold4 = 0;
+    let totalAbsDelta = 0;
+    let visiblePixelCount = 0;
+    for (let i = 0; i < pixelCount; i += 1) {
+      const offset = i * 4;
+      const dr = Math.abs(beforePixels.data[offset] - afterPixels.data[offset]);
+      const dg = Math.abs(beforePixels.data[offset + 1] - afterPixels.data[offset + 1]);
+      const db = Math.abs(beforePixels.data[offset + 2] - afterPixels.data[offset + 2]);
+      const da = Math.abs(beforePixels.data[offset + 3] - afterPixels.data[offset + 3]);
+      const maxDelta = Math.max(dr, dg, db);
+      if (maxDelta > 4) changedPixelsThreshold4 += 1;
+      if (
+        afterPixels.data[offset + 3] > 0
+        && (afterPixels.data[offset] > 4 || afterPixels.data[offset + 1] > 4 || afterPixels.data[offset + 2] > 4)
+      ) {
+        visiblePixelCount += 1;
+      }
+      totalAbsDelta += dr + dg + db + da;
+    }
+    let diffVisiblePixelCount = null;
+    if (diff?.decoded) {
+      const diffPixels = await sharp(diff.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      diffVisiblePixelCount = 0;
+      const diffPixelCount = diffPixels.info.width * diffPixels.info.height;
+      for (let i = 0; i < diffPixelCount; i += 1) {
+        const offset = i * 4;
+        if (
+          diffPixels.data[offset + 3] > 0
+          && (diffPixels.data[offset] > 4 || diffPixels.data[offset + 1] > 4 || diffPixels.data[offset + 2] > 4)
+        ) {
+          diffVisiblePixelCount += 1;
+        }
+      }
+    }
+    const changedPixelRatio = pixelCount > 0 ? changedPixelsThreshold4 / pixelCount : null;
+    const meanAbsDelta8bit = pixelCount > 0 ? totalAbsDelta / (pixelCount * 4) : null;
+    const accepted =
+      Number(changedPixelRatio) > 0
+      && Number(meanAbsDelta8bit) > 0
+      && visiblePixelCount > 0
+      && (diff ? Number(diffVisiblePixelCount) > 0 : true);
+    return {
+      present: true,
+      accepted,
+      source: 'matrix_recomputed_png_pixels',
+      width: beforePixels.info.width,
+      height: beforePixels.info.height,
+      changedPixelsThreshold4,
+      changedPixelRatio,
+      changed_pixel_ratio: changedPixelRatio,
+      meanAbsDelta8bit,
+      mean_abs_delta_8bit: meanAbsDelta8bit,
+      visiblePixelCount,
+      visible_pixel_count: visiblePixelCount,
+      diffVisiblePixelCount,
+      diff_visible_pixel_count: diffVisiblePixelCount,
+      failedGates: compactStringList([
+        Number(changedPixelRatio) > 0 ? null : 'visual_pair_zero_pixel_delta',
+        Number(meanAbsDelta8bit) > 0 ? null : 'visual_pair_zero_mean_delta',
+        visiblePixelCount > 0 ? null : 'visual_pair_blank_after_frame',
+        diff && !(Number(diffVisiblePixelCount) > 0) ? 'visual_diff_frame_blank' : null,
+      ]).map((code) => ({ code })),
+    };
+  } catch (error) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'matrix_recomputed_png_pixels',
+      failedGates: [{
+        code: 'visual_pair_pixel_recompute_error',
+        message: error?.message ? String(error.message) : String(error),
+      }],
+    };
+  }
+}
+
 async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, required = false) {
-  const resolved = compactStringList(paths)
-    .map((value) => resolveEvidencePath(value, repoRoot, baseDir))
-    .filter(Boolean);
+  const entries = visualArtifactEntries(paths);
+  const resolvedEntries = entries
+    .map((entry) => ({
+      ...entry,
+      resolvedPath: resolveEvidencePath(entry.sourcePath, repoRoot, baseDir),
+    }));
   const evidence = [];
-  for (const filePath of resolved) {
-    const fileEvidence = await pngEvidence(filePath);
+  for (const entry of resolvedEntries) {
+    const fileEvidence = entry.resolvedPath
+      ? await pngEvidence(entry.resolvedPath)
+      : {
+          path: null,
+          exists: false,
+          sizeBytes: null,
+          sha256: null,
+          pngSignatureValid: false,
+          decoded: false,
+          decodeError: 'evidence_path_outside_allowed_roots',
+          format: null,
+          width: null,
+          height: null,
+        };
+    const expectedHash = normalizeSha256(entry.expectedHash);
+    const hashMatches = expectedHash ? fileEvidence.sha256 === expectedHash : null;
     evidence.push({
       ...fileEvidence,
+      role: entry.role,
+      sourcePath: entry.sourcePath,
+      source_path: entry.sourcePath,
+      absolutePath: fileEvidence.path,
+      absolute_path: fileEvidence.path,
       path: relPath(fileEvidence.path, repoRoot),
+      expectedHash,
+      expected_hash: expectedHash,
+      hashMatches,
+      hash_matches: hashMatches,
     });
   }
   const imageCount = evidence.length;
   const existingImageCount = evidence.filter((item) => item.exists).length;
   const pngImageCount = evidence.filter((item) => item.pngSignatureValid).length;
   const decodedImageCount = evidence.filter((item) => item.decoded).length;
+  const declaredHashCount = evidence.filter((item) => item.expectedHash).length;
+  const hashMatchedCount = evidence.filter((item) => item.expectedHash && item.hashMatches === true).length;
   const allImagesExist = imageCount > 0 && existingImageCount === imageCount;
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
   const allImagesDecode = imageCount > 0 && decodedImageCount === imageCount;
   const allImagesAreDecodedPng = allImagesArePng && allImagesDecode;
+  const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
+  const visualPair = await recomputeVisualPairEvidence(evidence);
+  const requiresPixelProof = required === true && evidence.some((item) => item.role === 'before')
+    && evidence.some((item) => item.role === 'after');
+  const failedGates = compactStringList([
+    imageCount > 0 || required !== true ? null : 'visual_artifacts_missing',
+    allImagesExist || imageCount === 0 ? null : 'visual_artifact_file_missing',
+    allImagesArePng || imageCount === 0 ? null : 'visual_artifact_not_png',
+    allImagesDecode || imageCount === 0 ? null : 'visual_artifact_decode_failed',
+    allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
+    requiresPixelProof && visualPair.accepted !== true ? 'visual_pair_pixel_recompute_not_accepted' : null,
+  ]);
+  const accepted = imageCount === 0
+    ? required !== true
+    : allImagesExist
+      && allImagesAreDecodedPng
+      && allDeclaredHashesMatch
+      && (!requiresPixelProof || visualPair.accepted === true);
   return {
     required,
     present: imageCount > 0,
-    accepted: imageCount === 0
-      ? required !== true
-      : allImagesExist && allImagesAreDecodedPng,
+    accepted,
     imageCount,
     existingImageCount,
     pngImageCount,
     decodedImageCount,
+    declaredHashCount,
+    hashMatchedCount,
     allImagesExist,
     allImagesArePng,
     allImagesDecode,
     allImagesAreDecodedPng,
+    allDeclaredHashesMatch,
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
+    recomputedVisualPair: visualPair,
+    recomputed_visual_pair: visualPair,
+    failedGates,
+    failed_gates: failedGates,
     images: evidence,
   };
 }
@@ -3268,8 +3508,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   );
   const metrics = compactObject(json.metrics);
   const visual = await visualArtifactEvidence(
-    [visualArtifacts.beforeImage, visualArtifacts.afterImage, visualArtifacts.diffImage,
-      visualArtifacts.before_image, visualArtifacts.after_image, visualArtifacts.diff_image],
+    visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     metrics,
@@ -3865,7 +4104,7 @@ async function externalProjectRow(json, filePath, context) {
   const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
   const visualDiff = compactObject(json.visualDiff ?? json.visual_diff);
   const visual = await visualArtifactEvidence(
-    [visualArtifacts.before_image, visualArtifacts.after_image, visualArtifacts.diff_image],
+    visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     visualDiff,
@@ -6105,7 +6344,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
   const visualRequired = true;
   const visual = await visualArtifactEvidence(
-    artifactPathsFromValue(visualArtifacts),
+    visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     visualMetrics,

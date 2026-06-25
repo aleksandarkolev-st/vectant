@@ -2307,6 +2307,73 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof
   },
 });
 
+await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-hash-mismatch-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
+  proofId: 'webgpu-runtime-visual-proof:sha256:hash-mismatch-forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-hash-mismatch' },
+  contract: {
+    artifact_identity: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+    webgpu_contract: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-webgpu-hash-mismatch',
+    visualRoot: forgedWebGpuVisualDir,
+  }),
+  visualOracleArtifacts: {
+    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    beforeImageHash: hashValue('wrong-before-image-hash'),
+    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  },
+  visualThresholdValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  metrics: {
+    changedPixelRatio: 0.2,
+    meanAbsDelta8bit: 12,
+  },
+});
+
+const outsideVisualDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpu-hmr-outside-visual-'));
+await writeRgbaPng(path.join(outsideVisualDir, 'outside-before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(outsideVisualDir, 'outside-after.png'), 8, 8, (x, y) => [40 + x, 56 + y, 72, 255]);
+await writeRgbaPng(path.join(outsideVisualDir, 'outside-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-path-escape-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
+  proofId: 'webgpu-runtime-visual-proof:sha256:path-escape-forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-path-escape' },
+  contract: {
+    artifact_identity: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+    webgpu_contract: {
+      supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    },
+  },
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-webgpu-path-escape',
+    visualRoot: forgedWebGpuVisualDir,
+  }),
+  visualOracleArtifacts: {
+    beforeImage: path.join(outsideVisualDir, 'outside-before.png'),
+    afterImage: path.join(outsideVisualDir, 'outside-after.png'),
+    diffImage: path.join(outsideVisualDir, 'outside-diff.png'),
+  },
+  visualThresholdValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  metrics: {
+    changedPixelRatio: 0.2,
+    meanAbsDelta8bit: 12,
+  },
+});
+
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-visual-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:source-adapted-forged',
@@ -3514,6 +3581,29 @@ assert.equal(forgedWebGpuQueryOnly.visual.allImagesAreDecodedPng, true);
 assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
+
+const forgedWebGpuHashMismatch = ledger.rows.find((row) =>
+  row.targetId === 'forged-webgpu-hash-mismatch'
+);
+assert.equal(forgedWebGpuHashMismatch?.matrixOutcome, 'unproven');
+assert.equal(forgedWebGpuHashMismatch.acceptedForGpuHmr, false);
+assert.equal(forgedWebGpuHashMismatch.visual.present, true);
+assert.equal(forgedWebGpuHashMismatch.visual.allImagesAreDecodedPng, true);
+assert.equal(forgedWebGpuHashMismatch.visual.allDeclaredHashesMatch, false);
+assert.ok(forgedWebGpuHashMismatch.visual.failedGates.includes('visual_artifact_hash_mismatch'));
+assert.ok(forgedWebGpuHashMismatch.reasons.includes('visual_artifacts_not_readable'));
+
+const forgedWebGpuPathEscape = ledger.rows.find((row) =>
+  row.targetId === 'forged-webgpu-path-escape'
+);
+assert.equal(forgedWebGpuPathEscape?.matrixOutcome, 'unproven');
+assert.equal(forgedWebGpuPathEscape.acceptedForGpuHmr, false);
+assert.equal(forgedWebGpuPathEscape.visual.present, true);
+assert.equal(forgedWebGpuPathEscape.visual.accepted, false);
+assert.ok(forgedWebGpuPathEscape.visual.images.every((image) =>
+  image.decodeError === 'evidence_path_outside_allowed_roots'
+));
+assert.ok(forgedWebGpuPathEscape.reasons.includes('visual_artifacts_not_readable'));
 
 const forgedSourceAdaptedWebGpu = ledger.rows.find((row) =>
   row.targetId === 'forged-source-adapted-webgpu'
