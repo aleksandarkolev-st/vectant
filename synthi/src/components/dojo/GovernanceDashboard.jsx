@@ -35,6 +35,8 @@ export default function GovernanceDashboard({
   onApproveCaseLaw,
   onDeprecateCaseLaw,
   onExportCompliancePack,
+  onPromoteRegretPolicyDelta,
+  onDeleteRegretPolicyDelta,
   onRecertifySkill,
   onRevokeLicense,
   enableBridgeActions = true,
@@ -189,6 +191,23 @@ export default function GovernanceDashboard({
           />
         </section>
 
+        <RegretPolicyDeltaQueue
+          items={governance.regretPolicyDeltas}
+          busyDeltaId={actionState.busyKey.startsWith('regret-policy:') ? actionState.busyKey.slice('regret-policy:'.length) : ''}
+          onPromote={onPromoteRegretPolicyDelta ? (item) => invokeGovernanceAction({
+            busyKey: `regret-policy:${item.policyDeltaId}`,
+            successLabel: `Policy delta promoted: ${item.kind || item.policyDeltaId}`,
+            item,
+            handler: onPromoteRegretPolicyDelta,
+          }) : undefined}
+          onDelete={onDeleteRegretPolicyDelta ? (item) => invokeGovernanceAction({
+            busyKey: `regret-policy:${item.policyDeltaId}`,
+            successLabel: `Policy delta deleted: ${item.kind || item.policyDeltaId}`,
+            item,
+            handler: onDeleteRegretPolicyDelta,
+          }) : undefined}
+        />
+
         <CaseLawReviewQueue
           items={governance.caseLawReviewQueue}
           busyCaseId={actionState.busyKey.startsWith('case-law:') ? actionState.busyKey.slice('case-law:'.length) : ''}
@@ -221,6 +240,56 @@ export default function GovernanceDashboard({
         </section>
       </div>
     </main>
+  );
+}
+
+function RegretPolicyDeltaQueue({ items = [], busyDeltaId = '', onPromote, onDelete }) {
+  return (
+    <section className="rounded-md border p-4" style={panelStyle} data-testid="regret-policy-delta-queue">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Regret Policy Deltas</h2>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{items.length} proposed</span>
+      </div>
+      {items.length ? (
+        <div className="grid gap-2">
+          {items.map((item) => (
+            <article key={item.policyDeltaId} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">{item.kind || item.policyDeltaId}</h3>
+                  <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{item.taskClass || item.sourceBranchId}</p>
+                </div>
+                <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{item.status}</span>
+              </div>
+              <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>
+                {item.rationale || 'Evidence-backed branch comparison is awaiting reviewer decision.'}
+              </p>
+              <p className="mt-2 truncate text-xs" style={{ color: 'var(--text-muted)' }}>
+                {item.evidenceRefs?.slice(0, 2).join(', ') || 'No evidence refs'}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <CaseLawActionButton
+                  icon={CheckCircle2}
+                  label="Promote"
+                  disabled={!onPromote || busyDeltaId === item.policyDeltaId || item.status === 'promoted'}
+                  testId={`regret-policy-${item.policyDeltaId}-promote`}
+                  onClick={() => onPromote?.(item)}
+                />
+                <CaseLawActionButton
+                  icon={ArchiveX}
+                  label="Delete"
+                  disabled={!onDelete || busyDeltaId === item.policyDeltaId}
+                  testId={`regret-policy-${item.policyDeltaId}-delete`}
+                  onClick={() => onDelete?.(item)}
+                />
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No regret policy deltas require review.</p>
+      )}
+    </section>
   );
 }
 

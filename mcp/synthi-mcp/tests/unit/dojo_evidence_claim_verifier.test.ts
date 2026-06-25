@@ -206,6 +206,48 @@ describe("Dojo evidence claim verifier", () => {
     ]);
   });
 
+  it("accepts regret memory claims only from their allowed evidence kinds", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["policy_delta_promoted", "mutation_trial_completed"],
+      records: [
+        evidenceRecord("record-policy", ["policy_delta_promoted"], "2026-06-11T00:00:00.000Z", {
+          kind: "audit",
+        }),
+        evidenceRecord("record-mutation", ["mutation_trial_completed"], "2026-06-11T00:00:00.000Z", {
+          kind: "scenario",
+        }),
+      ],
+      checked_at: "2026-06-11T00:05:00.000Z",
+    })).toEqual([
+      expect.objectContaining({
+        claim_id: "policy_delta_promoted",
+        ok: true,
+        evidence_record_ids: ["record-policy"],
+      }),
+      expect.objectContaining({
+        claim_id: "mutation_trial_completed",
+        ok: true,
+        evidence_record_ids: ["record-mutation"],
+      }),
+    ]);
+
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["policy_delta_promoted"],
+      records: [
+        evidenceRecord("record-wrong-kind", ["policy_delta_promoted"], "2026-06-11T00:00:00.000Z", {
+          kind: "trace",
+        }),
+      ],
+      checked_at: "2026-06-11T00:05:00.000Z",
+    })).toEqual([
+      expect.objectContaining({
+        claim_id: "policy_delta_promoted",
+        ok: false,
+        blocked_by: ["evidence_claim_record_kind_mismatch:policy_delta_promoted"],
+      }),
+    ]);
+  });
+
   it("treats evidence_fresh as a freshness claim over any evidence record", () => {
     expect(resolveDojoEvidenceClaims({
       claim_ids: ["evidence_fresh"],

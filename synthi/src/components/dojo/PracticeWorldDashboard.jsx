@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Beaker, DatabaseZap, Play, ShieldCheck } from 'lucide-react';
 import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
+import CheckrideReportView from './CheckrideReportView';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
@@ -39,6 +40,7 @@ export default function PracticeWorldDashboard({
   }, [autoLoad, loadSummary, workspaceSlug]);
 
   const practice = summary.practice || createEmptyDojoSummary(workspaceSlug).practice;
+  const regret = summary.regret || practice.regret || createEmptyDojoSummary(workspaceSlug).regret;
   const skill = summary.selectedSkill;
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const selectedScenario = useMemo(() => practice.scenarios?.[0] || null, [practice.scenarios]);
@@ -145,6 +147,8 @@ export default function PracticeWorldDashboard({
               </div>
               <WindTunnelMatrix runs={practice.windTunnel.runs} />
             </section>
+
+            <CheckrideReportView branchTraces={regret.branchTraces} />
           </>
         ) : (
           <section className="rounded-md border p-6" style={panelStyle} data-testid="dojo-practice-empty">
@@ -216,6 +220,9 @@ function WindTunnelMatrix({ runs }) {
               </div>
               <StatusPill status={run.status} />
             </div>
+            {run.counterfactualStrength ? (
+              <StatusPill status={`near-miss:${run.counterfactualStrength}`} />
+            ) : null}
             <dl className="grid gap-2 text-xs">
               <Detail label="Mutation" value={run.mutationKind || 'baseline'} />
               <Detail label="Tier" value={run.simulatorTier || 'synthetic'} />
@@ -247,6 +254,11 @@ function WindTunnelMatrix({ runs }) {
                 <td className="truncate px-4 py-3">{run.simulatorTier || 'synthetic'}</td>
                 <td className="px-4 py-3">
                   <div className="truncate">{run.evidenceRefs?.slice(0, 2).join(', ') || run.finding || 'Recorded'}</div>
+                  {run.counterfactualStrength ? (
+                    <div className="mt-1">
+                      <StatusPill status={`near-miss:${run.counterfactualStrength}`} />
+                    </div>
+                  ) : null}
                 </td>
               </tr>
             ))}
