@@ -6494,6 +6494,8 @@ async function writeSameProcessOracleNegative({
   scope,
   appHookOverrides = {},
   sameProcessOverrides = {},
+  omitSameProcessOracle = false,
+  omitRuntimeProofArtifact = false,
   expectedGap,
 }) {
   const dir = path.join(logsRoot, scope);
@@ -6519,7 +6521,26 @@ async function writeSameProcessOracleNegative({
     rawReadbackBytes: bytes,
   });
   const appHook = acceptedRealRocmAppHookContract(scope, appHookOverrides);
-  const sameProcessOracle = acceptedSameProcessRuntimeOracle(scope, sameProcessOverrides);
+  const sameProcessOracle = omitSameProcessOracle
+    ? null
+    : acceptedSameProcessRuntimeOracle(scope, sameProcessOverrides);
+  const runtimeProofArtifact = omitRuntimeProofArtifact
+    ? null
+    : {
+      ...materials.runtime_proof_artifact,
+      realRocmAppHookContract: appHook,
+      real_rocm_app_hook_contract: appHook,
+      ...(sameProcessOracle ? {
+        realRocmSameProcessRuntimeOracle: sameProcessOracle,
+        real_rocm_same_process_runtime_oracle: sameProcessOracle,
+        sameProcessRuntimeOracle: sameProcessOracle,
+        same_process_runtime_oracle: sameProcessOracle,
+      } : {}),
+      realRocmProfileProofObligations: acceptedLargeRocmProfileObligations(scope),
+      real_rocm_profile_proof_obligations: acceptedLargeRocmProfileObligations(scope),
+      realRocmSourceDeltaExecution: acceptedLargeRocmSourceDeltaExecution(scope),
+      real_rocm_source_delta_execution: acceptedLargeRocmSourceDeltaExecution(scope),
+    };
   await writeJson(path.join(dir, `${scope}.json`), {
     slug: `gpu-${scope}-20260625`,
     real_rocm_profile: largeRocmMlProfile(scope),
@@ -6597,19 +6618,7 @@ async function writeSameProcessOracleNegative({
     real_rocm_source_delta_execution: acceptedLargeRocmSourceDeltaExecution(scope),
     real_rocm_app_hook_contract: appHook,
     real_rocm_same_process_runtime_oracle: sameProcessOracle,
-    runtime_proof_artifact: {
-      ...materials.runtime_proof_artifact,
-      realRocmAppHookContract: appHook,
-      real_rocm_app_hook_contract: appHook,
-      realRocmSameProcessRuntimeOracle: sameProcessOracle,
-      real_rocm_same_process_runtime_oracle: sameProcessOracle,
-      sameProcessRuntimeOracle: sameProcessOracle,
-      same_process_runtime_oracle: sameProcessOracle,
-      realRocmProfileProofObligations: acceptedLargeRocmProfileObligations(scope),
-      real_rocm_profile_proof_obligations: acceptedLargeRocmProfileObligations(scope),
-      realRocmSourceDeltaExecution: acceptedLargeRocmSourceDeltaExecution(scope),
-      real_rocm_source_delta_execution: acceptedLargeRocmSourceDeltaExecution(scope),
-    },
+    runtime_proof_artifact: runtimeProofArtifact,
     proof_ledger: materials.proof_ledger,
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
@@ -6701,6 +6710,114 @@ await writeSameProcessOracleNegative({
     output_target_matched: false,
   },
   expectedGap: 'same_process_runtime_oracle_output_target_mismatch',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-facet',
+  omitSameProcessOracle: true,
+  expectedGap: 'same_process_runtime_oracle_contract_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-wrong-schema',
+  sameProcessOverrides: {
+    schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v0',
+    schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v0',
+  },
+  expectedGap: 'same_process_runtime_oracle_contract_schema_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-artifact-transport',
+  sameProcessOverrides: {
+    artifactTransportObserved: false,
+    artifact_transport_observed: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_artifact_transport_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-epoch-publication',
+  sameProcessOverrides: {
+    epochPublicationObserved: false,
+    epoch_publication_observed: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_epoch_publication_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-dispatch-trace',
+  sameProcessOverrides: {
+    dispatchTraceObserved: false,
+    dispatch_trace_observed: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_dispatch_trace_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-dispatch-epoch-mismatch',
+  sameProcessOverrides: {
+    dispatchUsedPublishedEpoch: false,
+    dispatch_used_published_epoch: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_dispatch_epoch_mismatch',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-output-oracle',
+  sameProcessOverrides: {
+    outputOracleObserved: false,
+    output_oracle_observed: false,
+  },
+  expectedGap: 'same_process_runtime_oracle_output_oracle_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-full-runtime-missing',
+  sameProcessOverrides: {
+    blockingGaps: ['same_process_runtime_oracle_full_runtime_proof_missing'],
+    blocking_gaps: ['same_process_runtime_oracle_full_runtime_proof_missing'],
+  },
+  expectedGap: 'same_process_runtime_oracle_full_runtime_proof_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-cpu-hmr-used',
+  sameProcessOverrides: {
+    firewallAccepted: false,
+    firewall_accepted: false,
+    cpuHmrUsed: true,
+    cpu_hmr_used: true,
+  },
+  expectedGap: 'same_process_runtime_oracle_firewall_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-full-rebuild-used',
+  sameProcessOverrides: {
+    firewallAccepted: false,
+    firewall_accepted: false,
+    fullRebuildUsed: true,
+    full_rebuild_used: true,
+  },
+  expectedGap: 'same_process_runtime_oracle_firewall_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-process-restarted',
+  sameProcessOverrides: {
+    firewallAccepted: false,
+    firewall_accepted: false,
+    processRestarted: true,
+    process_restarted: true,
+  },
+  expectedGap: 'same_process_runtime_oracle_firewall_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-runtime-artifact-missing',
+  omitRuntimeProofArtifact: true,
+  expectedGap: 'same_process_runtime_oracle_strict_runtime_proof_artifact_missing',
 });
 
 await writeSameProcessOracleNegative({
