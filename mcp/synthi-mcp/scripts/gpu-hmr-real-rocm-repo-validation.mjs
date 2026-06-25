@@ -2418,11 +2418,15 @@ function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
   return Boolean(String(requestedCommit ?? '').trim()) && !localCommitAvailable;
 }
 
+function gitLongPathArgs(args = []) {
+  return ['-c', 'core.longpaths=true', ...args];
+}
+
 async function gitCommitExists(repoPath, commit) {
   if (!String(commit ?? '').trim()) return false;
   const found = await execText(
     'git',
-    ['-C', repoPath, 'cat-file', '-e', `${commit}^{commit}`],
+    gitLongPathArgs(['-C', repoPath, 'cat-file', '-e', `${commit}^{commit}`]),
     30000,
     false,
   );
@@ -2664,38 +2668,53 @@ async function ensureRepo() {
     const cloneArgs = CFG.repoCommit
       ? ['clone', CFG.repoUrl, CFG.repoPath]
       : ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath];
-    await execText('git', cloneArgs, 300000, true);
+    await execText('git', gitLongPathArgs(cloneArgs), 300000, true);
   }
   if (CFG.repoCommit) {
     const localCommitAvailable = await gitCommitExists(CFG.repoPath, CFG.repoCommit);
     if (shouldFetchRequestedCommit({ requestedCommit: CFG.repoCommit, localCommitAvailable })) {
       const fetched = await execText(
         'git',
-        ['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit],
+        gitLongPathArgs(['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit]),
         300000,
         false,
       );
       if (fetched === undefined) {
-        await execText('git', ['-C', CFG.repoPath, 'fetch', 'origin'], 300000, true);
+        await execText('git', gitLongPathArgs(['-C', CFG.repoPath, 'fetch', 'origin']), 300000, true);
       }
     }
-    await execText('git', ['-C', CFG.repoPath, 'checkout', '--detach', CFG.repoCommit], 120000, true);
+    await execText(
+      'git',
+      gitLongPathArgs(['-C', CFG.repoPath, 'checkout', '--detach', CFG.repoCommit]),
+      120000,
+      true,
+    );
   }
   if (CFG.initSubmodules) {
     const gitmodules = path.join(CFG.repoPath, '.gitmodules');
     if (existsSync(gitmodules)) {
       await execText(
         'git',
-        ['-C', CFG.repoPath, 'submodule', 'update', '--init', '--recursive'],
+        gitLongPathArgs(['-C', CFG.repoPath, 'submodule', 'update', '--init', '--recursive']),
         600000,
         true,
       );
     }
   }
-  const commit = await execText('git', ['-C', CFG.repoPath, 'rev-parse', 'HEAD'], 30000, true);
+  const commit = await execText(
+    'git',
+    gitLongPathArgs(['-C', CFG.repoPath, 'rev-parse', 'HEAD']),
+    30000,
+    true,
+  );
   report.repo_commit = commit.trim();
   report.submodules = CFG.initSubmodules
-    ? await execText('git', ['-C', CFG.repoPath, 'submodule', 'status', '--recursive'], 60000, false)
+    ? await execText(
+      'git',
+      gitLongPathArgs(['-C', CFG.repoPath, 'submodule', 'status', '--recursive']),
+      60000,
+      false,
+    )
     : 'submodule initialization disabled';
   const files = await listTrackedFiles();
   report.file_count = files.length;
@@ -2705,7 +2724,7 @@ async function ensureRepo() {
 async function listTrackedFiles() {
   const args = ['-C', CFG.repoPath, 'ls-files', '-z'];
   if (CFG.initSubmodules) args.push('--recurse-submodules');
-  const raw = await execText('git', args, 120000, true);
+  const raw = await execText('git', gitLongPathArgs(args), 120000, true);
   return raw.split('\0').filter(Boolean).sort();
 }
 
