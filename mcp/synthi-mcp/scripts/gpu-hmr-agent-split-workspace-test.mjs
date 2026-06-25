@@ -1852,14 +1852,19 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
   const recomputed = ledger ? queryGpuHmrLedgerInvariants(ledger) : null;
   const record = recomputed?.record ?? firstLedgerRecord(ledger);
   const splitIdentity = split ? splitProofIdentity(split) : {};
-  const evidenceRefs = [
-    `evidence:agent-split-validation-profile:${CFG.fixture}`,
+  const proofIds = [
     recomputed?.proofId,
+    recomputed?.proof_id,
     record?.proofId,
+    record?.proof_id,
     proof?.runtimeProofArtifact?.proofId,
     proof?.runtime_proof_artifact?.proofId,
     proof?.runtimeProofArtifact?.proof_id,
     proof?.runtime_proof_artifact?.proof_id,
+  ].filter(Boolean);
+  const evidenceRefs = [
+    `evidence:agent-split-validation-profile:${CFG.fixture}`,
+    ...proofIds,
     splitIdentity.targetId,
     visualDelta?.diffPath,
   ].filter(Boolean);
@@ -1871,6 +1876,8 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
     profileClass: profileClassForFixture(),
     profile_class: profileClassForFixture(),
     source: 'agent_split_fixture_runtime_visual_proof',
+    proofIds: [...new Set(proofIds)],
+    proof_ids: [...new Set(proofIds)],
     evidenceRefs: [...new Set(evidenceRefs)],
     evidence_refs: [...new Set(evidenceRefs)],
   };
