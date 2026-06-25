@@ -2336,6 +2336,13 @@ function acceptedRealRocmAppHookContract(scope, overrides = {}) {
 }
 
 function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
+  const closureRefs = [
+    `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`,
+    hashValue(`compute-artifact-after:${scope}`),
+    `epoch:${scope}`,
+    `dispatch:${scope}`,
+    `output-target:${scope}`,
+  ];
   return {
     schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
     schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
@@ -2379,10 +2386,64 @@ function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
     full_rebuild_used: false,
     processRestarted: false,
     process_restarted: false,
+    stageResults: {
+      artifact_transport: { observed: true },
+      epoch_publication: { observed: true },
+      dispatch_trace: {
+        observed: true,
+        dispatchUsedPublishedEpoch: true,
+        dispatch_used_published_epoch: true,
+      },
+      host_identity: {
+        observed: true,
+        sameProcessIdentityObserved: true,
+        same_process_identity_observed: true,
+      },
+      output_oracle: {
+        observed: true,
+        outputTargetObserved: true,
+        output_target_observed: true,
+        outputTargetMatched: true,
+        output_target_matched: true,
+        outputAfterDispatchObserved: true,
+        output_after_dispatch_observed: true,
+        dispatchOutputTarget: `output-target:${scope}`,
+        dispatch_output_target: `output-target:${scope}`,
+        oracleOutputTarget: `output-target:${scope}`,
+        oracle_output_target: `output-target:${scope}`,
+      },
+    },
+    stage_results: {
+      artifact_transport: { observed: true },
+      epoch_publication: { observed: true },
+      dispatch_trace: {
+        observed: true,
+        dispatchUsedPublishedEpoch: true,
+        dispatch_used_published_epoch: true,
+      },
+      host_identity: {
+        observed: true,
+        sameProcessIdentityObserved: true,
+        same_process_identity_observed: true,
+      },
+      output_oracle: {
+        observed: true,
+        outputTargetObserved: true,
+        output_target_observed: true,
+        outputTargetMatched: true,
+        output_target_matched: true,
+        outputAfterDispatchObserved: true,
+        output_after_dispatch_observed: true,
+        dispatchOutputTarget: `output-target:${scope}`,
+        dispatch_output_target: `output-target:${scope}`,
+        oracleOutputTarget: `output-target:${scope}`,
+        oracle_output_target: `output-target:${scope}`,
+      },
+    },
     blockingGaps: [],
     blocking_gaps: [],
-    evidenceRefs: [`evidence:same-process-runtime-oracle:${scope}`],
-    evidence_refs: [`evidence:same-process-runtime-oracle:${scope}`],
+    evidenceRefs: [`evidence:same-process-runtime-oracle:${scope}`, ...closureRefs],
+    evidence_refs: [`evidence:same-process-runtime-oracle:${scope}`, ...closureRefs],
     contractHash: hashValue(`same-process-runtime-oracle:${scope}`),
     contract_hash: hashValue(`same-process-runtime-oracle:${scope}`),
     ...overrides,
@@ -6494,6 +6555,7 @@ async function writeSameProcessOracleNegative({
   scope,
   appHookOverrides = {},
   sameProcessOverrides = {},
+  mutateMaterials = null,
   omitSameProcessOracle = false,
   omitRuntimeProofArtifact = false,
   expectedGap,
@@ -6520,6 +6582,9 @@ async function writeSameProcessOracleNegative({
     rawReadbackPath: rawReadback,
     rawReadbackBytes: bytes,
   });
+  if (typeof mutateMaterials === 'function') {
+    mutateMaterials(materials);
+  }
   const appHook = acceptedRealRocmAppHookContract(scope, appHookOverrides);
   const sameProcessOracle = omitSameProcessOracle
     ? null
@@ -6710,6 +6775,37 @@ await writeSameProcessOracleNegative({
     output_target_matched: false,
   },
   expectedGap: 'same_process_runtime_oracle_output_target_mismatch',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-evidence-closure',
+  sameProcessOverrides: {
+    evidenceRefs: ['evidence:same-process-runtime-oracle:unbound'],
+    evidence_refs: ['evidence:same-process-runtime-oracle:unbound'],
+  },
+  expectedGap: 'same_process_runtime_oracle_evidence_ref_closure_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-missing-stage-results',
+  sameProcessOverrides: {
+    stageResults: null,
+    stage_results: null,
+  },
+  expectedGap: 'same_process_runtime_oracle_stage_results_missing',
+});
+
+await writeSameProcessOracleNegative({
+  scope: 'real-rocm-forged-same-process-runtime-chain-mismatch',
+  mutateMaterials(materials) {
+    const record = materials.proof_ledger.records[0];
+    const outputEvent = record.output_event ?? record.outputEvent;
+    outputEvent.output_target_id = 'output-target:mutated-after-facet';
+    outputEvent.outputTargetId = 'output-target:mutated-after-facet';
+    materials.runtime_proof_artifact.proofLedger = materials.proof_ledger;
+    materials.runtime_proof_artifact.proof_ledger = materials.proof_ledger;
+  },
+  expectedGap: 'same_process_runtime_oracle_runtime_chain_closure_missing',
 });
 
 await writeSameProcessOracleNegative({

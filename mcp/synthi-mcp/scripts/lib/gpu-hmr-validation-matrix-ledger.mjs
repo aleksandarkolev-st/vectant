@@ -2202,10 +2202,65 @@ function realRocmSameProcessRuntimeOracleGate({
   realRocmSameProcessRuntimeOracle = {},
   realRocmAppHookContractGate: appHookGate = {},
   runtimeProofArtifactGate = {},
+  ledger = {},
+  proofLedger = {},
+  realRocmRuntimeChain = {},
+  outputOracleFacet = {},
+  realRocmFirewall = {},
 } = {}) {
   const facet = compactObject(realRocmSameProcessRuntimeOracle);
   const present = Object.keys(facet).length > 0;
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const stageResults = compactObject(facet.stageResults ?? facet.stage_results);
+  const dispatchStage = compactObject(stageResults.dispatch_trace ?? stageResults.dispatchTrace);
+  const outputStage = compactObject(stageResults.output_oracle ?? stageResults.outputOracle);
+  const facetEvidenceRefs = compactStringList(evidenceRefsFromValue(facet));
+  const runtimeProofId = firstText(runtimeProofArtifactGate.proofId, runtimeProofArtifactGate.proof_id);
+  const ledgerRecord = compactObject(ledger.record ?? proofLedger.records?.[0] ?? proofLedger.record);
+  const closureEvidenceRefs = compactStringList([
+    runtimeProofId,
+    firstText(ledgerRecord.proofId, ledgerRecord.proof_id),
+    firstText(realRocmRuntimeChain.artifactHash, realRocmRuntimeChain.artifact_hash),
+    firstText(realRocmRuntimeChain.epoch),
+    firstText(realRocmRuntimeChain.dispatchId, realRocmRuntimeChain.dispatch_id),
+    firstText(realRocmRuntimeChain.outputTargetId, realRocmRuntimeChain.output_target_id),
+  ]);
+  const proofClosureChecks = {
+    ledgerAccepted: ledger.present === true
+      && ledger.source === 'recomputed_ledger'
+      && ledger.gpuHmrSuccess === true
+      && Array.isArray(ledger.failedInvariants)
+      && ledger.failedInvariants.length === 0,
+    runtimeChainAccepted: realRocmRuntimeChain.accepted === true,
+    outputOracleFacetAccepted: outputOracleFacet.accepted === true,
+    firewallEvidenceAccepted: realRocmFirewall.accepted === true,
+    runtimeArtifactProofIdPresent: Boolean(runtimeProofId),
+    stageResultsPresent: Object.keys(stageResults).length > 0,
+    dispatchStageEpochMatched: firstBool(
+      dispatchStage.dispatchUsedPublishedEpoch,
+      dispatchStage.dispatch_used_published_epoch,
+      facet.dispatchUsedPublishedEpoch,
+      facet.dispatch_used_published_epoch,
+    ) === true,
+    outputStageTargetMatched: firstBool(
+      outputStage.outputTargetMatched,
+      outputStage.output_target_matched,
+      facet.outputTargetMatched,
+      facet.output_target_matched,
+    ) === true,
+    outputStageAfterDispatch: firstBool(
+      outputStage.outputAfterDispatchObserved,
+      outputStage.output_after_dispatch_observed,
+      facet.outputAfterDispatchObserved,
+      facet.output_after_dispatch_observed,
+    ) === true,
+    runtimeChainHasArtifact: Boolean(firstText(realRocmRuntimeChain.artifactHash, realRocmRuntimeChain.artifact_hash)),
+    runtimeChainHasEpoch: Boolean(firstText(realRocmRuntimeChain.epoch)),
+    runtimeChainHasDispatch: Boolean(firstText(realRocmRuntimeChain.dispatchId, realRocmRuntimeChain.dispatch_id)),
+    runtimeChainHasOutputTarget: Boolean(firstText(realRocmRuntimeChain.outputTargetId, realRocmRuntimeChain.output_target_id)),
+    evidenceRefsClosed: closureEvidenceRefs.length > 0
+      && closureEvidenceRefs.some((ref) => facetEvidenceRefs.includes(ref)),
+  };
   const blockingGaps = compactStringList([
     ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
     ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
@@ -2299,6 +2354,48 @@ function realRocmSameProcessRuntimeOracleGate({
     present && !checks.runtimeProofArtifactAccepted
       ? 'same_process_runtime_oracle_strict_runtime_proof_artifact_missing'
       : null,
+    present && !proofClosureChecks.ledgerAccepted
+      ? 'same_process_runtime_oracle_ledger_closure_missing'
+      : null,
+    present && !proofClosureChecks.runtimeChainAccepted
+      ? 'same_process_runtime_oracle_runtime_chain_closure_missing'
+      : null,
+    present && !proofClosureChecks.outputOracleFacetAccepted
+      ? 'same_process_runtime_oracle_output_oracle_closure_missing'
+      : null,
+    present && !proofClosureChecks.firewallEvidenceAccepted
+      ? 'same_process_runtime_oracle_firewall_closure_missing'
+      : null,
+    present && !proofClosureChecks.runtimeArtifactProofIdPresent
+      ? 'same_process_runtime_oracle_runtime_proof_id_missing'
+      : null,
+    present && !proofClosureChecks.stageResultsPresent
+      ? 'same_process_runtime_oracle_stage_results_missing'
+      : null,
+    present && !proofClosureChecks.dispatchStageEpochMatched
+      ? 'same_process_runtime_oracle_stage_dispatch_epoch_mismatch'
+      : null,
+    present && !proofClosureChecks.outputStageTargetMatched
+      ? 'same_process_runtime_oracle_stage_output_target_mismatch'
+      : null,
+    present && !proofClosureChecks.outputStageAfterDispatch
+      ? 'same_process_runtime_oracle_stage_after_dispatch_missing'
+      : null,
+    present && !proofClosureChecks.runtimeChainHasArtifact
+      ? 'same_process_runtime_oracle_runtime_chain_artifact_missing'
+      : null,
+    present && !proofClosureChecks.runtimeChainHasEpoch
+      ? 'same_process_runtime_oracle_runtime_chain_epoch_missing'
+      : null,
+    present && !proofClosureChecks.runtimeChainHasDispatch
+      ? 'same_process_runtime_oracle_runtime_chain_dispatch_missing'
+      : null,
+    present && !proofClosureChecks.runtimeChainHasOutputTarget
+      ? 'same_process_runtime_oracle_runtime_chain_output_target_missing'
+      : null,
+    present && !proofClosureChecks.evidenceRefsClosed
+      ? 'same_process_runtime_oracle_evidence_ref_closure_missing'
+      : null,
     ...blockingGaps,
   ]);
   const accepted =
@@ -2314,6 +2411,10 @@ function realRocmSameProcessRuntimeOracleGate({
     proven: accepted && actuallyRequired,
     status: present ? firstText(facet.status, facet.reason) : null,
     checks,
+    proofClosureChecks,
+    proof_closure_checks: proofClosureChecks,
+    closureEvidenceRefs,
+    closure_evidence_refs: closureEvidenceRefs,
     failedGates,
     failed_gates: failedGates,
   };
@@ -7748,6 +7849,11 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmSameProcessRuntimeOracle,
     realRocmAppHookContractGate: appHookContractGate,
     runtimeProofArtifactGate,
+    ledger,
+    proofLedger,
+    realRocmRuntimeChain,
+    outputOracleFacet,
+    realRocmFirewall,
   });
   const sameProcessRuntimeOracleAccepted = sameProcessRuntimeOracleGate.accepted === true;
   const runtimeCapabilityPreflightPresent = realRocmRuntimeCapabilityPreflight.present === true;
