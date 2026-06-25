@@ -25,8 +25,11 @@ What passed:
   readback oracle after dispatch.
 - Baseline flow fixture and complex two-kernel flow fixture.
 
-Model notes:
-- gemini-3.1-flash-lite-preview passed.
+Historical model notes:
+- gemini-3.1-flash-lite-preview was used in this May 2026 historical run, but
+  it is now a shutdown preview model and must not be treated as current passing
+  GPU HMR validation evidence unless a private alias/live provider check proves
+  that exact requested model path is available in the environment.
 - gemini-3.0-flash-preview was unavailable to the configured Gemini API.
 - gemini-3.1-flash-ltie was unavailable; this appears to be a misspelled model id.
 
