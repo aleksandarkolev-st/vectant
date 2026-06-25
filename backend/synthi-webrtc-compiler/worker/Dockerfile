@@ -97,7 +97,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Python
     python3 python3-dev python3-pip python3-setuptools python3-venv \
     # Common CMake-discovered native dependencies used by larger ROCm projects.
-    sqlite3 libsqlite3-dev libbz2-dev libmsgpack-dev libmsgpack-cxx-dev nlohmann-json3-dev \
+    sqlite3 libsqlite3-dev libbz2-dev libzstd-dev libmsgpack-dev libmsgpack-cxx-dev nlohmann-json3-dev \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
     libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev libglew-dev libomp-dev libpng-dev \
