@@ -524,6 +524,7 @@ function runtimeApi(vendor) {
 function monolithicSource(vendor) {
   if (CFG.fixture === 'complex-flow') return complexFlowSource(vendor);
   if (CFG.fixture === 'ray-light') return rayLightSource(vendor);
+  if (CFG.fixture === 'realistic-raytrace') return realisticRaytraceSource(vendor);
 
   const api = runtimeApi(vendor);
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
@@ -810,6 +811,329 @@ int main(int, char**) {
     ${api.free}(deviceVX);
     ${api.free}(deviceVY);
     ${api.free}(deviceHue);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
+`;
+}
+
+function realisticRaytraceSource(vendor) {
+  const api = runtimeApi(vendor);
+  const target = vendor === 'rocm' ? 'rocm' : 'cuda';
+  return `// User-authored single-file GPU realistic ray-tracing visual app.
+// Deterministic validation fixture: fixed camera, fixed scene, fixed lights,
+// no temporal accumulation, and GPU-rendered framebuffer pixels.
+// GPU_TARGET: ${target}
+// LINK: -lSDL2 ${api.link}
+// BUILD: ${api.build} main.cpp -lSDL2 ${api.link}
+#include <SDL2/SDL.h>
+${runtimeInclude(vendor)}
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+constexpr int WIDTH = 800;
+constexpr int HEIGHT = 600;
+constexpr int PIXEL_COUNT = WIDTH * HEIGHT;
+constexpr float PI = 3.14159265358979323846f;
+
+struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
+struct Hit {
+    float t;
+    Vec3 p;
+    Vec3 n;
+    int material;
+    float id;
+};
+
+__device__ Vec3 make3(float x, float y, float z) { return Vec3{x, y, z}; }
+__device__ Vec3 add3(Vec3 a, Vec3 b) { return make3(a.x + b.x, a.y + b.y, a.z + b.z); }
+__device__ Vec3 sub3(Vec3 a, Vec3 b) { return make3(a.x - b.x, a.y - b.y, a.z - b.z); }
+__device__ Vec3 mul3(Vec3 a, float s) { return make3(a.x * s, a.y * s, a.z * s); }
+__device__ Vec3 hadamard3(Vec3 a, Vec3 b) { return make3(a.x * b.x, a.y * b.y, a.z * b.z); }
+__device__ float dot3(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+__device__ Vec3 cross3(Vec3 a, Vec3 b) {
+    return make3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+__device__ float clampf(float v, float lo, float hi) { return fminf(hi, fmaxf(lo, v)); }
+__device__ float fract1(float v) { return v - floorf(v); }
+__device__ float smooth01(float v) {
+    v = clampf(v, 0.0f, 1.0f);
+    return v * v * (3.0f - 2.0f * v);
+}
+__device__ Vec3 clamp3(Vec3 v, float lo, float hi) {
+    return make3(clampf(v.x, lo, hi), clampf(v.y, lo, hi), clampf(v.z, lo, hi));
+}
+__device__ Vec3 normalize3(Vec3 v) {
+    float inv = rsqrtf(fmaxf(dot3(v, v), 0.0000001f));
+    return mul3(v, inv);
+}
+__device__ Vec3 reflect3(Vec3 i, Vec3 n) { return sub3(i, mul3(n, 2.0f * dot3(i, n))); }
+__device__ Vec3 mix3(Vec3 a, Vec3 b, float t) { return add3(mul3(a, 1.0f - t), mul3(b, t)); }
+
+__device__ Vec3 refract3(Vec3 i, Vec3 n, float eta) {
+    float cosi = clampf(-dot3(i, n), -1.0f, 1.0f);
+    float sint2 = eta * eta * fmaxf(0.0f, 1.0f - cosi * cosi);
+    if (sint2 > 1.0f) return reflect3(i, n);
+    float cost = sqrtf(fmaxf(0.0f, 1.0f - sint2));
+    return normalize3(add3(mul3(i, eta), mul3(n, eta * cosi - cost)));
+}
+
+__device__ unsigned int packColor(Vec3 c) {
+    c = clamp3(c, 0.0f, 1.0f);
+    c = make3(powf(c.x, 1.0f / 2.2f), powf(c.y, 1.0f / 2.2f), powf(c.z, 1.0f / 2.2f));
+    unsigned int r = (unsigned int)(c.x * 255.0f + 0.5f);
+    unsigned int g = (unsigned int)(c.y * 255.0f + 0.5f);
+    unsigned int b = (unsigned int)(c.z * 255.0f + 0.5f);
+    return 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
+__device__ Vec3 environmentColor(Vec3 rd) {
+    float up = clampf(rd.y * 0.5f + 0.5f, 0.0f, 1.0f);
+    Vec3 sky = mix3(make3(0.60f, 0.68f, 0.74f), make3(0.95f, 0.97f, 1.0f), up);
+    float sun = powf(fmaxf(0.0f, dot3(rd, normalize3(make3(-0.35f, 0.62f, -0.28f)))), 180.0f);
+    return add3(sky, mul3(make3(1.0f, 0.86f, 0.55f), sun * 2.4f));
+}
+
+__device__ Vec3 rotateY(Vec3 p, float angle) {
+    float c = cosf(angle);
+    float s = sinf(angle);
+    return make3(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
+}
+
+__device__ bool clipDiamondPlane(
+    Vec3 ro,
+    Vec3 rd,
+    Vec3 planeN,
+    float planeD,
+    float& tEnter,
+    float& tExit,
+    Vec3& enterNormal,
+    Vec3& exitNormal
+) {
+    float denom = dot3(planeN, rd);
+    float dist = planeD - dot3(planeN, ro);
+    if (fabsf(denom) < 0.000001f) {
+        return dist >= 0.0f;
+    }
+    float tPlane = dist / denom;
+    Vec3 n = normalize3(planeN);
+    if (denom < 0.0f) {
+        if (tPlane > tEnter) {
+            tEnter = tPlane;
+            enterNormal = n;
+        }
+    } else {
+        if (tPlane < tExit) {
+            tExit = tPlane;
+            exitNormal = n;
+        }
+    }
+    return tEnter <= tExit;
+}
+
+__device__ bool intersectDiamond(Vec3 ro, Vec3 rd, Vec3 center, float scale, float rotation, float& t, Vec3& normal) {
+    Vec3 lo = mul3(rotateY(sub3(ro, center), -rotation), 1.0f / scale);
+    Vec3 ld = mul3(rotateY(rd, -rotation), 1.0f / scale);
+    float tEnter = -1.0e20f;
+    float tExit = 1.0e20f;
+    Vec3 enterNormal = make3(0.0f, 1.0f, 0.0f);
+    Vec3 exitNormal = make3(0.0f, -1.0f, 0.0f);
+
+    const float tableY = 0.38f;
+    const float bottomY = -0.90f;
+    const float girdleRadius = 0.86f;
+    const float tableRadius = 0.30f;
+    const float crownSlope = (tableRadius - girdleRadius) / tableY;
+    const float pavilionSlope = girdleRadius / (0.0f - bottomY);
+
+    if (!clipDiamondPlane(lo, ld, make3(0.0f, 1.0f, 0.0f), tableY, tEnter, tExit, enterNormal, exitNormal)) return false;
+    for (int i = 0; i < 16; ++i) {
+        float a = ((float)i + 0.5f) * (2.0f * PI / 16.0f);
+        Vec3 h = make3(cosf(a), 0.0f, sinf(a));
+        Vec3 crownN = make3(h.x, -crownSlope, h.z);
+        Vec3 pavilionN = make3(h.x, -pavilionSlope, h.z);
+        if (!clipDiamondPlane(lo, ld, crownN, girdleRadius, tEnter, tExit, enterNormal, exitNormal)) return false;
+        if (!clipDiamondPlane(lo, ld, pavilionN, -pavilionSlope * bottomY, tEnter, tExit, enterNormal, exitNormal)) return false;
+    }
+
+    t = tEnter > 0.02f ? tEnter : tExit;
+    if (t <= 0.02f || t > 1.0e19f) return false;
+    Vec3 n = tEnter > 0.02f ? enterNormal : mul3(exitNormal, -1.0f);
+    normal = normalize3(rotateY(n, rotation));
+    return true;
+}
+
+__device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool includeGround) {
+    bool found = false;
+    hit.t = 1.0e20f;
+    if (includeGround && fabsf(rd.y) > 0.0001f) {
+        float t = -ro.y / rd.y;
+        if (t > 0.02f && t < hit.t) {
+            hit.t = t;
+            hit.p = add3(ro, mul3(rd, t));
+            hit.n = make3(0.0f, 1.0f, 0.0f);
+            hit.material = 0;
+            hit.id = 0.0f;
+            found = true;
+        }
+    }
+
+    float t = 0.0f;
+    Vec3 n = make3(0.0f, 1.0f, 0.0f);
+    Vec3 mainGem = make3(0.0f, 0.78f, -0.16f);
+    if (intersectDiamond(ro, rd, mainGem, 1.02f, -0.18f, t, n) && t < hit.t) {
+        hit.t = t;
+        hit.p = add3(ro, mul3(rd, t));
+        hit.n = n;
+        hit.material = 1;
+        hit.id = 1.0f;
+        found = true;
+    }
+
+    for (int i = 0; i < 22; ++i) {
+        float a = (float)i * 2.39996323f;
+        float ring = 1.12f + 0.24f * (float)(i % 3);
+        Vec3 center = make3(cosf(a) * ring, 0.105f, -0.18f + sinf(a) * 0.76f);
+        float radius = 0.105f + 0.020f * (float)(i % 4);
+        if (intersectDiamond(ro, rd, center, radius, a * 0.37f, t, n) && t < hit.t) {
+            hit.t = t;
+            hit.p = add3(ro, mul3(rd, t));
+            hit.n = n;
+            hit.material = 2;
+            hit.id = (float)i + 2.0f;
+            found = true;
+        }
+    }
+    return found;
+}
+
+__device__ float shadowFactor(Vec3 p, Vec3 lightDir, float sceneLight) {
+    Hit h;
+    Vec3 start = add3(p, mul3(lightDir, 0.035f));
+    if (!sceneHit(start, lightDir, sceneLight, h, false)) return 1.0f;
+    return h.t < 3.5f ? 0.34f : 1.0f;
+}
+
+__device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
+    Vec3 lightDir = normalize3(make3(-0.42f * sceneLight, 0.88f, -0.34f));
+    Vec3 viewDir = mul3(rd, -1.0f);
+    if (hit.material == 0) {
+        float veinA = 0.5f + 0.5f * sinf(hit.p.x * 7.2f + sinf(hit.p.z * 3.6f) * 2.4f);
+        float veinB = 0.5f + 0.5f * sinf(hit.p.z * 9.1f + hit.p.x * 1.7f);
+        float marble = powf(clampf(veinA * 0.72f + veinB * 0.28f, 0.0f, 1.0f), 5.0f);
+        float seamX = fabsf(fract1(hit.p.x * 0.46f) - 0.5f);
+        float seamZ = fabsf(fract1((hit.p.z + 0.36f) * 0.46f) - 0.5f);
+        float grout = 1.0f - smooth01(clampf((fminf(seamX, seamZ) - 0.018f) / 0.050f, 0.0f, 1.0f));
+        Vec3 base = mix3(make3(0.30f, 0.33f, 0.34f), make3(0.62f, 0.65f, 0.64f), 0.18f + marble * 0.48f);
+        base = mix3(base, make3(0.12f, 0.13f, 0.14f), grout * 0.46f);
+        float wet = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), 80.0f);
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * shadowFactor(hit.p, lightDir, sceneLight);
+        Vec3 refl = environmentColor(reflect3(rd, hit.n));
+        Vec3 color = add3(mul3(base, 0.22f + diffuse * 0.66f), mul3(refl, 0.24f));
+        color = add3(color, mul3(make3(1.0f, 0.92f, 0.72f), wet * 0.85f));
+        float caustic = expf(-fabsf(hit.p.x) * 2.4f) * expf(-fabsf(hit.p.z + 0.05f) * 1.3f);
+        color = add3(color, mul3(make3(0.60f, 0.82f, 1.0f), caustic * (0.18f + 0.10f * sceneLight)));
+        return color;
+    }
+
+    float eta = hit.material == 1 ? 1.0f / (1.47f + sceneLight * 0.035f) : 1.0f / 1.39f;
+    Vec3 reflected = environmentColor(reflect3(rd, hit.n));
+    Vec3 refracted = environmentColor(refract3(rd, hit.n, eta));
+    float fresnel = powf(1.0f - fmaxf(0.0f, dot3(hit.n, viewDir)), 5.0f);
+    float facetA = fmaxf(0.0f, dot3(hit.n, normalize3(make3(0.18f, 0.91f, 0.36f))));
+    float facetB = fmaxf(0.0f, dot3(hit.n, normalize3(make3(-0.74f, 0.42f, 0.52f))));
+    float dispersion = sinf((hit.n.x * 41.0f + hit.n.y * 29.0f + hit.n.z * 37.0f + hit.id) * 2.3f);
+    Vec3 spectral = make3(0.84f + 0.12f * sinf(dispersion + 0.0f),
+                          0.90f + 0.08f * sinf(dispersion + 2.1f),
+                          0.98f + 0.08f * sinf(dispersion + 4.2f));
+    Vec3 glass = mix3(hadamard3(refracted, spectral), reflected, 0.16f + 0.70f * fresnel);
+    glass = add3(glass, mul3(make3(0.92f, 0.98f, 1.0f), facetA * facetA * 0.30f));
+    glass = add3(glass, mul3(make3(1.0f, 0.90f, 0.62f), facetB * facetB * 0.16f));
+    float sparkle = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), 120.0f);
+    glass = add3(glass, mul3(make3(1.0f, 0.96f, 0.84f), sparkle * (2.4f + sceneLight)));
+    return glass;
+}
+
+extern "C" __global__ void render_realistic_raytrace(unsigned int* pixels, int width, int height, float exposure, unsigned long long frame) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    const float sceneLight = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
+    float rigIsWarm = sceneLight >= 0.0f ? 1.0f : 0.0f;
+    float rigExposure = sceneLight >= 0.0f ? (0.92f + 0.12f * clampf(sceneLight, 0.0f, 2.5f)) : 0.52f;
+    Vec3 rigColorGrade = mix3(make3(0.54f, 0.72f, 1.08f), make3(1.06f, 0.99f, 0.86f), rigIsWarm);
+    float px = ((float)x + 0.5f) / (float)width;
+    float py = ((float)y + 0.5f) / (float)height;
+    float aspect = (float)width / (float)height;
+
+    Vec3 eye = make3(0.0f, 1.18f, 4.65f);
+    Vec3 target = make3(0.0f, 0.58f, -0.10f);
+    Vec3 forward = normalize3(sub3(target, eye));
+    Vec3 right = normalize3(cross3(forward, make3(0.0f, 1.0f, 0.0f)));
+    Vec3 up = normalize3(cross3(right, forward));
+    float lens = tanf(34.0f * PI / 180.0f);
+    Vec3 rd = normalize3(add3(forward, add3(mul3(right, (px * 2.0f - 1.0f) * aspect * lens), mul3(up, (1.0f - py * 2.0f) * lens))));
+
+    Hit hit;
+    Vec3 color = environmentColor(rd);
+    if (sceneHit(eye, rd, sceneLight, hit, true)) {
+        color = shade(eye, rd, hit, sceneLight);
+        float fog = expf(-hit.t * 0.035f);
+        color = mix3(make3(0.72f, 0.76f, 0.78f), color, fog);
+    }
+
+    float vignette = px * (1.0f - px) * py * (1.0f - py) * 16.0f;
+    color = hadamard3(color, rigColorGrade);
+    color = mul3(color, exposure * rigExposure * (0.68f + 0.32f * clampf(vignette, 0.0f, 1.0f)));
+    pixels[y * width + x] = packColor(color);
+}
+
+int main(int, char**) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window* window = SDL_CreateWindow("Synthi GPU Realistic Raytrace HMR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+
+    static unsigned int hostPixels[PIXEL_COUNT];
+    unsigned int* devicePixels = nullptr;
+    ${api.malloc}(&devicePixels, sizeof(unsigned int) * PIXEL_COUNT);
+
+    bool running = true;
+    unsigned long long frame = 0;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) running = false;
+        }
+
+        dim3 block(16, 16);
+        dim3 grid((WIDTH + block.x - 1) / block.x, (HEIGHT + block.y - 1) / block.y);
+        render_realistic_raytrace<<<grid, block>>>(devicePixels, WIDTH, HEIGHT, 1.04f, frame++);
+        ${api.sync}();
+        ${api.memcpy}(hostPixels, devicePixels, sizeof(unsigned int) * PIXEL_COUNT, ${api.d2h});
+
+        SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(unsigned int));
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+        SDL_Delay(16);
+
+        if ((frame % 120ULL) == 0ULL) {
+            std::fprintf(stderr, "[user-gpu-realistic-raytrace] frame=%llu deterministic=1\\n", frame);
+        }
+    }
+
+    ${api.free}(devicePixels);
+    SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
