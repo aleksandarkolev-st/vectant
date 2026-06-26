@@ -9606,7 +9606,7 @@ function inferRuntimeBackendCandidates({
     ...compactStringList(nativeObservation.texture_object_api_coverage),
   ].join(' ').toLowerCase();
   const candidates = [];
-  if (/\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto/.test(evidenceText)) candidates.push('hiprt');
+  if (/\bhiprt\b/.test(evidenceText)) candidates.push('hiprt');
   if (/\bhip\b|hipcc|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|amdhip64/.test(evidenceText)) {
     candidates.push('hip');
   }
@@ -11322,6 +11322,28 @@ async function selfCheckRuntimeDispatchEvidence() {
   });
   if (!rocmCuAliasCandidates.includes('hip') || rocmCuAliasCandidates.includes('cuda')) {
     throw new Error(`ROCm cu* compatibility aliases must infer HIP only, got ${rocmCuAliasCandidates.join(',')}`);
+  }
+  const explicitHiprtCandidates = inferRuntimeBackendCandidates({
+    gpuMode: 'rocm',
+    cmakeArgs: ['-DRENDER_BACKEND=hiprt'],
+    nativeObservation: { api_coverage: ['hiprtBuildScene'] },
+    compiler: 'rocm-llvm-bin/amdclang++',
+  });
+  const nameOnlyHiprtCandidates = inferRuntimeBackendCandidates({
+    gpuMode: 'rocm',
+    cmakeArgs: ['-DRENDERER_CLASS=HIPRTOrochiCtx'],
+    nativeObservation: {},
+    compiler: 'rocm-llvm-bin/amdclang++',
+  });
+  if (
+    !explicitHiprtCandidates.includes('hiprt')
+    || nameOnlyHiprtCandidates.includes('hiprt')
+  ) {
+    throw new Error(
+      `HIPRT backend inference must require explicit backend/API evidence, got explicit=${
+        explicitHiprtCandidates.join(',')
+      } nameOnly=${nameOnlyHiprtCandidates.join(',')}`,
+    );
   }
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
