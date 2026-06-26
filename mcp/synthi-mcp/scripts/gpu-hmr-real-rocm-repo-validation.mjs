@@ -572,6 +572,16 @@ async function selfCheckRealRocmProfiles() {
         `real ROCm final-acceptance profile ${profile.id} disables output oracle without proofObligations.acceptanceMode=refusal_only`,
       );
     }
+    if (
+      finalAcceptanceProfile
+      && profile.outputOracle.profile === 'auto'
+      && profile.proofObligations.refusalOnly !== true
+    ) {
+      throw new Error(
+        `real ROCm final-acceptance profile ${profile.id} cannot use outputOracle.profile=auto; `
+        + 'declare an explicit runtime oracle profile or mark the profile refusal_only',
+      );
+    }
     if (largeRocmMlFinalAcceptance) {
       if (profile.proofObligations.requiresRunModes !== true) {
         throw new Error(
@@ -7232,6 +7242,18 @@ function selectedOutputOracleAdaptation(files) {
     contractPresent: report.output_oracle_contract !== null,
     runtimeProfilePresent: report.output_oracle_runtime_profile !== null,
   };
+  if (mode === 'auto' && CFG.targetProgressionPhase === 'final-acceptance') {
+    report.output_oracle_resolution = {
+      ...report.output_oracle_resolution,
+      selectedSource: CFG.outputOracleRuntimeProfile ? 'profile_runtime_profile' : null,
+      failedReason: CFG.outputOracleRuntimeProfile
+        ? null
+        : 'source_derived_auto_disallowed_for_final_acceptance',
+      runtimeProfilePresent: report.output_oracle_runtime_profile !== null
+        || CFG.outputOracleRuntimeProfile !== null,
+    };
+    return null;
+  }
   if (mode === 'auto') {
     if (candidates.length <= 1) return candidates[0] ?? null;
     const names = candidates.map((candidate) => candidate.profile.id).join(', ');
