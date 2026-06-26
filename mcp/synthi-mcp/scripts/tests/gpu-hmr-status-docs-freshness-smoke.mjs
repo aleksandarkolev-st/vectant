@@ -81,6 +81,14 @@ function matrixSummaryTokens(artifact, includeUnproven) {
     tokens.push(`${summary.byOutcome?.unproven ?? 0} historical unproven rows`);
   } else {
     tokens.push('0 included unproven rows');
+    const planCoverageById = new Map((summary.planCoverage ?? []).map((entry) => [entry.id, entry]));
+    const runModeCoverage = planCoverageById.get('per_target_run_modes');
+    if (runModeCoverage) {
+      tokens.push(`per_target_run_modes status=${runModeCoverage.status}`);
+      for (const gap of runModeCoverage.openGaps ?? []) {
+        tokens.push(`per_target_run_modes open gap: ${gap}`);
+      }
+    }
   }
   return tokens;
 }
