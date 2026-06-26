@@ -650,6 +650,85 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert "constexpr int N" not in result.files["device.hip"]
 
 
+def test_deterministic_rocm_sdl_split_preserves_texture_render_path(monkeypatch):
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for deterministic source-owned texture split")
+
+    source = r'''
+    #include <SDL2/SDL.h>
+    #include <hip/hip_runtime.h>
+    #include <cstdint>
+    constexpr int WIDTH = 32;
+    constexpr int HEIGHT = 24;
+    constexpr int PIXEL_COUNT = WIDTH * HEIGHT;
+    extern "C" __global__ void draw_pixels(uint32_t* pixels, int width, int height, float exposure, unsigned long long frame) {
+        int x = blockIdx.x * blockDim.x + threadIdx.x;
+        int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) return;
+        uint32_t r = (uint32_t)((x + (int)(frame & 7)) & 255);
+        uint32_t g = (uint32_t)((y * 3) & 255);
+        uint32_t b = (uint32_t)(exposure * 80.0f);
+        pixels[y * width + x] = 0xff000000u | (r << 16) | (g << 8) | b;
+    }
+    int main() {
+        SDL_Window* window = SDL_CreateWindow("texture", 0, 0, WIDTH, HEIGHT, 0);
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+        SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+        static uint32_t hostPixels[PIXEL_COUNT];
+        uint32_t* devicePixels = nullptr;
+        hipMalloc(&devicePixels, sizeof(uint32_t) * PIXEL_COUNT);
+        unsigned long long frame = 0;
+        dim3 block(8, 8);
+        dim3 grid((WIDTH + block.x - 1) / block.x, (HEIGHT + block.y - 1) / block.y);
+        draw_pixels<<<grid, block>>>(devicePixels, WIDTH, HEIGHT, 1.25f, frame++);
+        hipDeviceSynchronize();
+        hipMemcpy(hostPixels, devicePixels, sizeof(uint32_t) * PIXEL_COUNT, hipMemcpyDeviceToHost);
+        SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(uint32_t));
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+        return 0;
+    }
+    '''
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/texture_demo.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+    monkeypatch.delenv("SYNTHI_GPU_VENDOR", raising=False)
+    monkeypatch.delenv("SYNTHI_GPU_ARCH", raising=False)
+
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=provider,
+            user_code=source,
+            lang="cpp",
+            detection=detection,
+            files=[{"name": "src/texture_demo.hip", "content": source}],
+            focus="src/texture_demo.hip",
+            model="gemini-3.5-flash",
+            gpu_arch_hint="gfx1201",
+        )
+    )
+
+    assert provider.called is False
+    assert result.verification and result.verification.ok is True
+    assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
+    assert "void* texture = nullptr;" in result.files["shared.h"]
+    assert 'extern "C" void* core_get_api() { return &g_state; }' in result.files["core.cpp"]
+    assert 'extern "C" void* get_core_api() { return core_get_api(); }' in result.files["core.cpp"]
+    assert "SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT)" in result.files["gui.cpp"]
+    assert "AppState* state = static_cast<AppState*>(core_state_ptr ? core_state_ptr : prev_state);" in result.files["gui.cpp"]
+    assert "SDL_Texture* texture = static_cast<SDL_Texture*>(state->texture);" in result.files["gui.cpp"]
+    assert "SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(uint32_t));" in result.files["gui.cpp"]
+    assert "synthi_gpu_launch_source_location" in result.files["core.cpp"]
+
+
 def test_build_split_retry_prompt_preserves_previous_rejections():
     prompt = build_split_retry_prompt(
         "original prompt",

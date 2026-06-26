@@ -44,6 +44,15 @@ class _Buffer:
     bytes_expr: str
 
 
+@dataclass(frozen=True)
+class _Texture:
+    name: str
+    format_expr: str
+    access_expr: str
+    width_expr: str
+    height_expr: str
+
+
 @dataclass
 class _SeedPlan:
     function_name: str
@@ -64,6 +73,7 @@ class _SourceShape:
     arch: str
     launches: List[LaunchSite]
     buffers: List[_Buffer]
+    textures: List[_Texture]
     constants: str
     launch_dim_decls: List[str]
     device_prelude: str
@@ -92,6 +102,10 @@ _DEVICE_PTR_RE = re.compile(
 _MEMCPY_RE = re.compile(
     r"\b(?P<fn>hipMemcpy|cudaMemcpy)\s*\(\s*(?P<dst>[^,]+?)\s*,\s*(?P<src>[^,]+?)\s*,\s*"
     r"(?P<bytes>[^,]+?)\s*,\s*(?P<kind>hipMemcpyDeviceToHost|cudaMemcpyDeviceToHost|hipMemcpyHostToDevice|cudaMemcpyHostToDevice)\s*\)",
+    re.DOTALL,
+)
+_SDL_TEXTURE_RE = re.compile(
+    r"\bSDL_Texture\s*\*\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*SDL_CreateTexture\s*\(",
     re.DOTALL,
 )
 _HELPER_FUNCTION_RE = re.compile(
@@ -273,6 +287,7 @@ def _analyze_source_shape(
     launch_dim_decls = _extract_launch_dim_decls(source)
     _validate_launch_shapes(launches, launch_dim_decls, report)
     render_block = _extract_sdl_render_block(source, report)
+    textures = _extract_sdl_textures(source, render_block, report)
     constants = _extract_constants(source)
     device_prelude = _extract_device_prelude(source, report)
     helper_functions = _extract_render_helpers(source, render_block)
@@ -290,6 +305,7 @@ def _analyze_source_shape(
         arch=arch,
         launches=launches,
         buffers=buffers,
+        textures=textures,
         constants=constants,
         launch_dim_decls=launch_dim_decls,
         device_prelude=device_prelude,
@@ -444,6 +460,47 @@ def _extract_sdl_render_block(source: str, report: dict) -> str:
     return _rewrite_source_block_for_state(block)
 
 
+def _extract_sdl_textures(source: str, render_block: str, report: dict) -> List[_Texture]:
+    declarations: Dict[str, _Texture] = {}
+    for match in _SDL_TEXTURE_RE.finditer(mask_comments_for_parsing(source)):
+        args_body, _after = _read_balanced(source, source.find("(", match.end() - 1), "(", ")")
+        args = _split_top_level(args_body)
+        if len(args) < 5:
+            continue
+        renderer_expr = _clean_expr(args[0])
+        if renderer_expr != "renderer":
+            _unsupported(
+                report,
+                "deterministic_split_sdl_texture_renderer_unresolved",
+                "SDL texture creation must use the source renderer handle",
+            )
+        name = match.group("name")
+        declarations[name] = _Texture(
+            name=name,
+            format_expr=args[1].strip(),
+            access_expr=args[2].strip(),
+            width_expr=args[3].strip(),
+            height_expr=args[4].strip(),
+        )
+    used_names = set()
+    for match in re.finditer(r"\bSDL_(?:UpdateTexture|RenderCopy|RenderCopyEx)\s*\(", render_block):
+        args_body, _after = _read_balanced(render_block, match.end() - 1, "(", ")")
+        args = _split_top_level(args_body)
+        texture_index = 0 if "UpdateTexture" in match.group(0) else 1
+        if len(args) > texture_index:
+            candidate = _clean_expr(args[texture_index])
+            if _is_simple_identifier(candidate):
+                used_names.add(candidate)
+    missing = sorted(name for name in used_names if name not in declarations)
+    if missing:
+        _unsupported(
+            report,
+            "deterministic_split_sdl_texture_mapping_missing",
+            f"SDL render block references texture variables without parseable SDL_CreateTexture evidence: {', '.join(missing)}",
+        )
+    return [declarations[name] for name in sorted(used_names)]
+
+
 def _rewrite_source_block_for_state(block: str) -> str:
     out = block
     out = re.sub(r"\bSDL_RenderPresent\s*\([^;]+;", "", out)
@@ -596,6 +653,8 @@ def _render_shared(shape: _SourceShape) -> str:
     for buffer in shape.buffers:
         fields.append(f"    {buffer.ctype}* {buffer.host_name} = nullptr;")
         fields.append(f"    {buffer.ctype}* {buffer.device_name} = nullptr;")
+    for texture in shape.textures:
+        fields.append(f"    void* {texture.name} = nullptr;")
     return "\n".join(
         [
             "#pragma once",
@@ -643,6 +702,9 @@ def _render_core(shape: _SourceShape) -> str:
             'extern "C" void device_on_load(const unsigned char*, std::size_t) {}',
             'extern "C" std::size_t device_save_size() { return 0; }',
             'extern "C" void device_save_write(unsigned char*, std::size_t) {}',
+            "",
+            'extern "C" void* core_get_api() { return &g_state; }',
+            'extern "C" void* get_core_api() { return core_get_api(); }',
             "",
             'extern "C" void* core_on_load(void* prev_state, void* renderer) {',
             "    if (prev_state) {",
@@ -794,8 +856,24 @@ def _render_gui(shape: _SourceShape) -> str:
     alias_lines = ["    AppState* state = static_cast<AppState*>(state_ptr);", "    if (!state || !state->renderer) return;", "    SDL_Renderer* renderer = static_cast<SDL_Renderer*>(state->renderer);"]
     for buffer in shape.buffers:
         alias_lines.append(f"    {buffer.ctype}* {buffer.host_name} = state->{buffer.host_name};")
+    for texture in shape.textures:
+        alias_lines.append(f"    SDL_Texture* {texture.name} = static_cast<SDL_Texture*>(state->{texture.name});")
     alias_lines.append("    unsigned long long frame = state->frame;")
     block = _indent(shape.render_block, "    ")
+    gui_load_lines = [
+        "    AppState* state = static_cast<AppState*>(core_state_ptr ? core_state_ptr : prev_state);",
+        "    if (!state) return core_state_ptr;",
+        "    SDL_Renderer* renderer = static_cast<SDL_Renderer*>(state->renderer ? state->renderer : renderer_ptr);",
+        "    if (!renderer) return state;",
+    ]
+    for texture in shape.textures:
+        gui_load_lines.extend(
+            [
+                f"    if (!state->{texture.name}) {{",
+                f"        state->{texture.name} = SDL_CreateTexture(renderer, {texture.format_expr}, {texture.access_expr}, {texture.width_expr}, {texture.height_expr});",
+                "    }",
+            ]
+        )
     return "\n".join(
         [
             '#include "shared.h"',
@@ -805,7 +883,10 @@ def _render_gui(shape: _SourceShape) -> str:
             "",
             shape.helper_functions,
             "",
-            'extern "C" void* gui_on_load(void*, void*, void* core_state) { return core_state; }',
+            'extern "C" void* gui_on_load(void* prev_state, void* renderer_ptr, void* core_state_ptr) {',
+            *gui_load_lines,
+            "    return state;",
+            "}",
             'extern "C" void gui_on_render(void* state_ptr) {',
             *alias_lines,
             block,
