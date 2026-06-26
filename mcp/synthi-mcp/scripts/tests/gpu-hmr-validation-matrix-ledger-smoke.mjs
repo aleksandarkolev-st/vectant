@@ -4660,6 +4660,26 @@ assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-large-lib')?.rowCo
 assert.ok(coverageById.get('large_real_rocm_repo:real-rocm-large-lib')?.openGaps.includes(
   'output_or_visual_oracle_proof_required',
 ));
+const largeRocmCoverage = coverageById.get('large_real_rocm_repo:real-rocm-large-lib');
+assert.equal(largeRocmCoverage?.appHookContract.required, true);
+assert.equal(largeRocmCoverage.appHookContract.proven, false);
+assert.equal(largeRocmCoverage.appHookContract.status, 'contract_missing_or_unproven');
+assert.ok(largeRocmCoverage.appHookContract.blockingGaps.includes('real_rocm_app_hook_contract_required'));
+assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.required, true);
+assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.proven, false);
+assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.status, 'contract_missing_or_unproven');
+assert.equal(largeRocmCoverage.deviceSidecarContract.required, true);
+assert.equal(largeRocmCoverage.deviceSidecarContract.proven, false);
+assert.equal(largeRocmCoverage.deviceSidecarContract.status, 'device_sidecar_missing_or_unproven');
+assert.ok(largeRocmCoverage.deviceSidecarContract.blockingGaps.includes(
+  'device_sidecar_dispatch_trace_runtime_not_observed',
+));
+assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.required, true);
+assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.proven, false);
+assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.status, 'consistency_missing_or_unproven');
+assert.ok(largeRocmCoverage.sidecarRuntimeConsistency.blockingGaps.includes(
+  'sidecar_runtime_sidecar_observation_missing',
+));
 assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-second-lib')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
