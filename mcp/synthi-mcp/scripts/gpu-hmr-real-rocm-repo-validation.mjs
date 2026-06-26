@@ -252,6 +252,18 @@ const REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS = {
   ],
 };
 
+function realRocmStageProofKinds(stageKeyOrSnake) {
+  const stage = REAL_ROCM_APP_HOOK_STAGES.find((entry) =>
+    entry.key === stageKeyOrSnake || entry.snake === stageKeyOrSnake
+  );
+  return stage ? [...(REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS[stage.key] ?? [])] : [];
+}
+
+function missingProofKindsForStage(observed, stageKeyOrSnake) {
+  const proofKinds = realRocmStageProofKinds(stageKeyOrSnake);
+  return observed === true ? [] : proofKinds;
+}
+
 function realRocmRequiredAppHookContractTemplate({
   required = false,
   requiredReasons = [],
@@ -8646,6 +8658,7 @@ function realRocmAppHookContractFacet({
   const evidenceRefs = [];
   for (const stageDef of REAL_ROCM_APP_HOOK_STAGES) {
     const stage = contract.stages?.[stageDef.key] ?? contract[stageDef.key] ?? contract[stageDef.snake] ?? {};
+    const requiredProofKinds = realRocmStageProofKinds(stageDef.key);
     const stageEvidenceRefs = compactStringList([
       ...(Array.isArray(stage.evidenceRefs) ? stage.evidenceRefs : []),
       ...(Array.isArray(stage.evidence_refs) ? stage.evidence_refs : []),
@@ -8659,10 +8672,19 @@ function realRocmAppHookContractFacet({
       && stageEvidenceRefs.length > 0
       && unresolvedEvidenceRefs.length === 0;
     const runtimeObserved = runtimeObservedByStage[stageDef.key] === true;
+    const missingProofKinds = required && stage.required !== false && (
+      !contractEvidencePresent || !runtimeObserved
+    )
+      ? requiredProofKinds
+      : [];
     const stageResult = {
       stage: stageDef.snake,
       declared: stage.declared === true,
       required: required && stage.required !== false,
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
       contractEvidencePresent,
       contract_evidence_present: contractEvidencePresent,
       runtimeObserved,
@@ -8926,20 +8948,56 @@ function realRocmNativeRuntimeProofBridgeFacet({
     ...availableEvidenceRefs,
   ]);
   const stageResults = {
-    artifact_transport: { observed: artifactTransportObserved },
-    epoch_publication: { observed: epochPublicationObserved },
+    artifact_transport: {
+      observed: artifactTransportObserved,
+      requiredProofKinds: realRocmStageProofKinds('artifact_transport'),
+      required_proof_kinds: realRocmStageProofKinds('artifact_transport'),
+      missingProofKinds: missingProofKindsForStage(artifactTransportObserved, 'artifact_transport'),
+      missing_proof_kinds: missingProofKindsForStage(artifactTransportObserved, 'artifact_transport'),
+    },
+    epoch_publication: {
+      observed: epochPublicationObserved,
+      requiredProofKinds: realRocmStageProofKinds('epoch_publication'),
+      required_proof_kinds: realRocmStageProofKinds('epoch_publication'),
+      missingProofKinds: missingProofKindsForStage(epochPublicationObserved, 'epoch_publication'),
+      missing_proof_kinds: missingProofKindsForStage(epochPublicationObserved, 'epoch_publication'),
+    },
     dispatch_trace: {
       observed: dispatchBridgeObserved,
+      requiredProofKinds: realRocmStageProofKinds('dispatch_trace'),
+      required_proof_kinds: realRocmStageProofKinds('dispatch_trace'),
+      missingProofKinds: dispatchBridgeObserved && dispatchUsedPublishedEpoch
+        ? []
+        : realRocmStageProofKinds('dispatch_trace'),
+      missing_proof_kinds: dispatchBridgeObserved && dispatchUsedPublishedEpoch
+        ? []
+        : realRocmStageProofKinds('dispatch_trace'),
       dispatchUsedPublishedEpoch,
       dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
     },
     host_identity: {
       observed: hostIdentityObserved,
+      requiredProofKinds: realRocmStageProofKinds('host_identity'),
+      required_proof_kinds: realRocmStageProofKinds('host_identity'),
+      missingProofKinds: sameProcessIdentityObserved
+        ? []
+        : realRocmStageProofKinds('host_identity'),
+      missing_proof_kinds: sameProcessIdentityObserved
+        ? []
+        : realRocmStageProofKinds('host_identity'),
       sameProcessIdentityObserved,
       same_process_identity_observed: sameProcessIdentityObserved,
     },
     output_oracle: {
       observed: outputOracleObserved,
+      requiredProofKinds: realRocmStageProofKinds('output_oracle'),
+      required_proof_kinds: realRocmStageProofKinds('output_oracle'),
+      missingProofKinds: outputOracleObserved && outputTargetMatched && outputAfterDispatchObserved
+        ? []
+        : realRocmStageProofKinds('output_oracle'),
+      missing_proof_kinds: outputOracleObserved && outputTargetMatched && outputAfterDispatchObserved
+        ? []
+        : realRocmStageProofKinds('output_oracle'),
       outputTargetObserved,
       output_target_observed: outputTargetObserved,
       outputTargetMatched,
@@ -9175,20 +9233,56 @@ function realRocmSameProcessRuntimeOracleFacet({
     && firewallEvidence.full_rebuild_used === false
     && firewallEvidence.process_restarted === false;
   const stageResults = {
-    artifact_transport: { observed: artifactTransportObserved },
-    epoch_publication: { observed: epochPublicationObserved },
+    artifact_transport: {
+      observed: artifactTransportObserved,
+      requiredProofKinds: realRocmStageProofKinds('artifact_transport'),
+      required_proof_kinds: realRocmStageProofKinds('artifact_transport'),
+      missingProofKinds: missingProofKindsForStage(artifactTransportObserved, 'artifact_transport'),
+      missing_proof_kinds: missingProofKindsForStage(artifactTransportObserved, 'artifact_transport'),
+    },
+    epoch_publication: {
+      observed: epochPublicationObserved,
+      requiredProofKinds: realRocmStageProofKinds('epoch_publication'),
+      required_proof_kinds: realRocmStageProofKinds('epoch_publication'),
+      missingProofKinds: missingProofKindsForStage(epochPublicationObserved, 'epoch_publication'),
+      missing_proof_kinds: missingProofKindsForStage(epochPublicationObserved, 'epoch_publication'),
+    },
     dispatch_trace: {
       observed: dispatchTraceObserved,
+      requiredProofKinds: realRocmStageProofKinds('dispatch_trace'),
+      required_proof_kinds: realRocmStageProofKinds('dispatch_trace'),
+      missingProofKinds: dispatchTraceObserved && dispatchUsedPublishedEpoch
+        ? []
+        : realRocmStageProofKinds('dispatch_trace'),
+      missing_proof_kinds: dispatchTraceObserved && dispatchUsedPublishedEpoch
+        ? []
+        : realRocmStageProofKinds('dispatch_trace'),
       dispatchUsedPublishedEpoch,
       dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
     },
     host_identity: {
       observed: hostIdentityObserved,
+      requiredProofKinds: realRocmStageProofKinds('host_identity'),
+      required_proof_kinds: realRocmStageProofKinds('host_identity'),
+      missingProofKinds: sameProcessIdentityObserved
+        ? []
+        : realRocmStageProofKinds('host_identity'),
+      missing_proof_kinds: sameProcessIdentityObserved
+        ? []
+        : realRocmStageProofKinds('host_identity'),
       sameProcessIdentityObserved,
       same_process_identity_observed: sameProcessIdentityObserved,
     },
     output_oracle: {
       observed: outputOracleObserved,
+      requiredProofKinds: realRocmStageProofKinds('output_oracle'),
+      required_proof_kinds: realRocmStageProofKinds('output_oracle'),
+      missingProofKinds: outputOracleObserved && outputTargetMatched && outputAfterDispatchObserved
+        ? []
+        : realRocmStageProofKinds('output_oracle'),
+      missing_proof_kinds: outputOracleObserved && outputTargetMatched && outputAfterDispatchObserved
+        ? []
+        : realRocmStageProofKinds('output_oracle'),
       outputTargetObserved,
       output_target_observed: outputTargetObserved,
       outputTargetMatched,
@@ -11560,6 +11654,8 @@ async function selfCheckRuntimeDispatchEvidence() {
     || profileRequiredTemplate.stage_obligations.length !== REAL_ROCM_APP_HOOK_STAGES.length
     || !profileRequiredArtifactStage?.proof_kinds?.includes('changed_artifact_hash')
     || !profileRequiredArtifactStage?.proof_kinds?.includes('same_process_transport_event')
+    || !profileRequiredHookWithoutNativeObservation.stage_results?.artifact_transport?.missing_proof_kinds?.includes('changed_artifact_hash')
+    || !profileRequiredHookWithoutNativeObservation.stage_results?.artifact_transport?.missing_proof_kinds?.includes('same_process_transport_event')
     || refreshedRequiredHook.appHookFacet.required !== true
     || refreshedRequiredHook.appHookFacet.status !== 'required_app_hook_contract_missing'
     || !refreshedRequiredHook.appHookFacet.blocking_gaps.includes('app_hook_artifact_transport_evidence_missing')
@@ -11567,9 +11663,11 @@ async function selfCheckRuntimeDispatchEvidence() {
     || refreshedRequiredTemplate.proof_authority !== 'obligation_template_only_not_runtime_proof'
     || refreshedRequiredTemplate.can_satisfy_runtime_proof !== false
     || !refreshedRequiredOutputStage?.proof_kinds?.includes('readback_or_visual_artifact')
+    || !refreshedRequiredHook.appHookFacet.stage_results?.output_oracle?.required_proof_kinds?.includes('readback_or_visual_artifact')
     || refreshedRequiredHook.sameProcessFacet.required !== true
     || refreshedRequiredHook.sameProcessFacet.status !== 'same_process_runtime_oracle_contract_unproven'
     || !refreshedRequiredHook.sameProcessFacet.blocking_gaps.includes('same_process_runtime_oracle_app_hook_contract_unproven')
+    || !refreshedRequiredHook.sameProcessFacet.stage_results?.output_oracle?.missing_proof_kinds?.includes('readback_or_visual_artifact')
   ) {
     throw new Error('real ROCm app hook contract facet self-check failed');
   }
@@ -12305,9 +12403,12 @@ int main()
     || nativeBridgeDispatchEvidence.evidence_refs[0] !== 'worker-log:native_runtime_dispatch:pid4242-123:kernel'
     || nativeBridgeOriginalHost.proof.attachmentProven !== true
     || nativeBridgeFacet.accepted !== true
+    || nativeBridgeFacet.stage_results?.artifact_transport?.missing_proof_kinds?.length !== 0
+    || !nativeBridgeFacet.stage_results?.output_oracle?.required_proof_kinds?.includes('readback_or_visual_artifact')
     || nativeBridgeSameProcess.accepted !== true
     || nativeBridgeSameProcess.app_hook_contract_accepted !== false
     || nativeBridgeSameProcess.native_runtime_bridge_accepted !== true
+    || nativeBridgeSameProcess.stage_results?.dispatch_trace?.missing_proof_kinds?.length !== 0
   ) {
     throw new Error('native ROCm runtime proof bridge self-check failed');
   }
