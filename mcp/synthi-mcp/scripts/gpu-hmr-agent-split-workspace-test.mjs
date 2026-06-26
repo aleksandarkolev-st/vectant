@@ -887,6 +887,12 @@ __device__ Vec3 refract3(Vec3 i, Vec3 n, float eta) {
 }
 
 __device__ unsigned int packColor(Vec3 c) {
+    c = make3(fmaxf(0.0f, c.x), fmaxf(0.0f, c.y), fmaxf(0.0f, c.z));
+    c = make3(
+        (c.x * (2.51f * c.x + 0.03f)) / (c.x * (2.43f * c.x + 0.59f) + 0.14f),
+        (c.y * (2.51f * c.y + 0.03f)) / (c.y * (2.43f * c.y + 0.59f) + 0.14f),
+        (c.z * (2.51f * c.z + 0.03f)) / (c.z * (2.43f * c.z + 0.59f) + 0.14f)
+    );
     c = clamp3(c, 0.0f, 1.0f);
     c = make3(powf(c.x, 1.0f / 2.2f), powf(c.y, 1.0f / 2.2f), powf(c.z, 1.0f / 2.2f));
     unsigned int r = (unsigned int)(c.x * 255.0f + 0.5f);
@@ -897,9 +903,11 @@ __device__ unsigned int packColor(Vec3 c) {
 
 __device__ Vec3 environmentColor(Vec3 rd) {
     float up = clampf(rd.y * 0.5f + 0.5f, 0.0f, 1.0f);
-    Vec3 sky = mix3(make3(0.60f, 0.68f, 0.74f), make3(0.95f, 0.97f, 1.0f), up);
+    Vec3 sky = mix3(make3(0.54f, 0.61f, 0.67f), make3(0.90f, 0.94f, 1.0f), up);
+    float cityBand = smooth01(clampf((0.18f - rd.y) / 0.22f, 0.0f, 1.0f));
+    Vec3 city = make3(0.34f + 0.05f * sinf(rd.x * 31.0f), 0.35f, 0.34f);
     float sun = powf(fmaxf(0.0f, dot3(rd, normalize3(make3(-0.35f, 0.62f, -0.28f)))), 180.0f);
-    return add3(sky, mul3(make3(1.0f, 0.86f, 0.55f), sun * 2.4f));
+    return add3(mix3(sky, city, cityBand * 0.26f), mul3(make3(1.0f, 0.86f, 0.55f), sun * 2.4f));
 }
 
 __device__ Vec3 rotateY(Vec3 p, float angle) {
@@ -1112,6 +1120,22 @@ __device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool incl
         acceptHit(hit, found, ro, rd, boxT, boxN, 10, 103.0f);
     }
 
+    for (int bulb = 0; bulb < 11; ++bulb) {
+        float bx = -2.96f + (float)bulb * 0.56f;
+        float by = 1.70f + 0.08f * sinf((float)bulb * 0.93f);
+        float bz = -2.22f + 0.10f * sinf((float)bulb * 1.41f);
+        float bulbT = 0.0f;
+        Vec3 bulbN = make3(0.0f, 1.0f, 0.0f);
+        if (intersectEllipsoid(ro, rd, make3(bx, by, bz), make3(0.035f, 0.035f, 0.035f), bulbT, bulbN) && bulbT < hit.t) {
+            hit.t = bulbT;
+            hit.p = add3(ro, mul3(rd, bulbT));
+            hit.n = bulbN;
+            hit.material = 12;
+            hit.id = 120.0f + (float)bulb;
+            found = true;
+        }
+    }
+
     float carT = 0.0f;
     Vec3 carN = make3(0.0f, 1.0f, 0.0f);
     if (intersectEllipsoid(ro, rd, make3(1.84f, 0.28f, -0.86f), make3(0.76f, 0.22f, 0.34f), carT, carN) && carT < hit.t) {
@@ -1178,6 +1202,60 @@ __device__ float shadowFactor(Vec3 p, Vec3 lightDir, float sceneLight) {
     return h.t < 3.5f ? 0.34f : 1.0f;
 }
 
+__device__ Vec3 secondarySurfaceTint(Hit hit) {
+    if (hit.material == 0) return make3(0.42f, 0.44f, 0.42f);
+    if (hit.material == 1 || hit.material == 2) return make3(0.86f, 0.94f, 1.0f);
+    if (hit.material == 3) return make3(0.46f, 0.43f, 0.36f);
+    if (hit.material == 4) return make3(0.05f, 0.06f, 0.07f);
+    if (hit.material == 5) return make3(0.02f, 0.018f, 0.016f);
+    if (hit.material == 6) return make3(0.16f, 0.24f, 0.30f);
+    if (hit.material == 7) return make3(0.66f, 0.09f, 0.06f);
+    if (hit.material == 8) return make3(0.10f, 0.30f, 0.12f);
+    if (hit.material == 10) return make3(0.20f, 0.21f, 0.22f);
+    if (hit.material == 11) return make3(0.42f, 0.22f, 0.09f);
+    if (hit.material == 12) return make3(2.2f, 1.72f, 0.86f);
+    return make3(0.40f, 0.40f, 0.40f);
+}
+
+__device__ Vec3 tracedSecondaryColor(Vec3 p, Vec3 rd, float sceneLight) {
+    Hit h;
+    Vec3 start = add3(p, mul3(rd, 0.050f));
+    if (!sceneHit(start, rd, sceneLight, h, false)) {
+        return environmentColor(rd);
+    }
+    float falloff = expf(-h.t * 0.16f);
+    return mix3(environmentColor(rd), secondarySurfaceTint(h), falloff);
+}
+
+__device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight);
+
+__device__ Vec3 cameraRayColor(float px, float py, int width, int height, float sceneLight, float exposure) {
+    float aspect = (float)width / (float)height;
+    float rigIsWarm = sceneLight >= 0.0f ? 1.0f : 0.0f;
+    float rigExposure = sceneLight >= 0.0f ? (0.80f + 0.08f * clampf(sceneLight, 0.0f, 2.5f)) : 0.48f;
+    Vec3 rigColorGrade = mix3(make3(0.58f, 0.70f, 1.02f), make3(1.02f, 0.96f, 0.84f), rigIsWarm);
+
+    Vec3 eye = make3(-0.16f, 1.05f, 4.18f);
+    Vec3 target = make3(0.0f, 0.55f, -0.18f);
+    Vec3 forward = normalize3(sub3(target, eye));
+    Vec3 right = normalize3(cross3(forward, make3(0.0f, 1.0f, 0.0f)));
+    Vec3 up = normalize3(cross3(right, forward));
+    float lens = tanf(35.0f * PI / 180.0f);
+    Vec3 rd = normalize3(add3(forward, add3(mul3(right, (px * 2.0f - 1.0f) * aspect * lens), mul3(up, (1.0f - py * 2.0f) * lens))));
+
+    Hit hit;
+    Vec3 color = environmentColor(rd);
+    if (sceneHit(eye, rd, sceneLight, hit, true)) {
+        color = shade(eye, rd, hit, sceneLight);
+        float fog = expf(-hit.t * 0.020f);
+        color = mix3(make3(0.60f, 0.64f, 0.66f), color, fog);
+    }
+
+    float vignette = px * (1.0f - px) * py * (1.0f - py) * 16.0f;
+    color = hadamard3(color, rigColorGrade);
+    return mul3(color, exposure * rigExposure * (0.72f + 0.28f * clampf(vignette, 0.0f, 1.0f)));
+}
+
 __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
     Vec3 lightDir = normalize3(make3(-0.42f * sceneLight, 0.88f, -0.34f));
     Vec3 viewDir = mul3(rd, -1.0f);
@@ -1190,9 +1268,14 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
         float grout = 1.0f - smooth01(clampf((fminf(seamX, seamZ) - 0.018f) / 0.050f, 0.0f, 1.0f));
         Vec3 base = mix3(make3(0.30f, 0.33f, 0.34f), make3(0.62f, 0.65f, 0.64f), 0.18f + marble * 0.48f);
         base = mix3(base, make3(0.12f, 0.13f, 0.14f), grout * 0.46f);
+        float leafScatter = smooth01(sinf(hit.p.x * 13.7f + hit.p.z * 19.1f) * 0.5f + 0.5f)
+            * smooth01(sinf(hit.p.x * 29.0f - hit.p.z * 7.0f) * 0.5f + 0.5f);
+        if (hit.p.x > 0.7f && hit.p.z < -0.42f && leafScatter > 0.74f) {
+            base = mix3(base, make3(0.72f, 0.46f, 0.10f), 0.58f);
+        }
         float wet = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), 80.0f);
         float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * shadowFactor(hit.p, lightDir, sceneLight);
-        Vec3 refl = environmentColor(reflect3(rd, hit.n));
+        Vec3 refl = tracedSecondaryColor(hit.p, reflect3(rd, hit.n), sceneLight);
         Vec3 color = add3(mul3(base, 0.22f + diffuse * 0.66f), mul3(refl, 0.24f));
         color = add3(color, mul3(make3(1.0f, 0.92f, 0.72f), wet * 0.85f));
         float caustic = expf(-fabsf(hit.p.x) * 2.4f) * expf(-fabsf(hit.p.z + 0.05f) * 1.3f);
@@ -1237,7 +1320,7 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
     }
 
     if (hit.material == 4 || hit.material == 5 || hit.material == 6) {
-        Vec3 reflected = environmentColor(reflect3(rd, hit.n));
+        Vec3 reflected = tracedSecondaryColor(hit.p, reflect3(rd, hit.n), sceneLight);
         float spec = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), hit.material == 5 ? 32.0f : 110.0f);
         float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.30f + 0.18f;
         if (hit.material == 5) {
@@ -1268,7 +1351,7 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
     }
 
     if (hit.material == 10) {
-        Vec3 reflected = environmentColor(reflect3(rd, hit.n));
+        Vec3 reflected = tracedSecondaryColor(hit.p, reflect3(rd, hit.n), sceneLight);
         float spec = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), 96.0f);
         Vec3 metal = mix3(make3(0.05f, 0.055f, 0.06f), reflected, 0.38f);
         return add3(metal, mul3(make3(1.0f, 0.92f, 0.75f), spec * 0.70f));
@@ -1281,9 +1364,14 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
         return mul3(wood, diffuse);
     }
 
+    if (hit.material == 12) {
+        float halo = powf(fmaxf(0.0f, dot3(hit.n, viewDir)), 3.0f);
+        return add3(make3(1.85f, 1.32f, 0.62f), mul3(make3(1.0f, 0.74f, 0.28f), halo * 2.2f));
+    }
+
     float eta = hit.material == 1 ? 1.0f / (1.47f + sceneLight * 0.035f) : 1.0f / 1.39f;
-    Vec3 reflected = environmentColor(reflect3(rd, hit.n));
-    Vec3 refracted = environmentColor(refract3(rd, hit.n, eta));
+    Vec3 reflected = tracedSecondaryColor(hit.p, reflect3(rd, hit.n), sceneLight);
+    Vec3 refracted = tracedSecondaryColor(hit.p, refract3(rd, hit.n, eta), sceneLight);
     float fresnel = powf(1.0f - fmaxf(0.0f, dot3(hit.n, viewDir)), 5.0f);
     float facetA = fmaxf(0.0f, dot3(hit.n, normalize3(make3(0.18f, 0.91f, 0.36f))));
     float facetB = fmaxf(0.0f, dot3(hit.n, normalize3(make3(-0.74f, 0.42f, 0.52f))));
@@ -1305,32 +1393,19 @@ extern "C" __global__ void render_realistic_raytrace(unsigned int* pixels, int w
     if (x >= width || y >= height) return;
 
     const float sceneLight = 1.0f; // SYNTHI_HMR_DIRECTION_TOKEN
-    float rigIsWarm = sceneLight >= 0.0f ? 1.0f : 0.0f;
-    float rigExposure = sceneLight >= 0.0f ? (0.92f + 0.12f * clampf(sceneLight, 0.0f, 2.5f)) : 0.52f;
-    Vec3 rigColorGrade = mix3(make3(0.54f, 0.72f, 1.08f), make3(1.06f, 0.99f, 0.86f), rigIsWarm);
-    float px = ((float)x + 0.5f) / (float)width;
-    float py = ((float)y + 0.5f) / (float)height;
-    float aspect = (float)width / (float)height;
-
-    Vec3 eye = make3(0.0f, 1.10f, 4.05f);
-    Vec3 target = make3(0.0f, 0.56f, -0.18f);
-    Vec3 forward = normalize3(sub3(target, eye));
-    Vec3 right = normalize3(cross3(forward, make3(0.0f, 1.0f, 0.0f)));
-    Vec3 up = normalize3(cross3(right, forward));
-    float lens = tanf(37.0f * PI / 180.0f);
-    Vec3 rd = normalize3(add3(forward, add3(mul3(right, (px * 2.0f - 1.0f) * aspect * lens), mul3(up, (1.0f - py * 2.0f) * lens))));
-
-    Hit hit;
-    Vec3 color = environmentColor(rd);
-    if (sceneHit(eye, rd, sceneLight, hit, true)) {
-        color = shade(eye, rd, hit, sceneLight);
-        float fog = expf(-hit.t * 0.018f);
-        color = mix3(make3(0.68f, 0.72f, 0.76f), color, fog);
+    Vec3 color = make3(0.0f, 0.0f, 0.0f);
+    const float offsets[4][2] = {
+        {0.30f, 0.30f},
+        {0.70f, 0.30f},
+        {0.30f, 0.70f},
+        {0.70f, 0.70f}
+    };
+    for (int sample = 0; sample < 4; ++sample) {
+        float px = ((float)x + offsets[sample][0]) / (float)width;
+        float py = ((float)y + offsets[sample][1]) / (float)height;
+        color = add3(color, cameraRayColor(px, py, width, height, sceneLight, exposure));
     }
-
-    float vignette = px * (1.0f - px) * py * (1.0f - py) * 16.0f;
-    color = hadamard3(color, rigColorGrade);
-    color = mul3(color, exposure * rigExposure * (0.68f + 0.32f * clampf(vignette, 0.0f, 1.0f)));
+    color = mul3(color, 0.25f);
     pixels[y * width + x] = packColor(color);
 }
 
