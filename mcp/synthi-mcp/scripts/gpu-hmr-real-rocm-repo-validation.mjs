@@ -746,6 +746,30 @@ function parseStringArrayEnv(raw, name) {
   });
 }
 
+function parseJsonObjectEnv(raw, name) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`invalid ${name}: expected JSON object: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`invalid ${name}: expected JSON object`);
+  }
+  return parsed;
+}
+
+function firstJsonObjectEnv(names) {
+  for (const name of names) {
+    if (process.env[name] === undefined) continue;
+    const value = parseJsonObjectEnv(process.env[name], name);
+    if (value) return { value, source: `env:${name}` };
+  }
+  return { value: null, source: null };
+}
+
 function normalizeTargetProgressionPhase(raw) {
   const value = String(raw ?? '').trim();
   if (!value) {
@@ -2017,6 +2041,45 @@ const configuredOutputOracleJson = process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JS
   ?? (REAL_ROCM_PROFILE.outputOracle.contract
     ? JSON.stringify(REAL_ROCM_PROFILE.outputOracle.contract)
     : '');
+const configuredOutputOracleRuntimeProfileInput = firstJsonObjectEnv([
+  'SYNTHI_REAL_ROCM_OUTPUT_ORACLE_RUNTIME_PROFILE_JSON',
+  'SYNTHI_GPU_HMR_OUTPUT_ORACLE_RUNTIME_PROFILE_JSON',
+]);
+const configuredOutputOracleRuntimeProfile =
+  configuredOutputOracleRuntimeProfileInput.value
+  ?? REAL_ROCM_PROFILE.outputOracle.runtimeProfile;
+const configuredOutputOracleRuntimeProfileSource =
+  configuredOutputOracleRuntimeProfileInput.source
+  ?? (REAL_ROCM_PROFILE.outputOracle.runtimeProfile
+    ? 'profile:outputOracle.runtimeProfile'
+    : 'none');
+const configuredAppHookContractInput = firstJsonObjectEnv([
+  'SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON',
+  'SYNTHI_GPU_HMR_APP_HOOK_CONTRACT_JSON',
+]);
+const configuredAppHookContract = configuredAppHookContractInput.value
+  ? normalizeRealRocmAppHookContract(configuredAppHookContractInput.value)
+  : REAL_ROCM_PROFILE.appHookContract;
+const configuredAppHookContractSource =
+  configuredAppHookContractInput.source
+  ?? (REAL_ROCM_PROFILE.appHookContract.declared ? 'profile:appHookContract' : 'none');
+const configuredDeviceSidecarContractInput = firstJsonObjectEnv([
+  'SYNTHI_REAL_ROCM_DEVICE_SIDECAR_CONTRACT_JSON',
+  'SYNTHI_GPU_HMR_DEVICE_SIDECAR_CONTRACT_JSON',
+]);
+const configuredDeviceSidecarContract = configuredDeviceSidecarContractInput.value
+  ? normalizeRealRocmDeviceSidecarContract(configuredDeviceSidecarContractInput.value)
+  : REAL_ROCM_PROFILE.deviceSidecarContract;
+const configuredDeviceSidecarContractSource =
+  configuredDeviceSidecarContractInput.source
+  ?? (REAL_ROCM_PROFILE.deviceSidecarContract.declared ? 'profile:deviceSidecarContract' : 'none');
+const configuredOutputOracleProfile = outputOracleProfileMode(
+  process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
+    ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
+    ?? (configuredOutputOracleRuntimeProfile ? 'profile_runtime_profile' : undefined)
+    ?? REAL_ROCM_PROFILE.outputOracle.profile
+    ?? 'auto',
+);
 
 const CFG = {
   repoUrl: configuredRepoUrl,
@@ -2180,15 +2243,13 @@ const CFG = {
   outputOracleContract: parseOutputOracleContract(
     configuredOutputOracleJson,
   ),
-  outputOracleRuntimeProfile: REAL_ROCM_PROFILE.outputOracle.runtimeProfile,
-  outputOracleProfile: outputOracleProfileMode(
-    process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
-      ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
-      ?? REAL_ROCM_PROFILE.outputOracle.profile
-      ?? 'auto',
-  ),
-  appHookContract: REAL_ROCM_PROFILE.appHookContract,
-  deviceSidecarContract: REAL_ROCM_PROFILE.deviceSidecarContract,
+  outputOracleRuntimeProfile: configuredOutputOracleRuntimeProfile,
+  outputOracleRuntimeProfileSource: configuredOutputOracleRuntimeProfileSource,
+  outputOracleProfile: configuredOutputOracleProfile,
+  appHookContract: configuredAppHookContract,
+  appHookContractSource: configuredAppHookContractSource,
+  deviceSidecarContract: configuredDeviceSidecarContract,
+  deviceSidecarContractSource: configuredDeviceSidecarContractSource,
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   hmrRequiredGpuProofState: (process.env.SYNTHI_REAL_ROCM_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   forceGpuAiDelta: booleanFromEnv(
@@ -2317,12 +2378,15 @@ const report = {
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
   output_oracle_profile: CFG.outputOracleProfile,
+  output_oracle_runtime_profile_source: CFG.outputOracleRuntimeProfileSource,
   real_rocm_profile_proof_obligations: null,
   realRocmProfileProofObligations: null,
   app_hook_contract: CFG.appHookContract,
   appHookContract: CFG.appHookContract,
+  app_hook_contract_source: CFG.appHookContractSource,
   device_sidecar_contract: CFG.deviceSidecarContract,
   deviceSidecarContract: CFG.deviceSidecarContract,
+  device_sidecar_contract_source: CFG.deviceSidecarContractSource,
   real_rocm_device_sidecar_contract: null,
   realRocmDeviceSidecarContract: null,
   output_oracle_adaptations: [],
@@ -10759,6 +10823,34 @@ async function selfCheckRuntimeDispatchEvidence() {
     || mismatchedOutputOracleEvidence.deterministic_oracle_passed
   ) {
     throw new Error('runtime output oracle contract filter failed');
+  }
+  const envRuntimeProfile = parseJsonObjectEnv(
+    '{"id":"env.oracle","kind":"buffer_checksum","expected":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","producer":"external_app_hook","outputTargetId":"env:target","kernelSymbol":"env_kernel"}',
+    'SYNTHI_REAL_ROCM_OUTPUT_ORACLE_RUNTIME_PROFILE_JSON',
+  );
+  const envRuntimeProfileContract = outputOracleContractFromRuntimeProfile(envRuntimeProfile);
+  const envAppHookContract = normalizeRealRocmAppHookContract({
+    artifactTransport: { evidenceRefs: ['loader:artifact:sha256:def'] },
+    epochPublication: { evidenceRefs: ['epoch:3'] },
+    dispatchTrace: { evidenceRefs: ['dispatch:dispatch:sha256:def'] },
+    hostIdentity: { evidenceRefs: ['runtime-session:pid1'] },
+    outputOracle: { evidenceRefs: ['oracle:env.oracle'] },
+  });
+  let rejectedInvalidContractEnv = false;
+  try {
+    parseJsonObjectEnv('[]', 'SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON');
+  } catch {
+    rejectedInvalidContractEnv = true;
+  }
+  if (
+    envRuntimeProfileContract?.oracleId !== 'env.oracle'
+    || envRuntimeProfileContract?.outputTargetId !== 'env:target'
+    || envRuntimeProfileContract?.kernelSymbol !== 'env_kernel'
+    || envAppHookContract.declared !== true
+    || envAppHookContract.stages.dispatchTrace.evidenceRefs[0] !== 'dispatch:dispatch:sha256:def'
+    || rejectedInvalidContractEnv !== true
+  ) {
+    throw new Error('runtime output oracle/app-hook env contract self-check failed');
   }
   const saxpySelfCheckSource = `
 #include <cstddef>
