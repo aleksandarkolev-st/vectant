@@ -8852,9 +8852,11 @@ function broadLibraryAgnosticReadiness(rows) {
     fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
+  const broadRuntimeRowsComputed = true;
+  const broadRuntimeRowsMissing = broadRuntimeRows.length === 0;
   const openGaps = compactStringList([
     'matrix_level_broad_generalization_proof_not_present',
-    broadRuntimeRows.length > 0 ? null : 'broad_runtime_rows_not_computed_from_matrix',
+    broadRuntimeRowsMissing ? 'broad_runtime_rows_missing' : null,
     backends.length >= 4 ? null : 'broad_acceptance_requires_more_backend_families',
     acceptanceScopes.length >= 4 ? null : 'broad_acceptance_requires_more_acceptance_scopes',
     visualTargets.length > 0 ? null : 'broad_acceptance_requires_visual_oracle_rows',
@@ -8866,8 +8868,15 @@ function broadLibraryAgnosticReadiness(rows) {
     authority: 'matrix_computed_not_row_declared',
     accepted: false,
     broadRuntimeRows: broadRuntimeRows.length,
+    broad_runtime_rows: broadRuntimeRows.length,
+    broadRuntimeRowsComputed,
+    broad_runtime_rows_computed: broadRuntimeRowsComputed,
+    broadRuntimeRowsMissing,
+    broad_runtime_rows_missing: broadRuntimeRowsMissing,
     scopedRuntimeRows: scopedRuntimeRows.length,
+    scoped_runtime_rows: scopedRuntimeRows.length,
     acceptedFullRuntimeRows: fullRuntimeRows.length,
+    accepted_full_runtime_rows: fullRuntimeRows.length,
     distinctBackendCount: backends.length,
     distinctAcceptanceScopeCount: acceptanceScopes.length,
     distinctProofModeCount: proofModes.length,

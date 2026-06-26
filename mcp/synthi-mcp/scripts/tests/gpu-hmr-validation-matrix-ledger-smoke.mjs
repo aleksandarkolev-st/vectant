@@ -3897,6 +3897,14 @@ assert.equal(
   'matrix_computed_not_row_declared',
 );
 assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.accepted, false);
+assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsComputed, true);
+assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsMissing, true);
+assert.ok(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+  'broad_runtime_rows_missing',
+));
+assert.ok(!forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+  'broad_runtime_rows_not_computed_from_matrix',
+));
 const forgedBroadScopeWithFacetQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
