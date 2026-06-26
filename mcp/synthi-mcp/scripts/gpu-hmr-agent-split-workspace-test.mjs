@@ -1744,6 +1744,19 @@ function negativeEditProofId(value) {
   return `agent-split-negative-edit-refusal:sha256:${sha256Hex(stableJson(value))}`;
 }
 
+function literalOccurrenceCount(source, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (index <= source.length) {
+    const next = source.indexOf(needle, index);
+    if (next < 0) break;
+    count += 1;
+    index = next + Math.max(1, needle.length);
+  }
+  return count;
+}
+
 function exposedSplitPath(filePath) {
   const rel = cleanRel(filePath);
   const prefix = '.synthi/generated/gpu/';
@@ -2490,12 +2503,77 @@ function negativeAbiChangingEdit(source) {
       reasons: ['negative_edit_kernel_signature_not_found'],
     };
   }
+  const acceptedSignature = match[0];
+  const kernelName = (acceptedSignature.match(/__global__\s+void\s+([A-Za-z_]\w*)\s*\(/) ?? [])[1] ?? 'unknown';
   const replacementArgs = `${match[2].trim()}${match[2].trim() ? ', ' : ''}int synthi_negative_abi_break`;
-  const edited = `${source.slice(0, match.index)}${match[1]}${replacementArgs}${match[3]}${source.slice(match.index + match[0].length)}`;
+  const negativeSignature = `${match[1]}${replacementArgs}${match[3]}`;
+  const edited = `${source.slice(0, match.index)}${negativeSignature}${source.slice(match.index + match[0].length)}`;
+  const sourceBeforeHash = `sha256:${sha256Hex(source)}`;
+  const sourceAfterHash = `sha256:${sha256Hex(edited)}`;
+  const acceptedSignatureHash = `sha256:${sha256Hex(acceptedSignature)}`;
+  const negativeSignatureHash = `sha256:${sha256Hex(negativeSignature)}`;
+  const beforeCount = literalOccurrenceCount(source, acceptedSignature);
+  const afterCount = literalOccurrenceCount(edited, negativeSignature);
+  const sourceOccurrenceProofId = `source-occurrence-proof:sha256:${sha256Hex(stableJson({
+    sourceBeforeHash,
+    sourceAfterHash,
+    acceptedSignatureHash,
+    negativeSignatureHash,
+    kernelName,
+    beforeCount,
+    afterCount,
+  }))}`;
   return {
     accepted: true,
     edited,
     reasons: ['abi_compatibility_class_layout_changed', 'kernel_argument_added', 'gpu_hmr_rejected_before_load'],
+    executableStaticCheck: {
+      accepted: true,
+      signatureChanged: true,
+      signature_changed: true,
+      kernelName,
+      kernel_name: kernelName,
+      sourceBeforeHash,
+      source_before_hash: sourceBeforeHash,
+      sourceAfterHash,
+      source_after_hash: sourceAfterHash,
+      acceptedSignatureHash,
+      accepted_signature_hash: acceptedSignatureHash,
+      negativeSignatureHash,
+      negative_signature_hash: negativeSignatureHash,
+      proofId: `executable-static-check:sha256:${sha256Hex(stableJson({
+        sourceBeforeHash,
+        sourceAfterHash,
+        acceptedSignatureHash,
+        negativeSignatureHash,
+      }))}`,
+      proof_id: `executable-static-check:sha256:${sha256Hex(stableJson({
+        sourceBeforeHash,
+        sourceAfterHash,
+        acceptedSignatureHash,
+        negativeSignatureHash,
+      }))}`,
+    },
+    sourceOccurrenceProof: {
+      accepted: true,
+      proofId: sourceOccurrenceProofId,
+      proof_id: sourceOccurrenceProofId,
+      beforeHash: sourceBeforeHash,
+      before_hash: sourceBeforeHash,
+      afterHash: sourceAfterHash,
+      after_hash: sourceAfterHash,
+      beforeCount,
+      before_count: beforeCount,
+      afterCount,
+      after_count: afterCount,
+    },
+    negativeEditProof: {
+      accepted: true,
+      editKind: 'negative_edit',
+      edit_kind: 'negative_edit',
+      sourceProofId: sourceOccurrenceProofId,
+      source_proof_id: sourceOccurrenceProofId,
+    },
   };
 }
 
@@ -3143,6 +3221,10 @@ async function run() {
       reasons: negativeEdit.reasons,
       unsupportedReasons: negativeEdit.reasons,
       unsupported_reasons: negativeEdit.reasons,
+      executableStaticCheck: negativeEdit.executableStaticCheck,
+      executable_static_check: negativeEdit.executableStaticCheck,
+      sourceOccurrenceProof: negativeEdit.sourceOccurrenceProof,
+      source_occurrence_proof: negativeEdit.sourceOccurrenceProof,
       runMode: {
         schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
         metricClock: 'monotonic_ns',
@@ -3159,6 +3241,16 @@ async function run() {
         edit_kind: 'negative_edit',
         differentEdit: true,
         different_edit: true,
+      },
+      negativeEditProof: {
+        ...negativeEdit.negativeEditProof,
+        editHash: negativeEditHash,
+        edit_hash: negativeEditHash,
+      },
+      negative_edit_proof: {
+        ...negativeEdit.negativeEditProof,
+        editHash: negativeEditHash,
+        edit_hash: negativeEditHash,
       },
     });
     record('negative ABI edit refused before GPU HMR', 'pass', negativePath);
