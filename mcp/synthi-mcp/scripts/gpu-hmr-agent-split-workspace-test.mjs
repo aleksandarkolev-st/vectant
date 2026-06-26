@@ -971,6 +971,31 @@ __device__ bool intersectDiamond(Vec3 ro, Vec3 rd, Vec3 center, float scale, flo
     return true;
 }
 
+__device__ bool intersectEllipsoid(Vec3 ro, Vec3 rd, Vec3 center, Vec3 radius, float& t, Vec3& normal) {
+    Vec3 oc = sub3(ro, center);
+    Vec3 qro = make3(oc.x / radius.x, oc.y / radius.y, oc.z / radius.z);
+    Vec3 qrd = make3(rd.x / radius.x, rd.y / radius.y, rd.z / radius.z);
+    float a = dot3(qrd, qrd);
+    float b = 2.0f * dot3(qro, qrd);
+    float c = dot3(qro, qro) - 1.0f;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) return false;
+    float root = sqrtf(disc);
+    float invDenom = 0.5f / a;
+    float t0 = (-b - root) * invDenom;
+    float t1 = (-b + root) * invDenom;
+    t = t0 > 0.02f ? t0 : t1;
+    if (t <= 0.02f) return false;
+    Vec3 p = add3(ro, mul3(rd, t));
+    Vec3 lp = sub3(p, center);
+    normal = normalize3(make3(
+        lp.x / (radius.x * radius.x),
+        lp.y / (radius.y * radius.y),
+        lp.z / (radius.z * radius.z)
+    ));
+    return true;
+}
+
 __device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool includeGround) {
     bool found = false;
     hit.t = 1.0e20f;
@@ -982,6 +1007,52 @@ __device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool incl
             hit.n = make3(0.0f, 1.0f, 0.0f);
             hit.material = 0;
             hit.id = 0.0f;
+            found = true;
+        }
+    }
+
+    if (fabsf(rd.z) > 0.0001f) {
+        const float wallZ = -3.15f;
+        float wallT = (wallZ - ro.z) / rd.z;
+        if (wallT > 0.02f && wallT < hit.t) {
+            Vec3 wallP = add3(ro, mul3(rd, wallT));
+            if (wallP.y >= 0.0f && wallP.y <= 2.45f && fabsf(wallP.x) <= 3.75f) {
+                hit.t = wallT;
+                hit.p = wallP;
+                hit.n = make3(0.0f, 0.0f, 1.0f);
+                hit.material = 3;
+                hit.id = 30.0f;
+                found = true;
+            }
+        }
+    }
+
+    float carT = 0.0f;
+    Vec3 carN = make3(0.0f, 1.0f, 0.0f);
+    if (intersectEllipsoid(ro, rd, make3(1.84f, 0.28f, -0.86f), make3(0.76f, 0.22f, 0.34f), carT, carN) && carT < hit.t) {
+        hit.t = carT;
+        hit.p = add3(ro, mul3(rd, carT));
+        hit.n = carN;
+        hit.material = 4;
+        hit.id = 40.0f;
+        found = true;
+    }
+    if (intersectEllipsoid(ro, rd, make3(1.70f, 0.47f, -0.90f), make3(0.36f, 0.13f, 0.23f), carT, carN) && carT < hit.t) {
+        hit.t = carT;
+        hit.p = add3(ro, mul3(rd, carT));
+        hit.n = carN;
+        hit.material = 6;
+        hit.id = 42.0f;
+        found = true;
+    }
+    for (int wheel = 0; wheel < 2; ++wheel) {
+        float wx = wheel == 0 ? 1.38f : 2.28f;
+        if (intersectEllipsoid(ro, rd, make3(wx, 0.13f, -0.57f), make3(0.15f, 0.15f, 0.08f), carT, carN) && carT < hit.t) {
+            hit.t = carT;
+            hit.p = add3(ro, mul3(rd, carT));
+            hit.n = carN;
+            hit.material = 5;
+            hit.id = 41.0f + (float)wheel;
             found = true;
         }
     }
@@ -1042,6 +1113,58 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
         float caustic = expf(-fabsf(hit.p.x) * 2.4f) * expf(-fabsf(hit.p.z + 0.05f) * 1.3f);
         color = add3(color, mul3(make3(0.60f, 0.82f, 1.0f), caustic * (0.18f + 0.10f * sceneLight)));
         return color;
+    }
+
+    if (hit.material == 3) {
+        float x = hit.p.x;
+        float y = hit.p.y;
+        float brickA = 0.5f + 0.5f * sinf(x * 12.0f + floorf(y * 8.0f) * 0.73f);
+        float brickB = 0.5f + 0.5f * sinf((x + y) * 21.0f);
+        Vec3 wall = mix3(make3(0.36f, 0.35f, 0.31f), make3(0.58f, 0.54f, 0.46f), 0.32f + 0.24f * brickA);
+        float mortarX = 1.0f - smooth01(clampf((fabsf(fract1(x * 2.6f) - 0.5f) - 0.43f) / 0.06f, 0.0f, 1.0f));
+        float mortarY = 1.0f - smooth01(clampf((fabsf(fract1(y * 8.0f) - 0.5f) - 0.43f) / 0.06f, 0.0f, 1.0f));
+        wall = mix3(wall, make3(0.20f, 0.20f, 0.18f), clampf(mortarX + mortarY, 0.0f, 1.0f) * 0.25f);
+
+        if (y > 0.72f && y < 1.46f && x > -2.95f && x < -1.55f) {
+            float pane = 0.5f + 0.5f * sinf(x * 38.0f + y * 22.0f);
+            wall = mix3(make3(0.05f, 0.09f, 0.09f), make3(0.82f, 0.55f, 0.34f), 0.32f + 0.36f * pane);
+        }
+        if (y > 0.70f && y < 1.52f && x > -1.08f && x < -0.18f) {
+            wall = mix3(make3(0.04f, 0.08f, 0.08f), make3(0.75f, 0.48f, 0.28f), 0.42f + 0.20f * brickB);
+        }
+        if (y > 1.48f && y < 1.68f && x > -3.15f && x < -0.05f) {
+            wall = make3(0.64f, 0.08f, 0.07f);
+        }
+        if (y > 1.36f && y < 1.47f && x > -1.85f && x < -0.78f) {
+            wall = make3(0.12f, 0.22f, 0.16f);
+        }
+        if (y > 0.95f && y < 2.24f && x > 1.18f && x < 2.92f) {
+            float arch = smooth01(1.0f - fabsf(x - 2.05f) / 0.90f);
+            float stone = 0.42f + 0.28f * sinf((x * 9.0f + y * 6.0f));
+            wall = mix3(wall, make3(0.48f, 0.47f, 0.43f), arch * stone);
+        }
+        float leaf = (0.5f + 0.5f * sinf(x * 33.0f + y * 47.0f)) * smooth01(clampf((y - 0.52f) / 1.3f, 0.0f, 1.0f));
+        if (x < -3.03f && leaf > 0.38f) {
+            wall = mix3(wall, make3(0.05f, 0.28f, 0.12f), 0.72f);
+        }
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.55f + 0.34f;
+        return mul3(wall, diffuse);
+    }
+
+    if (hit.material == 4 || hit.material == 5 || hit.material == 6) {
+        Vec3 reflected = environmentColor(reflect3(rd, hit.n));
+        float spec = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), hit.material == 5 ? 32.0f : 110.0f);
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.30f + 0.18f;
+        if (hit.material == 5) {
+            return add3(mul3(make3(0.015f, 0.014f, 0.013f), diffuse + 0.28f), mul3(make3(0.70f, 0.03f, 0.02f), spec * 0.35f));
+        }
+        if (hit.material == 6) {
+            Vec3 glass = mix3(make3(0.07f, 0.12f, 0.16f), reflected, 0.58f);
+            return add3(mul3(glass, diffuse + 0.42f), mul3(make3(0.70f, 0.90f, 1.0f), spec * 0.65f));
+        }
+        Vec3 body = mix3(make3(0.018f, 0.020f, 0.022f), reflected, 0.46f);
+        body = add3(mul3(body, diffuse + 0.26f), mul3(make3(1.0f, 0.18f, 0.10f), spec * 0.45f));
+        return body;
     }
 
     float eta = hit.material == 1 ? 1.0f / (1.47f + sceneLight * 0.035f) : 1.0f / 1.39f;
