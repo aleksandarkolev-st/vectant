@@ -5908,7 +5908,11 @@ function realRocmCompileBridgeFacet(phases = [], {
   runtimeEvidenceRefs = [],
 } = {}) {
   const summaries = (Array.isArray(phases) ? phases : [])
-    .filter((phase) => /compile|hmr/i.test(String(phase?.name ?? '')))
+    .filter((phase) =>
+      /compile|hmr/i.test(String(phase?.name ?? ''))
+      || (phase?.compile_response_summary && typeof phase.compile_response_summary === 'object')
+      || (phase?.compileResponseSummary && typeof phase.compileResponseSummary === 'object')
+    )
     .map((phase) => ({
       phase: phase.name ?? null,
       summary: phase.compile_response_summary ?? phase.compileResponseSummary ?? null,
@@ -12349,6 +12353,9 @@ int main()
     { name: 'real_repo_user_source_delta_hmr', compile_response_summary: missingCompileBridgeSummary },
   ], derivedSidecarContractSelfCheck);
   const enrichedDerivedSidecarCompileBridge = realRocmCompileBridgeFacet(enrichedDerivedSidecarPhases);
+  const upstreamNamedCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'upstream_gpu_build_run', compile_response_summary: derivedSidecarSummary },
+  ]);
   const runtimeLinkedDerivedSidecarCompileBridge = realRocmCompileBridgeFacet([
     { name: 'real_repo_user_source_delta_hmr', compile_response_summary: derivedSidecarSummary },
   ], {
@@ -12386,6 +12393,8 @@ int main()
     || derivedSidecarCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
     || derivedSidecarCompileBridge.can_satisfy_runtime_proof !== false
     || !derivedSidecarCompileBridge.blocking_gaps.includes('compile_response_bridge_candidate_not_runtime_proof')
+    || upstreamNamedCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
+    || upstreamNamedCompileBridge.phase_count !== 1
     || unknownBackendSidecarSummary.status === 'compile_bridge_candidate_derived_not_runtime_proof'
     || unknownBackendSidecarSummary.signals.derived_device_sidecar_candidate !== false
     || cudaSidecarSummary.status === 'compile_bridge_candidate_derived_not_runtime_proof'
