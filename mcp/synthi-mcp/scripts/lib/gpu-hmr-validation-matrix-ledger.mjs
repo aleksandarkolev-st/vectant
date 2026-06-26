@@ -596,12 +596,20 @@ function visualArtifactEvidenceOptions(required) {
           required.requireDiffImage,
           required.require_diff_image,
         ) === true,
+      allowSingleFrameProof:
+        firstBool(
+          required.allowSingleFrameProof,
+          required.allow_single_frame_proof,
+          required.allowSingleFrameVisualProof,
+          required.allow_single_frame_visual_proof,
+        ) === true,
     };
   }
   return {
     required: required === true,
     requireDeclaredHashes: false,
     requireDiff: false,
+    allowSingleFrameProof: false,
   };
 }
 
@@ -721,6 +729,77 @@ async function recomputeVisualPairEvidence(images) {
   }
 }
 
+async function recomputeSingleVisualFrameEvidence(images) {
+  const image =
+    preferredVisualImage(images, 'after')
+    ?? preferredVisualImage(images, 'before')
+    ?? images.find((item) => item.exists && item.decoded)
+    ?? images[0];
+  if (!image) {
+    return {
+      present: false,
+      accepted: false,
+      source: 'matrix_recomputed_single_png_pixels',
+      failedGates: [{ code: 'visual_single_frame_missing' }],
+    };
+  }
+  if (!image.decoded) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'matrix_recomputed_single_png_pixels',
+      failedGates: [{ code: 'visual_single_frame_not_decoded' }],
+    };
+  }
+  try {
+    const pixels = await sharp(image.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pixelCount = pixels.info.width * pixels.info.height;
+    let visiblePixelCount = 0;
+    let totalLuma = 0;
+    for (let i = 0; i < pixelCount; i += 1) {
+      const offset = i * 4;
+      const r = pixels.data[offset];
+      const g = pixels.data[offset + 1];
+      const b = pixels.data[offset + 2];
+      const a = pixels.data[offset + 3];
+      if (a > 0 && (r > 4 || g > 4 || b > 4)) visiblePixelCount += 1;
+      totalLuma += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    const visiblePixelRatio = pixelCount > 0 ? visiblePixelCount / pixelCount : null;
+    const meanLuma8bit = pixelCount > 0 ? totalLuma / pixelCount : null;
+    const accepted = pixelCount > 0 && visiblePixelCount > 0;
+    return {
+      present: true,
+      accepted,
+      source: 'matrix_recomputed_single_png_pixels',
+      imageRole: image.role,
+      image_role: image.role,
+      width: pixels.info.width,
+      height: pixels.info.height,
+      visiblePixelCount,
+      visible_pixel_count: visiblePixelCount,
+      visiblePixelRatio,
+      visible_pixel_ratio: visiblePixelRatio,
+      meanLuma8bit,
+      mean_luma_8bit: meanLuma8bit,
+      failedGates: compactStringList([
+        pixelCount > 0 ? null : 'visual_single_frame_empty',
+        visiblePixelCount > 0 ? null : 'visual_single_frame_blank',
+      ]).map((code) => ({ code })),
+    };
+  } catch (error) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'matrix_recomputed_single_png_pixels',
+      failedGates: [{
+        code: 'visual_single_frame_pixel_recompute_error',
+        message: error?.message ? String(error.message) : String(error),
+      }],
+    };
+  }
+}
+
 async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, required = false) {
   const options = visualArtifactEvidenceOptions(required);
   const entries = visualArtifactEntries(paths);
@@ -775,10 +854,14 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     || (imageCount > 0 && declaredHashCount === imageCount);
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
+  const singleFrame = await recomputeSingleVisualFrameEvidence(evidence);
   const hasBeforeImage = evidence.some((item) => item.role === 'before');
   const hasAfterImage = evidence.some((item) => item.role === 'after');
   const hasDiffImage = evidence.some((item) => item.role === 'diff');
   const requiresPixelProof = options.required === true;
+  const pixelProofAccepted = options.allowSingleFrameProof === true
+    ? visualPair.accepted === true || singleFrame.accepted === true
+    : visualPair.accepted === true;
   const failedGates = compactStringList([
     imageCount > 0 || options.required !== true ? null : 'visual_artifacts_missing',
     allImagesExist || imageCount === 0 ? null : 'visual_artifact_file_missing',
@@ -786,10 +869,14 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allImagesDecode || imageCount === 0 ? null : 'visual_artifact_decode_failed',
     allRequiredHashesDeclared ? null : 'visual_artifact_declared_hash_missing',
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
-    options.required === true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
-    options.required === true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
+    options.required === true && options.allowSingleFrameProof !== true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
+    options.required === true && options.allowSingleFrameProof !== true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
     options.requireDiff === true && !hasDiffImage ? 'visual_diff_artifact_missing' : null,
-    requiresPixelProof && visualPair.accepted !== true ? 'visual_pair_pixel_recompute_not_accepted' : null,
+    requiresPixelProof && pixelProofAccepted !== true
+      ? options.allowSingleFrameProof === true
+        ? 'visual_single_frame_pixel_recompute_not_accepted'
+        : 'visual_pair_pixel_recompute_not_accepted'
+      : null,
   ]);
   const accepted = imageCount === 0
     ? options.required !== true
@@ -798,13 +885,15 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       && allRequiredHashesDeclared
       && allDeclaredHashesMatch
       && (options.requireDiff !== true || hasDiffImage)
-      && (!requiresPixelProof || visualPair.accepted === true);
+      && (!requiresPixelProof || pixelProofAccepted === true);
   return {
     required: options.required,
     requireDeclaredHashes: options.requireDeclaredHashes,
     require_declared_hashes: options.requireDeclaredHashes,
     requireDiff: options.requireDiff,
     require_diff: options.requireDiff,
+    allowSingleFrameProof: options.allowSingleFrameProof,
+    allow_single_frame_proof: options.allowSingleFrameProof,
     present: imageCount > 0,
     accepted,
     imageCount,
@@ -831,6 +920,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
     recomputedVisualPair: visualPair,
     recomputed_visual_pair: visualPair,
+    recomputedSingleFrame: singleFrame,
+    recomputed_single_frame: singleFrame,
     failedGates,
     failed_gates: failedGates,
     images: evidence,
@@ -8279,7 +8370,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     visualMetrics,
-    visualRequired,
+    {
+      required: visualRequired,
+      allowSingleFrameProof: runMode.metricScope === 'cold',
+    },
   );
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';

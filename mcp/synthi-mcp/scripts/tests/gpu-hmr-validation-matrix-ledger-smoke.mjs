@@ -1116,6 +1116,60 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   },
 });
 
+const webgpuSingleFrameColdDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-webgpu-single-frame-cold');
+await writeRgbaPng(path.join(webgpuSingleFrameColdDir, 'initial-frame.png'), 8, 8, (x, y) =>
+  x >= y ? [20 + x, 64 + y, 180, 255] : [0, 0, 0, 255]);
+await writeJson(path.join(webgpuSingleFrameColdDir, 'run-mode-cold-single-frame.json'), {
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  backend: 'webgpu',
+  targetId: 'webgpu-single-frame-cold',
+  profileId: 'webgpu-single-frame-cold',
+  proofId: 'agent-split-run-mode-proof:sha256:webgpu-single-frame-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  visualArtifacts: {
+    beforeImage: path.join(webgpuSingleFrameColdDir, 'initial-frame.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-webgpu-frame',
+    editHash: 'sha256:webgpu-single-frame-cold',
+  },
+});
+await writeJson(path.join(webgpuSingleFrameColdDir, 'run-mode-hot-single-frame-forged.json'), {
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  backend: 'webgpu',
+  targetId: 'webgpu-single-frame-hot-forged',
+  profileId: 'webgpu-single-frame-hot-forged',
+  proofId: 'agent-split-run-mode-proof:sha256:webgpu-single-frame-hot-forged',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:webgpu-single-frame-hot-forged',
+    'gpu-runtime-proof:sha256:webgpu-single-frame-hot-forged',
+  ),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  visualArtifacts: {
+    beforeImage: path.join(webgpuSingleFrameColdDir, 'initial-frame.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:webgpu-single-frame-hot-forged',
+    editHash: 'sha256:webgpu-single-frame-hot-forged',
+  },
+});
+
 const strictMissingArtifactMaterials = runtimeProofMaterials('hot_delta_1', {
   projectId: 'strict-runtime-missing-artifact',
 });
@@ -4822,6 +4876,29 @@ assert.equal(coldRunMode?.matrixOutcome, 'cold_split_proven');
 assert.equal(coldRunMode.acceptedForGpuHmr, false);
 assert.equal(coldRunMode.artifactSchema, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
 assert.equal(coldRunMode.proofChain, 'runtime_initial_visual_gate');
+
+const webgpuSingleFrameCold = ledger.rows.find((row) =>
+  row.targetId === 'webgpu-single-frame-cold'
+  && row.proofMode === 'run_mode_proof'
+  && row.runMode.metricScope === 'cold'
+);
+assert.equal(webgpuSingleFrameCold?.matrixOutcome, 'cold_split_proven');
+assert.equal(webgpuSingleFrameCold.visual.accepted, true);
+assert.equal(webgpuSingleFrameCold.visual.allowSingleFrameProof, true);
+assert.equal(webgpuSingleFrameCold.visual.recomputedSingleFrame.accepted, true);
+assert.ok(!webgpuSingleFrameCold.visual.failedGates.includes('visual_after_artifact_missing'));
+assert.ok(!webgpuSingleFrameCold.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
+const webgpuSingleFrameHotForged = ledger.rows.find((row) =>
+  row.targetId === 'webgpu-single-frame-hot-forged'
+  && row.proofMode === 'run_mode_proof'
+  && row.runMode.metricScope === 'hot_delta_1'
+);
+assert.equal(webgpuSingleFrameHotForged?.matrixOutcome, 'unproven');
+assert.equal(webgpuSingleFrameHotForged.visual.accepted, false);
+assert.equal(webgpuSingleFrameHotForged.visual.allowSingleFrameProof, false);
+assert.equal(webgpuSingleFrameHotForged.visual.recomputedSingleFrame.accepted, true);
+assert.ok(webgpuSingleFrameHotForged.visual.failedGates.includes('visual_after_artifact_missing'));
+assert.ok(webgpuSingleFrameHotForged.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
 
 const hot2RunMode = ledger.rows.find((row) =>
   row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'hot_delta_2'
