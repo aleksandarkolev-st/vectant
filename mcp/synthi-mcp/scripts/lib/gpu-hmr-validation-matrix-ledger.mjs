@@ -1992,10 +1992,12 @@ function noShimSourceIdentityFacet(row = {}) {
     ...sourceDeltaIdentity.editHashes,
   ]);
   const contentAddressedEditHashes = editHashes.filter(contentAddressedSha256);
+  const beforeSourceHashes = sourceDeltaIdentity.beforeHashes.filter(contentAddressedSha256);
+  const afterSourceHashes = sourceDeltaIdentity.afterHashes.filter(contentAddressedSha256);
   const sourceHashes = compactStringList([
-    ...sourceDeltaIdentity.beforeHashes,
-    ...sourceDeltaIdentity.afterHashes,
-  ]).filter(contentAddressedSha256);
+    ...beforeSourceHashes,
+    ...afterSourceHashes,
+  ]);
   const changedSources = compactStringList([
     ...sourceDeltaIdentity.changedSources,
     ...(Array.isArray(fissionReport.changedSources) ? fissionReport.changedSources : []),
@@ -2018,16 +2020,17 @@ function noShimSourceIdentityFacet(row = {}) {
     ...evidenceRefsFromValue(contract),
     ...evidenceRefsFromValue(fissionReport),
   ]);
-  const sourceIdentityPresent =
-    contentAddressedEditHashes.length > 0
-    || sourceHashes.length > 0
-    || changedSources.length > 0
+  const sourceIdentityObserved =
+    changedSources.length > 0
     || sourceDeltaIdentity.sourceWriteObserved === true;
+  const contentAddressedSourceIdentityPresent =
+    contentAddressedEditHashes.length > 0
+    || (beforeSourceHashes.length > 0 && afterSourceHashes.length > 0);
   const failedGates = compactStringList([
     sourceAdaptation.acceptedForNoShimHmr === true
       ? null
       : 'no_shim_source_identity_source_adaptation_detected',
-    sourceIdentityPresent ? null : 'no_shim_source_identity_source_or_edit_hash_missing',
+    contentAddressedSourceIdentityPresent ? null : 'no_shim_source_identity_source_or_edit_hash_missing',
     artifactAfterHash ? null : 'no_shim_source_identity_artifact_after_hash_missing',
     runtimeArtifactChainClosed ? null : 'no_shim_source_identity_runtime_artifact_chain_unclosed',
     proofIds.length > 0 ? null : 'no_shim_source_identity_runtime_proof_binding_missing',
@@ -2037,8 +2040,12 @@ function noShimSourceIdentityFacet(row = {}) {
     schema_version: 'synthi.gpu_hmr.no_shim_source_identity.v1',
     authority: 'matrix_recomputed_from_ledger_runtime_and_source_identity',
     accepted: failedGates.length === 0,
-    sourceIdentityPresent,
-    source_identity_present: sourceIdentityPresent,
+    sourceIdentityPresent: contentAddressedSourceIdentityPresent,
+    source_identity_present: contentAddressedSourceIdentityPresent,
+    contentAddressedSourceIdentityPresent,
+    content_addressed_source_identity_present: contentAddressedSourceIdentityPresent,
+    sourceIdentityObserved,
+    source_identity_observed: sourceIdentityObserved,
     runtimeArtifactChainClosed,
     runtime_artifact_chain_closed: runtimeArtifactChainClosed,
     artifactAfterHash,

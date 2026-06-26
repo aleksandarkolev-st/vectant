@@ -3984,6 +3984,46 @@ assert.ok(missingNoShimSourceIdentityQuery.failedGates.some((gate) =>
 assert.ok(missingNoShimSourceIdentityQuery.failedGates.some((gate) =>
   gate.code === 'no_shim_source_identity_runtime_proof_binding_missing'
 ));
+const sourcePathOnlyNoShimIdentityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-source-path-only-no-shim-identity', {
+      runMode: {},
+      acceptanceContract: {
+        artifact_identity: {
+          source_paths: ['src/kernels/generic_kernel.hip'],
+        },
+      },
+      fissionReport: {
+        changed_sources: ['src/kernels/generic_kernel.hip'],
+      },
+      realRocmSourceDeltaExecution: {
+        schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution.v1',
+        phases: [
+          {
+            phaseName: 'hot_delta_1',
+            sourcePath: 'src/kernels/generic_kernel.hip',
+            sourceWriteObserved: true,
+            compileCallAttempted: true,
+          },
+        ],
+      },
+      noShimSourceIdentity: {
+        schemaVersion: 'synthi.gpu_hmr.no_shim_source_identity.v1',
+        accepted: true,
+        sourceIdentityPresent: true,
+      },
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(sourcePathOnlyNoShimIdentityQuery.accepted, false);
+assert.equal(sourcePathOnlyNoShimIdentityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(sourcePathOnlyNoShimIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'no_shim_source_identity_source_or_edit_hash_missing'
+));
 const unknownAcceptanceScopeQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
