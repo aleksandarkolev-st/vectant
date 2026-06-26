@@ -224,6 +224,84 @@ const REAL_ROCM_APP_HOOK_STAGES = [
   },
 ];
 
+const REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS = {
+  artifactTransport: [
+    'changed_artifact_hash',
+    'same_process_transport_event',
+    'loaded_artifact_hash',
+  ],
+  epochPublication: [
+    'published_epoch',
+    'published_artifact_hash',
+    'same_process_epoch_event',
+  ],
+  dispatchTrace: [
+    'dispatch_id',
+    'dispatch_epoch',
+    'dispatch_artifact_hash',
+  ],
+  hostIdentity: [
+    'process_id',
+    'device_identity',
+    'context_or_queue_identity',
+  ],
+  outputOracle: [
+    'after_dispatch_id',
+    'output_target_id',
+    'readback_or_visual_artifact',
+  ],
+};
+
+function realRocmRequiredAppHookContractTemplate({
+  required = false,
+  requiredReasons = [],
+  profileProofObligations = {},
+} = {}) {
+  const profileObligations = profileProofObligations && typeof profileProofObligations === 'object'
+    ? profileProofObligations
+    : {};
+  const normalizedRequiredReasons = compactStringList(requiredReasons);
+  const stageObligations = REAL_ROCM_APP_HOOK_STAGES.map((stageDef) => {
+    const proofKinds = REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS[stageDef.key] ?? [];
+    return {
+      stage: stageDef.snake,
+      required: required === true,
+      evidenceRefRequired: true,
+      evidence_ref_required: true,
+      runtimeObservationRequired: true,
+      runtime_observation_required: true,
+      proofKinds,
+      proof_kinds: proofKinds,
+    };
+  });
+  const requiredStages = REAL_ROCM_APP_HOOK_STAGES.map((stage) => stage.snake);
+  const template = {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_required_app_hook_contract_template.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_required_app_hook_contract_template.v1',
+    proofAuthority: 'obligation_template_only_not_runtime_proof',
+    proof_authority: 'obligation_template_only_not_runtime_proof',
+    required: required === true,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    requiredReasons: normalizedRequiredReasons,
+    required_reasons: normalizedRequiredReasons,
+    profileProofObligations: profileObligations,
+    profile_proof_obligations: profileObligations,
+    requiredStages,
+    required_stages: requiredStages,
+    stageObligations,
+    stage_obligations: stageObligations,
+  };
+  const templateHash = `sha256:${createHash('sha256').update(stableJson(template)).digest('hex')}`;
+  return {
+    ...template,
+    templateHash,
+    template_hash: templateHash,
+  };
+}
+
 function normalizeRealRocmAppHookStage(rawStage, field) {
   const declared = rawStage !== undefined && rawStage !== null;
   const stage = objectOrEmpty(rawStage, field);
@@ -8642,6 +8720,11 @@ function realRocmAppHookContractFacet({
           : contract.declared === true
             ? 'declared_app_hook_contract_not_required'
             : 'not_required';
+  const requiredContractTemplate = realRocmRequiredAppHookContractTemplate({
+    required,
+    requiredReasons,
+    profileProofObligations: profileObligations,
+  });
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
     declared: contract.declared === true,
@@ -8659,6 +8742,10 @@ function realRocmAppHookContractFacet({
     profile_requires_app_hook_contract: profileRequiresAppHookContract,
     requiredReasons,
     required_reasons: requiredReasons,
+    requiredContractTemplate: required ? requiredContractTemplate : null,
+    required_contract_template: required ? requiredContractTemplate : null,
+    requiredContractTemplateHash: required ? requiredContractTemplate.templateHash : null,
+    required_contract_template_hash: required ? requiredContractTemplate.template_hash : null,
     contractEvidenceComplete,
     contract_evidence_complete: contractEvidenceComplete,
     runtimeObservationComplete,
@@ -11436,6 +11523,16 @@ async function selfCheckRuntimeDispatchEvidence() {
     report.same_process_runtime_oracle = savedRuntimeFacetState.sameProcessSnake;
     report.evidence = savedRuntimeFacetState.evidence;
   }
+  const profileRequiredTemplate =
+    profileRequiredHookWithoutNativeObservation.required_contract_template ?? {};
+  const refreshedRequiredTemplate =
+    refreshedRequiredHook.appHookFacet.required_contract_template ?? {};
+  const profileRequiredArtifactStage = Array.isArray(profileRequiredTemplate.stage_obligations)
+    ? profileRequiredTemplate.stage_obligations.find((stage) => stage.stage === 'artifact_transport')
+    : null;
+  const refreshedRequiredOutputStage = Array.isArray(refreshedRequiredTemplate.stage_obligations)
+    ? refreshedRequiredTemplate.stage_obligations.find((stage) => stage.stage === 'output_oracle')
+    : null;
   if (
     nativeOnlyMissingHook.status !== 'required_app_hook_contract_missing'
     || nativeOnlyMissingHook.canSatisfyRuntimeProof !== false
@@ -11454,9 +11551,22 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !profileRequiredHookWithoutNativeObservation.required_reasons.includes('app_hook_contract_required_by_profile_obligation')
     || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_required_by_profile_obligation')
     || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_not_declared')
+    || profileRequiredTemplate.schema_version !== 'synthi.gpu_hmr.real_rocm_required_app_hook_contract_template.v1'
+    || profileRequiredTemplate.proof_authority !== 'obligation_template_only_not_runtime_proof'
+    || profileRequiredTemplate.can_satisfy_runtime_proof !== false
+    || profileRequiredTemplate.can_satisfy_dispatch_proof !== false
+    || profileRequiredTemplate.required !== true
+    || !Array.isArray(profileRequiredTemplate.stage_obligations)
+    || profileRequiredTemplate.stage_obligations.length !== REAL_ROCM_APP_HOOK_STAGES.length
+    || !profileRequiredArtifactStage?.proof_kinds?.includes('changed_artifact_hash')
+    || !profileRequiredArtifactStage?.proof_kinds?.includes('same_process_transport_event')
     || refreshedRequiredHook.appHookFacet.required !== true
     || refreshedRequiredHook.appHookFacet.status !== 'required_app_hook_contract_missing'
     || !refreshedRequiredHook.appHookFacet.blocking_gaps.includes('app_hook_artifact_transport_evidence_missing')
+    || refreshedRequiredTemplate.schema_version !== 'synthi.gpu_hmr.real_rocm_required_app_hook_contract_template.v1'
+    || refreshedRequiredTemplate.proof_authority !== 'obligation_template_only_not_runtime_proof'
+    || refreshedRequiredTemplate.can_satisfy_runtime_proof !== false
+    || !refreshedRequiredOutputStage?.proof_kinds?.includes('readback_or_visual_artifact')
     || refreshedRequiredHook.sameProcessFacet.required !== true
     || refreshedRequiredHook.sameProcessFacet.status !== 'same_process_runtime_oracle_contract_unproven'
     || !refreshedRequiredHook.sameProcessFacet.blocking_gaps.includes('same_process_runtime_oracle_app_hook_contract_unproven')
