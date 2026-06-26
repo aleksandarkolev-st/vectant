@@ -8008,16 +8008,30 @@ function scopeLogTextToSession(text, slug) {
 
 function runtimeDispatchEvidence(workerEvidence) {
   const dispatchFailureLines = workerEvidence.filter((line) =>
-    /\bsynthi_gpu_launch\b.*\bdispatch=(failed|stale-pointer|missing-dispatcher)\b/i.test(line)
+    /\b(?:synthi_gpu_launch|native_(?:rocm_)?runtime_dispatch)\b.*\bdispatch=(failed|stale-pointer|missing-dispatcher)\b/i.test(line)
   );
   const dispatchSuccessLines = workerEvidence.filter((line) =>
     /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i.test(line)
+    || (
+      /\bnative_(?:rocm_)?runtime_dispatch\b.*\bdispatch=ok\b/i.test(line)
+      && /\bproof_bridge=complete\b/i.test(line)
+      && /\battachment_provenance=native_runtime_bridge\b/i.test(line)
+    )
+  );
+  const nativeRuntimeDispatchLines = workerEvidence.filter((line) =>
+    /\bnative_(?:rocm_)?runtime_dispatch\b/i.test(line)
+  );
+  const nativeRuntimeDispatchRejectedLines = nativeRuntimeDispatchLines.filter((line) =>
+    !dispatchSuccessLines.includes(line)
   );
   const dispatchSuccessCount = countMatches(
-    workerEvidence,
-    /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i,
+    dispatchSuccessLines,
+    /\b(?:synthi_gpu_launch|native_(?:rocm_)?runtime_dispatch)\b.*\bdispatch=ok\b/i,
   );
   const successRecords = dispatchSuccessLines.map((line) => {
+    const source = /\bnative_(?:rocm_)?runtime_dispatch\b/i.test(line)
+      ? 'native_runtime_bridge'
+      : 'synthi_runtime_boundary';
     const kernelName = logField(line, 'kernel');
     const runtimeSession = logField(line, 'runtime_session');
     const artifactId = logField(line, 'artifact_id');
@@ -8035,6 +8049,9 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatchTimestamp = Number(logField(line, 'dispatch_timestamp'));
     return {
       line,
+      source,
+      proofBridge: logField(line, 'proof_bridge'),
+      attachmentProvenance: logField(line, 'attachment_provenance') ?? logField(line, 'provenance'),
       kernelName: kernelName && kernelName !== 'none' ? kernelName : null,
       runtimeSession: runtimeSession && runtimeSession !== 'none' ? runtimeSession : null,
       artifactId: artifactId && artifactId !== 'none' ? artifactId : null,
@@ -8062,16 +8079,26 @@ function runtimeDispatchEvidence(workerEvidence) {
   });
   const dispatchEvidenceRefs = [...new Set(successRecords.map((record) => {
     if (!record.runtimeSession || !record.kernelName) return null;
-    return `worker-log:synthi_gpu_launch:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
+    const refKind = record.source === 'native_runtime_bridge'
+      ? 'native_runtime_dispatch'
+      : 'synthi_gpu_launch';
+    return `worker-log:${refKind}:${evidenceRefPart(record.runtimeSession, 'session')}:${evidenceRefPart(record.kernelName, 'kernel')}`;
   }).filter(Boolean))];
   const latestSuccessRecord = successRecords.at(-1) ?? null;
+  const nativeBridgeSuccessRecords = successRecords.filter((record) => record.source === 'native_runtime_bridge');
   const processIds = processIdsFromRuntimeSessions(successRecords.map((record) => record.runtimeSession));
   return {
     success_count: dispatchSuccessCount,
+    synthi_success_count: successRecords.filter((record) => record.source === 'synthi_runtime_boundary').length,
+    native_bridge_success_count: nativeBridgeSuccessRecords.length,
+    native_bridge_observed_count: nativeRuntimeDispatchLines.length,
+    native_bridge_rejected_count: nativeRuntimeDispatchRejectedLines.length,
+    native_bridge_rejected_lines: nativeRuntimeDispatchRejectedLines.slice(0, 20),
     process_id: processIds.length === 1 ? processIds[0] : null,
     process_ids: processIds,
     success_lines: dispatchSuccessLines.slice(-20),
     success_records: successRecords.slice(-20),
+    native_bridge_success_records: nativeBridgeSuccessRecords.slice(-20),
     evidence_refs: dispatchEvidenceRefs,
     runtime_artifact_ids: [...new Set(successRecords.map((record) => record.artifactId).filter(Boolean))],
     runtime_artifact_id: latestSuccessRecord?.artifactId ?? null,
@@ -8614,8 +8641,260 @@ function firstRuntimeText(...values) {
   return null;
 }
 
+function realRocmNativeRuntimeProofBridgeFacet({
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+  fullRuntimeProof = {},
+  firewallEvidence = {},
+  availableEvidenceRefs = [],
+} = {}) {
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  const dispatchBridgeObserved = Number(runtimeDispatch.native_bridge_success_count ?? 0) > 0;
+  const rejectedBridgeObserved = Number(runtimeDispatch.native_bridge_rejected_count ?? 0) > 0;
+  const anyBridgeObserved =
+    dispatchBridgeObserved
+    || rejectedBridgeObserved
+    || Number(runtimeDispatch.native_bridge_observed_count ?? 0) > 0;
+  const artifactTransportObserved = Number(
+    runtimeArtifactTransport.total_count ?? runtimeArtifactTransport.matched_count ?? 0,
+  ) > 0;
+  const epochPublicationObserved =
+    Number(epochEvidence.total_count ?? 0) > 0
+    || Number(epochEvidence.published_count ?? 0) > 0
+    || runtimeEpochSwap?.proof?.resultState === 'gpu-hmr-epoch-swap-proven';
+  const outputOracleObserved = Number(runtimeOutputOracle.total_count ?? 0) > 0;
+  const hostIdentityObserved = Number(hostEvidence.total_count ?? 0) > 0;
+  const sameProcessIdentityObserved =
+    hostIdentityObserved
+    && (runtimeHostPreservation?.proof?.resultState === 'gpu-hmr-host-preservation-proven'
+      || hostEvidence.process_preserved === true
+      || hostEvidence.same_process === true
+      || Number(hostEvidence.preserved_count ?? hostEvidence.total_count ?? 0) > 0);
+  const dispatchEpoch = firstRuntimeText(
+    runtimeDispatch.epoch,
+    ...(Array.isArray(runtimeDispatch.epochs) ? runtimeDispatch.epochs : []),
+  );
+  const publishedEpoch = firstRuntimeText(
+    epochEvidence.epoch,
+    epochEvidence.published_epoch,
+    epochEvidence.active_epoch,
+    runtimeEpochSwap?.proof?.epoch,
+  );
+  const dispatchUsedPublishedEpoch =
+    dispatchBridgeObserved
+    && epochPublicationObserved
+    && Boolean(dispatchEpoch)
+    && Boolean(publishedEpoch)
+    && dispatchEpoch === publishedEpoch;
+  const dispatchArtifactIds = contentAddressedArtifactIds([
+    runtimeDispatch.runtime_artifact_id,
+    ...(Array.isArray(runtimeDispatch.runtime_artifact_ids) ? runtimeDispatch.runtime_artifact_ids : []),
+  ]);
+  const transportedArtifactIds = contentAddressedArtifactIds([
+    runtimeArtifactTransport.artifact_id,
+    runtimeArtifactTransport.artifactId,
+    runtimeArtifactTransport.selected_artifact_id,
+    runtimeArtifactTransport.selectedArtifactId,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_ids) ? runtimeArtifactTransport.artifact_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactIds) ? runtimeArtifactTransport.artifactIds : []),
+    ...(Array.isArray(runtimeArtifactTransport.selected_artifact_ids) ? runtimeArtifactTransport.selected_artifact_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.selectedArtifactIds) ? runtimeArtifactTransport.selectedArtifactIds : []),
+    runtimeArtifactTransport.ram_blob_id,
+    runtimeArtifactTransport.ramBlobId,
+    ...(Array.isArray(runtimeArtifactTransport.ram_blob_ids) ? runtimeArtifactTransport.ram_blob_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.ramBlobIds) ? runtimeArtifactTransport.ramBlobIds : []),
+    runtimeArtifactTransport.artifact_hash,
+    runtimeArtifactTransport.artifactHash,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_hashes) ? runtimeArtifactTransport.artifact_hashes : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactHashes) ? runtimeArtifactTransport.artifactHashes : []),
+    runtimeArtifactTransport.artifact_content_hash,
+    runtimeArtifactTransport.artifactContentHash,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_content_hashes) ? runtimeArtifactTransport.artifact_content_hashes : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactContentHashes) ? runtimeArtifactTransport.artifactContentHashes : []),
+    runtimeArtifactTransport.blob_digest,
+  ]);
+  const artifactEpochMatched =
+    artifactTransportObserved
+    && dispatchBridgeObserved
+    && dispatchArtifactIds.length > 0
+    && transportedArtifactIds.length > 0
+    && dispatchArtifactIds.some((artifactId) => transportedArtifactIds.includes(artifactId));
+  const dispatchOutputTarget = firstRuntimeText(
+    runtimeDispatch.output_target_id,
+    ...(Array.isArray(runtimeDispatch.output_target_ids) ? runtimeDispatch.output_target_ids : []),
+  );
+  const oracleOutputTarget = firstRuntimeText(
+    runtimeOutputOracle.output_target_id,
+    runtimeOutputOracle.latest?.output_target_id,
+    runtimeOutputOracle.output_oracle?.output_target_id,
+    runtimeOutputOracle.output_oracle?.target_id,
+  );
+  const dispatchId = firstRuntimeText(
+    runtimeDispatch.dispatch_id,
+    ...(Array.isArray(runtimeDispatch.dispatch_ids) ? runtimeDispatch.dispatch_ids : []),
+  );
+  const oracleAfterDispatchId = firstRuntimeText(
+    runtimeOutputOracle.after_dispatch_id,
+    runtimeOutputOracle.latest?.after_dispatch_id,
+    runtimeOutputOracle.output_oracle?.after_dispatch_id,
+  );
+  const dispatchTimestamp = Number(
+    Array.isArray(runtimeDispatch.dispatch_timestamps)
+      ? runtimeDispatch.dispatch_timestamps.at(-1)
+      : runtimeDispatch.dispatch_timestamp,
+  );
+  const oracleTimestamp = Number(
+    runtimeOutputOracle.timestamp_after_dispatch
+    ?? runtimeOutputOracle.latest?.timestamp_after_dispatch
+    ?? runtimeOutputOracle.output_oracle?.timestamp_after_dispatch,
+  );
+  const outputTargetObserved = Boolean(oracleOutputTarget && dispatchOutputTarget);
+  const outputTargetMatched = outputTargetObserved && oracleOutputTarget === dispatchOutputTarget;
+  const outputAfterDispatchObserved =
+    outputOracleObserved
+    && (
+      (Boolean(dispatchId) && oracleAfterDispatchId === dispatchId)
+      || (
+        Number.isFinite(dispatchTimestamp)
+        && Number.isFinite(oracleTimestamp)
+        && oracleTimestamp >= dispatchTimestamp
+      )
+    );
+  const firewallAccepted =
+    firewallEvidence.cpu_hmr_used === false
+    && firewallEvidence.full_rebuild_used === false
+    && firewallEvidence.process_restarted === false;
+  const blockingGaps = [];
+  if (!dispatchBridgeObserved) blockingGaps.push('native_runtime_bridge_dispatch_missing');
+  if (rejectedBridgeObserved) blockingGaps.push('native_runtime_bridge_incomplete_dispatch_observed');
+  if (!artifactTransportObserved) blockingGaps.push('native_runtime_bridge_artifact_transport_missing');
+  if (!epochPublicationObserved) blockingGaps.push('native_runtime_bridge_epoch_publication_missing');
+  if (!sameProcessIdentityObserved) blockingGaps.push('native_runtime_bridge_process_identity_missing');
+  if (!outputOracleObserved) blockingGaps.push('native_runtime_bridge_output_oracle_missing');
+  if (!outputTargetObserved) blockingGaps.push('native_runtime_bridge_output_target_missing');
+  if (outputTargetObserved && !outputTargetMatched) {
+    blockingGaps.push('native_runtime_bridge_output_target_mismatch');
+  }
+  if (!outputAfterDispatchObserved) blockingGaps.push('native_runtime_bridge_after_dispatch_missing');
+  if (!dispatchUsedPublishedEpoch) blockingGaps.push('native_runtime_bridge_dispatch_epoch_mismatch');
+  if (!artifactEpochMatched) blockingGaps.push('native_runtime_bridge_artifact_epoch_mismatch');
+  if (fullRuntimeProof?.fullRuntimeProven !== true) {
+    blockingGaps.push('native_runtime_bridge_full_runtime_proof_missing');
+  }
+  if (!firewallAccepted) blockingGaps.push('native_runtime_bridge_firewall_missing');
+  const accepted = anyBridgeObserved && blockingGaps.length === 0;
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(runtimeDispatch.evidence_refs) ? runtimeDispatch.evidence_refs : []),
+    ...(Array.isArray(runtimeArtifactTransport.evidence_refs) ? runtimeArtifactTransport.evidence_refs : []),
+    ...(Array.isArray(epochEvidence.evidence_refs) ? epochEvidence.evidence_refs : []),
+    ...(Array.isArray(runtimeOutputOracle.evidence_refs) ? runtimeOutputOracle.evidence_refs : []),
+    ...(Array.isArray(hostEvidence.evidence_refs) ? hostEvidence.evidence_refs : []),
+    ...availableEvidenceRefs,
+  ]);
+  const stageResults = {
+    artifact_transport: { observed: artifactTransportObserved },
+    epoch_publication: { observed: epochPublicationObserved },
+    dispatch_trace: {
+      observed: dispatchBridgeObserved,
+      dispatchUsedPublishedEpoch,
+      dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
+    },
+    host_identity: {
+      observed: hostIdentityObserved,
+      sameProcessIdentityObserved,
+      same_process_identity_observed: sameProcessIdentityObserved,
+    },
+    output_oracle: {
+      observed: outputOracleObserved,
+      outputTargetObserved,
+      output_target_observed: outputTargetObserved,
+      outputTargetMatched,
+      output_target_matched: outputTargetMatched,
+      outputAfterDispatchObserved,
+      output_after_dispatch_observed: outputAfterDispatchObserved,
+    },
+  };
+  return {
+    schemaVersion: 'synthi.gpu_hmr.native_rocm_runtime_proof_bridge.v1',
+    schema_version: 'synthi.gpu_hmr.native_rocm_runtime_proof_bridge.v1',
+    observed: anyBridgeObserved,
+    declared: anyBridgeObserved,
+    accepted,
+    canSatisfyRuntimeProof: accepted,
+    can_satisfy_runtime_proof: accepted,
+    canSatisfyDispatchProof: accepted,
+    can_satisfy_dispatch_proof: accepted,
+    status: accepted
+      ? 'native_runtime_bridge_proven'
+      : anyBridgeObserved
+        ? 'native_runtime_bridge_unproven'
+        : 'not_observed',
+    proofAuthority: 'complete_native_runtime_event_chain',
+    proof_authority: 'complete_native_runtime_event_chain',
+    dispatchBridgeObserved,
+    dispatch_bridge_observed: dispatchBridgeObserved,
+    rejectedBridgeObserved,
+    rejected_bridge_observed: rejectedBridgeObserved,
+    artifactTransportObserved,
+    artifact_transport_observed: artifactTransportObserved,
+    epochPublicationObserved,
+    epoch_publication_observed: epochPublicationObserved,
+    dispatchUsedPublishedEpoch,
+    dispatch_used_published_epoch: dispatchUsedPublishedEpoch,
+    sameProcessIdentityObserved,
+    same_process_identity_observed: sameProcessIdentityObserved,
+    outputOracleObserved,
+    output_oracle_observed: outputOracleObserved,
+    outputTargetMatched,
+    output_target_matched: outputTargetMatched,
+    outputAfterDispatchObserved,
+    output_after_dispatch_observed: outputAfterDispatchObserved,
+    artifactEpochMatched,
+    artifact_epoch_matched: artifactEpochMatched,
+    firewallAccepted,
+    firewall_accepted: firewallAccepted,
+    dispatchArtifactIds,
+    dispatch_artifact_ids: dispatchArtifactIds,
+    transportedArtifactIds,
+    transported_artifact_ids: transportedArtifactIds,
+    stageResults,
+    stage_results: stageResults,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash: `sha256:${createHash('sha256').update(stableJson({
+      dispatchEpoch,
+      publishedEpoch,
+      dispatchArtifactIds,
+      transportedArtifactIds,
+      dispatchOutputTarget,
+      oracleOutputTarget,
+      dispatchId,
+      oracleAfterDispatchId,
+      stageResults,
+    })).digest('hex')}`,
+    contract_hash: `sha256:${createHash('sha256').update(stableJson({
+      dispatchEpoch,
+      publishedEpoch,
+      dispatchArtifactIds,
+      transportedArtifactIds,
+      dispatchOutputTarget,
+      oracleOutputTarget,
+      dispatchId,
+      oracleAfterDispatchId,
+      stageResults,
+    })).digest('hex')}`,
+  };
+}
+
 function realRocmSameProcessRuntimeOracleFacet({
   appHookContractFacet = {},
+  nativeRuntimeBridgeFacet = {},
   runtimeDispatch = {},
   runtimeArtifactTransport = {},
   runtimeEpochSwap = {},
@@ -8643,6 +8922,15 @@ function realRocmSameProcessRuntimeOracleFacet({
   const appHookContractAccepted =
     appHookContractFacet.canSatisfyRuntimeProof === true
     || appHookContractFacet.can_satisfy_runtime_proof === true;
+  const nativeRuntimeBridgeObserved =
+    nativeRuntimeBridgeFacet.observed === true
+    || nativeRuntimeBridgeFacet.declared === true;
+  const nativeRuntimeBridgeAccepted =
+    nativeRuntimeBridgeFacet.canSatisfyRuntimeProof === true
+    || nativeRuntimeBridgeFacet.can_satisfy_runtime_proof === true;
+  const runtimeProofBridgeAccepted =
+    appHookContractAccepted
+    || nativeRuntimeBridgeAccepted;
   const dispatchEpoch = firstRuntimeText(
     runtimeDispatch.epoch,
     ...(Array.isArray(runtimeDispatch.epochs) ? runtimeDispatch.epochs : []),
@@ -8784,8 +9072,11 @@ function realRocmSameProcessRuntimeOracleFacet({
     },
   };
   const blockingGaps = [];
-  if (appHookRequired && !appHookContractAccepted) {
+  if (appHookRequired && !runtimeProofBridgeAccepted) {
     blockingGaps.push('same_process_runtime_oracle_app_hook_contract_unproven');
+  }
+  if (nativeRuntimeBridgeObserved && !nativeRuntimeBridgeAccepted) {
+    blockingGaps.push('same_process_runtime_oracle_native_runtime_bridge_unproven');
   }
   if (!artifactTransportObserved) blockingGaps.push('same_process_runtime_oracle_artifact_transport_missing');
   if (!epochPublicationObserved) blockingGaps.push('same_process_runtime_oracle_epoch_publication_missing');
@@ -8806,22 +9097,27 @@ function realRocmSameProcessRuntimeOracleFacet({
     blockingGaps.push('same_process_runtime_oracle_firewall_missing');
   }
   const accepted =
-    appHookRequired
-    && appHookContractAccepted
+    runtimeProofBridgeAccepted
     && blockingGaps.length === 0;
+  const required =
+    appHookRequired
+    || nativeRuntimeBridgeObserved
+    || runtimeProofBridgeAccepted;
   const evidenceRefs = compactStringList([
     ...(Array.isArray(appHookContractFacet.evidenceRefs) ? appHookContractFacet.evidenceRefs : []),
     ...(Array.isArray(appHookContractFacet.evidence_refs) ? appHookContractFacet.evidence_refs : []),
+    ...(Array.isArray(nativeRuntimeBridgeFacet.evidenceRefs) ? nativeRuntimeBridgeFacet.evidenceRefs : []),
+    ...(Array.isArray(nativeRuntimeBridgeFacet.evidence_refs) ? nativeRuntimeBridgeFacet.evidence_refs : []),
     ...availableEvidenceRefs,
   ]);
   return {
     schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
     schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
     declared: appHookContractFacet.declared === true,
-    required: appHookRequired,
+    required,
     status: accepted
       ? 'same_process_runtime_oracle_contract_proven'
-      : appHookRequired
+      : required
         ? 'same_process_runtime_oracle_contract_unproven'
         : 'not_required',
     proofAuthority: 'runtime_stage_evidence_not_serialized_claim',
@@ -8833,6 +9129,12 @@ function realRocmSameProcessRuntimeOracleFacet({
     can_satisfy_dispatch_proof: accepted,
     appHookContractAccepted,
     app_hook_contract_accepted: appHookContractAccepted,
+    nativeRuntimeBridgeAccepted,
+    native_runtime_bridge_accepted: nativeRuntimeBridgeAccepted,
+    nativeRuntimeBridgeObserved,
+    native_runtime_bridge_observed: nativeRuntimeBridgeObserved,
+    runtimeProofBridgeAccepted,
+    runtime_proof_bridge_accepted: runtimeProofBridgeAccepted,
     artifactTransportObserved,
     artifact_transport_observed: artifactTransportObserved,
     epochPublicationObserved,
@@ -8875,6 +9177,8 @@ function realRocmSameProcessRuntimeOracleFacet({
     available_evidence_refs: compactStringList(availableEvidenceRefs),
     contractHash: `sha256:${createHash('sha256').update(stableJson({
       appHookContractHash: appHookContractFacet.contractHash ?? appHookContractFacet.contract_hash ?? null,
+      nativeRuntimeBridgeHash:
+        nativeRuntimeBridgeFacet.contractHash ?? nativeRuntimeBridgeFacet.contract_hash ?? null,
       dispatchEpoch,
       publishedEpoch,
       dispatchArtifact,
@@ -8889,6 +9193,8 @@ function realRocmSameProcessRuntimeOracleFacet({
     })).digest('hex')}`,
     contract_hash: `sha256:${createHash('sha256').update(stableJson({
       appHookContractHash: appHookContractFacet.contractHash ?? appHookContractFacet.contract_hash ?? null,
+      nativeRuntimeBridgeHash:
+        nativeRuntimeBridgeFacet.contractHash ?? nativeRuntimeBridgeFacet.contract_hash ?? null,
       dispatchEpoch,
       publishedEpoch,
       dispatchArtifact,
@@ -10473,6 +10779,16 @@ async function selfCheckRuntimeDispatchEvidence() {
   if (evidence.generation !== '2' || evidence.epoch !== '2') {
     throw new Error('dispatch generation evidence parser failed');
   }
+  const incompleteNativeRuntimeDispatch = runtimeDispatchEvidence([
+    `[gpu-runtime-boundary] native_runtime_dispatch kernel=kernel grid=(1,1,1) block=(1,1,1) dispatch=ok generation=2 runtime_session=pid1-100 artifact_id=artifact:sha256:${'1'.repeat(64)} proof_bridge=observe_only attachment_provenance=native_runtime_intercept dispatch_table_entry_id=kernel:0x1`,
+  ]);
+  if (
+    incompleteNativeRuntimeDispatch.success_count !== 0
+    || incompleteNativeRuntimeDispatch.native_bridge_observed_count !== 1
+    || incompleteNativeRuntimeDispatch.native_bridge_rejected_count !== 1
+  ) {
+    throw new Error('incomplete native runtime dispatch must not satisfy dispatch evidence');
+  }
   const scoped = scopeLogTextToSession(
     [
       '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale grid=(1, 1, 1) dispatch=ok',
@@ -11581,6 +11897,69 @@ int main()
     || !processBoundSameProcess.transported_artifact_ids.includes(activeEpochArtifactId)
   ) {
     throw new Error('same-process runtime oracle canonical evidence self-check failed');
+  }
+  const nativeBridgeDispatchEvidence = runtimeDispatchEvidence([
+    `[gpu-runtime-boundary] native_runtime_dispatch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 epoch=2 runtime_session=pid4242-123 artifact_id=${activeEpochArtifactId} dispatch_id=dispatch:native-process-bound output_target_id=target dispatch_timestamp=250 dispatch_table_entry_id=kernel:0x1 proof_bridge=complete attachment_provenance=native_runtime_bridge`,
+  ]);
+  const nativeBridgeOriginalHost = originalHostPathProofFromRuntimeEvidence([
+    `[gpu-runtime-boundary] native_runtime_dispatch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 epoch=2 runtime_session=pid4242-123 artifact_id=${activeEpochArtifactId} dispatch_id=dispatch:native-process-bound output_target_id=target dispatch_timestamp=250 dispatch_table_entry_id=kernel:0x1 proof_bridge=complete attachment_provenance=native_runtime_bridge`,
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel generation=2 runtime_session=pid4242-123 dispatch_table_entry_id=kernel:0x1 complete=true known_args=1 unknown_args=0 degradedState=none details=0:device-allocation:x:alloc_bytes=8:alloc_offset=0:size=8',
+    '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=native_runtime_bridge host_path_id=native-runtime-bridge:pid4242 dispatch_table_entry_id=kernel:0x1 runtime_dispatch_table_entry_id=kernel:0x1 dispatch_entry_runtime_verified=true generation=2 runtime_session=pid4242-123',
+  ], { required: true, runtimeSessionIds: ['pid4242-123'] });
+  const nativeBridgeOutputEvidence = runtimeOutputOracleEvidence([
+    `[gpu-runtime-boundary] output_oracle id=probe.native required_oracle_id=probe.native kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=2 runtime_session=pid4242-123 producer=runtime_probe output_target_id=target readback_timestamp=300 artifact_id=${activeEpochArtifactId} after_dispatch_id=dispatch:native-process-bound probe_mode=post_hmr_active_kernel_readback_checksum probe_config_hash=sha256:${'9'.repeat(64)} probe_evidence_ref=probe-ref`,
+  ]);
+  const nativeBridgeFacet = realRocmNativeRuntimeProofBridgeFacet({
+    runtimeDispatch: nativeBridgeDispatchEvidence,
+    runtimeArtifactTransport: processBoundTransportEvidence,
+    runtimeEpochSwap: {
+      proof: { resultState: 'gpu-hmr-epoch-swap-proven', epoch: '2' },
+      evidence: { total_count: 1, epoch: '2' },
+    },
+    runtimeOutputOracle: nativeBridgeOutputEvidence,
+    runtimeHostPreservation: {
+      proof: { resultState: 'gpu-hmr-host-preservation-proven' },
+      evidence: { total_count: 3 },
+    },
+    fullRuntimeProof: { fullRuntimeProven: true },
+    firewallEvidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    },
+  });
+  const nativeBridgeSameProcess = realRocmSameProcessRuntimeOracleFacet({
+    appHookContractFacet: {},
+    nativeRuntimeBridgeFacet: nativeBridgeFacet,
+    runtimeDispatch: nativeBridgeDispatchEvidence,
+    runtimeArtifactTransport: processBoundTransportEvidence,
+    runtimeEpochSwap: {
+      proof: { resultState: 'gpu-hmr-epoch-swap-proven', epoch: '2' },
+      evidence: { total_count: 1, epoch: '2' },
+    },
+    runtimeOutputOracle: nativeBridgeOutputEvidence,
+    runtimeHostPreservation: {
+      proof: { resultState: 'gpu-hmr-host-preservation-proven' },
+      evidence: { total_count: 3 },
+    },
+    fullRuntimeProof: { fullRuntimeProven: true },
+    firewallEvidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    },
+  });
+  if (
+    nativeBridgeDispatchEvidence.success_count !== 1
+    || nativeBridgeDispatchEvidence.native_bridge_success_count !== 1
+    || nativeBridgeDispatchEvidence.evidence_refs[0] !== 'worker-log:native_runtime_dispatch:pid4242-123:kernel'
+    || nativeBridgeOriginalHost.proof.attachmentProven !== true
+    || nativeBridgeFacet.accepted !== true
+    || nativeBridgeSameProcess.accepted !== true
+    || nativeBridgeSameProcess.app_hook_contract_accepted !== false
+    || nativeBridgeSameProcess.native_runtime_bridge_accepted !== true
+  ) {
+    throw new Error('native ROCm runtime proof bridge self-check failed');
   }
   const hostReplacedProof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: true,
@@ -13416,8 +13795,23 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   });
   report.realRocmAppHookContract = report.real_rocm_app_hook_contract;
   report.evidence.real_rocm_app_hook_contract = report.real_rocm_app_hook_contract;
+  report.real_rocm_native_runtime_bridge = realRocmNativeRuntimeProofBridgeFacet({
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+    fullRuntimeProof: report.full_runtime_proof,
+    firewallEvidence: report.firewall_evidence,
+    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
+  });
+  report.realRocmNativeRuntimeBridge = report.real_rocm_native_runtime_bridge;
+  report.nativeRuntimeBridge = report.real_rocm_native_runtime_bridge;
+  report.native_runtime_bridge = report.real_rocm_native_runtime_bridge;
+  report.evidence.real_rocm_native_runtime_bridge = report.real_rocm_native_runtime_bridge;
   report.real_rocm_same_process_runtime_oracle = realRocmSameProcessRuntimeOracleFacet({
     appHookContractFacet: report.real_rocm_app_hook_contract,
+    nativeRuntimeBridgeFacet: report.real_rocm_native_runtime_bridge,
     runtimeDispatch,
     runtimeArtifactTransport,
     runtimeEpochSwap,
@@ -13553,6 +13947,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       [
         `status=${report.real_rocm_same_process_runtime_oracle.status}`,
         `app_hook=${report.real_rocm_same_process_runtime_oracle.app_hook_contract_accepted}`,
+        `native_bridge=${report.real_rocm_same_process_runtime_oracle.native_runtime_bridge_accepted}`,
         `dispatch_epoch=${report.real_rocm_same_process_runtime_oracle.dispatch_used_published_epoch}`,
         `output_after_dispatch=${report.real_rocm_same_process_runtime_oracle.output_after_dispatch_observed}`,
         `gaps=${report.real_rocm_same_process_runtime_oracle.blocking_gaps.join(',') || 'none'}`,

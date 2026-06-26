@@ -1051,6 +1051,7 @@ function originalHostPathCandidateRecord(line) {
 const ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE = new Set([
   'runtime_explicit',
   'host_runtime_explicit',
+  'native_runtime_bridge',
 ]);
 
 function originalHostPathAttachmentProvenanceAccepted(provenance) {
@@ -1085,14 +1086,29 @@ function launchBoundaryRecord(line) {
 
 function dispatchBoundaryRecord(line) {
   const fields = parseRuntimeKeyValues(line);
+  const nativeRuntimeBridgeEvent =
+    runtimeBoundaryEventLine(line, /\bnative_(?:rocm_)?runtime_dispatch\b/i);
   return {
     line,
+    eventKind: nativeRuntimeBridgeEvent ? 'native_runtime_dispatch' : 'synthi_gpu_launch',
     runtimeSession: fields.runtime_session ?? null,
     dispatch: fields.dispatch ?? null,
     dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     artifactId: fields.artifact_id ?? fields.artifact ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+    proofBridge: fields.proof_bridge ?? fields.proofBridge ?? null,
+    attachmentProvenance:
+      fields.attachment_provenance
+      ?? fields.attachmentProvenance
+      ?? fields.provenance
+      ?? null,
   };
+}
+
+function dispatchBoundaryRuntimeBridgeAccepted(record) {
+  if (record?.eventKind !== 'native_runtime_dispatch') return true;
+  return String(record.proofBridge ?? '').trim().toLowerCase() === 'complete'
+    && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_bridge';
 }
 
 function runtimeErrorRecord(line) {
@@ -1361,12 +1377,16 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => runtimeBoundaryEventLine(line, /\bsynthi_gpu_launch\b/i))
+    .filter((line) =>
+      runtimeBoundaryEventLine(line, /\bsynthi_gpu_launch\b/i)
+      || runtimeBoundaryEventLine(line, /\bnative_(?:rocm_)?runtime_dispatch\b/i)
+    )
     .map(dispatchBoundaryRecord)
     .filter((record) =>
       typeof record.runtimeSession === 'string'
       && record.runtimeSession.trim()
       && String(record.dispatch ?? '').trim().toLowerCase() === 'ok'
+      && dispatchBoundaryRuntimeBridgeAccepted(record)
       && typeof record.dispatchTableEntryId === 'string'
       && record.dispatchTableEntryId.trim()
       && record.dispatchTableEntryId !== 'none'
