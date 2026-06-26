@@ -54,6 +54,7 @@ The 2026-06-24/2026-06-25 continuation added these generic anti-overclaim gates:
 - real ROCm profile proof obligations are recomputed by the validation matrix from raw profile and target-progression evidence. Serialized obligation facets can add stricter gaps, but cannot erase raw-profile obligations for large ROCm ML or final-acceptance rows.
 - real ROCm source-delta execution evidence is recomputed from runner-observed source write/compile phases, content-addressed before/after/edit hashes, and expected-refusal metadata. Declared fixture candidates cannot satisfy hot-delta-2 or negative-edit obligations by themselves.
 - real ROCm profile selection is no longer default-open for normal runner invocations. The runner requires `SYNTHI_REAL_ROCM_PROFILE_PATH` or `SYNTHI_REAL_ROCM_PROFILE_JSON`; the packaged SAXPY profile is available only for explicit diagnostic/default-profile runs through `SYNTHI_REAL_ROCM_ALLOW_DEFAULT_PROFILE=1` or `--self-check`, and the warm npm script supplies the SAXPY profile path explicitly.
+- real ROCm final-acceptance rows cannot use `outputOracle.profile=auto` to source-instrument a target. They must provide explicit runtime-oracle profile evidence or stay refused; refusal-only profiles can still record disabled/diagnostic oracle state without turning into acceptance.
 - real ROCm same-process runtime-oracle acceptance now requires a proven same-process path: either a complete native runtime bridge for rows where an app hook is not required, or a generic app-hook/runtime contract plus observed artifact transport, epoch publication, dispatch using the published epoch, stable process identity, dispatch/output-oracle target continuity, post-dispatch observation, artifact/epoch hash continuity, and explicit CPU/full-rebuild/restart firewall proof. If a profile/native-boundary gate requires an app hook, a native bridge alone cannot satisfy final acceptance. Smoke coverage includes one generic native-bridge positive fixture, one generic large-ROCm ML app-hook positive contract fixture, and generic negative fixtures for missing/unresolved hooks, missing facet, wrong schema, missing artifact transport, missing epoch, missing dispatch, dispatch/epoch mismatch, missing output oracle, missing output target, mismatched output target, process mismatch/restart, oracle-before-dispatch, artifact mismatch, CPU-HMR/full-rebuild firewall violations, full-runtime-proof gaps, and missing strict runtime proof artifacts; none of these gates are keyed to a repository or library name.
 - real ROCm app-hook contract acceptance now independently validates the five generic stages `artifact_transport`, `epoch_publication`, `dispatch_trace`, `host_identity`, and `output_oracle`. A serialized `canSatisfyRuntimeProof=true` field is only advisory unless the facet schema, content-addressed contract hash, resolved evidence refs, contract evidence, and runtime observations all pass; forged stage evidence remains unproven.
 - real ROCm runtime output-oracle, app-hook, and device-sidecar contracts can now be supplied as validated JSON-object environment inputs (`SYNTHI_REAL_ROCM_OUTPUT_ORACLE_RUNTIME_PROFILE_JSON`, `SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON`, `SYNTHI_REAL_ROCM_DEVICE_SIDECAR_CONTRACT_JSON`, plus `SYNTHI_GPU_HMR_*` aliases). These inputs are recorded in command metadata and source fields, but they are evidence-only declarations; the runtime still has to prove loader/artifact transport, epoch publication, dispatch, host identity, output oracle, firewall, and strict runtime proof closure before any row can be accepted.
@@ -515,6 +516,7 @@ Still open or refused: MIOpen full-runtime GPU HMR, real ROCm matrix multiplicat
 Additional commits since the previous status pass:
 
 ```text
+b9b4f5be7 fix(gpu-hmr): block auto oracles for rocm final acceptance
 b3e7d6d1b fix(gpu-hmr): require explicit real rocm profile
 e4f82cf48 fix(gpu-hmr): recompute large ml app hook obligation
 d45425c0b fix(gpu-hmr): require app hooks for large rocm final targets
@@ -1791,6 +1793,7 @@ The Codex in-app Browser connector failed to initialize in this session with a s
 Proof/fix commits are separate:
 
 ```text
+b9b4f5be7 fix(gpu-hmr): block auto oracles for rocm final acceptance
 b3e7d6d1b fix(gpu-hmr): require explicit real rocm profile
 e4f82cf48 fix(gpu-hmr): recompute large ml app hook obligation
 d45425c0b fix(gpu-hmr): require app hooks for large rocm final targets
