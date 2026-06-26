@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,6 +133,40 @@ function deterministicFissionEvidenceFor({ selectedPath, selectedKernel, selecte
 
 function hashBuffer(bytes) {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function fileHashForPath(filePath) {
+  return hashBuffer(fsSync.readFileSync(filePath));
+}
+
+function visualArtifactSet({ before, after, diff, diagnosticScreenshot } = {}, extra = {}) {
+  return {
+    ...(before
+      ? {
+          beforeImage: before,
+          beforeImageHash: fileHashForPath(before),
+        }
+      : {}),
+    ...(after
+      ? {
+          afterImage: after,
+          afterImageHash: fileHashForPath(after),
+        }
+      : {}),
+    ...(diff
+      ? {
+          diffImage: diff,
+          diffImageHash: fileHashForPath(diff),
+        }
+      : {}),
+    ...(diagnosticScreenshot
+      ? {
+          diagnosticScreenshot,
+          diagnosticScreenshotHash: fileHashForPath(diagnosticScreenshot),
+        }
+      : {}),
+    ...extra,
+  };
 }
 
 function modelProvenance(requestMode, requestedModel) {
@@ -733,9 +768,13 @@ function hiprtWarmProofArtifact({
       oracleRegionNonBlank: oracleRegionClaimNonBlank,
     },
     runtime: {
-      baseline: { localCapturePath: baselinePath },
+      baseline: {
+        localCapturePath: baselinePath,
+        contentHash: fileHashForPath(baselinePath),
+      },
       changed: {
         localCapturePath: changedPath,
+        contentHash: fileHashForPath(changedPath),
         sameProcess: true,
         liveRecompileMs: 1,
         totalHostWallMs: 2,
@@ -743,6 +782,7 @@ function hiprtWarmProofArtifact({
     },
     diff: {
       path: diffPath,
+      contentHash: fileHashForPath(diffPath),
       changedPixelRatioThreshold4: 1,
       meanAbsDelta8bit: 10,
       oracleRegion: {
@@ -957,11 +997,11 @@ const runModeProofBase = {
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
-  visualArtifacts: {
-    beforeImage: path.join(visualDir, 'before-hmr-first.png'),
-    afterImage: path.join(visualDir, 'after-hmr-first.png'),
-    diffImage: path.join(visualDir, 'before-after-diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(visualDir, 'before-hmr-first.png'),
+    after: path.join(visualDir, 'after-hmr-first.png'),
+    diff: path.join(visualDir, 'before-after-diff.png'),
+  }),
   visualMetrics: {
     changedPixelRatio: 0.042,
     meanAbsDelta8bit: 6.5,
@@ -1113,6 +1153,35 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
     editHash: hashValue('source-edit:hot2'),
     editKind: 'different_gpu_edit',
     differentEdit: true,
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-forged-readable-no-hash-diff.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:forged-readable-no-hash-diff',
+    'gpu-runtime-proof:sha256:forged-readable-no-hash-diff',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'forged-readable-no-hash-diff',
+  }),
+  targetId: 'forged-readable-no-hash-diff',
+  profileId: 'forged-readable-no-hash-diff',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-readable-no-hash-diff',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: path.join(visualDir, 'before-hmr-first.png'),
+    afterImage: path.join(visualDir, 'after-hmr-first.png'),
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:forged-readable-no-hash-diff',
+    editHash: hashValue('forged-readable-no-hash-diff'),
+    editKind: 'gpu_artifact_edit',
   },
 });
 
@@ -1980,12 +2049,13 @@ const externalVisualProofMaterial = {
   profile_selection: externalVisualProfileSelection,
   sourceDeltaEvidence: externalVisualSourceDeltaEvidence,
   source_delta_evidence: externalVisualSourceDeltaEvidence,
-  visualOracleArtifacts: {
-    before_image: externalVisualBefore,
-    after_image: externalVisualAfter,
-    diff_image: externalVisualDiff,
+  visualOracleArtifacts: visualArtifactSet({
+    before: externalVisualBefore,
+    after: externalVisualAfter,
+    diff: externalVisualDiff,
+  }, {
     capture_backend: 'external_runtime_screenshot',
-  },
+  }),
   visualDiff: {
     changedPixelRatio: 0.5,
     meanAbsDelta8bit: 24,
@@ -2031,12 +2101,13 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engi
   profile_selection: externalVisualProfileSelection,
   sourceDeltaEvidence: externalVisualSourceDeltaEvidence,
   source_delta_evidence: externalVisualSourceDeltaEvidence,
-  visualOracleArtifacts: {
-    before_image: externalVisualBefore,
-    after_image: externalVisualAfter,
-    diff_image: externalVisualDiff,
+  visualOracleArtifacts: visualArtifactSet({
+    before: externalVisualBefore,
+    after: externalVisualAfter,
+    diff: externalVisualDiff,
+  }, {
     capture_backend: 'external_runtime_screenshot',
-  },
+  }),
   visualDiff: {
     changedPixelRatio: 0.5,
     meanAbsDelta8bit: 24,
@@ -2145,12 +2216,13 @@ await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine
   profile_selection: seedlessExternalVisualProfileSelection,
   sourceDeltaEvidence: seedlessExternalVisualSourceDeltaEvidence,
   source_delta_evidence: seedlessExternalVisualSourceDeltaEvidence,
-  visualOracleArtifacts: {
-    before_image: externalVisualBefore,
-    after_image: externalVisualAfter,
-    diff_image: externalVisualDiff,
+  visualOracleArtifacts: visualArtifactSet({
+    before: externalVisualBefore,
+    after: externalVisualAfter,
+    diff: externalVisualDiff,
+  }, {
     capture_backend: 'external_runtime_screenshot',
-  },
+  }),
   visualDiff: {
     changedPixelRatio: 0.5,
     meanAbsDelta8bit: 24,
@@ -3113,11 +3185,11 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof
   proofId: 'webgpu-runtime-visual-proof:sha256:query-only-forged',
   gpuHmrSuccess: true,
   profile: { id: 'forged-webgpu-query-only' },
-  visualOracleArtifacts: {
-    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
-    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
-    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
-  },
+  visualOracleArtifacts: visualArtifactSet({
+    before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  }),
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -3217,11 +3289,11 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
     projectId: 'forged-webgpu-source-adapted-visual',
     visualRoot: forgedWebGpuVisualDir,
   }),
-  visualOracleArtifacts: {
-    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
-    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
-    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
-  },
+  visualOracleArtifacts: visualArtifactSet({
+    before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  }),
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -3272,11 +3344,11 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-seedless-visual-
     accepted: true,
     forgedByFixture: true,
   },
-  visualOracleArtifacts: {
-    beforeImage: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
-    afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
-    diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
-  },
+  visualOracleArtifacts: visualArtifactSet({
+    before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+    after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+    diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+  }),
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -3330,11 +3402,11 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
   cold_split_proven: true,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
-  visualArtifacts: {
-    beforeImage: hiprtAcceptedBefore,
-    afterImage: hiprtAcceptedAfter,
-    diffImage: hiprtAcceptedDiff,
-  },
+  visualArtifacts: visualArtifactSet({
+    before: hiprtAcceptedBefore,
+    after: hiprtAcceptedAfter,
+    diff: hiprtAcceptedDiff,
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'cold',
@@ -3363,11 +3435,11 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   visualProfileAccepted: true,
   sourceAdaptedProfile: true,
   gpuHmrSuccess: false,
-  visualArtifacts: {
-    beforeImage: hiprtAcceptedBefore,
-    afterImage: hiprtAcceptedAfter,
-    diffImage: hiprtAcceptedDiff,
-  },
+  visualArtifacts: visualArtifactSet({
+    before: hiprtAcceptedBefore,
+    after: hiprtAcceptedAfter,
+    diff: hiprtAcceptedDiff,
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_2',
@@ -3396,11 +3468,11 @@ await writeJson(path.join(hiprtDir, 'forged-hiprt-missing-instrumentation-hot.js
   proofId: 'agent-split-run-mode-proof:sha256:forged-hiprt-missing-instrumentation',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: hiprtAcceptedBefore,
-    afterImage: hiprtAcceptedAfter,
-    diffImage: hiprtAcceptedDiff,
-  },
+  visualArtifacts: visualArtifactSet({
+    before: hiprtAcceptedBefore,
+    after: hiprtAcceptedAfter,
+    diff: hiprtAcceptedDiff,
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -4450,7 +4522,9 @@ assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.include
 const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
 assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');
 assert.equal(forgedExternalVisual.backend, 'unknown');
-assert.equal(forgedExternalVisual.visual.accepted, true);
+assert.equal(forgedExternalVisual.visual.accepted, false);
+assert.equal(forgedExternalVisual.visual.allImagesAreDecodedPng, true);
+assert.ok(forgedExternalVisual.visual.failedGates.includes('visual_artifact_declared_hash_missing'));
 assert.equal(forgedExternalVisual.externalProjectContract.accepted, false);
 assert.equal(forgedExternalVisual.externalProfileSelection.accepted, false);
 assert.equal(forgedExternalVisual.externalSourceDelta.accepted, false);
@@ -4665,6 +4739,24 @@ assert.equal(noVisualOptOut.visual.required, true);
 assert.equal(noVisualOptOut.visual.present, false);
 assert.equal(noVisualOptOut.visual.accepted, false);
 assert.ok(noVisualOptOut.reasons.includes('visual_artifacts_not_readable'));
+
+const forgedReadableNoHashDiff = ledger.rows.find((row) =>
+  row.targetId === 'forged-readable-no-hash-diff'
+);
+assert.equal(forgedReadableNoHashDiff?.matrixOutcome, 'unproven');
+assert.equal(forgedReadableNoHashDiff.acceptedForGpuHmr, false);
+assert.equal(forgedReadableNoHashDiff.visual.present, true);
+assert.equal(forgedReadableNoHashDiff.visual.allImagesAreDecodedPng, true);
+assert.equal(forgedReadableNoHashDiff.visual.recomputedVisualPair.accepted, true);
+assert.equal(forgedReadableNoHashDiff.visual.requireDeclaredHashes, true);
+assert.equal(forgedReadableNoHashDiff.visual.requireDiff, true);
+assert.equal(forgedReadableNoHashDiff.visual.allRequiredHashesDeclared, false);
+assert.equal(forgedReadableNoHashDiff.visual.hasDiffImage, false);
+assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_artifact_declared_hash_missing'));
+assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_before_artifact_hash_missing'));
+assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_after_artifact_hash_missing'));
+assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_diff_artifact_missing'));
+assert.ok(forgedReadableNoHashDiff.reasons.includes('visual_artifacts_not_readable'));
 
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
@@ -5154,11 +5246,11 @@ await writeJson(path.join(reverseArtifactNamespaceDir, 'hot1.json'), {
   artifactAfterHash: `artifact:${reverseArtifactNamespaceAfterHash}`,
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
-    afterImage: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
-    diffImage: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
+    after: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
+    diff: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5179,11 +5271,11 @@ await writeJson(path.join(reverseArtifactNamespaceDir, 'cold.json'), {
   runModeCoverageSupport: reverseArtifactNamespaceSupport,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
-  visualArtifacts: {
-    beforeImage: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
-    afterImage: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
-    diffImage: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'),
+    after: path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'),
+    diff: path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'cold',
@@ -5243,11 +5335,11 @@ await writeJson(path.join(mismatchedArtifactNamespaceDir, 'hot1.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
-    afterImage: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
-    diffImage: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
+    after: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
+    diff: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5268,11 +5360,11 @@ await writeJson(path.join(mismatchedArtifactNamespaceDir, 'cold.json'), {
   runModeCoverageSupport: mismatchedArtifactNamespaceSupport,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
-  visualArtifacts: {
-    beforeImage: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
-    afterImage: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
-    diffImage: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'),
+    after: path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'),
+    diff: path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'cold',
@@ -5317,11 +5409,11 @@ await writeJson(path.join(spoofNamedFlowDir, 'hot1-name-only.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:flow-name-only-hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(spoofNamedFlowDir, 'before.png'),
-    afterImage: path.join(spoofNamedFlowDir, 'after.png'),
-    diffImage: path.join(spoofNamedFlowDir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(spoofNamedFlowDir, 'before.png'),
+    after: path.join(spoofNamedFlowDir, 'after.png'),
+    diff: path.join(spoofNamedFlowDir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5377,11 +5469,11 @@ await writeJson(path.join(forgedAcceptedProfileDir, 'hot1-forged-flow-profile.js
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(forgedAcceptedProfileDir, 'before.png'),
-    afterImage: path.join(forgedAcceptedProfileDir, 'after.png'),
-    diffImage: path.join(forgedAcceptedProfileDir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(forgedAcceptedProfileDir, 'before.png'),
+    after: path.join(forgedAcceptedProfileDir, 'after.png'),
+    diff: path.join(forgedAcceptedProfileDir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5441,11 +5533,11 @@ await writeJson(path.join(substringOnlyProfileDir, 'hot1-substring-only-profile.
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(substringOnlyProfileDir, 'before.png'),
-    afterImage: path.join(substringOnlyProfileDir, 'after.png'),
-    diffImage: path.join(substringOnlyProfileDir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(substringOnlyProfileDir, 'before.png'),
+    after: path.join(substringOnlyProfileDir, 'after.png'),
+    diff: path.join(substringOnlyProfileDir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5508,11 +5600,11 @@ await writeJson(path.join(explicitContractSourceProfileDir, 'hot1-explicit-contr
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(explicitContractSourceProfileDir, 'before.png'),
-    afterImage: path.join(explicitContractSourceProfileDir, 'after.png'),
-    diffImage: path.join(explicitContractSourceProfileDir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(explicitContractSourceProfileDir, 'before.png'),
+    after: path.join(explicitContractSourceProfileDir, 'after.png'),
+    diff: path.join(explicitContractSourceProfileDir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5559,11 +5651,11 @@ await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(duplicateHot2Dir, 'before.png'),
-    afterImage: path.join(duplicateHot2Dir, 'after.png'),
-    diffImage: path.join(duplicateHot2Dir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(duplicateHot2Dir, 'before.png'),
+    after: path.join(duplicateHot2Dir, 'after.png'),
+    diff: path.join(duplicateHot2Dir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -5584,11 +5676,11 @@ await writeJson(path.join(duplicateHot2Dir, 'hot2.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot2',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: {
-    beforeImage: path.join(duplicateHot2Dir, 'before.png'),
-    afterImage: path.join(duplicateHot2Dir, 'after.png'),
-    diffImage: path.join(duplicateHot2Dir, 'diff.png'),
-  },
+  visualArtifacts: visualArtifactSet({
+    before: path.join(duplicateHot2Dir, 'before.png'),
+    after: path.join(duplicateHot2Dir, 'after.png'),
+    diff: path.join(duplicateHot2Dir, 'diff.png'),
+  }),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_2',
@@ -5679,11 +5771,11 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
     projectId: 'real-rocm-accepted-lib',
     visualRoot: acceptedRealRocmDir,
   }),
-  visual_artifact_paths: [
-    path.join(acceptedRealRocmDir, 'before-hmr-first.png'),
-    path.join(acceptedRealRocmDir, 'after-hmr-first.png'),
-    path.join(acceptedRealRocmDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(acceptedRealRocmDir, 'before-hmr-first.png'),
+    after: path.join(acceptedRealRocmDir, 'after-hmr-first.png'),
+    diff: path.join(acceptedRealRocmDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -5830,11 +5922,11 @@ await writeJson(path.join(acceptedRealRocmSidecarDir, 'real-rocm-accepted-sideca
       },
     },
   }),
-  visual_artifact_paths: [
-    path.join(acceptedRealRocmSidecarDir, 'before-hmr-first.png'),
-    path.join(acceptedRealRocmSidecarDir, 'after-hmr-first.png'),
-    path.join(acceptedRealRocmSidecarDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(acceptedRealRocmSidecarDir, 'before-hmr-first.png'),
+    after: path.join(acceptedRealRocmSidecarDir, 'after-hmr-first.png'),
+    diff: path.join(acceptedRealRocmSidecarDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -5941,11 +6033,11 @@ async function writeForgedRealRocmAcceptanceGateCase({
       failures: [],
     },
     ...materials,
-    visual_artifact_paths: [
-      path.join(dir, 'before-hmr-first.png'),
-      path.join(dir, 'after-hmr-first.png'),
-      path.join(dir, 'before-after-diff.png'),
-    ],
+    visualEvidenceArtifacts: visualArtifactSet({
+      before: path.join(dir, 'before-hmr-first.png'),
+      after: path.join(dir, 'after-hmr-first.png'),
+      diff: path.join(dir, 'before-after-diff.png'),
+    }),
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
       source: 'real_rocm_validation',
@@ -6095,11 +6187,11 @@ async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) 
       failures: [],
     },
     ...materials,
-    visual_artifact_paths: [
-      path.join(dir, 'before-hmr-first.png'),
-      path.join(dir, 'after-hmr-first.png'),
-      path.join(dir, 'before-after-diff.png'),
-    ],
+    visualEvidenceArtifacts: visualArtifactSet({
+      before: path.join(dir, 'before-hmr-first.png'),
+      after: path.join(dir, 'after-hmr-first.png'),
+      diff: path.join(dir, 'before-after-diff.png'),
+    }),
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
       source: 'real_rocm_validation',
@@ -6205,11 +6297,11 @@ await writeJson(path.join(forgedOldArtifactRocmDir, 'real-rocm-forged-old-artifa
     failures: [],
   },
   ...forgedOldArtifactMaterials,
-  visual_artifact_paths: [
-    path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'),
-    path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'),
-    path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'),
+    after: path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'),
+    diff: path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -6337,11 +6429,11 @@ await writeJson(path.join(forgedSidecarMismatchRocmDir, 'real-rocm-forged-sideca
     projectId: 'real-rocm-forged-sidecar-mismatch',
     visualRoot: forgedSidecarMismatchRocmDir,
   }),
-  visual_artifact_paths: [
-    path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'),
-    path.join(forgedSidecarMismatchRocmDir, 'after-hmr-first.png'),
-    path.join(forgedSidecarMismatchRocmDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'),
+    after: path.join(forgedSidecarMismatchRocmDir, 'after-hmr-first.png'),
+    diff: path.join(forgedSidecarMismatchRocmDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -6489,11 +6581,11 @@ await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-
     projectId: 'real-rocm-forged-required-hook',
     visualRoot: forgedRequiredHookRocmDir,
   }),
-  visual_artifact_paths: [
-    path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'),
-    path.join(forgedRequiredHookRocmDir, 'after-hmr-first.png'),
-    path.join(forgedRequiredHookRocmDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'),
+    after: path.join(forgedRequiredHookRocmDir, 'after-hmr-first.png'),
+    diff: path.join(forgedRequiredHookRocmDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -6609,11 +6701,11 @@ await writeJson(path.join(forgedMissingHookFacetRocmDir, 'real-rocm-forged-missi
     projectId: 'real-rocm-forged-missing-hook-facet',
     visualRoot: forgedMissingHookFacetRocmDir,
   }),
-  visual_artifact_paths: [
-    path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'),
-    path.join(forgedMissingHookFacetRocmDir, 'after-hmr-first.png'),
-    path.join(forgedMissingHookFacetRocmDir, 'before-after-diff.png'),
-  ],
+  visualEvidenceArtifacts: visualArtifactSet({
+    before: path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'),
+    after: path.join(forgedMissingHookFacetRocmDir, 'after-hmr-first.png'),
+    diff: path.join(forgedMissingHookFacetRocmDir, 'before-after-diff.png'),
+  }),
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',

@@ -119,6 +119,12 @@ const SCOPED_GENERALITY_UNSUPPORTED_WITHOUT_EVIDENCE = [
   'different_backend_contract_without_recomputed_proof_ledger',
   'different_runtime_environment_without_runtime_capability_preflight',
 ];
+const RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS = Object.freeze({
+  required: true,
+  requireDeclaredHashes: true,
+  requireDiff: true,
+  allowSingleFrameProof: false,
+});
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -613,6 +619,15 @@ function visualArtifactEvidenceOptions(required) {
   };
 }
 
+function runtimeVisualOracleEvidenceRequirements({ allowSingleFrameProof = false } = {}) {
+  return {
+    ...RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS,
+    requireDeclaredHashes: allowSingleFrameProof ? false : true,
+    requireDiff: allowSingleFrameProof ? false : true,
+    allowSingleFrameProof,
+  };
+}
+
 function preferredVisualImage(images, role) {
   return images.find((item) => item.role === role && item.exists && item.decoded)
     ?? images.find((item) => item.role === role);
@@ -845,6 +860,9 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const pngImageCount = evidence.filter((item) => item.pngSignatureValid).length;
   const decodedImageCount = evidence.filter((item) => item.decoded).length;
   const declaredHashCount = evidence.filter((item) => item.expectedHash).length;
+  const contentAddressedHashCount = evidence.filter((item) =>
+    item.expectedHash && contentAddressedSha256(item.expectedHash)
+  ).length;
   const hashMatchedCount = evidence.filter((item) => item.expectedHash && item.hashMatches === true).length;
   const allImagesExist = imageCount > 0 && existingImageCount === imageCount;
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
@@ -852,12 +870,23 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const allImagesAreDecodedPng = allImagesArePng && allImagesDecode;
   const allRequiredHashesDeclared = !options.requireDeclaredHashes
     || (imageCount > 0 && declaredHashCount === imageCount);
+  const allDeclaredHashesContentAddressed =
+    declaredHashCount === 0 || contentAddressedHashCount === declaredHashCount;
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
   const singleFrame = await recomputeSingleVisualFrameEvidence(evidence);
   const hasBeforeImage = evidence.some((item) => item.role === 'before');
   const hasAfterImage = evidence.some((item) => item.role === 'after');
   const hasDiffImage = evidence.some((item) => item.role === 'diff');
+  const beforeHashDeclared = evidence.some((item) =>
+    item.role === 'before' && item.expectedHash && contentAddressedSha256(item.expectedHash)
+  );
+  const afterHashDeclared = evidence.some((item) =>
+    item.role === 'after' && item.expectedHash && contentAddressedSha256(item.expectedHash)
+  );
+  const diffHashDeclared = evidence.some((item) =>
+    item.role === 'diff' && item.expectedHash && contentAddressedSha256(item.expectedHash)
+  );
   const requiresPixelProof = options.required === true;
   const pixelProofAccepted = options.allowSingleFrameProof === true
     ? visualPair.accepted === true || singleFrame.accepted === true
@@ -868,10 +897,14 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allImagesArePng || imageCount === 0 ? null : 'visual_artifact_not_png',
     allImagesDecode || imageCount === 0 ? null : 'visual_artifact_decode_failed',
     allRequiredHashesDeclared ? null : 'visual_artifact_declared_hash_missing',
+    allDeclaredHashesContentAddressed ? null : 'visual_artifact_hash_not_content_addressed',
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
     options.required === true && options.allowSingleFrameProof !== true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
     options.required === true && options.allowSingleFrameProof !== true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
     options.requireDiff === true && !hasDiffImage ? 'visual_diff_artifact_missing' : null,
+    options.requireDeclaredHashes === true && !beforeHashDeclared ? 'visual_before_artifact_hash_missing' : null,
+    options.requireDeclaredHashes === true && !afterHashDeclared ? 'visual_after_artifact_hash_missing' : null,
+    options.requireDeclaredHashes === true && options.requireDiff === true && !diffHashDeclared ? 'visual_diff_artifact_hash_missing' : null,
     requiresPixelProof && pixelProofAccepted !== true
       ? options.allowSingleFrameProof === true
         ? 'visual_single_frame_pixel_recompute_not_accepted'
@@ -883,6 +916,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     : allImagesExist
       && allImagesAreDecodedPng
       && allRequiredHashesDeclared
+      && allDeclaredHashesContentAddressed
       && allDeclaredHashesMatch
       && (options.requireDiff !== true || hasDiffImage)
       && (!requiresPixelProof || pixelProofAccepted === true);
@@ -901,9 +935,12 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     pngImageCount,
     decodedImageCount,
     declaredHashCount,
+    contentAddressedHashCount,
     hashMatchedCount,
     allRequiredHashesDeclared,
     all_required_hashes_declared: allRequiredHashesDeclared,
+    allDeclaredHashesContentAddressed,
+    all_declared_hashes_content_addressed: allDeclaredHashesContentAddressed,
     allImagesExist,
     allImagesArePng,
     allImagesDecode,
@@ -915,6 +952,12 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     has_after_image: hasAfterImage,
     hasDiffImage,
     has_diff_image: hasDiffImage,
+    beforeHashDeclared,
+    before_hash_declared: beforeHashDeclared,
+    afterHashDeclared,
+    after_hash_declared: afterHashDeclared,
+    diffHashDeclared,
+    diff_hash_declared: diffHashDeclared,
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
@@ -1215,7 +1258,13 @@ function rowEvidenceRefs(row = {}) {
 function visualArtifactHashesForRow(row = {}) {
   return compactStringList([
     ...(Array.isArray(row.visual?.images)
-      ? row.visual.images.map((image) => firstText(image.contentHash, image.content_hash))
+      ? row.visual.images.map((image) => firstText(
+          image.expectedHash,
+          image.expected_hash,
+          image.contentHash,
+          image.content_hash,
+          image.sha256,
+        ))
       : []),
     ...artifactPathsFromValue(row.visualEvidenceArtifacts ?? row.visual_evidence_artifacts)
       .filter(contentAddressedSha256),
@@ -3255,6 +3304,23 @@ function rowSafetyFailures(row) {
   if (row.acceptedForGpuHmr === true && row.visual?.required === true && row.visual.accepted !== true) {
     failures.push({ code: 'visual_gpu_hmr_success_requires_readable_visual_artifacts' });
   }
+  if (
+    row.acceptedForGpuHmr === true
+    && row.visual?.required === true
+    && (
+      row.visual.requireDeclaredHashes !== true
+      || row.visual.requireDiff !== true
+      || row.visual.allRequiredHashesDeclared !== true
+      || row.visual.allDeclaredHashesContentAddressed !== true
+      || row.visual.allDeclaredHashesMatch !== true
+      || row.visual.beforeHashDeclared !== true
+      || row.visual.afterHashDeclared !== true
+      || row.visual.diffHashDeclared !== true
+      || row.visual.hasDiffImage !== true
+    )
+  ) {
+    failures.push({ code: 'visual_gpu_hmr_success_requires_content_addressed_visual_oracle' });
+  }
   if (row.acceptedForGpuHmr === true && row.proofMode === 'real_rocm_repo_validation') {
     const appHookGate = realRocmAppHookContractGate({
       nativeRocmLaunchBoundary: compactObject(row.nativeRocmLaunchBoundary ?? row.native_rocm_launch_boundary),
@@ -3468,6 +3534,14 @@ function artifactPathsFromValue(value) {
   ]);
 }
 
+function visualEvidenceInputsFromValue(value) {
+  if (!value) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => visualEvidenceInputsFromValue(item));
+  if (isObject(value)) return [value];
+  return [];
+}
+
 async function runtimeProofRow(json, filePath, context) {
   const contract = compactObject(json.acceptanceContract ?? json.acceptance_contract);
   const classification = compactObject(contract.classification);
@@ -3550,17 +3624,23 @@ async function runtimeProofRow(json, filePath, context) {
     ledgerNormalizedRecord.processRestarted,
     ledgerNormalizedRecord.process_restarted,
   );
-  const visualPaths = compactStringList([
-    ...artifactPathsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
-    ...artifactPathsFromValue(json.visualEvidenceRefs ?? json.visual_evidence_refs),
+  const visualInputs = [
+    ...visualEvidenceInputsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
+    ...visualEvidenceInputsFromValue(json.visualEvidenceRefs ?? json.visual_evidence_refs),
     ...artifactPathsFromValue(
       oracleArtifacts.visual_oracle_artifacts
       ?? oracleArtifacts.visualOracleArtifacts
       ?? oracleArtifacts.compute_oracle_artifacts
     ?? oracleArtifacts.computeOracleArtifacts,
   ).filter((item) => item.endsWith('.png')),
-  ]);
-  const visual = await visualArtifactEvidence(visualPaths, context.repoRoot, path.dirname(filePath), {}, outputKind === 'visual_oracle');
+  ];
+  const visual = await visualArtifactEvidence(
+    visualInputs,
+    context.repoRoot,
+    path.dirname(filePath),
+    {},
+    outputKind === 'visual_oracle' ? runtimeVisualOracleEvidenceRequirements() : false,
+  );
   const outputOracleFacet = await realRocmLedgerOutputOracleFacet(
     ledger,
     proofLedger,
@@ -3977,7 +4057,7 @@ async function agentSplitRow(records, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     deltaMetrics,
-    true,
+    runtimeVisualOracleEvidenceRequirements(),
   );
   const strictRuntimeProofAccepted =
     recomputedLedger.present === true
@@ -4292,14 +4372,51 @@ async function hiprtWarmRow(json, filePath, context) {
     oracleRegion,
   });
   const visual = await visualArtifactEvidence(
-    [baseline.localCapturePath, changed.localCapturePath, diff.path],
+    [
+      {
+        role: 'before',
+        path: baseline.localCapturePath,
+        contentHash: firstText(
+          baseline.contentHash,
+          baseline.content_hash,
+          baseline.localCaptureHash,
+          baseline.local_capture_hash,
+          baseline.localCaptureSha256,
+          baseline.local_capture_sha256,
+        ),
+      },
+      {
+        role: 'after',
+        path: changed.localCapturePath,
+        contentHash: firstText(
+          changed.contentHash,
+          changed.content_hash,
+          changed.localCaptureHash,
+          changed.local_capture_hash,
+          changed.localCaptureSha256,
+          changed.local_capture_sha256,
+        ),
+      },
+      {
+        role: 'diff',
+        path: diff.path,
+        contentHash: firstText(
+          diff.contentHash,
+          diff.content_hash,
+          diff.diffHash,
+          diff.diff_hash,
+          diff.diffSha256,
+          diff.diff_sha256,
+        ),
+      },
+    ],
     context.repoRoot,
     path.dirname(filePath),
     {
       changedPixelRatio: diff.changedPixelRatioThreshold4,
       meanAbsDelta8bit: diff.meanAbsDelta8bit,
     },
-    true,
+    runtimeVisualOracleEvidenceRequirements(),
   );
   const oracleRegionAccepted =
     acceptance.oracleRegionNonBlank === true
@@ -4456,7 +4573,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     metrics,
-    true,
+    runtimeVisualOracleEvidenceRequirements(),
   );
   const ledger = ledgerFacet(json);
   const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
@@ -5082,7 +5199,7 @@ async function externalProjectRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     visualDiff,
-    json.status === 'pass',
+    json.status === 'pass' ? runtimeVisualOracleEvidenceRequirements() : false,
   );
   const declaredDeterministicMode = compactObject(
     json.deterministicVisualMode
@@ -8153,19 +8270,19 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     summary.timings?.timing_metrics,
     summary.timings,
   );
-  const visualPaths = compactStringList([
+  const visualInputs = [
     ...(Array.isArray(json.visual_artifact_paths) ? json.visual_artifact_paths : []),
     ...(Array.isArray(json.visualArtifactPaths) ? json.visualArtifactPaths : []),
     ...(Array.isArray(summary.visual_artifact_paths) ? summary.visual_artifact_paths : []),
     ...(Array.isArray(summary.visualArtifactPaths) ? summary.visualArtifactPaths : []),
-    ...artifactPathsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
-  ]);
+    ...visualEvidenceInputsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
+  ];
   const visual = await visualArtifactEvidence(
-    visualPaths,
+    visualInputs,
     context.repoRoot,
     path.dirname(filePath),
     compactObject(json.visual_evidence_quality ?? json.visualEvidenceQuality),
-    visualPaths.length > 0,
+    visualInputs.length > 0 ? runtimeVisualOracleEvidenceRequirements() : false,
   );
   const outputOracleFacet = await realRocmLedgerOutputOracleFacet(
     ledger,
@@ -8650,16 +8767,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
   const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
   const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
-  const visualRequired = true;
   const visual = await visualArtifactEvidence(
     visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     visualMetrics,
-    {
-      required: visualRequired,
+    runtimeVisualOracleEvidenceRequirements({
       allowSingleFrameProof: runMode.metricScope === 'cold',
-    },
+    }),
   );
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';

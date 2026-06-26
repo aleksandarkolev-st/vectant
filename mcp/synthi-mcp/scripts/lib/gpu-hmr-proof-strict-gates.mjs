@@ -183,6 +183,138 @@ function visualArtifactsPresent(record) {
   ].some(isObject);
 }
 
+function contentAddressedSha256(value) {
+  return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? '').trim());
+}
+
+function visualArtifactObjects(record) {
+  const oracleArtifacts = firstObject(record.oracle_artifacts, record.oracleArtifacts);
+  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+  const outputArtifacts = firstObject(outputEvent.oracle_artifacts, outputEvent.oracleArtifacts);
+  const outputOracle = firstObject(outputEvent.output_oracle, outputEvent.outputOracle) ?? {};
+  const outputOracleArtifacts = firstObject(outputOracle.oracle_artifacts, outputOracle.oracleArtifacts);
+  return [
+    oracleArtifacts?.visual_oracle_artifacts,
+    oracleArtifacts?.visualOracleArtifacts,
+    outputArtifacts?.visual_oracle_artifacts,
+    outputArtifacts?.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts?.visual_oracle_artifacts,
+    outputOracleArtifacts?.visualOracleArtifacts,
+  ].filter(isObject);
+}
+
+function visualArtifactRole(value, fallbackPath = '') {
+  const role = normalizedText(value?.role, value?.artifactRole, value?.artifact_role);
+  if (role === 'before' || role === 'baseline') return 'before';
+  if (role === 'after' || role === 'changed') return 'after';
+  if (role === 'diff' || role === 'delta') return 'diff';
+  const lowerPath = String(fallbackPath ?? '').toLowerCase();
+  if (lowerPath.includes('before') || lowerPath.includes('baseline')) return 'before';
+  if (lowerPath.includes('after') || lowerPath.includes('changed')) return 'after';
+  if (lowerPath.includes('diff') || lowerPath.includes('delta')) return 'diff';
+  return 'artifact';
+}
+
+function visualArtifactHashForRole(object, role) {
+  return firstString(
+    object?.expectedHash,
+    object?.expected_hash,
+    object?.contentHash,
+    object?.content_hash,
+    object?.imageSha256,
+    object?.image_sha256,
+    object?.sha256,
+    object?.hash,
+    role === 'before' ? object?.before_image_hash : null,
+    role === 'before' ? object?.beforeImageHash : null,
+    role === 'after' ? object?.after_image_hash : null,
+    role === 'after' ? object?.afterImageHash : null,
+    role === 'diff' ? object?.diff_image_hash : null,
+    role === 'diff' ? object?.diffImageHash : null,
+  );
+}
+
+function visualArtifactEntriesFromValue(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => visualArtifactEntriesFromValue(entry));
+  }
+  if (!isObject(value)) return [];
+  const directPath = firstString(
+    value.path,
+    value.sourcePath,
+    value.source_path,
+    value.localPath,
+    value.local_path,
+    value.absolutePath,
+    value.absolute_path,
+    value.filePath,
+    value.file_path,
+    value.file,
+    value.uri,
+  );
+  const entries = [];
+  if (directPath) {
+    const role = visualArtifactRole(value, directPath);
+    entries.push({
+      role,
+      path: directPath,
+      hash: visualArtifactHashForRole(value, role),
+    });
+  }
+  const pushRole = (role, pathValues, hashValues) => {
+    const rolePath = firstString(...pathValues);
+    const hash = firstString(...hashValues);
+    if (!rolePath && !hash) return;
+    entries.push({ role, path: rolePath, hash });
+  };
+  pushRole('before', [value.before_image, value.beforeImage], [value.before_image_hash, value.beforeImageHash]);
+  pushRole('after', [value.after_image, value.afterImage], [value.after_image_hash, value.afterImageHash]);
+  pushRole('diff', [value.diff_image, value.diffImage], [value.diff_image_hash, value.diffImageHash]);
+  pushRole('before', [value.baseline_image, value.baselineImage, value.baselineCapturePath, value.baseline_capture_path], []);
+  pushRole('after', [value.changed_image, value.changedImage, value.changedCapturePath, value.changed_capture_path], []);
+  return entries;
+}
+
+function recordClaimsVisualOutput(record) {
+  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+  const kind = normalizedText(outputEvent.kind, outputEvent.oracle_kind, outputEvent.oracleKind) ?? '';
+  return kind.includes('visual')
+    || kind.includes('render')
+    || kind.includes('frame')
+    || kind.includes('pixel')
+    || visualArtifactsPresent(record);
+}
+
+function visualOracleDeclarationFailures(proofLedger) {
+  const records = ledgerRecords(proofLedger).filter(recordClaimsVisualOutput);
+  if (records.length === 0) return [];
+  const entries = records.flatMap((record) =>
+    visualArtifactObjects(record).flatMap((object) => visualArtifactEntriesFromValue(object))
+  );
+  const hasRole = (role) => entries.some((entry) => entry.role === role && entry.path);
+  const hasContentAddressedHash = (role) => entries.some((entry) =>
+    entry.role === role && contentAddressedSha256(entry.hash)
+  );
+  const declaredHashes = entries
+    .map((entry) => entry.hash)
+    .filter((hash) => hash !== undefined && hash !== null && String(hash).trim() !== '');
+  const allDeclaredHashesContentAddressed = declaredHashes.every(contentAddressedSha256);
+  return compactStrings([
+    entries.length > 0 ? null : 'visual_oracle_artifacts_missing',
+    hasRole('before') ? null : 'visual_oracle_before_image_missing',
+    hasRole('after') ? null : 'visual_oracle_after_image_missing',
+    hasRole('diff') ? null : 'visual_oracle_diff_image_missing',
+    hasContentAddressedHash('before') ? null : 'visual_oracle_before_image_hash_missing',
+    hasContentAddressedHash('after') ? null : 'visual_oracle_after_image_hash_missing',
+    hasContentAddressedHash('diff') ? null : 'visual_oracle_diff_image_hash_missing',
+    allDeclaredHashesContentAddressed ? null : 'visual_oracle_image_hash_not_content_addressed',
+  ]);
+}
+
 function outputOracleTarget(record) {
   const outputEvent = firstObject(record?.output_event, record?.outputEvent) ?? {};
   const outputOracle = firstObject(outputEvent.output_oracle, outputEvent.outputOracle) ?? {};
@@ -334,6 +466,7 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       ) {
         failures.push('proof_ledger_query_mismatch');
       }
+      failures.push(...visualOracleDeclarationFailures(proofLedger));
     }
     if (!proofLedgerQuery) {
       failures.push('proof_ledger_query_missing');
