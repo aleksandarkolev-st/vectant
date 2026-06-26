@@ -5693,9 +5693,103 @@ function compileResponseBridgeSignalStrings(value, out = [], depth = 0) {
   return out;
 }
 
-function compileResponseBridgeSummary(compile) {
+function bridgeObjectOrEmpty(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstBridgeText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function firstBridgeBool(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
+}
+
+function compileBridgeCandidateFromDeviceSidecarContract(deviceSidecarContract = null) {
+  const facet = bridgeObjectOrEmpty(deviceSidecarContract);
+  if (Object.keys(facet).length === 0) {
+    return {
+      present: false,
+      accepted: false,
+      status: 'device_sidecar_contract_unavailable',
+      evidenceRefs: [],
+      evidence_refs: [],
+    };
+  }
+  const artifactIdentity = bridgeObjectOrEmpty(facet.artifactIdentity ?? facet.artifact_identity);
+  const sourcePaths = compactKnownStringList(artifactIdentity.source_paths ?? artifactIdentity.sourcePaths);
+  const entryPoints = compactKnownStringList(artifactIdentity.entry_points ?? artifactIdentity.entryPoints);
+  const artifactKind = firstBridgeText(artifactIdentity.artifact_kind, artifactIdentity.artifactKind);
+  const compileTarget = firstBridgeText(artifactIdentity.compile_target, artifactIdentity.compileTarget);
+  const compiler = firstBridgeText(artifactIdentity.compiler);
+  const compilerArgsHash = firstBridgeText(artifactIdentity.compiler_args_hash, artifactIdentity.compilerArgsHash);
+  const backend = firstBridgeText(facet.backend);
+  const contractEvidenceComplete = firstBridgeBool(
+    facet.contractEvidenceComplete,
+    facet.contract_evidence_complete,
+  ) === true;
+  const sourceCoverageComplete = firstBridgeBool(
+    facet.sourceCoverageComplete,
+    facet.source_coverage_complete,
+  ) === true;
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const knownRocmBackend = Boolean(backend) && backend !== 'unknown' && backend !== 'cuda';
+  const accepted =
+    contractEvidenceComplete
+    && sourceCoverageComplete
+    && sourcePaths.length > 0
+    && entryPoints.length > 0
+    && artifactKind
+    && artifactKind !== 'unknown'
+    && compileTarget
+    && compiler
+    && compilerArgsHash
+    && knownRocmBackend
+    && !blockingGaps.includes('device_sidecar_cuda_not_provable_on_rocm_host');
+  return {
+    present: true,
+    accepted,
+    status: accepted
+      ? 'device_sidecar_contract_candidate_materialized'
+      : 'device_sidecar_contract_candidate_incomplete',
+    source: 'real_rocm_device_sidecar_contract_facet',
+    backend,
+    knownRocmBackend,
+    known_rocm_backend: knownRocmBackend,
+    artifactIdentity,
+    artifact_identity: artifactIdentity,
+    contractEvidenceComplete,
+    contract_evidence_complete: contractEvidenceComplete,
+    sourceCoverageComplete,
+    source_coverage_complete: sourceCoverageComplete,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+      ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    ]),
+    evidence_refs: compactStringList([
+      ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+      ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    ]),
+  };
+}
+
+function compileResponseBridgeSummary(compile, {
+  deviceSidecarContract = null,
+} = {}) {
   const present = compile && typeof compile === 'object' && !Array.isArray(compile);
   const matches = present ? compactStringList(compileResponseBridgeSignalStrings(compile)) : [];
+  const sidecarCandidate = compileBridgeCandidateFromDeviceSidecarContract(deviceSidecarContract);
   const joined = matches.join('\n');
   const loadDeviceCommandDeclared = /\bload_device(?:_partial)?\b/i.test(joined);
   const deviceSidecarDeclared = /\b(?:device[_ -]?sidecar|gpu[_ -]?sidecar)\b/i.test(joined);
@@ -5703,7 +5797,7 @@ function compileResponseBridgeSummary(compile) {
     /\b(?:artifact(?:[_ -]?(?:path|hash|id))?|hsaco|cubin|fatbin|ptx)\b/i.test(joined);
   const runtimeProofMaterialDeclared =
     /\b(?:gpu[_ -]?hmr|runtime[_ -]?proof|proof[_ -]?artifact)\b/i.test(joined);
-  const completeBridgeCandidate =
+  const compileResponseCandidate =
     loadDeviceCommandDeclared
     && deviceSidecarDeclared
     && artifactReferenceDeclared
@@ -5716,8 +5810,10 @@ function compileResponseBridgeSummary(compile) {
     proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
-    status: completeBridgeCandidate
+    status: compileResponseCandidate
       ? 'compile_bridge_candidate_declared_not_runtime_proof'
+      : sidecarCandidate.accepted
+      ? 'compile_bridge_candidate_derived_not_runtime_proof'
       : matches.length > 0
         ? 'compile_bridge_incomplete_not_runtime_proof'
         : 'compile_bridge_not_declared_by_compile_response',
@@ -5732,10 +5828,79 @@ function compileResponseBridgeSummary(compile) {
       artifact_reference_declared: artifactReferenceDeclared,
       runtimeProofMaterialDeclared,
       runtime_proof_material_declared: runtimeProofMaterialDeclared,
+      derivedDeviceSidecarCandidate: sidecarCandidate.accepted === true,
+      derived_device_sidecar_candidate: sidecarCandidate.accepted === true,
     },
-    evidenceSample: matches.slice(0, 12),
-    evidence_sample: matches.slice(0, 12),
+    deviceSidecarCandidate: sidecarCandidate,
+    device_sidecar_candidate: sidecarCandidate,
+    evidenceSample: compactStringList([
+      ...matches,
+      ...sidecarCandidate.evidenceRefs,
+    ]).slice(0, 12),
+    evidence_sample: compactStringList([
+      ...matches,
+      ...sidecarCandidate.evidenceRefs,
+    ]).slice(0, 12),
   };
+}
+
+function compileResponseBridgeSummaryWithDeviceSidecar(summary, deviceSidecarContract = null) {
+  const base = bridgeObjectOrEmpty(summary);
+  if (Object.keys(base).length === 0) {
+    return compileResponseBridgeSummary(null, { deviceSidecarContract });
+  }
+  const sidecarCandidate = compileBridgeCandidateFromDeviceSidecarContract(deviceSidecarContract);
+  const signals = bridgeObjectOrEmpty(base.signals);
+  const compileResponseCandidate =
+    base.status === 'compile_bridge_candidate_declared_not_runtime_proof'
+    || (
+      firstBridgeBool(signals.loadDeviceCommandDeclared, signals.load_device_command_declared) === true
+      && firstBridgeBool(signals.deviceSidecarDeclared, signals.device_sidecar_declared) === true
+      && firstBridgeBool(signals.artifactReferenceDeclared, signals.artifact_reference_declared) === true
+      && firstBridgeBool(signals.runtimeProofMaterialDeclared, signals.runtime_proof_material_declared) === true
+    );
+  const status = compileResponseCandidate
+    ? 'compile_bridge_candidate_declared_not_runtime_proof'
+    : sidecarCandidate.accepted
+      ? 'compile_bridge_candidate_derived_not_runtime_proof'
+      : base.status ?? 'compile_bridge_not_declared_by_compile_response';
+  const evidenceSample = compactStringList([
+    ...(Array.isArray(base.evidenceSample) ? base.evidenceSample : []),
+    ...(Array.isArray(base.evidence_sample) ? base.evidence_sample : []),
+    ...sidecarCandidate.evidenceRefs,
+  ]).slice(0, 12);
+  return {
+    ...base,
+    proofAuthority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status,
+    signals: {
+      ...signals,
+      derivedDeviceSidecarCandidate: sidecarCandidate.accepted === true,
+      derived_device_sidecar_candidate: sidecarCandidate.accepted === true,
+    },
+    deviceSidecarCandidate: sidecarCandidate,
+    device_sidecar_candidate: sidecarCandidate,
+    evidenceSample,
+    evidence_sample: evidenceSample,
+  };
+}
+
+function enrichCompileBridgeSummariesWithDeviceSidecar(phases = [], deviceSidecarContract = null) {
+  return (Array.isArray(phases) ? phases : []).map((phase) => {
+    if (!phase || typeof phase !== 'object') return phase;
+    const enrichedCompileSummary = compileResponseBridgeSummaryWithDeviceSidecar(
+      phase.compile_response_summary ?? phase.compileResponseSummary,
+      deviceSidecarContract,
+    );
+    return {
+      ...phase,
+      compile_response_summary: enrichedCompileSummary,
+      compileResponseSummary: enrichedCompileSummary,
+    };
+  });
 }
 
 function realRocmCompileBridgeFacet(phases = [], {
@@ -5749,9 +5914,11 @@ function realRocmCompileBridgeFacet(phases = [], {
       summary: phase.compile_response_summary ?? phase.compileResponseSummary ?? null,
     }))
     .filter((entry) => entry.summary && typeof entry.summary === 'object');
-  const anyCandidate = summaries.some((entry) =>
-    entry.summary.status === 'compile_bridge_candidate_declared_not_runtime_proof'
-  );
+  const candidateStatuses = new Set([
+    'compile_bridge_candidate_declared_not_runtime_proof',
+    'compile_bridge_candidate_derived_not_runtime_proof',
+  ]);
+  const anyCandidate = summaries.some((entry) => candidateStatuses.has(entry.summary.status));
   const anyIncomplete = summaries.some((entry) =>
     entry.summary.status === 'compile_bridge_incomplete_not_runtime_proof'
   );
@@ -12096,12 +12263,13 @@ int main()
   ) {
     throw new Error('wait_hmr proof-insufficient parser self-check failed');
   }
+  const missingCompileBridgeSummary = compileResponseBridgeSummary({
+    ok: true,
+    session_id: 'self-check',
+    note: 'compile dispatched',
+  });
   const missingCompileBridge = realRocmCompileBridgeFacet([
-    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
-      ok: true,
-      session_id: 'self-check',
-      note: 'compile dispatched',
-    }) },
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: missingCompileBridgeSummary },
   ]);
   const incompleteCompileBridge = realRocmCompileBridgeFacet([
     { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
@@ -12119,6 +12287,74 @@ int main()
       },
     }) },
   ]);
+  const derivedSidecarContractSelfCheck = {
+    backend: 'hip',
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    sourceCoverageComplete: true,
+    source_coverage_complete: true,
+    artifactIdentity: {
+      source_paths: ['src/self_check_kernel.hip'],
+      artifact_kind: 'hsaco',
+      entry_points: ['self_check_kernel'],
+      compile_target: 'gfx1201',
+      compiler: 'hipcc',
+      compiler_args_hash: `sha256:${'5'.repeat(64)}`,
+    },
+    blockingGaps: ['device_sidecar_artifact_transport_runtime_not_observed'],
+    blocking_gaps: ['device_sidecar_artifact_transport_runtime_not_observed'],
+    evidenceRefs: [
+      'profile:source:src/self_check_kernel.hip',
+      'build-metadata:coverage:src/self_check_kernel.hip:direct_source',
+    ],
+    evidence_refs: [
+      'profile:source:src/self_check_kernel.hip',
+      'build-metadata:coverage:src/self_check_kernel.hip:direct_source',
+    ],
+  };
+  const derivedSidecarSummary = compileResponseBridgeSummary({
+    ok: true,
+    note: 'compile dispatched',
+  }, {
+    deviceSidecarContract: derivedSidecarContractSelfCheck,
+  });
+  const enrichedDerivedSidecarSummary = compileResponseBridgeSummaryWithDeviceSidecar(
+    missingCompileBridgeSummary,
+    derivedSidecarContractSelfCheck,
+  );
+  const derivedSidecarCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: derivedSidecarSummary },
+  ]);
+  const unknownBackendSidecarSummary = compileResponseBridgeSummary({
+    ok: true,
+    note: 'compile dispatched',
+  }, {
+    deviceSidecarContract: {
+      ...derivedSidecarContractSelfCheck,
+      backend: 'unknown',
+    },
+  });
+  const cudaSidecarSummary = compileResponseBridgeSummary({
+    ok: true,
+    note: 'compile dispatched',
+  }, {
+    deviceSidecarContract: {
+      ...derivedSidecarContractSelfCheck,
+      backend: 'cuda',
+      blockingGaps: ['device_sidecar_cuda_not_provable_on_rocm_host'],
+      blocking_gaps: ['device_sidecar_cuda_not_provable_on_rocm_host'],
+    },
+  });
+  const enrichedDerivedSidecarPhases = enrichCompileBridgeSummariesWithDeviceSidecar([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: missingCompileBridgeSummary },
+  ], derivedSidecarContractSelfCheck);
+  const enrichedDerivedSidecarCompileBridge = realRocmCompileBridgeFacet(enrichedDerivedSidecarPhases);
+  const runtimeLinkedDerivedSidecarCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: derivedSidecarSummary },
+  ], {
+    runtimeProofAccepted: true,
+    runtimeEvidenceRefs: ['gpu-runtime-proof:sha256:self-check-derived-runtime'],
+  });
   const runtimeLinkedCompileBridge = realRocmCompileBridgeFacet([
     { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
       ok: true,
@@ -12141,6 +12377,25 @@ int main()
     || candidateCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
     || candidateCompileBridge.can_satisfy_runtime_proof !== false
     || !candidateCompileBridge.blocking_gaps.includes('compile_response_bridge_candidate_not_runtime_proof')
+    || derivedSidecarSummary.status !== 'compile_bridge_candidate_derived_not_runtime_proof'
+    || derivedSidecarSummary.can_satisfy_runtime_proof !== false
+    || derivedSidecarSummary.signals.derived_device_sidecar_candidate !== true
+    || enrichedDerivedSidecarSummary.status !== 'compile_bridge_candidate_derived_not_runtime_proof'
+    || enrichedDerivedSidecarSummary.can_satisfy_runtime_proof !== false
+    || enrichedDerivedSidecarSummary.signals.derived_device_sidecar_candidate !== true
+    || derivedSidecarCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
+    || derivedSidecarCompileBridge.can_satisfy_runtime_proof !== false
+    || !derivedSidecarCompileBridge.blocking_gaps.includes('compile_response_bridge_candidate_not_runtime_proof')
+    || unknownBackendSidecarSummary.status === 'compile_bridge_candidate_derived_not_runtime_proof'
+    || unknownBackendSidecarSummary.signals.derived_device_sidecar_candidate !== false
+    || cudaSidecarSummary.status === 'compile_bridge_candidate_derived_not_runtime_proof'
+    || cudaSidecarSummary.signals.derived_device_sidecar_candidate !== false
+    || enrichedDerivedSidecarPhases[0].compile_response_summary.status !== 'compile_bridge_candidate_derived_not_runtime_proof'
+    || enrichedDerivedSidecarCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
+    || enrichedDerivedSidecarCompileBridge.can_satisfy_runtime_proof !== false
+    || runtimeLinkedDerivedSidecarCompileBridge.status !== 'compile_bridge_linked_to_runtime_proof'
+    || runtimeLinkedDerivedSidecarCompileBridge.can_satisfy_runtime_proof !== true
+    || runtimeLinkedDerivedSidecarCompileBridge.blocking_gaps.length !== 0
     || runtimeLinkedCompileBridge.status !== 'compile_bridge_linked_to_runtime_proof'
     || runtimeLinkedCompileBridge.can_satisfy_runtime_proof !== true
     || runtimeLinkedCompileBridge.blocking_gaps.length !== 0
@@ -13061,6 +13316,10 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   });
   report.realRocmDeviceSidecarContract = report.real_rocm_device_sidecar_contract;
   report.evidence.real_rocm_device_sidecar_contract = report.real_rocm_device_sidecar_contract;
+  report.phases = enrichCompileBridgeSummariesWithDeviceSidecar(
+    report.phases,
+    report.real_rocm_device_sidecar_contract,
+  );
   report.real_rocm_compile_bridge = realRocmCompileBridgeFacet(report.phases, {
     runtimeProofAccepted: report.full_runtime_proof?.fullRuntimeProven === true,
     runtimeEvidenceRefs: realRocmAvailableEvidenceRefs,
