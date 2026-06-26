@@ -13659,6 +13659,53 @@ async function writeResults() {
   report.docker_image_ids = report.validation_proof_summary.docker_image_ids;
   report.proof_states = report.validation_proof_summary.proof_states;
   report.limitations = report.validation_proof_summary.limitations;
+  const fullRuntimeProven = report.full_runtime_proof?.fullRuntimeProven === true;
+  const runtimeProofArtifactGpuHmrSuccess = report.runtime_proof_artifact?.gpuHmrSuccess === true;
+  const strictRuntimeProofArtifactAccepted =
+    report.runtime_proof_artifact_strict_gates.length > 0
+    && report.runtime_proof_artifact_strict_gates.every((gate) => gate.status === 'pass');
+  const strictProofGatesPassed = report.strict_proof_gates.every((gate) => gate.status !== 'fail');
+  const targetProgressionGatesPassed =
+    report.target_progression_gates.every((gate) => gate.status !== 'fail');
+  const realRocmGpuHmrSuccess =
+    fullRuntimeProven
+    && runtimeProofArtifactGpuHmrSuccess
+    && strictRuntimeProofArtifactAccepted
+    && strictProofGatesPassed
+    && targetProgressionGatesPassed;
+  const verdictFailedGates = compactStringList([
+    fullRuntimeProven ? null : 'full_runtime_ladder_not_proven',
+    runtimeProofArtifactGpuHmrSuccess ? null : 'strict_runtime_proof_artifact_gpu_hmr_success_false',
+    strictRuntimeProofArtifactAccepted ? null : 'strict_runtime_proof_artifact_not_accepted',
+    strictProofGatesPassed ? null : 'strict_proof_gates_failed',
+    targetProgressionGatesPassed ? null : 'target_progression_gates_failed',
+  ]);
+  report.real_rocm_gpu_hmr_verdict = {
+    schemaVersion: 'synthi.real_rocm.gpu_hmr_verdict.v1',
+    schema_version: 'synthi.real_rocm.gpu_hmr_verdict.v1',
+    authority: 'derived_from_full_runtime_ladder_strict_runtime_artifact_and_target_gates',
+    gpuHmrSuccess: realRocmGpuHmrSuccess,
+    gpu_hmr_success: realRocmGpuHmrSuccess,
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    runtimeProofArtifactGpuHmrSuccess,
+    runtime_proof_artifact_gpu_hmr_success: runtimeProofArtifactGpuHmrSuccess,
+    strictRuntimeProofArtifactAccepted,
+    strict_runtime_proof_artifact_accepted: strictRuntimeProofArtifactAccepted,
+    strictProofGatesPassed,
+    strict_proof_gates_passed: strictProofGatesPassed,
+    targetProgressionGatesPassed,
+    target_progression_gates_passed: targetProgressionGatesPassed,
+    failedGates: verdictFailedGates,
+    failed_gates: verdictFailedGates,
+  };
+  report.realRocmGpuHmrVerdict = report.real_rocm_gpu_hmr_verdict;
+  report.gpuHmrSuccess = realRocmGpuHmrSuccess;
+  report.gpu_hmr_success = realRocmGpuHmrSuccess;
+  report.acceptedForGpuHmr = realRocmGpuHmrSuccess;
+  report.accepted_for_gpu_hmr = realRocmGpuHmrSuccess;
+  report.fullRuntimeProven = fullRuntimeProven;
+  report.full_runtime_proven = fullRuntimeProven;
   await mkdir(RETAINED_RESULTS_DIR, { recursive: true });
   const retainedBaseName = cleanIdentifier(report.slug ?? CFG.slug ?? 'real-rocm-result');
   const retainedResultsJson = path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.json`);
@@ -13695,6 +13742,9 @@ async function writeResults() {
     `target_progression_ledger_entry: ${JSON.stringify(report.target_progression_ledger_entry)}`,
     `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
+    `gpu_hmr_success: ${report.gpu_hmr_success}`,
+    `full_runtime_proven: ${report.full_runtime_proven}`,
+    `real_rocm_gpu_hmr_verdict: ${JSON.stringify(report.real_rocm_gpu_hmr_verdict)}`,
     `source_delta_execution: ${JSON.stringify(report.source_delta_execution)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `real_rocm_device_sidecar_contract: ${JSON.stringify(report.real_rocm_device_sidecar_contract)}`,
