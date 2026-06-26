@@ -1055,6 +1055,11 @@ function validationProfileEvidenceFor({
   evidenceRefs,
   proofIds,
   source = 'agent_split_run_mode_visual_ledger_recomputed',
+  profileHash = null,
+  sourceContentHash = null,
+  declaredSourceContentHash = null,
+  deterministicVisualModeHash = null,
+  visualProofHash = null,
 }) {
   return {
     schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
@@ -1062,6 +1067,16 @@ function validationProfileEvidenceFor({
     profileId,
     profileClass,
     source,
+    profileHash,
+    profile_hash: profileHash,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    declaredSourceContentHash,
+    declared_source_content_hash: declaredSourceContentHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    visualProofHash,
+    visual_proof_hash: visualProofHash,
     evidenceRefs,
     proofIds,
   };
@@ -5769,6 +5784,145 @@ assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.failedG
   'validation_profile_evidence_source_not_authorized',
 ));
 assert.equal(explicitContractSourceProfileCoverage.get('flow_visual_gpu_path'), undefined);
+
+const hashBoundProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-hash-bound-profile');
+await writeRgbaPng(path.join(hashBoundProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(hashBoundProfileDir, 'after.png'), 8, 8, (x, y) => [112 + x, 132 + y, 156, 255]);
+await writeRgbaPng(path.join(hashBoundProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const hashBoundProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: hashBoundProfileDir,
+});
+const boundProfileHash = hashValue('flow-profile-hash-bound');
+const boundSourceHash = hashValue('flow-source-hash-bound');
+const boundDeterministicModeHash = hashValue('flow-deterministic-mode-hash-bound');
+const boundVisualProofHash = hashValue('flow-visual-proof-hash-bound');
+await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    hashBoundProfileMaterials.proofLedgerQuery.record.proofId,
+    hashBoundProfileMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...hashBoundProfileMaterials,
+  proofId: 'agent-split-run-mode-proof:sha256:flow-hash-bound-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+      hashBoundProfileMaterials.proofLedgerQuery.record.proofId,
+      boundProfileHash,
+      boundSourceHash,
+      boundDeterministicModeHash,
+      boundVisualProofHash,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-hash-bound-profile',
+      hashBoundProfileMaterials.proofLedgerQuery.record.proofId,
+      hashBoundProfileMaterials.runtimeProofArtifact.proofId,
+    ],
+    profileHash: boundProfileHash,
+    sourceContentHash: boundSourceHash,
+    declaredSourceContentHash: boundSourceHash,
+    deterministicVisualModeHash: boundDeterministicModeHash,
+    visualProofHash: boundVisualProofHash,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: path.join(hashBoundProfileDir, 'before.png'),
+    after: path.join(hashBoundProfileDir, 'after.png'),
+    diff: path.join(hashBoundProfileDir, 'diff.png'),
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-hash-bound-profile',
+    editHash: hashValue('flow-hash-bound-profile'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const hashBoundProfileLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [hashBoundProfileDir],
+  generatedAt: '2026-06-09T00:00:01.050Z',
+  includeUnproven: true,
+});
+const hashBoundProfileRuntime = hashBoundProfileLedger.rows.find((row) => row.targetId === 'flow');
+assert.equal(hashBoundProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(hashBoundProfileRuntime.validationProfileEvidence.accepted, true);
+assert.equal(hashBoundProfileRuntime.validationProfileEvidence.binding.sourceContentHashBoundToEvidenceRefs, true);
+
+const mismatchedSourceHashProfileDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-source-hash-mismatch-profile',
+);
+await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'after.png'), 8, 8, (x, y) => [120 + x, 140 + y, 164, 255]);
+await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const mismatchedSourceHashMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: mismatchedSourceHashProfileDir,
+});
+const mismatchedActualSourceHash = hashValue('flow-source-actual');
+const mismatchedDeclaredSourceHash = hashValue('flow-source-declared');
+await writeJson(path.join(mismatchedSourceHashProfileDir, 'hot1-source-hash-mismatch-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    mismatchedSourceHashMaterials.proofLedgerQuery.record.proofId,
+    mismatchedSourceHashMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...mismatchedSourceHashMaterials,
+  proofId: 'agent-split-run-mode-proof:sha256:flow-source-hash-mismatch-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+      mismatchedSourceHashMaterials.proofLedgerQuery.record.proofId,
+      mismatchedActualSourceHash,
+      mismatchedDeclaredSourceHash,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-source-hash-mismatch-profile',
+      mismatchedSourceHashMaterials.proofLedgerQuery.record.proofId,
+      mismatchedSourceHashMaterials.runtimeProofArtifact.proofId,
+    ],
+    sourceContentHash: mismatchedActualSourceHash,
+    declaredSourceContentHash: mismatchedDeclaredSourceHash,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: path.join(mismatchedSourceHashProfileDir, 'before.png'),
+    after: path.join(mismatchedSourceHashProfileDir, 'after.png'),
+    diff: path.join(mismatchedSourceHashProfileDir, 'diff.png'),
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-source-hash-mismatch-profile',
+    editHash: hashValue('flow-source-hash-mismatch-profile'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const mismatchedSourceHashLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [mismatchedSourceHashProfileDir],
+  generatedAt: '2026-06-09T00:00:01.060Z',
+  includeUnproven: true,
+});
+const mismatchedSourceHashRuntime = mismatchedSourceHashLedger.rows.find((row) => row.targetId === 'flow');
+assert.equal(mismatchedSourceHashRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(mismatchedSourceHashRuntime.validationProfileEvidence.accepted, false);
+assert.ok(mismatchedSourceHashRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_source_hash_mismatch',
+));
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);

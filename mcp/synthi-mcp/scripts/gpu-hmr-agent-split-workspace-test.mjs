@@ -151,6 +151,15 @@ function profilePositiveInt(value, field, fallback) {
   return parsed;
 }
 
+function profileFiniteNumber(value, field, fallback = null) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`invalid agent visual profile ${field}: expected finite number`);
+  }
+  return parsed;
+}
+
 function profileObject(value, field, fallback = {}) {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -170,6 +179,106 @@ function profileArray(value, field) {
 function resolveProfilePath(profilePath, baseDir = process.cwd()) {
   const text = profileString(profilePath, 'path', { required: true });
   return path.isAbsolute(text) ? text : path.resolve(baseDir, text);
+}
+
+function contentAddressedSha256(value) {
+  return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
+}
+
+function sourceContentHash(sourceText) {
+  return `sha256:${sha256Hex(sourceText ?? '')}`;
+}
+
+function validateDeclaredSourceHash(declared, actual, field) {
+  if (!declared) return;
+  if (!contentAddressedSha256(declared)) {
+    throw new Error(`invalid agent visual profile ${field}: expected sha256 content hash`);
+  }
+  if (actual && declared.toLowerCase() !== actual.toLowerCase()) {
+    throw new Error(`agent visual profile ${field} mismatch: declared ${declared} actual ${actual}`);
+  }
+}
+
+function normalizeAgentVisualProof(rawValue = {}) {
+  const raw = profileObject(rawValue, 'visualProof', {});
+  const minChangedRatio = Math.max(0.01, profileFiniteNumber(
+    raw.minChangedRatio ?? raw.min_changed_ratio,
+    'visualProof.minChangedRatio',
+    0.01,
+  ));
+  const minMeanAbs = Math.max(1.0, profileFiniteNumber(
+    raw.minMeanAbs ?? raw.min_mean_abs,
+    'visualProof.minMeanAbs',
+    1.0,
+  ));
+  const controlMultiplier = Math.max(3.0, profileFiniteNumber(
+    raw.controlMultiplier ?? raw.control_multiplier,
+    'visualProof.controlMultiplier',
+    3.0,
+  ));
+  const controlChangedRatioPadding = Math.max(0.0025, profileFiniteNumber(
+    raw.controlChangedRatioPadding ?? raw.control_changed_ratio_padding,
+    'visualProof.controlChangedRatioPadding',
+    0.0025,
+  ));
+  const controlMeanAbsPadding = Math.max(0.25, profileFiniteNumber(
+    raw.controlMeanAbsPadding ?? raw.control_mean_abs_padding,
+    'visualProof.controlMeanAbsPadding',
+    0.25,
+  ));
+  const normalized = {
+    minChangedRatio,
+    min_changed_ratio: minChangedRatio,
+    minMeanAbs,
+    min_mean_abs: minMeanAbs,
+    controlMultiplier,
+    control_multiplier: controlMultiplier,
+    controlChangedRatioPadding,
+    control_changed_ratio_padding: controlChangedRatioPadding,
+    controlMeanAbsPadding,
+    control_mean_abs_padding: controlMeanAbsPadding,
+  };
+  const proofHash = `sha256:${sha256Hex(stableJson(normalized))}`;
+  return {
+    ...normalized,
+    proofHash,
+    proof_hash: proofHash,
+  };
+}
+
+function agentProfileSourceForHash(source) {
+  return {
+    entryPath: source.entryPath,
+    entry_path: source.entry_path,
+    path: source.path,
+    resolvedPath: source.resolvedPath,
+    resolved_path: source.resolved_path,
+    fixture: source.fixture,
+    contentHash: source.contentHash ?? null,
+    content_hash: source.content_hash ?? null,
+    declaredContentHash: source.declaredContentHash ?? null,
+    declared_content_hash: source.declared_content_hash ?? null,
+  };
+}
+
+function agentProfileHash(profile) {
+  return `sha256:${sha256Hex(stableJson({
+    schemaVersion: profile.schemaVersion,
+    profileId: profile.profileId,
+    profileClass: profile.profileClass,
+    source: agentProfileSourceForHash(profile.source),
+    compile: profile.compile,
+    deviceEdits: profile.deviceEdits,
+    deterministicVisualMode: profile.deterministicVisualMode,
+    visualProof: profile.visualProof,
+  }))}`;
+}
+
+function refreshAgentProfileHash(profile) {
+  const profileHash = agentProfileHash(profile);
+  profile.profileHash = profileHash;
+  profile.profile_hash = profileHash;
+  return profileHash;
 }
 
 function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
@@ -205,12 +314,27 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
   const profileDir = profilePath ? path.dirname(resolveProfilePath(profilePath)) : process.cwd();
   const profileId = profileString(raw.profileId ?? raw.profile_id ?? raw.id, 'profileId', { required: true });
   const sourcePath = profileString(source.path ?? source.sourcePath ?? source.source_path, 'source.path');
+  const resolvedSourcePath = sourcePath ? resolveProfilePath(sourcePath, profileDir) : '';
   const inlineSource = typeof source.inline === 'string'
     ? source.inline
     : typeof source.content === 'string'
       ? source.content
       : '';
   const fixtureSource = profileString(source.fixture, 'source.fixture').toLowerCase();
+  const declaredSourceContentHash = profileString(
+    source.contentHash ?? source.content_hash ?? source.sha256,
+    'source.contentHash',
+  ).toLowerCase();
+  const actualSourceContentHash = inlineSource
+    ? sourceContentHash(inlineSource)
+    : resolvedSourcePath && existsSync(resolvedSourcePath)
+      ? sourceContentHash(readFileSync(resolvedSourcePath, 'utf8'))
+      : null;
+  validateDeclaredSourceHash(declaredSourceContentHash, actualSourceContentHash, 'source.contentHash');
+  const visualProof = normalizeAgentVisualProof(raw.visualProof ?? raw.visual_proof);
+  const deterministicVisualMode =
+    profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {});
+  const deterministicVisualModeHash = `sha256:${sha256Hex(stableJson(deterministicVisualMode))}`;
   const normalized = {
     schemaVersion,
     schema_version: schemaVersion,
@@ -224,10 +348,16 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
       entryPath: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
       entry_path: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
       path: sourcePath,
-      resolvedPath: sourcePath ? resolveProfilePath(sourcePath, profileDir) : '',
-      resolved_path: sourcePath ? resolveProfilePath(sourcePath, profileDir) : '',
+      resolvedPath: resolvedSourcePath,
+      resolved_path: resolvedSourcePath,
       inline: inlineSource,
       fixture: fixtureSource,
+      contentHash: actualSourceContentHash,
+      content_hash: actualSourceContentHash,
+      declaredContentHash: declaredSourceContentHash || null,
+      declared_content_hash: declaredSourceContentHash || null,
+      evidenceRef: actualSourceContentHash ? `evidence:agent-profile-source:${actualSourceContentHash}` : null,
+      evidence_ref: actualSourceContentHash ? `evidence:agent-profile-source:${actualSourceContentHash}` : null,
     },
     compile: {
       width: profilePositiveInt(compile.width, 'compile.width', 800),
@@ -259,23 +389,16 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
           : 'missing',
     deviceEdits: editSpecs,
     device_edits: editSpecs,
-    deterministicVisualMode:
-      profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {}),
-    deterministic_visual_mode:
-      profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {}),
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    visualProof,
+    visual_proof: visualProof,
     profilePath: profilePath || null,
     profile_path: profilePath || null,
   };
-  normalized.profileHash = `sha256:${sha256Hex(stableJson({
-    schemaVersion: normalized.schemaVersion,
-    profileId: normalized.profileId,
-    profileClass: normalized.profileClass,
-    source: normalized.source,
-    compile: normalized.compile,
-    deviceEdits: normalized.deviceEdits,
-    deterministicVisualMode: normalized.deterministicVisualMode,
-  }))}`;
-  normalized.profile_hash = normalized.profileHash;
+  refreshAgentProfileHash(normalized);
   return normalized;
 }
 
@@ -292,9 +415,27 @@ function loadAgentVisualProfile(profilePath = CFG.profilePath) {
 
 function sourceFromAgentVisualProfile(profile, vendor) {
   if (!profile) return null;
-  if (profile.source.inline) return profile.source.inline;
-  if (profile.source.resolvedPath) return readFileSync(profile.source.resolvedPath, 'utf8');
-  if (profile.source.fixture) return builtinFixtureSource(vendor, profile.source.fixture);
+  const sourceText = profile.source.inline
+    ? profile.source.inline
+    : profile.source.resolvedPath
+      ? readFileSync(profile.source.resolvedPath, 'utf8')
+      : profile.source.fixture
+        ? builtinFixtureSource(vendor, profile.source.fixture)
+        : null;
+  if (sourceText !== null) {
+    const actualHash = sourceContentHash(sourceText);
+    validateDeclaredSourceHash(
+      profile.source.declaredContentHash ?? profile.source.declared_content_hash,
+      actualHash,
+      'source.contentHash',
+    );
+    profile.source.contentHash = actualHash;
+    profile.source.content_hash = actualHash;
+    profile.source.evidenceRef = `evidence:agent-profile-source:${actualHash}`;
+    profile.source.evidence_ref = `evidence:agent-profile-source:${actualHash}`;
+    refreshAgentProfileHash(profile);
+    return sourceText;
+  }
   throw new Error('agent visual profile must provide source.inline, source.path, or source.fixture');
 }
 
@@ -2727,10 +2868,16 @@ function selfCheckAgentVisualProfile() {
       source: {
         entryPath: 'src/main.cpp',
         inline: source,
+        contentHash: sourceContentHash(source),
       },
       compile: {
         width: 640,
         height: 360,
+      },
+      visualProof: {
+        minChangedRatio: 0.025,
+        minMeanAbs: 1.75,
+        controlMultiplier: 4,
       },
       requireDeclaredEdits: true,
       deviceEdits: [
@@ -2747,8 +2894,22 @@ function selfCheckAgentVisualProfile() {
       ],
     });
     ACTIVE_AGENT_PROFILE = profile;
+    const resolvedSource = sourceFromAgentVisualProfile(profile, 'rocm');
     const hot1 = deviceEditForRun(source, { attempt: 0, runMode: 'hot_delta_1' });
     const hot2 = deviceEditForRun(hot1.edited, { attempt: 1, runMode: 'hot_delta_2' });
+    let sourceHashMismatchRejected = false;
+    try {
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-source-hash-mismatch',
+        source: {
+          inline: source,
+          contentHash: `sha256:${'0'.repeat(64)}`,
+        },
+      });
+    } catch (err) {
+      sourceHashMismatchRejected = String(err.message).includes('source.contentHash mismatch');
+    }
     const ambiguousProfile = normalizeAgentVisualProfile({
       schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
       profileId: 'self-check-ambiguous-profile',
@@ -2761,6 +2922,18 @@ function selfCheckAgentVisualProfile() {
         find: '1.0f',
         replace: '2.0f',
       }],
+    });
+    const weakThresholdProfile = normalizeAgentVisualProfile({
+      schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+      profileId: 'self-check-weak-threshold-profile',
+      source: {
+        inline: source,
+      },
+      visualProof: {
+        minChangedRatio: 0,
+        minMeanAbs: 0,
+        controlMultiplier: 0,
+      },
     });
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
@@ -2775,10 +2948,21 @@ function selfCheckAgentVisualProfile() {
       || profile.compile.width !== 640
       || profile.compile.height !== 360
       || !profile.profileHash.startsWith('sha256:')
+      || resolvedSource !== source
+      || profile.source.contentHash !== sourceContentHash(source)
+      || !profile.source.evidenceRef.includes(profile.source.contentHash)
+      || profile.visualProof.minChangedRatio !== 0.025
+      || profile.visualProof.minMeanAbs !== 1.75
+      || profile.visualProof.controlMultiplier !== 4
+      || !profile.visualProof.proofHash.startsWith('sha256:')
+      || weakThresholdProfile.visualProof.minChangedRatio !== 0.01
+      || weakThresholdProfile.visualProof.minMeanAbs !== 1.0
+      || weakThresholdProfile.visualProof.controlMultiplier !== 3.0
       || !hot1.edited.includes('const float sceneLight = 1.7f;')
       || hot1.mutation?.kind !== 'profile_declared_source_edit'
       || !hot2.edited.includes('const float exposure = 0.82f;')
       || hot2.mutation?.selector !== 'regex'
+      || !sourceHashMismatchRejected
       || !ambiguousRejected
     ) {
       throw new Error('agent visual profile self-check failed');
@@ -3050,6 +3234,9 @@ function splitProofIdentity(split) {
 
 function runModeProofIdentity(split) {
   const splitIdentity = splitProofIdentity(split);
+  const sourceHash = ACTIVE_AGENT_PROFILE?.source?.contentHash ?? ACTIVE_AGENT_PROFILE?.source?.content_hash ?? null;
+  const sourceEvidenceRef =
+    ACTIVE_AGENT_PROFILE?.source?.evidenceRef ?? ACTIVE_AGENT_PROFILE?.source?.evidence_ref ?? null;
   return {
     backend: backendForSplit(split),
     ...splitIdentity,
@@ -3066,6 +3253,14 @@ function runModeProofIdentity(split) {
     ...(ACTIVE_AGENT_PROFILE ? {
       validationProfileHash: ACTIVE_AGENT_PROFILE.profileHash,
       validation_profile_hash: ACTIVE_AGENT_PROFILE.profileHash,
+      validationProfileSourceContentHash: sourceHash,
+      validation_profile_source_content_hash: sourceHash,
+      validationProfileSourceEvidenceRef: sourceEvidenceRef,
+      validation_profile_source_evidence_ref: sourceEvidenceRef,
+      validationProfileDeterministicModeHash: ACTIVE_AGENT_PROFILE.deterministicVisualModeHash,
+      validation_profile_deterministic_mode_hash: ACTIVE_AGENT_PROFILE.deterministicVisualModeHash,
+      validationProfileVisualProofHash: ACTIVE_AGENT_PROFILE.visualProof?.proofHash ?? null,
+      validation_profile_visual_proof_hash: ACTIVE_AGENT_PROFILE.visualProof?.proof_hash ?? null,
       validationProfilePath: ACTIVE_AGENT_PROFILE.profilePath,
       validation_profile_path: ACTIVE_AGENT_PROFILE.profilePath,
     } : {}),
@@ -3086,6 +3281,15 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
   const recomputed = ledger ? queryGpuHmrLedgerInvariants(ledger) : null;
   const record = recomputed?.record ?? firstLedgerRecord(ledger);
   const splitIdentity = split ? splitProofIdentity(split) : {};
+  const sourceHash = ACTIVE_AGENT_PROFILE?.source?.contentHash ?? ACTIVE_AGENT_PROFILE?.source?.content_hash ?? null;
+  const sourceEvidenceRef =
+    ACTIVE_AGENT_PROFILE?.source?.evidenceRef ?? ACTIVE_AGENT_PROFILE?.source?.evidence_ref ?? null;
+  const deterministicModeHash = ACTIVE_AGENT_PROFILE?.deterministicVisualModeHash
+    ?? ACTIVE_AGENT_PROFILE?.deterministic_visual_mode_hash
+    ?? null;
+  const visualProofHash = ACTIVE_AGENT_PROFILE?.visualProof?.proofHash
+    ?? ACTIVE_AGENT_PROFILE?.visual_proof?.proof_hash
+    ?? null;
   const proofIds = [
     recomputed?.proofId,
     recomputed?.proof_id,
@@ -3099,6 +3303,10 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
   const evidenceRefs = [
     `evidence:agent-split-validation-profile:${validationProfileId()}`,
     ACTIVE_AGENT_PROFILE?.profileHash,
+    sourceHash,
+    sourceEvidenceRef,
+    deterministicModeHash,
+    visualProofHash,
     ...proofIds,
     splitIdentity.targetId,
     visualDelta?.diffPath,
@@ -3113,6 +3321,20 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
     source: validationProfileEvidenceSource(),
     profileHash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
     profile_hash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+    sourceContentHash: sourceHash,
+    source_content_hash: sourceHash,
+    declaredSourceContentHash:
+      ACTIVE_AGENT_PROFILE?.source?.declaredContentHash
+      ?? ACTIVE_AGENT_PROFILE?.source?.declared_content_hash
+      ?? null,
+    declared_source_content_hash:
+      ACTIVE_AGENT_PROFILE?.source?.declaredContentHash
+      ?? ACTIVE_AGENT_PROFILE?.source?.declared_content_hash
+      ?? null,
+    deterministicVisualModeHash: deterministicModeHash,
+    deterministic_visual_mode_hash: deterministicModeHash,
+    visualProofHash,
+    visual_proof_hash: visualProofHash,
     profilePath: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
     profile_path: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
     proofIds: [...new Set(proofIds)],
@@ -3358,6 +3580,17 @@ function withRunModeVisualLedgerProof({
         visualDelta.selected_frame_capture_after_epoch_dispatch === true,
       fixed_swapchain_image_count: true,
     });
+    const profileDeterministicVisualMode =
+      ACTIVE_AGENT_PROFILE?.deterministicVisualMode
+      ?? ACTIVE_AGENT_PROFILE?.deterministic_visual_mode
+      ?? {};
+    const mergedDeterministicVisualMode = {
+      ...deterministicVisualMode,
+      ...(isRecord(profileDeterministicVisualMode) ? profileDeterministicVisualMode : {}),
+      source: ACTIVE_AGENT_PROFILE
+        ? 'agent_visual_profile_plus_mcp_frame_evidence'
+        : 'mcp_frame_evidence',
+    };
     return withoutSuppliedLedgerIdentity({
       ...record,
       oracle_artifacts: {
@@ -3378,8 +3611,8 @@ function withRunModeVisualLedgerProof({
         visual_oracle_artifacts: visualArtifacts,
         visualOracleArtifacts: visualArtifacts,
       },
-      deterministic_visual_mode: deterministicVisualMode,
-      deterministicVisualMode,
+      deterministic_visual_mode: mergedDeterministicVisualMode,
+      deterministicVisualMode: mergedDeterministicVisualMode,
     });
   });
   const queryableLedger = {
@@ -3703,15 +3936,45 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
       };
     }
   }
-  const minChangedRatio = Math.max(0.01, control.changedRatio * 3 + 0.0025);
-  const minMeanAbs = Math.max(1.0, control.meanAbs * 3 + 0.25);
+  const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
+  const controlMultiplier = Number.isFinite(visualProof.controlMultiplier)
+    ? visualProof.controlMultiplier
+    : Number.isFinite(visualProof.control_multiplier)
+      ? visualProof.control_multiplier
+      : 3.0;
+  const controlChangedRatioPadding = Number.isFinite(visualProof.controlChangedRatioPadding)
+    ? visualProof.controlChangedRatioPadding
+    : Number.isFinite(visualProof.control_changed_ratio_padding)
+      ? visualProof.control_changed_ratio_padding
+      : 0.0025;
+  const controlMeanAbsPadding = Number.isFinite(visualProof.controlMeanAbsPadding)
+    ? visualProof.controlMeanAbsPadding
+    : Number.isFinite(visualProof.control_mean_abs_padding)
+      ? visualProof.control_mean_abs_padding
+      : 0.25;
+  const minChangedRatio = Math.max(
+    Number.isFinite(visualProof.minChangedRatio)
+      ? visualProof.minChangedRatio
+      : Number.isFinite(visualProof.min_changed_ratio)
+        ? visualProof.min_changed_ratio
+        : 0.01,
+    control.changedRatio * controlMultiplier + controlChangedRatioPadding,
+  );
+  const minMeanAbs = Math.max(
+    Number.isFinite(visualProof.minMeanAbs)
+      ? visualProof.minMeanAbs
+      : Number.isFinite(visualProof.min_mean_abs)
+        ? visualProof.min_mean_abs
+        : 1.0,
+    control.meanAbs * controlMultiplier + controlMeanAbsPadding,
+  );
   const ok = best && best.changedRatio > minChangedRatio && best.meanAbs > minMeanAbs;
   const diffPath = path.join(ARTIFACT_DIR, `${diffArtifactName}.png`);
   if (best) await screenshotDelta(baseline, best.shot, diffPath);
   const firstAfterTs = afterSamples[0]?.ts || 0;
   const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
   const detail = best
-    ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
+      ? `changed=${(best.changedRatio * 100).toFixed(2)}% mean_abs=${best.meanAbs.toFixed(2)} min_changed=${(minChangedRatio * 100).toFixed(2)}% min_mean_abs=${minMeanAbs.toFixed(2)} control_changed=${(control.changedRatio * 100).toFixed(2)}% control_mean_abs=${control.meanAbs.toFixed(2)} selected_seq=${best.shot.seq} selected_delta_ms=${selectedDeltaMs} diff=${path.relative(process.cwd(), diffPath)}`
     : `no eligible post-HMR visual samples diff=${path.relative(process.cwd(), diffPath)}`;
   record(recordLabel, ok ? 'pass' : 'fail', detail);
   if (!ok) throw new Error(`visual delta too small: ${detail}`);
@@ -3749,6 +4012,20 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     selectedDeltaMs,
     selectedFrameCaptureAfterEpochDispatch: best.shot.frameCaptureAfterEpochDispatch,
     selected_frame_capture_after_epoch_dispatch: best.shot.frameCaptureAfterEpochDispatch,
+    visualProofThresholds: {
+      minChangedRatio,
+      minMeanAbs,
+      controlMultiplier,
+      controlChangedRatioPadding,
+      controlMeanAbsPadding,
+    },
+    visual_proof_thresholds: {
+      min_changed_ratio: minChangedRatio,
+      min_mean_abs: minMeanAbs,
+      control_multiplier: controlMultiplier,
+      control_changed_ratio_padding: controlChangedRatioPadding,
+      control_mean_abs_padding: controlMeanAbsPadding,
+    },
     diffPath: path.relative(process.cwd(), diffPath),
     visualArtifacts,
     visual_artifacts: visualArtifactsSnake,
@@ -3907,15 +4184,15 @@ async function run() {
   }
   record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'}`);
   record('fixture', 'pass', CFG.fixture);
+  const source = monolithicSource(vendor);
   if (ACTIVE_AGENT_PROFILE) {
     record(
       'agent visual profile',
       'pass',
-      `id=${ACTIVE_AGENT_PROFILE.profileId} source=${ACTIVE_AGENT_PROFILE.sourceAuthority} edits=${ACTIVE_AGENT_PROFILE.deviceEdits.length} hash=${ACTIVE_AGENT_PROFILE.profileHash}`,
+      `id=${ACTIVE_AGENT_PROFILE.profileId} source=${ACTIVE_AGENT_PROFILE.sourceAuthority} edits=${ACTIVE_AGENT_PROFILE.deviceEdits.length} hash=${ACTIVE_AGENT_PROFILE.profileHash} source_hash=${ACTIVE_AGENT_PROFILE.source?.contentHash ?? 'missing'}`,
     );
   }
 
-  const source = monolithicSource(vendor);
   assertNoSynthiAbi(source);
   const entryPath = validationProfileEntryPath();
   const renderWidth = validationProfileWidth();

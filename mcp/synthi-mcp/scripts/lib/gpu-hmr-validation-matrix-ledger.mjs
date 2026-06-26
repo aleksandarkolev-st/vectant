@@ -1293,6 +1293,22 @@ function visualArtifactHashesForRow(row = {}) {
 function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
+  const profileHash = firstText(supplied.profileHash, supplied.profile_hash);
+  const sourceContentHash = firstText(
+    supplied.sourceContentHash,
+    supplied.source_content_hash,
+    supplied.sourceHash,
+    supplied.source_hash,
+  );
+  const declaredSourceContentHash = firstText(
+    supplied.declaredSourceContentHash,
+    supplied.declared_source_content_hash,
+  );
+  const deterministicVisualModeHash = firstText(
+    supplied.deterministicVisualModeHash,
+    supplied.deterministic_visual_mode_hash,
+  );
+  const visualProofHash = firstText(supplied.visualProofHash, supplied.visual_proof_hash);
   const rowProofIds = new Set(compactStringList([
     ...(Array.isArray(row.proofIds) ? row.proofIds : []),
     ...(Array.isArray(row.proof_ids) ? row.proof_ids : []),
@@ -1347,10 +1363,39 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const evidenceRefsBoundToRow =
     evidenceRefs.length > 0
     && evidenceRefsBound.length > 0;
+  const profileHashBoundToEvidenceRefs =
+    !profileHash
+    || (contentAddressedSha256(profileHash) && evidenceRefs.includes(profileHash));
+  const sourceContentHashBoundToEvidenceRefs =
+    !sourceContentHash
+    || (contentAddressedSha256(sourceContentHash) && evidenceRefs.includes(sourceContentHash));
+  const declaredSourceHashMatchesActual =
+    !declaredSourceContentHash
+    || (
+      contentAddressedSha256(declaredSourceContentHash)
+      && sourceContentHash
+      && declaredSourceContentHash.toLowerCase() === sourceContentHash.toLowerCase()
+    );
+  const deterministicVisualModeHashBoundToEvidenceRefs =
+    !deterministicVisualModeHash
+    || (
+      contentAddressedSha256(deterministicVisualModeHash)
+      && evidenceRefs.includes(deterministicVisualModeHash)
+    );
+  const visualProofHashBoundToEvidenceRefs =
+    !visualProofHash
+    || (contentAddressedSha256(visualProofHash) && evidenceRefs.includes(visualProofHash));
   const failedGates = compactStringList([
     profileIdBoundToRow ? null : 'validation_profile_id_not_bound_to_runtime_identity',
     proofIdsBoundToRow ? null : 'validation_profile_proof_ids_not_bound_to_row',
     evidenceRefsBoundToRow ? null : 'validation_profile_evidence_refs_not_bound_to_row',
+    profileHashBoundToEvidenceRefs ? null : 'validation_profile_hash_not_bound_to_evidence_refs',
+    sourceContentHashBoundToEvidenceRefs ? null : 'validation_profile_source_hash_not_bound_to_evidence_refs',
+    declaredSourceHashMatchesActual ? null : 'validation_profile_source_hash_mismatch',
+    deterministicVisualModeHashBoundToEvidenceRefs
+      ? null
+      : 'validation_profile_deterministic_mode_hash_not_bound_to_evidence_refs',
+    visualProofHashBoundToEvidenceRefs ? null : 'validation_profile_visual_proof_hash_not_bound_to_evidence_refs',
   ]);
   return {
     accepted: failedGates.length === 0,
@@ -1360,6 +1405,16 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     proof_ids_bound_to_row: proofIdsBoundToRow,
     evidenceRefsBoundToRow,
     evidence_refs_bound_to_row: evidenceRefsBoundToRow,
+    profileHashBoundToEvidenceRefs,
+    profile_hash_bound_to_evidence_refs: profileHashBoundToEvidenceRefs,
+    sourceContentHashBoundToEvidenceRefs,
+    source_content_hash_bound_to_evidence_refs: sourceContentHashBoundToEvidenceRefs,
+    declaredSourceHashMatchesActual,
+    declared_source_hash_matches_actual: declaredSourceHashMatchesActual,
+    deterministicVisualModeHashBoundToEvidenceRefs,
+    deterministic_visual_mode_hash_bound_to_evidence_refs: deterministicVisualModeHashBoundToEvidenceRefs,
+    visualProofHashBoundToEvidenceRefs,
+    visual_proof_hash_bound_to_evidence_refs: visualProofHashBoundToEvidenceRefs,
     evidenceRefsBound,
     evidence_refs_bound: evidenceRefsBound,
     rowProofIdCount: rowProofIds.size,
@@ -1386,6 +1441,22 @@ function validationProfileEvidenceFacet(row = {}) {
     supplied.coverage_id,
   );
   const source = firstText(supplied.source, supplied.evidenceSource, supplied.evidence_source);
+  const profileHash = firstText(supplied.profileHash, supplied.profile_hash);
+  const sourceContentHash = firstText(
+    supplied.sourceContentHash,
+    supplied.source_content_hash,
+    supplied.sourceHash,
+    supplied.source_hash,
+  );
+  const declaredSourceContentHash = firstText(
+    supplied.declaredSourceContentHash,
+    supplied.declared_source_content_hash,
+  );
+  const deterministicVisualModeHash = firstText(
+    supplied.deterministicVisualModeHash,
+    supplied.deterministic_visual_mode_hash,
+  );
+  const visualProofHash = firstText(supplied.visualProofHash, supplied.visual_proof_hash);
   const requirement = firstText(supplied.requirement, supplied.description);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
@@ -1425,6 +1496,16 @@ function validationProfileEvidenceFacet(row = {}) {
     profile_class: profileClass,
     requirement,
     source,
+    profileHash,
+    profile_hash: profileHash,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    declaredSourceContentHash,
+    declared_source_content_hash: declaredSourceContentHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    visualProofHash,
+    visual_proof_hash: visualProofHash,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     proofIds,
