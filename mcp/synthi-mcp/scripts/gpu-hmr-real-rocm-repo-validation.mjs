@@ -9253,6 +9253,106 @@ function realRocmSameProcessRuntimeOracleFacet({
   };
 }
 
+function refreshRealRocmRuntimeProofObligationFacets({
+  appHookContract = CFG.appHookContract,
+  profileProofObligations = report.real_rocm_profile_proof_obligations,
+  nativeBoundary = report.native_rocm_launch_boundary ?? {},
+  nativeObservation = {},
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+  fullRuntimeProof = report.full_runtime_proof ?? {},
+  firewallEvidence = report.firewall_evidence ?? {},
+  availableEvidenceRefs = [],
+  force = false,
+} = {}) {
+  if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
+    report.evidence = {};
+  }
+  const existingAppHook = report.real_rocm_app_hook_contract;
+  const profileRequiresAppHook =
+    profileProofObligations?.requiresAppHookContract === true
+    || profileProofObligations?.requires_app_hook_contract === true
+    || profileProofObligations?.largeMlFinalAcceptance === true
+    || profileProofObligations?.large_ml_final_acceptance === true;
+  const appHookMissingOrStale =
+    force
+    || !existingAppHook
+    || (profileRequiresAppHook && existingAppHook.required !== true);
+  const appHookFacet = appHookMissingOrStale
+    ? realRocmAppHookContractFacet({
+      appHookContract,
+      profileProofObligations,
+      nativeBoundary,
+      nativeObservation,
+      runtimeDispatch,
+      runtimeArtifactTransport,
+      runtimeEpochSwap,
+      runtimeOutputOracle,
+      runtimeHostPreservation,
+      fullRuntimeProof,
+      availableEvidenceRefs,
+    })
+    : existingAppHook;
+  report.real_rocm_app_hook_contract = appHookFacet;
+  report.realRocmAppHookContract = appHookFacet;
+  report.appHookContract = appHookFacet;
+  report.app_hook_contract = appHookFacet;
+  report.evidence.real_rocm_app_hook_contract = appHookFacet;
+
+  const existingNativeBridge = report.real_rocm_native_runtime_bridge;
+  const nativeBridgeFacet = force || !existingNativeBridge
+    ? realRocmNativeRuntimeProofBridgeFacet({
+      runtimeDispatch,
+      runtimeArtifactTransport,
+      runtimeEpochSwap,
+      runtimeOutputOracle,
+      runtimeHostPreservation,
+      fullRuntimeProof,
+      firewallEvidence,
+      availableEvidenceRefs,
+    })
+    : existingNativeBridge;
+  report.real_rocm_native_runtime_bridge = nativeBridgeFacet;
+  report.realRocmNativeRuntimeBridge = nativeBridgeFacet;
+  report.nativeRuntimeBridge = nativeBridgeFacet;
+  report.native_runtime_bridge = nativeBridgeFacet;
+  report.evidence.real_rocm_native_runtime_bridge = nativeBridgeFacet;
+
+  const existingSameProcess = report.real_rocm_same_process_runtime_oracle;
+  const sameProcessMissingOrStale =
+    force
+    || !existingSameProcess
+    || (appHookFacet.required === true && existingSameProcess.required !== true);
+  const sameProcessFacet = sameProcessMissingOrStale
+    ? realRocmSameProcessRuntimeOracleFacet({
+      appHookContractFacet: appHookFacet,
+      nativeRuntimeBridgeFacet: nativeBridgeFacet,
+      runtimeDispatch,
+      runtimeArtifactTransport,
+      runtimeEpochSwap,
+      runtimeOutputOracle,
+      runtimeHostPreservation,
+      fullRuntimeProof,
+      firewallEvidence,
+      availableEvidenceRefs,
+    })
+    : existingSameProcess;
+  report.real_rocm_same_process_runtime_oracle = sameProcessFacet;
+  report.realRocmSameProcessRuntimeOracle = sameProcessFacet;
+  report.sameProcessRuntimeOracle = sameProcessFacet;
+  report.same_process_runtime_oracle = sameProcessFacet;
+  report.evidence.real_rocm_same_process_runtime_oracle = sameProcessFacet;
+
+  return {
+    appHookFacet,
+    nativeBridgeFacet,
+    sameProcessFacet,
+  };
+}
+
 function sourceDialectFromPath(filePath) {
   const ext = path.extname(String(filePath ?? '').toLowerCase());
   if (ext === '.cl') return 'opencl_c';
@@ -11286,6 +11386,56 @@ async function selfCheckRuntimeDispatchEvidence() {
     runtimeHostPreservation: { evidence: { total_count: 0 } },
     fullRuntimeProof: { fullRuntimeProven: false },
   });
+  const savedRuntimeFacetState = {
+    appHook: report.real_rocm_app_hook_contract,
+    appHookCamel: report.realRocmAppHookContract,
+    appHookContract: report.appHookContract,
+    appHookContractSnake: report.app_hook_contract,
+    nativeBridge: report.real_rocm_native_runtime_bridge,
+    nativeBridgeCamel: report.realRocmNativeRuntimeBridge,
+    nativeRuntimeBridge: report.nativeRuntimeBridge,
+    nativeRuntimeBridgeSnake: report.native_runtime_bridge,
+    sameProcess: report.real_rocm_same_process_runtime_oracle,
+    sameProcessCamel: report.realRocmSameProcessRuntimeOracle,
+    sameProcessAlias: report.sameProcessRuntimeOracle,
+    sameProcessSnake: report.same_process_runtime_oracle,
+    evidence: { ...(report.evidence ?? {}) },
+  };
+  let refreshedRequiredHook;
+  try {
+    report.real_rocm_app_hook_contract = { required: false, stale: true };
+    report.real_rocm_same_process_runtime_oracle = { required: false, stale: true };
+    refreshedRequiredHook = refreshRealRocmRuntimeProofObligationFacets({
+      appHookContract: normalizeRealRocmAppHookContract(null),
+      profileProofObligations: {
+        requiresAppHookContract: true,
+        largeMlFinalAcceptance: true,
+      },
+      nativeBoundary: {},
+      nativeObservation: {},
+      runtimeDispatch: { success_count: 0 },
+      runtimeArtifactTransport: { total_count: 0 },
+      runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+      runtimeOutputOracle: { total_count: 0 },
+      runtimeHostPreservation: { evidence: { total_count: 0 } },
+      fullRuntimeProof: { fullRuntimeProven: false },
+      firewallEvidence: {},
+    });
+  } finally {
+    report.real_rocm_app_hook_contract = savedRuntimeFacetState.appHook;
+    report.realRocmAppHookContract = savedRuntimeFacetState.appHookCamel;
+    report.appHookContract = savedRuntimeFacetState.appHookContract;
+    report.app_hook_contract = savedRuntimeFacetState.appHookContractSnake;
+    report.real_rocm_native_runtime_bridge = savedRuntimeFacetState.nativeBridge;
+    report.realRocmNativeRuntimeBridge = savedRuntimeFacetState.nativeBridgeCamel;
+    report.nativeRuntimeBridge = savedRuntimeFacetState.nativeRuntimeBridge;
+    report.native_runtime_bridge = savedRuntimeFacetState.nativeRuntimeBridgeSnake;
+    report.real_rocm_same_process_runtime_oracle = savedRuntimeFacetState.sameProcess;
+    report.realRocmSameProcessRuntimeOracle = savedRuntimeFacetState.sameProcessCamel;
+    report.sameProcessRuntimeOracle = savedRuntimeFacetState.sameProcessAlias;
+    report.same_process_runtime_oracle = savedRuntimeFacetState.sameProcessSnake;
+    report.evidence = savedRuntimeFacetState.evidence;
+  }
   if (
     nativeOnlyMissingHook.status !== 'required_app_hook_contract_missing'
     || nativeOnlyMissingHook.canSatisfyRuntimeProof !== false
@@ -11304,6 +11454,12 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !profileRequiredHookWithoutNativeObservation.required_reasons.includes('app_hook_contract_required_by_profile_obligation')
     || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_required_by_profile_obligation')
     || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_not_declared')
+    || refreshedRequiredHook.appHookFacet.required !== true
+    || refreshedRequiredHook.appHookFacet.status !== 'required_app_hook_contract_missing'
+    || !refreshedRequiredHook.appHookFacet.blocking_gaps.includes('app_hook_artifact_transport_evidence_missing')
+    || refreshedRequiredHook.sameProcessFacet.required !== true
+    || refreshedRequiredHook.sameProcessFacet.status !== 'same_process_runtime_oracle_contract_unproven'
+    || !refreshedRequiredHook.sameProcessFacet.blocking_gaps.includes('same_process_runtime_oracle_app_hook_contract_unproven')
   ) {
     throw new Error('real ROCm app hook contract facet self-check failed');
   }
@@ -13887,7 +14043,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeHostPreservation,
     proofArtifactRecords,
   });
-  report.real_rocm_app_hook_contract = realRocmAppHookContractFacet({
+  refreshRealRocmRuntimeProofObligationFacets({
     appHookContract: CFG.appHookContract,
     profileProofObligations: report.real_rocm_profile_proof_obligations,
     nativeBoundary: report.native_rocm_launch_boundary,
@@ -13898,41 +14054,10 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeOutputOracle,
     runtimeHostPreservation,
     fullRuntimeProof: report.full_runtime_proof,
-    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
-  });
-  report.realRocmAppHookContract = report.real_rocm_app_hook_contract;
-  report.evidence.real_rocm_app_hook_contract = report.real_rocm_app_hook_contract;
-  report.real_rocm_native_runtime_bridge = realRocmNativeRuntimeProofBridgeFacet({
-    runtimeDispatch,
-    runtimeArtifactTransport,
-    runtimeEpochSwap,
-    runtimeOutputOracle,
-    runtimeHostPreservation,
-    fullRuntimeProof: report.full_runtime_proof,
     firewallEvidence: report.firewall_evidence,
     availableEvidenceRefs: realRocmAvailableEvidenceRefs,
+    force: true,
   });
-  report.realRocmNativeRuntimeBridge = report.real_rocm_native_runtime_bridge;
-  report.nativeRuntimeBridge = report.real_rocm_native_runtime_bridge;
-  report.native_runtime_bridge = report.real_rocm_native_runtime_bridge;
-  report.evidence.real_rocm_native_runtime_bridge = report.real_rocm_native_runtime_bridge;
-  report.real_rocm_same_process_runtime_oracle = realRocmSameProcessRuntimeOracleFacet({
-    appHookContractFacet: report.real_rocm_app_hook_contract,
-    nativeRuntimeBridgeFacet: report.real_rocm_native_runtime_bridge,
-    runtimeDispatch,
-    runtimeArtifactTransport,
-    runtimeEpochSwap,
-    runtimeOutputOracle,
-    runtimeHostPreservation,
-    fullRuntimeProof: report.full_runtime_proof,
-    firewallEvidence: report.firewall_evidence,
-    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
-  });
-  report.realRocmSameProcessRuntimeOracle = report.real_rocm_same_process_runtime_oracle;
-  report.sameProcessRuntimeOracle = report.real_rocm_same_process_runtime_oracle;
-  report.same_process_runtime_oracle = report.real_rocm_same_process_runtime_oracle;
-  report.evidence.real_rocm_same_process_runtime_oracle =
-    report.real_rocm_same_process_runtime_oracle;
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
@@ -14375,6 +14500,7 @@ async function writeResults() {
   report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
   report.duration_ms = timingFields.duration_ms;
   report.timingMetrics = realRocmTimingMetrics(report);
+  refreshRealRocmRuntimeProofObligationFacets();
   const runtimeBackend = runtimeProofBackend();
   const runtimeSourceEditId = runtimeProofSourceEditId();
   const runtimeCompiler = runtimeProofCompiler();
