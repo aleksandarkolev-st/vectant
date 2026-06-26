@@ -1745,15 +1745,20 @@ await writeJson(path.join(artifactsRoot, 'oidn-hip-preflight', 'oidn-hip-proof.j
   classification: {
     oidnHipRuntimePreflightAccepted: true,
     oidnHipOutputProofAccepted: false,
+    oidnHipOutputOracleProven: false,
     resultState: 'oidn-hip-runtime-preflight-accepted',
     unsupportedReasons: [],
+    outputProofGaps: ['oidn_output_oracle_not_proven'],
+    openGaps: ['oidn_output_oracle_not_proven'],
   },
   acceptance: {
     acceptedForOidnHipRuntimePreflight: true,
     acceptedForHipOutputProof: false,
     acceptedForOidnHipOutputProof: false,
+    outputOracleProven: false,
     gpuHmrSuccess: false,
     reason: 'preflight_only_oidn_output_oracle_still_required',
+    openGaps: ['oidn_output_oracle_not_proven'],
     noShimApplied: true,
     noSynthesizedRuntime: true,
     noSymlinkApplied: true,
@@ -4473,6 +4478,71 @@ const forgedPreflightBackendCoverage = new Map(
   forgedPreflightBackendCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
 assert.equal(forgedPreflightBackendCoverage.get('opencl_dispatch_readback')?.status, 'missing');
+
+const forgedOidnHipOutputBroadRow = withQueryRecomputedRowId({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+  artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
+  artifactPath: 'synthetic/forged-oidn-hip-output-broad.json',
+  updatedAt: '2026-06-09T00:00:00.075Z',
+  backend: 'oidn_hip',
+  targetId: 'forged-oidn-hip-output-broad',
+  profileId: 'forged-oidn-hip-output-broad',
+  proofMode: 'runtime_preflight',
+  evidenceKind: 'runtime_preflight_diagnostic',
+  matrixOutcome: 'full_runtime_gpu_hmr',
+  acceptanceClass: 'full_runtime_gpu_hmr',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  refusalProven: false,
+  proofChainAccepted: true,
+  proofChain: 'runtime_preflight_only',
+  acceptanceScope: 'broad_library_agnostic',
+  claimScope: 'broad_library_agnostic',
+  proofIds: ['oidn-preflight-proof:sha256:forged-output-broad'],
+  backendEvidence: {
+    accepted: true,
+    backend: 'oidn_hip',
+    backendFamily: 'oidn_hip',
+    evidenceRefs: [oidnHipPreflightEvidenceRef],
+    failedGates: [],
+  },
+  ledger: {
+    present: false,
+    proofId: null,
+    gpuHmrSuccess: false,
+    failedInvariants: [],
+  },
+  runtimeProofArtifact: {
+    present: false,
+    accepted: false,
+    failedGates: [{ code: 'runtime_proof_artifact_missing' }],
+  },
+  reasons: ['forged_oidn_output_success_from_preflight'],
+  openGaps: [],
+});
+const forgedOidnHipOutputBroadQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [forgedOidnHipOutputBroadRow],
+});
+assert.equal(forgedOidnHipOutputBroadQuery.accepted, false);
+assert.equal(forgedOidnHipOutputBroadQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.equal(forgedOidnHipOutputBroadQuery.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedOidnHipOutputBroadQuery.failedGates.some((gate) =>
+  gate.code === 'runtime_preflight_row_cannot_accept_gpu_hmr'
+));
+assert.ok(forgedOidnHipOutputBroadQuery.failedGates.some((gate) =>
+  gate.code === 'runtime_preflight_row_cannot_report_gpu_hmr_success'
+));
+assert.ok(forgedOidnHipOutputBroadQuery.failedGates.some((gate) =>
+  gate.code === 'runtime_preflight_row_cannot_be_full_runtime_gpu_hmr'
+));
+assert.ok(forgedOidnHipOutputBroadQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_broad_library_agnostic_scope_proof'
+));
+const forgedOidnHipOutputBroadCoverage = new Map(
+  forgedOidnHipOutputBroadQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(forgedOidnHipOutputBroadCoverage.get('oidn_hip_output')?.status, 'missing');
 
 const bevy = ledger.rows.find((row) => row.backend === 'bevy_wgsl');
 assert.equal(bevy?.matrixOutcome, 'refusal_proven');

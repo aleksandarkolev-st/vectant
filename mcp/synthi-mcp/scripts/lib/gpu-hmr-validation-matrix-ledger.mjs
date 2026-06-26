@@ -3406,6 +3406,15 @@ function rowSafetyFailures(row) {
   if (row.proofMode === 'runtime_preflight') {
     const backend = firstText(row.backend);
     const backendEvidenceAccepted = preflightBackendEvidenceAccepted(row);
+    if (row.acceptedForGpuHmr === true) {
+      failures.push({ code: 'runtime_preflight_row_cannot_accept_gpu_hmr' });
+    }
+    if (row.gpuHmrSuccess === true) {
+      failures.push({ code: 'runtime_preflight_row_cannot_report_gpu_hmr_success' });
+    }
+    if (row.matrixOutcome === 'full_runtime_gpu_hmr') {
+      failures.push({ code: 'runtime_preflight_row_cannot_be_full_runtime_gpu_hmr' });
+    }
     if (backend && backend !== 'unknown' && backendEvidenceAccepted !== true) {
       failures.push({ code: 'preflight_backend_specific_classification_requires_typed_backend_evidence' });
     }

@@ -280,15 +280,24 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
   for (const gate of pathIntegrity?.failedGates ?? pathIntegrity?.failed_gates ?? []) {
     unsupportedReasons.push(gate);
   }
+  const outputProofGaps = ['oidn_output_oracle_not_proven'];
+  const openGaps = oidnHipRuntimePreflightAccepted
+    ? outputProofGaps
+    : [...new Set(unsupportedReasons)].sort();
   return {
     oidnHipRuntimePreflightAccepted,
     oidnHipOutputProofAccepted: false,
+    oidnHipOutputOracleProven: false,
     oidnHipTestsPassed: hipTestsPassed,
     oidnCpuDiagnosticsPassed: cpuPassed,
     resultState: oidnHipRuntimePreflightAccepted
       ? 'oidn-hip-runtime-preflight-accepted'
       : 'oidn-hip-rejected',
     unsupportedReasons: [...new Set(unsupportedReasons)].sort(),
+    outputProofGaps,
+    output_proof_gaps: outputProofGaps,
+    openGaps,
+    open_gaps: openGaps,
     missingLibraries: missingLibs,
   };
 }
@@ -388,10 +397,14 @@ async function buildProof() {
       acceptedForOidnHipRuntimePreflight: classification.oidnHipRuntimePreflightAccepted,
       acceptedForHipOutputProof: false,
       acceptedForOidnHipOutputProof: false,
+      outputOracleProven: false,
+      output_oracle_proven: false,
       gpuHmrSuccess: false,
       reason: classification.oidnHipRuntimePreflightAccepted
         ? 'preflight_only_oidn_output_oracle_still_required'
         : 'oidn_hip_runtime_preflight_rejected',
+      openGaps: classification.openGaps,
+      open_gaps: classification.openGaps,
       cpuDiagnosticOnly:
         classification.oidnCpuDiagnosticsPassed
         && !classification.oidnHipRuntimePreflightAccepted,
@@ -417,6 +430,7 @@ async function writeProof(proof) {
     `oidn_hip_runtime_preflight_accepted=${proof.classification.oidnHipRuntimePreflightAccepted}`,
     `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
     `oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`,
+    `open_gaps=${proof.classification.openGaps.join(',') || 'none'}`,
     `missing_libraries=${proof.classification.missingLibraries.join(',') || 'none'}`,
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
