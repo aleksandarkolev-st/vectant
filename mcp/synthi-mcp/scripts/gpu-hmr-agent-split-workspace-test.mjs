@@ -13,7 +13,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +72,7 @@ const CFG = {
   gpuDeltaModel: process.env.SYNTHI_GPU_DELTA_MODEL
     ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
     ?? 'gemini-3.1-flash-lite',
+  profilePath: process.env.SYNTHI_GPU_AGENT_PROFILE_PATH ?? '',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
@@ -80,6 +81,9 @@ const CFG = {
   visualDeltaMinSamples: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_MIN_SAMPLES ?? 8),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
+
+const AGENT_VISUAL_PROFILE_SCHEMA_VERSION = 'synthi.gpu_hmr.agent_split_visual_profile.v1';
+let ACTIVE_AGENT_PROFILE = null;
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const RESULTS_BASENAME = CFG.mode === 'seed-only' ? 'agent-split-seed-results' : 'agent-split-results';
@@ -117,6 +121,207 @@ function cleanVisibleWorkspaceDir(value) {
 function fail(message) {
   record('fatal', 'fail', message);
   throw new Error(message);
+}
+
+function profileString(value, field, { required = false } = {}) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    if (required) throw new Error(`invalid agent visual profile ${field}: expected non-empty string`);
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`invalid agent visual profile ${field}: expected string`);
+  }
+  return value.trim();
+}
+
+function profileBoolean(value, field, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'boolean') {
+    throw new Error(`invalid agent visual profile ${field}: expected boolean`);
+  }
+  return value;
+}
+
+function profilePositiveInt(value, field, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`invalid agent visual profile ${field}: expected positive integer`);
+  }
+  return parsed;
+}
+
+function profileObject(value, field, fallback = {}) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`invalid agent visual profile ${field}: expected object`);
+  }
+  return value;
+}
+
+function profileArray(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`invalid agent visual profile ${field}: expected array`);
+  }
+  return value;
+}
+
+function resolveProfilePath(profilePath, baseDir = process.cwd()) {
+  const text = profileString(profilePath, 'path', { required: true });
+  return path.isAbsolute(text) ? text : path.resolve(baseDir, text);
+}
+
+function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
+  const raw = profileObject(rawProfile, 'root');
+  const schemaVersion = raw.schemaVersion ?? raw.schema_version ?? AGENT_VISUAL_PROFILE_SCHEMA_VERSION;
+  if (schemaVersion !== AGENT_VISUAL_PROFILE_SCHEMA_VERSION) {
+    throw new Error(`unsupported agent visual profile schemaVersion: ${schemaVersion}`);
+  }
+  const source = profileObject(raw.source, 'source');
+  const compile = profileObject(raw.compile, 'compile');
+  const editSpecs = [
+    ...profileArray(raw.deviceEdits ?? raw.device_edits, 'deviceEdits'),
+    ...profileArray(raw.hotDeltas ?? raw.hot_deltas, 'hotDeltas'),
+  ].map((entry, index) => {
+    const spec = profileObject(entry, `deviceEdits[${index}]`);
+    const runMode = profileString(spec.runMode ?? spec.run_mode ?? spec.metricScope ?? spec.metric_scope, `deviceEdits[${index}].runMode`);
+    const find = profileString(spec.find, `deviceEdits[${index}].find`);
+    const regex = profileString(spec.regex, `deviceEdits[${index}].regex`);
+    const replace = profileString(spec.replace, `deviceEdits[${index}].replace`, { required: true });
+    if (!find && !regex) {
+      throw new Error(`invalid agent visual profile deviceEdits[${index}]: expected find or regex`);
+    }
+    return {
+      runMode,
+      run_mode: runMode,
+      find,
+      regex,
+      flags: profileString(spec.flags, `deviceEdits[${index}].flags`),
+      replace,
+      label: profileString(spec.label, `deviceEdits[${index}].label`) || runMode || `edit-${index + 1}`,
+    };
+  });
+  const profileDir = profilePath ? path.dirname(resolveProfilePath(profilePath)) : process.cwd();
+  const profileId = profileString(raw.profileId ?? raw.profile_id ?? raw.id, 'profileId', { required: true });
+  const sourcePath = profileString(source.path ?? source.sourcePath ?? source.source_path, 'source.path');
+  const inlineSource = typeof source.inline === 'string'
+    ? source.inline
+    : typeof source.content === 'string'
+      ? source.content
+      : '';
+  const fixtureSource = profileString(source.fixture, 'source.fixture').toLowerCase();
+  const normalized = {
+    schemaVersion,
+    schema_version: schemaVersion,
+    profileId,
+    profile_id: profileId,
+    profileClass:
+      profileString(raw.profileClass ?? raw.profile_class, 'profileClass') || profileClassForFixture(profileId),
+    profile_class:
+      profileString(raw.profileClass ?? raw.profile_class, 'profileClass') || profileClassForFixture(profileId),
+    source: {
+      entryPath: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
+      entry_path: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
+      path: sourcePath,
+      resolvedPath: sourcePath ? resolveProfilePath(sourcePath, profileDir) : '',
+      resolved_path: sourcePath ? resolveProfilePath(sourcePath, profileDir) : '',
+      inline: inlineSource,
+      fixture: fixtureSource,
+    },
+    compile: {
+      width: profilePositiveInt(compile.width, 'compile.width', 800),
+      height: profilePositiveInt(compile.height, 'compile.height', 600),
+    },
+    requireDeclaredEdits: profileBoolean(
+      raw.requireDeclaredEdits ?? raw.require_declared_edits,
+      'requireDeclaredEdits',
+      editSpecs.length > 0,
+    ),
+    require_declared_edits: profileBoolean(
+      raw.requireDeclaredEdits ?? raw.require_declared_edits,
+      'requireDeclaredEdits',
+      editSpecs.length > 0,
+    ),
+    sourceAuthority: sourcePath
+      ? 'profile_source_file'
+      : inlineSource
+        ? 'profile_inline_source'
+        : fixtureSource
+          ? 'profile_declared_builtin_fixture_source'
+          : 'missing',
+    source_authority: sourcePath
+      ? 'profile_source_file'
+      : inlineSource
+        ? 'profile_inline_source'
+        : fixtureSource
+          ? 'profile_declared_builtin_fixture_source'
+          : 'missing',
+    deviceEdits: editSpecs,
+    device_edits: editSpecs,
+    deterministicVisualMode:
+      profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {}),
+    deterministic_visual_mode:
+      profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {}),
+    profilePath: profilePath || null,
+    profile_path: profilePath || null,
+  };
+  normalized.profileHash = `sha256:${sha256Hex(stableJson({
+    schemaVersion: normalized.schemaVersion,
+    profileId: normalized.profileId,
+    profileClass: normalized.profileClass,
+    source: normalized.source,
+    compile: normalized.compile,
+    deviceEdits: normalized.deviceEdits,
+    deterministicVisualMode: normalized.deterministicVisualMode,
+  }))}`;
+  normalized.profile_hash = normalized.profileHash;
+  return normalized;
+}
+
+function loadAgentVisualProfile(profilePath = CFG.profilePath) {
+  const configured = profileString(profilePath, 'SYNTHI_GPU_AGENT_PROFILE_PATH');
+  if (!configured) return null;
+  const resolved = resolveProfilePath(configured);
+  if (!existsSync(resolved)) {
+    throw new Error(`agent visual profile not found: ${resolved}`);
+  }
+  const raw = JSON.parse(readFileSync(resolved, 'utf8'));
+  return normalizeAgentVisualProfile(raw, { profilePath: resolved });
+}
+
+function sourceFromAgentVisualProfile(profile, vendor) {
+  if (!profile) return null;
+  if (profile.source.inline) return profile.source.inline;
+  if (profile.source.resolvedPath) return readFileSync(profile.source.resolvedPath, 'utf8');
+  if (profile.source.fixture) return builtinFixtureSource(vendor, profile.source.fixture);
+  throw new Error('agent visual profile must provide source.inline, source.path, or source.fixture');
+}
+
+function validationProfileId() {
+  return ACTIVE_AGENT_PROFILE?.profileId ?? CFG.fixture;
+}
+
+function validationProfileClass() {
+  return ACTIVE_AGENT_PROFILE?.profileClass ?? profileClassForFixture(CFG.fixture);
+}
+
+function validationProfileEvidenceSource() {
+  return ACTIVE_AGENT_PROFILE
+    ? 'agent_split_profile_runtime_visual_proof'
+    : 'agent_split_fixture_runtime_visual_proof';
+}
+
+function validationProfileEntryPath() {
+  return ACTIVE_AGENT_PROFILE?.source?.entryPath ?? 'main.cpp';
+}
+
+function validationProfileWidth() {
+  return ACTIVE_AGENT_PROFILE?.compile?.width ?? 800;
+}
+
+function validationProfileHeight() {
+  return ACTIVE_AGENT_PROFILE?.compile?.height ?? 600;
 }
 
 async function httpJson(method, url, body, headers = {}) {
@@ -522,9 +727,15 @@ function runtimeApi(vendor) {
 }
 
 function monolithicSource(vendor) {
-  if (CFG.fixture === 'complex-flow') return complexFlowSource(vendor);
-  if (CFG.fixture === 'ray-light') return rayLightSource(vendor);
-  if (CFG.fixture === 'realistic-raytrace') return realisticRaytraceSource(vendor);
+  if (ACTIVE_AGENT_PROFILE) return sourceFromAgentVisualProfile(ACTIVE_AGENT_PROFILE, vendor);
+  return builtinFixtureSource(vendor, CFG.fixture);
+}
+
+function builtinFixtureSource(vendor, fixture = CFG.fixture) {
+  const normalizedFixture = String(fixture || 'flow').toLowerCase();
+  if (normalizedFixture === 'complex-flow') return complexFlowSource(vendor);
+  if (normalizedFixture === 'ray-light') return rayLightSource(vendor);
+  if (normalizedFixture === 'realistic-raytrace') return realisticRaytraceSource(vendor);
 
   const api = runtimeApi(vendor);
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
@@ -2363,6 +2574,124 @@ function deviceScalarEdit(source, attempt = 0) {
   return { edited: source, mutation: null };
 }
 
+function profileEditSpecsForRun(runMode, attempt) {
+  const specs = ACTIVE_AGENT_PROFILE?.deviceEdits ?? [];
+  const normalizedRunMode = String(runMode || '').toLowerCase();
+  const matching = specs.filter((spec, index) => {
+    const specRunMode = String(spec.runMode ?? spec.run_mode ?? '').toLowerCase();
+    return specRunMode
+      ? specRunMode === normalizedRunMode
+      : index === attempt;
+  });
+  return matching.length > 0 ? matching : specs[attempt] ? [specs[attempt]] : [];
+}
+
+function applyProfileDeclaredEdit(source, spec, attempt) {
+  if (!spec) return null;
+  if (spec.find) {
+    const first = source.indexOf(spec.find);
+    const last = source.lastIndexOf(spec.find);
+    if (first < 0) {
+      return {
+        accepted: false,
+        reason: 'profile_declared_edit_find_text_missing',
+        spec,
+      };
+    }
+    if (first !== last) {
+      return {
+        accepted: false,
+        reason: 'profile_declared_edit_find_text_ambiguous',
+        spec,
+      };
+    }
+    const edited = `${source.slice(0, first)}${spec.replace}${source.slice(first + spec.find.length)}`;
+    return {
+      accepted: edited !== source,
+      edited,
+      reason: edited === source ? 'profile_declared_edit_noop' : 'profile_declared_edit_applied',
+      mutation: {
+        kind: 'profile_declared_source_edit',
+        attempt,
+        profileId: validationProfileId(),
+        profile_id: validationProfileId(),
+        profileHash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+        profile_hash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+        label: spec.label ?? null,
+        selector: 'literal',
+        sourceSpan: { start: first, end: first + spec.find.length },
+        source_span: { start: first, end: first + spec.find.length },
+        beforeHash: `sha256:${sha256Hex(spec.find)}`,
+        before_hash: `sha256:${sha256Hex(spec.find)}`,
+        afterHash: `sha256:${sha256Hex(spec.replace)}`,
+        after_hash: `sha256:${sha256Hex(spec.replace)}`,
+      },
+    };
+  }
+  const flags = String(spec.flags || '').replace(/g/g, '');
+  const regex = new RegExp(spec.regex, flags);
+  const matches = [...source.matchAll(new RegExp(spec.regex, `${flags}g`))];
+  if (matches.length === 0) {
+    return {
+      accepted: false,
+      reason: 'profile_declared_edit_regex_missing',
+      spec,
+    };
+  }
+  if (matches.length !== 1) {
+    return {
+      accepted: false,
+      reason: 'profile_declared_edit_regex_ambiguous',
+      spec,
+      matchCount: matches.length,
+      match_count: matches.length,
+    };
+  }
+  const match = regex.exec(source);
+  const start = match.index;
+  const end = start + match[0].length;
+  const edited = `${source.slice(0, start)}${match[0].replace(regex, spec.replace)}${source.slice(end)}`;
+  return {
+    accepted: edited !== source,
+    edited,
+    reason: edited === source ? 'profile_declared_edit_noop' : 'profile_declared_edit_applied',
+    mutation: {
+      kind: 'profile_declared_source_edit',
+      attempt,
+      profileId: validationProfileId(),
+      profile_id: validationProfileId(),
+      profileHash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+      profile_hash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+      label: spec.label ?? null,
+      selector: 'regex',
+      sourceSpan: { start, end },
+      source_span: { start, end },
+      beforeHash: `sha256:${sha256Hex(match[0])}`,
+      before_hash: `sha256:${sha256Hex(match[0])}`,
+      afterHash: `sha256:${sha256Hex(match[0].replace(regex, spec.replace))}`,
+      after_hash: `sha256:${sha256Hex(match[0].replace(regex, spec.replace))}`,
+    },
+  };
+}
+
+function deviceEditForRun(source, { attempt = 0, runMode = '' } = {}) {
+  const profileSpecs = profileEditSpecsForRun(runMode, attempt);
+  const failures = [];
+  for (const spec of profileSpecs) {
+    const result = applyProfileDeclaredEdit(source, spec, attempt);
+    if (result?.accepted) return { edited: result.edited, mutation: result.mutation };
+    if (result) failures.push(result.reason);
+  }
+  if (ACTIVE_AGENT_PROFILE?.requireDeclaredEdits === true) {
+    throw new Error(
+      `agent visual profile declared edit did not apply for ${runMode || `attempt-${attempt}`}: ${
+        failures.join(',') || 'profile_declared_edit_missing'
+      }`,
+    );
+  }
+  return deviceScalarEdit(source, attempt);
+}
+
 function deviceEditHash({ selectedPath, beforeSource, afterSource, editKind }) {
   return `sha256:${sha256Hex(stableJson({
     selectedPath: cleanRel(selectedPath),
@@ -2378,6 +2707,86 @@ function runModeProofId(value) {
 
 function negativeEditProofId(value) {
   return `agent-split-negative-edit-refusal:sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function selfCheckAgentVisualProfile() {
+  const originalProfile = ACTIVE_AGENT_PROFILE;
+  try {
+    const source = [
+      'extern "C" __global__ void render(unsigned int* pixels) {',
+      '  const float sceneLight = 1.0f;',
+      '  const float exposure = 1.04f;',
+      '  pixels[0] = (unsigned int)(sceneLight * exposure);',
+      '}',
+      '',
+    ].join('\n');
+    const profile = normalizeAgentVisualProfile({
+      schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+      profileId: 'self-check-visual-profile',
+      profileClass: 'self_check_visual_gpu_path',
+      source: {
+        entryPath: 'src/main.cpp',
+        inline: source,
+      },
+      compile: {
+        width: 640,
+        height: 360,
+      },
+      requireDeclaredEdits: true,
+      deviceEdits: [
+        {
+          runMode: 'hot_delta_1',
+          find: 'const float sceneLight = 1.0f;',
+          replace: 'const float sceneLight = 1.7f;',
+        },
+        {
+          runMode: 'hot_delta_2',
+          regex: 'const float exposure = ([0-9.]+)f;',
+          replace: 'const float exposure = 0.82f;',
+        },
+      ],
+    });
+    ACTIVE_AGENT_PROFILE = profile;
+    const hot1 = deviceEditForRun(source, { attempt: 0, runMode: 'hot_delta_1' });
+    const hot2 = deviceEditForRun(hot1.edited, { attempt: 1, runMode: 'hot_delta_2' });
+    const ambiguousProfile = normalizeAgentVisualProfile({
+      schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+      profileId: 'self-check-ambiguous-profile',
+      source: {
+        inline: 'float value = 1.0f;\nfloat value2 = 1.0f;\n',
+      },
+      requireDeclaredEdits: true,
+      deviceEdits: [{
+        runMode: 'hot_delta_1',
+        find: '1.0f',
+        replace: '2.0f',
+      }],
+    });
+    ACTIVE_AGENT_PROFILE = ambiguousProfile;
+    let ambiguousRejected = false;
+    try {
+      deviceEditForRun(ambiguousProfile.source.inline, { attempt: 0, runMode: 'hot_delta_1' });
+    } catch (err) {
+      ambiguousRejected = String(err.message).includes('profile_declared_edit_find_text_ambiguous');
+    }
+    if (
+      profile.profileId !== 'self-check-visual-profile'
+      || profile.source.entryPath !== 'src/main.cpp'
+      || profile.compile.width !== 640
+      || profile.compile.height !== 360
+      || !profile.profileHash.startsWith('sha256:')
+      || !hot1.edited.includes('const float sceneLight = 1.7f;')
+      || hot1.mutation?.kind !== 'profile_declared_source_edit'
+      || !hot2.edited.includes('const float exposure = 0.82f;')
+      || hot2.mutation?.selector !== 'regex'
+      || !ambiguousRejected
+    ) {
+      throw new Error('agent visual profile self-check failed');
+    }
+    console.log('agent visual profile self-check passed');
+  } finally {
+    ACTIVE_AGENT_PROFILE = originalProfile;
+  }
 }
 
 function literalOccurrenceCount(source, needle) {
@@ -2511,8 +2920,8 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     gpu_arch: CFG.gpuArch,
     compile_manifest: split.manifest,
     slug: CFG.slug,
-    width: 800,
-    height: 600,
+    width: validationProfileWidth(),
+    height: validationProfileHeight(),
   }, CFG.hotSwapTimeoutMs, {
     metricScope: options.metricScope ?? 'hot_delta_1',
     cacheState: options.cacheState ?? 'compiler_cache_warm',
@@ -2646,12 +3055,20 @@ function runModeProofIdentity(split) {
     ...splitIdentity,
     generatedSplitProfileId: splitIdentity.profileId,
     generated_split_profile_id: splitIdentity.profile_id,
-    profileId: CFG.fixture,
-    profile_id: CFG.fixture,
+    profileId: validationProfileId(),
+    profile_id: validationProfileId(),
     fixtureId: CFG.fixture,
     fixture_id: CFG.fixture,
-    validationProfileId: CFG.fixture,
-    validation_profile_id: CFG.fixture,
+    validationProfileId: validationProfileId(),
+    validation_profile_id: validationProfileId(),
+    validationProfileSource: validationProfileEvidenceSource(),
+    validation_profile_source: validationProfileEvidenceSource(),
+    ...(ACTIVE_AGENT_PROFILE ? {
+      validationProfileHash: ACTIVE_AGENT_PROFILE.profileHash,
+      validation_profile_hash: ACTIVE_AGENT_PROFILE.profileHash,
+      validationProfilePath: ACTIVE_AGENT_PROFILE.profilePath,
+      validation_profile_path: ACTIVE_AGENT_PROFILE.profilePath,
+    } : {}),
   };
 }
 
@@ -2680,7 +3097,8 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
     proof?.runtime_proof_artifact?.proof_id,
   ].filter(Boolean);
   const evidenceRefs = [
-    `evidence:agent-split-validation-profile:${CFG.fixture}`,
+    `evidence:agent-split-validation-profile:${validationProfileId()}`,
+    ACTIVE_AGENT_PROFILE?.profileHash,
     ...proofIds,
     splitIdentity.targetId,
     visualDelta?.diffPath,
@@ -2688,11 +3106,15 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
   return {
     schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
     accepted: true,
-    profileId: CFG.fixture,
-    profile_id: CFG.fixture,
-    profileClass: profileClassForFixture(),
-    profile_class: profileClassForFixture(),
-    source: 'agent_split_fixture_runtime_visual_proof',
+    profileId: validationProfileId(),
+    profile_id: validationProfileId(),
+    profileClass: validationProfileClass(),
+    profile_class: validationProfileClass(),
+    source: validationProfileEvidenceSource(),
+    profileHash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+    profile_hash: ACTIVE_AGENT_PROFILE?.profileHash ?? null,
+    profilePath: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
+    profile_path: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
     proofIds: [...new Set(proofIds)],
     proof_ids: [...new Set(proofIds)],
     evidenceRefs: [...new Set(evidenceRefs)],
@@ -3475,6 +3897,7 @@ async function assertMcpScreenshot(
 
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
+  ACTIVE_AGENT_PROFILE = loadAgentVisualProfile();
   await resolveDockerContainers();
   const vendor = await detectVendor();
   const arch = await detectArch(vendor);
@@ -3484,9 +3907,19 @@ async function run() {
   }
   record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'}`);
   record('fixture', 'pass', CFG.fixture);
+  if (ACTIVE_AGENT_PROFILE) {
+    record(
+      'agent visual profile',
+      'pass',
+      `id=${ACTIVE_AGENT_PROFILE.profileId} source=${ACTIVE_AGENT_PROFILE.sourceAuthority} edits=${ACTIVE_AGENT_PROFILE.deviceEdits.length} hash=${ACTIVE_AGENT_PROFILE.profileHash}`,
+    );
+  }
 
   const source = monolithicSource(vendor);
   assertNoSynthiAbi(source);
+  const entryPath = validationProfileEntryPath();
+  const renderWidth = validationProfileWidth();
+  const renderHeight = validationProfileHeight();
 
   const workspace = await createWorkspace({
     name: `Synthi GPU Agent Split (${vendor})`,
@@ -3494,8 +3927,8 @@ async function run() {
   });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
 
-  await writeFilesBatch({ slug: CFG.slug, files: [{ path: 'main.cpp', content: source }] });
-  record('seed monolithic user source', 'pass', 'main.cpp');
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: entryPath, content: source }] });
+  record('seed monolithic user source', 'pass', entryPath);
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: seed monolithic source' })
     .then(() => record('workspace commit seed', 'pass'))
     .catch((e) => record('workspace commit seed', 'warn', e.message.slice(0, 200)));
@@ -3510,7 +3943,7 @@ async function run() {
   const firstStart = await workerCheckpoint();
   const initialCompileResult = await compileViaMcp({
     language: 'cpp',
-    filename: 'main.cpp',
+    filename: entryPath,
     source,
     files: [],
     is_gui: true,
@@ -3520,8 +3953,8 @@ async function run() {
     gpu_mode: vendor,
     gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
-    width: 800,
-    height: 600,
+    width: renderWidth,
+    height: renderHeight,
   }, CFG.hmrTimeoutMs, {
     metricScope: 'cold',
     cacheState: 'clean',
@@ -3603,7 +4036,10 @@ async function run() {
     };
   }
 
-  const hotDelta1Edit = deviceScalarEdit(split.files[split.roles.device], 0);
+  const hotDelta1Edit = deviceEditForRun(split.files[split.roles.device], {
+    attempt: 0,
+    runMode: 'hot_delta_1',
+  });
   if (hotDelta1Edit.edited === split.files[split.roles.device]) {
     throw new Error('hot delta 1 edit generator did not produce a distinct device source');
   }
@@ -3734,7 +4170,10 @@ async function run() {
     ].join(' '),
   );
 
-  const hotDelta2Edit = deviceScalarEdit(generatedDeviceResult.editedDevice, 1);
+  const hotDelta2Edit = deviceEditForRun(generatedDeviceResult.editedDevice, {
+    attempt: 1,
+    runMode: 'hot_delta_2',
+  });
   const hotDelta2Device = hotDelta2Edit.edited;
   if (hotDelta2Device === generatedDeviceResult.editedDevice) {
     throw new Error('hot delta 2 edit generator did not produce a distinct device source');
@@ -3919,10 +4358,19 @@ async function writeResults() {
   console.log(`archived results: ${archivedTxt}`);
 }
 
-run()
-  .catch(async (err) => {
-    record('fatal', 'fail', err.stack || err.message);
-    await writeResults().catch(() => {});
+if (process.argv.includes('--self-check')) {
+  try {
+    selfCheckAgentVisualProfile();
+  } catch (err) {
+    console.error(err.stack || err.message);
     process.exitCode = 1;
-  })
-  .finally(() => stopMcp());
+  }
+} else {
+  run()
+    .catch(async (err) => {
+      record('fatal', 'fail', err.stack || err.message);
+      await writeResults().catch(() => {});
+      process.exitCode = 1;
+    })
+    .finally(() => stopMcp());
+}

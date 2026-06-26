@@ -1090,6 +1090,7 @@ const flowHot1VisualProfileEvidence = validationProfileEvidenceFor({
 const flowHot2VisualProfileEvidence = validationProfileEvidenceFor({
   profileId: 'flow',
   profileClass: 'flow_visual_gpu_path',
+  source: 'agent_split_profile_runtime_visual_proof',
   evidenceRefs: [
     'evidence:validation-profile:flow:runtime-visual',
     flowHot2RuntimeMaterials.proofLedgerQuery.record.proofId,
@@ -5099,6 +5100,10 @@ assert.ok(flowVisualCoverage.rows.some((row) =>
   row.validationProfileEvidence?.accepted === true
   && row.validationProfileEvidence.profileId === 'flow'
   && row.validationProfileEvidence.profileClass === 'flow_visual_gpu_path'
+));
+assert.ok(flowVisualCoverage.rows.some((row) =>
+  row.validationProfileEvidence?.accepted === true
+  && row.validationProfileEvidence.source === 'agent_split_profile_runtime_visual_proof'
 ));
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.ok(!coverageById.get('opencl_dispatch_readback')?.rows.some((row) =>

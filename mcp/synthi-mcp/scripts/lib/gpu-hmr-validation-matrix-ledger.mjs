@@ -40,6 +40,7 @@ const VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_profile_evidence.v1';
 const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
   'agent_split_fixture_runtime_visual_proof',
+  'agent_split_profile_runtime_visual_proof',
   'agent_split_run_mode_visual_ledger_recomputed',
 ]);
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
