@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   getProgramSession: vi.fn(),
   listProgramSessions: vi.fn(),
   updateProgramSession: vi.fn(),
+  deleteProgramSession: vi.fn(),
   appendProgramRuntimeEvent: vi.fn(),
   listProgramRuntimeEvents: vi.fn(),
   launchRuntime: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('@/lib/programs/store', () => ({
   getProgramSession: h.getProgramSession,
   listProgramSessions: h.listProgramSessions,
   updateProgramSession: h.updateProgramSession,
+  deleteProgramSession: h.deleteProgramSession,
   appendProgramRuntimeEvent: h.appendProgramRuntimeEvent,
   listProgramRuntimeEvents: h.listProgramRuntimeEvents,
 }));
@@ -45,6 +47,7 @@ import { GET as GET_SESSIONS, POST as POST_SESSIONS } from '../route.js';
 import { GET as GET_SESSION_EVENTS } from '../[sessionId]/events/route.js';
 import { POST as POST_SESSION_STOP } from '../[sessionId]/stop/route.js';
 import { POST as POST_SESSION_RESTART } from '../[sessionId]/restart/route.js';
+import { DELETE as DELETE_SESSION } from '../[sessionId]/route.js';
 
 const req = (url, body, method = 'GET') => ({
   url,
@@ -61,6 +64,7 @@ beforeEach(() => {
   h.canWrite.mockResolvedValue(true);
   h.listPermissionGrants.mockResolvedValue([]);
   h.appendProgramRuntimeEvent.mockResolvedValue({ id: 'evt-1' });
+  h.deleteProgramSession.mockResolvedValue({ id: 'ps-1' });
   h.listProgramRuntimeEvents.mockResolvedValue([]);
   h.listRuntimeSessions.mockResolvedValue([]);
   h.getRuntimeSession.mockResolvedValue(null);
@@ -204,5 +208,47 @@ describe('GET /api/workspace/[slug]/program-sessions/[sessionId]/events', () => 
     expect(body.events[0].data.command).toBeUndefined();
     expect(body.events[1].data.command).toBeUndefined();
     expect(body.events[1].data.env).toBeUndefined();
+  });
+});
+
+describe('DELETE /api/workspace/[slug]/program-sessions/[sessionId]', () => {
+  it('removes a stopped session without touching the runtime', async () => {
+    h.getProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'stopped' });
+
+    const res = await DELETE_SESSION(req('http://localhost/api/workspace/team/program-sessions/ps-1', {}, 'DELETE'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+
+    expect(res.status).toBe(200);
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('ps-1');
+    expect(h.stopRuntime).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ ok: true, deleted: 'ps-1' });
+  });
+
+  it('stops a running session before deleting its record', async () => {
+    h.getProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'running' });
+    h.stopRuntime.mockResolvedValue({ sessionId: 'ps-1', state: 'stopped' });
+
+    const res = await DELETE_SESSION(req('http://localhost/api/workspace/team/program-sessions/ps-1', {}, 'DELETE'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+
+    expect(res.status).toBe(200);
+    expect(h.stopRuntime).toHaveBeenCalledWith('team', 'ps-1');
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('ps-1');
+  });
+
+  it('rejects a plain member (write scope required)', async () => {
+    h.canWrite.mockResolvedValue(false);
+
+    const res = await DELETE_SESSION(req('http://localhost/api/workspace/team/program-sessions/ps-1', {}, 'DELETE'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+
+    expect(res.status).toBe(403);
+    expect(h.deleteProgramSession).not.toHaveBeenCalled();
+  });
+
+  it('404s when the session is missing or belongs to another workspace', async () => {
+    h.getProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'other', state: 'stopped' });
+
+    const res = await DELETE_SESSION(req('http://localhost/api/workspace/team/program-sessions/ps-1', {}, 'DELETE'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+
+    expect(res.status).toBe(404);
+    expect(h.deleteProgramSession).not.toHaveBeenCalled();
   });
 });

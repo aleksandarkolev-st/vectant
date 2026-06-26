@@ -36,3 +36,28 @@ describe('mergeProgramSession runtimeScope (Slice 1)', () => {
     expect(mergeProgramSession({ id: 'ps-1' }, null).runtimeScope).toBeNull();
   });
 });
+
+describe('mergeProgramSession orphan reconciliation (R1)', () => {
+  it('downgrades an active DB session with no live runtime to stopped (zombie)', () => {
+    for (const state of ['starting', 'running', 'restarting']) {
+      expect(mergeProgramSession({ id: 'ps-1', state }, null).state).toBe('stopped');
+    }
+  });
+
+  it('leaves an already-inactive session unchanged when there is no live runtime', () => {
+    expect(mergeProgramSession({ id: 'ps-1', state: 'stopped' }, null).state).toBe('stopped');
+    expect(mergeProgramSession({ id: 'ps-1', state: 'crashed' }, null).state).toBe('crashed');
+  });
+
+  it('still prefers the live runtime state when a runtime session exists', () => {
+    expect(mergeProgramSession({ id: 'ps-1', state: 'starting' }, { state: 'running' }).state).toBe('running');
+  });
+});
+
+describe('mergeProgramSession webGui surfacing (R4 — live thumbnail)', () => {
+  it('surfaces webGui from the live runtime session so the running card can render a thumbnail', () => {
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: true }).webGui).toBe(true);
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: false }).webGui).toBe(false);
+    expect(mergeProgramSession({ id: 'ps-1' }, null).webGui).toBe(false);
+  });
+});

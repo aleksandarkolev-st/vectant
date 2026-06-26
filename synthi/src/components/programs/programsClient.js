@@ -53,6 +53,13 @@ export async function restartProgramSession(workspaceSlug, sessionId) {
   });
 }
 
+/** Remove a session record (stops the runtime first if it's still running). */
+export async function deleteProgramSession(workspaceSlug, sessionId) {
+  return request(`${workspaceBase(workspaceSlug)}/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
 // ── Phase 2: persisted installs (manifest-driven) ──
 
 function programsBase(workspaceSlug) {

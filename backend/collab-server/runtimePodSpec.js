@@ -71,6 +71,34 @@ function runtimeWantsGpu(metadata = {}) {
   return metadata.gpu === true || ['1', 'true', 'yes'].includes(String(metadata.gpu || '').trim().toLowerCase());
 }
 
+// Resource requests/limits for the runtime pod. Requests let the cluster autoscaler
+// bin-pack by actual need — without them (requests=0) every pod looks "free" to the
+// scheduler, so it overpacks the node → memory overcommit / OOM and unpredictable
+// cost. Limits cap a single workspace so it can't starve its node-mates. Defaults are
+// sized for a workspace running 1–2 programs on an n2-standard-4 (~7 pods/node by the
+// CPU request). Each value is env-overridable; set one to '' to omit just that field.
+// Read at call time so it's tunable without a restart / in tests. The on-demand GPU
+// limit (Slice 8) merges into the SAME block when metadata.gpu is set.
+function runtimeResources(gpu) {
+  const cpuRequest = (process.env.RUNTIME_CPU_REQUEST ?? '500m').trim();
+  const memoryRequest = (process.env.RUNTIME_MEMORY_REQUEST ?? '1Gi').trim();
+  const cpuLimit = (process.env.RUNTIME_CPU_LIMIT ?? '2').trim();
+  const memoryLimit = (process.env.RUNTIME_MEMORY_LIMIT ?? '4Gi').trim();
+
+  const requests = {};
+  const limits = {};
+  if (cpuRequest) requests.cpu = cpuRequest;
+  if (memoryRequest) requests.memory = memoryRequest;
+  if (cpuLimit) limits.cpu = cpuLimit;
+  if (memoryLimit) limits.memory = memoryLimit;
+  if (gpu) limits[RUNTIME_GPU_RESOURCE] = '1';
+
+  const resources = {};
+  if (Object.keys(requests).length) resources.requests = requests;
+  if (Object.keys(limits).length) resources.limits = limits;
+  return resources;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
@@ -204,7 +232,7 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
               name: 'runtime',
               image: RUNTIME_POD_IMAGE,
               ...(registryMirror ? { args: [`--registry-mirror=${registryMirror}`] } : {}),
-              ...(gpu ? { resources: { limits: { [RUNTIME_GPU_RESOURCE]: '1' } } } : {}),
+              resources: runtimeResources(gpu),
               env: [
                 { name: 'DOCKER_HOST', value: RUNTIME_DOCKER_HOST },
                 { name: 'SESSION_ID', value: sessionId },
