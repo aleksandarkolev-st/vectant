@@ -996,6 +996,63 @@ __device__ bool intersectEllipsoid(Vec3 ro, Vec3 rd, Vec3 center, Vec3 radius, f
     return true;
 }
 
+__device__ bool clipBoxAxis(
+    float origin,
+    float dir,
+    float mn,
+    float mx,
+    Vec3 negN,
+    Vec3 posN,
+    float& tEnter,
+    float& tExit,
+    Vec3& enterNormal,
+    Vec3& exitNormal
+) {
+    if (fabsf(dir) < 0.000001f) return origin >= mn && origin <= mx;
+    float t0 = (mn - origin) / dir;
+    float t1 = (mx - origin) / dir;
+    Vec3 n0 = negN;
+    Vec3 n1 = posN;
+    if (t0 > t1) {
+        float tmp = t0; t0 = t1; t1 = tmp;
+        Vec3 nt = n0; n0 = n1; n1 = nt;
+    }
+    if (t0 > tEnter) {
+        tEnter = t0;
+        enterNormal = n0;
+    }
+    if (t1 < tExit) {
+        tExit = t1;
+        exitNormal = n1;
+    }
+    return tEnter <= tExit;
+}
+
+__device__ bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, float& t, Vec3& normal) {
+    float tEnter = -1.0e20f;
+    float tExit = 1.0e20f;
+    Vec3 enterNormal = make3(0.0f, 1.0f, 0.0f);
+    Vec3 exitNormal = make3(0.0f, -1.0f, 0.0f);
+    if (!clipBoxAxis(ro.x, rd.x, bmin.x, bmax.x, make3(-1.0f, 0.0f, 0.0f), make3(1.0f, 0.0f, 0.0f), tEnter, tExit, enterNormal, exitNormal)) return false;
+    if (!clipBoxAxis(ro.y, rd.y, bmin.y, bmax.y, make3(0.0f, -1.0f, 0.0f), make3(0.0f, 1.0f, 0.0f), tEnter, tExit, enterNormal, exitNormal)) return false;
+    if (!clipBoxAxis(ro.z, rd.z, bmin.z, bmax.z, make3(0.0f, 0.0f, -1.0f), make3(0.0f, 0.0f, 1.0f), tEnter, tExit, enterNormal, exitNormal)) return false;
+    t = tEnter > 0.02f ? tEnter : tExit;
+    if (t <= 0.02f || t > 1.0e19f) return false;
+    normal = normalize3(tEnter > 0.02f ? enterNormal : mul3(exitNormal, -1.0f));
+    return true;
+}
+
+__device__ void acceptHit(Hit& hit, bool& found, Vec3 ro, Vec3 rd, float t, Vec3 n, int material, float id) {
+    if (t > 0.02f && t < hit.t) {
+        hit.t = t;
+        hit.p = add3(ro, mul3(rd, t));
+        hit.n = n;
+        hit.material = material;
+        hit.id = id;
+        found = true;
+    }
+}
+
 __device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool includeGround) {
     bool found = false;
     hit.t = 1.0e20f;
@@ -1017,14 +1074,42 @@ __device__ bool sceneHit(Vec3 ro, Vec3 rd, float sceneLight, Hit& hit, bool incl
         if (wallT > 0.02f && wallT < hit.t) {
             Vec3 wallP = add3(ro, mul3(rd, wallT));
             if (wallP.y >= 0.0f && wallP.y <= 2.45f && fabsf(wallP.x) <= 3.75f) {
-                hit.t = wallT;
-                hit.p = wallP;
-                hit.n = make3(0.0f, 0.0f, 1.0f);
-                hit.material = 3;
-                hit.id = 30.0f;
-                found = true;
+                acceptHit(hit, found, ro, rd, wallT, make3(0.0f, 0.0f, 1.0f), 3, 30.0f);
             }
         }
+    }
+
+    float boxT = 0.0f;
+    Vec3 boxN = make3(0.0f, 1.0f, 0.0f);
+    if (intersectBox(ro, rd, make3(-3.10f, 1.34f, -3.06f), make3(-0.18f, 1.60f, -2.50f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 7, 70.0f);
+    }
+    if (intersectBox(ro, rd, make3(-3.12f, 0.42f, -2.94f), make3(-2.42f, 0.70f, -2.45f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 8, 80.0f);
+    }
+    if (intersectBox(ro, rd, make3(-1.58f, 0.46f, -2.86f), make3(-0.92f, 0.72f, -2.45f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 8, 81.0f);
+    }
+    if (intersectBox(ro, rd, make3(-0.88f, 0.05f, -1.82f), make3(-0.36f, 0.11f, -1.30f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 11, 110.0f);
+    }
+    if (intersectBox(ro, rd, make3(-1.26f, 0.10f, -1.74f), make3(-1.18f, 0.46f, -1.66f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 11, 111.0f);
+    }
+    if (intersectBox(ro, rd, make3(-0.16f, 0.08f, -1.58f), make3(-0.06f, 0.42f, -1.48f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 11, 112.0f);
+    }
+    if (intersectBox(ro, rd, make3(0.82f, 0.0f, -2.82f), make3(0.96f, 1.50f, -2.68f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 10, 100.0f);
+    }
+    if (intersectBox(ro, rd, make3(0.58f, 1.42f, -2.96f), make3(1.20f, 1.56f, -2.54f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 10, 101.0f);
+    }
+    if (intersectBox(ro, rd, make3(0.26f, 0.0f, -0.82f), make3(0.34f, 0.48f, -0.74f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 10, 102.0f);
+    }
+    if (intersectBox(ro, rd, make3(-2.38f, 0.0f, -0.92f), make3(-2.30f, 0.48f, -0.84f), boxT, boxN)) {
+        acceptHit(hit, found, ro, rd, boxT, boxN, 10, 103.0f);
     }
 
     float carT = 0.0f;
@@ -1167,6 +1252,35 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight) {
         return body;
     }
 
+    if (hit.material == 7) {
+        float stripe = fract1(hit.p.x * 3.6f + hit.p.z * 1.4f);
+        Vec3 fabric = stripe < 0.52f ? make3(0.54f, 0.035f, 0.025f) : make3(0.78f, 0.18f, 0.14f);
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.46f + 0.30f;
+        float weave = 0.88f + 0.12f * sinf(hit.p.x * 48.0f + hit.p.y * 19.0f);
+        return mul3(fabric, diffuse * weave);
+    }
+
+    if (hit.material == 8) {
+        float leaf = 0.5f + 0.5f * sinf(hit.p.x * 57.0f + hit.p.y * 83.0f + hit.p.z * 31.0f);
+        Vec3 green = mix3(make3(0.03f, 0.17f, 0.07f), make3(0.30f, 0.48f, 0.18f), leaf);
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.52f + 0.34f;
+        return mul3(green, diffuse);
+    }
+
+    if (hit.material == 10) {
+        Vec3 reflected = environmentColor(reflect3(rd, hit.n));
+        float spec = powf(fmaxf(0.0f, dot3(reflect3(mul3(lightDir, -1.0f), hit.n), viewDir)), 96.0f);
+        Vec3 metal = mix3(make3(0.05f, 0.055f, 0.06f), reflected, 0.38f);
+        return add3(metal, mul3(make3(1.0f, 0.92f, 0.75f), spec * 0.70f));
+    }
+
+    if (hit.material == 11) {
+        float grain = 0.5f + 0.5f * sinf(hit.p.x * 24.0f + hit.p.z * 37.0f);
+        Vec3 wood = mix3(make3(0.25f, 0.12f, 0.055f), make3(0.58f, 0.31f, 0.13f), grain);
+        float diffuse = fmaxf(0.0f, dot3(hit.n, lightDir)) * 0.58f + 0.28f;
+        return mul3(wood, diffuse);
+    }
+
     float eta = hit.material == 1 ? 1.0f / (1.47f + sceneLight * 0.035f) : 1.0f / 1.39f;
     Vec3 reflected = environmentColor(reflect3(rd, hit.n));
     Vec3 refracted = environmentColor(refract3(rd, hit.n, eta));
@@ -1198,20 +1312,20 @@ extern "C" __global__ void render_realistic_raytrace(unsigned int* pixels, int w
     float py = ((float)y + 0.5f) / (float)height;
     float aspect = (float)width / (float)height;
 
-    Vec3 eye = make3(0.0f, 1.18f, 4.65f);
-    Vec3 target = make3(0.0f, 0.58f, -0.10f);
+    Vec3 eye = make3(0.0f, 1.10f, 4.05f);
+    Vec3 target = make3(0.0f, 0.56f, -0.18f);
     Vec3 forward = normalize3(sub3(target, eye));
     Vec3 right = normalize3(cross3(forward, make3(0.0f, 1.0f, 0.0f)));
     Vec3 up = normalize3(cross3(right, forward));
-    float lens = tanf(34.0f * PI / 180.0f);
+    float lens = tanf(37.0f * PI / 180.0f);
     Vec3 rd = normalize3(add3(forward, add3(mul3(right, (px * 2.0f - 1.0f) * aspect * lens), mul3(up, (1.0f - py * 2.0f) * lens))));
 
     Hit hit;
     Vec3 color = environmentColor(rd);
     if (sceneHit(eye, rd, sceneLight, hit, true)) {
         color = shade(eye, rd, hit, sceneLight);
-        float fog = expf(-hit.t * 0.035f);
-        color = mix3(make3(0.72f, 0.76f, 0.78f), color, fog);
+        float fog = expf(-hit.t * 0.018f);
+        color = mix3(make3(0.68f, 0.72f, 0.76f), color, fog);
     }
 
     float vignette = px * (1.0f - px) * py * (1.0f - py) * 16.0f;
