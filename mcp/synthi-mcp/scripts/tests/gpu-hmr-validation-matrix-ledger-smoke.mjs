@@ -2769,6 +2769,15 @@ function largeRocmMlProfile(scope) {
   };
 }
 
+function largeRocmMlProfileWithImplicitAppHook(scope) {
+  const profile = JSON.parse(JSON.stringify(largeRocmMlProfile(scope)));
+  delete profile.proofObligations.requiresAppHookContract;
+  delete profile.proofObligations.requires_app_hook_contract;
+  delete profile.proof_obligations.requiresAppHookContract;
+  delete profile.proof_obligations.requires_app_hook_contract;
+  return profile;
+}
+
 function withAcceptedRuntimeCapabilityPreflight(materials = {}) {
   const camelRuntimeProofArtifact = materials.runtimeProofArtifact && typeof materials.runtimeProofArtifact === 'object'
     ? materials.runtimeProofArtifact
@@ -9095,6 +9104,178 @@ assert.ok(forgedMissingRequiredHookRocm.reasons.includes('real_rocm_app_hook_con
 assert.ok(forgedMissingRequiredHookRocm.reasons.includes('real_rocm_app_hook_contract_missing'));
 assert.ok(forgedMissingRequiredHookRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
 assert.ok(forgedMissingRequiredHookRocm.openGaps.includes('real_rocm_app_hook_contract_missing'));
+
+const forgedImplicitLargeMlHookRocmDir =
+  path.join(logsRoot, 'real-rocm-forged-implicit-large-ml-hook');
+const forgedImplicitLargeMlHookRawReadback =
+  path.join(forgedImplicitLargeMlHookRocmDir, 'readback.bin');
+const forgedImplicitLargeMlHookBytes = Buffer.from([8, 13, 21, 34, 55, 89, 144, 233]);
+await fs.mkdir(forgedImplicitLargeMlHookRocmDir, { recursive: true });
+await fs.writeFile(forgedImplicitLargeMlHookRawReadback, forgedImplicitLargeMlHookBytes);
+await writeJson(`${forgedImplicitLargeMlHookRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: forgedImplicitLargeMlHookBytes.length,
+  shape: [forgedImplicitLargeMlHookBytes.length],
+});
+await writeRgbaPng(`${forgedImplicitLargeMlHookRawReadback}.card.png`, 8, 8, (x, y) => [
+  forgedImplicitLargeMlHookBytes[(x + y) % forgedImplicitLargeMlHookBytes.length],
+  96 + x,
+  112 + y,
+  255,
+]);
+const forgedImplicitLargeMlHookProofMaterials = realRocmComputeProofLedgerMaterials(
+  'forged-implicit-large-ml-hook',
+  {
+    projectId: 'real-rocm-forged-implicit-large-ml-hook',
+    rawReadbackPath: forgedImplicitLargeMlHookRawReadback,
+    rawReadbackBytes: forgedImplicitLargeMlHookBytes,
+  },
+);
+await writeJson(
+  path.join(forgedImplicitLargeMlHookRocmDir, 'real-rocm-forged-implicit-large-ml-hook.json'),
+  {
+    slug: 'gpu-real-rocm-forged-implicit-large-ml-hook-20260626',
+    real_rocm_profile: largeRocmMlProfileWithImplicitAppHook(
+      'real-rocm-forged-implicit-large-ml-hook',
+    ),
+    source_url: 'https://example.invalid/rocm/forged-implicit-large-ml-hook.git',
+    repo_commit: 'ffffffffffffffffffffffffffffffffffffffff',
+    entry_file: 'src/kernels/implicit_large_ml_entry.hip',
+    delta_file: 'src/kernels/implicit_large_ml_delta.h',
+    target_name: 'ForgedImplicitLargeMlHookDriver',
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      sourceDerivedCandidateCount: 0,
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: true,
+      phaseRaw: 'final-acceptance',
+      phase: 'final-acceptance',
+      recognized: true,
+      reason: null,
+      targetName: 'ForgedImplicitLargeMlHookDriver',
+      finalAcceptanceTarget: 'ForgedImplicitLargeMlHookDriver',
+      finalAcceptanceTargetDeclared: true,
+      targetMatchesFinalAcceptance: true,
+    },
+    target_progression_ledger: {
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: true,
+      entries: [
+        {
+          phase: 'small-oracle',
+          status: 'pass',
+          resultState: 'gpu-hmr-output-oracle-proven',
+          outputOracleProven: true,
+          proofId: 'implicit-large-ml-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+          compute_oracle_artifacts: forgedImplicitLargeMlHookProofMaterials.computeOracleArtifacts,
+        },
+        {
+          phase: 'partial-reload',
+          status: 'pass',
+          proofId: 'implicit-large-ml-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+          partialReloadProven: true,
+          fissionProven: true,
+        },
+        {
+          phase: 'original-host-path',
+          status: 'pass',
+          proofId: 'implicit-large-ml-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+          originalHostPathProven: true,
+          attachmentProven: true,
+          hostPreservationProven: true,
+          dispatchSafeProven: true,
+        },
+      ],
+    },
+    target_progression_gates: [
+      { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+    ],
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    real_rocm_source_delta_execution:
+      acceptedLargeRocmSourceDeltaExecution('real-rocm-forged-implicit-large-ml-hook'),
+    runtime_proof_artifact: {
+      ...forgedImplicitLargeMlHookProofMaterials.runtime_proof_artifact,
+      realRocmSourceDeltaExecution:
+        acceptedLargeRocmSourceDeltaExecution('real-rocm-forged-implicit-large-ml-hook'),
+      real_rocm_source_delta_execution:
+        acceptedLargeRocmSourceDeltaExecution('real-rocm-forged-implicit-large-ml-hook'),
+    },
+    proof_ledger: forgedImplicitLargeMlHookProofMaterials.proof_ledger,
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: 'real-rocm-forged-implicit-large-ml-hook-delta',
+      editHash: hashValue('real-rocm-forged-implicit-large-ml-hook-delta'),
+    },
+    checks: [
+      {
+        name: 'real ROCm repo',
+        status: 'pass',
+        detail: 'https://example.invalid/rocm/forged-implicit-large-ml-hook.git @ ffffffff files=18000',
+      },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  },
+);
+const forgedImplicitLargeMlHookRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedImplicitLargeMlHookRocmDir],
+  generatedAt: '2026-06-09T00:00:02.301Z',
+  includeUnproven: true,
+});
+const forgedImplicitLargeMlHookRocm = forgedImplicitLargeMlHookRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedImplicitLargeMlHookRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedImplicitLargeMlHookRocm.acceptedForGpuHmr, false);
+assert.equal(forgedImplicitLargeMlHookRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedImplicitLargeMlHookRocm.ledger.gpuHmrSuccess, true);
+assert.equal(forgedImplicitLargeMlHookRocm.outputOracleFacet.accepted, true);
+assert.equal(
+  forgedImplicitLargeMlHookRocm.realRocmProfileProofObligations.largeMlFinalAcceptance,
+  true,
+);
+assert.equal(
+  forgedImplicitLargeMlHookRocm.realRocmProfileProofObligations.requiresAppHookContract,
+  true,
+);
+assert.equal(forgedImplicitLargeMlHookRocm.realRocmAppHookContractGate.required, true);
+assert.equal(forgedImplicitLargeMlHookRocm.realRocmAppHookContractGate.missing, true);
+assert.ok(forgedImplicitLargeMlHookRocm.reasons.includes(
+  'real_rocm_app_hook_contract_required_not_proven',
+));
+assert.ok(forgedImplicitLargeMlHookRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
+assert.ok(forgedImplicitLargeMlHookRocm.openGaps.includes('real_rocm_app_hook_contract_missing'));
 
 const forgedTargetProgressionRocmDir = path.join(logsRoot, 'real-rocm-forged-target-progression-failure');
 const forgedTargetProgressionRawReadback = path.join(forgedTargetProgressionRocmDir, 'readback.bin');

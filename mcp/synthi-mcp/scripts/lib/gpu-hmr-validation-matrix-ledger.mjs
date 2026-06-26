@@ -6863,7 +6863,7 @@ function realRocmProfileProofObligationsMatrixFacet({
     || requirements.includes('output_oracle_proven')
     || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
     || finalAcceptance;
-  const requiresAppHookContract = explicitRequiresAppHookContract;
+  const requiresAppHookContract = explicitRequiresAppHookContract || largeMlFinalAcceptance;
   const requiresRunModes = explicitRequiresRunModes || largeMlFinalAcceptance;
   const requiresNegativeEdit = explicitRequiresNegativeEdit || largeMlFinalAcceptance;
   const resolution = compactObject(outputOracleResolution);
