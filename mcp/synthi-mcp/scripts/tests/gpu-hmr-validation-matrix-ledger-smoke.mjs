@@ -4680,6 +4680,88 @@ assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.status, 'consistency_mi
 assert.ok(largeRocmCoverage.sidecarRuntimeConsistency.blockingGaps.includes(
   'sidecar_runtime_sidecar_observation_missing',
 ));
+
+const contradictoryRealRocmCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [{
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.real_rocm_repo_validation.v1',
+    artifactPath: 'synthetic/real-rocm-contradictory-contracts.json',
+    updatedAt: '2026-06-09T00:00:00.080Z',
+    backend: 'hip',
+    targetId: 'real-rocm-contradictory-contracts',
+    profileId: 'real-rocm-contradictory-contracts',
+    proofMode: 'real_rocm_repo_validation',
+    evidenceKind: 'real_rocm_repo_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'structured_runtime_refusal',
+    proofIds: ['real-rocm-contradictory-contracts-proof:sha256:refusal'],
+    ledger: {
+      present: true,
+      proofId: 'real-rocm-contradictory-contracts-ledger:sha256:refusal',
+      gpuHmrSuccess: false,
+      failedInvariants: ['runtime_proof_missing'],
+    },
+    reasons: ['runtime_proof_missing'],
+    openGaps: ['output_or_visual_oracle_proof_required'],
+    realRocmAppHookContract: {
+      required: true,
+      accepted: true,
+      canSatisfyRuntimeProof: true,
+      blockingGaps: ['contradictory_app_hook_gap'],
+      blocking_gaps: ['contradictory_app_hook_gap'],
+    },
+    realRocmSameProcessRuntimeOracle: {
+      required: true,
+      accepted: true,
+      canSatisfyRuntimeProof: true,
+      failedGaps: ['contradictory_oracle_gap'],
+      failed_gaps: ['contradictory_oracle_gap'],
+    },
+    realRocmDeviceSidecarContract: {
+      accepted: true,
+      proven: true,
+      failedGates: [{ code: 'contradictory_sidecar_gate' }],
+      failed_gates: [{ code: 'contradictory_sidecar_gate' }],
+    },
+    realRocmSidecarRuntimeConsistency: {
+      accepted: true,
+      runtimeConsistencyAccepted: true,
+      blockingGaps: ['contradictory_consistency_gap'],
+      blocking_gaps: ['contradictory_consistency_gap'],
+    },
+  }],
+});
+const contradictoryCoverage = new Map(
+  contradictoryRealRocmCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+).get('large_real_rocm_repo:real-rocm-contradictory-contracts');
+assert.equal(contradictoryCoverage?.status, 'refused');
+assert.equal(contradictoryCoverage.appHookContract.proven, false);
+assert.equal(contradictoryCoverage.appHookContract.accepted, false);
+assert.equal(contradictoryCoverage.appHookContract.status, 'contract_missing_or_unproven');
+assert.ok(contradictoryCoverage.appHookContract.blockingGaps.includes('contradictory_app_hook_gap'));
+assert.equal(contradictoryCoverage.sameProcessRuntimeOracleContract.proven, false);
+assert.equal(contradictoryCoverage.sameProcessRuntimeOracleContract.accepted, false);
+assert.ok(contradictoryCoverage.sameProcessRuntimeOracleContract.blockingGaps.includes(
+  'contradictory_oracle_gap',
+));
+assert.equal(contradictoryCoverage.deviceSidecarContract.proven, false);
+assert.equal(contradictoryCoverage.deviceSidecarContract.accepted, false);
+assert.equal(contradictoryCoverage.deviceSidecarContract.status, 'device_sidecar_missing_or_unproven');
+assert.ok(contradictoryCoverage.deviceSidecarContract.blockingGaps.includes(
+  'contradictory_sidecar_gate',
+));
+assert.equal(contradictoryCoverage.sidecarRuntimeConsistency.proven, false);
+assert.equal(contradictoryCoverage.sidecarRuntimeConsistency.accepted, false);
+assert.equal(contradictoryCoverage.sidecarRuntimeConsistency.status, 'consistency_missing_or_unproven');
+assert.ok(contradictoryCoverage.sidecarRuntimeConsistency.blockingGaps.includes(
+  'contradictory_consistency_gap',
+));
 assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-second-lib')?.status, 'refused');
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');

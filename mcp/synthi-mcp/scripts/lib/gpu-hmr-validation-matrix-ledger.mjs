@@ -9505,20 +9505,6 @@ function realRocmCoverageContractAudit(
     )
     || (requiredWhenPresent && (gates.length > 0 || facets.length > 0));
   const present = gates.length > 0 || facets.length > 0;
-  const proven = gates.some((gate) =>
-    gate.accepted === true
-    || gate.proven === true
-  ) || facets.some((facet) =>
-    facet.accepted === true
-    || facet.canSatisfyRuntimeProof === true
-    || facet.can_satisfy_runtime_proof === true
-    || facet.runtimeConsistencyAccepted === true
-    || facet.runtime_consistency_accepted === true
-  );
-  const statusValues = compactStringList([
-    ...gates.map((gate) => firstText(gate.status, gate.reason)),
-    ...facets.map((facet) => firstText(facet.status, facet.reason)),
-  ]);
   const listEntries = (entry) => [
     ...(Array.isArray(entry.failedGaps) ? entry.failedGaps : []),
     ...(Array.isArray(entry.failed_gaps) ? entry.failed_gaps : []),
@@ -9527,6 +9513,24 @@ function realRocmCoverageContractAudit(
     ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
     ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
   ];
+  const entryHasBlockingProofGaps = (entry) => listEntries(entry).length > 0;
+  const proven = gates.some((gate) =>
+    !entryHasBlockingProofGaps(gate)
+    && (gate.accepted === true || gate.proven === true)
+  ) || facets.some((facet) =>
+    !entryHasBlockingProofGaps(facet)
+    && (
+      facet.accepted === true
+      || facet.canSatisfyRuntimeProof === true
+      || facet.can_satisfy_runtime_proof === true
+      || facet.runtimeConsistencyAccepted === true
+      || facet.runtime_consistency_accepted === true
+    )
+  );
+  const statusValues = compactStringList([
+    ...gates.map((gate) => firstText(gate.status, gate.reason)),
+    ...facets.map((facet) => firstText(facet.status, facet.reason)),
+  ]);
   const blockingGaps = compactStringList([...gates, ...facets]
     .flatMap(listEntries)
     .map((value) => firstText(value, compactObject(value).code)));
