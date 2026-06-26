@@ -59,19 +59,19 @@ The 2026-06-24/2026-06-25 continuation added these generic anti-overclaim gates:
 - real ROCm worker repository transfer failures now emit a generic structured `synthi.real_rocm.worker_repo_transfer_failure.v1` facet and the validation matrix treats accepted transfer facets as fail-closed refusal evidence. The smoke fixture is project-agnostic and verifies `gpuHmrSuccess=false`, `acceptedForGpuHmr=false`, `proofChain=real_rocm_strict_runtime_refusal`, and attempt-completeness score 70.
 - compute-oracle/runtime-chain epoch checks now normalize string and numeric epoch fields before comparing loader, publish, dispatch, output, and oracle evidence. Numeric JSON epochs emitted by HIP module runtime artifacts can pass only when the strict runtime proof artifact, proof ledger, dispatch event, and readback oracle all agree; missing or mismatched epochs still fail closed.
 
-The latest generated machine-readable validation matrix ledger reports 62 rows after the richer deterministic ROCm raytrace visual proof, fresh container-backed Flow and ray-light visual proof, strict WebGPU compute/readback runtime-proof authority, strict HIP module runtime-proof authority, the refreshed large ROCm ML refusals, the live OIDN runtime-split refusal, the OIDN declared-checkout no-shim refusal, the large ROCm source-delta execution gate, the generic same-process real-ROCm runtime-oracle/app-hook gate, structural negative-edit refusal gating, proof-hashed latest-attempt history, external visual deterministic-mode recomputation, explicit real-ROCm top-level verdict booleans, and non-final ROCm target-progression evidence retention as non-success rows were selected: 20 accepted full-runtime GPU HMR rows, 0 broad library-agnostic full-runtime GPU HMR rows, 20 scoped full-runtime GPU HMR rows, 2 deterministic generated-split fission verifier rows, 2 visual-profile rows, 27 structurally proven refusal rows, 10 cold split rows, 1 WebGPU typed runtime preflight-only row, and 0 unproven rows in the default included set. The matrix hash is:
+The latest generated machine-readable validation matrix ledger reports 63 rows after the richer deterministic ROCm raytrace visual proof, fresh container-backed Flow and ray-light visual proof, strict WebGPU compute/readback runtime-proof authority, strict HIP module runtime-proof authority, the refreshed large ROCm ML refusals, the live OIDN runtime-split refusal, the fresh OIDN declared-checkout no-shim refusal, profile-required app-hook obligation surfacing, the large ROCm source-delta execution gate, the generic same-process real-ROCm runtime-oracle/app-hook gate, structural negative-edit refusal gating, proof-hashed latest-attempt history, external visual deterministic-mode recomputation, explicit real-ROCm top-level verdict booleans, and non-final ROCm target-progression evidence retention as non-success rows were selected: 20 accepted full-runtime GPU HMR rows, 0 broad library-agnostic full-runtime GPU HMR rows, 20 scoped full-runtime GPU HMR rows, 2 deterministic generated-split fission verifier rows, 2 visual-profile rows, 28 structurally proven refusal rows, 10 cold split rows, 1 WebGPU typed runtime preflight-only row, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:a310b6e7546083d0f5eb96e4325d6ab08216c88652b07164615d996371c8b825
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
-latest rerun context: validation matrix rerun after realistic ROCm raytrace visual proof, strict runtime-proof-artifact authority was made mandatory for every accepted GPU HMR row, source-derived real ROCm oracle instrumentation was marked as no-shim source adaptation, the accepted-row no-shim source identity facet now requires content-addressed edit/source identity plus runtime artifact-chain closure, HIPRT real-ROCm probing became explicit env/profile config, real-ROCm proof obligations became matrix-recomputed from raw profile/target-progression evidence, target-progression ledger entries rederived mandatory proof gates, required visual proof requires before/after pixel recomputation instead of a lone decoded screenshot, content-addressed before/after/diff visual oracle artifacts are required for visual runtime rows, external visual proof artifacts recompute deterministic visual-mode gates from declared controls, WebGPU compute/readback and HIP module proofs emit accepted strict runtime proof artifacts backed by raw mapped GPU bytes/readback bytes, large ROCm ML refusals are retained as structured refusal rows, worker-repo transfer failures are structured refusal facets, real-ROCm same-process runtime-oracle gates require a generic app-hook contract plus artifact transport, epoch publication, dispatch, process identity, dispatch/output-oracle target continuity, post-dispatch timing, artifact/epoch hash continuity, and CPU/full-rebuild/restart firewall evidence, real-ROCm retained reports now expose top-level `gpu_hmr_success`, `accepted_for_gpu_hmr`, `full_runtime_proven`, and a strict failed-gate verdict, generic env-declared real-ROCm runtime output-oracle/app-hook/device-sidecar contract inputs are recorded evidence-only declarations, broad-readiness reports matrix-computed zero broad rows as a missing proof gap, per-target coverage rejects contradictory positive facets with blocking gaps, negative-edit refusal rows require structural typed evidence and explicit firewall/run-mode proof, default matrices proof-hash disabled/latest-attempt history metadata while history audits expose newest attempts, CUDA coverage is not-applicable for this ROCm/AMD-only matrix, large ROCm ML retained rows require runner-observed content-addressed hot-delta-2/negative-edit source-delta execution instead of fixture declarations alone, and non-final target-progression rows can be retained only as non-success evidence.
-summary: 62 rows, 20 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 20 scoped full-runtime GPU HMR, 20 all full-runtime rows, 27 refusals under the stricter structural gate, 10 cold splits, 2 deterministic fission, 2 visual profiles, 1 preflight-only row, 0 included unproven rows
+gpu-validation-matrix-ledger:sha256:b43c658a76092b7ac847230ab8e5339b20e36b0bc49068885b3a890e52881b0e
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
+latest rerun context: validation matrix rerun after realistic ROCm raytrace visual proof, strict runtime-proof-artifact authority was made mandatory for every accepted GPU HMR row, source-derived real ROCm oracle instrumentation was marked as no-shim source adaptation, the accepted-row no-shim source identity facet now requires content-addressed edit/source identity plus runtime artifact-chain closure, HIPRT real-ROCm probing became explicit env/profile config, real-ROCm proof obligations became matrix-recomputed from raw profile/target-progression evidence, profile-required app-hook obligations now surface in the real-ROCm app-hook and runtime-eligibility facets even before native launch evidence appears, target-progression ledger entries rederived mandatory proof gates, required visual proof requires before/after pixel recomputation instead of a lone decoded screenshot, content-addressed before/after/diff visual oracle artifacts are required for visual runtime rows, external visual proof artifacts recompute deterministic visual-mode gates from declared controls, WebGPU compute/readback and HIP module proofs emit accepted strict runtime proof artifacts backed by raw mapped GPU bytes/readback bytes, large ROCm ML refusals are retained as structured refusal rows, worker-repo transfer failures are structured refusal facets, real-ROCm same-process runtime-oracle gates require a generic app-hook contract plus artifact transport, epoch publication, dispatch, process identity, dispatch/output-oracle target continuity, post-dispatch timing, artifact/epoch hash continuity, and CPU/full-rebuild/restart firewall evidence, real-ROCm retained reports now expose top-level `gpu_hmr_success`, `accepted_for_gpu_hmr`, `full_runtime_proven`, and a strict failed-gate verdict, generic env-declared real-ROCm runtime output-oracle/app-hook/device-sidecar contract inputs are recorded evidence-only declarations, broad-readiness reports matrix-computed zero broad rows as a missing proof gap, per-target coverage rejects contradictory positive facets with blocking gaps, negative-edit refusal rows require structural typed evidence and explicit firewall/run-mode proof, default matrices proof-hash disabled/latest-attempt history metadata while history audits expose newest attempts, CUDA coverage is not-applicable for this ROCm/AMD-only matrix, large ROCm ML retained rows require runner-observed content-addressed hot-delta-2/negative-edit source-delta execution instead of fixture declarations alone, and non-final target-progression rows can be retained only as non-success evidence.
+summary: 63 rows, 20 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 20 scoped full-runtime GPU HMR, 20 all full-runtime rows, 28 refusals under the stricter structural gate, 10 cold splits, 2 deterministic fission, 2 visual profiles, 1 preflight-only row, 0 included unproven rows
 broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, broadRuntimeRowsComputed=true, broadRuntimeRowsMissing=true, scopedRuntimeRows=20, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_missing,broad_acceptance_requires_more_backend_families
 scope breakdown: generated_rocm_hip_preview_visual: 8, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 per_target_run_modes status=accepted
-history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:2e85ccccd95100f7eeb7009fa888a95e8daa7eaaa7e77839184209345aeace31, 672 rows with 610 historical unproven rows included
-history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260626T165502Z.json
+history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:82b3a0f361ee56dd949d804a7a26bd38ed9a73f6d6555d742101d586031bf3b4, 673 rows with 610 historical unproven rows included
+history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260626T172032Z.json
 history scope breakdown: generated_rocm_hip_preview_visual: 8, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=21, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 ```
@@ -136,8 +136,8 @@ hot delta 1 runtime proof: gpu-runtime-proof:sha256:b37e8bd83b2727f1293e8395d66a
 hot delta 2 run-mode proof: agent-split-run-mode-proof:sha256:1894ce4ce00f6d22f26b95a79d5a7c7d8d7833c0e21076bbc21f348b27b0db70
 hot delta 2 ledger: gpu-ledger-proof:sha256:f27a0bc1c60227edf770dc0c1a5e0ee4540b02f9a9c6bb4b5820abc3d2cd4c65
 hot delta 2 runtime proof: gpu-runtime-proof:sha256:c78dedd7bce09a7a67e8f6c712a150d6d57cd09124c964bc2c069b97eaf2bc47
-latest hot1 matrix row id: gpu-validation-matrix-row:sha256:3a7342f9485cfa5d613377ffd7518e07e188b61086044ac18762a9e8e8e781e5 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
-latest hot2 matrix row id: gpu-validation-matrix-row:sha256:032efece7b0b6de3648fc51375f91997bd80d7202ee3389d308196ee6e54862a in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
+latest hot1 matrix row id: gpu-validation-matrix-row:sha256:3a7342f9485cfa5d613377ffd7518e07e188b61086044ac18762a9e8e8e781e5 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
+latest hot2 matrix row id: gpu-validation-matrix-row:sha256:032efece7b0b6de3648fc51375f91997bd80d7202ee3389d308196ee6e54862a in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
 latest matrix runtime proofs: gpu-runtime-proof:sha256:b37e8bd83b2727f1293e8395d66a04e70ef31f9ce0825095c058b409cdbab99d, gpu-runtime-proof:sha256:c78dedd7bce09a7a67e8f6c712a150d6d57cd09124c964bc2c069b97eaf2bc47
 latest matrix acceptance scope: generated_rocm_hip_preview_visual, claimScope=scoped_profile, broadLibraryAgnosticAccepted=false, arbitraryLibraryAccepted=false
 visual artifacts: before-hmr-first.png, after-hmr-first.png, before-after-diff.png, hot-delta-2-diff.png
@@ -259,7 +259,7 @@ Composable Kernel matrix row id: gpu-validation-matrix-row:sha256:d39cd85170912b
 Composable Kernel proof ids: gpu-ledger-proof:sha256:03027d7487672f7ff92fc13ac89ed243897bc8b2bdef542ebf0d5a7ec3700eb7, gpu-runtime-proof:sha256:23a3eb841be36d824eb934e48c7975a644099ab0140aeeb5cdbc9433205f0e11, real-rocm-validation:sha256:bb91d17ca4590437ddff05b901a26fff7f2b1e2e6cffe425f4fd9a219e0beafb
 Composable Kernel metadata recovery: attempted=true, accepted=false; compile_commands.json was unavailable after the upstream target failure, so no source-delta phase executed and GPU HMR stayed refused
 hipBLASLt latest matrix row: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-hipBLASLt-20260626165108.json
-hipBLASLt latest matrix row id: gpu-validation-matrix-row:sha256:e50a14f013f4f4d8082bca548943b2261838a67240b9bdf5b19b811cbe096486
+hipBLASLt latest matrix row id: gpu-validation-matrix-row:sha256:1bb645e293d923e0609f84f946f934db7783967e359e1d58f4e40922b27dd466
 hipBLASLt latest proof ids: gpu-ledger-proof:sha256:0da6b003788f1572063df281091aaa4b31da74ac4d9b7d67e76e961456a8f6fa, gpu-runtime-proof:sha256:0efbe732f0d90e8b161fe6eb710bc5c8c5a49da63c6a3f942eaea73dba019f71, real-rocm-validation:sha256:b8c3e47080d79771e8b9649281587ae3fe274e0b63afaeaf0aaaf194bf9ab927
 hipBLASLt latest target-progression ledger: target-progression-ledger:sha256:66cb52c8baaaefed4d0c5f4175dc9fe975673f5c86a520b3a51ce910d62ec09b, mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-hipBLASLt-20260626165108-final-acceptance-66cb52c8baaaefed4d0c5f4175dc9fe975673f5c86a520b3a51ce910d62ec09b.json
 hipBLASLt latest compile bridge: status=compile_bridge_missing, phase_count=1, device_sidecar_candidate.status=device_sidecar_contract_candidate_incomplete, known_rocm_backend=false, backend=unknown
@@ -350,7 +350,7 @@ native ROCm refusal facet: status=refusal_evidence, can_satisfy_dispatch_proof=f
 real ROCm app-hook contract facet: status=required_app_hook_contract_missing, declared=false, required=true, can_satisfy_runtime_proof=false, gaps=app_hook_contract_not_declared,app_hook_artifact_transport_evidence_missing,app_hook_artifact_transport_runtime_not_observed,app_hook_epoch_publication_evidence_missing,app_hook_epoch_publication_runtime_not_observed,app_hook_dispatch_trace_evidence_missing,app_hook_dispatch_trace_runtime_not_observed,app_hook_host_identity_evidence_missing,app_hook_host_identity_runtime_not_observed,app_hook_output_oracle_evidence_missing,app_hook_output_oracle_runtime_not_observed
 current matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
 current matrix proof ids: gpu-ledger-proof:sha256:e71d4db8c67adea313caf47d212e164e60d34b684f27e81383530a9c08351eb5, gpu-runtime-proof:sha256:f31a677434e0897949d25c02dbfe5475c83915b6ae07162b70a28e90145a4d85, real-rocm-validation:sha256:d4ada3b673566388fa013c8f93f87f3775bf6141ab12abb058be859457a9ace8
-current matrix row id: gpu-validation-matrix-row:sha256:6cd5270ee2909a8ba5c994ea9f4b7ea13f9b70036527f443ff8d62eb576d45c3 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
+current matrix row id: gpu-validation-matrix-row:sha256:6cd5270ee2909a8ba5c994ea9f4b7ea13f9b70036527f443ff8d62eb576d45c3 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
 current matrix open gaps: strict_runtime_proof_artifact_required, proof_ledger_success_required, output_or_visual_oracle_proof_required, real_rocm_runtime_chain_required, real_rocm_app_hook_contract_required, target_progression_gates_failed, native_boundary_not_synthi_dispatch_proof, artifact_transport_not_observed, same_process_epoch_missing, dispatch_epoch_missing, output_oracle_missing, host_identity_not_observed
 visual artifacts: first-compile screenshot sha256:d0786b715111c7313ec3525e8ec0f476231a5443d178b924c0b26e819e81a704 and post-HMR screenshot sha256:e37a7d495b24f1f775b910a3d7fb25dd3ae5ed238c7cc019a5e5683fbae5eff2 were opened with the local image tool on 2026-06-25; both render a nonblank preview scene, but both have frame_capture_after_epoch_dispatch=false and are not accepted as GPU HMR output-oracle proof
 visual result: compute-only target; no frame-gated visual proof is counted, and the run still refuses because the runtime ledger lacks post-epoch output-oracle observation
@@ -385,7 +385,7 @@ native ROCm refusal facet: status=not_observed, can_satisfy_dispatch_proof=false
 real ROCm app-hook contract facet: status=not_required at the facet level because no native launch was observed, while profile proof obligations still require an app-hook contract before final acceptance; no stage evidence exists for artifact transport, epoch publication, dispatch trace, host identity, or output oracle
 current matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
 current matrix proof ids: gpu-ledger-proof:sha256:03027d7487672f7ff92fc13ac89ed243897bc8b2bdef542ebf0d5a7ec3700eb7, gpu-runtime-proof:sha256:23a3eb841be36d824eb934e48c7975a644099ab0140aeeb5cdbc9433205f0e11, real-rocm-validation:sha256:bb91d17ca4590437ddff05b901a26fff7f2b1e2e6cffe425f4fd9a219e0beafb
-current matrix row id: gpu-validation-matrix-row:sha256:d39cd85170912b85a090a769a6807cc18b4ff040fe06cca9a374d96198a20746 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
+current matrix row id: gpu-validation-matrix-row:sha256:d39cd85170912b85a090a769a6807cc18b4ff040fe06cca9a374d96198a20746 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
 current matrix open gaps: strict runtime proof artifact rejected, proof ledger success false, output or visual oracle proof missing, output oracle disabled/missing, runtime chain missing, app-hook contract required by profile proof obligations, target-progression gates failed, runtime capability preflight failed, artifact transport not observed, same-process epoch missing, dispatch epoch missing, host identity not observed
 visual artifacts: none; compute-only target with no frame-gated visual proof, and no raw readback/card output-oracle artifacts were produced after a Synthi epoch dispatch
 ```
@@ -414,10 +414,11 @@ timings: total_validator_wall_time=165.6s observed by command runner; retained r
 strict result: refused, gpu_hmr_success=false, full_runtime_proven=false, runtime_proof_artifact=gpu-runtime-proof:sha256:0efbe732f0d90e8b161fe6eb710bc5c8c5a49da63c6a3f942eaea73dba019f71
 proof ledger: gpu-ledger-proof:sha256:0da6b003788f1572063df281091aaa4b31da74ac4d9b7d67e76e961456a8f6fa, gpu_hmr_success=false
 current matrix proof ids: gpu-ledger-proof:sha256:0da6b003788f1572063df281091aaa4b31da74ac4d9b7d67e76e961456a8f6fa, gpu-runtime-proof:sha256:0efbe732f0d90e8b161fe6eb710bc5c8c5a49da63c6a3f942eaea73dba019f71, real-rocm-validation:sha256:b8c3e47080d79771e8b9649281587ae3fe274e0b63afaeaf0aaaf194bf9ab927
-current matrix row id: gpu-validation-matrix-row:sha256:e50a14f013f4f4d8082bca548943b2261838a67240b9bdf5b19b811cbe096486 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
+current matrix row id: gpu-validation-matrix-row:sha256:1bb645e293d923e0609f84f946f934db7783967e359e1d58f4e40922b27dd466 in mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
 refusal reason: serious ROCm ML library/sample metadata is evidence-only; no build metadata, Synthi artifact transport, epoch publication, dispatch trace, host identity, output-oracle observation, accepted app-hook contract, accepted sidecar/runtime consistency, or accepted runtime proof chain was collected
 visual artifacts: none; compute-only target with no frame-gated visual proof, and no raw readback/card output-oracle artifacts were produced after a Synthi epoch dispatch
 prior richer attempt retained for context: gpu-real-rocm-hipBLASLt-20260626142827 recovered CMake File API metadata and executed hot_delta_1/hot_delta_2/negative_edit source-delta phases, then still refused because there was no same-process runtime bridge proof or post-dispatch output oracle.
+latest attempted rerun retained as latest-attempt evidence only: gpu-real-rocm-hipBLASLt-20260626171543 failed closed during generic worker repo transfer (`docker_cp`) and did not replace the stronger selected lifecycle row; it produced rejected runtime proof gpu-runtime-proof:sha256:52f7dc60b1aa396acc46f0d6cbc304f463e17d060935723e4b555643bfc3c9ab and target-progression ledger target-progression-ledger:sha256:c688affc069029fd962552b72a37a1817a642dcd60dd95b6df7280589ed70598. The app-hook facet now reports `required_app_hook_contract_missing`, `profileRequiresAppHookContract=true`, and gaps including `app_hook_contract_required_by_profile_obligation`; `gpu_hmr_success=false`.
 ```
 
 Historical real ROCm hipBLASLt fused GEMM/GELU/AUX/bias large-ML refusal (older retained attempt, not superseding the current latest run):
@@ -734,14 +735,14 @@ Current superseding matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:a310b6e7546083d0f5eb96e4325d6ab08216c88652b07164615d996371c8b825
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T165430Z.json
+proof id: gpu-validation-matrix-ledger:sha256:b43c658a76092b7ac847230ab8e5339b20e36b0bc49068885b3a890e52881b0e
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260626T171952Z.json
 ```
 
 Matrix result:
 
 ```text
-row count: 62
+row count: 63
 accepted full-runtime GPU HMR rows: 20
 broad library-agnostic full-runtime GPU HMR rows: 0
 computed broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRowsComputed=true, broadRuntimeRowsMissing=true, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_missing,broad_acceptance_requires_more_backend_families
@@ -758,11 +759,10 @@ strict cold split rows: 10
 deterministic fission rows: 2
   render_realistic_raytrace
   trace_light_rays
-visual-profile rows: 5
+visual-profile rows: 2
   hiprt-camera-rays-horizontal-mirror
   hiprt-megakernel-direct-light-gain
-  threejs-webgl-shader-lava
-structurally proven refusal rows: 26
+structurally proven refusal rows: 28
   bevy-wgsl-shader-material typed bevy_wgsl manifest-backed refusal
   generated realistic-raytrace negative edit refusal
   generated Flow negative edit refusal
@@ -775,6 +775,8 @@ structurally proven refusal rows: 26
   hiprt-megakernel-direct-light-gain ABI-changing negative edit refusal
   hiprt-megakernel-direct-light-zero
   oidn-hiprt-rocm-preflight-20260622-real-checkout
+  oidn-hiprt-rocm-preflight-20260626-after-apphook-refresh
+  oidn-hiprt-rocm-preflight-20260626-live-rerun
   oidn-preflight-20260624090147
   oidn-preflight-20260624093615
   oidn-preflight-20260624093728
@@ -885,9 +887,9 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:a310b6e7546083d0f5eb96e4325d6ab08216c88652b07164615d996371c8b825
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:b43c658a76092b7ac847230ab8e5339b20e36b0bc49068885b3a890e52881b0e
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:history
-  latest history audit: passed, matrix gpu-validation-matrix-ledger:sha256:2e85ccccd95100f7eeb7009fa888a95e8daa7eaaa7e77839184209345aeace31
+  latest history audit: passed, matrix gpu-validation-matrix-ledger:sha256:82b3a0f361ee56dd949d804a7a26bd38ed9a73f6d6555d742101d586031bf3b4
   smoke coverage: compute-only real ROCm oracle acceptance, forged missing raw/schema/card file refusal, forged large ROCm ML final-acceptance refusal when hot-delta-2/negative-edit fixtures are absent, and generic worker-repo transfer refusal scoring
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
   latest result: passed; includes generic real ROCm profile loading, runtime-dispatch evidence, CMake missing package/config/compiler parsing, git-remote normalization, and safe invalid-checkout quarantine/refusal self-checks
@@ -1247,7 +1249,7 @@ CameraRays source-adapted run-mode visual evidence:
 
 ```text
 matrix coverage rows: hiprt_run_modes=missing, hiprt_visual_path=missing
-current matrix proof id: gpu-validation-matrix-ledger:sha256:a310b6e7546083d0f5eb96e4325d6ab08216c88652b07164615d996371c8b825
+current matrix proof id: gpu-validation-matrix-ledger:sha256:b43c658a76092b7ac847230ab8e5339b20e36b0bc49068885b3a890e52881b0e
 matrix classification: visual_profile_accepted, acceptedForGpuHmr=false, sourceAdaptedProfile=true
 
 hot delta 1 proof id: hiprt-warm-runtime-proof:sha256:d0a8b4ca701d855e96ce0c6b812c668a4307901d13b232948e5c629fe7b0384b
@@ -1362,16 +1364,19 @@ Visual inspection confirmed CameraRays before/after/diff images are readable and
 OIDN was tested through structured HIP preflight artifacts, most recently on 2026-06-26 after splitting OIDN HIP runtime preflight from OIDN HIP output proof and rerunning a declared worker-checkout preflight. The latest live declared-checkout worker run remains a refusal: `oidnTest` and the HIP device library were absent in `vectant-ade-worker-1` at `/tmp/synthi-real-rocm/HIPRT-Path-Tracer`, so no HIP runtime preflight or output proof was accepted. Earlier real-checkout runs remain useful diagnostics: CPU OIDN diagnostics passed, but the installed HIP OIDN device library linked against `libamdhip64.so.5`, which is unavailable in the ROCm 7 worker environment. No compatibility shim, symlink, fake library, or synthesized runtime was added.
 
 ```text
-latest proof id: oidn-preflight-proof:sha256:55a97051b6691b78f9caf40705969ca6fce106a294b7baf545a99cd2bbc95fbc
+latest proof id: oidn-preflight-proof:sha256:48ccd07dae1bb1e686418c0850879ccd310e4219de4c262305da27208f1c53f4
 latest result state: oidn-hip-rejected
-latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-live-rerun-proof.json
-latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-live-rerun-summary.txt
-latest matrix row: gpu-validation-matrix-row:sha256:96258906d64e534e0c5d9e045f59282ddfb26a67a52f0ce770a5e43a5e1d0463
+latest proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-after-apphook-refresh-proof.json
+latest summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-after-apphook-refresh-summary.txt
+latest matrix row: gpu-validation-matrix-row:sha256:e74998a481903178ba7c5fca6fe0b62c4bf0c2d2e77698f75a6a4c3944eb93b6
 latest matrix outcome: refusal_proven
 acceptedForOidnHipRuntimePreflight: false
 acceptedForOidnHipOutputProof: false
 gpuHmrSuccess: false
 repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
+previous proof id: oidn-preflight-proof:sha256:55a97051b6691b78f9caf40705969ca6fce106a294b7baf545a99cd2bbc95fbc
+previous proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-live-rerun-proof.json
+previous summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260626-live-rerun-summary.txt
 previous proof id: oidn-preflight-proof:sha256:25577fa64be579acb4bb512f3b1f2cb3652e48885b90f84e0d54e7aca3198ff4
 previous proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-preflight-20260624095704-proof.json
 previous summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-preflight-20260624095704-summary.txt
