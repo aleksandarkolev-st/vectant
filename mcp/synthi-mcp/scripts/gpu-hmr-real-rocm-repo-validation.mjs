@@ -8442,6 +8442,7 @@ function nativeRocmLaunchBoundaryRefusalFacet({
 
 function realRocmAppHookContractFacet({
   appHookContract = {},
+  profileProofObligations = {},
   nativeBoundary = {},
   nativeObservation = {},
   runtimeDispatch = {},
@@ -8458,6 +8459,12 @@ function realRocmAppHookContractFacet({
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
   const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
+  const profileObligations = profileProofObligations && typeof profileProofObligations === 'object'
+    ? profileProofObligations
+    : {};
+  const profileRequiresAppHookContract =
+    profileObligations.requiresAppHookContract === true
+    || profileObligations.requires_app_hook_contract === true;
   const nativeObserved = nativeBoundary.observed === true
     || nativeBoundary.native_launch_boundary_observed === true
     || Number(nativeObservation.function_resolution_count ?? 0) > 0
@@ -8473,7 +8480,14 @@ function realRocmAppHookContractFacet({
     hostIdentity: Number(hostEvidence.total_count ?? 0) > 0,
     outputOracle: Number(runtimeOutputOracle.total_count ?? 0) > 0,
   };
-  const required = contract.required === true || (nativeObserved && !fullRuntimeProven);
+  const requiredReasons = compactStringList([
+    contract.required === true ? 'app_hook_contract_required_by_contract' : null,
+    profileRequiresAppHookContract ? 'app_hook_contract_required_by_profile_obligation' : null,
+    nativeObserved && !fullRuntimeProven
+      ? 'app_hook_contract_required_by_native_boundary_without_full_runtime_proof'
+      : null,
+  ]);
+  const required = requiredReasons.length > 0;
   const availableEvidenceRefSet = new Set(compactStringList(availableEvidenceRefs));
   const stageResults = {};
   const blockingGaps = [];
@@ -8532,7 +8546,12 @@ function realRocmAppHookContractFacet({
   const runtimeObservationComplete = REAL_ROCM_APP_HOOK_STAGES.every((stage) =>
     stageResults[stage.key].runtimeObserved === true
   );
-  if (required && contract.declared !== true) blockingGaps.unshift('app_hook_contract_not_declared');
+  if (required && contract.declared !== true) {
+    blockingGaps.unshift('app_hook_contract_not_declared');
+    if (profileRequiresAppHookContract) {
+      blockingGaps.unshift('app_hook_contract_required_by_profile_obligation');
+    }
+  }
   const canSatisfyRuntimeProof =
     fullRuntimeProven
     && contract.declared === true
@@ -8562,6 +8581,10 @@ function realRocmAppHookContractFacet({
     can_satisfy_dispatch_proof: canSatisfyRuntimeProof,
     nativeLaunchBoundaryObserved: nativeObserved,
     native_launch_boundary_observed: nativeObserved,
+    profileRequiresAppHookContract,
+    profile_requires_app_hook_contract: profileRequiresAppHookContract,
+    requiredReasons,
+    required_reasons: requiredReasons,
     contractEvidenceComplete,
     contract_evidence_complete: contractEvidenceComplete,
     runtimeObservationComplete,
@@ -10848,6 +10871,18 @@ async function selfCheckRuntimeDispatchEvidence() {
     fullRuntimeProof: { fullRuntimeProven: false },
     availableEvidenceRefs: ['hook:artifact-transport'],
   });
+  const profileRequiredHookWithoutNativeObservation = realRocmAppHookContractFacet({
+    appHookContract: normalizeRealRocmAppHookContract(null),
+    profileProofObligations: { requiresAppHookContract: true },
+    nativeBoundary: {},
+    nativeObservation: {},
+    runtimeDispatch: { success_count: 0 },
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+    runtimeOutputOracle: { total_count: 0 },
+    runtimeHostPreservation: { evidence: { total_count: 0 } },
+    fullRuntimeProof: { fullRuntimeProven: false },
+  });
   if (
     nativeOnlyMissingHook.status !== 'required_app_hook_contract_missing'
     || nativeOnlyMissingHook.canSatisfyRuntimeProof !== false
@@ -10859,6 +10894,13 @@ async function selfCheckRuntimeDispatchEvidence() {
     || declaredHookWithoutRuntime.status !== 'declared_app_hook_pending_runtime_observation'
     || declaredHookUnresolvedEvidence.contract_evidence_complete !== false
     || !declaredHookUnresolvedEvidence.blocking_gaps.includes('app_hook_epoch_publication_evidence_ref_unresolved')
+    || profileRequiredHookWithoutNativeObservation.status !== 'required_app_hook_contract_missing'
+    || profileRequiredHookWithoutNativeObservation.native_launch_boundary_observed !== false
+    || profileRequiredHookWithoutNativeObservation.profile_requires_app_hook_contract !== true
+    || profileRequiredHookWithoutNativeObservation.canSatisfyRuntimeProof !== false
+    || !profileRequiredHookWithoutNativeObservation.required_reasons.includes('app_hook_contract_required_by_profile_obligation')
+    || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_required_by_profile_obligation')
+    || !profileRequiredHookWithoutNativeObservation.blocking_gaps.includes('app_hook_contract_not_declared')
   ) {
     throw new Error('real ROCm app hook contract facet self-check failed');
   }
@@ -13277,6 +13319,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   });
   report.real_rocm_app_hook_contract = realRocmAppHookContractFacet({
     appHookContract: CFG.appHookContract,
+    profileProofObligations: report.real_rocm_profile_proof_obligations,
     nativeBoundary: report.native_rocm_launch_boundary,
     nativeObservation: runtimeNativeLaunchObservation,
     runtimeDispatch,
