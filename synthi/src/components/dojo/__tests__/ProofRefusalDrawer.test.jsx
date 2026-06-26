@@ -241,7 +241,7 @@ describe('Proof and refusal drawers', () => {
     localStorage.setItem(USER_ID_KEY, 'proof-operator-a');
     global.fetch = vi.fn(async () => ({
       ok: true,
-      json: async () => ({
+      text: async () => JSON.stringify({
         ok: true,
         is_error: false,
         result: {

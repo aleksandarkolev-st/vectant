@@ -53,6 +53,7 @@ export default function SkillPassport({
     const allSkills = summary.skills || [];
     return allSkills.find((candidate) => candidate.skillId === decodedSkillId) || summary.selectedSkill;
   }, [decodedSkillId, summary.selectedSkill, summary.skills]);
+  const regret = skill?.regret || summary.regret || createEmptyDojoSummary(workspaceSlug).regret;
 
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const revokeProofHandler = onRevokeProofCapsule
@@ -159,6 +160,8 @@ export default function SkillPassport({
               <ToolsPanel tools={skill.publishedTools} />
             </section>
 
+            <LearnedNearMissPanel regret={regret} />
+
             {(skill.proofRequired || skill.proofCapsule || skill.refusal) ? (
               <section className="grid gap-4 lg:grid-cols-2">
                 <ProofCapsuleDrawer
@@ -191,6 +194,40 @@ export default function SkillPassport({
         )}
       </div>
     </main>
+  );
+}
+
+function LearnedNearMissPanel({ regret }) {
+  const hints = regret?.planningHints || [];
+  const fossils = regret?.branchFossils || [];
+  const policyDeltas = regret?.policyDeltas || [];
+  const primary = policyDeltas.find((delta) => delta.status === 'promoted')
+    || policyDeltas[0]
+    || fossils.find((fossil) => fossil.strength === 'strong')
+    || hints[0];
+  return (
+    <section className="rounded-md border p-4" style={panelStyle} data-testid="skill-passport-near-misses">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Learned From Near-Misses</h2>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {policyDeltas.length + fossils.length + hints.length} signals
+        </span>
+      </div>
+      {primary ? (
+        <div className="grid gap-2 text-sm">
+          <p style={{ color: 'var(--text-secondary)' }}>
+            {primary.rationale || primary.summary || `${primary.hintKind || primary.kind} affects ${primary.taskClass || 'this task class'}.`}
+          </p>
+          <p className="truncate text-xs" style={{ color: 'var(--text-muted)' }}>
+            {(primary.evidenceRefs || []).slice(0, 2).join(', ') || 'Evidence references pending'}
+          </p>
+        </div>
+      ) : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          No retained near-miss lessons have affected this workspace yet.
+        </p>
+      )}
+    </section>
   );
 }
 

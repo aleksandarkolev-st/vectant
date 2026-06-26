@@ -41,6 +41,14 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         missingArtifacts: [],
         retentionClass: '',
       },
+      regretPolicyDeltas: [],
+    },
+    regret: {
+      policyDeltas: [],
+      branchFossils: [],
+      branchTraces: [],
+      choiceScenes: [],
+      planningHints: [],
     },
     practice: {
       scenarios: [],
@@ -675,6 +683,7 @@ function normalizeGovernanceState(state, skill, workspaceSlug) {
     .map(normalizeAuditExportItem)
     .filter((item) => item.exportId || item.title);
   const complianceEvidencePack = normalizeComplianceEvidencePack(raw.compliance_evidence_pack || raw.complianceEvidencePack || raw.compliance_export || raw.complianceExport);
+  const regret = normalizeRegretState(state, state.dojo || state.skillCredential || state.skill_credential || {});
   const fallbackLicenseHealth = licenseHealth.length || !skill
     ? licenseHealth
     : [normalizeLicenseHealthItem({
@@ -708,6 +717,94 @@ function normalizeGovernanceState(state, skill, workspaceSlug) {
     recertificationQueue,
     auditExports,
     complianceEvidencePack,
+    regretPolicyDeltas: regret.policyDeltas,
+  };
+}
+
+function normalizePolicyDeltaItem(item, index = 0) {
+  return {
+    policyDeltaId: item?.policy_delta_id || item?.policyDeltaId || item?.id || `policy-delta-${index + 1}`,
+    kind: item?.delta_kind || item?.deltaKind || item?.hintKind || '',
+    status: item?.status || 'hypothesis',
+    confidence: item?.confidence || 'low',
+    taskClass: item?.task_class || item?.taskClass || '',
+    rationale: item?.rationale || item?.lesson || item?.summary || '',
+    sourceBranchId: item?.source_branch_id || item?.sourceBranchId || item?.branch_id || item?.branchId || '',
+    sourceRunId: item?.source_counterfactual_run_id || item?.sourceCounterfactualRunId || item?.counterfactual_run_id || item?.counterfactualRunId || '',
+    evidenceRefs: compactStrings(item?.evidence_ids || item?.evidenceIds || item?.evidence_refs || item?.evidenceRefs),
+    expiresAt: item?.expires_at || item?.expiresAt || '',
+  };
+}
+
+function normalizeBranchFossilItem(item, index = 0) {
+  return {
+    fossilId: item?.fossil_id || item?.fossilId || item?.id || `fossil-${index + 1}`,
+    branchId: item?.branch_id || item?.branchId || '',
+    exposureLevel: item?.exposure_level || item?.exposureLevel || 'none',
+    strength: item?.counterfactual_strength || item?.counterfactualStrength || 'none',
+    taskClass: item?.task_class || item?.taskClass || '',
+    summary: item?.summary || item?.lesson || '',
+    ambiguityFlags: compactStrings(item?.ambiguity_flags || item?.ambiguityFlags),
+    evidenceRefs: compactStrings(item?.evidence_ids || item?.evidenceIds || item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizeBranchTraceItem(item, index = 0) {
+  return {
+    branchId: item?.branch_id || item?.branchId || item?.id || `branch-${index + 1}`,
+    branchKind: item?.branch_kind || item?.branchKind || '',
+    status: item?.status || 'not_run',
+    substrate: item?.substrate || '',
+    taskClass: item?.task_class || item?.taskClass || '',
+    summary: item?.summary || item?.finding || '',
+    exposureLevel: item?.exposure_level || item?.exposureLevel || '',
+    counterfactualStrength: item?.counterfactual_strength || item?.counterfactualStrength || '',
+    ambiguityFlags: compactStrings(item?.ambiguity_flags || item?.ambiguityFlags),
+    blockedBy: compactStrings(item?.blocked_by || item?.blockedBy),
+    evidenceRefs: compactStrings(item?.evidence_ids || item?.evidenceIds || item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizeChoiceSceneItem(item, index = 0) {
+  return {
+    choiceSceneId: item?.choice_scene_id || item?.choiceSceneId || item?.id || `choice-scene-${index + 1}`,
+    selectedBranchId: item?.selected_branch_id || item?.selectedBranchId || '',
+    visibleBranchIds: compactStrings(item?.visible_branch_ids || item?.visibleBranchIds),
+    openedBranchIds: compactStrings(item?.opened_branch_ids || item?.openedBranchIds),
+    ambiguityFlags: compactStrings(item?.ambiguity_flags || item?.ambiguityFlags),
+    evidenceRefs: compactStrings(item?.evidence_ids || item?.evidenceIds || item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizePlanningHintItem(item, index = 0) {
+  return {
+    hintId: item?.hint_id || item?.hintId || `${item?.hintKind || item?.hint_kind || 'hint'}-${index + 1}`,
+    hintKind: item?.hintKind || item?.hint_kind || '',
+    confidence: item?.confidence || 'low',
+    taskClass: item?.taskClass || item?.task_class || '',
+    evidenceRefs: compactStrings(item?.evidenceIds || item?.evidence_ids || item?.evidenceRefs || item?.evidence_refs),
+    expiresAt: item?.expiresAt || item?.expires_at || '',
+  };
+}
+
+function normalizeRegretState(state, dojo) {
+  const raw = state.regretMemory || state.regret_memory || state.regret || dojo.regretMemory || dojo.regret_memory || dojo.regret || {};
+  return {
+    policyDeltas: asArray(raw.policy_deltas || raw.policyDeltas || raw.deltas)
+      .map(normalizePolicyDeltaItem)
+      .filter((item) => item.policyDeltaId || item.rationale),
+    branchFossils: asArray(raw.branch_fossils || raw.branchFossils || raw.fossils)
+      .map(normalizeBranchFossilItem)
+      .filter((item) => item.fossilId || item.summary),
+    branchTraces: asArray(raw.branch_traces || raw.branchTraces || raw.branches)
+      .map(normalizeBranchTraceItem)
+      .filter((item) => item.branchId || item.summary),
+    choiceScenes: asArray(raw.choice_scenes || raw.choiceScenes)
+      .map(normalizeChoiceSceneItem)
+      .filter((item) => item.choiceSceneId),
+    planningHints: asArray(raw.planning_hints || raw.planningHints)
+      .map(normalizePlanningHintItem)
+      .filter((item) => item.hintKind || item.hintId),
   };
 }
 
@@ -744,6 +841,9 @@ function normalizeScenarioRunItem(item, index = 0) {
     startedAt: item?.started_at || item?.startedAt || '',
     completedAt: item?.completed_at || item?.completedAt || item?.finished_at || item?.finishedAt || '',
     fixtureHash: item?.fixture_materialization_hash || item?.fixtureMaterializationHash || '',
+    branchKind: item?.branch_kind || item?.branchKind || '',
+    counterfactualStrength: item?.counterfactual_strength || item?.counterfactualStrength || '',
+    ambiguityFlags: compactStrings(item?.ambiguity_flags || item?.ambiguityFlags),
     cost: item?.cost || {},
   };
 }
@@ -804,6 +904,7 @@ function normalizePracticeState(state, dojo, skill) {
     latestRun,
     organoid: normalizeOrganoidState(dojo),
     windTunnel,
+    regret: normalizeRegretState(state, dojo),
     coverage: {
       score: Number(checkride.coverageScore ?? checkride.coverage_score ?? skill?.coverageScore ?? state.metrics?.coverage ?? 0),
       criticalFailures: Number(checkride.criticalFailures ?? checkride.critical_failures ?? 0),
@@ -1277,10 +1378,12 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const license = dojo.license || {};
   const empty = createEmptyDojoSummary(workspaceSlug);
   if (!dojo.skillId && !dojo.skill_id) {
+    const regret = normalizeRegretState(state, dojo);
     return {
       ...empty,
       governance: normalizeGovernanceState(state, null, workspaceSlug),
       practice: normalizePracticeState(state, dojo, null),
+      regret,
       debug: normalizeDebugState(dojo),
       source: normalizeSourceState(state, dojo, null),
       evidence: normalizeEvidenceState(state, dojo, null),
@@ -1316,6 +1419,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     entrustmentTimeline: normalizeTimeline(dojo),
   };
   skill.graph = normalizeSkillGraph(dojo, skill);
+  skill.regret = normalizeRegretState(state, dojo);
   skill.proofCapsule = normalizeProofCapsule(dojo);
   skill.refusal = normalizeRefusal(dojo, skill);
   skill.practice = normalizePracticeState(state, dojo, skill);
@@ -1338,6 +1442,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     },
     governance: normalizeGovernanceState(state, skill, workspaceSlug),
     practice: skill.practice,
+    regret: skill.regret,
     debug: skill.debug,
     source: skill.source,
     evidence: skill.evidence,

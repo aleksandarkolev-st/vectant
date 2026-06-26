@@ -16,7 +16,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import cost_ledger, events, multiverse, preference, snapshot
+from .choice_scene import annotate_traces_with_choice, build_choice_scene
 from .generator import PatchBlock
+from .policy_delta import STORE as POLICY_STORE
+from .policy_delta import persist_policy_deltas
+from .regret_memory_markdown import append_session_memory, load_policy_deltas
+from .regret_arbiter import extract_regret_lessons
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
 logger = logging.getLogger("shadow.api")
@@ -59,6 +64,8 @@ class ShadowVerifyOnlyRequest(BaseModel):
 
 class ShadowApplyRequest(BaseModel):
     universeId: str
+    openedDiffUniverseIds: List[str] = Field(default_factory=list)
+    openedExplanationUniverseIds: List[str] = Field(default_factory=list)
 
 
 class ShadowWhyRequest(BaseModel):
@@ -72,6 +79,7 @@ class ShadowWhyRequest(BaseModel):
 @router.post("/run")
 async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict[str, Any]:
     repo = _resolve_repo(req.workspace_path)
+    _load_markdown_memory(repo, req.intent)
     job_id = multiverse.make_job_id()
     cost_usd = multiverse.estimate_cost_for_request(req.tier, req.models)
     job = events.JobState(
@@ -132,6 +140,7 @@ async def cost_cap(req: CostCapRequest) -> Dict[str, Any]:
 @router.post("/verify-only")
 async def shadow_verify_only(req: ShadowVerifyOnlyRequest, background: BackgroundTasks) -> Dict[str, Any]:
     repo = _resolve_repo(req.workspace_path)
+    _load_markdown_memory(repo, "fix")
     job_id = multiverse.make_job_id()
     job = events.JobState(
         job_id=job_id,
@@ -158,6 +167,15 @@ async def shadow_stream(job_id: str) -> StreamingResponse:
             yield events.encode_sse({"type": "snapshot_taken", "files": job.snapshot.get("files", [])})
         for uid, ev in job.universes.items():
             yield events.encode_sse({"type": "universe_done", **ev})
+        if job.policy_hints or job.direction_forecast:
+            yield events.encode_sse(events.counterfactual_policy({
+                "policy_hints": job.policy_hints,
+                "direction_forecast": job.direction_forecast,
+            }))
+        if job.learned_lines:
+            yield events.encode_sse(events.counterfactual_learned({
+                "learned_lines": job.learned_lines,
+            }))
         # Live drain
         while True:
             try:
@@ -299,6 +317,53 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
         except Exception:
             logger.exception("preference store write failed for job %s", job_id)
 
+    learned_lines: List[str] = []
+    policy_delta_payloads: List[Dict[str, Any]] = []
+    try:
+        visible_ids = list(job.universes.keys())
+        arbiter_pick = None
+        if isinstance(job.last_verdict, dict):
+            arbiter_pick = job.last_verdict.get("winner")
+        scene = build_choice_scene(
+            run_id=job.counterfactual_run_id or job.job_id,
+            base_state_hash=job.counterfactual_base_hash,
+            request_summary=job.user_request or "",
+            task_class=job.intent or "fix",
+            available_universe_ids=visible_ids,
+            visible_universe_ids=visible_ids,
+            opened_diff_universe_ids=req.openedDiffUniverseIds,
+            opened_explanation_universe_ids=req.openedExplanationUniverseIds,
+            arbiter_recommendation=arbiter_pick,
+            selector_action="applied" if written and not failed else "apply_failed",
+            selected_universe_id=req.universeId if written and not failed else None,
+            ambiguity_flags=["merge_conflict"] if failed else [],
+        )
+        traces = annotate_traces_with_choice(list(job.branch_traces or []), scene)
+        lessons = extract_regret_lessons(
+            choice_scene=scene,
+            traces=traces,
+            workspace_id=str(repo),
+        )
+        persist_policy_deltas(lesson.policy_delta for lesson in lessons)
+        learned_lines = [lesson.text for lesson in lessons]
+        policy_delta_payloads = [lesson.policy_delta.to_dict() for lesson in lessons]
+        append_session_memory(
+            repo,
+            task_class=job.intent or "fix",
+            learned_lines=learned_lines,
+            policy_deltas=[lesson.policy_delta for lesson in lessons],
+            run_id=job.counterfactual_run_id or job.job_id,
+        )
+        job.branch_traces = traces
+        job.learned_lines.extend(learned_lines)
+        if learned_lines:
+            await job.emit(events.counterfactual_learned({
+                "learned_lines": learned_lines,
+                "policy_deltas": policy_delta_payloads,
+            }))
+    except Exception:
+        logger.exception("counterfactual lesson capture failed for job %s", job_id)
+
     return {
         "applied": not failed,
         "files": written,
@@ -309,6 +374,8 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
             for r in results
         ],
         "siblings_cancelled": cancelled_siblings,
+        "learned_lines": learned_lines,
+        "policy_deltas": policy_delta_payloads,
     }
 
 
@@ -389,6 +456,27 @@ async def shadow_cancel(job_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
     job.cancelled = True
     cancelled_ids = _cancel_tasks(job, keep=None)
+    try:
+        visible_ids = list(job.universes.keys())
+        arbiter_pick = None
+        if isinstance(job.last_verdict, dict):
+            arbiter_pick = job.last_verdict.get("winner")
+        scene = build_choice_scene(
+            run_id=job.counterfactual_run_id or job.job_id,
+            base_state_hash=job.counterfactual_base_hash,
+            request_summary=job.user_request or "",
+            task_class=job.intent or "fix",
+            available_universe_ids=visible_ids or list(job.tasks.keys()),
+            visible_universe_ids=visible_ids,
+            arbiter_recommendation=arbiter_pick,
+            selector_action="cancelled",
+            selected_universe_id=None,
+            ambiguity_flags=["latency_abort"] if job.tasks else [],
+            cancel_stage="user_cancel",
+        )
+        job.branch_traces = annotate_traces_with_choice(list(job.branch_traces or []), scene)
+    except Exception:
+        logger.exception("counterfactual cancel capture failed for job %s", job_id)
     await job.emit(events.error(stage="cancel", msg="cancelled by user"))
     await job.emit_done()
     # User-cancel: refund all not-yet-run universes. Estimate as
@@ -453,6 +541,12 @@ def _resolve_repo(workspace_path: str) -> Path:
     if not p.exists():
         raise HTTPException(status_code=400, detail=f"unresolvable workspace_path: {workspace_path}")
     return p
+
+
+def _load_markdown_memory(repo: Path, task_class: str) -> None:
+    workspace_id = str(repo)
+    for delta in load_policy_deltas(repo, task_class, workspace_id=workspace_id):
+        POLICY_STORE.add(delta)
 
 
 def _resolve_patches(repo: Path, patches: List[PatchModel]) -> List[PatchBlock]:

@@ -66,6 +66,16 @@ function expectedDojoContractExports() {
     contractExport("./dojo/api/endpoint-inference", "api/endpoint_inference"),
     contractExport("./dojo/api/api-tool-compiler", "api/api_tool_compiler"),
     contractExport("./dojo/governance/service", "governance/service"),
+    contractExport("./dojo/regret/types", "regret/types"),
+    contractExport("./dojo/regret/store", "regret/store"),
+    contractExport("./dojo/regret/exposure", "regret/exposure"),
+    contractExport("./dojo/regret/choice-scene", "regret/choice_scene"),
+    contractExport("./dojo/regret/policy-delta", "regret/policy_delta"),
+    contractExport("./dojo/regret/regret-arbiter", "regret/regret_arbiter"),
+    contractExport("./dojo/regret/counterfactual-run", "regret/counterfactual_run"),
+    contractExport("./dojo/regret/branch-trace", "regret/branch_trace"),
+    contractExport("./dojo/regret/branch-fossil", "regret/branch_fossil"),
+    contractExport("./dojo/regret/service", "regret/service"),
     contractExport("./dojo/runtime/hosted-runtime-gateway", "runtime/hosted_runtime_gateway"),
   ];
 }

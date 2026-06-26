@@ -360,7 +360,7 @@ describe('GovernanceDashboard', () => {
     }];
     global.fetch = vi.fn(async () => ({
       ok: true,
-      json: async () => ({
+      text: async () => JSON.stringify({
         ok: true,
         is_error: false,
         result: { ok: true },

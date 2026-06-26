@@ -167,6 +167,46 @@
       "types": "./dist/dojo/governance/service.d.ts",
       "import": "./dist/dojo/governance/service.js"
     },
+    "./dojo/regret/types": {
+      "types": "./dist/dojo/regret/types.d.ts",
+      "import": "./dist/dojo/regret/types.js"
+    },
+    "./dojo/regret/store": {
+      "types": "./dist/dojo/regret/store.d.ts",
+      "import": "./dist/dojo/regret/store.js"
+    },
+    "./dojo/regret/exposure": {
+      "types": "./dist/dojo/regret/exposure.d.ts",
+      "import": "./dist/dojo/regret/exposure.js"
+    },
+    "./dojo/regret/choice-scene": {
+      "types": "./dist/dojo/regret/choice_scene.d.ts",
+      "import": "./dist/dojo/regret/choice_scene.js"
+    },
+    "./dojo/regret/policy-delta": {
+      "types": "./dist/dojo/regret/policy_delta.d.ts",
+      "import": "./dist/dojo/regret/policy_delta.js"
+    },
+    "./dojo/regret/regret-arbiter": {
+      "types": "./dist/dojo/regret/regret_arbiter.d.ts",
+      "import": "./dist/dojo/regret/regret_arbiter.js"
+    },
+    "./dojo/regret/counterfactual-run": {
+      "types": "./dist/dojo/regret/counterfactual_run.d.ts",
+      "import": "./dist/dojo/regret/counterfactual_run.js"
+    },
+    "./dojo/regret/branch-trace": {
+      "types": "./dist/dojo/regret/branch_trace.d.ts",
+      "import": "./dist/dojo/regret/branch_trace.js"
+    },
+    "./dojo/regret/branch-fossil": {
+      "types": "./dist/dojo/regret/branch_fossil.d.ts",
+      "import": "./dist/dojo/regret/branch_fossil.js"
+    },
+    "./dojo/regret/service": {
+      "types": "./dist/dojo/regret/service.d.ts",
+      "import": "./dist/dojo/regret/service.js"
+    },
     "./dojo/runtime/hosted-runtime-gateway": {
       "types": "./dist/dojo/runtime/hosted_runtime_gateway.d.ts",
       "import": "./dist/dojo/runtime/hosted_runtime_gateway.js"
