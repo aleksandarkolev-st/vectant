@@ -177,6 +177,17 @@ function firstText(...values) {
   return null;
 }
 
+function firstEpochText(...values) {
+  for (const value of values) {
+    const normalized = firstText(value);
+    if (normalized) return normalized;
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+      return String(value);
+    }
+  }
+  return null;
+}
+
 function boolOrNull(value) {
   return typeof value === 'boolean' ? value : null;
 }
@@ -6985,9 +6996,9 @@ function realRocmRuntimeChainFacet({ ledger = {}, proofLedger = {} } = {}) {
   ]);
   const processIds = compactStringList(processIdEvidence);
   const requiredEpochEvidence = stringEvidenceList([
-    firstText(epochPublishEvent.epoch),
-    firstText(dispatchEvent.epoch),
-    firstText(outputEvent.epoch),
+    firstEpochText(epochPublishEvent.epoch),
+    firstEpochText(dispatchEvent.epoch),
+    firstEpochText(outputEvent.epoch),
   ]);
   const epochs = compactStringList(requiredEpochEvidence);
   const generationEvidence = stringEvidenceList([
@@ -7301,8 +7312,8 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     enriched?.timestamp_after_dispatch
     ?? enriched?.timestampAfterDispatch,
   );
-  const artifactEpoch = firstText(enriched?.epoch, enriched?.epoch_id, enriched?.epochId);
-  const outputEpoch = firstText(outputEvent.epoch, outputEvent.epoch_id, outputEvent.epochId);
+  const artifactEpoch = firstEpochText(enriched?.epoch, enriched?.epoch_id, enriched?.epochId);
+  const outputEpoch = firstEpochText(outputEvent.epoch, outputEvent.epoch_id, outputEvent.epochId);
   const epochMatches = artifactEpoch && outputEpoch ? artifactEpoch === outputEpoch : Boolean(artifactEpoch);
   const semanticFailedGates = compactStringList([
     declaredRawReadbackHash ? null : 'compute_oracle_raw_readback_hash_declared_missing',

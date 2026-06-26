@@ -2852,6 +2852,57 @@ function realRocmComputeProofLedgerMaterials(scope, options = {}) {
   return withAcceptedRuntimeCapabilityPreflight(computeProofLedgerMaterials(scope, options));
 }
 
+function withNumericComputeEpoch(materials, epoch) {
+  const numericEpoch = Number(epoch);
+  assert.equal(Number.isInteger(numericEpoch) && numericEpoch >= 0, true);
+  const copy = JSON.parse(JSON.stringify(materials));
+  const replaceEpochFields = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(replaceEpochFields);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'epoch') value[key] = numericEpoch;
+      else replaceEpochFields(child);
+    }
+  };
+  replaceEpochFields(copy);
+  const record = copy.proofLedger.records[0];
+  for (const event of [
+    record.epoch_publish_event,
+    record.dispatch_event,
+    record.output_event,
+    record.retirement_event,
+  ]) {
+    if (event) event.epoch = numericEpoch;
+  }
+  if (record.output_event?.compute_oracle_artifacts) {
+    record.output_event.compute_oracle_artifacts.epoch = numericEpoch;
+  }
+  if (record.oracle_artifacts?.compute_oracle_artifacts) {
+    record.oracle_artifacts.compute_oracle_artifacts.epoch = numericEpoch;
+  }
+  if (copy.computeOracleArtifacts) copy.computeOracleArtifacts.epoch = numericEpoch;
+  const proofLedger = buildGpuHmrProofLedger(record);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  assert.deepEqual(proofLedgerQuery.failedInvariants, []);
+  assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
+  copy.proofLedger = proofLedger;
+  copy.proof_ledger = proofLedger;
+  copy.proofLedgerQuery = proofLedgerQuery;
+  copy.proof_ledger_query = proofLedgerQuery;
+  for (const key of ['runtimeProofArtifact', 'runtime_proof_artifact']) {
+    if (copy[key]) {
+      copy[key].proofLedger = proofLedger;
+      copy[key].proof_ledger = proofLedger;
+      copy[key].proofLedgerQuery = proofLedgerQuery;
+      copy[key].proof_ledger_query = proofLedgerQuery;
+    }
+  }
+  return copy;
+}
+
 const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -6914,6 +6965,98 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dis
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
+
+const numericEpochComputeRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-numeric-epoch');
+const numericEpochComputeRawReadback = path.join(numericEpochComputeRocmDir, 'readback.bin');
+const numericEpochComputeBytes = Buffer.from([2, 4, 8, 16, 32, 64, 128, 255]);
+await fs.mkdir(numericEpochComputeRocmDir, { recursive: true });
+await fs.writeFile(numericEpochComputeRawReadback, numericEpochComputeBytes);
+await writeJson(`${numericEpochComputeRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: numericEpochComputeBytes.length,
+  shape: [numericEpochComputeBytes.length],
+});
+await writeRgbaPng(`${numericEpochComputeRawReadback}.card.png`, 8, 8, (x, y) => [
+  numericEpochComputeBytes[(x + y) % numericEpochComputeBytes.length],
+  80 + x,
+  150 + y,
+  255,
+]);
+const numericEpochComputeProofMaterials = withNumericComputeEpoch(
+  realRocmComputeProofLedgerMaterials('accepted-compute-numeric-epoch', {
+    projectId: 'real-rocm-accepted-compute-numeric-epoch',
+    rawReadbackPath: numericEpochComputeRawReadback,
+    rawReadbackBytes: numericEpochComputeBytes,
+  }),
+  2,
+);
+await writeJson(path.join(numericEpochComputeRocmDir, 'real-rocm-accepted-compute-numeric-epoch.json'), {
+  slug: 'gpu-real-rocm-accepted-compute-numeric-epoch-20260626',
+  real_rocm_profile: { id: 'real-rocm-accepted-compute-numeric-epoch' },
+  source_url: 'https://example.invalid/rocm/accepted-compute-numeric-epoch.git',
+  repo_commit: 'cccccccccccccccccccccccccccccccccccccccc',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'AcceptedComputeNumericEpochDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...numericEpochComputeProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-compute-numeric-epoch-delta',
+    editHash: hashValue('real-rocm-accepted-compute-numeric-epoch-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-compute-numeric-epoch.git @ cccccccc files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const numericEpochComputeRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [numericEpochComputeRocmDir],
+  generatedAt: '2026-06-09T00:00:02.260Z',
+  includeUnproven: true,
+});
+const numericEpochComputeRocm = numericEpochComputeRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(numericEpochComputeRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(numericEpochComputeRocm.acceptedForGpuHmr, true);
+assert.equal(numericEpochComputeRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(numericEpochComputeRocm.outputOracleFacet.accepted, true);
+assert.equal(numericEpochComputeRocm.outputOracleFacet.compute.epoch, '2');
+assert.equal(numericEpochComputeRocm.outputOracleFacet.compute.semanticAccepted, true);
+assert.equal(numericEpochComputeRocm.outputOracleFacet.compute.expectedOutputVerified, true);
+assert.equal(numericEpochComputeRocm.outputOracleFacet.compute.rawReadbackByteLength, numericEpochComputeBytes.length);
 
 const acceptedLargeMlRocmDir = path.join(logsRoot, 'real-rocm-accepted-large-ml-generic-hook');
 const acceptedLargeMlRawReadback = path.join(acceptedLargeMlRocmDir, 'readback.bin');
