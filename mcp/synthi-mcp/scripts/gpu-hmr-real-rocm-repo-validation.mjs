@@ -992,7 +992,7 @@ function realRocmProfileProofObligationsFacet({
     || requirements.includes('output_oracle_proven')
     || requirements.includes('raw_compute_oracle_artifacts_when_compute_only')
     || finalAcceptance;
-  const requiresAppHookContract = explicitRequiresAppHookContract;
+  const requiresAppHookContract = explicitRequiresAppHookContract || largeMlFinalAcceptance;
   const requiresRunModes = explicitRequiresRunModes || largeMlFinalAcceptance;
   const requiresNegativeEdit = explicitRequiresNegativeEdit || largeMlFinalAcceptance;
   const outputOraclePresent =
@@ -1095,6 +1095,8 @@ function realRocmProfileProofObligationsFacet({
       outputOraclePresent,
       appHookContractDeclared,
       requireFullRuntimeProof,
+      requiresAppHookContract,
+      explicitRequiresAppHookContract,
       requiresRunModes,
       explicitRequiresRunModes,
       requiresNegativeEdit,
@@ -1108,6 +1110,8 @@ function realRocmProfileProofObligationsFacet({
       outputOraclePresent,
       appHookContractDeclared,
       requireFullRuntimeProof,
+      requiresAppHookContract,
+      explicitRequiresAppHookContract,
       requiresRunModes,
       explicitRequiresRunModes,
       requiresNegativeEdit,
@@ -8495,7 +8499,9 @@ function realRocmAppHookContractFacet({
     : {};
   const profileRequiresAppHookContract =
     profileObligations.requiresAppHookContract === true
-    || profileObligations.requires_app_hook_contract === true;
+    || profileObligations.requires_app_hook_contract === true
+    || profileObligations.largeMlFinalAcceptance === true
+    || profileObligations.large_ml_final_acceptance === true;
   const nativeObserved = nativeBoundary.observed === true
     || nativeBoundary.native_launch_boundary_observed === true
     || Number(nativeObservation.function_resolution_count ?? 0) > 0
@@ -12382,6 +12388,25 @@ int main()
     outputOracleProfile: 'none',
     requireFullRuntimeProof: true,
   });
+  const largeMlImplicitAppHookObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-large-ml-implicit-app-hook',
+      proofObligations: normalizeRealRocmProofObligations({
+        targetClass: 'large_rocm_ml_infrastructure',
+        requiresFullRuntimeProof: true,
+        requiresOutputOracle: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'final-acceptance',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'none',
+    requireFullRuntimeProof: true,
+  });
   const largeMlDeclaredRunModeObligations = realRocmProfileProofObligationsFacet({
     profile: {
       id: 'profile-large-ml-declared-run-modes',
@@ -12531,12 +12556,16 @@ int main()
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_profile')
     || !finalAcceptanceRefusalOnlyObligations.blocking_gaps.includes('proof_obligation_refusal_only_output_oracle_absent')
     || largeMlMissingRunModeObligations.largeMlFinalAcceptance !== true
+    || largeMlMissingRunModeObligations.requiresAppHookContract !== true
     || largeMlMissingRunModeObligations.requiresRunModes !== true
     || largeMlMissingRunModeObligations.requiresNegativeEdit !== true
+    || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_app_hook_contract_missing')
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_run_modes_missing')
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_missing')
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_hot_delta_2_fixture_missing')
     || !largeMlMissingRunModeObligations.blocking_gaps.includes('proof_obligation_negative_edit_fixture_missing')
+    || largeMlImplicitAppHookObligations.requiresAppHookContract !== true
+    || !largeMlImplicitAppHookObligations.blocking_gaps.includes('proof_obligation_app_hook_contract_missing')
     || largeMlDeclaredRunModeObligations.requiresRunModesDeclared !== true
     || largeMlDeclaredRunModeObligations.requiresNegativeEditDeclared !== true
     || largeMlDeclaredRunModeObligations.sourceDeltaFixtures.hotDelta2Declared !== true
