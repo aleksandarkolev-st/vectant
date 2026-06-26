@@ -6532,8 +6532,14 @@ function realRocmSourceDeltaExecutionFacet(raw = {}) {
   };
 }
 
-function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}) {
+function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}, serialized = {}) {
   const sourceDelta = compactObject(profile.sourceDelta ?? profile.source_delta);
+  const serializedFacet = compactObject(serialized);
+  const serializedFixtures = compactObject(
+    serializedFacet.sourceDeltaFixtures
+    ?? serializedFacet.source_delta_fixtures
+    ?? serializedFacet,
+  );
   const second = compactObject(sourceDelta.second ?? sourceDelta.secondDelta ?? sourceDelta.second_delta);
   const extraDeltas = Array.isArray(sourceDelta.extraDeltas)
     ? sourceDelta.extraDeltas
@@ -6559,8 +6565,45 @@ function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}) {
       || entry.expected_refusal === true;
   });
   const secondDeclared = realRocmSourceDeltaEntryConfiguredExecutableCandidate(second, profile);
-  const hotDelta2Declared = secondDeclared || hotDelta2Extras.length > 0;
-  const negativeEditDeclared = negativeEditExtras.length > 0;
+  const serializedHotDelta2Declared = firstBool(
+    serializedFixtures.hotDelta2Declared,
+    serializedFixtures.hot_delta_2_declared,
+  );
+  const serializedSecondDeltaDeclared = firstBool(
+    serializedFixtures.secondDeltaDeclared,
+    serializedFixtures.second_delta_declared,
+  );
+  const serializedNegativeEditDeclared = firstBool(
+    serializedFixtures.negativeEditDeclared,
+    serializedFixtures.negative_edit_declared,
+  );
+  const serializedHotDelta2FixtureCount = finiteNumber(
+    serializedFixtures.hotDelta2FixtureCount
+    ?? serializedFixtures.hot_delta_2_fixture_count,
+  );
+  const serializedNegativeEditFixtureCount = finiteNumber(
+    serializedFixtures.negativeEditFixtureCount
+    ?? serializedFixtures.negative_edit_fixture_count,
+  );
+  const serializedExecutableExtraDeltaCount = finiteNumber(
+    serializedFixtures.executableExtraDeltaCount
+    ?? serializedFixtures.executable_extra_delta_count,
+  );
+  const serializedFixtureConfigurationPresent = Boolean(
+    serializedHotDelta2Declared === true
+    || serializedSecondDeltaDeclared === true
+    || serializedNegativeEditDeclared === true
+    || Number(serializedHotDelta2FixtureCount) > 0
+    || Number(serializedNegativeEditFixtureCount) > 0
+    || Number(serializedExecutableExtraDeltaCount) > 0
+  );
+  const profileSourceDeltaPresent = Object.keys(sourceDelta).length > 0;
+  const useSerializedConfiguration = !profileSourceDeltaPresent && serializedFixtureConfigurationPresent;
+  const hotDelta2Declared = secondDeclared
+    || hotDelta2Extras.length > 0
+    || (useSerializedConfiguration && serializedHotDelta2Declared === true);
+  const negativeEditDeclared = negativeEditExtras.length > 0
+    || (useSerializedConfiguration && serializedNegativeEditDeclared === true);
   const execution = compactObject(sourceDeltaExecution);
   const hotDelta2PhaseExecuted =
     execution.hotDelta2PhaseExecuted === true
@@ -6574,12 +6617,14 @@ function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}) {
     proof_authority: 'profile_configuration_plus_runner_execution_evidence',
     hotDelta2Declared,
     hot_delta_2_declared: hotDelta2Declared,
-    secondDeltaDeclared: secondDeclared,
-    second_delta_declared: secondDeclared,
+    secondDeltaDeclared: secondDeclared || (useSerializedConfiguration && serializedSecondDeltaDeclared === true),
+    second_delta_declared: secondDeclared || (useSerializedConfiguration && serializedSecondDeltaDeclared === true),
     negativeEditDeclared,
     negative_edit_declared: negativeEditDeclared,
-    fallbackFile: realRocmSourceDeltaFallbackFile(profile),
-    fallback_file: realRocmSourceDeltaFallbackFile(profile),
+    fallbackFile: realRocmSourceDeltaFallbackFile(profile)
+      || firstText(serializedFixtures.fallbackFile, serializedFixtures.fallback_file),
+    fallback_file: realRocmSourceDeltaFallbackFile(profile)
+      || firstText(serializedFixtures.fallbackFile, serializedFixtures.fallback_file),
     hotDelta2PhaseExecuted,
     hot_delta_2_phase_executed: hotDelta2PhaseExecuted,
     negativeEditPhaseExecuted,
@@ -6588,12 +6633,28 @@ function realRocmSourceDeltaFixtures(profile = {}, sourceDeltaExecution = {}) {
     execution_proof_id: firstText(execution.proofId, execution.proof_id) ?? null,
     executionAccepted: execution.accepted === true,
     execution_accepted: execution.accepted === true,
-    executableExtraDeltaCount: executableExtraDeltas.length,
-    executable_extra_delta_count: executableExtraDeltas.length,
-    hotDelta2FixtureCount: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
-    hot_delta_2_fixture_count: hotDelta2Extras.length + (secondDeclared ? 1 : 0),
-    negativeEditFixtureCount: negativeEditExtras.length,
-    negative_edit_fixture_count: negativeEditExtras.length,
+    profileSourceDeltaPresent,
+    profile_source_delta_present: profileSourceDeltaPresent,
+    serializedConfigurationUsed: useSerializedConfiguration,
+    serialized_configuration_used: useSerializedConfiguration,
+    executableExtraDeltaCount: useSerializedConfiguration
+      ? Math.max(0, serializedExecutableExtraDeltaCount ?? 0)
+      : executableExtraDeltas.length,
+    executable_extra_delta_count: useSerializedConfiguration
+      ? Math.max(0, serializedExecutableExtraDeltaCount ?? 0)
+      : executableExtraDeltas.length,
+    hotDelta2FixtureCount: useSerializedConfiguration
+      ? Math.max(0, serializedHotDelta2FixtureCount ?? (hotDelta2Declared ? 1 : 0))
+      : hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    hot_delta_2_fixture_count: useSerializedConfiguration
+      ? Math.max(0, serializedHotDelta2FixtureCount ?? (hotDelta2Declared ? 1 : 0))
+      : hotDelta2Extras.length + (secondDeclared ? 1 : 0),
+    negativeEditFixtureCount: useSerializedConfiguration
+      ? Math.max(0, serializedNegativeEditFixtureCount ?? (negativeEditDeclared ? 1 : 0))
+      : negativeEditExtras.length,
+    negative_edit_fixture_count: useSerializedConfiguration
+      ? Math.max(0, serializedNegativeEditFixtureCount ?? (negativeEditDeclared ? 1 : 0))
+      : negativeEditExtras.length,
   };
 }
 
@@ -6690,7 +6751,11 @@ function realRocmProfileProofObligationsMatrixFacet({
     || Object.keys(oracleContract).length > 0
     || Object.keys(runtimeProfile).length > 0;
   const sourceDeltaExecutionFacet = realRocmSourceDeltaExecutionFacet(sourceDeltaExecution);
-  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile, sourceDeltaExecutionFacet);
+  const sourceDeltaFixtures = realRocmSourceDeltaFixtures(
+    profile,
+    sourceDeltaExecutionFacet,
+    serializedFacet,
+  );
   const blockingGaps = compactStringList([
     ...serializedGaps,
     finalAcceptance && !rawDeclared

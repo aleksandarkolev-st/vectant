@@ -4784,12 +4784,54 @@ exit 0
     lifecycleError ? 'warn' : 'pass',
     `${timings.replace(/\s+/g, ' ')} metadata=${lifecyclePlan.metadataSource} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'} clean=${CFG.cleanUpstreamBuild ? 'on' : 'off'} timeout_ms=${CFG.upstreamBuildTimeoutMs} cmake_args=${CFG.cmakeArgs.length}`,
   );
+  let recoveredBuildMetadata = null;
+  if (lifecycleError && !lifecycleCanContinueWithCachedMetadata) {
+    try {
+      recoveredBuildMetadata = await collectBuildMetadataFromWorker(buildPath);
+      report.upstream_lifecycle_metadata_recovery = {
+        schemaVersion: 'synthi.real_rocm.upstream_lifecycle_metadata_recovery.v1',
+        attempted: true,
+        accepted: true,
+        source: 'worker_cmake_file_api_after_lifecycle_failure',
+        compileCommandSourceCount: recoveredBuildMetadata.compileCommandSourcePaths.length,
+        compile_command_source_count: recoveredBuildMetadata.compileCommandSourcePaths.length,
+        cmakeReplyFileCount: recoveredBuildMetadata.cmakeReplyFiles.length,
+        cmake_reply_file_count: recoveredBuildMetadata.cmakeReplyFiles.length,
+        matchedTargetFileCount: recoveredBuildMetadata.matchedTargetFiles.length,
+        matched_target_file_count: recoveredBuildMetadata.matchedTargetFiles.length,
+        targetSourceCount: recoveredBuildMetadata.targetSourcePaths.length,
+        target_source_count: recoveredBuildMetadata.targetSourcePaths.length,
+      };
+      report.evidence.upstream_lifecycle_metadata_recovery = report.upstream_lifecycle_metadata_recovery;
+      record(
+        'upstream lifecycle metadata recovery',
+        'warn',
+        `accepted compile_sources=${recoveredBuildMetadata.compileCommandSourcePaths.length} target_sources=${recoveredBuildMetadata.targetSourcePaths.length} matched_targets=${recoveredBuildMetadata.matchedTargetFiles.length}`,
+      );
+    } catch (err) {
+      report.upstream_lifecycle_metadata_recovery = {
+        schemaVersion: 'synthi.real_rocm.upstream_lifecycle_metadata_recovery.v1',
+        attempted: true,
+        accepted: false,
+        source: 'worker_cmake_file_api_after_lifecycle_failure',
+        error: err.message,
+      };
+      report.evidence.upstream_lifecycle_metadata_recovery = report.upstream_lifecycle_metadata_recovery;
+      record(
+        'upstream lifecycle metadata recovery',
+        'warn',
+        `rejected error=${err.message}`,
+      );
+    }
+  }
   if (lifecycleError) {
     record(
       'upstream GPU target lifecycle',
-      lifecycleCanContinueWithCachedMetadata ? 'warn' : 'fail',
+      lifecycleCanContinueWithCachedMetadata || recoveredBuildMetadata ? 'warn' : 'fail',
       lifecycleCanContinueWithCachedMetadata
         ? `failed; continuing with cached_metadata=${CFG.buildMetadataDir}`
+        : recoveredBuildMetadata
+          ? 'failed; continuing with worker CMake metadata recovered after lifecycle failure'
         : [
             'failed without usable cached metadata',
             `reasons=${upstreamLifecycleFailure?.reasons?.join('|') || 'unknown'}`,
@@ -4797,7 +4839,7 @@ exit 0
           ].join(' '),
     );
   }
-  if (lifecycleError && !lifecycleCanContinueWithCachedMetadata) {
+  if (lifecycleError && !lifecycleCanContinueWithCachedMetadata && !recoveredBuildMetadata) {
     throw new Error([
       'upstream_configure_build_failed_without_metadata',
       `reasons=${upstreamLifecycleFailure?.reasons?.join('|') || 'unknown'}`,
@@ -4822,7 +4864,7 @@ exit 0
     await collectHiprtRuntimeProbeCapture();
   }
 
-  return cachedMetadata ?? collectBuildMetadataFromWorker(buildPath);
+  return cachedMetadata ?? recoveredBuildMetadata ?? collectBuildMetadataFromWorker(buildPath);
 }
 
 async function collectBuildMetadataFromHost(metadataDir) {
@@ -7207,6 +7249,85 @@ function parseExtraDeltas() {
     });
   });
   return deltas;
+}
+
+function effectiveSourceDeltaFromConfiguredDeltas(extraDeltas = []) {
+  const secondDelta = extraDeltas.find((delta) =>
+    sourceDeltaPhaseKind(delta) === 'hot_delta_2'
+    && String(delta.label ?? '').toLowerCase() === 'second'
+  );
+  const extraDeltaEntries = extraDeltas
+    .filter((delta) => delta !== secondDelta)
+    .map((delta) => ({
+      label: delta.label,
+      kind: delta.kind,
+      expectedRefusal: delta.expectedRefusal === true,
+      expected_refusal: delta.expectedRefusal === true,
+      file: delta.file,
+      before: delta.before,
+      after: delta.after,
+    }));
+  return {
+    before: CFG.deltaBefore,
+    after: CFG.deltaAfter,
+    second: secondDelta
+      ? {
+          file: secondDelta.file,
+          before: secondDelta.before,
+          after: secondDelta.after,
+        }
+      : {
+          file: CFG.secondDeltaFile,
+          before: CFG.secondDeltaBefore,
+          after: CFG.secondDeltaAfter,
+        },
+    extraDeltas: extraDeltaEntries,
+    extra_deltas: extraDeltaEntries,
+  };
+}
+
+function effectiveRealRocmProfileWithConfiguredSourceDeltas(extraDeltas = []) {
+  const sourceDelta = effectiveSourceDeltaFromConfiguredDeltas(extraDeltas);
+  return {
+    ...CFG.realRocmProfile,
+    sourceDelta,
+    source_delta: sourceDelta,
+  };
+}
+
+function sourceDeltaPlanForReport(extraDeltas = []) {
+  return extraDeltas.map((delta) => ({
+    label: delta.label,
+    kind: delta.kind ?? null,
+    expected_refusal: delta.expectedRefusal === true,
+    file: delta.file,
+    before_sha256: createHash('sha256').update(delta.before).digest('hex'),
+    after_sha256: createHash('sha256').update(delta.after).digest('hex'),
+  }));
+}
+
+function applyConfiguredSourceDeltaPlan(extraDeltas = []) {
+  const effectiveProfile = effectiveRealRocmProfileWithConfiguredSourceDeltas(extraDeltas);
+  const sourceDelta = effectiveProfile.sourceDelta;
+  report.real_rocm_profile.sourceDelta = sourceDelta;
+  report.real_rocm_profile.source_delta = sourceDelta;
+  report.extra_deltas = sourceDeltaPlanForReport(extraDeltas);
+  report.real_rocm_profile_proof_obligations = realRocmProfileProofObligationsFacet({
+    profile: effectiveProfile,
+    targetProgression: report.target_progression,
+    outputOracleProfile: CFG.outputOracleProfile,
+    outputOracleContract: CFG.outputOracleContract,
+    outputOracleRuntimeProfile: CFG.outputOracleRuntimeProfile,
+    requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+  });
+  report.realRocmProfileProofObligations = report.real_rocm_profile_proof_obligations;
+  report.profile_proof_obligations = report.real_rocm_profile_proof_obligations;
+  report.profileProofObligations = report.real_rocm_profile_proof_obligations;
+  report.source_delta_fixtures = report.real_rocm_profile_proof_obligations.sourceDeltaFixtures;
+  report.real_rocm_source_delta_fixtures = report.real_rocm_profile_proof_obligations.sourceDeltaFixtures;
+  report.evidence.real_rocm_profile_proof_obligations = report.real_rocm_profile_proof_obligations;
+  report.evidence.source_delta_fixtures = report.source_delta_fixtures;
+  return effectiveProfile;
 }
 
 function sha256Text(value) {
@@ -13835,6 +13956,8 @@ async function run() {
     throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
   }
   await ensureRepo();
+  const extraDeltas = parseExtraDeltas();
+  applyConfiguredSourceDeltaPlan(extraDeltas);
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);
   runtimeEvidenceContext.buildMetadata = buildMetadata;
@@ -13856,15 +13979,6 @@ async function run() {
   };
   const outputOracleProfile = applyOutputOracleProfileAdaptation(files, updateFileContent);
   await syncWorkerRuntimeOutputOracleProfile(outputOracleProfile?.runtimeProfile ?? null);
-  const extraDeltas = parseExtraDeltas();
-  report.extra_deltas = extraDeltas.map((delta) => ({
-    label: delta.label,
-    kind: delta.kind ?? null,
-    expected_refusal: delta.expectedRefusal === true,
-    file: delta.file,
-    before_sha256: createHash('sha256').update(delta.before).digest('hex'),
-    after_sha256: createHash('sha256').update(delta.after).digest('hex'),
-  }));
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
     files,
     buildMetadata,

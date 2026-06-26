@@ -8080,6 +8080,145 @@ assert.ok(forgedFinalUnexecutedFixturesRocm.openGaps.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_phase_not_executed',
 ));
 
+const compactSerializedFixturesRocmDir = path.join(logsRoot, 'real-rocm-compact-serialized-fixtures');
+const compactSerializedFixturesProofMaterials = realRocmComputeProofLedgerMaterials(
+  'compact-serialized-fixtures',
+  {
+    projectId: 'real-rocm-compact-serialized-fixtures',
+    rawReadbackPath: forgedFinalMissingFixturesReadback,
+    rawReadbackBytes: forgedFinalMissingFixturesBytes,
+  },
+);
+await writeJson(path.join(compactSerializedFixturesRocmDir, 'real-rocm-compact-serialized-fixtures.json'), {
+  slug: 'gpu-real-rocm-compact-serialized-fixtures-20260626',
+  real_rocm_profile: {
+    id: 'real-rocm-compact-serialized-fixtures',
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    target: {
+      entryFile: 'src/kernels/final_fixture_entry.hip',
+      deltaFile: 'src/kernels/final_fixture_delta.h',
+    },
+    proofObligations: {
+      targetClass: 'large_rocm_ml_infrastructure',
+      requiresFullRuntimeProof: true,
+      requiresOutputOracle: true,
+      requiresRunModes: true,
+      requiresNegativeEdit: true,
+    },
+  },
+  real_rocm_profile_proof_obligations: {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_profile_proof_obligations_facet.v1',
+    status: 'profile_proof_obligations_unmet',
+    proofAuthority: 'profile_configuration_gate_not_runtime_proof',
+    sourceDeltaFixtures: {
+      schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_fixtures.v1',
+      proofAuthority: 'profile_configuration_only_not_runtime_proof',
+      hotDelta2Declared: true,
+      hot_delta_2_declared: true,
+      secondDeltaDeclared: true,
+      second_delta_declared: true,
+      negativeEditDeclared: true,
+      negative_edit_declared: true,
+      fallbackFile: 'src/kernels/final_fixture_delta.h',
+      fallback_file: 'src/kernels/final_fixture_delta.h',
+      executableExtraDeltaCount: 1,
+      executable_extra_delta_count: 1,
+      hotDelta2FixtureCount: 1,
+      hot_delta_2_fixture_count: 1,
+      negativeEditFixtureCount: 1,
+      negative_edit_fixture_count: 1,
+    },
+  },
+  source_url: 'https://example.invalid/rocm/compact-serialized-fixtures.git',
+  repo_commit: 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1',
+  entry_file: 'src/kernels/final_fixture_entry.hip',
+  delta_file: 'src/kernels/final_fixture_delta.h',
+  target_name: 'CompactSerializedFixturesDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'CompactSerializedFixturesDriver',
+    finalAcceptanceTarget: 'CompactSerializedFixturesDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+    requirements: ['output_oracle_proven'],
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...compactSerializedFixturesProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-compact-serialized-fixtures-delta',
+    editHash: hashValue('real-rocm-compact-serialized-fixtures-delta'),
+  },
+  checks: [
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+  ],
+});
+const compactSerializedFixturesRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [compactSerializedFixturesRocmDir],
+  generatedAt: '2026-06-26T00:00:02.550Z',
+  includeUnproven: true,
+});
+const compactSerializedFixturesRocm = compactSerializedFixturesRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(compactSerializedFixturesRocm?.matrixOutcome, 'unproven');
+assert.equal(compactSerializedFixturesRocm.acceptedForGpuHmr, false);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.profileSourceDeltaPresent, false);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.serializedConfigurationUsed, true);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2Declared, true);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditDeclared, true);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.hotDelta2PhaseExecuted, false);
+assert.equal(compactSerializedFixturesRocm.realRocmProfileProofObligations.sourceDeltaFixtures.negativeEditPhaseExecuted, false);
+assert.ok(!compactSerializedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_fixture_missing',
+));
+assert.ok(!compactSerializedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_fixture_missing',
+));
+assert.ok(compactSerializedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_hot_delta_2_phase_not_executed',
+));
+assert.ok(compactSerializedFixturesRocm.reasons.includes(
+  'real_rocm_profile_proof_obligations:proof_obligation_negative_edit_phase_not_executed',
+));
+
 const forgedFinalExecutedFixturesRocmDir = path.join(logsRoot, 'real-rocm-forged-final-executed-fixtures');
 const forgedFinalExecutedFixturesProofMaterials = realRocmComputeProofLedgerMaterials(
   'forged-final-executed-fixtures',
