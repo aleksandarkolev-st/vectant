@@ -486,20 +486,35 @@ function normalizeRealRocmProfile(rawProfile, source) {
   };
 }
 
-function loadRealRocmProfile() {
-  const inline = process.env.SYNTHI_REAL_ROCM_PROFILE_JSON
-    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_JSON
+function allowPackagedDefaultRealRocmProfile(env = process.env, argv = process.argv) {
+  return argv.includes('--self-check')
+    || booleanFromEnv(env, 'SYNTHI_REAL_ROCM_ALLOW_DEFAULT_PROFILE', false);
+}
+
+function loadRealRocmProfile(env = process.env, argv = process.argv) {
+  const inline = env.SYNTHI_REAL_ROCM_PROFILE_JSON
+    ?? env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_JSON
     ?? '';
   if (String(inline).trim()) {
     return normalizeRealRocmProfile(JSON.parse(inline), 'env:SYNTHI_REAL_ROCM_PROFILE_JSON');
   }
-  const profilePath = process.env.SYNTHI_REAL_ROCM_PROFILE_PATH
-    ?? process.env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_PATH
-    ?? DEFAULT_REAL_ROCM_PROFILE_PATH;
-  const absolutePath = path.resolve(REPO_ROOT, profilePath);
+  const profilePath = env.SYNTHI_REAL_ROCM_PROFILE_PATH
+    ?? env.SYNTHI_GPU_HMR_REAL_ROCM_PROFILE_PATH
+    ?? '';
+  if (!String(profilePath).trim() && !allowPackagedDefaultRealRocmProfile(env, argv)) {
+    throw new Error(
+      'real ROCm validation requires SYNTHI_REAL_ROCM_PROFILE_PATH or '
+      + 'SYNTHI_REAL_ROCM_PROFILE_JSON; set SYNTHI_REAL_ROCM_ALLOW_DEFAULT_PROFILE=1 '
+      + 'only for packaged diagnostic/default-profile runs',
+    );
+  }
+  const selectedProfilePath = String(profilePath).trim() || DEFAULT_REAL_ROCM_PROFILE_PATH;
+  const absolutePath = path.resolve(REPO_ROOT, selectedProfilePath);
   return normalizeRealRocmProfile(
     JSON.parse(readFileSync(absolutePath, 'utf8')),
-    path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/'),
+    `${String(profilePath).trim() ? '' : 'packaged-default-diagnostic:'}${
+      path.relative(REPO_ROOT, absolutePath).replace(/\\/g, '/')
+    }`,
   );
 }
 
@@ -11551,6 +11566,25 @@ async function selfCheckRuntimeDispatchEvidence() {
     || rejectedInvalidContractEnv !== true
   ) {
     throw new Error('runtime output oracle/app-hook env contract self-check failed');
+  }
+  let rejectedMissingProfile = false;
+  try {
+    loadRealRocmProfile({}, ['node', 'gpu-hmr-real-rocm-repo-validation.mjs']);
+  } catch (err) {
+    rejectedMissingProfile = String(err?.message ?? '').includes(
+      'real ROCm validation requires SYNTHI_REAL_ROCM_PROFILE_PATH',
+    );
+  }
+  if (
+    rejectedMissingProfile !== true
+    || allowPackagedDefaultRealRocmProfile({}, ['node', 'gpu-hmr-real-rocm-repo-validation.mjs'])
+    || !allowPackagedDefaultRealRocmProfile(
+      { SYNTHI_REAL_ROCM_ALLOW_DEFAULT_PROFILE: '1' },
+      ['node', 'gpu-hmr-real-rocm-repo-validation.mjs'],
+    )
+    || !allowPackagedDefaultRealRocmProfile({}, ['node', 'gpu-hmr-real-rocm-repo-validation.mjs', '--self-check'])
+  ) {
+    throw new Error('real ROCm default profile gate self-check failed');
   }
   const saxpySelfCheckSource = `
 #include <cstddef>
