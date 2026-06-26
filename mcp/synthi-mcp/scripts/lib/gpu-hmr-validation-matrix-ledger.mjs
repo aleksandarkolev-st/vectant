@@ -6052,7 +6052,13 @@ function preflightBackendEvidenceAccepted(row = {}) {
 }
 
 function preflightAcceptedField(backend, acceptance) {
-  if (backend === 'oidn_hip') return acceptance.acceptedForHipOutputProof === true;
+  if (backend === 'oidn_hip') {
+    return acceptance.acceptedForOidnHipOutputProof === true
+      || (
+        acceptance.acceptedForHipOutputProof === true
+        && acceptance.outputOracleObservedAfterDispatch === true
+      );
+  }
   if (backend === 'opencl') return acceptance.acceptedForOpenClOutputProof === true;
   if (backend === 'vulkan') return acceptance.acceptedForVulkanPipelineProof === true;
   if (backend === 'webgpu') return acceptance.acceptedForWebGpuPipelineProof === true;
@@ -6060,10 +6066,19 @@ function preflightAcceptedField(backend, acceptance) {
 }
 
 function preflightRuntimeOnlyAccepted(backend, acceptance) {
+  if (backend === 'oidn_hip') return acceptance.acceptedForOidnHipRuntimePreflight === true;
   if (backend === 'webgpu') return acceptance.acceptedForWebGpuRuntimePreflight === true;
   if (backend === 'opencl') return acceptance.acceptedForOpenClRuntimePreflight === true;
   if (backend === 'vulkan') return acceptance.acceptedForVulkanRuntimePreflight === true;
   return false;
+}
+
+function preflightRuntimeOnlyOpenGaps(backend) {
+  if (backend === 'oidn_hip') return ['oidn_output_oracle_not_proven'];
+  if (backend === 'opencl') return ['opencl_dispatch_readback_output_oracle_not_proven'];
+  if (backend === 'vulkan') return ['vulkan_pipeline_frame_output_not_proven'];
+  if (backend === 'webgpu') return ['shader_pipeline_or_output_oracle_not_proven'];
+  return ['runtime_preflight_output_oracle_not_proven'];
 }
 
 async function preflightRow(json, filePath, context) {
@@ -6114,7 +6129,9 @@ async function preflightRow(json, filePath, context) {
     targetId: firstText(json.slug, backend),
     profileId: firstText(json.slug, backend),
     proofMode: 'runtime_preflight',
-    evidenceKind: backend === 'webgpu' ? 'runtime_preflight_diagnostic' : 'runtime_preflight_refusal',
+    evidenceKind: runtimeOnlyAccepted || backend === 'webgpu'
+      ? 'runtime_preflight_diagnostic'
+      : 'runtime_preflight_refusal',
     backendEvidence,
     backend_evidence: backendEvidence,
     matrixOutcome,
@@ -6156,7 +6173,7 @@ async function preflightRow(json, filePath, context) {
       proofAccepted ? 'preflight_does_not_prove_required_output_or_pipeline' : null,
     ]),
     openGaps: matrixOutcome === 'preflight_only'
-      ? ['shader_pipeline_or_output_oracle_not_proven']
+      ? preflightRuntimeOnlyOpenGaps(backend)
       : refusalProven
         ? compactStringList([
           backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',
@@ -10012,6 +10029,7 @@ function planCoverage(rows) {
     && row.runtimeResourceTrace?.bindGroupCount > 0
     && row.runtimeResourceTrace?.vertexBufferCount > 0
   );
+  const oidnHipPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'oidn_hip');
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
   const externalVisualRows = visualProfileRows(rows, (row) =>
     rowHasAcceptedVisualEvidence(row)
@@ -10079,6 +10097,15 @@ function planCoverage(rows) {
       openGaps: webgpuPreflightRows.length > 0
         ? compactStringList(webgpuPreflightRows.flatMap((row) => row.openGaps))
         : ['webgpu_runtime_preflight_required'],
+    }),
+    coverageEntry({
+      id: 'oidn_hip_runtime_preflight',
+      requirement: 'OIDN HIP runtime capability preflight without output-oracle overclaim',
+      status: oidnHipPreflightRows.length > 0 ? 'preflight_only' : 'missing',
+      rows: oidnHipPreflightRows,
+      openGaps: oidnHipPreflightRows.length > 0
+        ? compactStringList(oidnHipPreflightRows.flatMap((row) => row.openGaps))
+        : ['oidn_hip_runtime_preflight_required'],
     }),
     coverageEntry({
       id: 'external_engine_visual_profile',

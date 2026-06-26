@@ -266,7 +266,7 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
       && pathIntegrity.noSymlinkApplied === true
       && pathIntegrity.noSynthesizedRuntime === true
     );
-  const hipPassed = hipTestsPassed && pathIntegrityAccepted;
+  const oidnHipRuntimePreflightAccepted = hipTestsPassed && pathIntegrityAccepted;
   const cpuPassed = cpuTests.length > 0 && cpuTests.every((test) => test.passed);
   const missingLibs = ldd?.missingLibraries ?? [];
   const unsupportedReasons = [];
@@ -281,10 +281,13 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
     unsupportedReasons.push(gate);
   }
   return {
-    oidnHipAccepted: hipPassed,
+    oidnHipRuntimePreflightAccepted,
+    oidnHipOutputProofAccepted: false,
     oidnHipTestsPassed: hipTestsPassed,
     oidnCpuDiagnosticsPassed: cpuPassed,
-    resultState: hipPassed ? 'oidn-hip-device-available' : 'oidn-hip-rejected',
+    resultState: oidnHipRuntimePreflightAccepted
+      ? 'oidn-hip-runtime-preflight-accepted'
+      : 'oidn-hip-rejected',
     unsupportedReasons: [...new Set(unsupportedReasons)].sort(),
     missingLibraries: missingLibs,
   };
@@ -382,8 +385,16 @@ async function buildProof() {
     }),
     classification,
     acceptance: {
-      acceptedForHipOutputProof: classification.oidnHipAccepted,
-      cpuDiagnosticOnly: classification.oidnCpuDiagnosticsPassed && !classification.oidnHipAccepted,
+      acceptedForOidnHipRuntimePreflight: classification.oidnHipRuntimePreflightAccepted,
+      acceptedForHipOutputProof: false,
+      acceptedForOidnHipOutputProof: false,
+      gpuHmrSuccess: false,
+      reason: classification.oidnHipRuntimePreflightAccepted
+        ? 'preflight_only_oidn_output_oracle_still_required'
+        : 'oidn_hip_runtime_preflight_rejected',
+      cpuDiagnosticOnly:
+        classification.oidnCpuDiagnosticsPassed
+        && !classification.oidnHipRuntimePreflightAccepted,
       noShimApplied: pathIntegrity.noShimApplied,
       noSymlinkApplied: pathIntegrity.noSymlinkApplied,
       noSynthesizedRuntime: pathIntegrity.noSynthesizedRuntime,
@@ -403,7 +414,8 @@ async function writeProof(proof) {
     `result_state=${proof.classification.resultState}`,
     `oidn_tool=${proof.oidnTool ?? 'missing'}`,
     `hip_device_library=${proof.hipDeviceLibrary ?? 'missing'}`,
-    `oidn_hip_accepted=${proof.classification.oidnHipAccepted}`,
+    `oidn_hip_runtime_preflight_accepted=${proof.classification.oidnHipRuntimePreflightAccepted}`,
+    `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
     `oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`,
     `missing_libraries=${proof.classification.missingLibraries.join(',') || 'none'}`,
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
@@ -451,7 +463,9 @@ function runSelfCheck() {
     ],
     ldd: { missingLibraries: [] },
   });
-  assert(accepted.resultState === 'oidn-hip-device-available', 'accepted state not classified');
+  assert(accepted.resultState === 'oidn-hip-runtime-preflight-accepted', 'runtime preflight state not classified');
+  assert(accepted.oidnHipRuntimePreflightAccepted === true, 'HIP runtime preflight should be accepted');
+  assert(accepted.oidnHipOutputProofAccepted === false, 'OIDN HIP runtime preflight must not imply output proof');
   const shimRejected = classifyPreflight({
     oidnTool: './bin/oidnTest',
     tests: [
@@ -483,11 +497,12 @@ if (args.has('--self-check')) {
   const paths = await writeProof(proof);
   console.log(`proof_id=${proof.proofId}`);
   console.log(`result_state=${proof.classification.resultState}`);
-  console.log(`oidn_hip_accepted=${proof.classification.oidnHipAccepted}`);
+  console.log(`oidn_hip_runtime_preflight_accepted=${proof.classification.oidnHipRuntimePreflightAccepted}`);
+  console.log(`oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`);
   console.log(`oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`);
   console.log(`proof_json=${paths.jsonPath}`);
   console.log(`summary_txt=${paths.txtPath}`);
-  if (!proof.classification.oidnHipAccepted && (CFG.requireHip || !CFG.allowRejected)) {
+  if (!proof.classification.oidnHipRuntimePreflightAccepted && (CFG.requireHip || !CFG.allowRejected)) {
     process.exitCode = 1;
   }
 }

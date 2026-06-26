@@ -1644,6 +1644,54 @@ await writeJson(path.join(artifactsRoot, 'webgpu-preflight', 'webgpu-proof.json'
   proofId: 'webgpu-preflight-proof:sha256:synthetic',
 });
 
+const oidnHipPreflightEvidenceRef = 'evidence:synthetic-oidn-hip-preflight:runtime-capability';
+await writeJson(path.join(artifactsRoot, 'oidn-hip-preflight', 'oidn-hip-proof.json'), {
+  schema: 'synthi.gpu_hmr.oidn_preflight.v1',
+  slug: 'synthetic-oidn-hip-preflight',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      probe: 'oidn_hip_device_preflight',
+      toolFound: true,
+      hipDeviceLibraryFound: true,
+      hipTestCount: 2,
+      cpuDiagnosticCount: 2,
+      noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    evidenceRefs: [oidnHipPreflightEvidenceRef],
+  },
+  classification: {
+    oidnHipRuntimePreflightAccepted: true,
+    oidnHipOutputProofAccepted: false,
+    resultState: 'oidn-hip-runtime-preflight-accepted',
+    unsupportedReasons: [],
+  },
+  acceptance: {
+    acceptedForOidnHipRuntimePreflight: true,
+    acceptedForHipOutputProof: false,
+    acceptedForOidnHipOutputProof: false,
+    gpuHmrSuccess: false,
+    reason: 'preflight_only_oidn_output_oracle_still_required',
+    noShimApplied: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'oidn-preflight-proof:sha256:synthetic',
+});
+
 const legacySchemaOnlyPreflightDir = path.join(artifactsRoot, 'legacy-schema-only-preflight');
 await writeJson(path.join(legacySchemaOnlyPreflightDir, 'schema-only-opencl-preflight.json'), {
   schema: 'synthi.gpu_hmr.opencl_preflight.v1',
@@ -4229,6 +4277,23 @@ assert.deepEqual(webgpuPreflight.backendEvidence.evidenceRefs, [webGpuPreflightE
 assert.ok(webgpuPreflight.openGaps.includes('shader_pipeline_or_output_oracle_not_proven'));
 assert.ok(!webgpuPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
 
+const oidnHipPreflight = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'synthetic-oidn-hip-preflight'
+);
+assert.equal(oidnHipPreflight?.matrixOutcome, 'preflight_only');
+assert.equal(oidnHipPreflight.acceptedForGpuHmr, false);
+assert.equal(oidnHipPreflight.gpuHmrSuccess, false);
+assert.equal(oidnHipPreflight.refusalProven, false);
+assert.equal(oidnHipPreflight.proofChainAccepted, true);
+assert.equal(oidnHipPreflight.backendEvidence.accepted, true);
+assert.equal(oidnHipPreflight.backendEvidence.backend, 'oidn_hip');
+assert.equal(oidnHipPreflight.backendEvidence.backendFamily, 'oidn_hip');
+assert.deepEqual(oidnHipPreflight.backendEvidence.evidenceRefs, [oidnHipPreflightEvidenceRef]);
+assert.ok(oidnHipPreflight.openGaps.includes('oidn_output_oracle_not_proven'));
+assert.ok(!oidnHipPreflight.openGaps.includes('shader_pipeline_or_output_oracle_not_proven'));
+assert.ok(oidnHipPreflight.reasons.includes('preflight_only_oidn_output_oracle_still_required'));
+
 const legacySchemaOnlyPreflightLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
@@ -4940,6 +5005,11 @@ assert.equal(coverageById.get('webgpu_runtime_preflight')?.status, 'preflight_on
 assert.ok(coverageById.get('webgpu_runtime_preflight')?.openGaps.includes(
   'shader_pipeline_or_output_oracle_not_proven',
 ));
+assert.equal(coverageById.get('oidn_hip_runtime_preflight')?.status, 'preflight_only');
+assert.ok(coverageById.get('oidn_hip_runtime_preflight')?.openGaps.includes('oidn_output_oracle_not_proven'));
+assert.equal(coverageById.get('oidn_hip_output')?.status, 'missing');
+assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('oidn_hip_runtime_proof_required'));
+assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);
 assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
 assert.ok(coverageById.get('external_engine_visual_profile')?.rows.every((row) =>
   row.externalProfileSelection?.accepted === true
