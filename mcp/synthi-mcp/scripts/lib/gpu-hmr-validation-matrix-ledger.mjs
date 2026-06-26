@@ -2632,6 +2632,18 @@ function realRocmSameProcessRuntimeOracleGate({
       facet.appHookContractAccepted,
       facet.app_hook_contract_accepted,
     ) === true,
+    nativeRuntimeBridgeAccepted: firstBool(
+      facet.nativeRuntimeBridgeAccepted,
+      facet.native_runtime_bridge_accepted,
+    ) === true,
+    runtimeProofBridgeAccepted: firstBool(
+      facet.runtimeProofBridgeAccepted,
+      facet.runtime_proof_bridge_accepted,
+      facet.appHookContractAccepted,
+      facet.app_hook_contract_accepted,
+      facet.nativeRuntimeBridgeAccepted,
+      facet.native_runtime_bridge_accepted,
+    ) === true,
     artifactTransportObserved: firstBool(
       facet.artifactTransportObserved,
       facet.artifact_transport_observed,
@@ -2684,7 +2696,12 @@ function realRocmSameProcessRuntimeOracleGate({
     actuallyRequired && !present ? 'same_process_runtime_oracle_contract_missing' : null,
     present && !checks.schemaAccepted ? 'same_process_runtime_oracle_contract_schema_missing' : null,
     present && acceptedFlag !== true ? 'same_process_runtime_oracle_contract_not_accepted' : null,
-    present && !checks.appHookContractAccepted ? 'same_process_runtime_oracle_app_hook_contract_unproven' : null,
+    present && appHookGate.required === true && !checks.appHookContractAccepted
+      ? 'same_process_runtime_oracle_app_hook_contract_unproven'
+      : null,
+    present && !checks.runtimeProofBridgeAccepted
+      ? 'same_process_runtime_oracle_runtime_proof_bridge_unproven'
+      : null,
     present && !checks.artifactTransportObserved ? 'same_process_runtime_oracle_artifact_transport_missing' : null,
     present && !checks.epochPublicationObserved ? 'same_process_runtime_oracle_epoch_publication_missing' : null,
     present && !checks.dispatchTraceObserved ? 'same_process_runtime_oracle_dispatch_trace_missing' : null,

@@ -6966,6 +6966,130 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-ta
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
 
+const acceptedNativeBridgeRocmDir = path.join(logsRoot, 'real-rocm-accepted-native-runtime-bridge');
+const acceptedNativeBridgeReadback = path.join(acceptedNativeBridgeRocmDir, 'readback.bin');
+const acceptedNativeBridgeBytes = Buffer.from([9, 18, 27, 36, 45, 54, 63, 72]);
+await fs.mkdir(acceptedNativeBridgeRocmDir, { recursive: true });
+await fs.writeFile(acceptedNativeBridgeReadback, acceptedNativeBridgeBytes);
+await writeJson(`${acceptedNativeBridgeReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: acceptedNativeBridgeBytes.length,
+  shape: [acceptedNativeBridgeBytes.length],
+});
+await writeRgbaPng(`${acceptedNativeBridgeReadback}.card.png`, 8, 8, (x, y) => [
+  acceptedNativeBridgeBytes[(x + y) % acceptedNativeBridgeBytes.length],
+  96 + x,
+  160 + y,
+  255,
+]);
+const acceptedNativeBridgeProofMaterials =
+  realRocmComputeProofLedgerMaterials('accepted-native-runtime-bridge', {
+    projectId: 'real-rocm-accepted-native-runtime-bridge',
+    rawReadbackPath: acceptedNativeBridgeReadback,
+    rawReadbackBytes: acceptedNativeBridgeBytes,
+  });
+const acceptedNativeBridgeSameProcess =
+  acceptedSameProcessRuntimeOracle('accepted-native-runtime-bridge', {
+    declared: false,
+    appHookContractAccepted: false,
+    app_hook_contract_accepted: false,
+    nativeRuntimeBridgeAccepted: true,
+    native_runtime_bridge_accepted: true,
+    nativeRuntimeBridgeObserved: true,
+    native_runtime_bridge_observed: true,
+    runtimeProofBridgeAccepted: true,
+    runtime_proof_bridge_accepted: true,
+  });
+await writeJson(path.join(acceptedNativeBridgeRocmDir, 'real-rocm-accepted-native-runtime-bridge.json'), {
+  slug: 'gpu-real-rocm-accepted-native-runtime-bridge-20260626',
+  real_rocm_profile: { id: 'real-rocm-accepted-native-runtime-bridge' },
+  source_url: 'https://example.invalid/rocm/accepted-native-runtime-bridge.git',
+  repo_commit: 'dddddddddddddddddddddddddddddddddddddddd',
+  entry_file: 'src/kernels/native_bridge_entry.hip',
+  delta_file: 'src/kernels/native_bridge_delta.h',
+  target_name: 'AcceptedNativeRuntimeBridgeDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  real_rocm_same_process_runtime_oracle: acceptedNativeBridgeSameProcess,
+  same_process_runtime_oracle: acceptedNativeBridgeSameProcess,
+  runtime_proof_artifact: {
+    ...acceptedNativeBridgeProofMaterials.runtime_proof_artifact,
+    realRocmSameProcessRuntimeOracle: acceptedNativeBridgeSameProcess,
+    real_rocm_same_process_runtime_oracle: acceptedNativeBridgeSameProcess,
+    sameProcessRuntimeOracle: acceptedNativeBridgeSameProcess,
+    same_process_runtime_oracle: acceptedNativeBridgeSameProcess,
+  },
+  proof_ledger: acceptedNativeBridgeProofMaterials.proof_ledger,
+  proofLedger: acceptedNativeBridgeProofMaterials.proofLedger,
+  proof_ledger_query: acceptedNativeBridgeProofMaterials.proof_ledger_query,
+  proofLedgerQuery: acceptedNativeBridgeProofMaterials.proofLedgerQuery,
+  computeOracleArtifacts: acceptedNativeBridgeProofMaterials.computeOracleArtifacts,
+  compute_oracle_artifacts: acceptedNativeBridgeProofMaterials.computeOracleArtifacts,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-native-runtime-bridge-delta',
+    editHash: hashValue('real-rocm-accepted-native-runtime-bridge-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-native-runtime-bridge.git @ dddddddd files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedNativeBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedNativeBridgeRocmDir],
+  generatedAt: '2026-06-26T00:00:02.255Z',
+  includeUnproven: true,
+});
+const acceptedNativeBridgeRocm = acceptedNativeBridgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedNativeBridgeRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedNativeBridgeRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedNativeBridgeRocm.realRocmAppHookContractGate.required, false);
+assert.equal(acceptedNativeBridgeRocm.realRocmSameProcessRuntimeOracleGate.accepted, true);
+assert.equal(
+  acceptedNativeBridgeRocm.realRocmSameProcessRuntimeOracleGate.checks.appHookContractAccepted,
+  false,
+);
+assert.equal(
+  acceptedNativeBridgeRocm.realRocmSameProcessRuntimeOracleGate.checks.nativeRuntimeBridgeAccepted,
+  true,
+);
+assert.equal(
+  acceptedNativeBridgeRocm.realRocmSameProcessRuntimeOracleGate.checks.runtimeProofBridgeAccepted,
+  true,
+);
+
 const numericEpochComputeRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-numeric-epoch');
 const numericEpochComputeRawReadback = path.join(numericEpochComputeRocmDir, 'readback.bin');
 const numericEpochComputeBytes = Buffer.from([2, 4, 8, 16, 32, 64, 128, 255]);
