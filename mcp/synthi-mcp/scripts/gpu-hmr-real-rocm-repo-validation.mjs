@@ -8025,6 +8025,7 @@ function runtimeDispatchEvidence(workerEvidence) {
     const dispatchTableHash = logField(line, 'dispatch_table_hash');
     const dispatchTableEntryId = logField(line, 'dispatch_table_entry_id');
     const dispatchId = logField(line, 'dispatch_id');
+    const outputTargetId = logField(line, 'output_target_id') ?? logField(line, 'output_target');
     const generation = logField(line, 'generation') ?? logField(line, 'active_generation');
     const epoch = logField(line, 'epoch') ?? logField(line, 'active_epoch');
     const streamId = logField(line, 'stream');
@@ -8045,6 +8046,7 @@ function runtimeDispatchEvidence(workerEvidence) {
         ? dispatchTableEntryId
         : null,
       dispatchId: dispatchId && dispatchId !== 'none' ? dispatchId : null,
+      outputTargetId: outputTargetId && outputTargetId !== 'none' ? outputTargetId : null,
       generation: generation && generation !== 'none' ? generation : null,
       epoch: epoch && epoch !== 'none' ? epoch : null,
       streamId: streamId && streamId !== 'none' ? streamId : null,
@@ -8075,6 +8077,8 @@ function runtimeDispatchEvidence(workerEvidence) {
     runtime_artifact_id: latestSuccessRecord?.artifactId ?? null,
     dispatch_ids: [...new Set(successRecords.map((record) => record.dispatchId).filter(Boolean))],
     dispatch_id: latestSuccessRecord?.dispatchId ?? null,
+    output_target_ids: [...new Set(successRecords.map((record) => record.outputTargetId).filter(Boolean))],
+    output_target_id: latestSuccessRecord?.outputTargetId ?? null,
     generations: [...new Set(successRecords.map((record) => record.generation).filter(Boolean))],
     generation: latestSuccessRecord?.generation ?? null,
     epochs: [...new Set(successRecords.map((record) => record.epoch).filter(Boolean))],
@@ -8653,7 +8657,35 @@ function realRocmSameProcessRuntimeOracleFacet({
     runtimeDispatch.runtime_artifact_id,
     ...(Array.isArray(runtimeDispatch.runtime_artifact_ids) ? runtimeDispatch.runtime_artifact_ids : []),
   );
+  const dispatchArtifactIds = contentAddressedArtifactIds([
+    runtimeDispatch.runtime_artifact_id,
+    ...(Array.isArray(runtimeDispatch.runtime_artifact_ids) ? runtimeDispatch.runtime_artifact_ids : []),
+  ]);
+  const transportedArtifactIds = contentAddressedArtifactIds([
+    runtimeArtifactTransport.artifact_id,
+    runtimeArtifactTransport.artifactId,
+    runtimeArtifactTransport.selected_artifact_id,
+    runtimeArtifactTransport.selectedArtifactId,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_ids) ? runtimeArtifactTransport.artifact_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactIds) ? runtimeArtifactTransport.artifactIds : []),
+    ...(Array.isArray(runtimeArtifactTransport.selected_artifact_ids) ? runtimeArtifactTransport.selected_artifact_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.selectedArtifactIds) ? runtimeArtifactTransport.selectedArtifactIds : []),
+    runtimeArtifactTransport.ram_blob_id,
+    runtimeArtifactTransport.ramBlobId,
+    ...(Array.isArray(runtimeArtifactTransport.ram_blob_ids) ? runtimeArtifactTransport.ram_blob_ids : []),
+    ...(Array.isArray(runtimeArtifactTransport.ramBlobIds) ? runtimeArtifactTransport.ramBlobIds : []),
+    runtimeArtifactTransport.artifact_hash,
+    runtimeArtifactTransport.artifactHash,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_hashes) ? runtimeArtifactTransport.artifact_hashes : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactHashes) ? runtimeArtifactTransport.artifactHashes : []),
+    runtimeArtifactTransport.artifact_content_hash,
+    runtimeArtifactTransport.artifactContentHash,
+    ...(Array.isArray(runtimeArtifactTransport.artifact_content_hashes) ? runtimeArtifactTransport.artifact_content_hashes : []),
+    ...(Array.isArray(runtimeArtifactTransport.artifactContentHashes) ? runtimeArtifactTransport.artifactContentHashes : []),
+    runtimeArtifactTransport.blob_digest,
+  ]);
   const transportedArtifact = firstRuntimeText(
+    transportedArtifactIds[0],
     runtimeArtifactTransport.artifact_id,
     runtimeArtifactTransport.artifact_hash,
     runtimeArtifactTransport.blob_digest,
@@ -8703,9 +8735,9 @@ function realRocmSameProcessRuntimeOracleFacet({
   const artifactEpochMatched =
     artifactTransportObserved
     && dispatchTraceObserved
-    && Boolean(dispatchArtifact)
-    && Boolean(transportedArtifact)
-    && dispatchArtifact === transportedArtifact;
+    && dispatchArtifactIds.length > 0
+    && transportedArtifactIds.length > 0
+    && dispatchArtifactIds.some((artifactId) => transportedArtifactIds.includes(artifactId));
   const outputTargetObserved = Boolean(oracleOutputTarget && dispatchOutputTarget);
   const outputTargetMatched =
     outputTargetObserved
@@ -8821,6 +8853,10 @@ function realRocmSameProcessRuntimeOracleFacet({
     output_after_dispatch_observed: outputAfterDispatchObserved,
     artifactEpochMatched,
     artifact_epoch_matched: artifactEpochMatched,
+    dispatchArtifactIds,
+    dispatch_artifact_ids: dispatchArtifactIds,
+    transportedArtifactIds,
+    transported_artifact_ids: transportedArtifactIds,
     firewallAccepted,
     firewall_accepted: firewallAccepted,
     cpuHmrUsed: firewallEvidence.cpu_hmr_used ?? null,
@@ -8843,6 +8879,8 @@ function realRocmSameProcessRuntimeOracleFacet({
       publishedEpoch,
       dispatchArtifact,
       transportedArtifact,
+      dispatchArtifactIds,
+      transportedArtifactIds,
       dispatchOutputTarget,
       oracleOutputTarget,
       dispatchId,
@@ -8855,6 +8893,8 @@ function realRocmSameProcessRuntimeOracleFacet({
       publishedEpoch,
       dispatchArtifact,
       transportedArtifact,
+      dispatchArtifactIds,
+      transportedArtifactIds,
       dispatchOutputTarget,
       oracleOutputTarget,
       dispatchId,
@@ -9575,10 +9615,14 @@ function runtimeArtifactMatchesSelected({ runtimeDispatch, selectedArtifactIds }
 
 function contentAddressedArtifactIds(values) {
   return Array.isArray(values)
-    ? [...new Set(values.filter((value) =>
-        typeof value === 'string'
-        && /^artifact:sha256:[0-9a-f]{64}$/i.test(value.trim()),
-      ).map((value) => value.trim()))]
+    ? [...new Set(values.map((value) => {
+        if (typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        const artifactDigest = trimmed.match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1];
+        const shaDigest = trimmed.match(/^sha256:([0-9a-f]{64})$/i)?.[1];
+        const digest = artifactDigest ?? shaDigest;
+        return digest ? `artifact:sha256:${digest.toLowerCase()}` : null;
+      }).filter(Boolean))]
     : [];
 }
 
@@ -11497,6 +11541,46 @@ int main()
     || processBoundTransportProof.processId !== 'pid:4242'
   ) {
     throw new Error('runtime process identity propagation self-check failed');
+  }
+  const processBoundDispatchEvidence = runtimeDispatchEvidence([
+    `[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel grid=(1,1,1) block=(1,1,1) args=1 stream=0 shared_bytes=0 dispatch=ok generation=2 epoch=2 runtime_session=pid4242-123 artifact_id=${activeEpochArtifactId} dispatch_id=dispatch:process-bound output_target_id=target dispatch_timestamp=250`,
+  ]);
+  const processBoundSameProcess = realRocmSameProcessRuntimeOracleFacet({
+    appHookContractFacet: {
+      required: true,
+      declared: true,
+      canSatisfyRuntimeProof: true,
+      can_satisfy_runtime_proof: true,
+      evidenceRefs: ['evidence:app-hook:self-check'],
+    },
+    runtimeDispatch: processBoundDispatchEvidence,
+    runtimeArtifactTransport: processBoundTransportEvidence,
+    runtimeEpochSwap: {
+      proof: { resultState: 'gpu-hmr-epoch-swap-proven', epoch: '2' },
+      evidence: { total_count: 1, epoch: '2' },
+    },
+    runtimeOutputOracle: processBoundOutputEvidence,
+    runtimeHostPreservation: {
+      proof: { resultState: 'gpu-hmr-host-preservation-proven' },
+      evidence: { total_count: 3 },
+    },
+    fullRuntimeProof: { fullRuntimeProven: true },
+    firewallEvidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    },
+  });
+  if (
+    !processBoundDispatchEvidence.output_target_ids.includes('target')
+    || processBoundSameProcess.accepted !== true
+    || processBoundSameProcess.artifactEpochMatched !== true
+    || processBoundSameProcess.outputTargetMatched !== true
+    || processBoundSameProcess.outputAfterDispatchObserved !== true
+    || !processBoundSameProcess.dispatch_artifact_ids.includes(activeEpochArtifactId)
+    || !processBoundSameProcess.transported_artifact_ids.includes(activeEpochArtifactId)
+  ) {
+    throw new Error('same-process runtime oracle canonical evidence self-check failed');
   }
   const hostReplacedProof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: true,

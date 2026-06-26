@@ -84,6 +84,22 @@ function artifactIdDigest(value) {
   return value.trim().match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 }
 
+function artifactIdFromDigest(digest) {
+  return typeof digest === 'string' && /^[0-9a-f]{64}$/i.test(digest)
+    ? `artifact:sha256:${digest.toLowerCase()}`
+    : null;
+}
+
+function contentAddressedArtifactIds(values) {
+  return compactStringList(values)
+    .map((value) =>
+      artifactIdFromDigest(artifactIdDigest(value))
+      ?? artifactIdFromDigest(sha256Digest(value))
+    )
+    .filter(Boolean)
+    .filter((value, index, all) => all.indexOf(value) === index);
+}
+
 function evidenceRefToken(value) {
   const token = String(value ?? '')
     .trim()
@@ -1771,6 +1787,14 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const ramArtifactReferenceProvided = records.some((record) => record.ramReference === true);
   const ramBlobIds = compactStringList(records.map((record) => record.ramBlobId));
   const artifactHashes = compactStringList(records.map((record) => record.artifactHash));
+  const artifactIds = contentAddressedArtifactIds([
+    ...ramBlobIds,
+    ...artifactHashes,
+  ]);
+  const latestArtifactIds = latest
+    ? contentAddressedArtifactIds([latest.ramBlobId, latest.artifactHash])
+    : [];
+  const latestArtifactId = latestArtifactIds[0] ?? null;
   const ramBlobIdentityForRecord = (record) => {
     if (record.ramReference !== true) return false;
     const artifactDigest = sha256Digest(record.artifactHash);
@@ -1815,7 +1839,23 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
     ram_artifact_reference_provided: ramArtifactReferenceProvided,
     ram_blob_identity_proven: ramBlobIdentityProven,
     ram_blob_ids: ramBlobIds,
+    ramBlobIds,
+    ram_blob_id: latest?.ramBlobId ?? null,
+    ramBlobId: latest?.ramBlobId ?? null,
     artifact_hashes: artifactHashes,
+    artifactHashes,
+    artifact_hash: latest?.artifactHash ?? null,
+    artifactHash: latest?.artifactHash ?? null,
+    artifact_content_hashes: artifactHashes,
+    artifactContentHashes: artifactHashes,
+    artifact_id: latestArtifactId,
+    artifactId: latestArtifactId,
+    artifact_ids: artifactIds,
+    artifactIds,
+    selected_artifact_id: latestArtifactId,
+    selectedArtifactId: latestArtifactId,
+    selected_artifact_ids: artifactIds,
+    selectedArtifactIds: artifactIds,
     ram_transport_proven: effectiveRamTransportProven,
     loader_transports: loaderTransports,
     reload_request_transports: reloadRequestTransports,
@@ -1859,6 +1899,8 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
   const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
   const oracleKindAccepted = latest !== null && gpuHmrOutputOracleKindAccepted(latest.kind);
+  const latestAfterDispatchId = latest?.afterDispatchId ?? latest?.dispatchId ?? null;
+  const latestDispatchId = latest?.dispatchId ?? latest?.afterDispatchId ?? null;
   const valueCompatibility = latest !== null
     ? gpuHmrOracleValuesCompatible(latest.expected, latest.actual, latest.tolerance)
     : {
@@ -1894,7 +1936,9 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     output_oracle: latest
       ? {
           oracleId: latest.oracleId,
+          oracle_id: latest.oracleId,
           requiredOracleId: latest.requiredOracleId,
+          required_oracle_id: latest.requiredOracleId,
           kind: latest.kind,
           producer: latest.producer,
           expected: latest.expected,
@@ -1902,29 +1946,56 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           passed: latest.passed,
           tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
+          runtime_session: latest.runtimeSession,
           processId: processIdFromRuntimeSession(latest.runtimeSession),
+          process_id: processIdFromRuntimeSession(latest.runtimeSession),
           outputTargetId: latest.outputTargetId,
+          output_target_id: latest.outputTargetId,
+          target_id: latest.outputTargetId,
           readbackTimestamp: latest.readbackTimestamp,
+          readback_timestamp: latest.readbackTimestamp,
+          timestamp_after_dispatch: latest.readbackTimestamp,
           artifactId: latest.artifactId,
-          afterDispatchId: latest.afterDispatchId ?? latest.dispatchId,
-          after_dispatch_id: latest.afterDispatchId ?? latest.dispatchId,
-          dispatchId: latest.dispatchId ?? latest.afterDispatchId,
-          dispatch_id: latest.dispatchId ?? latest.afterDispatchId,
+          artifact_id: latest.artifactId,
+          afterDispatchId: latestAfterDispatchId,
+          after_dispatch_id: latestAfterDispatchId,
+          dispatchId: latestDispatchId,
+          dispatch_id: latestDispatchId,
           visualEvidenceRef: latest.visualEvidenceRef,
+          visual_evidence_ref: latest.visualEvidenceRef,
           probeMode: latest.probeMode,
+          probe_mode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,
+          probe_config_hash: latest.probeConfigHash,
           readbackBytes: latest.readbackBytes,
+          readback_bytes: latest.readbackBytes,
           readbackSampleStride: latest.readbackSampleStride,
+          readback_sample_stride: latest.readbackSampleStride,
           readbackSampleSha256: latest.readbackSampleSha256,
+          readback_sample_sha256: latest.readbackSampleSha256,
           readbackSampleHex: latest.readbackSampleHex,
+          readback_sample_hex: latest.readbackSampleHex,
           probeEvidenceRefs: compactStringList([
             latest.probeEvidenceRef,
             ...evidenceRefs,
           ]),
+          probe_evidence_refs: compactStringList([
+            latest.probeEvidenceRef,
+            ...evidenceRefs,
+          ]),
           kindAccepted: oracleKindAccepted,
+          kind_accepted: oracleKindAccepted,
           evidenceRefs,
+          evidence_refs: evidenceRefs,
         }
       : null,
+    output_target_id: latest?.outputTargetId ?? null,
+    target_id: latest?.outputTargetId ?? null,
+    artifact_id: latest?.artifactId ?? null,
+    after_dispatch_id: latestAfterDispatchId,
+    dispatch_id: latestDispatchId,
+    timestamp_after_dispatch: latest?.readbackTimestamp ?? null,
+    readback_timestamp: latest?.readbackTimestamp ?? null,
     evidence_refs: evidenceRefs,
     lines: records.map((record) => record.line).slice(-20),
   };
