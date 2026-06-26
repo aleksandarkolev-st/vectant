@@ -1870,6 +1870,196 @@ function sourceAdaptationProofFacet(...sources) {
   };
 }
 
+function eventArtifactHash(event = {}) {
+  return firstText(
+    event.artifactHash,
+    event.artifact_hash,
+    event.artifactId,
+    event.artifact_id,
+  );
+}
+
+function artifactHashesForNoShimIdentity(row = {}) {
+  const record = ledgerRecordForRow(row);
+  const contract = compactObject(row.acceptanceContract ?? row.acceptance_contract);
+  const fissionReport = compactObject(
+    row.fissionReport
+    ?? row.fission_report
+    ?? contract.fissionReport
+    ?? contract.fission_report,
+  );
+  const hashes = compactStringList([
+    row.artifactAfterHash,
+    row.artifact_after_hash,
+    row.artifactHash,
+    row.artifact_hash,
+    record.artifactAfterHash,
+    record.artifact_after_hash,
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    fissionReport.artifact_hash_after,
+    fissionReport.artifactHashAfter,
+    eventArtifactHash(record.loaderEvent ?? record.loader_event),
+    eventArtifactHash(record.epochPublishEvent ?? record.epoch_publish_event),
+    eventArtifactHash(record.dispatchEvent ?? record.dispatch_event),
+    eventArtifactHash(record.outputEvent ?? record.output_event),
+  ]);
+  return {
+    raw: hashes,
+    normalized: compactStringList(hashes.map(normalizedArtifactHash)),
+  };
+}
+
+function sourceDeltaExecutionIdentity(sourceDeltaExecution = {}) {
+  const phases = compactObjectList(sourceDeltaExecution.phases);
+  return {
+    editHashes: compactStringList(phases.map((phase) => firstText(phase.editHash, phase.edit_hash))),
+    beforeHashes: compactStringList(phases.map((phase) => firstText(
+      phase.sourceBeforeHash,
+      phase.source_before_hash,
+      phase.beforeHash,
+      phase.before_hash,
+    ))),
+    afterHashes: compactStringList(phases.map((phase) => firstText(
+      phase.sourceAfterHash,
+      phase.source_after_hash,
+      phase.afterHash,
+      phase.after_hash,
+    ))),
+    changedSources: compactStringList(phases.map((phase) => firstText(
+      phase.file,
+      phase.path,
+      phase.sourcePath,
+      phase.source_path,
+    ))),
+    sourceWriteObserved: phases.some((phase) => firstBool(
+      phase.sourceWriteObserved,
+      phase.source_write_observed,
+    ) === true),
+  };
+}
+
+function noShimSourceIdentityFacet(row = {}) {
+  const record = ledgerRecordForRow(row);
+  const runMode = compactObject(row.runMode ?? row.run_mode);
+  const timings = compactObject(row.timings);
+  const timingMetrics = compactObject(timings.timingMetrics ?? timings.timing_metrics);
+  const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
+  const contract = compactObject(row.acceptanceContract ?? row.acceptance_contract);
+  const artifactIdentity = compactObject(contract.artifactIdentity ?? contract.artifact_identity);
+  const fissionReport = compactObject(
+    row.fissionReport
+    ?? row.fission_report
+    ?? contract.fissionReport
+    ?? contract.fission_report,
+  );
+  const sourceDeltaIdentity = sourceDeltaExecutionIdentity(compactObject(
+    row.realRocmSourceDeltaExecution
+    ?? row.real_rocm_source_delta_execution
+    ?? row.sourceDeltaExecution
+    ?? row.source_delta_execution,
+  ));
+  const sourceAdaptation = sourceAdaptationProofFacet(row);
+  const artifactHashes = artifactHashesForNoShimIdentity(row);
+  const runtimeEventHashes = [
+    eventArtifactHash(record.loaderEvent ?? record.loader_event),
+    eventArtifactHash(record.epochPublishEvent ?? record.epoch_publish_event),
+    eventArtifactHash(record.dispatchEvent ?? record.dispatch_event),
+    eventArtifactHash(record.outputEvent ?? record.output_event),
+  ].map(normalizedArtifactHash).filter(Boolean);
+  const artifactAfterHash = firstText(
+    normalizedArtifactHash(row.artifactAfterHash),
+    normalizedArtifactHash(row.artifact_after_hash),
+    normalizedArtifactHash(record.artifactAfterHash),
+    normalizedArtifactHash(record.artifact_after_hash),
+    normalizedArtifactHash(contract.artifact_hash_after),
+    normalizedArtifactHash(contract.artifactHashAfter),
+    normalizedArtifactHash(fissionReport.artifact_hash_after),
+    normalizedArtifactHash(fissionReport.artifactHashAfter),
+    artifactHashes.normalized[0],
+  );
+  const runtimeArtifactChainClosed =
+    Boolean(artifactAfterHash)
+    && runtimeEventHashes.length >= 3
+    && runtimeEventHashes.every((hash) => hash === artifactAfterHash);
+  const editHashes = compactStringList([
+    row.editHash,
+    row.edit_hash,
+    runMode.editHash,
+    runMode.edit_hash,
+    timingMetrics.editHash,
+    timingMetrics.edit_hash,
+    ...sourceDeltaIdentity.editHashes,
+  ]);
+  const contentAddressedEditHashes = editHashes.filter(contentAddressedSha256);
+  const sourceHashes = compactStringList([
+    ...sourceDeltaIdentity.beforeHashes,
+    ...sourceDeltaIdentity.afterHashes,
+  ]).filter(contentAddressedSha256);
+  const changedSources = compactStringList([
+    ...sourceDeltaIdentity.changedSources,
+    ...(Array.isArray(fissionReport.changedSources) ? fissionReport.changedSources : []),
+    ...(Array.isArray(fissionReport.changed_sources) ? fissionReport.changed_sources : []),
+    ...(Array.isArray(artifactIdentity.sourcePaths) ? artifactIdentity.sourcePaths : []),
+    ...(Array.isArray(artifactIdentity.source_paths) ? artifactIdentity.source_paths : []),
+  ]);
+  const proofIds = compactStringList([
+    ...(Array.isArray(row.proofIds) ? row.proofIds : []),
+    ...(Array.isArray(row.proof_ids) ? row.proof_ids : []),
+    row.ledger?.proofId,
+    row.ledger?.proof_id,
+    record.proofId,
+    record.proof_id,
+    runtimeProofArtifact.proofId,
+    runtimeProofArtifact.proof_id,
+  ]);
+  const evidenceRefs = compactStringList([
+    ...rowEvidenceRefs(row),
+    ...evidenceRefsFromValue(contract),
+    ...evidenceRefsFromValue(fissionReport),
+  ]);
+  const sourceIdentityPresent =
+    contentAddressedEditHashes.length > 0
+    || sourceHashes.length > 0
+    || changedSources.length > 0
+    || sourceDeltaIdentity.sourceWriteObserved === true;
+  const failedGates = compactStringList([
+    sourceAdaptation.acceptedForNoShimHmr === true
+      ? null
+      : 'no_shim_source_identity_source_adaptation_detected',
+    sourceIdentityPresent ? null : 'no_shim_source_identity_source_or_edit_hash_missing',
+    artifactAfterHash ? null : 'no_shim_source_identity_artifact_after_hash_missing',
+    runtimeArtifactChainClosed ? null : 'no_shim_source_identity_runtime_artifact_chain_unclosed',
+    proofIds.length > 0 ? null : 'no_shim_source_identity_runtime_proof_binding_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.no_shim_source_identity.v1',
+    schema_version: 'synthi.gpu_hmr.no_shim_source_identity.v1',
+    authority: 'matrix_recomputed_from_ledger_runtime_and_source_identity',
+    accepted: failedGates.length === 0,
+    sourceIdentityPresent,
+    source_identity_present: sourceIdentityPresent,
+    runtimeArtifactChainClosed,
+    runtime_artifact_chain_closed: runtimeArtifactChainClosed,
+    artifactAfterHash,
+    artifact_after_hash: artifactAfterHash,
+    contentAddressedEditHashes,
+    content_addressed_edit_hashes: contentAddressedEditHashes,
+    sourceHashes,
+    source_hashes: sourceHashes,
+    changedSources,
+    changed_sources: changedSources,
+    proofIds,
+    proof_ids: proofIds,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 function generalityClaimFacet(row = {}) {
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? inferFullRuntimeAcceptanceScope(row);
   const claimScope = firstText(row.claimScope, row.claim_scope) ?? claimScopeForAcceptanceScope(acceptanceScope);
@@ -2063,6 +2253,8 @@ function finalizeRow(seed) {
   }
   row.fullRuntimeEvidenceAuthority = fullRuntimeEvidenceAuthorityFacet(row);
   row.full_runtime_evidence_authority = row.fullRuntimeEvidenceAuthority;
+  row.noShimSourceIdentity = noShimSourceIdentityFacet(row);
+  row.no_shim_source_identity = row.noShimSourceIdentity;
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -3027,6 +3219,10 @@ function rowSafetyFailures(row) {
     if (sourceAdaptation.acceptedForNoShimHmr !== true) {
       failures.push(...sourceAdaptation.failedGates);
     }
+    const noShimSourceIdentity = noShimSourceIdentityFacet(row);
+    if (noShimSourceIdentity.accepted !== true) {
+      failures.push(...compactObjectList(noShimSourceIdentity.failedGates ?? noShimSourceIdentity.failed_gates));
+    }
   }
   if (row.acceptedForGpuHmr === true && row.cpuHmrUsed !== false) {
     failures.push({
@@ -3386,6 +3582,12 @@ async function runtimeProofRow(json, filePath, context) {
     proofChain: accepted ? 'proof_ledger_invariant_query' : 'proof_ledger_rejected',
     proofIds: proofIdsFrom(json, ledger, runtimeProofArtifactRaw),
     ledger,
+    acceptanceContract: contract,
+    acceptance_contract: contract,
+    artifactAfterHash: firstText(ledgerRecord.artifactAfterHash, ledgerRecord.artifact_after_hash),
+    artifact_after_hash: firstText(ledgerRecord.artifactAfterHash, ledgerRecord.artifact_after_hash),
+    artifactBeforeHash: firstText(ledgerRecord.artifactBeforeHash, ledgerRecord.artifact_before_hash),
+    artifact_before_hash: firstText(ledgerRecord.artifactBeforeHash, ledgerRecord.artifact_before_hash),
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
     outputOracleFacet,
@@ -3855,6 +4057,30 @@ async function agentSplitRow(records, filePath, context) {
       waitDetail?.gpu_proof_telemetry?.proof_id,
     ),
     ledger,
+    acceptanceContract: compactObject(
+      runtimeProofArtifact.acceptanceContract
+      ?? runtimeProofArtifact.acceptance_contract,
+    ),
+    acceptance_contract: compactObject(
+      runtimeProofArtifact.acceptanceContract
+      ?? runtimeProofArtifact.acceptance_contract,
+    ),
+    artifactAfterHash: firstText(
+      recomputedLedger.record?.artifactAfterHash,
+      recomputedLedger.record?.artifact_after_hash,
+    ),
+    artifact_after_hash: firstText(
+      recomputedLedger.record?.artifactAfterHash,
+      recomputedLedger.record?.artifact_after_hash,
+    ),
+    artifactBeforeHash: firstText(
+      recomputedLedger.record?.artifactBeforeHash,
+      recomputedLedger.record?.artifact_before_hash,
+    ),
+    artifact_before_hash: firstText(
+      recomputedLedger.record?.artifactBeforeHash,
+      recomputedLedger.record?.artifact_before_hash,
+    ),
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,
@@ -8118,6 +8344,42 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       }),
     ),
     ledger,
+    acceptanceContract: compactObject(
+      json.acceptanceContract
+      ?? json.acceptance_contract
+      ?? runtimeProofArtifact.acceptanceContract
+      ?? runtimeProofArtifact.acceptance_contract,
+    ),
+    acceptance_contract: compactObject(
+      json.acceptanceContract
+      ?? json.acceptance_contract
+      ?? runtimeProofArtifact.acceptanceContract
+      ?? runtimeProofArtifact.acceptance_contract,
+    ),
+    artifactAfterHash: firstText(
+      json.artifactAfterHash,
+      json.artifact_after_hash,
+      ledger.record?.artifactAfterHash,
+      ledger.record?.artifact_after_hash,
+    ),
+    artifact_after_hash: firstText(
+      json.artifactAfterHash,
+      json.artifact_after_hash,
+      ledger.record?.artifactAfterHash,
+      ledger.record?.artifact_after_hash,
+    ),
+    artifactBeforeHash: firstText(
+      json.artifactBeforeHash,
+      json.artifact_before_hash,
+      ledger.record?.artifactBeforeHash,
+      ledger.record?.artifact_before_hash,
+    ),
+    artifact_before_hash: firstText(
+      json.artifactBeforeHash,
+      json.artifact_before_hash,
+      ledger.record?.artifactBeforeHash,
+      ledger.record?.artifact_before_hash,
+    ),
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
     sourceAdaptation,

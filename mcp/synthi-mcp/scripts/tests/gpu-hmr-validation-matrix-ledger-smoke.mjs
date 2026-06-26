@@ -1075,7 +1075,7 @@ await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split',
-    editHash: 'sha256:cold-split',
+    editHash: hashValue('cold-split'),
   },
 });
 
@@ -1092,7 +1092,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1',
-    editHash: 'sha256:hot1',
+    editHash: hashValue('source-edit:hot1'),
   },
 });
 
@@ -1110,7 +1110,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
     metricScope: 'hot_delta_2',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot2',
-    editHash: 'sha256:hot2',
+    editHash: hashValue('source-edit:hot2'),
     editKind: 'different_gpu_edit',
     differentEdit: true,
   },
@@ -1140,7 +1140,7 @@ await writeJson(path.join(webgpuSingleFrameColdDir, 'run-mode-cold-single-frame.
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-webgpu-frame',
-    editHash: 'sha256:webgpu-single-frame-cold',
+    editHash: hashValue('webgpu-single-frame-cold'),
   },
 });
 await writeJson(path.join(webgpuSingleFrameColdDir, 'run-mode-hot-single-frame-forged.json'), {
@@ -1166,7 +1166,7 @@ await writeJson(path.join(webgpuSingleFrameColdDir, 'run-mode-hot-single-frame-f
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:webgpu-single-frame-hot-forged',
-    editHash: 'sha256:webgpu-single-frame-hot-forged',
+    editHash: hashValue('webgpu-single-frame-hot-forged'),
   },
 });
 
@@ -1356,7 +1356,7 @@ await writeJson(path.join(visualDir, 'run-mode-forged-source-adapted-webgpu.json
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:forged-source-adapted-webgpu',
-    editHash: 'sha256:forged-source-adapted-webgpu',
+    editHash: hashValue('forged-source-adapted-webgpu'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -1396,7 +1396,7 @@ await writeJson(path.join(visualDir, 'run-mode-forged-top-level-source-adapted-w
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:forged-top-level-source-adapted-webgpu',
-    editHash: 'sha256:forged-top-level-source-adapted-webgpu',
+    editHash: hashValue('forged-top-level-source-adapted-webgpu'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -1467,7 +1467,7 @@ await writeJson(path.join(visualDir, 'forged-unlinked-flow-cold.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split-forged-unlinked',
-    editHash: 'sha256:forged-unlinked-flow-cold',
+    editHash: hashValue('forged-unlinked-flow-cold'),
   },
 });
 
@@ -1485,7 +1485,7 @@ await writeJson(path.join(visualDir, 'stale-cold-only.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split',
-    editHash: 'sha256:stale-cold-only',
+    editHash: hashValue('stale-cold-only'),
   },
 });
 
@@ -3292,7 +3292,7 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split',
-    editHash: 'sha256:accepted-hiprt-cold',
+    editHash: hashValue('accepted-hiprt-cold'),
     editKind: 'cold_split',
   },
 });
@@ -3325,7 +3325,7 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
     metricScope: 'hot_delta_2',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:accepted-hiprt-hot2',
-    editHash: 'sha256:accepted-hiprt-hot2',
+    editHash: hashValue('accepted-hiprt-hot2'),
     editKind: 'different_gpu_edit',
     differentEdit: true,
   },
@@ -3358,7 +3358,7 @@ await writeJson(path.join(hiprtDir, 'forged-hiprt-missing-instrumentation-hot.js
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:forged-hiprt-missing-instrumentation',
-    editHash: 'sha256:forged-hiprt-missing-instrumentation',
+    editHash: hashValue('forged-hiprt-missing-instrumentation'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -3404,7 +3404,7 @@ await writeJson(path.join(truncatedVisualDir, 'hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:truncated-visual-hot1',
-    editHash: 'sha256:truncated-visual-hot1',
+    editHash: hashValue('truncated-visual-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -3433,7 +3433,7 @@ await writeJson(path.join(noVisualOptOutDir, 'hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:no-visual-optout-hot1',
-    editHash: 'sha256:no-visual-optout-hot1',
+    editHash: hashValue('no-visual-optout-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -3610,6 +3610,11 @@ assert.ok(forgedGenericOpencl.reasons.includes('gpu_hmr_success_requires_known_a
 assert.ok(forgedGenericOpencl.openGaps.includes('gpu_hmr_success_requires_known_acceptance_scope'));
 
 function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
+  const artifactBeforeHash = hashValue(`accepted-row:${targetId}:artifact-before`);
+  const artifactAfterHash = hashValue(`accepted-row:${targetId}:artifact-after`);
+  const ledgerProofId = `gpu-ledger-proof:sha256:${sha256Hex(`accepted-row:${targetId}:ledger`)}`;
+  const runtimeProofId = `gpu-runtime-proof:sha256:${sha256Hex(`accepted-row:${targetId}:runtime`)}`;
+  const editHash = hashValue(`accepted-row:${targetId}:edit`);
   return {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`missing-firewall:${targetId}`)}`,
@@ -3622,16 +3627,41 @@ function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
     proofChainAccepted: true,
     acceptanceScope: 'rocm_hip_declared_runtime_profile',
     claimScope: 'scoped_profile',
+    proofIds: [ledgerProofId, runtimeProofId],
     ledger: {
       present: true,
       source: 'recomputed_ledger',
+      proofId: ledgerProofId,
       gpuHmrSuccess: true,
       failedInvariants: [],
+      record: {
+        proofId: ledgerProofId,
+        proof_id: ledgerProofId,
+        artifact_before_hash: artifactBeforeHash,
+        artifact_after_hash: artifactAfterHash,
+        loader_event: {
+          artifact_hash: artifactAfterHash,
+        },
+        epoch_publish_event: {
+          artifact_hash: artifactAfterHash,
+        },
+        dispatch_event: {
+          artifact_hash: artifactAfterHash,
+        },
+        output_event: {
+          artifact_hash: artifactAfterHash,
+        },
+      },
     },
     runtimeProofArtifact: {
       present: true,
+      proofId: runtimeProofId,
       accepted: true,
       failedGates: [],
+    },
+    runMode: {
+      editHash,
+      edit_hash: editHash,
     },
     visual: {
       required: false,
@@ -3793,6 +3823,12 @@ const missingLedgerAuthorityQuery = queryGpuHmrValidationMatrixLedger({
       cpuHmrUsed: false,
       fullRebuildUsed: false,
       processRestarted: false,
+      ledger: {
+        present: true,
+        source: 'recomputed_ledger',
+        gpuHmrSuccess: true,
+        failedInvariants: [],
+      },
     }),
   ],
 });
@@ -3908,6 +3944,45 @@ assert.equal(sourceDerivedOracleAdaptationQuery.accepted, false);
 assert.equal(sourceDerivedOracleAdaptationQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
 assert.ok(sourceDerivedOracleAdaptationQuery.failedGates.some((gate) =>
   gate.code === 'source_adapted_profile_not_no_shim_gpu_hmr'
+));
+const missingNoShimSourceIdentityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-missing-no-shim-source-identity', {
+      proofIds: [],
+      ledger: {
+        present: true,
+        source: 'recomputed_ledger',
+        gpuHmrSuccess: true,
+        failedInvariants: [],
+      },
+      runtimeProofArtifact: {
+        present: true,
+        accepted: true,
+        failedGates: [],
+      },
+      runMode: {},
+      noShimSourceIdentity: {
+        schemaVersion: 'synthi.gpu_hmr.no_shim_source_identity.v1',
+        accepted: true,
+        proofIds: ['forged:no-shim-proof'],
+      },
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+  ],
+});
+assert.equal(missingNoShimSourceIdentityQuery.accepted, false);
+assert.equal(missingNoShimSourceIdentityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(missingNoShimSourceIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'no_shim_source_identity_source_or_edit_hash_missing'
+));
+assert.ok(missingNoShimSourceIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'no_shim_source_identity_runtime_artifact_chain_unclosed'
+));
+assert.ok(missingNoShimSourceIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'no_shim_source_identity_runtime_proof_binding_missing'
 ));
 const unknownAcceptanceScopeQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -4979,7 +5054,7 @@ await writeJson(path.join(reverseArtifactNamespaceDir, 'hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:artifact-namespace-reverse-hot1',
-    editHash: 'sha256:artifact-namespace-reverse-hot1',
+    editHash: hashValue('artifact-namespace-reverse-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5004,7 +5079,7 @@ await writeJson(path.join(reverseArtifactNamespaceDir, 'cold.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split:artifact-namespace-reverse',
-    editHash: 'sha256:artifact-namespace-reverse-cold',
+    editHash: hashValue('artifact-namespace-reverse-cold'),
   },
 });
 const reverseArtifactNamespaceLedger = await collectGpuHmrValidationMatrixLedger({
@@ -5068,7 +5143,7 @@ await writeJson(path.join(mismatchedArtifactNamespaceDir, 'hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:artifact-namespace-mismatch-hot1',
-    editHash: 'sha256:artifact-namespace-mismatch-hot1',
+    editHash: hashValue('artifact-namespace-mismatch-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5093,7 +5168,7 @@ await writeJson(path.join(mismatchedArtifactNamespaceDir, 'cold.json'), {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split:artifact-namespace-mismatch',
-    editHash: 'sha256:artifact-namespace-mismatch-cold',
+    editHash: hashValue('artifact-namespace-mismatch-cold'),
   },
 });
 const mismatchedArtifactNamespaceLedger = await collectGpuHmrValidationMatrixLedger({
@@ -5142,7 +5217,7 @@ await writeJson(path.join(spoofNamedFlowDir, 'hot1-name-only.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:flow-name-only-hot1',
-    editHash: 'sha256:flow-name-only-hot1',
+    editHash: hashValue('flow-name-only-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5202,7 +5277,7 @@ await writeJson(path.join(forgedAcceptedProfileDir, 'hot1-forged-flow-profile.js
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:not-flow-forged-profile',
-    editHash: 'sha256:not-flow-forged-profile',
+    editHash: hashValue('not-flow-forged-profile'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5266,7 +5341,7 @@ await writeJson(path.join(substringOnlyProfileDir, 'hot1-substring-only-profile.
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:flow-substring-only-profile',
-    editHash: 'sha256:flow-substring-only-profile',
+    editHash: hashValue('flow-substring-only-profile'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5333,7 +5408,7 @@ await writeJson(path.join(explicitContractSourceProfileDir, 'hot1-explicit-contr
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:flow-explicit-contract-source-profile',
-    editHash: 'sha256:flow-explicit-contract-source-profile',
+    editHash: hashValue('flow-explicit-contract-source-profile'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -5384,7 +5459,7 @@ await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
     metricScope: 'hot_delta_1',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:duplicate-hot1',
-    editHash: 'sha256:same-edit',
+    editHash: hashValue('same-edit'),
   },
 });
 await writeJson(path.join(duplicateHot2Dir, 'hot2.json'), {
@@ -5409,7 +5484,7 @@ await writeJson(path.join(duplicateHot2Dir, 'hot2.json'), {
     metricScope: 'hot_delta_2',
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:duplicate-hot2',
-    editHash: 'sha256:same-edit',
+    editHash: hashValue('same-edit'),
     editKind: 'gpu_artifact_edit',
     differentEdit: false,
   },
