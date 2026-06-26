@@ -246,6 +246,52 @@ function normalizeAgentVisualProof(rawValue = {}) {
   };
 }
 
+function profileJsonValue(value, field) {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`invalid agent visual profile ${field}: expected finite JSON number`);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => profileJsonValue(item, `${field}[${index}]`))
+      .filter((item) => item !== undefined);
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    const out = {};
+    for (const [key, item] of entries) {
+      out[key] = profileJsonValue(item, `${field}.${key}`);
+    }
+    return out;
+  }
+  throw new Error(`invalid agent visual profile ${field}: expected JSON value`);
+}
+
+function normalizeAgentVisualSceneManifest(rawValue, declaredHash = '') {
+  if (rawValue === undefined || rawValue === null) return null;
+  const raw = profileObject(rawValue, 'visualSceneManifest');
+  if (Object.keys(raw).length === 0) {
+    throw new Error('invalid agent visual profile visualSceneManifest: expected non-empty object');
+  }
+  const manifest = profileJsonValue(raw, 'visualSceneManifest');
+  const manifestHash = `sha256:${sha256Hex(stableJson(manifest))}`;
+  validateDeclaredSourceHash(declaredHash, manifestHash, 'visualSceneManifestHash');
+  const evidenceRef = `evidence:agent-profile-visual-scene-manifest:${manifestHash}`;
+  return {
+    manifest,
+    manifest_hash: manifestHash,
+    manifestHash,
+    evidence_ref: evidenceRef,
+    evidenceRef,
+  };
+}
+
 function agentProfileSourceForHash(source) {
   return {
     entryPath: source.entryPath,
@@ -271,6 +317,8 @@ function agentProfileHash(profile) {
     deviceEdits: profile.deviceEdits,
     deterministicVisualMode: profile.deterministicVisualMode,
     visualProof: profile.visualProof,
+    visualSceneManifest: profile.visualSceneManifest ?? null,
+    visualSceneManifestHash: profile.visualSceneManifestHash ?? null,
   }))}`;
 }
 
@@ -332,6 +380,20 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
       : null;
   validateDeclaredSourceHash(declaredSourceContentHash, actualSourceContentHash, 'source.contentHash');
   const visualProof = normalizeAgentVisualProof(raw.visualProof ?? raw.visual_proof);
+  const declaredVisualSceneManifestHash = profileString(
+    raw.visualSceneManifestHash
+      ?? raw.visual_scene_manifest_hash
+      ?? raw.renderSceneManifestHash
+      ?? raw.render_scene_manifest_hash,
+    'visualSceneManifestHash',
+  ).toLowerCase();
+  const visualSceneManifest = normalizeAgentVisualSceneManifest(
+    raw.visualSceneManifest
+      ?? raw.visual_scene_manifest
+      ?? raw.renderSceneManifest
+      ?? raw.render_scene_manifest,
+    declaredVisualSceneManifestHash,
+  );
   const deterministicVisualMode =
     profileObject(raw.deterministicVisualMode ?? raw.deterministic_visual_mode, 'deterministicVisualMode', {});
   const deterministicVisualModeHash = `sha256:${sha256Hex(stableJson(deterministicVisualMode))}`;
@@ -395,6 +457,12 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
     deterministic_visual_mode_hash: deterministicVisualModeHash,
     visualProof,
     visual_proof: visualProof,
+    visualSceneManifest: visualSceneManifest?.manifest ?? null,
+    visual_scene_manifest: visualSceneManifest?.manifest ?? null,
+    visualSceneManifestHash: visualSceneManifest?.manifestHash ?? null,
+    visual_scene_manifest_hash: visualSceneManifest?.manifest_hash ?? null,
+    visualSceneManifestEvidenceRef: visualSceneManifest?.evidenceRef ?? null,
+    visual_scene_manifest_evidence_ref: visualSceneManifest?.evidence_ref ?? null,
     profilePath: profilePath || null,
     profile_path: profilePath || null,
   };
@@ -2879,6 +2947,29 @@ function selfCheckAgentVisualProfile() {
         minMeanAbs: 1.75,
         controlMultiplier: 4,
       },
+      visualSceneManifest: {
+        schemaVersion: 'synthi.gpu_hmr.visual_scene_manifest.v1',
+        sceneId: 'self-check-ray-scene',
+        camera: {
+          position: [0, 0, 4],
+          target: [0, 0, 0],
+          fovDegrees: 48,
+        },
+        rayPolicy: {
+          samplesPerPixel: 4,
+          maxBounces: 2,
+          fixedSeed: 1337,
+        },
+        objects: [
+          { id: 'faceted-gem', kind: 'dielectric_mesh', material: 'glass' },
+        ],
+        lights: [
+          { id: 'key', kind: 'area', intensity: 14.0 },
+        ],
+        semanticProbes: [
+          { id: 'gem-highlight', region: [280, 120, 80, 80], expected: 'brighter_after_hot_delta' },
+        ],
+      },
       requireDeclaredEdits: true,
       deviceEdits: [
         {
@@ -2909,6 +3000,23 @@ function selfCheckAgentVisualProfile() {
       });
     } catch (err) {
       sourceHashMismatchRejected = String(err.message).includes('source.contentHash mismatch');
+    }
+    let sceneManifestHashMismatchRejected = false;
+    try {
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-scene-hash-mismatch',
+        source: {
+          inline: source,
+        },
+        visualSceneManifest: {
+          sceneId: 'self-check-ray-scene',
+          camera: { position: [0, 0, 4] },
+        },
+        visualSceneManifestHash: `sha256:${'1'.repeat(64)}`,
+      });
+    } catch (err) {
+      sceneManifestHashMismatchRejected = String(err.message).includes('visualSceneManifestHash mismatch');
     }
     const ambiguousProfile = normalizeAgentVisualProfile({
       schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
@@ -2955,6 +3063,9 @@ function selfCheckAgentVisualProfile() {
       || profile.visualProof.minMeanAbs !== 1.75
       || profile.visualProof.controlMultiplier !== 4
       || !profile.visualProof.proofHash.startsWith('sha256:')
+      || !profile.visualSceneManifestHash?.startsWith('sha256:')
+      || !profile.visualSceneManifestEvidenceRef?.includes(profile.visualSceneManifestHash)
+      || profile.visualSceneManifest?.sceneId !== 'self-check-ray-scene'
       || weakThresholdProfile.visualProof.minChangedRatio !== 0.01
       || weakThresholdProfile.visualProof.minMeanAbs !== 1.0
       || weakThresholdProfile.visualProof.controlMultiplier !== 3.0
@@ -2963,6 +3074,7 @@ function selfCheckAgentVisualProfile() {
       || !hot2.edited.includes('const float exposure = 0.82f;')
       || hot2.mutation?.selector !== 'regex'
       || !sourceHashMismatchRejected
+      || !sceneManifestHashMismatchRejected
       || !ambiguousRejected
     ) {
       throw new Error('agent visual profile self-check failed');
@@ -3237,6 +3349,14 @@ function runModeProofIdentity(split) {
   const sourceHash = ACTIVE_AGENT_PROFILE?.source?.contentHash ?? ACTIVE_AGENT_PROFILE?.source?.content_hash ?? null;
   const sourceEvidenceRef =
     ACTIVE_AGENT_PROFILE?.source?.evidenceRef ?? ACTIVE_AGENT_PROFILE?.source?.evidence_ref ?? null;
+  const visualSceneManifestHash =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestHash
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_hash
+    ?? null;
+  const visualSceneManifestEvidenceRef =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestEvidenceRef
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_evidence_ref
+    ?? null;
   return {
     backend: backendForSplit(split),
     ...splitIdentity,
@@ -3261,6 +3381,10 @@ function runModeProofIdentity(split) {
       validation_profile_deterministic_mode_hash: ACTIVE_AGENT_PROFILE.deterministicVisualModeHash,
       validationProfileVisualProofHash: ACTIVE_AGENT_PROFILE.visualProof?.proofHash ?? null,
       validation_profile_visual_proof_hash: ACTIVE_AGENT_PROFILE.visualProof?.proof_hash ?? null,
+      validationProfileVisualSceneManifestHash: visualSceneManifestHash,
+      validation_profile_visual_scene_manifest_hash: visualSceneManifestHash,
+      validationProfileVisualSceneManifestEvidenceRef: visualSceneManifestEvidenceRef,
+      validation_profile_visual_scene_manifest_evidence_ref: visualSceneManifestEvidenceRef,
       validationProfilePath: ACTIVE_AGENT_PROFILE.profilePath,
       validation_profile_path: ACTIVE_AGENT_PROFILE.profilePath,
     } : {}),
@@ -3290,6 +3414,13 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
   const visualProofHash = ACTIVE_AGENT_PROFILE?.visualProof?.proofHash
     ?? ACTIVE_AGENT_PROFILE?.visual_proof?.proof_hash
     ?? null;
+  const visualSceneManifestHash = ACTIVE_AGENT_PROFILE?.visualSceneManifestHash
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_hash
+    ?? null;
+  const visualSceneManifestEvidenceRef =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestEvidenceRef
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_evidence_ref
+    ?? null;
   const proofIds = [
     recomputed?.proofId,
     recomputed?.proof_id,
@@ -3307,6 +3438,8 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
     sourceEvidenceRef,
     deterministicModeHash,
     visualProofHash,
+    visualSceneManifestHash,
+    visualSceneManifestEvidenceRef,
     ...proofIds,
     splitIdentity.targetId,
     visualDelta?.diffPath,
@@ -3335,6 +3468,10 @@ function typedValidationProfileEvidence({ proof = null, split = null, visualDelt
     deterministic_visual_mode_hash: deterministicModeHash,
     visualProofHash,
     visual_proof_hash: visualProofHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
+    visualSceneManifestEvidenceRef,
+    visual_scene_manifest_evidence_ref: visualSceneManifestEvidenceRef,
     profilePath: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
     profile_path: ACTIVE_AGENT_PROFILE?.profilePath ?? null,
     proofIds: [...new Set(proofIds)],
@@ -3552,6 +3689,18 @@ function withRunModeVisualLedgerProof({
   const records = Array.isArray(ledgerClone.records)
     ? ledgerClone.records
     : [ledgerClone.record ?? ledgerClone];
+  const visualSceneManifestHash =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestHash
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_hash
+    ?? null;
+  const visualSceneManifestEvidenceRef =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestEvidenceRef
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_evidence_ref
+    ?? null;
+  const visualSceneManifest =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifest
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest
+    ?? null;
   const enrichedRecords = records.map((record) => {
     if (!isRecord(record)) return record;
     const outputEvent = isRecord(record.output_event)
@@ -3591,15 +3740,33 @@ function withRunModeVisualLedgerProof({
         ? 'agent_visual_profile_plus_mcp_frame_evidence'
         : 'mcp_frame_evidence',
     };
+    const mergedEvidenceRefs = [...new Set([
+      ...(Array.isArray(record.evidence_refs) ? record.evidence_refs : []),
+      ...(Array.isArray(record.evidenceRefs) ? record.evidenceRefs : []),
+      visualSceneManifestHash,
+      visualSceneManifestEvidenceRef,
+    ].map((value) => String(value ?? '').trim()).filter(Boolean))];
     return withoutSuppliedLedgerIdentity({
       ...record,
+      evidence_refs: mergedEvidenceRefs,
+      evidenceRefs: mergedEvidenceRefs,
+      visual_scene_manifest: visualSceneManifest,
+      visualSceneManifest,
+      visual_scene_manifest_hash: visualSceneManifestHash,
+      visualSceneManifestHash: visualSceneManifestHash,
+      visual_scene_manifest_evidence_ref: visualSceneManifestEvidenceRef,
+      visualSceneManifestEvidenceRef: visualSceneManifestEvidenceRef,
       oracle_artifacts: {
         ...(isRecord(record.oracle_artifacts) ? record.oracle_artifacts : {}),
         visual_oracle_artifacts: visualArtifacts,
+        visual_scene_manifest: visualSceneManifest,
+        visual_scene_manifest_hash: visualSceneManifestHash,
       },
       oracleArtifacts: {
         ...(isRecord(record.oracleArtifacts) ? record.oracleArtifacts : {}),
         visualOracleArtifacts: visualArtifacts,
+        visualSceneManifest,
+        visualSceneManifestHash: visualSceneManifestHash,
       },
       output_event: {
         ...outputEvent,

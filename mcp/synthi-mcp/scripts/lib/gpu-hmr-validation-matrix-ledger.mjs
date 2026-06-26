@@ -1309,6 +1309,12 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     supplied.deterministic_visual_mode_hash,
   );
   const visualProofHash = firstText(supplied.visualProofHash, supplied.visual_proof_hash);
+  const visualSceneManifestHash = firstText(
+    supplied.visualSceneManifestHash,
+    supplied.visual_scene_manifest_hash,
+    supplied.renderSceneManifestHash,
+    supplied.render_scene_manifest_hash,
+  );
   const rowProofIds = new Set(compactStringList([
     ...(Array.isArray(row.proofIds) ? row.proofIds : []),
     ...(Array.isArray(row.proof_ids) ? row.proof_ids : []),
@@ -1385,6 +1391,13 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const visualProofHashBoundToEvidenceRefs =
     !visualProofHash
     || (contentAddressedSha256(visualProofHash) && evidenceRefs.includes(visualProofHash));
+  const visualSceneManifestHashBoundToEvidenceRefs =
+    !visualSceneManifestHash
+    || (
+      contentAddressedSha256(visualSceneManifestHash)
+      && evidenceRefs.includes(visualSceneManifestHash)
+      && evidenceRefSet.has(visualSceneManifestHash)
+    );
   const failedGates = compactStringList([
     profileIdBoundToRow ? null : 'validation_profile_id_not_bound_to_runtime_identity',
     proofIdsBoundToRow ? null : 'validation_profile_proof_ids_not_bound_to_row',
@@ -1396,6 +1409,9 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
       ? null
       : 'validation_profile_deterministic_mode_hash_not_bound_to_evidence_refs',
     visualProofHashBoundToEvidenceRefs ? null : 'validation_profile_visual_proof_hash_not_bound_to_evidence_refs',
+    visualSceneManifestHashBoundToEvidenceRefs
+      ? null
+      : 'validation_profile_visual_scene_manifest_hash_not_bound_to_evidence_refs',
   ]);
   return {
     accepted: failedGates.length === 0,
@@ -1415,6 +1431,8 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     deterministic_visual_mode_hash_bound_to_evidence_refs: deterministicVisualModeHashBoundToEvidenceRefs,
     visualProofHashBoundToEvidenceRefs,
     visual_proof_hash_bound_to_evidence_refs: visualProofHashBoundToEvidenceRefs,
+    visualSceneManifestHashBoundToEvidenceRefs,
+    visual_scene_manifest_hash_bound_to_evidence_refs: visualSceneManifestHashBoundToEvidenceRefs,
     evidenceRefsBound,
     evidence_refs_bound: evidenceRefsBound,
     rowProofIdCount: rowProofIds.size,
@@ -1457,6 +1475,12 @@ function validationProfileEvidenceFacet(row = {}) {
     supplied.deterministic_visual_mode_hash,
   );
   const visualProofHash = firstText(supplied.visualProofHash, supplied.visual_proof_hash);
+  const visualSceneManifestHash = firstText(
+    supplied.visualSceneManifestHash,
+    supplied.visual_scene_manifest_hash,
+    supplied.renderSceneManifestHash,
+    supplied.render_scene_manifest_hash,
+  );
   const requirement = firstText(supplied.requirement, supplied.description);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
@@ -1506,6 +1530,8 @@ function validationProfileEvidenceFacet(row = {}) {
     deterministic_visual_mode_hash: deterministicVisualModeHash,
     visualProofHash,
     visual_proof_hash: visualProofHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     proofIds,

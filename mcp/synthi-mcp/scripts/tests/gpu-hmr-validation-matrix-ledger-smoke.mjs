@@ -403,6 +403,10 @@ function runtimeProofMaterials(scope, options = {}) {
   const dispatchTableEntryId = options.dispatchTableEntryId ?? `dispatch-table-entry:${scope}`;
   const outputTargetId = options.outputTargetId ?? `output-target:${scope}`;
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
+  const evidenceRefs = [...new Set([
+    evidenceRef,
+    ...(Array.isArray(options.extraEvidenceRefs) ? options.extraEvidenceRefs : []),
+  ].filter(Boolean))];
   const beforeHash = hashValue(`artifact-before:${scope}`);
   const afterHash = hashValue(`artifact-after:${scope}`);
   const timings = timingFields(scope);
@@ -488,7 +492,7 @@ function runtimeProofMaterials(scope, options = {}) {
       split: modelProvenance('split', 'gemini-3.5-flash'),
       gpu_delta: modelProvenance('gpu_delta', 'gemini-3.1-flash-lite'),
     },
-    evidence_refs: [evidenceRef],
+    evidence_refs: evidenceRefs,
     cpu_hmr_used: false,
     full_rebuild_used: false,
     process_restarted: false,
@@ -1060,6 +1064,7 @@ function validationProfileEvidenceFor({
   declaredSourceContentHash = null,
   deterministicVisualModeHash = null,
   visualProofHash = null,
+  visualSceneManifestHash = null,
 }) {
   return {
     schemaVersion: 'synthi.gpu.hmr.validation_profile_evidence.v1',
@@ -1077,6 +1082,8 @@ function validationProfileEvidenceFor({
     deterministic_visual_mode_hash: deterministicVisualModeHash,
     visualProofHash,
     visual_proof_hash: visualProofHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
     evidenceRefs,
     proofIds,
   };
@@ -5789,14 +5796,16 @@ const hashBoundProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthe
 await writeRgbaPng(path.join(hashBoundProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'after.png'), 8, 8, (x, y) => [112 + x, 132 + y, 156, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const hashBoundProfileMaterials = runtimeProofMaterials('hot_delta_1', {
-  projectId: 'flow',
-  visualRoot: hashBoundProfileDir,
-});
 const boundProfileHash = hashValue('flow-profile-hash-bound');
 const boundSourceHash = hashValue('flow-source-hash-bound');
 const boundDeterministicModeHash = hashValue('flow-deterministic-mode-hash-bound');
 const boundVisualProofHash = hashValue('flow-visual-proof-hash-bound');
+const boundVisualSceneManifestHash = hashValue('flow-visual-scene-manifest-hash-bound');
+const hashBoundProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: hashBoundProfileDir,
+  extraEvidenceRefs: [boundVisualSceneManifestHash],
+});
 await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -5815,6 +5824,7 @@ await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), 
       boundSourceHash,
       boundDeterministicModeHash,
       boundVisualProofHash,
+      boundVisualSceneManifestHash,
     ],
     proofIds: [
       'agent-split-run-mode-proof:sha256:flow-hash-bound-profile',
@@ -5826,6 +5836,7 @@ await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), 
     declaredSourceContentHash: boundSourceHash,
     deterministicVisualModeHash: boundDeterministicModeHash,
     visualProofHash: boundVisualProofHash,
+    visualSceneManifestHash: boundVisualSceneManifestHash,
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
@@ -5854,6 +5865,71 @@ const hashBoundProfileRuntime = hashBoundProfileLedger.rows.find((row) => row.ta
 assert.equal(hashBoundProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hashBoundProfileRuntime.validationProfileEvidence.accepted, true);
 assert.equal(hashBoundProfileRuntime.validationProfileEvidence.binding.sourceContentHashBoundToEvidenceRefs, true);
+assert.equal(hashBoundProfileRuntime.validationProfileEvidence.binding.visualSceneManifestHashBoundToEvidenceRefs, true);
+
+const unboundSceneManifestProfileDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-unbound-scene-manifest-profile',
+);
+await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'after.png'), 8, 8, (x, y) => [118 + x, 130 + y, 172, 255]);
+await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const unboundSceneManifestMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'flow',
+  visualRoot: unboundSceneManifestProfileDir,
+});
+await writeJson(path.join(unboundSceneManifestProfileDir, 'hot1-unbound-scene-manifest-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    unboundSceneManifestMaterials.proofLedgerQuery.record.proofId,
+    unboundSceneManifestMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...unboundSceneManifestMaterials,
+  proofId: 'agent-split-run-mode-proof:sha256:flow-unbound-scene-manifest-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+      unboundSceneManifestMaterials.proofLedgerQuery.record.proofId,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-unbound-scene-manifest-profile',
+      unboundSceneManifestMaterials.proofLedgerQuery.record.proofId,
+      unboundSceneManifestMaterials.runtimeProofArtifact.proofId,
+    ],
+    visualSceneManifestHash: hashValue('flow-unbound-scene-manifest-hash'),
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: path.join(unboundSceneManifestProfileDir, 'before.png'),
+    after: path.join(unboundSceneManifestProfileDir, 'after.png'),
+    diff: path.join(unboundSceneManifestProfileDir, 'diff.png'),
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-unbound-scene-manifest-profile',
+    editHash: hashValue('flow-unbound-scene-manifest-profile'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const unboundSceneManifestLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [unboundSceneManifestProfileDir],
+  generatedAt: '2026-06-09T00:00:01.055Z',
+  includeUnproven: true,
+});
+const unboundSceneManifestRuntime = unboundSceneManifestLedger.rows.find((row) => row.targetId === 'flow');
+assert.equal(unboundSceneManifestRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(unboundSceneManifestRuntime.validationProfileEvidence.accepted, false);
+assert.ok(unboundSceneManifestRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_visual_scene_manifest_hash_not_bound_to_evidence_refs',
+));
 
 const mismatchedSourceHashProfileDir = path.join(
   logsRoot,
