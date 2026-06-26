@@ -7359,7 +7359,8 @@ async function writeSameProcessOracleNegative({
   mutateMaterials = null,
   omitSameProcessOracle = false,
   omitRuntimeProofArtifact = false,
-  expectedGap,
+  expectedGap = null,
+  expectedAppHookGap = null,
 }) {
   const dir = path.join(logsRoot, scope);
   const rawReadback = path.join(dir, 'readback.bin');
@@ -7513,9 +7514,16 @@ async function writeSameProcessOracleNegative({
   );
   assert.equal(row?.matrixOutcome, 'unproven');
   assert.equal(row.acceptedForGpuHmr, false);
-  assert.equal(row.realRocmSameProcessRuntimeOracleGate.accepted, false);
-  assert.ok(row.openGaps.includes('real_rocm_same_process_runtime_oracle_required'));
-  assert.ok(row.openGaps.includes(`real_rocm_same_process_runtime_oracle:${expectedGap}`));
+  if (expectedGap) {
+    assert.equal(row.realRocmSameProcessRuntimeOracleGate.accepted, false);
+    assert.ok(row.openGaps.includes('real_rocm_same_process_runtime_oracle_required'));
+    assert.ok(row.openGaps.includes(`real_rocm_same_process_runtime_oracle:${expectedGap}`));
+  }
+  if (expectedAppHookGap) {
+    assert.equal(row.realRocmAppHookContractGate.proven, false);
+    assert.ok(row.openGaps.includes('real_rocm_app_hook_contract_required'));
+    assert.ok(row.openGaps.includes(expectedAppHookGap));
+  }
 }
 
 await writeSameProcessOracleNegative({
@@ -7551,6 +7559,28 @@ await writeSameProcessOracleNegative({
     blocking_gaps: ['same_process_runtime_oracle_app_hook_contract_unproven'],
   },
   expectedGap: 'same_process_runtime_oracle_app_hook_contract_unproven',
+});
+
+const forgedStageScope = 'real-rocm-forged-app-hook-stage-evidence';
+const forgedStageResults = JSON.parse(JSON.stringify(
+  acceptedRealRocmAppHookContract(forgedStageScope).stageResults,
+));
+for (const stageKey of ['epoch_publication', 'epochPublication']) {
+  forgedStageResults[stageKey] = {
+    ...forgedStageResults[stageKey],
+    contractEvidencePresent: false,
+    contract_evidence_present: false,
+    unresolvedEvidenceRefs: ['evidence:app-hook:unresolved-epoch-publication'],
+    unresolved_evidence_refs: ['evidence:app-hook:unresolved-epoch-publication'],
+  };
+}
+await writeSameProcessOracleNegative({
+  scope: forgedStageScope,
+  appHookOverrides: {
+    stageResults: forgedStageResults,
+    stage_results: forgedStageResults,
+  },
+  expectedAppHookGap: 'real_rocm_app_hook_contract_stage_epoch_publication_evidence_missing',
 });
 
 await writeSameProcessOracleNegative({

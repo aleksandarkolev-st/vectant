@@ -119,6 +119,13 @@ const SCOPED_GENERALITY_UNSUPPORTED_WITHOUT_EVIDENCE = [
   'different_backend_contract_without_recomputed_proof_ledger',
   'different_runtime_environment_without_runtime_capability_preflight',
 ];
+const REAL_ROCM_APP_HOOK_REQUIRED_STAGES = Object.freeze([
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+]);
 const RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS = Object.freeze({
   required: true,
   requireDeclaredHashes: true,
@@ -2511,6 +2518,71 @@ function realRocmAppHookContractGate({
   const profileProofObligations = compactObject(realRocmProfileProofObligations);
   const facetPresent = Object.keys(contract).length > 0;
   const profileAppHookContract = compactObject(profile.appHookContract ?? profile.app_hook_contract);
+  const schemaVersion = firstText(contract.schemaVersion, contract.schema_version, contract.schema);
+  const stageResults = compactObject(
+    contract.stageResults
+    ?? contract.stage_results
+    ?? contract.stages,
+  );
+  const directBlockingGaps = compactStringList([
+    ...(Array.isArray(contract.blockingGaps) ? contract.blockingGaps : []),
+    ...(Array.isArray(contract.blocking_gaps) ? contract.blocking_gaps : []),
+  ]);
+  const contractHash = firstText(contract.contractHash, contract.contract_hash);
+  const stageChecks = Object.fromEntries(REAL_ROCM_APP_HOOK_REQUIRED_STAGES.map((stageName) => {
+    const camelStage = stageName.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    const stage = compactObject(
+      stageResults[stageName]
+      ?? stageResults[camelStage]
+      ?? compactObject(contract[stageName])
+      ?? compactObject(contract[camelStage]),
+    );
+    const present = Object.keys(stage).length > 0;
+    const unresolvedEvidenceRefs = compactStringList([
+      ...(Array.isArray(stage.unresolvedEvidenceRefs) ? stage.unresolvedEvidenceRefs : []),
+      ...(Array.isArray(stage.unresolved_evidence_refs) ? stage.unresolved_evidence_refs : []),
+    ]);
+    const evidenceRefs = compactStringList([
+      ...evidenceRefsFromValue(stage),
+      stage.proofId,
+      stage.proof_id,
+    ]);
+    const contractEvidencePresent = firstBool(
+      stage.contractEvidencePresent,
+      stage.contract_evidence_present,
+    ) === true;
+    const runtimeObserved = firstBool(
+      stage.runtimeObserved,
+      stage.runtime_observed,
+    ) === true;
+    return [stageName, {
+      present,
+      contractEvidencePresent,
+      contract_evidence_present: contractEvidencePresent,
+      runtimeObserved,
+      runtime_observed: runtimeObserved,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+      unresolvedEvidenceRefs,
+      unresolved_evidence_refs: unresolvedEvidenceRefs,
+      failedGaps: compactStringList([
+        !present ? `real_rocm_app_hook_contract_stage_${stageName}_missing` : null,
+        present && !contractEvidencePresent
+          ? `real_rocm_app_hook_contract_stage_${stageName}_evidence_missing`
+          : null,
+        present && !runtimeObserved
+          ? `real_rocm_app_hook_contract_stage_${stageName}_runtime_missing`
+          : null,
+        present && evidenceRefs.length === 0
+          ? `real_rocm_app_hook_contract_stage_${stageName}_evidence_refs_missing`
+          : null,
+        unresolvedEvidenceRefs.length > 0
+          ? `real_rocm_app_hook_contract_stage_${stageName}_unresolved_evidence_refs`
+          : null,
+      ]),
+    }];
+  }));
+  const stageFailedGaps = Object.values(stageChecks).flatMap((stage) => stage.failedGaps);
   const required =
     nativeBoundaryRequiresAppHook
     || nativeBoundaryRequiresRealRocmAppHook({
@@ -2528,21 +2600,62 @@ function realRocmAppHookContractGate({
     || profile.app_hook_contract_declared === true
     || profileAppHookContract.declared === true
     || profileAppHookContract.required === true;
+  const semanticFailedGaps = compactStringList([
+    facetPresent && schemaVersion !== 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1'
+      ? 'real_rocm_app_hook_contract_schema_missing'
+      : null,
+    facetPresent && !contentAddressedSha256(contractHash)
+      ? 'real_rocm_app_hook_contract_hash_missing'
+      : null,
+    facetPresent && Object.keys(stageResults).length === 0
+      ? 'real_rocm_app_hook_contract_stage_results_missing'
+      : null,
+    facetPresent && firstBool(
+      contract.canSatisfyRuntimeProof,
+      contract.can_satisfy_runtime_proof,
+    ) !== true
+      ? 'real_rocm_app_hook_contract_runtime_proof_flag_false'
+      : null,
+    facetPresent && firstBool(
+      contract.contractEvidenceComplete,
+      contract.contract_evidence_complete,
+    ) !== true
+      ? 'real_rocm_app_hook_contract_evidence_incomplete'
+      : null,
+    facetPresent && firstBool(
+      contract.runtimeObservationComplete,
+      contract.runtime_observation_complete,
+    ) !== true
+      ? 'real_rocm_app_hook_contract_runtime_observation_incomplete'
+      : null,
+    facetPresent && directBlockingGaps.length > 0
+      ? 'real_rocm_app_hook_contract_blocking_gaps_present'
+      : null,
+    ...stageFailedGaps,
+  ]);
   const proven =
     facetPresent
     && (
       contract.canSatisfyRuntimeProof === true
       || contract.can_satisfy_runtime_proof === true
-    );
+    )
+    && semanticFailedGaps.length === 0;
   return {
     required,
     facetPresent,
     proven,
     accepted: !required || proven,
     missing: required && !facetPresent,
+    schemaVersion,
+    schema_version: schemaVersion,
+    stageChecks,
+    stage_checks: stageChecks,
+    semanticFailedGaps,
+    semantic_failed_gaps: semanticFailedGaps,
     failedGaps: compactStringList([
       required && !facetPresent ? 'real_rocm_app_hook_contract_missing' : null,
       required && !proven ? 'real_rocm_app_hook_contract_required' : null,
+      ...(required ? semanticFailedGaps : []),
     ]),
   };
 }
