@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -305,7 +305,12 @@ export async function validateArtifactCasManifest(manifest, options = {}) {
   if (transport.bytesEmbedded === true) gaps.push('artifact_cas_manifest_embeds_bytes');
   if (transport.kind === 'serialized_fallback') gaps.push('serialized_artifact_transport_fallback');
 
-  if (normalized.acceptedForGpuHmr === true || normalized.gpuHmrSuccess === true) {
+  if (
+    normalized.acceptedForGpuHmr === true
+    || normalized.accepted_for_gpu_hmr === true
+    || normalized.gpuHmrSuccess === true
+    || normalized.gpu_hmr_success === true
+  ) {
     fail('artifact_cas_manifest_claims_gpu_hmr_success');
   }
 
@@ -322,10 +327,12 @@ export async function validateArtifactCasManifest(manifest, options = {}) {
     if (roots.length === 0) {
       fail('artifact_cas_allowed_root_required_for_local_path');
     } else {
-      const inside = resolveInsideAnyRoot(localPath, roots);
+      const inside = await resolveInsideAnyRoot(localPath, roots);
       if (!inside.accepted) {
         fail('artifact_cas_local_path_outside_allowed_roots');
       } else {
+        result.localPath = inside.path;
+        result.local_path = inside.path;
         if (storage.relativePath) {
           try {
             const expected = contentHash ? casRelativePathForHash(contentHash) : null;
@@ -512,7 +519,30 @@ function normalizeAllowedRoots(roots, artifactRoot) {
   return [...new Set(values.map(text).filter(Boolean).map((root) => path.resolve(root)))];
 }
 
-function resolveInsideAnyRoot(candidate, roots) {
+async function resolveInsideAnyRoot(candidate, roots) {
+  const resolved = path.resolve(candidate);
+  const lexical = resolveInsideAnyRootLexical(resolved, roots);
+  if (!lexical.accepted) return lexical;
+  let candidateRealPath;
+  try {
+    candidateRealPath = await realpath(lexical.path);
+  } catch {
+    return { accepted: false, path: lexical.path, root: lexical.root };
+  }
+  for (const root of roots) {
+    try {
+      const rootRealPath = await realpath(path.resolve(root));
+      if (sameOrInside(candidateRealPath, rootRealPath)) {
+        return { accepted: true, path: candidateRealPath, root: rootRealPath };
+      }
+    } catch {
+      // Keep checking remaining allowed roots.
+    }
+  }
+  return { accepted: false, path: candidateRealPath, root: null };
+}
+
+function resolveInsideAnyRootLexical(candidate, roots) {
   const resolved = path.resolve(candidate);
   for (const root of roots) {
     try {

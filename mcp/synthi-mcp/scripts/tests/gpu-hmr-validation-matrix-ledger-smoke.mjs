@@ -4103,6 +4103,34 @@ assert.equal(
   ),
   false,
 );
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.identitySchemaVersion,
+  'synthi.gpu_hmr.visual_worker_identity.v1',
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executorIdentity,
+  'node_worker_threads_visual_proof_worker',
+);
+assert.match(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableHash ?? '',
+  /^sha256:[a-f0-9]{64}$/,
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableHash,
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executable_hash,
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableHash,
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableManifestHash,
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableManifestSchemaVersion,
+  'synthi.gpu_hmr.visual_worker_executable_manifest.v1',
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableModuleCount,
+  3,
+);
 assert.equal(acceptedFlow.runMode.accepted, true);
 assert.equal(acceptedFlow.runMode.metricScope, 'hot_delta_1');
 assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
@@ -5505,6 +5533,22 @@ assert.equal(
     'threadId',
   ),
   false,
+);
+assert.match(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableHash ?? '',
+  /^sha256:[a-f0-9]{64}$/,
+);
+assert.equal(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableHash,
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableManifestHash,
+);
+assert.equal(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executableModuleCount,
+  3,
+);
+assert.equal(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker?.executorIdentity,
+  'node_worker_threads_visual_proof_worker',
 );
 assert.equal(forgedReadableNoHashDiff.visual.requireDeclaredHashes, true);
 assert.equal(forgedReadableNoHashDiff.visual.requireDiff, true);

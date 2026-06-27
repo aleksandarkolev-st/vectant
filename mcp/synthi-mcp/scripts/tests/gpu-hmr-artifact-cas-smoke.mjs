@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -133,6 +133,51 @@ const escapedPathResult = await validateArtifactLocator(escapedPath, {
 });
 assert.equal(escapedPathResult.accepted, false);
 assert.ok(escapedPathResult.reasons.includes('artifact_cas_local_path_outside_allowed_roots'));
+
+const snakeCaseSuccessClaim = {
+  ...written,
+  accepted_for_gpu_hmr: true,
+  gpu_hmr_success: true,
+  manifestHash: null,
+};
+const snakeCaseSuccessClaimResult = await validateArtifactLocator(snakeCaseSuccessClaim, {
+  artifactRoot: root,
+  allowedRoots: [root],
+  requireReadableBytes: true,
+});
+assert.equal(snakeCaseSuccessClaimResult.accepted, false);
+assert.ok(snakeCaseSuccessClaimResult.reasons.includes('artifact_cas_manifest_claims_gpu_hmr_success'));
+
+const outsideRoot = path.join(root, '..', 'synthi-cas-smoke-outside');
+await mkdir(outsideRoot, { recursive: true });
+const outsideFile = path.join(outsideRoot, 'escaped.bin');
+await writeFile(outsideFile, bytes);
+const linkPath = path.join(root, 'escaped-link');
+let symlinkCreated = false;
+try {
+  await symlink(outsideRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+  symlinkCreated = true;
+} catch {
+  symlinkCreated = false;
+}
+if (symlinkCreated) {
+  const symlinkEscape = {
+    ...written,
+    storage: {
+      ...written.storage,
+      localPath: path.join(linkPath, 'escaped.bin'),
+      relativePath: null,
+    },
+    manifestHash: null,
+  };
+  const symlinkEscapeResult = await validateArtifactLocator(symlinkEscape, {
+    artifactRoot: root,
+    allowedRoots: [root],
+    requireReadableBytes: true,
+  });
+  assert.equal(symlinkEscapeResult.accepted, false);
+  assert.ok(symlinkEscapeResult.reasons.includes('artifact_cas_local_path_outside_allowed_roots'));
+}
 
 const serializedFallback = await locatorFromBytes({
   bytes,

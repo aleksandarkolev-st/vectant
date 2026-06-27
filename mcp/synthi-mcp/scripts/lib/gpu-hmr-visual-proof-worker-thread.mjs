@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { isMainThread, parentPort, threadId, workerData } from 'node:worker_threads';
 import sharp from 'sharp';
@@ -12,6 +12,7 @@ import {
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  computeVisualWorkerExecutableIdentity,
 } from './gpu-hmr-visual-proof-worker.mjs';
 
 let activeWorkerIdentity = null;
@@ -152,7 +153,13 @@ async function runWorker(request, options) {
       tile_consistency: roiTileConsistency,
     };
     if (request.allowRoiEarlyExit === true && beforeHash === afterHash) {
-      if (roiTileConsistency && roiTileConsistency.changedTileCount > 0) {
+      if (!tileEvidence) {
+        skipReason = 'roi_hash_unchanged_but_tile_evidence_missing';
+        roiEvidence.earlyExitAccepted = false;
+        roiEvidence.early_exit_accepted = false;
+        roiEvidence.earlyExitBlockedReason = skipReason;
+        roiEvidence.early_exit_blocked_reason = skipReason;
+      } else if (roiTileConsistency && roiTileConsistency.changedTileCount > 0) {
         skipReason = roiTileConsistency.changedTilesOutsideRoiCount > 0
           ? 'roi_hash_unchanged_but_tiles_changed_outside_roi'
           : 'roi_hash_unchanged_but_tile_evidence_changed';
@@ -174,9 +181,8 @@ async function runWorker(request, options) {
   if (!deepDiffSkipped) {
     fullFrameDiff = computeFullFrameDiff(decodedBefore, decodedAfter);
     if (request.diffPath) {
-      const diffPath = validateOutputPath(request.diffPath, allowedOutputRoots, reasons);
+      const diffPath = await validateOutputPath(request.diffPath, allowedOutputRoots, reasons);
       if (diffPath) {
-        await mkdir(path.dirname(diffPath), { recursive: true });
         await sharp(fullFrameDiff.diffBytes, {
           raw: {
             width: dimensions.width,
@@ -316,19 +322,15 @@ async function runWorker(request, options) {
       deep_diff_skipped: deepDiffSkipped,
       skipReason,
       skip_reason: skipReason,
-      roiEarlyExitSafe: !roiTileConsistency || roiTileConsistency.changedTileCount === 0,
-      roi_early_exit_safe: !roiTileConsistency || roiTileConsistency.changedTileCount === 0,
+      roiEarlyExitSafe: Boolean(roiTileConsistency && roiTileConsistency.changedTileCount === 0),
+      roi_early_exit_safe: Boolean(roiTileConsistency && roiTileConsistency.changedTileCount === 0),
       roiEarlyExitBlocked: Boolean(
-        roiTileConsistency
-        && roiTileConsistency.changedTileCount > 0
-        && skipReason
-        && !deepDiffSkipped,
+        skipReason
+        && !deepDiffSkipped
       ),
       roi_early_exit_blocked: Boolean(
-        roiTileConsistency
-        && roiTileConsistency.changedTileCount > 0
-        && skipReason
-        && !deepDiffSkipped,
+        skipReason
+        && !deepDiffSkipped
       ),
     },
   });
@@ -358,7 +360,8 @@ async function resolveImageInput(input, role, context) {
       };
     }
     const localPath = manifest.storage?.localPath;
-    const bytes = await readFile(localPath);
+    const resolvedLocalPath = validation.localPath ?? validation.local_path ?? localPath;
+    const bytes = await readFile(resolvedLocalPath);
     return {
       bytes,
       encodedHash: sha256Bytes(bytes),
@@ -368,7 +371,7 @@ async function resolveImageInput(input, role, context) {
         artifactId: manifest.artifactId ?? null,
         contentHash: manifest.contentHash ?? null,
         manifestHash: validation.manifestHash,
-        localPath,
+        localPath: resolvedLocalPath,
         casValidation: validation,
       },
     };
@@ -376,7 +379,7 @@ async function resolveImageInput(input, role, context) {
 
   const localPath = text(entry.path ?? entry.localPath ?? entry.local_path);
   if (localPath) {
-    const resolved = validateInputPath(localPath, context.allowedRoots, context.reasons, role);
+    const resolved = await validateInputPath(localPath, context.allowedRoots, context.reasons, role);
     if (!resolved) return { bytes: null, summary: { role, localPath } };
     const bytes = await readFile(resolved);
     return {
@@ -606,37 +609,72 @@ function normalizeTileSize(value, dimensions) {
   return Math.max(1, Math.min(requested, Math.max(dimensions.width, dimensions.height)));
 }
 
-function validateInputPath(candidate, allowedRoots, reasons, role) {
-  const resolved = resolveInsideAllowedRoots(candidate, allowedRoots);
-  if (!resolved) {
+async function validateInputPath(candidate, allowedRoots, reasons, role) {
+  if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) {
+    reasons.push(`${role}_allowed_root_required_for_path`);
+    return null;
+  }
+  const resolved = await resolveExistingPathInsideAllowedRoots(candidate, allowedRoots);
+  if (!resolved.accepted) {
     reasons.push(`${role}_path_outside_allowed_roots`);
     return null;
   }
-  return resolved;
+  return resolved.path;
 }
 
-function validateOutputPath(candidate, allowedRoots, reasons) {
-  const resolved = Array.isArray(allowedRoots) && allowedRoots.length
-    ? resolveInsideAllowedRoots(candidate, allowedRoots)
-    : path.resolve(candidate);
-  if (!resolved) {
+async function validateOutputPath(candidate, allowedRoots, reasons) {
+  if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) {
+    reasons.push('visual_worker_diff_allowed_output_root_required');
+    return null;
+  }
+  const resolved = resolvePathLexicallyInsideAllowedRoots(candidate, allowedRoots);
+  if (!resolved.accepted) {
     reasons.push('visual_worker_diff_path_outside_allowed_roots');
     return null;
   }
-  return resolved;
+  await mkdir(path.dirname(resolved.path), { recursive: true });
+  const parent = await resolveExistingPathInsideAllowedRoots(path.dirname(resolved.path), allowedRoots);
+  if (!parent.accepted) {
+    reasons.push('visual_worker_diff_parent_path_outside_allowed_roots');
+    return null;
+  }
+  return path.join(parent.path, path.basename(resolved.path));
 }
 
-function resolveInsideAllowedRoots(candidate, roots) {
+function resolvePathLexicallyInsideAllowedRoots(candidate, roots) {
   const resolved = path.resolve(String(candidate ?? ''));
-  if (!Array.isArray(roots) || roots.length === 0) return resolved;
   for (const root of roots) {
     const resolvedRoot = path.resolve(root);
     const relative = path.relative(caseNormalizedPath(resolvedRoot), caseNormalizedPath(resolved));
     if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
-      return resolved;
+      return { accepted: true, path: resolved, root: resolvedRoot };
     }
   }
-  return null;
+  return { accepted: false, path: resolved, root: null };
+}
+
+async function resolveExistingPathInsideAllowedRoots(candidate, roots) {
+  const lexical = resolvePathLexicallyInsideAllowedRoots(candidate, roots);
+  if (!lexical.accepted) return lexical;
+  let candidateRealPath;
+  try {
+    candidateRealPath = await realpath(lexical.path);
+  } catch {
+    return { accepted: false, path: lexical.path, root: lexical.root };
+  }
+  for (const root of roots) {
+    let rootRealPath;
+    try {
+      rootRealPath = await realpath(path.resolve(root));
+    } catch {
+      continue;
+    }
+    const relative = path.relative(caseNormalizedPath(rootRealPath), caseNormalizedPath(candidateRealPath));
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      return { accepted: true, path: candidateRealPath, root: rootRealPath };
+    }
+  }
+  return { accepted: false, path: candidateRealPath, root: null };
 }
 
 function finalizeResult(input) {
@@ -696,15 +734,13 @@ function failResult(reason, details = {}) {
 
 async function currentVisualWorkerIdentity() {
   if (cachedWorkerIdentity) return cachedWorkerIdentity;
-  const scriptBytes = await readFile(new URL(import.meta.url));
-  const executableHash = sha256Bytes(scriptBytes);
+  const executableIdentity = await computeVisualWorkerExecutableIdentity();
   cachedWorkerIdentity = {
     identitySchemaVersion: 'synthi.gpu_hmr.visual_worker_identity.v1',
     identity_schema_version: 'synthi.gpu_hmr.visual_worker_identity.v1',
     executorIdentity: 'node_worker_threads_visual_proof_worker',
     executor_identity: 'node_worker_threads_visual_proof_worker',
-    executableHash,
-    executable_hash: executableHash,
+    ...executableIdentity,
     scriptUrl: import.meta.url,
     script_url: import.meta.url,
   };

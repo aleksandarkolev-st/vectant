@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 export const GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION =
@@ -8,12 +9,16 @@ export const GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION =
 export const GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY =
   'async_visual_metrics_only';
 
+export const GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_worker_executable_manifest.v1';
+
 export async function computeAsyncVisualProof(input = {}, options = {}) {
   const timeoutMs = finitePositiveInteger(options.timeoutMs, 30000);
   const workerUrl = new URL('./gpu-hmr-visual-proof-worker-thread.mjs', import.meta.url);
+  const expectedWorkerIdentity = await computeVisualWorkerExecutableIdentity();
   const expectedWorkerExecutableHash =
     normalizeSha256Hash(options.expectedWorkerExecutableHash)
-    ?? await hashFileUrl(workerUrl);
+    ?? expectedWorkerIdentity.executableHash;
   const startedAt = Date.now();
   const request = {
     ...input,
@@ -114,6 +119,43 @@ export function failClosedWorkerResult(reason, details = {}) {
   };
 }
 
+export async function computeVisualWorkerExecutableIdentity() {
+  const modules = [];
+  for (const moduleEntry of visualWorkerExecutableModules()) {
+    const bytes = await readFile(moduleEntry.url);
+    const contentHash = hashBytes(bytes);
+    modules.push({
+      role: moduleEntry.role,
+      fileName: path.basename(moduleEntry.url.pathname),
+      file_name: path.basename(moduleEntry.url.pathname),
+      byteLength: bytes.byteLength,
+      byte_length: bytes.byteLength,
+      contentHash,
+      content_hash: contentHash,
+    });
+  }
+  const manifest = {
+    schemaVersion: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
+    schema_version: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
+    hashMode: 'ordered_local_module_graph',
+    hash_mode: 'ordered_local_module_graph',
+    modules,
+  };
+  const executableHash = hashText(stableJson(manifest));
+  return {
+    executableHash,
+    executable_hash: executableHash,
+    executableManifestHash: executableHash,
+    executable_manifest_hash: executableHash,
+    executableManifestSchemaVersion: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
+    executable_manifest_schema_version: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
+    executableModuleCount: modules.length,
+    executable_module_count: modules.length,
+    executableManifest: manifest,
+    executable_manifest: manifest,
+  };
+}
+
 function normalizeWorkerResult(result, startedAtMs, context = {}) {
   const normalized = result && typeof result === 'object'
     ? result
@@ -176,9 +218,28 @@ function workerIdentityRejectionReasons(result, context = {}) {
   return reasons;
 }
 
-async function hashFileUrl(fileUrl) {
-  const bytes = await readFile(fileUrl);
+function visualWorkerExecutableModules() {
+  return [
+    { role: 'visual_worker_entry', url: new URL('./gpu-hmr-visual-proof-worker-thread.mjs', import.meta.url) },
+    { role: 'visual_worker_client', url: new URL('./gpu-hmr-visual-proof-worker.mjs', import.meta.url) },
+    { role: 'artifact_cas_helper', url: new URL('./gpu-hmr-artifact-cas.mjs', import.meta.url) },
+  ];
+}
+
+function hashBytes(bytes) {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function hashText(value) {
+  return hashBytes(Buffer.from(String(value ?? ''), 'utf8'));
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
 }
 
 function normalizeSha256Hash(value) {

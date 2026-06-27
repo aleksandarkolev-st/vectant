@@ -818,6 +818,34 @@ function summarizeAsyncVisualProof(proof) {
     proof_authority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
     worker: {
       kind: text(worker.kind) || 'node_worker_threads',
+      identitySchemaVersion:
+        text(worker.identitySchemaVersion ?? worker.identity_schema_version) || null,
+      identity_schema_version:
+        text(worker.identitySchemaVersion ?? worker.identity_schema_version) || null,
+      executorIdentity:
+        text(worker.executorIdentity ?? worker.executor_identity) || null,
+      executor_identity:
+        text(worker.executorIdentity ?? worker.executor_identity) || null,
+      executableHash:
+        text(worker.executableHash ?? worker.executable_hash) || null,
+      executable_hash:
+        text(worker.executableHash ?? worker.executable_hash) || null,
+      executableManifestHash:
+        text(worker.executableManifestHash ?? worker.executable_manifest_hash) || null,
+      executable_manifest_hash:
+        text(worker.executableManifestHash ?? worker.executable_manifest_hash) || null,
+      executableManifestSchemaVersion:
+        text(worker.executableManifestSchemaVersion ?? worker.executable_manifest_schema_version) || null,
+      executable_manifest_schema_version:
+        text(worker.executableManifestSchemaVersion ?? worker.executable_manifest_schema_version) || null,
+      executableModuleCount:
+        Number.isSafeInteger(Number(worker.executableModuleCount ?? worker.executable_module_count))
+          ? Number(worker.executableModuleCount ?? worker.executable_module_count)
+          : null,
+      executable_module_count:
+        Number.isSafeInteger(Number(worker.executableModuleCount ?? worker.executable_module_count))
+          ? Number(worker.executableModuleCount ?? worker.executable_module_count)
+          : null,
       offMainThread: worker.offMainThread === true,
       off_main_thread: worker.offMainThread === true,
       failedBeforeWorkerCompletion: worker.failedBeforeWorkerCompletion === true,

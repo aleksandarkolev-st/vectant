@@ -83,6 +83,12 @@ assert.equal(proof.gpuHmrSuccess, false);
 assert.equal(proof.worker.offMainThread, true);
 assert.match(proof.worker.executableHash, /^sha256:[a-f0-9]{64}$/);
 assert.equal(proof.worker.executableHash, proof.worker.executable_hash);
+assert.equal(proof.worker.executableHash, proof.worker.executableManifestHash);
+assert.equal(proof.worker.executableModuleCount, 3);
+assert.deepEqual(
+  proof.worker.executableManifest.modules.map((moduleEntry) => moduleEntry.role),
+  ['visual_worker_entry', 'visual_worker_client', 'artifact_cas_helper'],
+);
 assert.equal(proof.incremental.fullFrameDiffComputed, true);
 assert.equal(proof.incremental.tileHashing, true);
 assert.ok(proof.changedRatio > 0);
@@ -118,6 +124,29 @@ assert.equal(roiOutsideChangeFallback.roiEvidence.changed, false);
 assert.equal(roiOutsideChangeFallback.roiEvidence.earlyExitAccepted, false);
 assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTileCount > 0);
 assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTilesOutsideRoiCount > 0);
+
+const roiOutsideChangeNoTiles = await computeAsyncVisualProof({
+  before: { casManifest: beforeManifest },
+  after: { casManifest: outsideRoiAfterManifest },
+  roi: { x: 0, y: 0, width: 8, height: 8 },
+  allowRoiEarlyExit: true,
+  tileHashing: false,
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(roiOutsideChangeNoTiles.accepted, true);
+assert.equal(roiOutsideChangeNoTiles.incremental.roiEvaluated, true);
+assert.equal(roiOutsideChangeNoTiles.incremental.tileHashing, false);
+assert.equal(roiOutsideChangeNoTiles.incremental.deepDiffSkipped, false);
+assert.equal(roiOutsideChangeNoTiles.incremental.fullFrameDiffComputed, true);
+assert.equal(
+  roiOutsideChangeNoTiles.incremental.skipReason,
+  'roi_hash_unchanged_but_tile_evidence_missing',
+);
+assert.equal(roiOutsideChangeNoTiles.incremental.roiEarlyExitBlocked, true);
+assert.equal(roiOutsideChangeNoTiles.roiEvidence.earlyExitAccepted, false);
+assert.ok(roiOutsideChangeNoTiles.metrics.changedPixelsThreshold4 > 0);
 
 const trueRoiSkip = await computeAsyncVisualProof({
   before: { casManifest: beforeManifest },
@@ -193,6 +222,21 @@ const forgedSuccess = await computeAsyncVisualProof({
 assert.equal(forgedSuccess.accepted, false);
 assert.ok(forgedSuccess.reasons.includes('before_cas_manifest_rejected'));
 
+const forgedSnakeCaseSuccessManifest = {
+  ...beforeManifest,
+  accepted_for_gpu_hmr: true,
+  gpu_hmr_success: true,
+};
+const forgedSnakeCaseSuccess = await computeAsyncVisualProof({
+  before: { casManifest: forgedSnakeCaseSuccessManifest },
+  after: { casManifest: afterManifest },
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(forgedSnakeCaseSuccess.accepted, false);
+assert.ok(forgedSnakeCaseSuccess.reasons.includes('before_cas_manifest_rejected'));
+
 const forgedWorkerIdentity = await computeAsyncVisualProof({
   before: { casManifest: beforeManifest },
   after: { casManifest: afterManifest },
@@ -222,6 +266,27 @@ const escapedPath = await computeAsyncVisualProof({
 });
 assert.equal(escapedPath.accepted, false);
 assert.ok(escapedPath.reasons.includes('before_cas_manifest_rejected'));
+
+const directPathWithoutRoots = await computeAsyncVisualProof({
+  before: { path: beforeManifest.storage.localPath },
+  after: { path: afterManifest.storage.localPath },
+}, {
+  timeoutMs: 30000,
+});
+assert.equal(directPathWithoutRoots.accepted, false);
+assert.ok(directPathWithoutRoots.reasons.includes('before_allowed_root_required_for_path'));
+assert.ok(directPathWithoutRoots.reasons.includes('after_allowed_root_required_for_path'));
+
+const diffPathWithoutOutputRoots = await computeAsyncVisualProof({
+  before: { casManifest: beforeManifest },
+  after: { casManifest: afterManifest },
+  diffPath: path.join(tmp, 'unrooted-diff.png'),
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(diffPathWithoutOutputRoots.accepted, false);
+assert.ok(diffPathWithoutOutputRoots.reasons.includes('visual_worker_diff_allowed_output_root_required'));
 
 const timeout = await computeAsyncVisualProof({
   before: { bytesBase64: beforePng.toString('base64') },
