@@ -37,6 +37,11 @@ import {
   buildGpuHmrRunModeCoverageSupport,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  defaultCasRootFromEnv,
+  writeArtifactToCas,
+} from './lib/gpu-hmr-artifact-cas.mjs';
+import { computeAsyncVisualProof } from './lib/gpu-hmr-visual-proof-worker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4221,42 +4226,69 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   if (!beforeShot?.imageData || !afterShot?.imageData) {
     throw new Error('visual delta requires saved before/after screenshot data');
   }
-  const beforeInput = Buffer.from(beforeShot.imageData, 'base64');
-  const afterInput = Buffer.from(afterShot.imageData, 'base64');
-  const before = await sharp(beforeInput).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  const after = await sharp(afterInput)
-    .resize(before.info.width, before.info.height, { fit: 'fill' })
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const pixelCount = Math.max(1, before.info.width * before.info.height);
-  const diff = Buffer.alloc(pixelCount * 4);
-  let changed = 0;
-  let totalAbs = 0;
-  for (let i = 0, p = 0; i < before.data.length && i < after.data.length; i += before.info.channels, p += 4) {
-    const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
-    const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
-    const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
-    const delta = dr + dg + db;
-    totalAbs += delta / 3;
-    if (delta > 42) changed += 1;
-    diff[p] = Math.min(255, dr * 4);
-    diff[p + 1] = Math.min(255, dg * 4);
-    diff[p + 2] = Math.min(255, db * 4);
-    diff[p + 3] = 255;
+  const casRoot = defaultCasRootFromEnv();
+  const beforeInput = await visualWorkerImageInput(beforeShot, 'before_frame');
+  const afterInput = await visualWorkerImageInput(afterShot, 'after_frame');
+  const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
+  const roi = visualProof.oracleRegion
+    ?? visualProof.oracle_region
+    ?? visualProof.regionOfInterest
+    ?? visualProof.region_of_interest
+    ?? visualProof.roi
+    ?? null;
+  const asyncVisualProof = await computeAsyncVisualProof({
+    before: beforeInput,
+    after: afterInput,
+    diffPath,
+    roi,
+    allowRoiEarlyExit: visualProof.allowRoiEarlyExit === true || visualProof.allow_roi_early_exit === true,
+    tileSize: visualProof.tileSize ?? visualProof.tile_size ?? 128,
+  }, {
+    allowedRoots: casRoot ? [casRoot] : [],
+    allowedOutputRoots: [ARTIFACT_DIR],
+    timeoutMs: Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000),
+  });
+  if (asyncVisualProof.accepted !== true) {
+    const reasons = Array.isArray(asyncVisualProof.reasons) ? asyncVisualProof.reasons.join(',') : 'unknown';
+    throw new Error(`visual proof worker failed: ${reasons}`);
   }
-  const changedRatio = changed / pixelCount;
-  const meanAbs = totalAbs / pixelCount;
-  if (diffPath) {
-    await sharp(diff, {
-      raw: {
-        width: before.info.width,
-        height: before.info.height,
-        channels: 4,
-      },
-    }).png().toFile(diffPath);
+  return {
+    changedRatio: asyncVisualProof.changedRatio ?? asyncVisualProof.metrics?.changedRatio ?? 0,
+    meanAbs: asyncVisualProof.meanAbs ?? asyncVisualProof.metrics?.meanAbs ?? 0,
+    asyncVisualProof,
+    async_visual_proof: asyncVisualProof,
+  };
+}
+
+async function visualWorkerImageInput(shot, role) {
+  const casRoot = defaultCasRootFromEnv();
+  if (!casRoot) return { imageData: shot.imageData };
+  const bytes = Buffer.from(shot.imageData, 'base64');
+  try {
+    return {
+      casManifest: await writeArtifactToCas(bytes, {
+        artifactRoot: casRoot,
+        mediaType: 'image/png',
+        role,
+        sessionNamespace: CFG.slug,
+        producer: {
+          name: 'agent_split_visual_runner',
+          kind: 'visual_proof_worker',
+        },
+      }),
+    };
+  } catch (error) {
+    if (process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_REQUIRE_CAS === '1') {
+      throw error;
+    }
+    return {
+      imageData: shot.imageData,
+      casWriteFallback: true,
+      cas_write_fallback: true,
+      casWriteError: error?.message ?? String(error),
+      cas_write_error: error?.message ?? String(error),
+    };
   }
-  return { changedRatio, meanAbs };
 }
 
 async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'before-after-diff', recordLabel = 'mcp screenshot visual delta') {
@@ -4319,7 +4351,11 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
   );
   const ok = best && best.changedRatio > minChangedRatio && best.meanAbs > minMeanAbs;
   const diffPath = path.join(ARTIFACT_DIR, `${diffArtifactName}.png`);
-  if (best) await screenshotDelta(baseline, best.shot, diffPath);
+  const selectedDiffStats = best ? await screenshotDelta(baseline, best.shot, diffPath) : null;
+  if (best && selectedDiffStats?.asyncVisualProof) {
+    best.asyncVisualProof = selectedDiffStats.asyncVisualProof;
+    best.async_visual_proof = selectedDiffStats.asyncVisualProof;
+  }
   const firstAfterTs = afterSamples[0]?.ts || 0;
   const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
   const detail = best
@@ -4378,6 +4414,10 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     diffPath: path.relative(process.cwd(), diffPath),
     visualArtifacts,
     visual_artifacts: visualArtifactsSnake,
+    asyncVisualProof: best.asyncVisualProof ?? null,
+    async_visual_proof: best.asyncVisualProof ?? null,
+    controlAsyncVisualProof: control.asyncVisualProof ?? null,
+    control_async_visual_proof: control.asyncVisualProof ?? null,
   };
 }
 
