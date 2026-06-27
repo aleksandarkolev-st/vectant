@@ -1249,6 +1249,31 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
   },
 });
 
+await writeJson(path.join(visualDir, 'run-mode-profile-priority-hot1.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  targetId: 'profile-priority-generated-target',
+  profileId: 'agent-realistic-test-profile',
+  profile_id: 'agent-realistic-test-profile',
+  validationProfileId: 'agent-realistic-test-profile',
+  validation_profile_id: 'agent-realistic-test-profile',
+  fixtureId: 'flow',
+  fixture_id: 'flow',
+  proofId: 'agent-split-run-mode-proof:sha256:profile-priority-hot1',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'profile-priority-generated-target',
+  }),
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:profile-priority-hot1',
+    editHash: hashValue('source-edit:profile-priority-hot1'),
+  },
+});
+
 await writeJson(path.join(visualDir, 'run-mode-hot1-smuggled-precompiled.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
@@ -6056,6 +6081,15 @@ assert.equal(hot1RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hot1RunMode.artifactSchema, 'synthi.gpu.hmr.agent_split_run_mode_proof.v1');
 assert.equal(hot1RunMode.sourceFirstIngestion.accepted, true);
 assert.equal(hot1RunMode.sourceFirstIngestion.proofAuthority, 'source_first_ingestion_provenance_only_not_runtime_proof');
+
+const profilePriorityRunMode = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:profile-priority-hot1')
+);
+assert.equal(profilePriorityRunMode?.targetId, 'profile-priority-generated-target');
+assert.equal(profilePriorityRunMode.profileId, 'agent-realistic-test-profile');
+assert.equal(profilePriorityRunMode.fixtureId, 'flow');
+assert.equal(profilePriorityRunMode.validationProfileId, 'agent-realistic-test-profile');
+assert.equal(profilePriorityRunMode.matrixOutcome, 'unproven');
 
 const smuggledPrecompiledRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-smuggled-precompiled'

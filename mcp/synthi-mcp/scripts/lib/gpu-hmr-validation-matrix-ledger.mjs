@@ -10151,12 +10151,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     json.acceptance_contract?.projectId,
     json.acceptance_contract?.project_id,
   ) ?? 'unknown';
-  const fixtureId = firstText(
-    json.fixtureId,
-    json.fixture_id,
-    json.validationProfileId,
-    json.validation_profile_id,
-  );
+  const fixtureId = firstText(json.fixtureId, json.fixture_id);
+  const validationProfileId = firstText(json.validationProfileId, json.validation_profile_id);
   const proofValidation = compactObject(json.gpuProofValidation ?? json.gpu_proof_validation ?? json.proofValidation);
   const ledgerValidation = compactObject(proofValidation.proofLedgerValidation);
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
@@ -10268,11 +10264,17 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     updatedAt: context.updatedAt,
     backend,
     targetId,
-    profileId: firstText(fixtureId, json.profileId, json.profile_id, targetId === 'unknown' ? null : targetId) ?? 'unknown',
+    profileId: firstText(
+      validationProfileId,
+      json.profileId,
+      json.profile_id,
+      fixtureId,
+      targetId === 'unknown' ? null : targetId,
+    ) ?? 'unknown',
     fixtureId,
     fixture_id: fixtureId,
-    validationProfileId: firstText(json.validationProfileId, json.validation_profile_id),
-    validation_profile_id: firstText(json.validationProfileId, json.validation_profile_id),
+    validationProfileId,
+    validation_profile_id: validationProfileId,
     proofMode: 'run_mode_proof',
     evidenceKind: isCold
       ? genericRuntimeRunMode
@@ -10410,12 +10412,8 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     json.acceptance_contract?.projectId,
     json.acceptance_contract?.project_id,
   ) ?? 'unknown';
-  const fixtureId = firstText(
-    json.fixtureId,
-    json.fixture_id,
-    json.validationProfileId,
-    json.validation_profile_id,
-  );
+  const fixtureId = firstText(json.fixtureId, json.fixture_id);
+  const validationProfileId = firstText(json.validationProfileId, json.validation_profile_id);
   const reasons = compactStringList([
     ...(Array.isArray(json.reasons) ? json.reasons : []),
     ...(Array.isArray(json.unsupportedReasons) ? json.unsupportedReasons : []),
@@ -10431,11 +10429,11 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     updatedAt: context.updatedAt,
     backend,
     targetId,
-    profileId: firstText(fixtureId, json.profileId, json.profile_id, targetId),
+    profileId: firstText(validationProfileId, json.profileId, json.profile_id, fixtureId, targetId),
     fixtureId,
     fixture_id: fixtureId,
-    validationProfileId: firstText(json.validationProfileId, json.validation_profile_id),
-    validation_profile_id: firstText(json.validationProfileId, json.validation_profile_id),
+    validationProfileId,
+    validation_profile_id: validationProfileId,
     proofMode: 'negative_edit',
     evidenceKind: 'negative_edit',
     matrixOutcome: refusalProven ? 'refusal_proven' : 'unproven',

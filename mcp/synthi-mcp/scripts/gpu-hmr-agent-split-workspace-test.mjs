@@ -512,8 +512,12 @@ function validationProfileId() {
   return ACTIVE_AGENT_PROFILE?.profileId ?? CFG.fixture;
 }
 
+function validationFixtureId() {
+  return ACTIVE_AGENT_PROFILE?.source?.fixture || CFG.fixture;
+}
+
 function validationProfileClass() {
-  return ACTIVE_AGENT_PROFILE?.profileClass ?? profileClassForFixture(CFG.fixture);
+  return ACTIVE_AGENT_PROFILE?.profileClass ?? profileClassForFixture(validationFixtureId());
 }
 
 function validationProfileEvidenceSource() {
@@ -3486,6 +3490,13 @@ function selfCheckAgentVisualProfile() {
         controlMultiplier: 0,
       },
     });
+    const fixtureBackedProfile = normalizeAgentVisualProfile({
+      schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+      profileId: 'self-check-fixture-backed-profile',
+      source: {
+        fixture: 'ray-light',
+      },
+    });
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -3493,6 +3504,8 @@ function selfCheckAgentVisualProfile() {
     } catch (err) {
       ambiguousRejected = String(err.message).includes('profile_declared_edit_find_text_ambiguous');
     }
+    ACTIVE_AGENT_PROFILE = fixtureBackedProfile;
+    const fixtureBackedIdentity = validationFixtureId();
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -3519,6 +3532,7 @@ function selfCheckAgentVisualProfile() {
       || !sourceHashMismatchRejected
       || !sceneManifestHashMismatchRejected
       || !ambiguousRejected
+      || fixtureBackedIdentity !== 'ray-light'
     ) {
       throw new Error('agent visual profile self-check failed');
     }
@@ -3807,8 +3821,8 @@ function runModeProofIdentity(split) {
     generated_split_profile_id: splitIdentity.profile_id,
     profileId: validationProfileId(),
     profile_id: validationProfileId(),
-    fixtureId: CFG.fixture,
-    fixture_id: CFG.fixture,
+    fixtureId: validationFixtureId(),
+    fixture_id: validationFixtureId(),
     validationProfileId: validationProfileId(),
     validation_profile_id: validationProfileId(),
     validationProfileSource: validationProfileEvidenceSource(),
@@ -4827,7 +4841,7 @@ async function run() {
     process.env.SYNTHI_GPU_ARCH = arch;
   }
   record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'}`);
-  record('fixture', 'pass', CFG.fixture);
+  record('fixture', 'pass', validationFixtureId());
   const source = monolithicSource(vendor);
   if (ACTIVE_AGENT_PROFILE) {
     record(
