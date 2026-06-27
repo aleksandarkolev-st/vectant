@@ -9921,7 +9921,9 @@ function realRocmDeviceSidecarContractFacet({
     ...contractEntryPoints,
     ...compactStringList(CFG.nativeLaunchSymbols),
   ]);
-  const compiler = declaredContract.compiler ?? compilerFromCmakeArgs(CFG.cmakeArgs);
+  const compiler = declaredContract.compiler
+    ?? compilerFromCmakeArgs(CFG.cmakeArgs)
+    ?? compilerFromBuildMetadata(buildMetadata, effectiveSourcePaths);
   const compileTarget = declaredContract.compileTarget
     ?? declaredContract.compile_target
     ?? CFG.gpuArch;
@@ -10127,6 +10129,30 @@ function compileCommandArgv(entry = {}) {
   return args;
 }
 
+function compilerFromBuildMetadata(buildMetadata = {}, preferredSourcePaths = []) {
+  const preferred = new Set(compactStringList(preferredSourcePaths).map((sourcePath) =>
+    sourcePath.replace(/\\/g, '/')
+  ));
+  const entries = realRocmCompileCommandEntries(buildMetadata);
+  const ordered = [
+    ...entries.filter((entry) => preferred.has(repoRelativePath(entry?.file))),
+    ...entries.filter((entry) => !preferred.has(repoRelativePath(entry?.file))),
+  ];
+  for (const entry of ordered) {
+    const argv = compileCommandArgv(entry);
+    while (argv.length > 0 && /^(?:ccache|sccache|distcc)$/i.test(path.posix.basename(String(argv[0]).replace(/\\/g, '/')))) {
+      argv.shift();
+    }
+    const compiler = argv[0];
+    if (!compiler) continue;
+    const base = path.posix.basename(String(compiler).replace(/\\/g, '/')).toLowerCase();
+    if (/(?:hipcc|amdclang\+\+|clang\+\+|g\+\+|c\+\+)$/.test(base)) {
+      return compiler;
+    }
+  }
+  return null;
+}
+
 function cppStandardFromBuildMetadata(buildMetadata = {}, sourcePath = '') {
   const normalizedSource = String(sourcePath ?? '').replace(/\\/g, '/');
   const entries = realRocmCompileCommandEntries(buildMetadata);
@@ -10230,6 +10256,9 @@ function realRocmDerivedCompileManifestFacet({
   ]);
   if (entryPoints.length === 0) {
     blockingGaps.push('real_rocm_compile_manifest_entry_points_missing');
+  }
+  if (sidecarContract.contractEvidenceComplete !== true) {
+    blockingGaps.push('real_rocm_compile_manifest_contract_evidence_incomplete');
   }
   const accepted =
     blockingGaps.length === 0
