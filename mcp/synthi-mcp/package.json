@@ -33,6 +33,7 @@
     "scripts/gpu-hmr-hip-module-runtime-proof.mjs",
     "scripts/probes/hip_module_runtime_probe.cpp",
     "scripts/profiles/hiprt-*.json",
+    "scripts/profiles/agent-*.json",
     "scripts/profiles/real-rocm-*.json",
     "scripts/profiles/hip-module-runtime-*.json",
     "scripts/profiles/hip-module/*.hip",
