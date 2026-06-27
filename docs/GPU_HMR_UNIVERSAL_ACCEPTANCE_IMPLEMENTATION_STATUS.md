@@ -36,22 +36,23 @@ strict blockers: no Synthi artifact transport, epoch publication, dispatch trace
 timing: total_validator_wall_time=985361.4846ms, initial_compile_wall_ms=300366, hot_hmr_compile_ms=180293, runtime_probe_ms=2
 ```
 
-Fresh profile-backed realistic ROCm raytrace visual GPU HMR was rerun with the corrected MCP container entry `/app/dist/index.js`:
+Fresh profile-backed realistic ROCm raytrace visual GPU HMR was rerun after routing agent-split visual deltas through the generic async/CAS visual proof bundle. The corrected MCP container entry is `/app/dist/index.js`:
 
 ```text
 profile: agent-realistic-raytrace-scene
-slug: gpu-agent-profile-realistic-raytrace-20260627-cas-followup2
-workspace url: http://localhost:3000/workspace/gpu-agent-profile-realistic-raytrace-20260627-cas-followup2
-artifact dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-profile-realistic-raytrace-20260627-cas-followup2
+slug: gpu-agent-profile-realistic-raytrace-20260627-agent-cas-worker2
+workspace url: http://localhost:3000/workspace/gpu-agent-profile-realistic-raytrace-20260627-agent-cas-worker2
+artifact dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-profile-realistic-raytrace-20260627-agent-cas-worker2
 visual inspection: before/after/diff PNGs were opened locally; the scene is nonblank and shows a faceted diamond, small stones, glossy slab reflections, wall/awning geometry, cafe bulbs, and a car with visible post-epoch diffs
-hot1 row: gpu-validation-matrix-row:sha256:519cd3ea73d09ef8c880f177a23f23cd75449927eea1aef6993bd93f80cdfb8a
-hot1 proof ids: agent-split-run-mode-proof:sha256:8dcd923e828faaa32ff41b94ba68a28957d576d59ddb71c467ecbff6a590a4b3, gpu-ledger-proof:sha256:4f63ca43b8d2bb20674ada77c8ea9aa16f41bca7bc666ae32603fe7df2247670, gpu-runtime-proof:sha256:7f881f9decda29fa31b8f44280b53d07314503115a7e2296418cd5935bec7078
+async/CAS visual transport: each selected hot-delta visual artifact carries 3 `synthi.cas.artifact_locator.v1` records for before/after/diff, with `visualArtifactTransportEvidence.accepted=true`, `acceptedForGpuHmr=false`, and `proofAuthority=transport_integrity_only_not_visual_or_ledger_proof`
+hot1 row: gpu-validation-matrix-row:sha256:a0df2300f4410e37f66b6b6bf99814f3794b5a19d2b79e9a62acddec22af81b4
+hot1 proof ids: agent-split-run-mode-proof:sha256:cc383eacf9eb781eca84d8d61940ab1fefe8ca650ca73f80a75d4d3163dcbea1, gpu-ledger-proof:sha256:e030e2412f9d50594f15d99f849a63772d6e0c4ff01e49df84dac2abce4a5231, gpu-runtime-proof:sha256:089697f498eabe5f59548725a0d97da10717dc18fd9a262da1398b1367ba560a
 hot1 visual delta: changed=82.64%, mean_abs=17.89, control_changed=0.00%, control_mean_abs=0.02
-hot1 timing: device_compile_wall_time=68468800ns, runtime_probe_time=3473445000ns, total_validator_wall_time=3541997500ns
-hot2 row: gpu-validation-matrix-row:sha256:c80e654cbf9e35bc18391eff8a57d42aeeef7b01fddd1b82aec6053008539cac
-hot2 proof ids: agent-split-run-mode-proof:sha256:5d2a1117ae215a5ee52feac2a50ed1f9e5955da12ed6283a3f2fde26c2191244, gpu-ledger-proof:sha256:a55732e9e8c754dc68ee24d55a434153142ccb3551bbd52284d62da1f2d7ef5f, gpu-runtime-proof:sha256:b1332ccbf55da5ad166dc6d8201c39d0fa0159164a2e67f5d10417d781b19d47
+hot1 timing: device_compile_wall_time=87520100ns, runtime_probe_time=6765742200ns, total_validator_wall_time=6853352500ns
+hot2 row: gpu-validation-matrix-row:sha256:f3cdc75c6b776e7aa329044bca871cbfdc30edcfbd31e9eb2afc4d549b5a66db
+hot2 proof ids: agent-split-run-mode-proof:sha256:03f7de7e9956197e2f3cd1f7d29bfeb3e546e5644610f2d6c210296f4cf0acb6, gpu-ledger-proof:sha256:12586c613fbc76d73b8ca5395ef79f18a9296d5f33970b957a02fab4043f5409, gpu-runtime-proof:sha256:39768f789cccfa507f7207873b9574c1fd48d317abd3b6dbb83cbfabb414279a
 hot2 visual delta: changed=99.87%, mean_abs=37.38, control_changed=0.00%, control_mean_abs=0.03
-hot2 timing: device_compile_wall_time=31185800ns, runtime_probe_time=1934395000ns, total_validator_wall_time=1965662200ns
+hot2 timing: device_compile_wall_time=90923600ns, runtime_probe_time=6032621500ns, total_validator_wall_time=6123677100ns
 negative edit: ABI/layout-changing edit refused before GPU HMR acceptance
 fission: deterministic verifier accepted per_kernel_hmr for render_realistic_raytrace
 scope: generated_rocm_hip_preview_visual, scoped_profile only; this is not arbitrary HIP application/library acceptance
@@ -60,8 +61,8 @@ scope: generated_rocm_hip_preview_visual, scoped_profile only; this is not arbit
 Latest validation matrix after these runs:
 
 ```text
-proof id: gpu-validation-matrix-ledger:sha256:0cab3f2fb8a527f348a50c8dc549e28221bf08b41f92bfe842b569c1ec71d406
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260627T100841Z.json
+proof id: gpu-validation-matrix-ledger:sha256:a2ac3f4e5bf7f12e715a20fde0dc28972eb5d37c58303c6b38e29eaa7b342b82
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260627T134613Z.json
 summary: 67 rows, 22 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 22 scoped full-runtime GPU HMR, 29 structurally proven refusals, 11 cold splits, 2 deterministic fission, 2 visual profiles, 1 preflight-only row
 broad readiness: accepted=false, broadRuntimeRows=0, scopedRuntimeRows=22
 history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:8f00d68c3c48237ffecb967a63c61e7fbc85af2d726db682420e7b7322682b44, 677 rows with 610 historical unproven rows included

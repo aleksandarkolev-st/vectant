@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  buildAsyncVisualProofBundle,
   deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   mcpFrameAtOrAfterFrameGate,
@@ -37,11 +38,6 @@ import {
   buildGpuHmrRunModeCoverageSupport,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
-import {
-  defaultCasRootFromEnv,
-  writeArtifactToCas,
-} from './lib/gpu-hmr-artifact-cas.mjs';
-import { computeAsyncVisualProof } from './lib/gpu-hmr-visual-proof-worker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3791,6 +3787,18 @@ function visualLedgerArtifactsFromDelta({
     diffImage: visualDelta.visualArtifacts.diffImage,
     diff_image_hash: visualDelta.visual_artifacts.diff_image_hash,
     diffImageHash: visualDelta.visualArtifacts.diffImageHash,
+    artifact_cas_locators: visualDelta.artifact_cas_locators ?? visualDelta.visual_artifacts.artifact_cas_locators ?? [],
+    artifactCasLocators: visualDelta.artifactCasLocators ?? visualDelta.visualArtifacts.artifactCasLocators ?? [],
+    visual_artifact_transport_evidence:
+      visualDelta.visual_artifact_transport_evidence
+      ?? visualDelta.visual_artifacts.visual_artifact_transport_evidence
+      ?? null,
+    visualArtifactTransportEvidence:
+      visualDelta.visualArtifactTransportEvidence
+      ?? visualDelta.visualArtifacts.visualArtifactTransportEvidence
+      ?? null,
+    artifact_transport_authority: 'transport_integrity_only_not_visual_or_ledger_proof',
+    artifactTransportAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
     diff_image_hash_verified: true,
     diffImageHashVerified: true,
     blank_frame_rejection: visiblePixelCount > 0,
@@ -4226,69 +4234,40 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   if (!beforeShot?.imageData || !afterShot?.imageData) {
     throw new Error('visual delta requires saved before/after screenshot data');
   }
-  const casRoot = defaultCasRootFromEnv();
-  const beforeInput = await visualWorkerImageInput(beforeShot, 'before_frame');
-  const afterInput = await visualWorkerImageInput(afterShot, 'after_frame');
   const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
-  const roi = visualProof.oracleRegion
-    ?? visualProof.oracle_region
-    ?? visualProof.regionOfInterest
-    ?? visualProof.region_of_interest
-    ?? visualProof.roi
-    ?? null;
-  const asyncVisualProof = await computeAsyncVisualProof({
-    before: beforeInput,
-    after: afterInput,
+  const bundle = await buildAsyncVisualProofBundle({
+    beforeBytes: Buffer.from(beforeShot.imageData, 'base64'),
+    afterBytes: Buffer.from(afterShot.imageData, 'base64'),
     diffPath,
-    roi,
-    allowRoiEarlyExit: visualProof.allowRoiEarlyExit === true || visualProof.allow_roi_early_exit === true,
-    tileSize: visualProof.tileSize ?? visualProof.tile_size ?? 128,
+    artifactDir: ARTIFACT_DIR,
+    sessionNamespace: CFG.slug,
+    producer: {
+      name: 'agent_split_visual_runner',
+      kind: 'visual_proof_worker',
+    },
+    producerSubsystem: 'agent_split_visual_proof',
+    visualProof,
   }, {
-    allowedRoots: casRoot ? [casRoot] : [],
     allowedOutputRoots: [ARTIFACT_DIR],
     timeoutMs: Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000),
   });
+  const asyncVisualProof = bundle.asyncVisualProof ?? bundle.async_visual_proof ?? {};
   if (asyncVisualProof.accepted !== true) {
     const reasons = Array.isArray(asyncVisualProof.reasons) ? asyncVisualProof.reasons.join(',') : 'unknown';
     throw new Error(`visual proof worker failed: ${reasons}`);
   }
   return {
-    changedRatio: asyncVisualProof.changedRatio ?? asyncVisualProof.metrics?.changedRatio ?? 0,
-    meanAbs: asyncVisualProof.meanAbs ?? asyncVisualProof.metrics?.meanAbs ?? 0,
+    changedRatio: bundle.metrics?.changedPixelRatio ?? asyncVisualProof.changedRatio ?? asyncVisualProof.metrics?.changedRatio ?? 0,
+    meanAbs: bundle.metrics?.meanAbsDelta8bit ?? asyncVisualProof.meanAbs ?? asyncVisualProof.metrics?.meanAbs ?? 0,
+    visualProofBundle: bundle,
+    visual_proof_bundle: bundle,
+    artifactCasLocators: bundle.artifactCasLocators ?? [],
+    artifact_cas_locators: bundle.artifactCasLocators ?? [],
+    visualArtifactTransportEvidence: bundle.visualArtifactTransportEvidence ?? null,
+    visual_artifact_transport_evidence: bundle.visualArtifactTransportEvidence ?? null,
     asyncVisualProof,
     async_visual_proof: asyncVisualProof,
   };
-}
-
-async function visualWorkerImageInput(shot, role) {
-  const casRoot = defaultCasRootFromEnv();
-  if (!casRoot) return { imageData: shot.imageData };
-  const bytes = Buffer.from(shot.imageData, 'base64');
-  try {
-    return {
-      casManifest: await writeArtifactToCas(bytes, {
-        artifactRoot: casRoot,
-        mediaType: 'image/png',
-        role,
-        sessionNamespace: CFG.slug,
-        producer: {
-          name: 'agent_split_visual_runner',
-          kind: 'visual_proof_worker',
-        },
-      }),
-    };
-  } catch (error) {
-    if (process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_REQUIRE_CAS === '1') {
-      throw error;
-    }
-    return {
-      imageData: shot.imageData,
-      casWriteFallback: true,
-      cas_write_fallback: true,
-      casWriteError: error?.message ?? String(error),
-      cas_write_error: error?.message ?? String(error),
-    };
-  }
 }
 
 async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'before-after-diff', recordLabel = 'mcp screenshot visual delta') {
@@ -4355,6 +4334,12 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
   if (best && selectedDiffStats?.asyncVisualProof) {
     best.asyncVisualProof = selectedDiffStats.asyncVisualProof;
     best.async_visual_proof = selectedDiffStats.asyncVisualProof;
+    best.visualProofBundle = selectedDiffStats.visualProofBundle;
+    best.visual_proof_bundle = selectedDiffStats.visualProofBundle;
+    best.artifactCasLocators = selectedDiffStats.artifactCasLocators ?? [];
+    best.artifact_cas_locators = selectedDiffStats.artifactCasLocators ?? [];
+    best.visualArtifactTransportEvidence = selectedDiffStats.visualArtifactTransportEvidence ?? null;
+    best.visual_artifact_transport_evidence = selectedDiffStats.visualArtifactTransportEvidence ?? null;
   }
   const firstAfterTs = afterSamples[0]?.ts || 0;
   const selectedDeltaMs = firstAfterTs && best?.shot?.ts ? best.shot.ts - firstAfterTs : null;
@@ -4376,6 +4361,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     afterImageHash: selectedAfterArtifact.hash,
     diffImage: diffArtifact.path,
     diffImageHash: diffArtifact.hash,
+    artifactCasLocators: best.artifactCasLocators ?? [],
+    visualArtifactTransportEvidence: best.visualArtifactTransportEvidence ?? null,
   };
   const visualArtifactsSnake = {
     before_image: baselineArtifact.path,
@@ -4384,6 +4371,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     after_image_hash: selectedAfterArtifact.hash,
     diff_image: diffArtifact.path,
     diff_image_hash: diffArtifact.hash,
+    artifact_cas_locators: best.artifactCasLocators ?? [],
+    visual_artifact_transport_evidence: best.visualArtifactTransportEvidence ?? null,
   };
   return {
     changedRatio: best.changedRatio,
@@ -4414,6 +4403,12 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     diffPath: path.relative(process.cwd(), diffPath),
     visualArtifacts,
     visual_artifacts: visualArtifactsSnake,
+    artifactCasLocators: best.artifactCasLocators ?? [],
+    artifact_cas_locators: best.artifactCasLocators ?? [],
+    visualArtifactTransportEvidence: best.visualArtifactTransportEvidence ?? null,
+    visual_artifact_transport_evidence: best.visualArtifactTransportEvidence ?? null,
+    visualProofBundle: best.visualProofBundle ?? null,
+    visual_proof_bundle: best.visualProofBundle ?? null,
     asyncVisualProof: best.asyncVisualProof ?? null,
     async_visual_proof: best.asyncVisualProof ?? null,
     controlAsyncVisualProof: control.asyncVisualProof ?? null,
