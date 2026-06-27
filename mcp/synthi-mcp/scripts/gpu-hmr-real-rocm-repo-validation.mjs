@@ -1320,8 +1320,15 @@ function cmakeMissingDependencyTokens(text) {
   const configPackageGroups = [...combined.matchAll(
     /package\s+configuration\s+file\s+provided\s+by\s+["']([^"']+)["']/gi,
   )];
+  const boostConfigComponentTokens = configPackageGroups.flatMap((match) => {
+    const componentMatch = String(match[1] ?? '').match(/^boost[_-]([A-Za-z0-9_.+-]+)$/i);
+    return componentMatch ? ['Boost', `Boost::${componentMatch[1]}`] : [];
+  });
   const missingCompilerGroups = [...combined.matchAll(
     /The\s+(CMAKE_[A-Za-z0-9_]+_COMPILER):\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*is\s+not\s+a\s+full\s+path\s+and\s+was\s+not\s+found\s+in\s+the\s+PATH\./gi,
+  )];
+  const findProgramMissingGroups = [...combined.matchAll(
+    /Could\s+not\s+find\s+([A-Za-z0-9_.:+-]+)\s+using\s+the\s+following\s+names:\s*([^\r\n]+)/gi,
   )];
   const missingHeaderGroups = [...combined.matchAll(
     /fatal\s+error:\s+['<]([^'">]+)['>]\s+file\s+not\s+found/gi,
@@ -1332,7 +1339,12 @@ function cmakeMissingDependencyTokens(text) {
       ...(match[2] ? match[2].split(/[\s,;]+/) : []),
     ]),
     ...configPackageGroups.map((match) => match[1]),
+    ...boostConfigComponentTokens,
     ...missingCompilerGroups.flatMap((match) => [match[1], match[2]]),
+    ...findProgramMissingGroups.flatMap((match) => [
+      match[1],
+      ...(match[2] ? match[2].split(/[\s,;]+/) : []),
+    ]),
     ...missingHeaderGroups.map((match) => match[1]),
     ...[...combined.matchAll(/No package ['"]?([A-Za-z0-9_.:+-]+)['"]? found/gi)]
       .map((match) => match[1]),
@@ -14301,6 +14313,8 @@ int main()
   const cmakeMissingDeps = cmakeMissingDependencyTokens([
     'Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)',
     'Could not find a package configuration file provided by "msgpack" with any of the following names:',
+    'Could not find a package configuration file provided by "boost_filesystem" with any of the following names:',
+    'Could not find UNZIPPER using the following names: bzip2',
     'No package "libexample" found',
     'The CMAKE_Fortran_COMPILER:',
     '  gfortran',
@@ -14312,6 +14326,11 @@ int main()
     || !cmakeMissingDeps.includes('BZIP2_LIBRARIES')
     || !cmakeMissingDeps.includes('BZIP2_INCLUDE_DIR')
     || !cmakeMissingDeps.includes('msgpack')
+    || !cmakeMissingDeps.includes('boost_filesystem')
+    || !cmakeMissingDeps.includes('Boost')
+    || !cmakeMissingDeps.includes('Boost::filesystem')
+    || !cmakeMissingDeps.includes('UNZIPPER')
+    || !cmakeMissingDeps.includes('bzip2')
     || !cmakeMissingDeps.includes('libexample')
     || !cmakeMissingDeps.includes('CMAKE_Fortran_COMPILER')
     || !cmakeMissingDeps.includes('gfortran')
