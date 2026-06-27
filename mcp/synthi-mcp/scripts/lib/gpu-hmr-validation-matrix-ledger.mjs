@@ -1347,6 +1347,8 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     row.target_id,
     row.profileId,
     row.profile_id,
+    row.validationProfileId,
+    row.validation_profile_id,
     row.projectId,
     row.project_id,
     ledgerRecord.projectId,
@@ -9162,6 +9164,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     profileId: firstText(fixtureId, json.profileId, json.profile_id, targetId === 'unknown' ? null : targetId) ?? 'unknown',
     fixtureId,
     fixture_id: fixtureId,
+    validationProfileId: firstText(json.validationProfileId, json.validation_profile_id),
+    validation_profile_id: firstText(json.validationProfileId, json.validation_profile_id),
     proofMode: 'run_mode_proof',
     evidenceKind: isCold
       ? genericRuntimeRunMode
@@ -9310,6 +9314,8 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     profileId: firstText(fixtureId, json.profileId, json.profile_id, targetId),
     fixtureId,
     fixture_id: fixtureId,
+    validationProfileId: firstText(json.validationProfileId, json.validation_profile_id),
+    validation_profile_id: firstText(json.validationProfileId, json.validation_profile_id),
     proofMode: 'negative_edit',
     evidenceKind: 'negative_edit',
     matrixOutcome: refusalProven ? 'refusal_proven' : 'unproven',
