@@ -6318,7 +6318,16 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
       const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
       if (identityLoss) return identityLoss;
       const waitError = waitResultFromWaitHmrToolError(err);
-      if (waitError) return attachWaitEvidence(waitError, waitArgs);
+      if (waitError) {
+        const attachedWaitError = attachWaitEvidence(waitError, waitArgs);
+        if (attachedWaitError?.status === 'timeout') {
+          const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
+          if (recovered) return recovered;
+          last = attachedWaitError;
+          continue;
+        }
+        return attachedWaitError;
+      }
       const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
       throw err;
