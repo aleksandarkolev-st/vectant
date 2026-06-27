@@ -5082,6 +5082,67 @@ assert.equal(emptyProofSchedulingRocm.reasons.some((reason) =>
   reason.startsWith('real_rocm_proof_scheduling:')
 ), false);
 
+const forgedTimeoutIntelligence = realRocmProofSchedulingFixture({
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+});
+const timeoutIntelligenceOnlyRocmDir = path.join(logsRoot, 'real-rocm-timeout-intelligence-only');
+await writeJson(path.join(timeoutIntelligenceOnlyRocmDir, 'real-rocm-timeout-intelligence-only.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-timeout-intelligence-only-20260627',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-timeout-intelligence-only',
+    source: 'scripts/profiles/real-rocm-timeout-intelligence-only.json',
+  },
+  source_url: 'https://example.invalid/rocm/timeout-intelligence-only.git',
+  target_name: 'TimeoutIntelligenceOnlyDriver',
+  real_rocm_proof_scheduling: null,
+  realRocmProofScheduling: null,
+  proof_scheduling: null,
+  proofScheduling: null,
+  timeout_intelligence_failure: forgedTimeoutIntelligence,
+  timeoutIntelligenceFailure: forgedTimeoutIntelligence,
+  real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligationsFixture(),
+});
+const timeoutIntelligenceOnlyLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [timeoutIntelligenceOnlyRocmDir],
+  generatedAt: '2026-06-27T00:00:02.000Z',
+});
+const timeoutIntelligenceRocm = timeoutIntelligenceOnlyLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(timeoutIntelligenceRocm?.acceptedForGpuHmr, false);
+assert.equal(timeoutIntelligenceRocm.gpuHmrSuccess, false);
+assert.equal(timeoutIntelligenceRocm.realRocmProofScheduling.present, true);
+assert.equal(timeoutIntelligenceRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
+assert.equal(timeoutIntelligenceRocm.realRocmProofScheduling.accepted, false);
+assert.equal(timeoutIntelligenceRocm.timeoutIntelligenceFailure.fastFailApplied, true);
+assert.ok(timeoutIntelligenceRocm.realRocmProofScheduling.failedGates.includes(
+  'real_rocm_proof_scheduling_claimed_gpu_hmr_acceptance',
+));
+assert.ok(timeoutIntelligenceRocm.realRocmProofScheduling.failedGates.includes(
+  'real_rocm_proof_scheduling_claimed_gpu_hmr_success',
+));
+assert.ok(timeoutIntelligenceRocm.realRocmProofScheduling.failedGates.includes(
+  'real_rocm_proof_scheduling_claimed_runtime_authority',
+));
+assert.deepEqual(timeoutIntelligenceRocm.realRocmRuntimeStageObligationsGate.missingStages, [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+]);
+assert.ok(timeoutIntelligenceRocm.reasons.includes('real_rocm_runtime_stage_obligations_not_met'));
+assert.ok(timeoutIntelligenceRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
+
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));

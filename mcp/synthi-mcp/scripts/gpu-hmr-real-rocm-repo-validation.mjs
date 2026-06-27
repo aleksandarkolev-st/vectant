@@ -1290,6 +1290,17 @@ function compactStringList(values = []) {
   return out;
 }
 
+function compactRecord(value = {}) {
+  const result = {};
+  if (!value || typeof value !== 'object') return result;
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined || entry === null) continue;
+    if (Array.isArray(entry) && entry.length === 0) continue;
+    result[key] = entry;
+  }
+  return result;
+}
+
 function compactKnownStringList(values = []) {
   return compactStringList(values).filter((value) => {
     const normalized = value.trim().toLowerCase();
@@ -6199,10 +6210,203 @@ function realRocmProofSchedulingStructuralGaps({ compileBridgeSummary = null } =
   ]);
 }
 
+function proofWaitValidationFromResult(proofWaitResult = {}) {
+  const result = proofWaitResult && typeof proofWaitResult === 'object'
+    ? proofWaitResult
+    : {};
+  const validation =
+    result.gpu_proof_validation && typeof result.gpu_proof_validation === 'object'
+      ? result.gpu_proof_validation
+      : result.gpuProofValidation && typeof result.gpuProofValidation === 'object'
+        ? result.gpuProofValidation
+        : {};
+  return validation;
+}
+
+function failedGateCodesFromProofValidation(validation = {}) {
+  const gates = [];
+  const pushGateCodes = (value) => {
+    if (!Array.isArray(value)) return;
+    for (const gate of value) {
+      if (typeof gate === 'string') {
+        gates.push(gate);
+      } else if (gate && typeof gate === 'object') {
+        gates.push(gate.code, gate.gate, gate.reason, gate.name);
+      }
+    }
+  };
+  pushGateCodes(validation.failedGates);
+  pushGateCodes(validation.failed_gates);
+  const runtimeArtifact =
+    validation.runtimeProofArtifactValidation
+    ?? validation.runtime_proof_artifact_validation
+    ?? {};
+  pushGateCodes(runtimeArtifact.failedGates);
+  pushGateCodes(runtimeArtifact.failed_gates);
+  const ledger =
+    validation.proofLedgerValidation
+    ?? validation.proof_ledger_validation
+    ?? {};
+  pushGateCodes(ledger.failedGates);
+  pushGateCodes(ledger.failed_gates);
+  return compactStringList(gates);
+}
+
+function proofSchedulingStageSnapshot({ required = false } = {}) {
+  const stageResults = {};
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const requiredProofKinds = realRocmStageProofKinds(stage.snake);
+    const stageResult = {
+      stage: stage.snake,
+      required: required === true,
+      observed: false,
+      runtimeObserved: false,
+      runtime_observed: false,
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds: required ? requiredProofKinds : [],
+      missing_proof_kinds: required ? requiredProofKinds : [],
+      evidenceRefs: [],
+      evidence_refs: [],
+    };
+    stageResults[stage.snake] = stageResult;
+    stageResults[stage.key] = stageResult;
+  }
+  return {
+    stageResults,
+    stage_results: stageResults,
+    missingStages: required ? REAL_ROCM_APP_HOOK_STAGES.map((stage) => stage.snake) : [],
+    missing_stages: required ? REAL_ROCM_APP_HOOK_STAGES.map((stage) => stage.snake) : [],
+  };
+}
+
+function realRocmProofWaitStructuralClassifier({
+  phaseName = 'unknown',
+  proofWaitResult = null,
+  baseBlockingGaps = [],
+  strictFullRuntimeProofRequired = false,
+} = {}) {
+  const result = proofWaitResult && typeof proofWaitResult === 'object'
+    ? proofWaitResult
+    : {};
+  const validation = proofWaitValidationFromResult(result);
+  const reason = stringField(validation, ['reason', 'failedReason', 'failed_reason']);
+  const proofInsufficient =
+    result.error === 'gpu_hmr_proof_insufficient'
+    || validation.satisfied === false
+    || validation.validated === false
+    || Boolean(reason);
+  if (!proofInsufficient || strictFullRuntimeProofRequired !== true) {
+    return {
+      blockingGaps: [],
+      blocking_gaps: [],
+      missingStages: [],
+      missing_stages: [],
+      stageResults: {},
+      stage_results: {},
+      absenceBasis: [],
+      absence_basis: [],
+      classifierInputs: compactRecord({ phaseName, proofInsufficient }),
+      classifier_inputs: compactRecord({ phase_name: phaseName, proof_insufficient: proofInsufficient }),
+    };
+  }
+  const terminalRejectedReasons = new Set([
+    'proof_ledger_rejected',
+    'runtime_proof_artifact_rejected',
+  ]);
+  const terminalMissingReasons = new Set([
+    'proof_state_missing',
+    'proof_ledger_missing',
+    'runtime_proof_artifact_missing',
+  ]);
+  const failedGateCodes = failedGateCodesFromProofValidation(validation);
+  const baseHasStructuralBlocker = compactStringList(baseBlockingGaps).length > 0;
+  const terminalRejected = terminalRejectedReasons.has(reason);
+  const missingButAlreadyStructurallyBlocked =
+    terminalMissingReasons.has(reason) && baseHasStructuralBlocker;
+  const structurallyClassified =
+    terminalRejected
+    || missingButAlreadyStructurallyBlocked;
+  if (!structurallyClassified) {
+    return {
+      blockingGaps: [],
+      blocking_gaps: [],
+      missingStages: [],
+      missing_stages: [],
+      stageResults: {},
+      stage_results: {},
+      absenceBasis: [`gpu_hmr_proof_insufficient:${reason || 'unknown'}`],
+      absence_basis: [`gpu_hmr_proof_insufficient:${reason || 'unknown'}`],
+      classifierInputs: compactRecord({
+        phaseName,
+        proofInsufficient,
+        reason,
+        failedGateCodes,
+        terminalRejected,
+        baseHasStructuralBlocker,
+      }),
+      classifier_inputs: compactRecord({
+        phase_name: phaseName,
+        proof_insufficient: proofInsufficient,
+        reason,
+        failed_gate_codes: failedGateCodes,
+        terminal_rejected: terminalRejected,
+        base_has_structural_blocker: baseHasStructuralBlocker,
+      }),
+    };
+  }
+  const stageSnapshot = proofSchedulingStageSnapshot({ required: true });
+  const blockingGaps = compactStringList([
+    reason ? `proof_scheduling_wait_${reason}` : 'proof_scheduling_wait_gpu_hmr_proof_insufficient',
+    ...failedGateCodes.map((code) => `proof_scheduling_failed_gate:${code}`),
+    ...stageSnapshot.missing_stages.flatMap((stage) => [
+      `proof_scheduling_${stage}_runtime_observation_missing`,
+      ...realRocmStageProofKinds(stage).map((kind) => `proof_scheduling_${stage}_${kind}_missing`),
+    ]),
+  ]);
+  const absenceBasis = compactStringList([
+    `gpu_hmr_proof_insufficient:${reason || 'unknown'}`,
+    terminalRejected ? 'terminal_rejected_runtime_proof_material' : null,
+    missingButAlreadyStructurallyBlocked ? 'existing_structural_proof_blockers' : null,
+  ]);
+  const classifierInputs = compactRecord({
+    phaseName,
+    proofInsufficient,
+    reason,
+    failedGateCodes,
+    terminalRejected,
+    missingButAlreadyStructurallyBlocked,
+    baseBlockingGaps: compactStringList(baseBlockingGaps),
+  });
+  return {
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    missingStages: stageSnapshot.missingStages,
+    missing_stages: stageSnapshot.missing_stages,
+    stageResults: stageSnapshot.stageResults,
+    stage_results: stageSnapshot.stage_results,
+    absenceBasis,
+    absence_basis: absenceBasis,
+    classifierInputs,
+    classifier_inputs: {
+      phase_name: classifierInputs.phaseName,
+      proof_insufficient: classifierInputs.proofInsufficient,
+      reason: classifierInputs.reason,
+      failed_gate_codes: classifierInputs.failedGateCodes,
+      terminal_rejected: classifierInputs.terminalRejected,
+      missing_but_already_structurally_blocked:
+        classifierInputs.missingButAlreadyStructurallyBlocked,
+      base_blocking_gaps: classifierInputs.baseBlockingGaps,
+    },
+  };
+}
+
 function realRocmProofSchedulingFacet({
   phaseName = 'unknown',
   requestedTimeoutMs = 0,
   compileBridgeSummary = null,
+  proofWaitResult = null,
+  elapsedBeforeClassifiedMs = null,
 } = {}) {
   const requested = Number.isFinite(Number(requestedTimeoutMs))
     ? Math.max(0, Number(requestedTimeoutMs))
@@ -6212,9 +6416,20 @@ function realRocmProofSchedulingFacet({
     CFG.requireFullRuntimeProof === true
     || report.real_rocm_profile_proof_obligations?.requiresFullRuntimeProof === true
     || report.real_rocm_profile_proof_obligations?.requires_full_runtime_proof === true;
-  const blockingGaps = strictFullRuntimeProofRequired
+  const baseBlockingGaps = strictFullRuntimeProofRequired
     ? realRocmProofSchedulingStructuralGaps({ compileBridgeSummary })
     : [];
+  const waitClassifier = realRocmProofWaitStructuralClassifier({
+    phaseName,
+    proofWaitResult,
+    baseBlockingGaps,
+    strictFullRuntimeProofRequired,
+  });
+  const blockingGaps = compactStringList([
+    ...baseBlockingGaps,
+    ...(Array.isArray(waitClassifier.blockingGaps) ? waitClassifier.blockingGaps : []),
+    ...(Array.isArray(waitClassifier.blocking_gaps) ? waitClassifier.blocking_gaps : []),
+  ]);
   const acceptedAsRefusalEvidence =
     strictFullRuntimeProofRequired
     && blockingGaps.length > 0;
@@ -6315,14 +6530,39 @@ function realRocmProofSchedulingFacet({
     can_satisfy_runtime_proof: false,
     strictFullRuntimeProofRequired,
     strict_full_runtime_proof_required: strictFullRuntimeProofRequired,
+    requiredGpuProofState: configuredWaitRequiredGpuProofState(),
+    required_gpu_proof_state: configuredWaitRequiredGpuProofState(),
     fastFailApplied,
     fast_fail_applied: fastFailApplied,
     requestedTimeoutMs: requested,
     requested_timeout_ms: requested,
     effectiveTimeoutMs,
     effective_timeout_ms: effectiveTimeoutMs,
+    elapsedBeforeClassifiedMs: Number.isFinite(Number(elapsedBeforeClassifiedMs))
+      ? Number(elapsedBeforeClassifiedMs)
+      : null,
+    elapsed_before_classified_ms: Number.isFinite(Number(elapsedBeforeClassifiedMs))
+      ? Number(elapsedBeforeClassifiedMs)
+      : null,
+    decision: fastFailApplied
+      ? 'stop_after_diagnostic_proof_slice'
+      : acceptedAsRefusalEvidence
+        ? 'diagnostic_wait_only'
+        : 'continue_wait',
     blockingGaps,
     blocking_gaps: blockingGaps,
+    missingStages: Array.isArray(waitClassifier.missingStages)
+      ? waitClassifier.missingStages
+      : [],
+    missing_stages: Array.isArray(waitClassifier.missing_stages)
+      ? waitClassifier.missing_stages
+      : [],
+    stageResults: waitClassifier.stageResults ?? {},
+    stage_results: waitClassifier.stage_results ?? waitClassifier.stageResults ?? {},
+    absenceBasis: waitClassifier.absenceBasis ?? [],
+    absence_basis: waitClassifier.absence_basis ?? waitClassifier.absenceBasis ?? [],
+    classifierInputs: waitClassifier.classifierInputs ?? {},
+    classifier_inputs: waitClassifier.classifier_inputs ?? waitClassifier.classifierInputs ?? {},
     waitPolicy,
     wait_policy: waitPolicy,
     validationBlocker,
@@ -6353,6 +6593,23 @@ function recordRealRocmProofScheduling(event) {
     ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
     ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
   ]));
+  const missingStages = compactStringList(events.flatMap((entry) => [
+    ...(Array.isArray(entry.missingStages) ? entry.missingStages : []),
+    ...(Array.isArray(entry.missing_stages) ? entry.missing_stages : []),
+  ]));
+  const stageResults = {};
+  for (const entry of events) {
+    const candidateStageResults = entry.stageResults ?? entry.stage_results;
+    if (!candidateStageResults || typeof candidateStageResults !== 'object') continue;
+    for (const [stage, result] of Object.entries(candidateStageResults)) {
+      if (stageResults[stage] || !result || typeof result !== 'object') continue;
+      stageResults[stage] = result;
+    }
+  }
+  const absenceBasis = compactStringList(events.flatMap((entry) => [
+    ...(Array.isArray(entry.absenceBasis) ? entry.absenceBasis : []),
+    ...(Array.isArray(entry.absence_basis) ? entry.absence_basis : []),
+  ]));
   const aggregate = {
     schemaVersion: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
     schema_version: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
@@ -6378,6 +6635,12 @@ function recordRealRocmProofScheduling(event) {
     events,
     blockingGaps,
     blocking_gaps: blockingGaps,
+    missingStages,
+    missing_stages: missingStages,
+    stageResults,
+    stage_results: stageResults,
+    absenceBasis,
+    absence_basis: absenceBasis,
     validationBlockers: blockers,
     validation_blockers: blockers,
   };
@@ -6546,6 +6809,7 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     phaseName,
     identityMonitor,
     Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
+    compileSummaryForScheduling,
   );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(
@@ -6640,7 +6904,70 @@ function attachWaitEvidence(wait, waitArgs) {
   };
 }
 
-async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null, sinceTs = null) {
+function classifyStructuralWaitHmrProofFailure({
+  wait,
+  timeoutMs,
+  phaseName,
+  startedAt,
+  compileBridgeSummary = null,
+} = {}) {
+  const validation = proofWaitValidationFromResult(wait);
+  const hasProofInsufficientSignal =
+    wait?.error === 'gpu_hmr_proof_insufficient'
+    || validation.satisfied === false
+    || validation.validated === false
+    || Boolean(stringField(validation, ['reason', 'failedReason', 'failed_reason']));
+  if (!hasProofInsufficientSignal) return null;
+  const proofScheduling = realRocmProofSchedulingFacet({
+    phaseName,
+    requestedTimeoutMs: timeoutMs,
+    compileBridgeSummary,
+    proofWaitResult: wait,
+    elapsedBeforeClassifiedMs: Date.now() - startedAt,
+  });
+  const hasWaitClassifierGap = [
+    ...(Array.isArray(proofScheduling.absenceBasis) ? proofScheduling.absenceBasis : []),
+    ...(Array.isArray(proofScheduling.absence_basis) ? proofScheduling.absence_basis : []),
+  ].length > 0;
+  if (
+    proofScheduling.accepted_as_refusal_evidence !== true
+    || proofScheduling.fast_fail_applied !== true
+    || !hasWaitClassifierGap
+  ) {
+    return null;
+  }
+  const recordedScheduling = recordRealRocmProofScheduling(proofScheduling);
+  record(
+    `${phaseName} timeout intelligence`,
+    'warn',
+    [
+      `decision=${recordedScheduling.decision}`,
+      `elapsed=${recordedScheduling.elapsed_before_classified_ms}ms`,
+      `requested=${recordedScheduling.requested_timeout_ms}ms`,
+      `effective=${recordedScheduling.effective_timeout_ms}ms`,
+      `gaps=${recordedScheduling.blocking_gaps.join(',') || 'none'}`,
+    ].join(' '),
+  );
+  return {
+    ...(wait && typeof wait === 'object' ? wait : {}),
+    status: wait?.status ?? 'timeout',
+    source: wait?.source ?? 'real_rocm_timeout_intelligence',
+    elapsedMs: Date.now() - startedAt,
+    proof_scheduling: recordedScheduling,
+    real_rocm_proof_scheduling: recordedScheduling,
+    timeout_intelligence_failure: recordedScheduling,
+    validation_blocker: recordedScheduling.validation_blocker ?? null,
+  };
+}
+
+async function waitHmrForCurrentWorkspace(
+  state,
+  timeoutMs,
+  phaseName,
+  identityMonitor = null,
+  sinceTs = null,
+  compileBridgeSummary = null,
+) {
   const startedAt = Date.now();
   const eventLogSinceTs = Number.isFinite(sinceTs) ? sinceTs : startedAt - 2000;
   let last = null;
@@ -6673,6 +7000,14 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
         if (attachedWaitError?.status === 'timeout') {
           const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
           if (recovered) return recovered;
+          const classified = classifyStructuralWaitHmrProofFailure({
+            wait: attachedWaitError,
+            timeoutMs,
+            phaseName,
+            startedAt,
+            compileBridgeSummary,
+          });
+          if (classified) return classified;
           last = attachedWaitError;
           continue;
         }
@@ -6697,6 +7032,14 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityM
     if (wait?.status === 'timeout') {
       const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, waitArgs, waitContract);
       if (recovered) return recovered;
+      const classified = classifyStructuralWaitHmrProofFailure({
+        wait,
+        timeoutMs,
+        phaseName,
+        startedAt,
+        compileBridgeSummary,
+      });
+      if (classified) return classified;
       continue;
     }
     return wait;
@@ -14283,6 +14626,14 @@ int main()
     targetProgression: report.target_progression,
     appHookContract: report.real_rocm_app_hook_contract,
     cfgAppHookContract: CFG.appHookContract,
+    realRocmProofScheduling: report.real_rocm_proof_scheduling,
+    realRocmProofSchedulingCamel: report.realRocmProofScheduling,
+    proofScheduling: report.proof_scheduling,
+    timeoutIntelligenceFailure: report.timeout_intelligence_failure,
+    timeoutIntelligenceFailureCamel: report.timeoutIntelligenceFailure,
+    validationBlockers: report.validation_blockers,
+    validationBlockersCamel: report.validationBlockers,
+    evidence: report.evidence,
   };
   try {
     CFG.requireFullRuntimeProof = true;
@@ -14319,6 +14670,30 @@ int main()
       requestedTimeoutMs: 20000,
       compileBridgeSummary: derivedSidecarSummary,
     });
+    const fakeWaitCalls = [];
+    const structuralWaitResult = await waitHmrForCurrentWorkspace({
+      client: {
+        async toolCall(name) {
+          fakeWaitCalls.push(name);
+          if (name === 'synthi_get_event_log') return { entries: [] };
+          if (name === 'synthi_wait_hmr') {
+            throw new Error(`tool synthi_wait_hmr isError: ${JSON.stringify({
+              error: 'gpu_hmr_proof_insufficient',
+              status: 'timeout',
+              gpu_proof_validation: {
+                reason: 'runtime_proof_artifact_rejected',
+                satisfied: false,
+                runtimeProofArtifactValidation: {
+                  accepted: false,
+                  failedGates: [{ code: 'runtime_proof_artifact_gpu_hmr_success_false' }],
+                },
+              },
+            })}`);
+          }
+          throw new Error(`unexpected fake self-check tool call ${name}`);
+        },
+      },
+    }, 20000, 'self_check_wait_hmr', null, Date.now(), derivedSidecarSummary);
     CFG.requireFullRuntimeProof = false;
     report.real_rocm_profile_proof_obligations = {};
     report.output_oracle_resolution = {
@@ -14344,6 +14719,20 @@ int main()
       || blockedSchedule.validation_blocker?.can_satisfy_runtime_proof !== false
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_output_oracle_disabled')
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_app_hook_contract_missing')
+      || fakeWaitCalls.filter((name) => name === 'synthi_wait_hmr').length !== 1
+      || structuralWaitResult.status !== 'timeout'
+      || structuralWaitResult.timeout_intelligence_failure?.accepted_for_gpu_hmr !== false
+      || structuralWaitResult.timeout_intelligence_failure?.gpu_hmr_success !== false
+      || structuralWaitResult.timeout_intelligence_failure?.can_satisfy_runtime_proof !== false
+      || structuralWaitResult.timeout_intelligence_failure?.fast_fail_applied !== true
+      || !structuralWaitResult.timeout_intelligence_failure?.blocking_gaps?.includes(
+        'proof_scheduling_wait_runtime_proof_artifact_rejected',
+      )
+      || !structuralWaitResult.timeout_intelligence_failure?.missing_stages?.includes('artifact_transport')
+      || !structuralWaitResult.timeout_intelligence_failure?.stage_results
+        ?.output_oracle
+        ?.missing_proof_kinds
+        ?.includes('readback_or_visual_artifact')
       || preservedSchedule.fast_fail_applied !== false
       || preservedSchedule.effective_timeout_ms !== 20000
       || preservedSchedule.accepted_as_refusal_evidence !== false
@@ -14361,6 +14750,18 @@ int main()
     report.target_progression = savedProofSchedulingSelfCheck.targetProgression;
     report.real_rocm_app_hook_contract = savedProofSchedulingSelfCheck.appHookContract;
     CFG.appHookContract = savedProofSchedulingSelfCheck.cfgAppHookContract;
+    report.real_rocm_proof_scheduling =
+      savedProofSchedulingSelfCheck.realRocmProofScheduling;
+    report.realRocmProofScheduling =
+      savedProofSchedulingSelfCheck.realRocmProofSchedulingCamel;
+    report.proof_scheduling = savedProofSchedulingSelfCheck.proofScheduling;
+    report.timeout_intelligence_failure =
+      savedProofSchedulingSelfCheck.timeoutIntelligenceFailure;
+    report.timeoutIntelligenceFailure =
+      savedProofSchedulingSelfCheck.timeoutIntelligenceFailureCamel;
+    report.validation_blockers = savedProofSchedulingSelfCheck.validationBlockers;
+    report.validationBlockers = savedProofSchedulingSelfCheck.validationBlockersCamel;
+    report.evidence = savedProofSchedulingSelfCheck.evidence;
   }
   const sidecarSelfCheckFiles = [
     {
