@@ -24,6 +24,36 @@ arbitrary user project
 
 The system must be hostile to fake GPU HMR success. Logs, compile output, AI assertions, and screenshot existence are not authoritative proof. They are evidence inputs to a structured proof ledger.
 
+### 1.1 Operational Diagnosis
+
+The validation framework is strong as a proof system, but it is not yet good enough as an everyday development loop. It is currently optimized to be hostile to fake success, which is correct, but the proof path is too coupled to the interaction path.
+
+The fast path must be:
+
+```text
+edit -> compile -> load -> epoch publish -> visible change
+```
+
+The proof-finalization path must be asynchronous:
+
+```text
+artifact hashing -> image decode -> pixel diff -> ledger recompute -> matrix ingestion -> docs/proof packaging
+```
+
+The UI should be able to report `HMR applied, proof pending` after epoch publication and lightweight oracle scheduling, while strict mode can still block until the full proof ledger closes. This is the same evidence model with different blocking behavior; it is not a weaker acceptance mode.
+
+The timing evidence already shows the gap. Some edit-visible paths complete in tens to low hundreds of milliseconds, while total validator wall time can be seconds or minutes. When a real ROCm runner waits the full proof window for runtime stages that are structurally absent, the delay is orchestration and proof scheduling, not GPU execution.
+
+Highest-leverage operational fixes:
+
+1. Offload visual validation to worker threads or processes, preferably a Rust visual proof worker or Rust-backed N-API path for PNG decode, hashing, ROI diff, perceptual diff, and proof-card rendering.
+2. Make visual proof incremental through deterministic oracle regions, tile hashes, changed ROIs, and full-frame escalation only when the incremental proof is missing or ambiguous.
+3. Move heavy artifacts through shared content-addressable storage instead of synchronous `docker cp`, base64 WebSocket payloads, or stdout JSON blobs.
+4. Separate interactive HMR from investor-grade proof packaging: dev mode can surface applied/pending state, while strict acceptance still waits for the ledger.
+5. Add timeout intelligence so structurally impossible or absent runtime stages fail fast with precise gaps instead of burning a long proof window.
+
+This performance work must not weaken proof gates. It makes the proof ledger asynchronous, content-addressed, incremental, and transport-aware while preserving fail-closed acceptance.
+
 ## 2. Immediate Corrections To The Previous Plan
 
 ### 2.1 Delta model requirement
@@ -677,6 +707,69 @@ timings:
 
 Model provenance fields from section 2.1 must be included in the same ledger entry as the timings.
 
+### 11.1 Validator Fast-Path Performance Plan
+
+The validation framework must distinguish the user-facing HMR fast path from the proof-finalization path:
+
+```text
+edit -> compile -> artifact load -> epoch publish -> visible/output-ready signal
+```
+
+must not wait on full-frame image decoding, full-matrix proof collection, cross-container binary copies, or archival artifact rendering unless those steps are required before a specific acceptance decision can be emitted. The proof system must still fail closed: a fast visible signal is not GPU HMR acceptance until the strict ledger, dispatch, and output oracle gates pass.
+
+Required performance architecture:
+
+```yaml
+validator_fast_path:
+  visual_analysis_executor:
+    value: rust_worker | napi_rust_worker | node_worker_thread | unavailable
+    proof_ready_event_required: true
+    executor_identity:
+    executable_hash:
+    schema_version:
+    evidence_refs: []
+  incremental_visual_proof:
+    roi_or_tile_manifest_required: true
+    deterministic_oracle_region_hash_before:
+    deterministic_oracle_region_hash_after:
+    tile_hash_grid:
+      tile_size:
+      changed_tile_count:
+      total_tile_count:
+      changed_tile_hashes: []
+    full_frame_diff_required_when:
+      - oracle_region_hash_changed_but_bounds_unknown
+      - roi_or_tile_manifest_missing
+      - deterministic_visual_mode_unproven
+      - visual_threshold_result_ambiguous
+  artifact_transport:
+    value: cas_shared_volume | cas_tmpfs | direct_worker_path | serialized_fallback
+    content_address:
+    manifest_hash:
+    shared_volume_identity:
+    producer_container:
+    consumer_container:
+    byte_length:
+    no_docker_cp_required_for_fast_path: true | false
+    no_base64_frame_transport_required_for_fast_path: true | false
+```
+
+Visual analysis should move out of the main validator event loop. The preferred implementation is a Rust proof worker, either as a standalone binary reached through a durable manifest/proof-ready event, or as a Rust-backed N-API module when embedding is clearly safer. A Node `worker_threads` implementation is acceptable only as an interim executor or compatibility fallback, and it must record that executor identity in proof metadata. Worker execution is a performance mechanism, not an authority shortcut.
+
+Incremental visual proof must be project-agnostic. A profile may declare an ROI only as a typed oracle region with hashes, dimensions, capture backend, deterministic visual controls, and evidence refs. If the ROI or tile manifest is absent, stale, out of bounds, mismatched to the frame hash, or disconnected from the post-epoch capture, the validator must fall back to the stricter full-frame visual proof or reject. It must not infer success from project names, target names, fixture names, or hand-picked pixel regions.
+
+Artifact transport should use content-addressable storage wherever possible. Worker, MCP, and frontend containers should share a bind mount or tmpfs CAS root for heavy proof artifacts such as frames, raw readback bytes, code objects, and rendered proof cards. The fast path should pass only a compact manifest with content addresses, hashes, byte lengths, producer identity, and allowed reader identities. `docker cp`, base64 screenshots over WebSocket, stdout JSON blobs containing binary data, and repeated re-materialization are allowed only as explicit fallback paths and must be recorded as transport limitations in timing/proof metadata.
+
+Acceptance rules:
+
+```text
+CAS presence is not proof by itself.
+ROI hash change is not proof by itself.
+Worker proof-ready event is not proof by itself.
+Serialized fallback transport must not be hidden from total validator wall time.
+Any missing or mismatched content address, byte length, frame hash, ROI manifest, worker executable hash, or proof-ready event fails closed.
+```
+
 ## 12. Validation Matrix
 
 The matrix must include positive, negative, and ambiguous cases.
@@ -745,6 +838,7 @@ Suggested workstreams:
 - Subagent C: fission and epoch proof schema review.
 - Subagent D: validation matrix runner and artifact collector.
 - Subagent E: adversarial validator that attempts false GPU HMR passes.
+- Subagent F: validator fast-path performance audit for Rust visual workers, ROI/tile proof, and CAS/shared-volume artifact transport.
 
 Subagent E should explicitly try to create fake successes:
 
@@ -755,6 +849,14 @@ Subagent E should explicitly try to create fake successes:
 - Readback from stale buffer.
 - Process restarted.
 - Full rebuild hidden in timing.
+
+Subagent F should explicitly review performance without weakening proof gates:
+
+- Main-thread image decode, full-frame diff, and PNG encode hotspots.
+- Base64, `docker cp`, stdout JSON, and repeated file materialization bottlenecks.
+- Generic CAS manifest schemas that do not encode project, fixture, backend, or library names.
+- ROI/tile visual proof failure cases where stale bounds, camera jitter, blank frames, or pre-epoch captures could fake success.
+- Evidence needed to prove that the proof worker itself did not become an untracked oracle.
 
 ## 14. Implementation Order
 
@@ -797,6 +899,19 @@ Only after the adversarial refusal harness passes should the matrix broaden scop
 ### Step 10: Timing normalization
 
 Unify all validation scripts under the monotonic metric schema.
+
+### Step 11: Validator fast-path performance
+
+Move heavy visual validation and binary artifact transport off the main validator path without changing acceptance semantics.
+
+Implementation order:
+
+1. Introduce executor metadata and proof-ready event schemas for visual analysis.
+2. Add a background visual proof worker path, preferably Rust or Rust-backed N-API, with a Node worker fallback only when recorded explicitly.
+3. Add typed ROI/tile manifests and deterministic oracle-region hashes.
+4. Add CAS/shared-volume manifests for frames, raw readbacks, code objects, and proof cards.
+5. Keep serialized base64 and `docker cp` paths as measured fallbacks, not the preferred fast path.
+6. Require validation matrix self-checks for forged ROI hashes, stale tiles, missing CAS bytes, mismatched byte lengths, wrong worker executable hashes, and proof-ready events without ledger output.
 
 ## 15. Stronger Definition Of Done
 
