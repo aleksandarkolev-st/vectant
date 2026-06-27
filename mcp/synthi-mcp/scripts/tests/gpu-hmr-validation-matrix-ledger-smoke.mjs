@@ -3067,6 +3067,95 @@ function realRocmRuntimeStageObligationsFixture(overrides = {}) {
   };
 }
 
+function realRocmProofSchedulingFixture(overrides = {}) {
+  const blockingGaps = [
+    'proof_obligation_output_oracle_profile_missing',
+    'proof_scheduling_output_oracle_disabled',
+    'proof_scheduling_app_hook_contract_missing',
+    'proof_scheduling_target_progression_missing',
+  ];
+  const validationBlocker = {
+    schemaVersion: 'synthi.gpu_hmr.validation_blocker.v1',
+    schema_version: 'synthi.gpu_hmr.validation_blocker.v1',
+    status: 'terminal_for_current_attempt',
+    scope: 'full_runtime_proof',
+    stageId: 'wait_hmr',
+    stage_id: 'wait_hmr',
+    phaseName: 'real_repo_user_source_delta_hmr',
+    phase_name: 'real_repo_user_source_delta_hmr',
+    proofAuthority: 'validation_blocker_only_not_gpu_hmr_success',
+    proof_authority: 'validation_blocker_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: ['profile:real-rocm-large-lib', 'phase:real_repo_user_source_delta_hmr'],
+    evidence_refs: ['profile:real-rocm-large-lib', 'phase:real_repo_user_source_delta_hmr'],
+    waitPolicy: {
+      requestedTimeoutMs: 1200000,
+      requested_timeout_ms: 1200000,
+      effectiveTimeoutMs: 30000,
+      effective_timeout_ms: 30000,
+      diagnosticCollectionBudgetMs: 30000,
+      diagnostic_collection_budget_ms: 30000,
+      proofFastFailEnabled: true,
+      proof_fast_fail_enabled: true,
+      skipAsyncRuntimeWaits: false,
+      skip_async_runtime_waits: false,
+    },
+    wait_policy: {
+      requestedTimeoutMs: 1200000,
+      requested_timeout_ms: 1200000,
+      effectiveTimeoutMs: 30000,
+      effective_timeout_ms: 30000,
+      diagnosticCollectionBudgetMs: 30000,
+      diagnostic_collection_budget_ms: 30000,
+      proofFastFailEnabled: true,
+      proof_fast_fail_enabled: true,
+      skipAsyncRuntimeWaits: false,
+      skip_async_runtime_waits: false,
+    },
+    contractHash: hashValue('real-rocm-proof-scheduling-blocker'),
+    contract_hash: hashValue('real-rocm-proof-scheduling-blocker'),
+  };
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_proof_scheduling.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_proof_scheduling.v1',
+    status: 'fast_fail_wait_budget_applied',
+    proofAuthority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    fastFailApplied: true,
+    fast_fail_applied: true,
+    eventCount: 1,
+    event_count: 1,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    validationBlockers: [validationBlocker],
+    validation_blockers: [validationBlocker],
+    contractHash: hashValue('real-rocm-proof-scheduling-fixture'),
+    contract_hash: hashValue('real-rocm-proof-scheduling-fixture'),
+    ...overrides,
+  };
+}
+
+const largeRocmProofSchedulingFixture = realRocmProofSchedulingFixture();
+
 const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -3252,6 +3341,10 @@ const largeRocmLatestReport = {
     blocking_gaps: ['sidecar_runtime_sidecar_observation_missing'],
   },
   real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligationsFixture(),
+  real_rocm_proof_scheduling: largeRocmProofSchedulingFixture,
+  proof_scheduling: largeRocmProofSchedulingFixture,
+  timeout_intelligence_failure: largeRocmProofSchedulingFixture,
+  validation_blockers: largeRocmProofSchedulingFixture.validation_blockers,
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -4917,6 +5010,55 @@ assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
 assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
   'runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
 ));
+assert.equal(largeRocm.realRocmProofScheduling.present, true);
+assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
+assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
+assert.equal(largeRocm.realRocmProofScheduling.fastFailApplied, true);
+assert.equal(largeRocm.realRocmProofScheduling.validationBlockerGates[0].accepted, true);
+assert.equal(largeRocm.realRocmProofScheduling.validationBlockerGates[0].acceptedAsRefusalEvidence, true);
+assert.equal(largeRocm.realRocmProofScheduling.validationBlockers[0].acceptedForGpuHmr, false);
+assert.equal(largeRocm.realRocmProofScheduling.validationBlockers[0].gpuHmrSuccess, false);
+assert.equal(largeRocm.attemptCompleteness.proofSchedulingAcceptedAsRefusalEvidence, true);
+assert.equal(largeRocm.attemptCompleteness.score, 80);
+
+const emptyProofSchedulingRocmDir = path.join(logsRoot, 'real-rocm-empty-proof-scheduling');
+await writeJson(path.join(emptyProofSchedulingRocmDir, 'real-rocm-empty-proof-scheduling.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-empty-proof-scheduling-20260627',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-empty-proof-scheduling',
+    source: 'scripts/profiles/real-rocm-empty-proof-scheduling.json',
+  },
+  source_url: 'https://example.invalid/rocm/empty-proof-scheduling.git',
+  target_name: 'EmptyProofSchedulingDriver',
+  real_rocm_proof_scheduling: null,
+  realRocmProofScheduling: null,
+  proof_scheduling: null,
+  proofScheduling: null,
+  timeout_intelligence_failure: null,
+  timeoutIntelligenceFailure: null,
+  validation_blockers: [],
+  validationBlockers: [],
+});
+const emptyProofSchedulingLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [emptyProofSchedulingRocmDir],
+  generatedAt: '2026-06-27T00:00:01.000Z',
+});
+const emptyProofSchedulingRocm = emptyProofSchedulingLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(emptyProofSchedulingRocm?.matrixOutcome, 'refusal_proven');
+assert.equal(emptyProofSchedulingRocm.realRocmProofScheduling.present, false);
+assert.equal(emptyProofSchedulingRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, false);
+assert.equal(emptyProofSchedulingRocm.attemptCompleteness.proofSchedulingPresent, false);
+assert.equal(emptyProofSchedulingRocm.attemptCompleteness.proofSchedulingAcceptedAsRefusalEvidence, false);
+assert.equal(emptyProofSchedulingRocm.reasons.some((reason) =>
+  reason.startsWith('real_rocm_proof_scheduling:')
+), false);
+
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
@@ -4943,6 +5085,12 @@ assert.ok(largeRocm.reasons.includes(
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_runtime_stage_obligations:runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_proof_scheduling:fast_fail_wait_budget_applied',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_proof_scheduling:proof_scheduling_app_hook_contract_missing',
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_runtime_capability_preflight:gpu-runtime-array-allocation-unavailable',
@@ -4984,6 +5132,9 @@ assert.ok(largeRocm.openGaps.includes(
 assert.ok(largeRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_runtime_stage_obligations:runtime_stage_obligation_dispatch_trace_dispatch_epoch_missing',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_proof_scheduling:proof_scheduling_output_oracle_disabled',
 ));
 const retainedRealRocmRows = ledger.rows.filter((row) => row.proofMode === 'real_rocm_repo_validation');
 assert.equal(

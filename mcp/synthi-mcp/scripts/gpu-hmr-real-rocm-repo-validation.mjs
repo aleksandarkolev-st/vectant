@@ -2339,6 +2339,12 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 20 * 60 * 1000),
+  proofFastFailEnabled: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_PROOF_FAST_FAIL', true),
+  proofFastFailMinWaitMs: positiveIntegerFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_PROOF_FAST_FAIL_MIN_WAIT_MS',
+    30000,
+  ),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
   dockerPreflightTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_DOCKER_PREFLIGHT_TIMEOUT_MS', 8000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
@@ -2408,6 +2414,8 @@ const WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH =
   '/tmp/synthi-gpu-hmr-runtime-output-oracle.json';
 const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
+const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
 
 const report = {
   slug: CFG.slug,
@@ -2464,6 +2472,13 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  validation_blockers: [],
+  validationBlockers: [],
+  real_rocm_proof_scheduling: null,
+  realRocmProofScheduling: null,
+  proof_scheduling: null,
+  timeout_intelligence_failure: null,
+  timeoutIntelligenceFailure: null,
   adversarial_preflight: null,
   hiprt_runtime_probe: {
     enabled: CFG.hiprtRuntimeProbe,
@@ -6089,6 +6104,303 @@ function realRocmCompileBridgeFacet(phases = [], {
   };
 }
 
+function listFromMaybeAliases(value, ...keys) {
+  const values = [];
+  for (const key of keys) {
+    const field = value?.[key];
+    if (Array.isArray(field)) values.push(...field);
+  }
+  return compactStringList(values);
+}
+
+function realRocmProofSchedulingStructuralGaps({ compileBridgeSummary = null } = {}) {
+  const obligations = report.real_rocm_profile_proof_obligations
+    && typeof report.real_rocm_profile_proof_obligations === 'object'
+    ? report.real_rocm_profile_proof_obligations
+    : {};
+  const outputOracle = report.output_oracle_resolution
+    && typeof report.output_oracle_resolution === 'object'
+    ? report.output_oracle_resolution
+    : {};
+  const targetProgression = report.target_progression
+    && typeof report.target_progression === 'object'
+    ? report.target_progression
+    : {};
+  const compileSummary = compileBridgeSummary && typeof compileBridgeSummary === 'object'
+    ? compileBridgeSummary
+    : {};
+  const requiresOutputOracle =
+    obligations.requiresOutputOracle === true
+    || obligations.requires_output_oracle === true;
+  const requiresAppHook =
+    obligations.requiresAppHookContract === true
+    || obligations.requires_app_hook_contract === true
+    || obligations.largeMlFinalAcceptance === true
+    || obligations.large_ml_final_acceptance === true;
+  const appHookDeclared =
+    CFG.appHookContract?.declared === true
+    || report.real_rocm_app_hook_contract?.declared === true;
+  const outputOracleRequested = stringField(outputOracle, [
+    'requestedProfile',
+    'requested_profile',
+    'mode',
+  ]);
+  const outputOracleDisabled =
+    outputOracleRequested === 'none'
+    || outputOracle.disabledReason === 'profile_disabled'
+    || outputOracle.disabled_reason === 'profile_disabled';
+  const outputOracleMissing =
+    requiresOutputOracle
+    && (
+      outputOracleDisabled
+      || outputOracle.contractPresent !== true
+      || outputOracle.runtimeProfilePresent !== true
+      || outputOracle.runtimeProfileSynced !== true
+      || Boolean(outputOracle.failedReason ?? outputOracle.failed_reason)
+    );
+  const targetProgressionRequired =
+    targetProgression.required === true || CFG.requireTargetProgression === true;
+  const targetProgressionMissing =
+    targetProgressionRequired
+    && (
+      targetProgression.recognized === false
+      || !stringField(targetProgression, ['phase', 'phaseRaw', 'phase_raw'])
+    );
+  const profileGaps = listFromMaybeAliases(obligations, 'blockingGaps', 'blocking_gaps');
+  const structuralGaps = compactStringList([
+    ...profileGaps,
+    outputOracleMissing ? 'proof_scheduling_output_oracle_unavailable' : null,
+    outputOracleDisabled ? 'proof_scheduling_output_oracle_disabled' : null,
+    requiresOutputOracle && outputOracle.contractPresent !== true
+      ? 'proof_scheduling_output_oracle_contract_missing'
+      : null,
+    requiresOutputOracle && outputOracle.runtimeProfilePresent !== true
+      ? 'proof_scheduling_output_oracle_runtime_profile_missing'
+      : null,
+    requiresOutputOracle && outputOracle.runtimeProfileSynced !== true
+      ? 'proof_scheduling_output_oracle_runtime_profile_not_synced'
+      : null,
+    requiresAppHook && !appHookDeclared
+      ? 'proof_scheduling_app_hook_contract_missing'
+      : null,
+    targetProgressionMissing ? 'proof_scheduling_target_progression_missing' : null,
+  ]);
+  const compileBridgeSupportingGaps =
+    structuralGaps.length > 0
+      ? listFromMaybeAliases(
+        compileSummary.deviceSidecarCandidate ?? compileSummary.device_sidecar_candidate ?? {},
+        'blockingGaps',
+        'blocking_gaps',
+      )
+      : [];
+  return compactStringList([
+    ...structuralGaps,
+    ...compileBridgeSupportingGaps.map((gap) => `proof_scheduling_device_sidecar:${gap}`),
+  ]);
+}
+
+function realRocmProofSchedulingFacet({
+  phaseName = 'unknown',
+  requestedTimeoutMs = 0,
+  compileBridgeSummary = null,
+} = {}) {
+  const requested = Number.isFinite(Number(requestedTimeoutMs))
+    ? Math.max(0, Number(requestedTimeoutMs))
+    : 0;
+  const minDiagnosticWaitMs = Math.max(1000, CFG.proofFastFailMinWaitMs);
+  const strictFullRuntimeProofRequired =
+    CFG.requireFullRuntimeProof === true
+    || report.real_rocm_profile_proof_obligations?.requiresFullRuntimeProof === true
+    || report.real_rocm_profile_proof_obligations?.requires_full_runtime_proof === true;
+  const blockingGaps = strictFullRuntimeProofRequired
+    ? realRocmProofSchedulingStructuralGaps({ compileBridgeSummary })
+    : [];
+  const acceptedAsRefusalEvidence =
+    strictFullRuntimeProofRequired
+    && blockingGaps.length > 0;
+  const fastFailApplied =
+    CFG.proofFastFailEnabled === true
+    && acceptedAsRefusalEvidence
+    && requested > minDiagnosticWaitMs;
+  const effectiveTimeoutMs = fastFailApplied ? minDiagnosticWaitMs : requested;
+  const waitPolicy = {
+    requestedTimeoutMs: requested,
+    requested_timeout_ms: requested,
+    effectiveTimeoutMs,
+    effective_timeout_ms: effectiveTimeoutMs,
+    diagnosticCollectionBudgetMs: minDiagnosticWaitMs,
+    diagnostic_collection_budget_ms: minDiagnosticWaitMs,
+    proofFastFailEnabled: CFG.proofFastFailEnabled === true,
+    proof_fast_fail_enabled: CFG.proofFastFailEnabled === true,
+    skipAsyncRuntimeWaits: false,
+    skip_async_runtime_waits: false,
+  };
+  const evidenceRefs = compactStringList([
+    `profile:${CFG.realRocmProfile.id}`,
+    `phase:${phaseName}`,
+    ...(Array.isArray(report.real_rocm_profile_proof_obligations?.evidenceRefs)
+      ? report.real_rocm_profile_proof_obligations.evidenceRefs
+      : []),
+    ...(Array.isArray(report.real_rocm_profile_proof_obligations?.evidence_refs)
+      ? report.real_rocm_profile_proof_obligations.evidence_refs
+      : []),
+    ...(Array.isArray(compileBridgeSummary?.evidenceSample)
+      ? compileBridgeSummary.evidenceSample
+      : []),
+    ...(Array.isArray(compileBridgeSummary?.evidence_sample)
+      ? compileBridgeSummary.evidence_sample
+      : []),
+  ]);
+  const validationBlocker = {
+    schemaVersion: 'synthi.gpu_hmr.validation_blocker.v1',
+    schema_version: 'synthi.gpu_hmr.validation_blocker.v1',
+    status: acceptedAsRefusalEvidence
+      ? 'terminal_for_current_attempt'
+      : 'not_terminal',
+    scope: 'full_runtime_proof',
+    stageId: 'wait_hmr',
+    stage_id: 'wait_hmr',
+    phaseName,
+    phase_name: phaseName,
+    proofAuthority: 'validation_blocker_only_not_gpu_hmr_success',
+    proof_authority: 'validation_blocker_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    waitPolicy,
+    wait_policy: waitPolicy,
+  };
+  const contractHash = `sha256:${createHash('sha256').update(stableJson({
+    phaseName,
+    strictFullRuntimeProofRequired,
+    requested,
+    effectiveTimeoutMs,
+    blockingGaps,
+    fastFailApplied,
+  })).digest('hex')}`;
+  validationBlocker.contractHash = contractHash;
+  validationBlocker.contract_hash = contractHash;
+  return {
+    schemaVersion: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
+    phaseName,
+    phase_name: phaseName,
+    status: fastFailApplied
+      ? 'fast_fail_wait_budget_applied'
+      : acceptedAsRefusalEvidence
+        ? 'structural_blocker_diagnostic_wait'
+        : strictFullRuntimeProofRequired
+          ? 'strict_wait_budget_preserved'
+          : 'strict_wait_not_required',
+    proofAuthority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    strictFullRuntimeProofRequired,
+    strict_full_runtime_proof_required: strictFullRuntimeProofRequired,
+    fastFailApplied,
+    fast_fail_applied: fastFailApplied,
+    requestedTimeoutMs: requested,
+    requested_timeout_ms: requested,
+    effectiveTimeoutMs,
+    effective_timeout_ms: effectiveTimeoutMs,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    waitPolicy,
+    wait_policy: waitPolicy,
+    validationBlocker,
+    validation_blocker: validationBlocker,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash,
+    contract_hash: contractHash,
+  };
+}
+
+function recordRealRocmProofScheduling(event) {
+  if (!event || typeof event !== 'object') return event;
+  const previousEvents = Array.isArray(report.real_rocm_proof_scheduling?.events)
+    ? report.real_rocm_proof_scheduling.events
+    : [];
+  const events = [...previousEvents, event];
+  const blockers = events
+    .map((entry) => entry.validationBlocker ?? entry.validation_blocker)
+    .filter((entry) =>
+      entry && typeof entry === 'object' && entry.accepted_as_refusal_evidence === true
+    );
+  const fastFailApplied = events.some((entry) =>
+    entry.fastFailApplied === true || entry.fast_fail_applied === true
+  );
+  const acceptedAsRefusalEvidence = blockers.length > 0;
+  const blockingGaps = compactStringList(events.flatMap((entry) => [
+    ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
+    ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
+  ]));
+  const aggregate = {
+    schemaVersion: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
+    status: fastFailApplied
+      ? 'fast_fail_wait_budget_applied'
+      : acceptedAsRefusalEvidence
+        ? 'structural_blocker_diagnostic_wait'
+        : 'strict_wait_budget_preserved',
+    proofAuthority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    fastFailApplied,
+    fast_fail_applied: fastFailApplied,
+    eventCount: events.length,
+    event_count: events.length,
+    events,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    validationBlockers: blockers,
+    validation_blockers: blockers,
+  };
+  aggregate.contractHash = `sha256:${createHash('sha256').update(stableJson({
+    events: events.map((entry) => entry.contractHash ?? entry.contract_hash),
+    blockingGaps,
+    fastFailApplied,
+    acceptedAsRefusalEvidence,
+  })).digest('hex')}`;
+  aggregate.contract_hash = aggregate.contractHash;
+  report.real_rocm_proof_scheduling = aggregate;
+  report.realRocmProofScheduling = aggregate;
+  report.proof_scheduling = aggregate;
+  report.timeout_intelligence_failure = aggregate;
+  report.timeoutIntelligenceFailure = aggregate;
+  report.validation_blockers = blockers;
+  report.validationBlockers = blockers;
+  report.evidence.real_rocm_proof_scheduling = aggregate;
+  report.evidence.timeout_intelligence_failure = aggregate;
+  report.evidence.validation_blockers = blockers;
+  return event;
+}
+
 function runtimeProofStateAccepted(proof, state) {
   return proof?.resultState === state && !proof?.degradedState;
 }
@@ -6211,15 +6523,40 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     throw new Error(`${phaseName} runtime identity changed after synthi_compile: ${wait.detail.reason}`);
   }
   const waitStart = Date.now();
+  const compileSummaryForScheduling = compileResponseBridgeSummary(compile);
+  const proofScheduling = recordRealRocmProofScheduling(realRocmProofSchedulingFacet({
+    phaseName,
+    requestedTimeoutMs: timeoutMs,
+    compileBridgeSummary: compileSummaryForScheduling,
+  }));
+  if (proofScheduling.fast_fail_applied === true) {
+    record(
+      `${phaseName} proof scheduling`,
+      'warn',
+      [
+        `requested=${proofScheduling.requested_timeout_ms}ms`,
+        `effective=${proofScheduling.effective_timeout_ms}ms`,
+        `gaps=${proofScheduling.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
   const wait = await waitHmrForCurrentWorkspace(
     state,
-    timeoutMs,
+    proofScheduling.effective_timeout_ms,
     phaseName,
     identityMonitor,
     Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
   );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
-  const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor, compile);
+  const phase = phaseResultFromCompileWait(
+    phaseName,
+    start,
+    waitStart,
+    wait,
+    identityMonitor,
+    compile,
+    proofScheduling,
+  );
   report.phases.push(phase);
   const waitApplied = wait?.status === 'applied';
   const waitTerminalProvisional = !waitApplied && CFG.requireFullRuntimeProof;
@@ -6236,7 +6573,15 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   return { compile, wait, phase };
 }
 
-function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor, compile = null) {
+function phaseResultFromCompileWait(
+  phaseName,
+  start,
+  waitStart,
+  wait,
+  identityMonitor,
+  compile = null,
+  proofScheduling = null,
+) {
   const compileSummary = compileResponseBridgeSummary(compile);
   return {
     name: phaseName,
@@ -6256,6 +6601,11 @@ function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityM
     gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
     wait_call_wall_ms: Date.now() - waitStart,
+    proof_scheduling: proofScheduling,
+    real_rocm_proof_scheduling: proofScheduling,
+    validation_blocker: proofScheduling?.validation_blocker ?? null,
+    wait_hmr_requested_timeout_ms: proofScheduling?.requested_timeout_ms ?? null,
+    wait_hmr_effective_timeout_ms: proofScheduling?.effective_timeout_ms ?? null,
   };
 }
 
@@ -13923,6 +14273,95 @@ int main()
   ) {
     throw new Error('compile response bridge evidence self-check failed');
   }
+  const savedProofSchedulingSelfCheck = {
+    requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+    proofFastFailEnabled: CFG.proofFastFailEnabled,
+    proofFastFailMinWaitMs: CFG.proofFastFailMinWaitMs,
+    requireTargetProgression: CFG.requireTargetProgression,
+    profileProofObligations: report.real_rocm_profile_proof_obligations,
+    outputOracleResolution: report.output_oracle_resolution,
+    targetProgression: report.target_progression,
+    appHookContract: report.real_rocm_app_hook_contract,
+    cfgAppHookContract: CFG.appHookContract,
+  };
+  try {
+    CFG.requireFullRuntimeProof = true;
+    CFG.proofFastFailEnabled = true;
+    CFG.proofFastFailMinWaitMs = 1000;
+    CFG.requireTargetProgression = true;
+    report.real_rocm_profile_proof_obligations = {
+      requiresFullRuntimeProof: true,
+      requires_full_runtime_proof: true,
+      requiresOutputOracle: true,
+      requires_output_oracle: true,
+      requiresAppHookContract: true,
+      requires_app_hook_contract: true,
+      blockingGaps: ['proof_obligation_output_oracle_profile_missing'],
+      blocking_gaps: ['proof_obligation_output_oracle_profile_missing'],
+    };
+    report.output_oracle_resolution = {
+      requestedProfile: 'none',
+      mode: 'none',
+      disabledReason: 'profile_disabled',
+      contractPresent: false,
+      runtimeProfilePresent: false,
+      runtimeProfileSynced: false,
+    };
+    report.target_progression = {
+      required: true,
+      recognized: true,
+      phase: null,
+    };
+    report.real_rocm_app_hook_contract = { declared: false };
+    CFG.appHookContract = { declared: false };
+    const blockedSchedule = realRocmProofSchedulingFacet({
+      phaseName: 'self_check_wait_hmr',
+      requestedTimeoutMs: 20000,
+      compileBridgeSummary: derivedSidecarSummary,
+    });
+    CFG.requireFullRuntimeProof = false;
+    report.real_rocm_profile_proof_obligations = {};
+    report.output_oracle_resolution = {
+      requestedProfile: 'profile_runtime_profile',
+      mode: 'profile_runtime_profile',
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    };
+    report.target_progression = { required: false, phase: null };
+    const preservedSchedule = realRocmProofSchedulingFacet({
+      phaseName: 'self_check_non_strict_wait',
+      requestedTimeoutMs: 20000,
+      compileBridgeSummary: derivedSidecarSummary,
+    });
+    if (
+      blockedSchedule.fast_fail_applied !== true
+      || blockedSchedule.effective_timeout_ms !== 1000
+      || blockedSchedule.accepted_as_refusal_evidence !== true
+      || blockedSchedule.accepted_for_gpu_hmr !== false
+      || blockedSchedule.gpu_hmr_success !== false
+      || blockedSchedule.validation_blocker?.accepted_as_refusal_evidence !== true
+      || blockedSchedule.validation_blocker?.can_satisfy_runtime_proof !== false
+      || !blockedSchedule.blocking_gaps.includes('proof_scheduling_output_oracle_disabled')
+      || !blockedSchedule.blocking_gaps.includes('proof_scheduling_app_hook_contract_missing')
+      || preservedSchedule.fast_fail_applied !== false
+      || preservedSchedule.effective_timeout_ms !== 20000
+      || preservedSchedule.accepted_as_refusal_evidence !== false
+    ) {
+      throw new Error('real ROCm proof scheduling self-check failed');
+    }
+  } finally {
+    CFG.requireFullRuntimeProof = savedProofSchedulingSelfCheck.requireFullRuntimeProof;
+    CFG.proofFastFailEnabled = savedProofSchedulingSelfCheck.proofFastFailEnabled;
+    CFG.proofFastFailMinWaitMs = savedProofSchedulingSelfCheck.proofFastFailMinWaitMs;
+    CFG.requireTargetProgression = savedProofSchedulingSelfCheck.requireTargetProgression;
+    report.real_rocm_profile_proof_obligations =
+      savedProofSchedulingSelfCheck.profileProofObligations;
+    report.output_oracle_resolution = savedProofSchedulingSelfCheck.outputOracleResolution;
+    report.target_progression = savedProofSchedulingSelfCheck.targetProgression;
+    report.real_rocm_app_hook_contract = savedProofSchedulingSelfCheck.appHookContract;
+    CFG.appHookContract = savedProofSchedulingSelfCheck.cfgAppHookContract;
+  }
   const sidecarSelfCheckFiles = [
     {
       path: CFG.entryFile,
@@ -15493,6 +15932,14 @@ async function writeResults() {
     real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
     runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
     runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+    realRocmProofScheduling: report.real_rocm_proof_scheduling,
+    real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
+    proofScheduling: report.real_rocm_proof_scheduling,
+    proof_scheduling: report.real_rocm_proof_scheduling,
+    timeoutIntelligenceFailure: report.timeout_intelligence_failure,
+    timeout_intelligence_failure: report.timeout_intelligence_failure,
+    validationBlockers: report.validation_blockers,
+    validation_blockers: report.validation_blockers,
     backendCandidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backend_candidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backendEvidence: [
@@ -15600,6 +16047,14 @@ async function writeResults() {
       real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
       runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
       runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+      realRocmProofScheduling: report.real_rocm_proof_scheduling,
+      real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
+      proofScheduling: report.real_rocm_proof_scheduling,
+      proof_scheduling: report.real_rocm_proof_scheduling,
+      timeoutIntelligenceFailure: report.timeout_intelligence_failure,
+      timeout_intelligence_failure: report.timeout_intelligence_failure,
+      validationBlockers: report.validation_blockers,
+      validation_blockers: report.validation_blockers,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
       visualEvidenceArtifacts: capturedVisualEvidenceArtifacts,

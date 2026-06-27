@@ -749,7 +749,25 @@ export function realRocmTimingMetrics(report) {
     keyValueTiming(upstream?.timings, 'build_ms'),
   ]);
   const hotCompileMs = finiteMs(deltaCompile?.compile_wall_ms) ?? maxMs(compileWalls.slice(1));
-  const hotSignalMs = finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls);
+  const deltaProofScheduling = firstObject(
+    deltaCompile?.proof_scheduling,
+    deltaCompile?.real_rocm_proof_scheduling,
+    report?.real_rocm_proof_scheduling,
+    report?.proof_scheduling,
+    report?.timeout_intelligence_failure,
+  ) ?? {};
+  const blockedValidationWait =
+    deltaProofScheduling.accepted_as_refusal_evidence === true
+    || deltaProofScheduling.acceptedAsRefusalEvidence === true
+    || deltaProofScheduling.fast_fail_applied === true
+    || deltaProofScheduling.fastFailApplied === true;
+  const rawHotSignalMs = finiteMs(deltaCompile?.wait_hmr_elapsed_ms) ?? maxMs(waitWalls);
+  const blockedValidationWaitMs = blockedValidationWait
+    ? finiteMs(deltaCompile?.wait_call_wall_ms)
+      ?? finiteMs(deltaCompile?.wait_hmr_elapsed_ms)
+      ?? maxMs(waitWalls)
+    : null;
+  const hotSignalMs = blockedValidationWait ? null : rawHotSignalMs;
   const dispatchTimestamps = Array.isArray(report?.dispatch_proof?.dispatchTimestamps)
     ? report.dispatch_proof.dispatchTimestamps.map(finiteMs).filter((value) => value !== null)
     : [];
@@ -817,6 +835,8 @@ export function realRocmTimingMetrics(report) {
     sameProcessLiveRecompileMs: null,
     sameProcessTriggerWaitMs: null,
     hotReloadSignalMs: hotSignalMs,
+    blockedValidationWaitMs,
+    blocked_validation_wait_ms: blockedValidationWaitMs,
     editToFirstVisualMs: null,
     beforeCaptureMs: null,
     afterCaptureMs: null,
@@ -846,6 +866,11 @@ export function realRocmTimingMetrics(report) {
       phase('initial_compile', firstCompile?.compile_wall_ms ?? compileWalls[0], 'phases[].compile_wall_ms'),
       phase('hot_hmr_compile', hotCompileMs, 'phases[].compile_wall_ms'),
       phase('hot_reload_signal', hotSignalMs, 'phases[].wait_hmr_elapsed_ms|wait_call_wall_ms'),
+      phase(
+        'blocked_validation_wait',
+        blockedValidationWaitMs,
+        'phases[].proof_scheduling.accepted_as_refusal_evidence',
+      ),
     ],
   };
 }

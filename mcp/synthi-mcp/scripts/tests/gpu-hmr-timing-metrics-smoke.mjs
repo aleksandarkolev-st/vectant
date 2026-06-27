@@ -217,6 +217,43 @@ assert.equal(rocm.normalizedTimings.deviceCompileWallTimeMs, 40);
 assert.equal(rocm.normalizedTimings.runtimeProbeTimeMs, 30);
 assert.equal(rocm.normalizedTimings.totalValidatorWallTimeMs, 2000);
 
+const blockedRocm = realRocmTimingMetrics({
+  slug: 'rocm-large-blocked',
+  target_name: 'large-rocm-driver',
+  metric_clock: 'monotonic_ns',
+  started_monotonic_ns: '7000000000',
+  finished_monotonic_ns: '9000000000',
+  duration_monotonic_ns: '2000000000',
+  duration_ms: 2000,
+  phases: [
+    { name: 'upstream_gpu_build_run', timings: 'configure_ms=10\nbuild_ms=20\nrun_ms=30\n' },
+    { name: 'first split/HMR', compile_wall_ms: 400, wait_hmr_elapsed_ms: 50, wait_call_wall_ms: 55 },
+    {
+      name: 'real_repo_user_source_delta_hmr',
+      compile_wall_ms: 40,
+      wait_hmr_elapsed_ms: 30000,
+      wait_call_wall_ms: 30010,
+      proof_scheduling: {
+        schemaVersion: 'synthi.gpu_hmr.real_rocm_proof_scheduling.v1',
+        accepted_as_refusal_evidence: true,
+        fast_fail_applied: true,
+      },
+    },
+  ],
+  evidence: {
+    ai_call_counts: { gpu_delta: 1 },
+  },
+});
+assertCommonShape(blockedRocm);
+assert.equal(blockedRocm.hotReloadSignalMs, null);
+assert.equal(blockedRocm.blockedValidationWaitMs, 30010);
+assert.equal(blockedRocm.blocked_validation_wait_ms, 30010);
+assert.equal(blockedRocm.normalizedTimings.triggerToVisibleTimeMs, null);
+assert.equal(
+  blockedRocm.phases.find((entry) => entry.name === 'blocked_validation_wait')?.wallMs,
+  30010,
+);
+
 const webgpu = webGpuRuntimeVisualTimingMetrics({
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:test',

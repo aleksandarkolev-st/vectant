@@ -86,6 +86,10 @@ const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
 const REAL_ROCM_RUNTIME_STAGE_OBLIGATIONS_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1';
+const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
+const VALIDATION_BLOCKER_SCHEMA_VERSION =
+  'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
   'profile_runtime_profile',
   'source_derived_profile',
@@ -2636,6 +2640,7 @@ function realRocmAttemptCompletenessFacet({
   accepted = false,
   upstreamLifecycleFailure = {},
   workerRepoTransferFailure = {},
+  proofScheduling = {},
   runtimeProofArtifact = {},
   strictGateFailures = [],
   ledger = {},
@@ -2650,25 +2655,42 @@ function realRocmAttemptCompletenessFacet({
     workerRepoTransferFailure.acceptedAsRefusalEvidence,
     workerRepoTransferFailure.accepted_as_refusal_evidence,
   ) === true;
+  const proofSchedulingHasPresentFlag = Object.prototype.hasOwnProperty.call(
+    proofScheduling,
+    'present',
+  );
+  const proofSchedulingPresent = proofSchedulingHasPresentFlag
+    ? proofScheduling.present === true
+    : Object.keys(compactObject(proofScheduling)).length > 0;
+  const proofSchedulingAccepted = proofScheduling.present === true
+    && proofScheduling.accepted === true
+    && firstBool(
+      proofScheduling.acceptedAsRefusalEvidence,
+      proofScheduling.accepted_as_refusal_evidence,
+    ) === true;
   const runtimeProofPresent = runtimeProofArtifact.present === true;
   const ledgerPresent = ledger.present === true;
   const score = accepted
     ? 100
     : upstreamAccepted
       ? 80
-      : transferAccepted
-        ? 70
-      : upstreamPresent
-        ? 60
-        : transferPresent
-          ? 50
-        : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
-          ? 30
-          : runtimeProofPresent
-            ? 20
-            : ledgerPresent
-              ? 10
-              : 0;
+      : proofSchedulingAccepted
+        ? 80
+        : transferAccepted
+          ? 70
+          : upstreamPresent
+            ? 60
+            : transferPresent
+              ? 50
+              : proofSchedulingPresent
+                ? 40
+                : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
+                  ? 30
+                  : runtimeProofPresent
+                    ? 20
+                    : ledgerPresent
+                      ? 10
+                      : 0;
   return {
     accepted: score >= 80,
     score,
@@ -2680,13 +2702,21 @@ function realRocmAttemptCompletenessFacet({
     worker_repo_transfer_present: transferPresent,
     workerRepoTransferAcceptedAsRefusalEvidence: transferAccepted,
     worker_repo_transfer_accepted_as_refusal_evidence: transferAccepted,
+    proofSchedulingPresent,
+    proof_scheduling_present: proofSchedulingPresent,
+    proofSchedulingAcceptedAsRefusalEvidence: proofSchedulingAccepted,
+    proof_scheduling_accepted_as_refusal_evidence: proofSchedulingAccepted,
     runtimeProofArtifactPresent: runtimeProofPresent,
     runtime_proof_artifact_present: runtimeProofPresent,
     ledgerPresent,
     ledger_present: ledgerPresent,
     failedGates: compactStringList([
-      upstreamAccepted || transferAccepted || accepted ? null : 'real_rocm_refusal_evidence_not_accepted',
-      upstreamPresent || transferPresent || accepted ? null : 'real_rocm_attempt_evidence_missing',
+      upstreamAccepted || proofSchedulingAccepted || transferAccepted || accepted
+        ? null
+        : 'real_rocm_refusal_evidence_not_accepted',
+      upstreamPresent || proofSchedulingPresent || transferPresent || accepted
+        ? null
+        : 'real_rocm_attempt_evidence_missing',
     ]),
   };
 }
@@ -3464,6 +3494,169 @@ function realRocmRuntimeStageObligationsGate(input = {}) {
     blocking_gaps: blockingGaps,
     failedGates,
     failed_gates: failedGates,
+  };
+}
+
+function validationBlockerGate(input = {}) {
+  const blocker = compactObject(input);
+  const present = Object.keys(blocker).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsRefusalEvidence: false,
+      accepted_as_refusal_evidence: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+  }
+  const schemaVersion = firstText(blocker.schemaVersion, blocker.schema_version, blocker.schema);
+  const proofAuthority = firstText(blocker.proofAuthority, blocker.proof_authority);
+  const acceptedAsRefusalEvidence = firstBool(
+    blocker.acceptedAsRefusalEvidence,
+    blocker.accepted_as_refusal_evidence,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(
+    blocker.acceptedForGpuHmr,
+    blocker.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(blocker.gpuHmrSuccess, blocker.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    blocker.canSatisfyRuntimeProof,
+    blocker.can_satisfy_runtime_proof,
+  );
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(blocker.blockingGaps) ? blocker.blockingGaps : []),
+    ...(Array.isArray(blocker.blocking_gaps) ? blocker.blocking_gaps : []),
+  ]);
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'validation_blocker_schema_missing',
+    schemaVersion && schemaVersion !== VALIDATION_BLOCKER_SCHEMA_VERSION
+      ? 'validation_blocker_schema_unknown'
+      : null,
+    proofAuthority === 'validation_blocker_only_not_gpu_hmr_success'
+      ? null
+      : 'validation_blocker_authority_unknown',
+    acceptedForGpuHmr === true ? 'validation_blocker_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess === true ? 'validation_blocker_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof === true ? 'validation_blocker_claimed_runtime_authority' : null,
+    acceptedAsRefusalEvidence && blockingGaps.length === 0
+      ? 'validation_blocker_blocking_gaps_missing'
+      : null,
+  ]);
+  return {
+    present: true,
+    accepted: acceptedAsRefusalEvidence && failedGates.length === 0,
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    status: firstText(blocker.status, blocker.reason),
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function realRocmProofSchedulingGate(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsRefusalEvidence: false,
+      accepted_as_refusal_evidence: false,
+      fastFailApplied: false,
+      fast_fail_applied: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      validationBlockers: [],
+      validation_blockers: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedAsRefusalEvidence = firstBool(
+    facet.acceptedAsRefusalEvidence,
+    facet.accepted_as_refusal_evidence,
+  ) === true;
+  const fastFailApplied = firstBool(facet.fastFailApplied, facet.fast_fail_applied) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const events = compactObjectList(facet.events);
+  const validationBlockers = compactObjectList([
+    ...(Array.isArray(facet.validationBlockers) ? facet.validationBlockers : []),
+    ...(Array.isArray(facet.validation_blockers) ? facet.validation_blockers : []),
+    facet.validationBlocker,
+    facet.validation_blocker,
+  ]);
+  const blockerGates = validationBlockers.map(validationBlockerGate);
+  const acceptedBlockerCount = blockerGates.filter((gate) => gate.accepted === true).length;
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...events.flatMap((event) => [
+      ...(Array.isArray(event.blockingGaps) ? event.blockingGaps : []),
+      ...(Array.isArray(event.blocking_gaps) ? event.blocking_gaps : []),
+    ]),
+    ...blockerGates.flatMap((gate) => gate.blockingGaps),
+  ]);
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_proof_scheduling_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION
+      ? 'real_rocm_proof_scheduling_schema_unknown'
+      : null,
+    proofAuthority === 'proof_scheduling_evidence_only_not_gpu_hmr_success'
+      ? null
+      : 'real_rocm_proof_scheduling_authority_unknown',
+    acceptedForGpuHmr === true ? 'real_rocm_proof_scheduling_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess === true ? 'real_rocm_proof_scheduling_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof === true ? 'real_rocm_proof_scheduling_claimed_runtime_authority' : null,
+    acceptedAsRefusalEvidence && acceptedBlockerCount === 0
+      ? 'real_rocm_proof_scheduling_refusal_blocker_missing'
+      : null,
+    acceptedAsRefusalEvidence && blockingGaps.length === 0
+      ? 'real_rocm_proof_scheduling_blocking_gaps_missing'
+      : null,
+    ...blockerGates.flatMap((gate) =>
+      gate.failedGates.map((failure) => `validation_blocker:${failure}`)
+    ),
+  ]);
+  return {
+    present: true,
+    accepted: acceptedAsRefusalEvidence && failedGates.length === 0,
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    fastFailApplied,
+    fast_fail_applied: fastFailApplied,
+    status: firstText(facet.status, facet.reason),
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    validationBlockers,
+    validation_blockers: validationBlockers,
+    validationBlockerGates: blockerGates,
+    validation_blocker_gates: blockerGates,
   };
 }
 
@@ -8897,6 +9090,43 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.runtime_stage_obligations
     ?? runtimeProofArtifact.runtimeStageObligations,
   );
+  const topLevelValidationBlockers = compactObjectList([
+    ...(Array.isArray(json.validation_blockers) ? json.validation_blockers : []),
+    ...(Array.isArray(json.validationBlockers) ? json.validationBlockers : []),
+  ]);
+  const realRocmProofScheduling = realRocmProofSchedulingGate(compactObject(
+    json.real_rocm_proof_scheduling
+    ?? json.realRocmProofScheduling
+    ?? json.proof_scheduling
+    ?? json.proofScheduling
+    ?? json.timeout_intelligence_failure
+    ?? json.timeoutIntelligenceFailure
+    ?? summary.real_rocm_proof_scheduling
+    ?? summary.realRocmProofScheduling
+    ?? summary.proof_scheduling
+    ?? summary.proofScheduling
+    ?? summary.timeout_intelligence_failure
+    ?? summary.timeoutIntelligenceFailure
+    ?? runtimeProofArtifact.real_rocm_proof_scheduling
+    ?? runtimeProofArtifact.realRocmProofScheduling
+    ?? runtimeProofArtifact.proof_scheduling
+    ?? runtimeProofArtifact.proofScheduling
+    ?? runtimeProofArtifact.timeout_intelligence_failure
+    ?? runtimeProofArtifact.timeoutIntelligenceFailure
+    ?? (
+      topLevelValidationBlockers.length > 0
+        ? {
+          schemaVersion: REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION,
+          proofAuthority: 'proof_scheduling_evidence_only_not_gpu_hmr_success',
+          acceptedAsRefusalEvidence: true,
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+          validationBlockers: topLevelValidationBlockers,
+        }
+        : null
+    ),
+  ));
   const realRocmRuntimeCapabilityPreflight = realRocmRuntimeCapabilityPreflightFacet(
     runtimeCapabilityPreflightFromSources({
       json,
@@ -8961,6 +9191,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ? realRocmRuntimeCapabilityPreflight.blocking_gaps
       : []),
   ]);
+  const realRocmProofSchedulingGaps = compactStringList([
+    ...(Array.isArray(realRocmProofScheduling.blockingGaps)
+      ? realRocmProofScheduling.blockingGaps
+      : []),
+    ...(Array.isArray(realRocmProofScheduling.blocking_gaps)
+      ? realRocmProofScheduling.blocking_gaps
+      : []),
+    ...(Array.isArray(realRocmProofScheduling.failedGates)
+      ? realRocmProofScheduling.failedGates
+      : []),
+    ...(Array.isArray(realRocmProofScheduling.failed_gates)
+      ? realRocmProofScheduling.failed_gates
+      : []),
+  ]);
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -8996,6 +9240,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmRuntimeCapabilityPreflightReason =
     realRocmRuntimeCapabilityPreflight.present === true
       ? firstText(realRocmRuntimeCapabilityPreflight.status, realRocmRuntimeCapabilityPreflight.reason)
+      : null;
+  const realRocmProofSchedulingReason =
+    realRocmProofScheduling.present === true
+      ? firstText(realRocmProofScheduling.status, realRocmProofScheduling.reason)
       : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
@@ -9178,16 +9426,21 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     hmrProofValidation.reason === 'proof_state_missing'
     || hmrProofValidation.satisfied === false
     || hmrWaitDetail?.wait_hmr_status === 'timeout';
+  const proofSchedulingRefusalAccepted =
+    realRocmProofScheduling.present === true
+    && realRocmProofScheduling.accepted === true
+    && realRocmProofScheduling.acceptedAsRefusalEvidence === true;
   const refusalProven =
     !accepted
     && realRocmRequiredFullRuntimeProof(json)
     && gpuHmrSuccess !== true
     && fullRuntimeProven !== true
-    && (strictRuntimeGateFailed || proofStateMissing);
+    && (strictRuntimeGateFailed || proofStateMissing || proofSchedulingRefusalAccepted);
   const attemptCompleteness = realRocmAttemptCompletenessFacet({
     accepted,
     upstreamLifecycleFailure,
     workerRepoTransferFailure,
+    proofScheduling: realRocmProofScheduling,
     runtimeProofArtifact: runtimeProofArtifactGate,
     strictGateFailures,
     ledger,
@@ -9360,6 +9613,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     runtime_stage_obligations: realRocmRuntimeStageObligations,
     realRocmRuntimeStageObligationsGate: runtimeStageObligationsGate,
     real_rocm_runtime_stage_obligations_gate: runtimeStageObligationsGate,
+    realRocmProofScheduling,
+    real_rocm_proof_scheduling: realRocmProofScheduling,
+    proofScheduling: realRocmProofScheduling,
+    proof_scheduling: realRocmProofScheduling,
+    timeoutIntelligenceFailure: realRocmProofScheduling,
+    timeout_intelligence_failure: realRocmProofScheduling,
     realRocmRuntimeCapabilityPreflight,
     real_rocm_runtime_capability_preflight: realRocmRuntimeCapabilityPreflight,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
@@ -9428,6 +9687,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...runtimeStageObligationsGate.failedGates.map((failure) =>
         `real_rocm_runtime_stage_obligations:${failure}`
       ),
+      realRocmProofSchedulingReason
+        ? `real_rocm_proof_scheduling:${realRocmProofSchedulingReason}`
+        : null,
+      ...realRocmProofSchedulingGaps.map((gap) =>
+        `real_rocm_proof_scheduling:${gap}`
+      ),
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_not_proven',
       ledger.present === true ? null : 'proof_ledger_record_missing',
@@ -9475,6 +9740,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeStageObligationsAccepted ? null : 'real_rocm_runtime_stage_obligations_required',
       ...runtimeStageObligationsGate.failedGates.map((failure) =>
         `real_rocm_runtime_stage_obligations:${failure}`
+      ),
+      ...realRocmProofSchedulingGaps.map((gap) =>
+        `real_rocm_proof_scheduling:${gap}`
       ),
       ...realRocmRuntimeCapabilityPreflightGaps.map((gap) =>
         `real_rocm_runtime_capability_preflight:${gap}`
