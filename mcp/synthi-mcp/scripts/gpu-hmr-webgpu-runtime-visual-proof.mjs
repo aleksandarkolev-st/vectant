@@ -6,7 +6,6 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharp from 'sharp';
 import { chromium } from 'playwright-core';
 import {
   buildGpuHmrProofLedger,
@@ -19,7 +18,10 @@ import {
   evaluateGpuHmrAcceptanceContractConsistency,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
-import { evaluateGpuHmrDeterministicVisualMode } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  buildAsyncVisualProofBundle,
+  evaluateGpuHmrDeterministicVisualMode,
+} from './lib/gpu-hmr-visual-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1122,49 +1124,6 @@ async function browserProcessIdentity(browser) {
   return null;
 }
 
-async function compareImages(beforePath, afterPath, diffPath) {
-  const before = await sharp(beforePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const after = await sharp(afterPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const { width, height, channels } = before.info;
-  if (width !== after.info.width || height !== after.info.height || channels !== after.info.channels) {
-    throw new Error(`image dimensions differ before=${width}x${height} after=${after.info.width}x${after.info.height}`);
-  }
-  const pixels = width * height;
-  const diff = Buffer.alloc(pixels * 4);
-  let changed = 0;
-  let visible = 0;
-  let totalAbs = 0;
-  for (let pixel = 0; pixel < pixels; pixel += 1) {
-    const offset = pixel * channels;
-    const dr = Math.abs(before.data[offset] - after.data[offset]);
-    const dg = Math.abs(before.data[offset + 1] - after.data[offset + 1]);
-    const db = Math.abs(before.data[offset + 2] - after.data[offset + 2]);
-    const maxDelta = Math.max(dr, dg, db);
-    const beforeVisible = before.data[offset] > 12 || before.data[offset + 1] > 12 || before.data[offset + 2] > 12;
-    const afterVisible = after.data[offset] > 12 || after.data[offset + 1] > 12 || after.data[offset + 2] > 12;
-    if (beforeVisible || afterVisible) visible += 1;
-    if (maxDelta > 8) changed += 1;
-    totalAbs += dr + dg + db;
-    const d = Math.min(255, Math.round(maxDelta * 4));
-    const diffOffset = pixel * 4;
-    diff[diffOffset] = d;
-    diff[diffOffset + 1] = d;
-    diff[diffOffset + 2] = d;
-    diff[diffOffset + 3] = 255;
-  }
-  await sharp(diff, { raw: { width, height, channels: 4 } }).png().toFile(diffPath);
-  const meanAbsDelta8bit = totalAbs / (pixels * 3);
-  return {
-    width,
-    height,
-    changedPixels: changed,
-    changedPixelRatio: changed / pixels,
-    meanAbsDelta8bit,
-    perceptualDiff: meanAbsDelta8bit / 255,
-    visiblePixelCount: visible,
-  };
-}
-
 function nsSince(startNs) {
   return Number(process.hrtime.bigint() - startNs);
 }
@@ -1788,7 +1747,7 @@ async function writeColdRuntimeRunModeProof({
 }
 
 function visualArtifactsForWebgpuRunMode(artifacts) {
-  return {
+  const result = {
     beforeImage: artifacts.beforeImage,
     before_image: artifacts.beforeImage,
     afterImage: artifacts.afterImage,
@@ -1802,6 +1761,21 @@ function visualArtifactsForWebgpuRunMode(artifacts) {
     diffImageHash: artifacts.diffImageHash,
     diff_image_hash: artifacts.diffImageHash,
   };
+  if (Array.isArray(artifacts.artifactCasLocators) && artifacts.artifactCasLocators.length > 0) {
+    result.artifactCasLocators = artifacts.artifactCasLocators;
+    result.artifact_cas_locators = artifacts.artifactCasLocators;
+    result.artifactTransportAuthority = 'transport_integrity_only_not_visual_or_ledger_proof';
+    result.artifact_transport_authority = 'transport_integrity_only_not_visual_or_ledger_proof';
+  }
+  if (artifacts.visualArtifactTransportEvidence) {
+    result.visualArtifactTransportEvidence = artifacts.visualArtifactTransportEvidence;
+    result.visual_artifact_transport_evidence = artifacts.visualArtifactTransportEvidence;
+  }
+  if (artifacts.asyncVisualProof) {
+    result.asyncVisualProof = artifacts.asyncVisualProof;
+    result.async_visual_proof = artifacts.asyncVisualProof;
+  }
+  return result;
 }
 
 function visualMetricsForWebgpuRunMode(metrics) {
@@ -1946,6 +1920,14 @@ function buildRuntimeProofArtifact({
     visual_threshold_validation: visualThresholdValidation,
     nativeWebGpuApiEvidence: nativeWebGpuEvidence,
     native_webgpu_api_evidence: nativeWebGpuEvidence,
+    ...(artifacts.asyncVisualProof ? {
+      asyncVisualProof: artifacts.asyncVisualProof,
+      async_visual_proof: artifacts.asyncVisualProof,
+    } : {}),
+    ...(artifacts.visualArtifactTransportEvidence ? {
+      visualArtifactTransportEvidence: artifacts.visualArtifactTransportEvidence,
+      visual_artifact_transport_evidence: artifacts.visualArtifactTransportEvidence,
+    } : {}),
   };
   const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
   return {
@@ -2194,6 +2176,16 @@ function buildLedgerRecord({
       perceptual_diff: metrics.perceptualDiff,
       visible_pixel_count: metrics.visiblePixelCount,
     },
+    ...(Array.isArray(artifacts.artifactCasLocators) && artifacts.artifactCasLocators.length > 0 ? {
+      artifact_cas_locators: artifacts.artifactCasLocators,
+      artifact_transport_authority: 'transport_integrity_only_not_visual_or_ledger_proof',
+    } : {}),
+    ...(artifacts.visualArtifactTransportEvidence ? {
+      visual_artifact_transport_evidence: artifacts.visualArtifactTransportEvidence,
+    } : {}),
+    ...(artifacts.asyncVisualProof ? {
+      async_visual_proof: artifacts.asyncVisualProof,
+    } : {}),
   };
   return {
     project_id: profile.targetId,
@@ -2377,16 +2369,40 @@ async function runProof() {
     const afterScreenshotEnd = process.hrtime.bigint();
 
     const oracleStartNs = process.hrtime.bigint();
-    const metrics = await compareImages(beforeImage, afterImage, diffImage);
+    const visualProofBundle = await buildAsyncVisualProofBundle({
+      beforePath: beforeImage,
+      afterPath: afterImage,
+      diffPath: diffImage,
+      artifactDir: ARTIFACT_DIR,
+      sessionNamespace: profileSlug,
+      producer: {
+        name: 'webgpu_runtime_visual_proof',
+        kind: 'runtime_visual_runner',
+      },
+      visualProof: profile.visualProof,
+    });
+    if (visualProofBundle.accepted !== true) {
+      const reasons = Array.isArray(visualProofBundle.asyncVisualProof?.reasons)
+        ? visualProofBundle.asyncVisualProof.reasons.join(',')
+        : 'unknown';
+      throw new Error(`webgpu visual proof worker failed: ${reasons}`);
+    }
+    const metrics = visualProofBundle.metrics;
     const oracleEndNs = process.hrtime.bigint();
 
     const artifacts = {
-      beforeImage,
-      afterImage,
-      diffImage,
-      beforeImageHash: await sha256File(beforeImage),
-      afterImageHash: await sha256File(afterImage),
-      diffImageHash: await sha256File(diffImage),
+      beforeImage: visualProofBundle.artifacts.beforeImage ?? beforeImage,
+      afterImage: visualProofBundle.artifacts.afterImage ?? afterImage,
+      diffImage: visualProofBundle.artifacts.diffImage ?? diffImage,
+      beforeImageHash: visualProofBundle.artifacts.beforeImageHash,
+      afterImageHash: visualProofBundle.artifacts.afterImageHash,
+      diffImageHash: visualProofBundle.artifacts.diffImageHash,
+      artifactCasLocators: visualProofBundle.artifactCasLocators,
+      artifact_cas_locators: visualProofBundle.artifactCasLocators,
+      visualArtifactTransportEvidence: visualProofBundle.visualArtifactTransportEvidence,
+      visual_artifact_transport_evidence: visualProofBundle.visualArtifactTransportEvidence,
+      asyncVisualProof: visualProofBundle.asyncVisualProof,
+      async_visual_proof: visualProofBundle.asyncVisualProof,
     };
     const trace = {
       url,

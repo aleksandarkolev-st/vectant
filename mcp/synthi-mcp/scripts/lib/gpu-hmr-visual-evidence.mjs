@@ -1,9 +1,14 @@
+import path from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import {
   artifactCasManifestEvidence,
   collectArtifactLocators,
+  defaultCasRootFromEnv,
   validateArtifactLocator,
+  writeArtifactToCas,
 } from './gpu-hmr-artifact-cas.mjs';
+import { computeAsyncVisualProof } from './gpu-hmr-visual-proof-worker.mjs';
 
 const MIN_VISUAL_WIDTH = 320;
 const MIN_VISUAL_HEIGHT = 240;
@@ -56,6 +61,36 @@ function compactStringList(values) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map(textOrNull)
     .filter(Boolean))];
+}
+
+function pathTextOrNull(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function firstObject(...values) {
+  for (const value of values) {
+    if (isObject(value)) return value;
+  }
+  return null;
+}
+
+function bufferFromInput(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value === 'string') return Buffer.from(value, 'base64');
+  return null;
+}
+
+function uniquePaths(...paths) {
+  return [...new Set(paths.map(pathTextOrNull).filter(Boolean).map((entry) => path.resolve(entry)))];
+}
+
+function visualWorkerMetric(metrics, ...keys) {
+  for (const key of keys) {
+    const value = finiteNumberOrNull(metrics?.[key]);
+    if (value !== null) return value;
+  }
+  return null;
 }
 
 function normalizeFrameHashes(...values) {
@@ -812,5 +847,234 @@ export async function visualArtifactTransportEvidence(input = {}, options = {}) 
     entries,
     reasons: [...new Set(reasons)],
     gaps: [...new Set(gaps)],
+  };
+}
+
+export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
+  const beforePath = pathTextOrNull(
+    input.beforePath
+    ?? input.before_path
+    ?? input.beforeImage
+    ?? input.before_image,
+  );
+  const afterPath = pathTextOrNull(
+    input.afterPath
+    ?? input.after_path
+    ?? input.afterImage
+    ?? input.after_image,
+  );
+  const diffPath = pathTextOrNull(
+    input.diffPath
+    ?? input.diff_path
+    ?? input.diffImage
+    ?? input.diff_image,
+  );
+  const artifactDir = path.resolve(
+    pathTextOrNull(input.artifactDir ?? input.artifact_dir)
+    ?? (diffPath ? path.dirname(diffPath) : null)
+    ?? (beforePath ? path.dirname(beforePath) : null)
+    ?? process.cwd(),
+  );
+  const casRoot = path.resolve(
+    pathTextOrNull(input.casRoot ?? input.cas_root ?? input.artifactRoot ?? input.artifact_root)
+    ?? defaultCasRootFromEnv()
+    ?? path.join(artifactDir, 'cas'),
+  );
+  await mkdir(casRoot, { recursive: true });
+
+  const beforeBytes = bufferFromInput(input.beforeBytes ?? input.before_bytes)
+    ?? (beforePath ? await readFile(beforePath) : null);
+  const afterBytes = bufferFromInput(input.afterBytes ?? input.after_bytes)
+    ?? (afterPath ? await readFile(afterPath) : null);
+  if (!beforeBytes || !afterBytes) {
+    throw new Error('async_visual_proof_bundle_requires_before_after_bytes_or_paths');
+  }
+
+  const sessionNamespace = textOrNull(
+    input.sessionNamespace
+    ?? input.session_namespace
+    ?? input.namespace
+    ?? input.slug,
+  ) ?? 'visual-proof';
+  const producer = isObject(input.producer)
+    ? input.producer
+    : {
+        name: textOrNull(input.producer) ?? 'gpu_hmr_visual_proof_bundle',
+        kind: 'visual_proof_worker',
+      };
+  const producerSubsystem = textOrNull(
+    input.producerSubsystem
+    ?? input.producer_subsystem,
+  ) ?? 'visual_proof';
+
+  const beforeLocator = await writeArtifactToCas(beforeBytes, {
+    artifactRoot: casRoot,
+    mediaType: input.mediaType ?? input.media_type ?? 'image/png',
+    artifactKind: input.artifactKind ?? input.artifact_kind ?? 'visual_frame',
+    role: 'before_frame',
+    sessionNamespace,
+    producer,
+    producerSubsystem,
+  });
+  const afterLocator = await writeArtifactToCas(afterBytes, {
+    artifactRoot: casRoot,
+    mediaType: input.mediaType ?? input.media_type ?? 'image/png',
+    artifactKind: input.artifactKind ?? input.artifact_kind ?? 'visual_frame',
+    role: 'after_frame',
+    sessionNamespace,
+    producer,
+    producerSubsystem,
+  });
+
+  const visualProof = isObject(input.visualProof ?? input.visual_proof)
+    ? (input.visualProof ?? input.visual_proof)
+    : {};
+  const roi = firstObject(
+    input.roi,
+    input.oracleRegion,
+    input.oracle_region,
+    input.regionOfInterest,
+    input.region_of_interest,
+    visualProof.roi,
+    visualProof.oracleRegion,
+    visualProof.oracle_region,
+    visualProof.regionOfInterest,
+    visualProof.region_of_interest,
+  );
+  const workerAllowedRoots = uniquePaths(
+    casRoot,
+    ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+  );
+  const workerAllowedOutputRoots = uniquePaths(
+    artifactDir,
+    diffPath ? path.dirname(diffPath) : null,
+    ...(Array.isArray(options.allowedOutputRoots) ? options.allowedOutputRoots : []),
+  );
+  const asyncVisualProof = await computeAsyncVisualProof({
+    before: { casManifest: beforeLocator },
+    after: { casManifest: afterLocator },
+    ...(diffPath ? { diffPath } : {}),
+    ...(roi ? { roi } : {}),
+    allowRoiEarlyExit: input.allowRoiEarlyExit === true
+      || input.allow_roi_early_exit === true
+      || visualProof.allowRoiEarlyExit === true
+      || visualProof.allow_roi_early_exit === true,
+    tileSize: input.tileSize ?? input.tile_size ?? visualProof.tileSize ?? visualProof.tile_size ?? 128,
+    tileHashing: input.tileHashing ?? input.tile_hashing ?? visualProof.tileHashing ?? visualProof.tile_hashing,
+  }, {
+    allowedRoots: workerAllowedRoots,
+    allowedOutputRoots: workerAllowedOutputRoots,
+    timeoutMs: finiteNumberOrNull(
+      options.timeoutMs
+      ?? input.timeoutMs
+      ?? input.timeout_ms
+      ?? process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS,
+    ) ?? 30000,
+  });
+
+  const artifactCasLocators = [beforeLocator, afterLocator];
+  let diffLocator = null;
+  if (diffPath && asyncVisualProof.accepted === true) {
+    diffLocator = await writeArtifactToCas(await readFile(diffPath), {
+      artifactRoot: casRoot,
+      mediaType: 'image/png',
+      artifactKind: input.artifactKind ?? input.artifact_kind ?? 'visual_frame',
+      role: 'diff_frame',
+      sessionNamespace,
+      producer,
+      producerSubsystem,
+    });
+    artifactCasLocators.push(diffLocator);
+  }
+
+  const metricsSource = isObject(asyncVisualProof.metrics) ? asyncVisualProof.metrics : {};
+  const meanAbsDelta8bit = visualWorkerMetric(
+    metricsSource,
+    'meanAbsDelta8bit',
+    'mean_abs_delta_8bit',
+    'meanAbs',
+    'mean_abs',
+  ) ?? 0;
+  const changedPixelRatio = visualWorkerMetric(
+    metricsSource,
+    'changedRatio',
+    'changed_ratio',
+    'changedPixelRatio',
+    'changed_pixel_ratio',
+  ) ?? 0;
+  const metrics = {
+    width: visualWorkerMetric(asyncVisualProof.dimensions, 'width') ?? null,
+    height: visualWorkerMetric(asyncVisualProof.dimensions, 'height') ?? null,
+    changedPixels: visualWorkerMetric(metricsSource, 'changedPixels', 'changed_pixels') ?? 0,
+    changed_pixels: visualWorkerMetric(metricsSource, 'changedPixels', 'changed_pixels') ?? 0,
+    changedPixelRatio,
+    changed_pixel_ratio: changedPixelRatio,
+    meanAbsDelta8bit,
+    mean_abs_delta_8bit: meanAbsDelta8bit,
+    perceptualDiff: meanAbsDelta8bit / 255,
+    perceptual_diff: meanAbsDelta8bit / 255,
+    visiblePixelCount: visualWorkerMetric(
+      metricsSource,
+      'visiblePixelCount',
+      'visible_pixel_count',
+    ) ?? 0,
+    visible_pixel_count: visualWorkerMetric(
+      metricsSource,
+      'visiblePixelCount',
+      'visible_pixel_count',
+    ) ?? 0,
+  };
+  const artifacts = {
+    beforeImage: beforePath ?? beforeLocator.storage?.localPath ?? null,
+    before_image: beforePath ?? beforeLocator.storage?.localPath ?? null,
+    afterImage: afterPath ?? afterLocator.storage?.localPath ?? null,
+    after_image: afterPath ?? afterLocator.storage?.localPath ?? null,
+    diffImage: diffPath ?? diffLocator?.storage?.localPath ?? null,
+    diff_image: diffPath ?? diffLocator?.storage?.localPath ?? null,
+    beforeImageHash: beforeLocator.contentHash,
+    before_image_hash: beforeLocator.contentHash,
+    afterImageHash: afterLocator.contentHash,
+    after_image_hash: afterLocator.contentHash,
+    diffImageHash: diffLocator?.contentHash
+      ?? asyncVisualProof.diffArtifact?.hash
+      ?? asyncVisualProof.diff_artifact?.hash
+      ?? null,
+    diff_image_hash: diffLocator?.contentHash
+      ?? asyncVisualProof.diffArtifact?.hash
+      ?? asyncVisualProof.diff_artifact?.hash
+      ?? null,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
+  };
+  const transportEvidence = await visualArtifactTransportEvidence({
+    artifactCasLocators,
+  }, {
+    artifactRoot: casRoot,
+    allowedRoots: [casRoot],
+    requireReadableBytes: true,
+  });
+
+  return {
+    accepted: asyncVisualProof.accepted === true,
+    acceptedAsAsyncVisualMetrics: asyncVisualProof.acceptedAsAsyncVisualMetrics === true,
+    accepted_as_async_visual_metrics: asyncVisualProof.acceptedAsAsyncVisualMetrics === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'async_visual_metrics_and_transport_only',
+    proof_authority: 'async_visual_metrics_and_transport_only',
+    casRoot,
+    cas_root: casRoot,
+    metrics,
+    artifacts,
+    visualArtifacts: artifacts,
+    visual_artifacts: artifacts,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
+    visualArtifactTransportEvidence: transportEvidence,
+    visual_artifact_transport_evidence: transportEvidence,
+    asyncVisualProof,
+    async_visual_proof: asyncVisualProof,
   };
 }

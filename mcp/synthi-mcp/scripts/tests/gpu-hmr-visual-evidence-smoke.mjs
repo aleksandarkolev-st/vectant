@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
+  buildAsyncVisualProofBundle,
   collectVisualArtifactCasLocators,
   deterministicVisualModeFromMcpEvidence,
   deterministicVisualModeAccepted,
@@ -379,6 +381,50 @@ assert.equal(rowWithTransport.artifact_cas_locators.length, 1);
 assert.equal(rowWithTransport.artifact_transport_authority, 'transport_integrity_only_not_visual_proof');
 assert.equal(collectVisualArtifactCasLocators(rowWithTransport).length, 1);
 
+const bundleDir = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-proof-bundle-smoke-'));
+const beforeBundlePng = path.join(bundleDir, 'before.png');
+const afterBundlePng = path.join(bundleDir, 'after.png');
+const diffBundlePng = path.join(bundleDir, 'diff.png');
+const width = 16;
+const height = 16;
+const beforeRaw = Buffer.alloc(width * height * 4, 0);
+const afterRaw = Buffer.alloc(width * height * 4, 0);
+for (let pixel = 0; pixel < width * height; pixel += 1) {
+  const offset = pixel * 4;
+  beforeRaw[offset] = 20;
+  beforeRaw[offset + 1] = 30;
+  beforeRaw[offset + 2] = 40;
+  beforeRaw[offset + 3] = 255;
+  afterRaw[offset] = pixel % 2 === 0 ? 200 : 20;
+  afterRaw[offset + 1] = pixel % 2 === 0 ? 180 : 30;
+  afterRaw[offset + 2] = pixel % 2 === 0 ? 80 : 40;
+  afterRaw[offset + 3] = 255;
+}
+await sharp(beforeRaw, { raw: { width, height, channels: 4 } }).png().toFile(beforeBundlePng);
+await sharp(afterRaw, { raw: { width, height, channels: 4 } }).png().toFile(afterBundlePng);
+const bundle = await buildAsyncVisualProofBundle({
+  beforePath: beforeBundlePng,
+  afterPath: afterBundlePng,
+  diffPath: diffBundlePng,
+  artifactDir: bundleDir,
+  sessionNamespace: 'visual-proof-bundle-smoke',
+  producer: { name: 'visual_evidence_smoke', kind: 'self_check' },
+  visualProof: { tileSize: 8 },
+});
+assert.equal(bundle.accepted, true);
+assert.equal(bundle.acceptedForGpuHmr, false);
+assert.equal(bundle.gpuHmrSuccess, false);
+assert.equal(bundle.proofAuthority, 'async_visual_metrics_and_transport_only');
+assert.ok(bundle.metrics.changedPixelRatio > 0);
+assert.equal(bundle.artifacts.beforeImageHash.startsWith('sha256:'), true);
+assert.equal(bundle.artifacts.afterImageHash.startsWith('sha256:'), true);
+assert.equal(bundle.artifacts.diffImageHash.startsWith('sha256:'), true);
+assert.equal(bundle.artifactCasLocators.length, 3);
+assert.equal(bundle.artifactCasLocators.every((locator) => locator.artifactKind === 'visual_frame'), true);
+assert.equal(bundle.visualArtifactTransportEvidence.acceptedAsTransportEvidence, true);
+assert.equal(bundle.visualArtifactTransportEvidence.acceptedForGpuHmr, false);
+assert.equal(bundle.asyncVisualProof.acceptedAsAsyncVisualMetrics, true);
+
 const missingTransport = await visualArtifactTransportEvidence({});
 assert.equal(missingTransport.accepted, false);
 assert.ok(missingTransport.reasons.includes('visual_artifact_transport_locator_missing'));
@@ -397,5 +443,6 @@ console.log(JSON.stringify({
     'mcp_failed_gpu_proof_validation_rejection',
     'mcp_stale_screenshot_rejection',
     'visual_artifact_transport_evidence_not_gpu_hmr_proof',
+    'async_visual_proof_bundle_cas_worker_transport',
   ],
 }, null, 2));
