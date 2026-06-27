@@ -6136,6 +6136,99 @@ function listFromMaybeAliases(value, ...keys) {
   return compactStringList(values);
 }
 
+function realRocmAcceptedUpstreamLifecycleFailure() {
+  const candidates = [
+    report.upstream_lifecycle_failure,
+    report.upstream_lifecycle_failure_facet,
+    report.evidence?.upstream_lifecycle_failure,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    if (
+      candidate.acceptedAsRefusalEvidence === true
+      || candidate.accepted_as_refusal_evidence === true
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function proofSchedulingGapToken(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120);
+}
+
+function realRocmUpstreamLifecycleProofSchedulingGaps() {
+  const lifecycle = realRocmAcceptedUpstreamLifecycleFailure();
+  if (!lifecycle) return [];
+  const reasons = listFromMaybeAliases(lifecycle, 'reasons', 'blockingGaps', 'blocking_gaps');
+  const missingDependencies = listFromMaybeAliases(
+    lifecycle,
+    'missingDependencies',
+    'missing_dependencies',
+  );
+  const runExitCodeText = stringField(lifecycle, ['runExitCodeText', 'run_exit_code_text']);
+  const runNotStarted = runExitCodeText === 'not-run';
+  const cmakeConfigureFailed =
+    lifecycle.cmakeConfigureFailed === true
+    || lifecycle.cmake_configure_failed === true
+    || reasons.includes('cmake_configure_failed');
+  const buildBlockedByConfigure =
+    lifecycle.buildBlockedByConfigure === true
+    || lifecycle.build_blocked_by_configure === true
+    || reasons.includes('upstream_build_blocked_by_configure');
+  const buildFailed =
+    lifecycle.buildFailed === true
+    || lifecycle.build_failed === true
+    || reasons.includes('upstream_build_failed');
+  const runBlockedByConfigure =
+    lifecycle.runBlockedByConfigure === true
+    || lifecycle.run_blocked_by_configure === true
+    || reasons.includes('upstream_run_not_started_after_configure_failure');
+  const runBlockedByBuild =
+    lifecycle.runBlockedByBuild === true
+    || lifecycle.run_blocked_by_build === true
+    || reasons.includes('upstream_run_not_started_after_build_failure');
+  const missingBuildDependency =
+    missingDependencies.length > 0 || reasons.includes('missing_build_dependency');
+  const runtimeStagesAbsent =
+    cmakeConfigureFailed
+    || buildBlockedByConfigure
+    || runBlockedByConfigure
+    || runBlockedByBuild
+    || (buildFailed && runNotStarted)
+    || (missingBuildDependency && runNotStarted);
+  if (!runtimeStagesAbsent) return [];
+  const lifecycleReasons = reasons
+    .filter((reason) => reason !== 'upstream_run_failed')
+    .map(proofSchedulingGapToken)
+    .filter(Boolean);
+  return compactStringList([
+    'proof_scheduling_upstream_lifecycle_runtime_absent',
+    ...lifecycleReasons.map((reason) => `proof_scheduling_upstream_lifecycle:${reason}`),
+    ...missingDependencies
+      .map(proofSchedulingGapToken)
+      .filter(Boolean)
+      .slice(0, 8)
+      .map((dependency) => `proof_scheduling_upstream_missing_dependency:${dependency}`),
+  ]);
+}
+
+function realRocmUpstreamLifecycleProofSchedulingEvidenceRefs() {
+  const lifecycle = realRocmAcceptedUpstreamLifecycleFailure();
+  if (!lifecycle) return [];
+  return compactStringList([
+    'evidence:upstream_lifecycle_failure',
+    'phase:upstream_gpu_build_run',
+    ...listFromMaybeAliases(lifecycle, 'evidenceRefs', 'evidence_refs'),
+  ]);
+}
+
 function realRocmProofSchedulingStructuralGaps({ compileBridgeSummary = null } = {}) {
   const obligations = report.real_rocm_profile_proof_obligations
     && typeof report.real_rocm_profile_proof_obligations === 'object'
@@ -6190,8 +6283,10 @@ function realRocmProofSchedulingStructuralGaps({ compileBridgeSummary = null } =
       || !stringField(targetProgression, ['phase', 'phaseRaw', 'phase_raw'])
     );
   const profileGaps = listFromMaybeAliases(obligations, 'blockingGaps', 'blocking_gaps');
+  const upstreamLifecycleGaps = realRocmUpstreamLifecycleProofSchedulingGaps();
   const structuralGaps = compactStringList([
     ...profileGaps,
+    ...upstreamLifecycleGaps,
     outputOracleMissing ? 'proof_scheduling_output_oracle_unavailable' : null,
     outputOracleDisabled ? 'proof_scheduling_output_oracle_disabled' : null,
     requiresOutputOracle && outputOracle.contractPresent !== true
@@ -6477,6 +6572,7 @@ function realRocmProofSchedulingFacet({
     ...(Array.isArray(compileBridgeSummary?.evidence_sample)
       ? compileBridgeSummary.evidence_sample
       : []),
+    ...realRocmUpstreamLifecycleProofSchedulingEvidenceRefs(),
   ]);
   const validationBlocker = {
     schemaVersion: 'synthi.gpu_hmr.validation_blocker.v1',
@@ -14652,6 +14748,8 @@ int main()
     timeoutIntelligenceFailureCamel: report.timeoutIntelligenceFailure,
     validationBlockers: report.validation_blockers,
     validationBlockersCamel: report.validationBlockers,
+    upstreamLifecycleFailure: report.upstream_lifecycle_failure,
+    upstreamLifecycleFailureFacet: report.upstream_lifecycle_failure_facet,
     evidence: report.evidence,
   };
   try {
@@ -14684,6 +14782,34 @@ int main()
     };
     report.real_rocm_app_hook_contract = { declared: false };
     CFG.appHookContract = { declared: false };
+    const terminalUpstreamLifecycleFailure = {
+      schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      acceptedAsRefusalEvidence: true,
+      accepted_as_refusal_evidence: true,
+      reasons: [
+        'cmake_configure_failed',
+        'missing_build_dependency',
+        'upstream_build_blocked_by_configure',
+        'upstream_run_not_started_after_configure_failure',
+      ],
+      missingDependencies: ['half/half.hpp'],
+      missing_dependencies: ['half/half.hpp'],
+      cmakeConfigureFailed: true,
+      cmake_configure_failed: true,
+      buildBlockedByConfigure: true,
+      build_blocked_by_configure: true,
+      runBlockedByConfigure: true,
+      run_blocked_by_configure: true,
+      runExitCodeText: 'not-run',
+      run_exit_code_text: 'not-run',
+    };
+    report.upstream_lifecycle_failure = terminalUpstreamLifecycleFailure;
+    report.upstream_lifecycle_failure_facet = terminalUpstreamLifecycleFailure;
+    report.evidence = {
+      ...(report.evidence ?? {}),
+      upstream_lifecycle_failure: terminalUpstreamLifecycleFailure,
+    };
     const blockedSchedule = realRocmProofSchedulingFacet({
       phaseName: 'self_check_wait_hmr',
       requestedTimeoutMs: 20000,
@@ -14728,6 +14854,44 @@ int main()
       requestedTimeoutMs: 20000,
       compileBridgeSummary: derivedSidecarSummary,
     });
+    CFG.requireFullRuntimeProof = true;
+    CFG.requireTargetProgression = false;
+    report.real_rocm_profile_proof_obligations = {
+      requiresFullRuntimeProof: true,
+      requires_full_runtime_proof: true,
+    };
+    report.output_oracle_resolution = {
+      requestedProfile: 'profile_runtime_profile',
+      mode: 'profile_runtime_profile',
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    };
+    report.target_progression = { required: false, phase: null };
+    report.real_rocm_app_hook_contract = { declared: true };
+    CFG.appHookContract = { declared: true };
+    const runFailedOnlyLifecycleFailure = {
+      schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      acceptedAsRefusalEvidence: true,
+      accepted_as_refusal_evidence: true,
+      reasons: ['upstream_run_failed'],
+      runFailed: true,
+      run_failed: true,
+      runExitCodeText: '1',
+      run_exit_code_text: '1',
+    };
+    report.upstream_lifecycle_failure = runFailedOnlyLifecycleFailure;
+    report.upstream_lifecycle_failure_facet = runFailedOnlyLifecycleFailure;
+    report.evidence = {
+      ...(report.evidence ?? {}),
+      upstream_lifecycle_failure: runFailedOnlyLifecycleFailure,
+    };
+    const runFailedOnlySchedule = realRocmProofSchedulingFacet({
+      phaseName: 'self_check_run_failed_only',
+      requestedTimeoutMs: 20000,
+      compileBridgeSummary: derivedSidecarSummary,
+    });
     if (
       blockedSchedule.fast_fail_applied !== true
       || blockedSchedule.effective_timeout_ms !== 1000
@@ -14736,6 +14900,14 @@ int main()
       || blockedSchedule.gpu_hmr_success !== false
       || blockedSchedule.validation_blocker?.accepted_as_refusal_evidence !== true
       || blockedSchedule.validation_blocker?.can_satisfy_runtime_proof !== false
+      || !blockedSchedule.blocking_gaps.includes('proof_scheduling_upstream_lifecycle_runtime_absent')
+      || !blockedSchedule.blocking_gaps.includes(
+        'proof_scheduling_upstream_lifecycle:cmake_configure_failed',
+      )
+      || !blockedSchedule.blocking_gaps.includes(
+        'proof_scheduling_upstream_missing_dependency:half_half.hpp',
+      )
+      || !blockedSchedule.evidence_refs.includes('evidence:upstream_lifecycle_failure')
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_output_oracle_disabled')
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_app_hook_contract_missing')
       || fakeWaitCalls.filter((name) => name === 'synthi_wait_hmr').length !== 1
@@ -14755,6 +14927,12 @@ int main()
       || preservedSchedule.fast_fail_applied !== false
       || preservedSchedule.effective_timeout_ms !== 20000
       || preservedSchedule.accepted_as_refusal_evidence !== false
+      || runFailedOnlySchedule.fast_fail_applied !== false
+      || runFailedOnlySchedule.effective_timeout_ms !== 20000
+      || runFailedOnlySchedule.accepted_as_refusal_evidence !== false
+      || runFailedOnlySchedule.blocking_gaps.includes(
+        'proof_scheduling_upstream_lifecycle_runtime_absent',
+      )
     ) {
       throw new Error('real ROCm proof scheduling self-check failed');
     }
@@ -14780,6 +14958,10 @@ int main()
       savedProofSchedulingSelfCheck.timeoutIntelligenceFailureCamel;
     report.validation_blockers = savedProofSchedulingSelfCheck.validationBlockers;
     report.validationBlockers = savedProofSchedulingSelfCheck.validationBlockersCamel;
+    report.upstream_lifecycle_failure =
+      savedProofSchedulingSelfCheck.upstreamLifecycleFailure;
+    report.upstream_lifecycle_failure_facet =
+      savedProofSchedulingSelfCheck.upstreamLifecycleFailureFacet;
     report.evidence = savedProofSchedulingSelfCheck.evidence;
   }
   const sidecarSelfCheckFiles = [

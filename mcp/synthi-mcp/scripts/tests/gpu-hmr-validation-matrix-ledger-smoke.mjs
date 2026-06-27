@@ -3070,6 +3070,8 @@ function realRocmRuntimeStageObligationsFixture(overrides = {}) {
 function realRocmProofSchedulingFixture(overrides = {}) {
   const blockingGaps = [
     'proof_obligation_output_oracle_profile_missing',
+    'proof_scheduling_upstream_lifecycle_runtime_absent',
+    'proof_scheduling_upstream_lifecycle:upstream_run_not_started_after_build_failure',
     'proof_scheduling_output_oracle_disabled',
     'proof_scheduling_app_hook_contract_missing',
     'proof_scheduling_target_progression_missing',
@@ -5037,6 +5039,9 @@ assert.equal(largeRocm.realRocmProofScheduling.present, true);
 assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
 assert.equal(largeRocm.realRocmProofScheduling.fastFailApplied, true);
+assert.ok(largeRocm.realRocmProofScheduling.blockingGaps.includes(
+  'proof_scheduling_upstream_lifecycle_runtime_absent',
+));
 assert.equal(largeRocm.realRocmProofScheduling.validationBlockerGates[0].accepted, true);
 assert.equal(largeRocm.realRocmProofScheduling.validationBlockerGates[0].acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.validationBlockers[0].acceptedForGpuHmr, false);
