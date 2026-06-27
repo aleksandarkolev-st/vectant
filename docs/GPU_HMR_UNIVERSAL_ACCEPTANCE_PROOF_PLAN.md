@@ -937,6 +937,15 @@ Required behavior:
 
 This step must remain project-agnostic. Fixture-backed tests may be used as smoke coverage only when they exercise the same source-first ingestion, split, compile, runtime, and oracle machinery that an arbitrary user project would use. A fixture name, profile ID, or target string must never satisfy acceptance gates.
 
+Current source-first gate requirements:
+
+1. Agent-split run-mode rows must carry `synthi.gpu.hmr.agent_split_source_first_ingestion.v1` provenance before they can count as generated/profiled visual runtime evidence.
+2. That provenance is explicitly non-authoritative: `proofAuthority=source_first_ingestion_provenance_only_not_runtime_proof`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`.
+3. The matrix recomputes the source-first proof id from the seed source hash, entry path, target id, initial source manifest hash, generated artifact hashes, sidecar hash, and compile manifest hash.
+4. The initial compile manifest must contain the seeded source path and a content hash matching the source profile; an empty manifest, stale proof id, or pre-existing Synthi generated artifact/metadata path fails closed.
+5. Worker log text about AI split activity is corroborating evidence only. The accepted source-first boundary requires structured split/sidecar evidence, generated artifact hashes, and later runtime ledger closure.
+6. The gate must not depend on a fixed split file count, target name, fixture id, or project-specific success branch.
+
 ## 15. Stronger Definition Of Done
 
 GPU HMR is accepted only when:

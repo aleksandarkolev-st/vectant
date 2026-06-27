@@ -12,7 +12,9 @@ export function isAiSplitEvidenceLine(line) {
   const text = String(line ?? '');
   return /\bmode=split\b/i.test(text)
     || /POST\s+\/refactor\/split(?:\/verified|\/gpu)?\b/i.test(text)
-    || /Calling API.*\/refactor\/split(?:\/verified|\/gpu)?\b/i.test(text);
+    || /Calling API.*\/refactor\/split(?:\/verified|\/gpu)?\b/i.test(text)
+    || /GPU markers detected; calling GPU split endpoint/i.test(text)
+    || /GPU split endpoint returned a \d+-file split/i.test(text);
 }
 
 export function countAiSplitEvidenceLines(lines) {

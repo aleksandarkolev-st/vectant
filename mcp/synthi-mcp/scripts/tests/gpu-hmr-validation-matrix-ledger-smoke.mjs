@@ -1001,7 +1001,7 @@ await writeJson(path.join(forgedLegacyDir, 'agent-split-results.json'), [
 ]);
 
 const runModeProofBase = {
-  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   backend: 'hip',
   targetId: 'flow',
   profileId: 'flow',
@@ -1096,6 +1096,87 @@ function validationProfileEvidenceFor({
   };
 }
 
+function sourceFirstIngestionEvidenceFor({
+  targetId = 'flow',
+  entryPath = 'src/main.cpp',
+  sourceHash = hashValue(`${targetId}:seed-source`),
+  useAiSplit = true,
+  userRequestedAi = true,
+  preferGpuPipeline = true,
+  gpuSplitEndpointObserved = true,
+  preexistingGeneratedArtifactPaths = [],
+  generatedArtifactHashes = [hashValue(`${targetId}:generated-device`)],
+  generatedArtifactPaths = ['.synthi/generated/gpu/device.hip'],
+  sidecarHash = hashValue(`${targetId}:sidecar`),
+  compileManifestHash = hashValue(`${targetId}:manifest`),
+  initialFiles,
+  accepted = true,
+} = {}) {
+  const normalizedInitialFiles = initialFiles ?? [{
+    path: entryPath,
+    contentHash: sourceHash,
+    content_hash: sourceHash,
+    byteLength: 4096,
+    byte_length: 4096,
+  }];
+  const initialManifestHash = contentHashFor(normalizedInitialFiles);
+  const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson({
+    sourceContentHash: sourceHash,
+    entryPath,
+    targetId,
+    initialManifestHash,
+    generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+  }))}`;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_source_first_ingestion.v1',
+    accepted,
+    proofId,
+    proofAuthority: 'source_first_ingestion_provenance_only_not_runtime_proof',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    sourceContentHash: sourceHash,
+    noSynthiAbiInSeedSource: true,
+    entryPath,
+    seededWorkspacePath: entryPath,
+    initialCompileContract: {
+      filename: entryPath,
+      initialFilePaths: normalizedInitialFiles.map((entry) => entry.path),
+      initialFiles: normalizedInitialFiles,
+      initialManifestHash,
+      useAiSplit,
+      userRequestedAi,
+      preferGpuPipeline,
+    },
+    initialFilePaths: normalizedInitialFiles.map((entry) => entry.path),
+    initialFiles: normalizedInitialFiles,
+    initialManifestHash,
+    initialSourceFilePresent: normalizedInitialFiles.some((entry) => entry.path === entryPath),
+    initialSourceHashMatches: normalizedInitialFiles.some((entry) =>
+      entry.path === entryPath && (entry.contentHash ?? entry.content_hash) === sourceHash
+    ),
+    preexistingGeneratedArtifactsPresent: preexistingGeneratedArtifactPaths.length > 0,
+    preexistingGeneratedArtifactPaths,
+    gpuSplitEndpointObserved,
+    generatedArtifactCreatedAfterAiSplit: true,
+    generatedArtifactPaths,
+    generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+    targetId,
+    evidenceRefs: [
+      proofId,
+      sourceHash,
+      initialManifestHash,
+      sidecarHash,
+      compileManifestHash,
+      ...generatedArtifactHashes,
+    ],
+  };
+}
+
 const flowHot1RuntimeMaterials = runtimeProofMaterials('hot_delta_1');
 const flowHot2RuntimeMaterials = runtimeProofMaterials('hot_delta_2');
 const flowRunModeCoverageSupport = runModeCoverageSupportFor(flowHot1RuntimeMaterials, [
@@ -1151,10 +1232,12 @@ await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
 
 await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
   ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot1', 'gpu-runtime-proof:sha256:synthetic-hot1'),
   ...flowHot1RuntimeMaterials,
   proofId: 'agent-split-run-mode-proof:sha256:hot1',
   validationProfileEvidence: flowHot1VisualProfileEvidence,
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({ targetId: 'flow' }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
   runMode: {
@@ -1163,6 +1246,65 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1',
     editHash: hashValue('source-edit:hot1'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-smuggled-precompiled.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-smuggled-precompiled',
+    'gpu-runtime-proof:sha256:synthetic-hot1-smuggled-precompiled',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-smuggled-precompiled',
+  }),
+  targetId: 'flow-smuggled-precompiled',
+  profileId: 'flow-smuggled-precompiled',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-smuggled-precompiled',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-smuggled-precompiled',
+    useAiSplit: false,
+    preexistingGeneratedArtifactPaths: ['.synthi/generated/gpu/device.hip'],
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-smuggled-precompiled',
+    editHash: hashValue('source-edit:hot1-smuggled-precompiled'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-empty-source-manifest.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-empty-source-manifest',
+    'gpu-runtime-proof:sha256:synthetic-hot1-empty-source-manifest',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-empty-source-manifest',
+  }),
+  targetId: 'flow-empty-source-manifest',
+  profileId: 'flow-empty-source-manifest',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-empty-source-manifest',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-empty-source-manifest',
+    initialFiles: [],
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-empty-source-manifest',
+    editHash: hashValue('source-edit:hot1-empty-source-manifest'),
   },
 });
 
@@ -5862,6 +6004,34 @@ const hot2RunMode = ledger.rows.find((row) =>
 assert.equal(hot2RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hot2RunMode.artifactSchema, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
 assert.equal(hot2RunMode.runMode.differentEdit, true);
+
+const hot1RunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'hot_delta_1'
+);
+assert.equal(hot1RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(hot1RunMode.artifactSchema, 'synthi.gpu.hmr.agent_split_run_mode_proof.v1');
+assert.equal(hot1RunMode.sourceFirstIngestion.accepted, true);
+assert.equal(hot1RunMode.sourceFirstIngestion.proofAuthority, 'source_first_ingestion_provenance_only_not_runtime_proof');
+
+const smuggledPrecompiledRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-smuggled-precompiled'
+);
+assert.equal(smuggledPrecompiledRunMode?.matrixOutcome, 'unproven');
+assert.equal(smuggledPrecompiledRunMode.acceptedForGpuHmr, false);
+assert.equal(smuggledPrecompiledRunMode.sourceFirstIngestion.accepted, false);
+assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_compile_use_ai_split_missing'));
+assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_precompiled_generated_artifacts_present'));
+
+const emptySourceManifestRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-empty-source-manifest'
+);
+assert.equal(emptySourceManifestRunMode?.matrixOutcome, 'unproven');
+assert.equal(emptySourceManifestRunMode.acceptedForGpuHmr, false);
+assert.equal(emptySourceManifestRunMode.sourceFirstIngestion.accepted, false);
+assert.ok(emptySourceManifestRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(emptySourceManifestRunMode.reasons.includes('source_first_initial_file_manifest_missing'));
+assert.ok(emptySourceManifestRunMode.reasons.includes('source_first_initial_source_file_missing'));
 
 const negativeEdit = ledger.rows.find((row) =>
   row.proofIds?.includes('agent-split-negative-edit-refusal:sha256:synthetic')

@@ -48,6 +48,10 @@ const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
   'agent_split_profile_runtime_visual_proof',
   'agent_split_run_mode_visual_ledger_recomputed',
 ]);
+const AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION =
+  'synthi.gpu.hmr.agent_split_source_first_ingestion.v1';
+const AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY =
+  'source_first_ingestion_provenance_only_not_runtime_proof';
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],
   ['proofId', 'proof_id'],
@@ -1583,6 +1587,339 @@ function rawValidationProfileEvidence(row = {}) {
   );
 }
 
+function rawSourceFirstIngestionEvidence(row = {}) {
+  return compactObject(
+    row.sourceFirstIngestion
+      ?? row.source_first_ingestion
+      ?? row.sourceFirstIngestionEvidence
+      ?? row.source_first_ingestion_evidence,
+  );
+}
+
+function normalizedEvidenceRelPath(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '');
+}
+
+function sourceFirstGeneratedArtifactPath(value) {
+  const normalized = normalizedEvidenceRelPath(value).toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith('.synthi/')
+    || normalized.includes('/.synthi/')
+    || normalized === '.synthi_split_meta.json'
+    || normalized.endsWith('/.synthi_split_meta.json');
+}
+
+function pathListFromValue(value) {
+  if (!Array.isArray(value)) return [];
+  return compactStringList(value.map((entry) => {
+    if (typeof entry === 'string') return normalizedEvidenceRelPath(entry);
+    if (!isObject(entry)) return null;
+    return normalizedEvidenceRelPath(
+      entry.path
+        ?? entry.name
+        ?? entry.filename
+        ?? entry.filePath
+        ?? entry.file_path,
+    );
+  }));
+}
+
+function sourceFirstIngestionFacet(row = {}) {
+  const supplied = rawSourceFirstIngestionEvidence(row);
+  const compileContract = compactObject(
+    supplied.initialCompileContract
+      ?? supplied.initial_compile_contract,
+  );
+  const sourcePurity = compactObject(
+    supplied.sourcePurityEvidence
+      ?? supplied.source_purity_evidence,
+  );
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema);
+  const proofAuthority = firstText(supplied.proofAuthority, supplied.proof_authority);
+  const acceptedFlag = firstBool(supplied.accepted, supplied.sourceFirstAccepted, supplied.source_first_accepted);
+  const acceptedForGpuHmr = firstBool(supplied.acceptedForGpuHmr, supplied.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(supplied.gpuHmrSuccess, supplied.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    supplied.canSatisfyRuntimeProof,
+    supplied.can_satisfy_runtime_proof,
+  );
+  const sourceContentHash = firstText(
+    supplied.sourceContentHash,
+    supplied.source_content_hash,
+    sourcePurity.sourceContentHash,
+    sourcePurity.source_content_hash,
+  );
+  const noSynthiAbiInSeedSource = firstBool(
+    supplied.noSynthiAbiInSeedSource,
+    supplied.no_synthi_abi_in_seed_source,
+    sourcePurity.noSynthiAbiInSeedSource,
+    sourcePurity.no_synthi_abi_in_seed_source,
+    sourcePurity.accepted,
+  );
+  const useAiSplit = firstBool(
+    supplied.useAiSplit,
+    supplied.use_ai_split,
+    compileContract.useAiSplit,
+    compileContract.use_ai_split,
+  );
+  const userRequestedAi = firstBool(
+    supplied.userRequestedAi,
+    supplied.user_requested_ai,
+    compileContract.userRequestedAi,
+    compileContract.user_requested_ai,
+  );
+  const preferGpuPipeline = firstBool(
+    supplied.preferGpuPipeline,
+    supplied.prefer_gpu_pipeline,
+    compileContract.preferGpuPipeline,
+    compileContract.prefer_gpu_pipeline,
+  );
+  const gpuSplitEndpointObserved = firstBool(
+    supplied.gpuSplitEndpointObserved,
+    supplied.gpu_split_endpoint_observed,
+  );
+  const generatedArtifactCreatedAfterAiSplit = firstBool(
+    supplied.generatedArtifactCreatedAfterAiSplit,
+    supplied.generated_artifact_created_after_ai_split,
+  );
+  const initialFileEntries = compactObjectList(
+    compileContract.initialFiles
+      ?? compileContract.initial_files
+      ?? supplied.initialFiles
+      ?? supplied.initial_files,
+  ).map((entry) => ({
+    path: normalizedEvidenceRelPath(
+      entry.path
+        ?? entry.name
+        ?? entry.filename
+        ?? entry.filePath
+        ?? entry.file_path,
+    ),
+    contentHash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    content_hash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    byteLength: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+    byte_length: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+  })).filter((entry) => entry.path);
+  const initialFilePaths = pathListFromValue(
+    compileContract.initialFilePaths
+      ?? compileContract.initial_file_paths
+      ?? compileContract.initialFiles
+      ?? compileContract.initial_files
+      ?? supplied.initialFilePaths
+      ?? supplied.initial_file_paths
+      ?? supplied.initialFiles
+      ?? supplied.initial_files,
+  );
+  const normalizedInitialFilePaths = compactStringList([
+    ...initialFilePaths,
+    ...initialFileEntries.map((entry) => entry.path),
+  ]);
+  const initialManifestHash = firstText(
+    supplied.initialManifestHash,
+    supplied.initial_manifest_hash,
+    compileContract.initialManifestHash,
+    compileContract.initial_manifest_hash,
+  );
+  const recomputedInitialManifestHash = initialFileEntries.length > 0
+    ? `sha256:${sha256Hex(stableJson(initialFileEntries))}`
+    : null;
+  const initialManifestHashMatches =
+    contentAddressedSha256(initialManifestHash)
+    && Boolean(recomputedInitialManifestHash)
+    && initialManifestHash === recomputedInitialManifestHash;
+  const entryPath = normalizedEvidenceRelPath(firstText(
+    supplied.entryPath,
+    supplied.entry_path,
+    supplied.seededWorkspacePath,
+    supplied.seeded_workspace_path,
+    compileContract.filename,
+  ));
+  const initialSourceEntries = initialFileEntries
+    .filter((entry) => entry.path === entryPath);
+  const initialSourceFilePresent =
+    initialSourceEntries.length > 0
+    && normalizedInitialFilePaths.includes(entryPath);
+  const initialSourceHashMatches =
+    initialSourceFilePresent
+    && initialSourceEntries.some((entry) => entry.contentHash === sourceContentHash);
+  const declaredPreexistingGeneratedArtifactPaths = pathListFromValue(
+    supplied.preexistingGeneratedArtifactPaths
+      ?? supplied.preexisting_generated_artifact_paths,
+  );
+  const detectedInitialGeneratedArtifactPaths = normalizedInitialFilePaths.filter(sourceFirstGeneratedArtifactPath);
+  const preexistingGeneratedArtifactPaths = compactStringList([
+    ...declaredPreexistingGeneratedArtifactPaths,
+    ...detectedInitialGeneratedArtifactPaths,
+  ]);
+  const preexistingGeneratedArtifactsPresent = firstBool(
+    supplied.preexistingGeneratedArtifactsPresent,
+    supplied.preexisting_generated_artifacts_present,
+  ) ?? preexistingGeneratedArtifactPaths.length > 0;
+  const generatedArtifacts = compactObjectList(
+    supplied.generatedArtifacts
+      ?? supplied.generated_artifacts,
+  );
+  const generatedArtifactPaths = compactStringList([
+    ...pathListFromValue(supplied.generatedArtifactPaths ?? supplied.generated_artifact_paths),
+    ...pathListFromValue(generatedArtifacts),
+  ]);
+  const generatedArtifactHashes = compactStringList([
+    ...(Array.isArray(supplied.generatedArtifactHashes) ? supplied.generatedArtifactHashes : []),
+    ...(Array.isArray(supplied.generated_artifact_hashes) ? supplied.generated_artifact_hashes : []),
+    ...generatedArtifacts.map((entry) => firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    )),
+  ]);
+  const sidecarHash = firstText(supplied.sidecarHash, supplied.sidecar_hash);
+  const compileManifestHash = firstText(
+    supplied.compileManifestHash,
+    supplied.compile_manifest_hash,
+    supplied.manifestHash,
+    supplied.manifest_hash,
+  );
+  const targetId = firstText(supplied.targetId, supplied.target_id);
+  const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
+  const targetIdBoundToRow = Boolean(targetId) && Boolean(rowTargetId) && targetId === rowTargetId;
+  const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
+  const generatedArtifactHashesAccepted =
+    generatedArtifactHashes.length > 0
+    && generatedArtifactHashes.every(contentAddressedSha256);
+  const suppliedProofId = firstText(supplied.proofId, supplied.proof_id);
+  const recomputedProofId = proofIdFor('agent-split-source-first-ingestion', {
+    sourceContentHash,
+    entryPath,
+    targetId,
+    initialManifestHash,
+    generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+  });
+  const proofIdMatches =
+    Boolean(suppliedProofId)
+    && suppliedProofId === recomputedProofId;
+  const failedGates = compactStringList([
+    Object.keys(supplied).length > 0 ? null : 'source_first_ingestion_evidence_missing',
+    schemaVersion === AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION
+      ? null
+      : 'source_first_ingestion_schema_missing',
+    proofAuthority === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
+      ? null
+      : 'source_first_ingestion_authority_not_provenance_only',
+    acceptedFlag === true ? null : 'source_first_ingestion_not_explicitly_accepted',
+    acceptedForGpuHmr === false ? null : 'source_first_ingestion_must_not_claim_gpu_hmr_acceptance',
+    gpuHmrSuccess === false ? null : 'source_first_ingestion_must_not_claim_gpu_hmr_success',
+    canSatisfyRuntimeProof === false ? null : 'source_first_ingestion_must_not_claim_runtime_proof_authority',
+    proofIdMatches ? null : 'source_first_proof_id_mismatch',
+    contentAddressedSha256(sourceContentHash) ? null : 'source_first_seed_source_hash_missing',
+    noSynthiAbiInSeedSource === true ? null : 'source_first_seed_source_contains_synthi_abi',
+    useAiSplit === true ? null : 'source_first_compile_use_ai_split_missing',
+    userRequestedAi === true ? null : 'source_first_compile_user_requested_ai_missing',
+    preferGpuPipeline === true ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+    initialFileEntries.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+    initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
+    initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
+    initialManifestHashMatches ? null : 'source_first_initial_manifest_hash_mismatch',
+    gpuSplitEndpointObserved === true ? null : 'source_first_gpu_split_endpoint_not_observed',
+    generatedArtifactCreatedAfterAiSplit === true
+      ? null
+      : 'source_first_generated_artifact_boundary_not_proven',
+    generatedArtifactPaths.length > 0 ? null : 'source_first_generated_artifact_paths_missing',
+    generatedArtifactHashesAccepted ? null : 'source_first_generated_artifact_hashes_missing',
+    contentAddressedSha256(sidecarHash) ? null : 'source_first_sidecar_hash_missing',
+    contentAddressedSha256(compileManifestHash) ? null : 'source_first_compile_manifest_hash_missing',
+    targetIdBoundToRow ? null : 'source_first_target_id_not_bound_to_row',
+    preexistingGeneratedArtifactsPresent === false && preexistingGeneratedArtifactPaths.length === 0
+      ? null
+      : 'source_first_precompiled_generated_artifacts_present',
+    evidenceRefs.length > 0 ? null : 'source_first_evidence_refs_missing',
+  ]);
+  return {
+    present: Object.keys(supplied).length > 0,
+    accepted: failedGates.length === 0,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    proofId: suppliedProofId,
+    proof_id: suppliedProofId,
+    recomputedProofId,
+    recomputed_proof_id: recomputedProofId,
+    proofIdMatches,
+    proof_id_matches: proofIdMatches,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    entryPath,
+    entry_path: entryPath,
+    noSynthiAbiInSeedSource,
+    no_synthi_abi_in_seed_source: noSynthiAbiInSeedSource,
+    useAiSplit,
+    use_ai_split: useAiSplit,
+    userRequestedAi,
+    user_requested_ai: userRequestedAi,
+    preferGpuPipeline,
+    prefer_gpu_pipeline: preferGpuPipeline,
+    gpuSplitEndpointObserved,
+    gpu_split_endpoint_observed: gpuSplitEndpointObserved,
+    generatedArtifactCreatedAfterAiSplit,
+    generated_artifact_created_after_ai_split: generatedArtifactCreatedAfterAiSplit,
+    initialFilePaths: normalizedInitialFilePaths,
+    initial_file_paths: normalizedInitialFilePaths,
+    initialFiles: initialFileEntries,
+    initial_files: initialFileEntries,
+    initialManifestHash,
+    initial_manifest_hash: initialManifestHash,
+    recomputedInitialManifestHash,
+    recomputed_initial_manifest_hash: recomputedInitialManifestHash,
+    initialManifestHashMatches,
+    initial_manifest_hash_matches: initialManifestHashMatches,
+    initialSourceFilePresent,
+    initial_source_file_present: initialSourceFilePresent,
+    initialSourceHashMatches,
+    initial_source_hash_matches: initialSourceHashMatches,
+    preexistingGeneratedArtifactsPresent,
+    preexisting_generated_artifacts_present: preexistingGeneratedArtifactsPresent,
+    preexistingGeneratedArtifactPaths,
+    preexisting_generated_artifact_paths: preexistingGeneratedArtifactPaths,
+    generatedArtifactPaths,
+    generated_artifact_paths: generatedArtifactPaths,
+    generatedArtifactHashes,
+    generated_artifact_hashes: generatedArtifactHashes,
+    sidecarHash,
+    sidecar_hash: sidecarHash,
+    compileManifestHash,
+    compile_manifest_hash: compileManifestHash,
+    targetId,
+    target_id: targetId,
+    targetIdBoundToRow,
+    target_id_bound_to_row: targetIdBoundToRow,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function rowEvidenceRefs(row = {}) {
   const ledgerRecord = ledgerRecordForRow(row);
   return compactStringList([
@@ -1591,6 +1928,7 @@ function rowEvidenceRefs(row = {}) {
     ...evidenceRefsFromValue(ledgerRecord),
     ...evidenceRefsFromValue(row.runtimeProofArtifact ?? row.runtime_proof_artifact),
     ...evidenceRefsFromValue(row.visual),
+    ...evidenceRefsFromValue(row.sourceFirstIngestion ?? row.source_first_ingestion),
   ]);
 }
 
@@ -9765,6 +10103,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
   );
   const genericRuntimeRunMode = schema === 'synthi.gpu.hmr.runtime_run_mode_proof.v1';
+  const requiresSourceFirstIngestion = schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1';
+  const sourceFirstIngestion = sourceFirstIngestionFacet(json);
   const runMode = timingEvidence(
     json.runMode,
     json.run_mode,
@@ -9859,6 +10199,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noCpuFallback
     && noFullRebuild
     && noRestart
+    && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
     && (backend !== 'hiprt' || runtimeProbeInstrumentation.accepted === true);
   const strictRuntimeVisualProof =
     strictRuntimeVisualProfileProof === true
@@ -9884,7 +10225,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && runMode.accepted === true
     && noCpuFallback
     && noFullRebuild
-    && noRestart;
+    && noRestart
+    && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true);
   const matrixOutcome = acceptedRuntime
     ? 'full_runtime_gpu_hmr'
     : sourceAdaptedVisualProfileAccepted
@@ -9969,6 +10311,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
+    sourceFirstIngestion,
+    source_first_ingestion: sourceFirstIngestion,
     visual,
     runMode,
     cpuHmrUsed,
@@ -9986,6 +10330,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+      !requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true
+        ? null
+        : 'source_first_ingestion_not_accepted',
       backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
@@ -9995,6 +10342,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
+      ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
     ]) : [],
     openGaps: sourceAdaptedVisualProfileAccepted
       ? ['source_adapted_profile_not_no_shim_gpu_hmr']
@@ -10004,8 +10352,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
             ? 'hiprt_profile_instrumentation_disclosure_required'
             : null,
+          requiresSourceFirstIngestion && sourceFirstIngestion.accepted !== true
+            ? 'source_first_ingestion_required'
+            : null,
           ...visual.failedGates,
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
+          ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
         ])
       : [],
   });
@@ -10043,6 +10395,7 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     firstText(json.reason),
   ]);
   const refusalEvidence = negativeEditRefusalEvidenceFacet(json, { runMode, reasons });
+  const sourceFirstIngestion = sourceFirstIngestionFacet(json);
   const refusalProven = refusalEvidence.accepted === true;
   return finalizeRow({
     artifactSchema: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
@@ -10071,6 +10424,8 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
         ?? json.coverageSupport
         ?? json.coverage_support,
     ),
+    sourceFirstIngestion,
+    source_first_ingestion: sourceFirstIngestion,
     ledger: {
       present: false,
       proofId: null,

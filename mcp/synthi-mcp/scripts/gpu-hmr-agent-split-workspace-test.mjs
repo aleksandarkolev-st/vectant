@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Full-path GPU-HMR validation:
-//   normal user source -> agent GPU split -> generated device edit -> GPU HMR.
+// Synthi agent-split source-first GPU-HMR validation:
+//   profile/fixture seed source -> agent GPU split -> generated device edit -> GPU HMR.
 //
 // This differs from gpu-hmr-dynamic-workspace-test.mjs, which starts from an
 // already-adapted project. Here the seeded source intentionally contains no
@@ -2095,8 +2095,23 @@ int main(int, char**) {
 function assertNoSynthiAbi(source) {
   const forbidden = ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'];
   const found = forbidden.filter((needle) => source.includes(needle));
+  const evidence = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
+    accepted: found.length === 0,
+    noSynthiAbiInSeedSource: found.length === 0,
+    no_synthi_abi_in_seed_source: found.length === 0,
+    forbiddenMarkersChecked: forbidden,
+    forbidden_markers_checked: forbidden,
+    forbiddenMarkersFound: found,
+    forbidden_markers_found: found,
+    sourceContentHash: `sha256:${sha256Hex(source)}`,
+    source_content_hash: `sha256:${sha256Hex(source)}`,
+    sourceByteLength: Buffer.byteLength(source, 'utf8'),
+    source_byte_length: Buffer.byteLength(source, 'utf8'),
+  };
   if (found.length) fail(`monolithic source unexpectedly contains Synthi ABI markers: ${found.join(', ')}`);
-  record('monolithic source has no Synthi ABI', 'pass');
+  record('monolithic source has no Synthi ABI', 'pass', evidence.sourceContentHash);
+  return evidence;
 }
 
 async function compileViaMcp(args, timeoutMs, options = {}) {
@@ -2845,7 +2860,7 @@ function gpuSplitEndpointEvidenceFromSidecar(split) {
     'launch_indirection_report',
     'model_provenance',
   ].filter((key) => sidecar[key] && typeof sidecar[key] === 'object');
-  const generatedFilesObserved = rolePaths.length >= 5
+  const generatedFilesObserved = rolePaths.length > 0
     && rolePaths.every((filePath) => split.files && Object.prototype.hasOwnProperty.call(split.files, filePath));
   return {
     observed: gpuManifestObserved && generatedFilesObserved,
@@ -2854,6 +2869,251 @@ function gpuSplitEndpointEvidenceFromSidecar(split) {
       `generated_files=${rolePaths.length}`,
       `sidecar_reports=${sidecarReports.join('|') || 'none'}`,
     ].join(' '),
+  };
+}
+
+function sourceFirstInitialFileManifest(files) {
+  const entries = Array.isArray(files) ? files : [];
+  return entries
+    .map((entry) => {
+      const filePath = cleanRel(entry?.path ?? entry?.name ?? entry?.filename ?? '');
+      const content = typeof entry?.content === 'string' ? entry.content : '';
+      return {
+        path: filePath,
+        contentHash: filePath ? `sha256:${sha256Hex(content)}` : null,
+        content_hash: filePath ? `sha256:${sha256Hex(content)}` : null,
+        byteLength: Buffer.byteLength(content, 'utf8'),
+        byte_length: Buffer.byteLength(content, 'utf8'),
+      };
+    })
+    .filter((entry) => entry.path);
+}
+
+function sourceFirstPreexistingGeneratedArtifactPath(filePath) {
+  const normalized = cleanRel(filePath).toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith('.synthi/')
+    || normalized.includes('/.synthi/')
+    || normalized === '.synthi_split_meta.json'
+    || normalized.endsWith('/.synthi_split_meta.json');
+}
+
+function generatedSplitArtifactManifest(split) {
+  return Object.entries(split?.files ?? {})
+    .map(([filePath, content]) => ({
+      path: cleanRel(filePath),
+      contentHash: `sha256:${sha256Hex(content)}`,
+      content_hash: `sha256:${sha256Hex(content)}`,
+      byteLength: Buffer.byteLength(String(content ?? ''), 'utf8'),
+      byte_length: Buffer.byteLength(String(content ?? ''), 'utf8'),
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function sourceFirstIngestionEvidence({
+  source,
+  entryPath,
+  sourcePurityEvidence,
+  initialCompileArgs,
+  initialCompileResult,
+  split,
+  sawGpuSplit,
+  splitEndpointEvidence,
+}) {
+  const splitIdentity = splitProofIdentity(split);
+  const sourceContentHash = `sha256:${sha256Hex(source)}`;
+  const initialFiles = sourceFirstInitialFileManifest(initialCompileArgs?.files);
+  const initialFilePaths = initialFiles.map((entry) => entry.path);
+  const normalizedEntryPath = cleanRel(entryPath);
+  const initialSourceEntry = initialFiles.find((entry) => entry.path === normalizedEntryPath);
+  const initialSourceFilePresent = Boolean(initialSourceEntry);
+  const initialSourceHashMatches = initialSourceEntry?.contentHash === sourceContentHash;
+  const preexistingGeneratedArtifactPaths = initialFilePaths
+    .filter(sourceFirstPreexistingGeneratedArtifactPath);
+  const generatedArtifacts = generatedSplitArtifactManifest(split);
+  const generatedArtifactHashes = generatedArtifacts
+    .map((entry) => entry.contentHash)
+    .filter(Boolean);
+  const sidecarHash = split?.sidecarRaw ? `sha256:${sha256Hex(split.sidecarRaw)}` : null;
+  const compileManifestHash = split?.manifest
+    ? `sha256:${sha256Hex(stableJson(split.manifest))}`
+    : null;
+  const initialManifestHash = `sha256:${sha256Hex(stableJson(initialFiles))}`;
+  const gpuSplitLogObserved = sawGpuSplit?.matched === true;
+  const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
+  const generatedArtifactBoundaryProven =
+    gpuSplitEndpointObserved
+    && preexistingGeneratedArtifactPaths.length === 0
+    && generatedArtifacts.length > 0;
+  const seed = {
+    sourceContentHash,
+    entryPath: normalizedEntryPath,
+    targetId: splitIdentity.targetId,
+    initialManifestHash,
+    generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+  };
+  const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson(seed))}`;
+  const evidenceRefs = [
+    proofId,
+    sourceContentHash,
+    ACTIVE_AGENT_PROFILE?.profileHash,
+    ACTIVE_AGENT_PROFILE?.source?.evidenceRef,
+    ACTIVE_AGENT_PROFILE?.source?.evidence_ref,
+    ACTIVE_AGENT_PROFILE?.source?.contentHash,
+    ACTIVE_AGENT_PROFILE?.source?.content_hash,
+    initialManifestHash,
+    sidecarHash,
+    compileManifestHash,
+    ...generatedArtifactHashes,
+    initialCompileResult?.waitSummary?.status ? `evidence:initial-compile-wait-status:${initialCompileResult.waitSummary.status}` : null,
+  ].filter(Boolean);
+  const useAiSplit = initialCompileArgs?.use_ai_split === true;
+  const userRequestedAi = initialCompileArgs?.user_requested_ai === true;
+  const preferGpuPipeline = initialCompileArgs?.prefer_gpu_pipeline === true;
+  const accepted =
+    sourcePurityEvidence?.accepted === true
+    && useAiSplit
+    && userRequestedAi
+    && preferGpuPipeline
+    && initialFiles.length > 0
+    && initialSourceFilePresent
+    && initialSourceHashMatches
+    && gpuSplitEndpointObserved
+    && generatedArtifactBoundaryProven
+    && Boolean(sidecarHash)
+    && Boolean(compileManifestHash);
+  return {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_source_first_ingestion.v1',
+    accepted,
+    proofId,
+    proof_id: proofId,
+    proofAuthority: 'source_first_ingestion_provenance_only_not_runtime_proof',
+    proof_authority: 'source_first_ingestion_provenance_only_not_runtime_proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sourceAuthority: ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source',
+    source_authority: ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source',
+    entryPath: normalizedEntryPath,
+    entry_path: normalizedEntryPath,
+    seededWorkspacePath: normalizedEntryPath,
+    seeded_workspace_path: normalizedEntryPath,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    sourceByteLength: Buffer.byteLength(source, 'utf8'),
+    source_byte_length: Buffer.byteLength(source, 'utf8'),
+    sourcePurityEvidence,
+    source_purity_evidence: sourcePurityEvidence,
+    noSynthiAbiInSeedSource: sourcePurityEvidence?.accepted === true,
+    no_synthi_abi_in_seed_source: sourcePurityEvidence?.accepted === true,
+    initialCompileContract: {
+      language: initialCompileArgs?.language ?? null,
+      filename: cleanRel(initialCompileArgs?.filename),
+      initialFileCount: initialFiles.length,
+      initial_file_count: initialFiles.length,
+      initialManifestHash,
+      initial_manifest_hash: initialManifestHash,
+      initialFiles,
+      initial_files: initialFiles,
+      initialFilePaths,
+      initial_file_paths: initialFilePaths,
+      useAiSplit,
+      use_ai_split: useAiSplit,
+      userRequestedAi,
+      user_requested_ai: userRequestedAi,
+      preferGpuPipeline,
+      prefer_gpu_pipeline: preferGpuPipeline,
+      gpuMode: initialCompileArgs?.gpu_mode ?? null,
+      gpu_mode: initialCompileArgs?.gpu_mode ?? null,
+      gpuArch: initialCompileArgs?.gpu_arch ?? null,
+      gpu_arch: initialCompileArgs?.gpu_arch ?? null,
+    },
+    initial_compile_contract: {
+      language: initialCompileArgs?.language ?? null,
+      filename: cleanRel(initialCompileArgs?.filename),
+      initial_file_count: initialFiles.length,
+      initial_manifest_hash: initialManifestHash,
+      initial_files: initialFiles,
+      initial_file_paths: initialFilePaths,
+      use_ai_split: useAiSplit,
+      user_requested_ai: userRequestedAi,
+      prefer_gpu_pipeline: preferGpuPipeline,
+      gpu_mode: initialCompileArgs?.gpu_mode ?? null,
+      gpu_arch: initialCompileArgs?.gpu_arch ?? null,
+    },
+    preexistingGeneratedArtifactsPresent: preexistingGeneratedArtifactPaths.length > 0,
+    preexisting_generated_artifacts_present: preexistingGeneratedArtifactPaths.length > 0,
+    preexistingGeneratedArtifactPaths,
+    preexisting_generated_artifact_paths: preexistingGeneratedArtifactPaths,
+    initialSourceFilePresent,
+    initial_source_file_present: initialSourceFilePresent,
+    initialSourceHashMatches,
+    initial_source_hash_matches: initialSourceHashMatches,
+    initialManifestHash,
+    initial_manifest_hash: initialManifestHash,
+    gpuSplitLogObserved,
+    gpu_split_log_observed: gpuSplitLogObserved,
+    gpuSplitEndpointObserved,
+    gpu_split_endpoint_observed: gpuSplitEndpointObserved,
+    gpuSplitEndpointEvidence: splitEndpointEvidence,
+    gpu_split_endpoint_evidence: splitEndpointEvidence,
+    generatedArtifactCreatedAfterAiSplit: generatedArtifactBoundaryProven,
+    generated_artifact_created_after_ai_split: generatedArtifactBoundaryProven,
+    generatedArtifacts,
+    generated_artifacts: generatedArtifacts,
+    generatedArtifactPaths: generatedArtifacts.map((entry) => entry.path),
+    generated_artifact_paths: generatedArtifacts.map((entry) => entry.path),
+    generatedArtifactHashes,
+    generated_artifact_hashes: generatedArtifactHashes,
+    generatedArtifactCount: generatedArtifacts.length,
+    generated_artifact_count: generatedArtifacts.length,
+    sidecarHash,
+    sidecar_hash: sidecarHash,
+    compileManifestHash,
+    compile_manifest_hash: compileManifestHash,
+    targetId: splitIdentity.targetId,
+    target_id: splitIdentity.target_id,
+    profileId: validationProfileId(),
+    profile_id: validationProfileId(),
+    validationProfileId: validationProfileId(),
+    validation_profile_id: validationProfileId(),
+    evidenceRefs: [...new Set(evidenceRefs)],
+    evidence_refs: [...new Set(evidenceRefs)],
+    failedGates: accepted ? [] : [
+      sourcePurityEvidence?.accepted === true ? null : 'source_first_seed_source_contains_synthi_abi',
+      useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
+      userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
+      preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+      initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+      initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
+      initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
+      gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
+      preexistingGeneratedArtifactPaths.length === 0 ? null : 'source_first_precompiled_generated_artifacts_present',
+      generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
+      generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
+      sidecarHash ? null : 'source_first_sidecar_hash_missing',
+      compileManifestHash ? null : 'source_first_compile_manifest_hash_missing',
+    ].filter(Boolean),
+    failed_gates: accepted ? [] : [
+      sourcePurityEvidence?.accepted === true ? null : 'source_first_seed_source_contains_synthi_abi',
+      useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
+      userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
+      preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+      initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+      initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
+      initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
+      gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
+      preexistingGeneratedArtifactPaths.length === 0 ? null : 'source_first_precompiled_generated_artifacts_present',
+      generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
+      generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
+      sidecarHash ? null : 'source_first_sidecar_hash_missing',
+      compileManifestHash ? null : 'source_first_compile_manifest_hash_missing',
+    ].filter(Boolean),
   };
 }
 
@@ -3328,7 +3588,7 @@ function visibleGpuSplitFiles(split, granularity = null) {
       '# GPU HMR Split Files',
       '',
       'These files are the visible editor surface for the generated GPU split.',
-      'Edit the device file here for the fast GPU HMR delta path.',
+      'Edit the generated device-surface file here; acceptance still requires runtime proof-ledger closure.',
       '',
       'Granularity is manifest-derived. A single device file proves device-translation-unit HMR, not per-kernel or smallest-safe fission.',
       'Smallest-safe fission requires a deterministic fission verifier report.',
@@ -4577,7 +4837,7 @@ async function run() {
     );
   }
 
-  assertNoSynthiAbi(source);
+  const sourcePurityEvidence = assertNoSynthiAbi(source);
   const entryPath = validationProfileEntryPath();
   const renderWidth = validationProfileWidth();
   const renderHeight = validationProfileHeight();
@@ -4589,7 +4849,7 @@ async function run() {
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
 
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: entryPath, content: source }] });
-  record('seed monolithic user source', 'pass', entryPath);
+  record('seed profile/fixture source', 'pass', entryPath);
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: seed monolithic source' })
     .then(() => record('workspace commit seed', 'pass'))
     .catch((e) => record('workspace commit seed', 'warn', e.message.slice(0, 200)));
@@ -4602,11 +4862,11 @@ async function run() {
   }
 
   const firstStart = await workerCheckpoint();
-  const initialCompileResult = await compileViaMcp({
+  const initialCompileArgs = {
     language: 'cpp',
     filename: entryPath,
     source,
-    files: [],
+    files: [{ name: entryPath, content: source }],
     is_gui: true,
     use_ai_split: true,
     user_requested_ai: true,
@@ -4616,7 +4876,8 @@ async function run() {
     slug: CFG.slug,
     width: renderWidth,
     height: renderHeight,
-  }, CFG.hmrTimeoutMs, {
+  };
+  const initialCompileResult = await compileViaMcp(initialCompileArgs, CFG.hmrTimeoutMs, {
     metricScope: 'cold',
     cacheState: 'clean',
     editId: 'initial-ai-split',
@@ -4627,7 +4888,7 @@ async function run() {
   record('first compile via MCP', 'pass', 'use_ai_split=true prefer_gpu_pipeline=true');
 
   const sawGpuSplit = await awaitWorkerLogRegex(
-    /GPU markers detected; calling GPU split endpoint|GPU split endpoint returned a 5-file split/,
+    /GPU markers detected; calling GPU split endpoint|GPU split endpoint returned a \d+-file split/,
     CFG.hmrTimeoutMs,
     firstStart,
   );
@@ -4659,6 +4920,26 @@ async function run() {
   if (!(sawGpuSplit.matched || splitEndpointEvidence.observed)) {
     throw new Error('GPU split endpoint evidence missing after initial compile');
   }
+  const sourceFirstIngestion = sourceFirstIngestionEvidence({
+    source,
+    entryPath,
+    sourcePurityEvidence,
+    initialCompileArgs,
+    initialCompileResult,
+    split,
+    sawGpuSplit,
+    splitEndpointEvidence,
+  });
+  record(
+    'source-first AI split provenance-only evidence',
+    sourceFirstIngestion.accepted ? 'pass' : 'fail',
+    sourceFirstIngestion.accepted
+      ? sourceFirstIngestion.proofId
+      : sourceFirstIngestion.failedGates.join('|'),
+  );
+  if (!sourceFirstIngestion.accepted) {
+    throw new Error(`source-first AI split provenance-only evidence rejected: ${sourceFirstIngestion.failedGates.join('|')}`);
+  }
   const granularity = validateGeneratedSplit(split);
   const granularityPath = await writeJsonArtifact('generated-split-granularity', granularity);
   record('generated split granularity artifact', 'pass', granularityPath);
@@ -4685,6 +4966,8 @@ async function run() {
       run_mode: initialCompileResult.timingMetrics,
       timingMetrics: initialCompileResult.timingMetrics,
       timing_metrics: initialCompileResult.timingMetrics,
+      sourceFirstIngestion,
+      source_first_ingestion: sourceFirstIngestion,
       visualArtifacts: {
         beforeImage: artifactRel('before-hmr-first.png'),
         afterImage: artifactRel('before-hmr-second.png'),
@@ -4775,6 +5058,8 @@ async function run() {
       run_mode: generatedDeviceResult.timingMetrics,
       timingMetrics: generatedDeviceResult.timingMetrics,
       timing_metrics: generatedDeviceResult.timingMetrics,
+      sourceFirstIngestion,
+      source_first_ingestion: sourceFirstIngestion,
       deviceEditMutation: hotDelta1Edit.mutation,
       device_edit_mutation: hotDelta1Edit.mutation,
       sourceBaselineProof: generatedDeviceResult.sourceBaselineProof,
@@ -4933,6 +5218,8 @@ async function run() {
       run_mode: hotDelta2Result.timingMetrics,
       timingMetrics: hotDelta2Result.timingMetrics,
       timing_metrics: hotDelta2Result.timingMetrics,
+      sourceFirstIngestion,
+      source_first_ingestion: sourceFirstIngestion,
       deviceEditMutation: hotDelta2Edit.mutation,
       device_edit_mutation: hotDelta2Edit.mutation,
       sourceBaselineProof: hotDelta2Result.sourceBaselineProof,
@@ -4982,6 +5269,8 @@ async function run() {
         runModeCoverageSupport: hotDelta1RunModeCoverageSupport,
         run_mode_coverage_support: hotDelta1RunModeCoverageSupport,
       } : {}),
+      sourceFirstIngestion,
+      source_first_ingestion: sourceFirstIngestion,
       reasons: negativeEdit.reasons,
       unsupportedReasons: negativeEdit.reasons,
       unsupported_reasons: negativeEdit.reasons,
