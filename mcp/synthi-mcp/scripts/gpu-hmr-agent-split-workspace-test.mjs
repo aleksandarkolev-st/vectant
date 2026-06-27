@@ -2104,7 +2104,7 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   const compileEndNs = process.hrtime.bigint();
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
-  const waitContract = waitContractForCompile({ args, compile, timeoutMs });
+  const waitContract = waitContractForCompile({ args, compile, timeoutMs, options });
   const waitStartNs = process.hrtime.bigint();
   const wait = await state.client.toolCall(
     'synthi_wait_hmr',
@@ -2148,7 +2148,9 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
   if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
   if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
-  const requireAppliedWait = options.requireAppliedWait === true || waitContract.isGpuDeviceEdit;
+  const requireAppliedWait = options.requireAppliedWait === true
+    || waitContract.isGpuDeviceEdit
+    || typeof options.requiredGpuProofState === 'string';
   record(
     options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
     wait?.status === 'applied' ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
@@ -2178,6 +2180,184 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+const GPU_HMR_PROOF_STATE_RANKS = new Map([
+  ['gpu-hmr-compile-proven', 1],
+  ['gpu-hmr-symbol-bound', 2],
+  ['gpu-hmr-abi-proven', 3],
+  ['gpu-hmr-epoch-swap-proven', 4],
+  ['gpu-hmr-dispatch-observed', 5],
+  ['gpu-hmr-dispatch-safe-proven', 6],
+  ['gpu-hmr-output-oracle-proven', 7],
+  ['gpu-hmr-host-preservation-proven', 8],
+  ['gpu-hmr-full-runtime-proven', 9],
+]);
+
+function gpuHmrProofStateRank(value) {
+  return GPU_HMR_PROOF_STATE_RANKS.get(String(value ?? '')) ?? 0;
+}
+
+function proofValidationObject(wait) {
+  return wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : {};
+}
+
+function proofTelemetryObject(wait) {
+  return wait?.gpu_proof_telemetry && typeof wait.gpu_proof_telemetry === 'object'
+    ? wait.gpu_proof_telemetry
+    : {};
+}
+
+function proofIdLooksImmutable(value) {
+  return typeof value === 'string'
+    && /^gpu-(?:runtime-)?proof(?::sha256)?:[a-f0-9]{64}$/i.test(value.trim());
+}
+
+function initialDeviceCompileProofFromResult(result) {
+  const wait = result?.wait && typeof result.wait === 'object' ? result.wait : {};
+  const validation = proofValidationObject(wait);
+  const telemetry = proofTelemetryObject(wait);
+  const validatedRequiredState = validation.requiredState ?? validation.required_state ?? null;
+  const validatedResultState = validation.resultState ?? validation.result_state ?? null;
+  const effectiveResultRank = Number.isFinite(validation.effectiveResultRank)
+    ? validation.effectiveResultRank
+    : Number.isFinite(validation.effective_result_rank)
+      ? validation.effective_result_rank
+      : gpuHmrProofStateRank(validatedResultState);
+  const resultState = telemetry.resultState ?? telemetry.result_state ?? null;
+  const proofId = telemetry.proofId ?? telemetry.proof_id ?? null;
+  const proofArtifactPath = telemetry.proofArtifactPath ?? telemetry.proof_artifact_path ?? null;
+  const resultRank = Math.max(gpuHmrProofStateRank(resultState), gpuHmrProofStateRank(validatedResultState), effectiveResultRank);
+  const requiredRank = gpuHmrProofStateRank('gpu-hmr-compile-proven');
+  const accepted = wait.status === 'applied'
+    && validation.satisfied === true
+    && resultRank >= requiredRank
+    && gpuHmrProofStateRank(validatedRequiredState) >= requiredRank
+    && proofIdLooksImmutable(proofId);
+  return {
+    accepted,
+    waitStatus: wait.status ?? null,
+    validationSatisfied: validation.satisfied === true,
+    validation_satisfied: validation.satisfied === true,
+    proofId,
+    proof_id: proofId,
+    proofArtifactPath,
+    proof_artifact_path: proofArtifactPath,
+    resultState: resultState ?? validatedResultState,
+    result_state: resultState ?? validatedResultState,
+    validatedResultState,
+    validated_result_state: validatedResultState,
+    resultRank,
+    result_rank: resultRank,
+    requiredState: validatedRequiredState ?? 'gpu-hmr-compile-proven',
+    required_state: validatedRequiredState ?? 'gpu-hmr-compile-proven',
+    requiredRank,
+    required_rank: requiredRank,
+    effectiveResultRank,
+    effective_result_rank: effectiveResultRank,
+    degradedState: validation.degradedState ?? validation.degraded_state ?? telemetry.degradedState ?? telemetry.degraded_state ?? null,
+    degraded_state: validation.degradedState ?? validation.degraded_state ?? telemetry.degradedState ?? telemetry.degraded_state ?? null,
+    degradedStateRankCap: validation.degradedStateRankCap ?? validation.degraded_state_rank_cap ?? null,
+    degraded_state_rank_cap: validation.degradedStateRankCap ?? validation.degraded_state_rank_cap ?? null,
+    degradedReason: telemetry.degradedReason ?? telemetry.degraded_reason ?? null,
+    degraded_reason: telemetry.degradedReason ?? telemetry.degraded_reason ?? null,
+    source: telemetry.source ?? null,
+    observedAt: telemetry.observedAt ?? telemetry.observed_at ?? null,
+    observed_at: telemetry.observedAt ?? telemetry.observed_at ?? null,
+  };
+}
+
+function fullRuntimeGpuHmrProofFromResult(result) {
+  const wait = result?.wait && typeof result.wait === 'object' ? result.wait : {};
+  const validation = proofValidationObject(wait);
+  const telemetry = proofTelemetryObject(wait);
+  const ledgerValidation = validation.proofLedgerValidation && typeof validation.proofLedgerValidation === 'object'
+    ? validation.proofLedgerValidation
+    : {};
+  const runtimeArtifactValidation = validation.runtimeProofArtifactValidation
+    && typeof validation.runtimeProofArtifactValidation === 'object'
+    ? validation.runtimeProofArtifactValidation
+    : {};
+  const resultState = validation.resultState ?? validation.result_state ?? telemetry.resultState ?? telemetry.result_state ?? null;
+  const effectiveResultRank = Number.isFinite(validation.effectiveResultRank)
+    ? validation.effectiveResultRank
+    : Number.isFinite(validation.effective_result_rank)
+      ? validation.effective_result_rank
+      : gpuHmrProofStateRank(resultState);
+  const fullRuntimeRank = gpuHmrProofStateRank('gpu-hmr-full-runtime-proven');
+  const failedInvariants = Array.isArray(ledgerValidation.failedInvariants)
+    ? ledgerValidation.failedInvariants
+    : Array.isArray(ledgerValidation.failed_invariants)
+      ? ledgerValidation.failed_invariants
+      : [];
+  const accepted = wait.status === 'applied'
+    && validation.satisfied === true
+    && effectiveResultRank >= fullRuntimeRank
+    && ledgerValidation.gpuHmrSuccess === true
+    && failedInvariants.length === 0
+    && runtimeArtifactValidation.accepted === true
+    && proofIdLooksImmutable(telemetry.proofId ?? telemetry.proof_id)
+    && typeof (ledgerValidation.proofId ?? ledgerValidation.proof_id) === 'string';
+  return {
+    accepted,
+    waitStatus: wait.status ?? null,
+    validationSatisfied: validation.satisfied === true,
+    validation_satisfied: validation.satisfied === true,
+    resultState,
+    result_state: resultState,
+    effectiveResultRank,
+    effective_result_rank: effectiveResultRank,
+    requiredState: validation.requiredState ?? validation.required_state ?? 'gpu-hmr-full-runtime-proven',
+    required_state: validation.requiredState ?? validation.required_state ?? 'gpu-hmr-full-runtime-proven',
+    requiredRank: validation.requiredRank ?? validation.required_rank ?? fullRuntimeRank,
+    required_rank: validation.requiredRank ?? validation.required_rank ?? fullRuntimeRank,
+    runtimeProofId: telemetry.proofId ?? telemetry.proof_id ?? null,
+    runtime_proof_id: telemetry.proofId ?? telemetry.proof_id ?? null,
+    ledgerProofId: ledgerValidation.proofId ?? ledgerValidation.proof_id ?? null,
+    ledger_proof_id: ledgerValidation.proofId ?? ledgerValidation.proof_id ?? null,
+    gpuHmrSuccess: ledgerValidation.gpuHmrSuccess === true,
+    gpu_hmr_success: ledgerValidation.gpuHmrSuccess === true,
+    failedInvariants,
+    failed_invariants: failedInvariants,
+    runtimeProofArtifactAccepted: runtimeArtifactValidation.accepted === true,
+    runtime_proof_artifact_accepted: runtimeArtifactValidation.accepted === true,
+    runtimeProofArtifactSource: runtimeArtifactValidation.source ?? null,
+    runtime_proof_artifact_source: runtimeArtifactValidation.source ?? null,
+  };
+}
+
+function generatedDeviceEditIdentityProof(result, split, expectedEditHash) {
+  const selectedPathMatches = cleanRel(result?.selectedPath) === cleanRel(split?.roles?.device);
+  const editHashMatches = typeof expectedEditHash === 'string'
+    && result?.editHash === expectedEditHash;
+  const sourceBaselineAccepted = result?.sourceBaselineProof?.accepted === true;
+  const refreshedSourceBaselineAccepted = result?.refreshedSourceBaselineProof?.accepted === true
+    || result?.refreshed_source_baseline_proof?.accepted === true;
+  const accepted = selectedPathMatches
+    && editHashMatches
+    && sourceBaselineAccepted
+    && refreshedSourceBaselineAccepted;
+  return {
+    accepted,
+    selectedPath: result?.selectedPath ?? null,
+    selected_path: result?.selectedPath ?? null,
+    expectedPath: split?.roles?.device ?? null,
+    expected_path: split?.roles?.device ?? null,
+    selectedPathMatches,
+    selected_path_matches: selectedPathMatches,
+    editHash: result?.editHash ?? null,
+    edit_hash: result?.editHash ?? null,
+    expectedEditHash,
+    expected_edit_hash: expectedEditHash,
+    editHashMatches,
+    edit_hash_matches: editHashMatches,
+    sourceBaselineAccepted,
+    source_baseline_accepted: sourceBaselineAccepted,
+    refreshedSourceBaselineAccepted,
+    refreshed_source_baseline_accepted: refreshedSourceBaselineAccepted,
+  };
 }
 
 function normalizedObjectStringLookup(root, parentKey, filePath) {
@@ -2237,7 +2417,7 @@ function manifestRoleForPath(manifest, filePath) {
   return null;
 }
 
-function waitContractForCompile({ args, compile, timeoutMs }) {
+function waitContractForCompile({ args, compile, timeoutMs, options = {} }) {
   const manifest = args?.compile_manifest;
   const filename = cleanRel(args?.filename);
   const role = manifestRoleForPath(manifest, filename);
@@ -2253,8 +2433,10 @@ function waitContractForCompile({ args, compile, timeoutMs }) {
       : {}),
     ...(module ? { module } : {}),
   };
-  const requiredState = process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
-  if (requiredState && requiredState.trim()) {
+  const requiredState = typeof options.requiredGpuProofState === 'string' && options.requiredGpuProofState.trim()
+    ? options.requiredGpuProofState.trim()
+    : process.env.SYNTHI_GPU_HMR_REQUIRED_PROOF_STATE;
+  if (typeof requiredState === 'string' && requiredState.trim()) {
     waitArgs.requiredGpuProofState = requiredState.trim();
   } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
     waitArgs.requireGpuFullRuntimeProof = true;
@@ -4405,6 +4587,7 @@ async function run() {
     editId: 'initial-ai-split',
     editHash: `sha256:${sha256Hex(source)}`,
     editKind: 'cold_split',
+    requiredGpuProofState: 'gpu-hmr-compile-proven',
   });
   record('first compile via MCP', 'pass', 'use_ai_split=true prefer_gpu_pipeline=true');
 
@@ -4414,14 +4597,16 @@ async function run() {
     firstStart,
   );
 
-  const sawDeviceCompile = await awaitWorkerLogRegex(
-    /compile-device.*(hipcc|nvcc)|Device sidecar reload vendor=.*result=Success/,
-    CFG.hmrTimeoutMs,
-    firstStart,
+  const structuredInitialCompileProof = initialDeviceCompileProofFromResult(initialCompileResult);
+  record(
+    'generated device compiled',
+    structuredInitialCompileProof.accepted ? 'pass' : 'fail',
+    structuredInitialCompileProof.accepted
+      ? `structured_proof=${JSON.stringify(structuredInitialCompileProof)}`
+      : `structured proof rejected: ${JSON.stringify(structuredInitialCompileProof)}`,
   );
-  record('generated device compiled', sawDeviceCompile.matched ? 'pass' : 'fail', sawDeviceCompile.snippet || 'no device compile marker');
-  if (!sawDeviceCompile.matched) {
-    throw new Error('initial GPU compile did not produce a device compile marker');
+  if (!structuredInitialCompileProof.accepted) {
+    throw new Error('initial GPU compile did not produce a device compile proof');
   }
 
   const baselineShot = CFG.captureArtifacts
@@ -4504,19 +4689,29 @@ async function run() {
   });
   record('device edit compile via MCP', 'pass', split.roles.device);
 
-  const sawSplitEdit = await awaitWorkerLogRegex(
-    new RegExp(`FallbackDeterministic.*split file edit.*${split.roles.device.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|compile-device.*${split.roles.device.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
-    CFG.hotSwapTimeoutMs + 30000,
-    secondStart,
+  const deviceEditIdentityProof = generatedDeviceEditIdentityProof(
+    generatedDeviceResult,
+    split,
+    hotDelta1EditHash,
   );
-  record('generated device file used for HMR', sawSplitEdit.matched ? 'pass' : 'fail', sawSplitEdit.snippet || 'no split-file/device marker');
+  record(
+    'generated device file used for HMR',
+    deviceEditIdentityProof.accepted ? 'pass' : 'fail',
+    JSON.stringify(deviceEditIdentityProof),
+  );
+  if (!deviceEditIdentityProof.accepted) {
+    throw new Error('generated device edit identity proof failed for hot delta 1');
+  }
 
-  const hotSwap = await awaitWorkerLogRegex(
-    /\[gpu-reload\].*plan=device_only|Device sidecar reload vendor=.*result=Success/,
-    CFG.hotSwapTimeoutMs + 30000,
-    secondStart,
+  const hotSwapProof = fullRuntimeGpuHmrProofFromResult(generatedDeviceResult);
+  record(
+    'device-only GPU HMR observed',
+    hotSwapProof.accepted ? 'pass' : 'fail',
+    JSON.stringify(hotSwapProof),
   );
-  record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
+  if (!hotSwapProof.accepted) {
+    throw new Error('full-runtime GPU HMR proof failed for hot delta 1');
+  }
 
   const afterShot = await assertMcpScreenshot(
     'mcp screenshot after hmr',
@@ -4640,7 +4835,6 @@ async function run() {
     afterSource: hotDelta2Device,
     editKind: 'different_gpu_edit',
   });
-  const thirdStart = await workerCheckpoint();
   const hotDelta2Result = await compileGeneratedDevice(split, hotDelta2Device, {
     metricScope: 'hot_delta_2',
     cacheState: 'compiler_cache_warm',
@@ -4651,12 +4845,28 @@ async function run() {
     waitRecordLabel: 'mcp wait_hmr proof gate hot delta 2',
   });
   record('device edit compile via MCP hot delta 2', 'pass', split.roles.device);
-  const hotDelta2Reload = await awaitWorkerLogRegex(
-    /\[gpu-reload\].*plan=device_only|Device sidecar reload vendor=.*result=Success/,
-    CFG.hotSwapTimeoutMs + 30000,
-    thirdStart,
+  const hotDelta2IdentityProof = generatedDeviceEditIdentityProof(
+    hotDelta2Result,
+    split,
+    hotDelta2EditHash,
   );
-  record('device-only GPU HMR observed hot delta 2', hotDelta2Reload.matched ? 'pass' : 'fail', hotDelta2Reload.snippet || 'no device-only reload marker');
+  record(
+    'generated device file used for HMR hot delta 2',
+    hotDelta2IdentityProof.accepted ? 'pass' : 'fail',
+    JSON.stringify(hotDelta2IdentityProof),
+  );
+  if (!hotDelta2IdentityProof.accepted) {
+    throw new Error('generated device edit identity proof failed for hot delta 2');
+  }
+  const hotDelta2ReloadProof = fullRuntimeGpuHmrProofFromResult(hotDelta2Result);
+  record(
+    'device-only GPU HMR observed hot delta 2',
+    hotDelta2ReloadProof.accepted ? 'pass' : 'fail',
+    JSON.stringify(hotDelta2ReloadProof),
+  );
+  if (!hotDelta2ReloadProof.accepted) {
+    throw new Error('full-runtime GPU HMR proof failed for hot delta 2');
+  }
   const afterHotDelta2Shot = await assertMcpScreenshot(
     'mcp screenshot after hmr hot delta 2',
     'after-hmr-2',
