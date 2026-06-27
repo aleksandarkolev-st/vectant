@@ -9434,6 +9434,260 @@ function realRocmSameProcessRuntimeOracleFacet({
   };
 }
 
+function realRocmRuntimeStageObligationsFacet({
+  sourceDeltaExecution = {},
+  deviceSidecarContract = {},
+  compileBridge = {},
+  runtimeEligibility = {},
+  appHookContract = {},
+  sameProcessRuntimeOracle = {},
+  nativeRuntimeBridge = {},
+  sidecarRuntimeConsistency = {},
+  runtimeCapabilityPreflight = {},
+  fullRuntimeProof = {},
+  firewallEvidence = {},
+  profileProofObligations = {},
+  availableEvidenceRefs = [],
+} = {}) {
+  const sourceDelta = sourceDeltaExecution && typeof sourceDeltaExecution === 'object'
+    ? sourceDeltaExecution
+    : {};
+  const sidecar = deviceSidecarContract && typeof deviceSidecarContract === 'object'
+    ? deviceSidecarContract
+    : {};
+  const compile = compileBridge && typeof compileBridge === 'object' ? compileBridge : {};
+  const eligibility = runtimeEligibility && typeof runtimeEligibility === 'object'
+    ? runtimeEligibility
+    : {};
+  const appHook = appHookContract && typeof appHookContract === 'object' ? appHookContract : {};
+  const sameProcess = sameProcessRuntimeOracle && typeof sameProcessRuntimeOracle === 'object'
+    ? sameProcessRuntimeOracle
+    : {};
+  const nativeBridge = nativeRuntimeBridge && typeof nativeRuntimeBridge === 'object'
+    ? nativeRuntimeBridge
+    : {};
+  const sidecarConsistency = sidecarRuntimeConsistency && typeof sidecarRuntimeConsistency === 'object'
+    ? sidecarRuntimeConsistency
+    : {};
+  const preflight = runtimeCapabilityPreflight && typeof runtimeCapabilityPreflight === 'object'
+    ? runtimeCapabilityPreflight
+    : {};
+  const obligations = profileProofObligations && typeof profileProofObligations === 'object'
+    ? profileProofObligations
+    : {};
+  const stageResults = {};
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const sameProcessStage = sameProcess.stage_results?.[stage.snake]
+      ?? sameProcess.stageResults?.[stage.snake]
+      ?? sameProcess.stage_results?.[stage.key]
+      ?? sameProcess.stageResults?.[stage.key]
+      ?? {};
+    const nativeStage = nativeBridge.stage_results?.[stage.snake]
+      ?? nativeBridge.stageResults?.[stage.snake]
+      ?? nativeBridge.stage_results?.[stage.key]
+      ?? nativeBridge.stageResults?.[stage.key]
+      ?? {};
+    const appHookStage = appHook.stage_results?.[stage.snake]
+      ?? appHook.stageResults?.[stage.snake]
+      ?? appHook.stage_results?.[stage.key]
+      ?? appHook.stageResults?.[stage.key]
+      ?? appHook.stages?.[stage.key]
+      ?? appHook[stage.key]
+      ?? appHook[stage.snake]
+      ?? {};
+    const sidecarRuntimeObserved =
+      sidecar.runtime_observed_by_stage?.[stage.key] === true
+      || sidecar.runtimeObservedByStage?.[stage.key] === true
+      || sidecar.runtime_observed_by_stage?.[stage.snake] === true
+      || sidecar.runtimeObservedByStage?.[stage.snake] === true;
+    const observed =
+      sameProcessStage.observed === true
+      || sameProcessStage.runtimeObserved === true
+      || sameProcessStage.runtime_observed === true
+      || nativeStage.observed === true
+      || nativeStage.runtimeObserved === true
+      || nativeStage.runtime_observed === true
+      || appHookStage.runtimeObserved === true
+      || appHookStage.runtime_observed === true
+      || sidecarRuntimeObserved;
+    const sourceMissingKinds = compactStringList([
+      ...(Array.isArray(sameProcessStage.missingProofKinds) ? sameProcessStage.missingProofKinds : []),
+      ...(Array.isArray(sameProcessStage.missing_proof_kinds) ? sameProcessStage.missing_proof_kinds : []),
+      ...(Array.isArray(nativeStage.missingProofKinds) ? nativeStage.missingProofKinds : []),
+      ...(Array.isArray(nativeStage.missing_proof_kinds) ? nativeStage.missing_proof_kinds : []),
+      ...(Array.isArray(appHookStage.missingProofKinds) ? appHookStage.missingProofKinds : []),
+      ...(Array.isArray(appHookStage.missing_proof_kinds) ? appHookStage.missing_proof_kinds : []),
+    ]);
+    const stageProofKinds = realRocmStageProofKinds(stage.snake);
+    const missingProofKinds = observed
+      ? sourceMissingKinds.filter((kind) => stageProofKinds.includes(kind))
+      : stageProofKinds;
+    const evidenceRefs = compactStringList([
+      ...(Array.isArray(sameProcessStage.evidenceRefs) ? sameProcessStage.evidenceRefs : []),
+      ...(Array.isArray(sameProcessStage.evidence_refs) ? sameProcessStage.evidence_refs : []),
+      ...(Array.isArray(nativeStage.evidenceRefs) ? nativeStage.evidenceRefs : []),
+      ...(Array.isArray(nativeStage.evidence_refs) ? nativeStage.evidence_refs : []),
+      ...(Array.isArray(appHookStage.evidenceRefs) ? appHookStage.evidenceRefs : []),
+      ...(Array.isArray(appHookStage.evidence_refs) ? appHookStage.evidence_refs : []),
+    ]);
+    stageResults[stage.snake] = {
+      stage: stage.snake,
+      required: true,
+      observed,
+      runtimeObserved: observed,
+      runtime_observed: observed,
+      requiredProofKinds: stageProofKinds,
+      required_proof_kinds: stageProofKinds,
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    };
+  }
+  const stageMissing = Object.values(stageResults).filter((stage) =>
+    stage.observed !== true || stage.missing_proof_kinds.length > 0
+  );
+  const sourceDeltaAccepted =
+    sourceDelta.accepted === true
+    || sourceDelta.source_delta_execution_accepted === true;
+  const sourceDeltaPresent =
+    sourceDelta.present === true
+    || sourceDeltaAccepted
+    || Array.isArray(sourceDelta.phases)
+    || Array.isArray(sourceDelta.run_modes);
+  const fullRuntimeProofAccepted = fullRuntimeProof?.fullRuntimeProven === true;
+  const firewallAccepted =
+    firewallEvidence?.cpu_hmr_used === false
+    && firewallEvidence?.full_rebuild_used === false
+    && firewallEvidence?.process_restarted === false;
+  const profileRequiresFullRuntimeProof =
+    obligations.requiresFullRuntimeProof === true
+    || obligations.requires_full_runtime_proof === true
+    || CFG.requireFullRuntimeProof === true;
+  const required =
+    profileRequiresFullRuntimeProof
+    || appHook.required === true
+    || appHook.declared === true
+    || sameProcess.required === true
+    || sameProcess.declared === true
+    || sidecar.declared === true
+    || sidecar.contract_evidence_complete === true
+    || sidecar.contractEvidenceComplete === true
+    || nativeBridge.observed === true
+    || eligibility.observed === true
+    || sourceDeltaPresent;
+  const blockingGaps = compactStringList([
+    ...stageMissing.flatMap((stage) => [
+      `${stage.stage}_runtime_observation_missing`,
+      ...stage.missing_proof_kinds.map((kind) => `${stage.stage}_${kind}_missing`),
+    ]),
+    sourceDeltaPresent && !sourceDeltaAccepted ? 'source_delta_execution_not_accepted' : null,
+    fullRuntimeProofAccepted ? null : 'full_runtime_proof_not_accepted',
+    firewallAccepted ? null : 'cpu_gpu_firewall_not_proven',
+    appHook.can_satisfy_runtime_proof === true || appHook.canSatisfyRuntimeProof === true
+      ? null
+      : 'app_hook_contract_not_runtime_proof',
+    sameProcess.accepted === true || sameProcess.can_satisfy_runtime_proof === true
+      ? null
+      : 'same_process_runtime_oracle_not_proven',
+    sidecarConsistency.accepted === true || sidecarConsistency.not_applicable === true
+      ? null
+      : 'sidecar_runtime_consistency_not_proven',
+    compile.can_satisfy_runtime_proof === true || compile.canSatisfyRuntimeProof === true
+      ? null
+      : 'compile_bridge_not_linked_to_runtime_proof',
+    preflight.accepted === true || preflight.observed === true ? null : 'runtime_capability_preflight_not_observed',
+  ]);
+  const complete = required && stageMissing.length === 0;
+  const readyForAcceptance =
+    complete
+    && sourceDeltaAccepted
+    && fullRuntimeProofAccepted
+    && firewallAccepted
+    && (sameProcess.accepted === true || sameProcess.can_satisfy_runtime_proof === true)
+    && (sidecarConsistency.accepted === true || sidecarConsistency.not_applicable === true);
+  const evidenceRefs = compactStringList([
+    ...availableEvidenceRefs,
+    sourceDelta.proofId,
+    sourceDelta.proof_id,
+    ...(Array.isArray(sourceDelta.evidenceRefs) ? sourceDelta.evidenceRefs : []),
+    ...(Array.isArray(sourceDelta.evidence_refs) ? sourceDelta.evidence_refs : []),
+    ...(Array.isArray(sidecar.evidenceRefs) ? sidecar.evidenceRefs : []),
+    ...(Array.isArray(sidecar.evidence_refs) ? sidecar.evidence_refs : []),
+    ...(Array.isArray(sameProcess.evidenceRefs) ? sameProcess.evidenceRefs : []),
+    ...(Array.isArray(sameProcess.evidence_refs) ? sameProcess.evidence_refs : []),
+    ...(Array.isArray(nativeBridge.evidenceRefs) ? nativeBridge.evidenceRefs : []),
+    ...(Array.isArray(nativeBridge.evidence_refs) ? nativeBridge.evidence_refs : []),
+    ...(Array.isArray(compile.runtimeEvidenceRefs) ? compile.runtimeEvidenceRefs : []),
+    ...(Array.isArray(compile.runtime_evidence_refs) ? compile.runtime_evidence_refs : []),
+  ]);
+  const contractHash = `sha256:${createHash('sha256').update(stableJson({
+    profileId: CFG.realRocmProfile.id,
+    targetName: CFG.targetName,
+    stageResults,
+    sourceDeltaAccepted,
+    fullRuntimeProofAccepted,
+    firewallAccepted,
+    appHookStatus: appHook.status,
+    sameProcessStatus: sameProcess.status,
+    sidecarStatus: sidecar.status,
+    sidecarConsistencyStatus: sidecarConsistency.status,
+    compileBridgeStatus: compile.status,
+  })).digest('hex')}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    required,
+    complete,
+    accepted: readyForAcceptance,
+    readyForAcceptance,
+    ready_for_acceptance: readyForAcceptance,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    proofAuthority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    proof_authority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    status: readyForAcceptance
+      ? 'runtime_stage_obligations_satisfied'
+      : required
+        ? 'runtime_stage_obligations_unmet'
+        : 'not_required',
+    sourceDeltaExecutionPresent: sourceDeltaPresent,
+    source_delta_execution_present: sourceDeltaPresent,
+    sourceDeltaExecutionAccepted: sourceDeltaAccepted,
+    source_delta_execution_accepted: sourceDeltaAccepted,
+    fullRuntimeProofAccepted,
+    full_runtime_proof_accepted: fullRuntimeProofAccepted,
+    firewallAccepted,
+    firewall_accepted: firewallAccepted,
+    appHookContractStatus: appHook.status ?? null,
+    app_hook_contract_status: appHook.status ?? null,
+    sameProcessRuntimeOracleStatus: sameProcess.status ?? null,
+    same_process_runtime_oracle_status: sameProcess.status ?? null,
+    deviceSidecarContractStatus: sidecar.status ?? null,
+    device_sidecar_contract_status: sidecar.status ?? null,
+    sidecarRuntimeConsistencyStatus: sidecarConsistency.status ?? null,
+    sidecar_runtime_consistency_status: sidecarConsistency.status ?? null,
+    compileBridgeStatus: compile.status ?? null,
+    compile_bridge_status: compile.status ?? null,
+    runtimeEligibilityStatus: eligibility.status ?? null,
+    runtime_eligibility_status: eligibility.status ?? null,
+    runtimeCapabilityPreflightStatus: preflight.status ?? null,
+    runtime_capability_preflight_status: preflight.status ?? null,
+    stageResults,
+    stage_results: stageResults,
+    missingStages: stageMissing.map((stage) => stage.stage),
+    missing_stages: stageMissing.map((stage) => stage.stage),
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash,
+    contract_hash: contractHash,
+  };
+}
+
 function refreshRealRocmRuntimeProofObligationFacets({
   appHookContract = CFG.appHookContract,
   profileProofObligations = report.real_rocm_profile_proof_obligations,
@@ -14341,6 +14595,26 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   report.realRocmSidecarRuntimeConsistency = report.real_rocm_sidecar_runtime_consistency;
   report.evidence.real_rocm_sidecar_runtime_consistency =
     report.real_rocm_sidecar_runtime_consistency;
+  report.real_rocm_runtime_stage_obligations = realRocmRuntimeStageObligationsFacet({
+    sourceDeltaExecution: report.real_rocm_source_delta_execution,
+    deviceSidecarContract: report.real_rocm_device_sidecar_contract,
+    compileBridge: report.real_rocm_compile_bridge,
+    runtimeEligibility: report.real_rocm_runtime_eligibility,
+    appHookContract: report.real_rocm_app_hook_contract,
+    sameProcessRuntimeOracle: report.real_rocm_same_process_runtime_oracle,
+    nativeRuntimeBridge: report.real_rocm_native_runtime_bridge,
+    sidecarRuntimeConsistency: report.real_rocm_sidecar_runtime_consistency,
+    runtimeCapabilityPreflight: report.runtime_capability_preflight,
+    fullRuntimeProof: report.full_runtime_proof,
+    firewallEvidence: report.firewall_evidence,
+    profileProofObligations: report.real_rocm_profile_proof_obligations,
+    availableEvidenceRefs: realRocmAvailableEvidenceRefs,
+  });
+  report.realRocmRuntimeStageObligations = report.real_rocm_runtime_stage_obligations;
+  report.runtimeStageObligations = report.real_rocm_runtime_stage_obligations;
+  report.runtime_stage_obligations = report.real_rocm_runtime_stage_obligations;
+  report.evidence.real_rocm_runtime_stage_obligations =
+    report.real_rocm_runtime_stage_obligations;
   if (report.native_rocm_launch_boundary.observed) {
     record(
       'native ROCm launch boundary refusal facet',
@@ -14421,6 +14695,17 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       ].join(' '),
     );
   }
+  if (report.real_rocm_runtime_stage_obligations.required) {
+    record(
+      'real ROCm runtime stage obligations facet',
+      report.real_rocm_runtime_stage_obligations.accepted ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_runtime_stage_obligations.status}`,
+        `missing_stages=${report.real_rocm_runtime_stage_obligations.missing_stages.join(',') || 'none'}`,
+        `gaps=${report.real_rocm_runtime_stage_obligations.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
   if (hiprtNativeDispatchProof || hiprtNativeOutputProof || hiprtNativeOriginalHostPathProof) {
     record(
       'HIPRT native runtime proof bridge',
@@ -14489,6 +14774,8 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     requireFullRuntimeProof: CFG.requireFullRuntimeProof,
     originalHostPathProof: report.original_host_path_proof,
     fullRuntimeProof: report.full_runtime_proof,
+    realRocmRuntimeStageObligations: report.real_rocm_runtime_stage_obligations,
+    real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
   });
   if (CFG.forceGpuAiDelta) {
     strictProofRows.push(...forcedGpuAiDeltaArtifactGateRows({
@@ -14811,6 +15098,10 @@ async function writeResults() {
     real_rocm_sidecar_runtime_consistency: report.real_rocm_sidecar_runtime_consistency,
     sidecarRuntimeConsistency: report.real_rocm_sidecar_runtime_consistency,
     sidecar_runtime_consistency: report.real_rocm_sidecar_runtime_consistency,
+    realRocmRuntimeStageObligations: report.real_rocm_runtime_stage_obligations,
+    real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+    runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
+    runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
     backendCandidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backend_candidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
     backendEvidence: [
@@ -14914,6 +15205,10 @@ async function writeResults() {
       process_restarted: report.firewall_evidence?.process_restarted,
       targetProgressionLedger: report.target_progression_ledger,
       targetProgressionGates: report.target_progression_gates,
+      realRocmRuntimeStageObligations: report.real_rocm_runtime_stage_obligations,
+      real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+      runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
+      runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
       label: 'real-rocm-runtime-proof',
       visualEvidenceRefs: visualArtifactPaths,
       visualEvidenceArtifacts: capturedVisualEvidenceArtifacts,
@@ -15104,6 +15399,7 @@ async function writeResults() {
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
     `real_rocm_device_sidecar_contract: ${JSON.stringify(report.real_rocm_device_sidecar_contract)}`,
     `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
+    `real_rocm_runtime_stage_obligations: ${JSON.stringify(report.real_rocm_runtime_stage_obligations)}`,
     `model: ${report.model}`,
     `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,

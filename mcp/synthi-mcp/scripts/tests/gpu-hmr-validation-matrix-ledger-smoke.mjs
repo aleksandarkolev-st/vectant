@@ -2935,6 +2935,89 @@ function withNumericComputeEpoch(materials, epoch) {
   return copy;
 }
 
+function realRocmRuntimeStageObligationsFixture(overrides = {}) {
+  const stageProofKinds = {
+    artifact_transport: ['changed_artifact_hash', 'same_process_transport_event', 'loaded_artifact_hash'],
+    epoch_publication: ['published_epoch', 'published_artifact_hash', 'same_process_epoch_event'],
+    dispatch_trace: ['dispatch_id', 'dispatch_epoch', 'dispatch_artifact_hash'],
+    host_identity: ['process_id', 'device_identity', 'context_or_queue_identity'],
+    output_oracle: ['after_dispatch_id', 'output_target_id', 'readback_or_visual_artifact'],
+  };
+  const stageResults = Object.fromEntries(Object.entries(stageProofKinds).map(([stage, proofKinds]) => [
+    stage,
+    {
+      stage,
+      required: true,
+      observed: false,
+      runtimeObserved: false,
+      runtime_observed: false,
+      requiredProofKinds: proofKinds,
+      required_proof_kinds: proofKinds,
+      missingProofKinds: proofKinds,
+      missing_proof_kinds: proofKinds,
+      evidenceRefs: [],
+      evidence_refs: [],
+    },
+  ]));
+  const blockingGaps = Object.entries(stageProofKinds).flatMap(([stage, proofKinds]) => [
+    `${stage}_runtime_observation_missing`,
+    ...proofKinds.map((kind) => `${stage}_${kind}_missing`),
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    required: true,
+    complete: false,
+    accepted: false,
+    readyForAcceptance: false,
+    ready_for_acceptance: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    proofAuthority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    proof_authority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    status: 'runtime_stage_obligations_unmet',
+    sourceDeltaExecutionPresent: true,
+    source_delta_execution_present: true,
+    sourceDeltaExecutionAccepted: true,
+    source_delta_execution_accepted: true,
+    fullRuntimeProofAccepted: false,
+    full_runtime_proof_accepted: false,
+    firewallAccepted: false,
+    firewall_accepted: false,
+    stageResults,
+    stage_results: stageResults,
+    missingStages: Object.keys(stageProofKinds),
+    missing_stages: Object.keys(stageProofKinds),
+    blockingGaps: [
+      ...blockingGaps,
+      'full_runtime_proof_not_accepted',
+      'cpu_gpu_firewall_not_proven',
+      'app_hook_contract_not_runtime_proof',
+      'same_process_runtime_oracle_not_proven',
+      'sidecar_runtime_consistency_not_proven',
+      'compile_bridge_not_linked_to_runtime_proof',
+      'runtime_capability_preflight_not_observed',
+    ],
+    blocking_gaps: [
+      ...blockingGaps,
+      'full_runtime_proof_not_accepted',
+      'cpu_gpu_firewall_not_proven',
+      'app_hook_contract_not_runtime_proof',
+      'same_process_runtime_oracle_not_proven',
+      'sidecar_runtime_consistency_not_proven',
+      'compile_bridge_not_linked_to_runtime_proof',
+      'runtime_capability_preflight_not_observed',
+    ],
+    evidenceRefs: ['real-rocm-source-delta-execution:sha256:fixture'],
+    evidence_refs: ['real-rocm-source-delta-execution:sha256:fixture'],
+    contractHash: hashValue('real-rocm-runtime-stage-obligations-fixture'),
+    contract_hash: hashValue('real-rocm-runtime-stage-obligations-fixture'),
+    ...overrides,
+  };
+}
+
 const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -3119,6 +3202,7 @@ const largeRocmLatestReport = {
     blockingGaps: ['sidecar_runtime_sidecar_observation_missing'],
     blocking_gaps: ['sidecar_runtime_sidecar_observation_missing'],
   },
+  real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligationsFixture(),
   strict_proof_gates: {
     schemaVersion: 'synthi.gpu_hmr.strict_proof_gates.v1',
     name: 'strict runtime proof artifact presence',
@@ -4729,6 +4813,19 @@ assert.equal(largeRocm.realRocmDeviceSidecarContract.status, 'derived_device_sid
 assert.equal(largeRocm.realRocmDeviceSidecarContract.canSatisfyRuntimeProof, false);
 assert.equal(largeRocm.realRocmSidecarRuntimeConsistency.status, 'sidecar_runtime_backend_consistent_not_runtime_proof');
 assert.equal(largeRocm.realRocmSidecarRuntimeConsistency.backendConsistent, true);
+assert.equal(largeRocm.realRocmRuntimeStageObligations.status, 'runtime_stage_obligations_unmet');
+assert.equal(largeRocm.realRocmRuntimeStageObligations.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmRuntimeStageObligationsGate.present, true);
+assert.equal(largeRocm.realRocmRuntimeStageObligationsGate.accepted, false);
+assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
+  'runtime_stage_obligations_not_accepted',
+));
+assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
+  'runtime_stage_obligation_artifact_transport_changed_artifact_hash_missing',
+));
+assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
+  'runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
+));
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
@@ -4748,6 +4845,13 @@ assert.ok(largeRocm.reasons.includes(
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
+));
+assert.ok(largeRocm.reasons.includes('real_rocm_runtime_stage_obligations_not_met'));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_runtime_stage_obligations:runtime_stage_obligation_artifact_transport_changed_artifact_hash_missing',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_runtime_stage_obligations:runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_runtime_capability_preflight:gpu-runtime-array-allocation-unavailable',
@@ -4785,6 +4889,10 @@ assert.ok(largeRocm.openGaps.includes(
 ));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
+));
+assert.ok(largeRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_runtime_stage_obligations:runtime_stage_obligation_dispatch_trace_dispatch_epoch_missing',
 ));
 const retainedRealRocmRows = ledger.rows.filter((row) => row.proofMode === 'real_rocm_repo_validation');
 assert.equal(

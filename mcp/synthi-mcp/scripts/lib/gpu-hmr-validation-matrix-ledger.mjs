@@ -79,6 +79,8 @@ const REAL_ROCM_SIDECAR_RUNTIME_CONSISTENCY_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_sidecar_runtime_consistency.v1';
 const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
+const REAL_ROCM_RUNTIME_STAGE_OBLIGATIONS_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
   'profile_runtime_profile',
   'source_derived_profile',
@@ -3057,6 +3059,99 @@ function realRocmSidecarRuntimeConsistencyGate(input = {}) {
     schemaVersion,
     schema_version: schemaVersion,
     status: status ?? null,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function realRocmRuntimeStageObligationsGate(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      status: null,
+      required: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const status = firstText(facet.status, facet.reason);
+  const required = firstBool(facet.required) === true;
+  const acceptedFlag = firstBool(
+    facet.accepted,
+    facet.readyForAcceptance,
+    facet.ready_for_acceptance,
+  );
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const stageResults = compactObject(facet.stageResults ?? facet.stage_results);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const missingStages = compactStringList([
+    ...(Array.isArray(facet.missingStages) ? facet.missingStages : []),
+    ...(Array.isArray(facet.missing_stages) ? facet.missing_stages : []),
+  ]);
+  const stageFailedGates = REAL_ROCM_APP_HOOK_REQUIRED_STAGES.flatMap((stageName) => {
+    const camelStage = stageName.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    const stage = compactObject(stageResults[stageName] ?? stageResults[camelStage]);
+    const stagePresent = Object.keys(stage).length > 0;
+    const observed = firstBool(stage.observed, stage.runtimeObserved, stage.runtime_observed);
+    const requiredProofKinds = compactStringList([
+      ...(Array.isArray(stage.requiredProofKinds) ? stage.requiredProofKinds : []),
+      ...(Array.isArray(stage.required_proof_kinds) ? stage.required_proof_kinds : []),
+    ]);
+    const missingProofKinds = compactStringList([
+      ...(Array.isArray(stage.missingProofKinds) ? stage.missingProofKinds : []),
+      ...(Array.isArray(stage.missing_proof_kinds) ? stage.missing_proof_kinds : []),
+    ]);
+    return compactStringList([
+      !stagePresent ? `runtime_stage_obligation_${stageName}_missing` : null,
+      stagePresent && requiredProofKinds.length === 0
+        ? `runtime_stage_obligation_${stageName}_proof_kinds_missing`
+        : null,
+      stagePresent && observed !== true
+        ? `runtime_stage_obligation_${stageName}_not_observed`
+        : null,
+      ...missingProofKinds.map((kind) =>
+        `runtime_stage_obligation_${stageName}_${kind}_missing`
+      ),
+    ]);
+  });
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'runtime_stage_obligations_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_RUNTIME_STAGE_OBLIGATIONS_SCHEMA_VERSION
+      ? 'runtime_stage_obligations_schema_unknown'
+      : null,
+    required && acceptedFlag !== true ? 'runtime_stage_obligations_not_accepted' : null,
+    canSatisfyRuntimeProof === true ? 'runtime_stage_obligations_claimed_runtime_authority' : null,
+    proofAuthority === 'derived_runtime_stage_obligation_ledger_not_runtime_proof'
+      ? null
+      : 'runtime_stage_obligations_authority_unknown',
+    required && Object.keys(stageResults).length === 0 ? 'runtime_stage_obligations_stage_results_missing' : null,
+    ...stageFailedGates,
+    ...blockingGaps,
+  ]);
+  return {
+    present: true,
+    required,
+    accepted: !required || failedGates.length === 0,
+    status: status ?? null,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    missingStages,
+    missing_stages: missingStages,
     blockingGaps,
     blocking_gaps: blockingGaps,
     failedGates,
@@ -8469,6 +8564,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.real_rocm_compile_bridge
     ?? runtimeProofArtifact.realRocmCompileBridge,
   );
+  const realRocmRuntimeStageObligations = compactObject(
+    json.real_rocm_runtime_stage_obligations
+    ?? json.realRocmRuntimeStageObligations
+    ?? json.runtime_stage_obligations
+    ?? json.runtimeStageObligations
+    ?? summary.real_rocm_runtime_stage_obligations
+    ?? summary.realRocmRuntimeStageObligations
+    ?? summary.runtime_stage_obligations
+    ?? summary.runtimeStageObligations
+    ?? runtimeProofArtifact.real_rocm_runtime_stage_obligations
+    ?? runtimeProofArtifact.realRocmRuntimeStageObligations
+    ?? runtimeProofArtifact.runtime_stage_obligations
+    ?? runtimeProofArtifact.runtimeStageObligations,
+  );
   const realRocmRuntimeCapabilityPreflight = realRocmRuntimeCapabilityPreflightFacet(
     runtimeCapabilityPreflightFromSources({
       json,
@@ -8647,6 +8756,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmSidecarRuntimeConsistency,
   );
   const sidecarRuntimeConsistencyAccepted = sidecarRuntimeConsistencyGate.accepted === true;
+  const runtimeStageObligationsGate = realRocmRuntimeStageObligationsGate(
+    realRocmRuntimeStageObligations,
+  );
+  const runtimeStageObligationsAccepted =
+    runtimeStageObligationsGate.present !== true
+    || runtimeStageObligationsGate.accepted === true;
   const profileProofObligationsAccepted = realRocmProfileProofObligationsGaps.length === 0;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
@@ -8726,6 +8841,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && sameProcessRuntimeOracleAccepted === true
     && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
+    && runtimeStageObligationsAccepted === true
     && profileProofObligationsAccepted === true
     && targetProgressionGateFailures.length === 0
     && realRocmFirewall.accepted === true
@@ -8919,6 +9035,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_sidecar_runtime_consistency_gate: sidecarRuntimeConsistencyGate,
     realRocmCompileBridge,
     real_rocm_compile_bridge: realRocmCompileBridge,
+    realRocmRuntimeStageObligations,
+    real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligations,
+    runtimeStageObligations: realRocmRuntimeStageObligations,
+    runtime_stage_obligations: realRocmRuntimeStageObligations,
+    realRocmRuntimeStageObligationsGate: runtimeStageObligationsGate,
+    real_rocm_runtime_stage_obligations_gate: runtimeStageObligationsGate,
     realRocmRuntimeCapabilityPreflight,
     real_rocm_runtime_capability_preflight: realRocmRuntimeCapabilityPreflight,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
@@ -8960,6 +9082,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ) : []),
       realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
+      ...runtimeStageObligationsGate.failedGates.map((gap) =>
+        `real_rocm_runtime_stage_obligations:${gap}`
+      ),
       realRocmRuntimeCapabilityPreflightReason
         ? `real_rocm_runtime_capability_preflight:${realRocmRuntimeCapabilityPreflightReason}`
         : null,
@@ -8979,6 +9104,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
       ...sidecarRuntimeConsistencyGate.failedGates.map((failure) =>
         `real_rocm_sidecar_runtime_consistency:${failure}`
+      ),
+      runtimeStageObligationsAccepted ? null : 'real_rocm_runtime_stage_obligations_not_met',
+      ...runtimeStageObligationsGate.failedGates.map((failure) =>
+        `real_rocm_runtime_stage_obligations:${failure}`
       ),
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_not_proven',
@@ -9024,6 +9153,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
+      runtimeStageObligationsAccepted ? null : 'real_rocm_runtime_stage_obligations_required',
+      ...runtimeStageObligationsGate.failedGates.map((failure) =>
+        `real_rocm_runtime_stage_obligations:${failure}`
+      ),
       ...realRocmRuntimeCapabilityPreflightGaps.map((gap) =>
         `real_rocm_runtime_capability_preflight:${gap}`
       ),
