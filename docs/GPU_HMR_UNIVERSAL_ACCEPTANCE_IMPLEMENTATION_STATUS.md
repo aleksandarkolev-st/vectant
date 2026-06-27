@@ -19,6 +19,22 @@ verification: npm --prefix mcp/synthi-mcp run proof:artifact-cas:self-check -> p
 verification: npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
 ```
 
+Async visual proof worker hardening was added without project-specific branches:
+
+```text
+commit: d9c0aeb05 fix(gpu-hmr): bind async visual worker identity
+commit: 708b1a3b4 fix(gpu-hmr): guard roi early exits with tile evidence
+worker identity gate: accepted-looking async visual worker results now require proof_ready, off-main-thread execution, and a matching sha256 worker executable hash
+ROI/tile gate: unchanged ROI hashes can skip full-frame diff only when tile hashes prove no changed tiles; outside-ROI or ambiguous tile changes force full-frame visual proof
+not proof by itself: async worker events, CAS locators, ROI hashes, and tile hashes still remain acceptedForGpuHmr=false and gpuHmrSuccess=false unless the strict runtime ledger closes
+verification: npm --prefix mcp/synthi-mcp run proof:visual-proof-worker:self-check -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
+verification: npm --prefix mcp/synthi-mcp run build -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a wider timeout; proof id gpu-validation-matrix-ledger:sha256:4c72bbb92788e13681d9f6fee77f15b8f85fd13dd3c3cb27c42ed5626c3369f4
+```
+
+The proof plan now tracks source-first uncompiled project validation as the next user-facing axis. The intended test path starts from an uncompiled source tree/workspace, lets AI propose GPU split candidates, compiles through the normal backend toolchain, publishes a runtime epoch, and requires post-epoch visual or compute proof. Fixture/profile runs can only serve as smoke coverage when they exercise the same generic source-first machinery; fixture names, target strings, and profile IDs remain non-authoritative.
+
 Fresh large ROCm ML validation was started against the explicit MIOpen profile, not a hardcoded target branch:
 
 ```text

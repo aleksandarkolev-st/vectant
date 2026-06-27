@@ -774,6 +774,8 @@ Implementation checkpoint, 2026-06-27:
 
 - A reusable async visual proof bundle now writes before/after/diff image artifacts through generic CAS manifests, runs visual decode/diff work in the existing visual proof worker, records tile/ROI-capable async metrics, and emits visual transport evidence as non-authoritative support metadata.
 - The WebGPU runtime visual proof runner uses that bundle for real browser-captured frame proof instead of doing the full image diff in the runner path. The strict ledger still accepts only the existing visual oracle artifacts, epoch/dispatch proof, deterministic visual controls, process continuity, and runtime proof artifact gates.
+- The async visual proof worker now records a content-addressed worker executable hash and executor identity. The parent runner rejects accepted-looking worker results when the worker proof-ready event is missing, the worker is not proven off the main thread, or the worker executable hash is missing or mismatched.
+- ROI early exit is guarded by tile evidence. An unchanged ROI can skip full-frame diff only when tile hashes show no changed tiles; if changed tiles appear outside or ambiguously around the ROI, the worker falls back to full-frame visual proof instead of treating the ROI hash as sufficient.
 - CAS transport evidence, ROI/tile hashes, and worker proof-ready events remain `acceptedForGpuHmr=false` support evidence by themselves. They can reduce hot-path blocking and improve auditability, but cannot authorize GPU HMR success without the strict proof ledger.
 
 ## 12. Validation Matrix
@@ -918,6 +920,21 @@ Implementation order:
 4. Add CAS/shared-volume manifests for frames, raw readbacks, code objects, and proof cards.
 5. Keep serialized base64 and `docker cp` paths as measured fallbacks, not the preferred fast path.
 6. Require validation matrix self-checks for forged ROI hashes, stale tiles, missing CAS bytes, mismatched byte lengths, wrong worker executable hashes, and proof-ready events without ledger output.
+
+### Step 12: Source-first uncompiled project validation
+
+After the scoped profile/runtime rows and fast-path proof worker gates are stable, test the user-facing path from source/project input instead of precompiled device artifacts.
+
+Required behavior:
+
+1. Ingest an uncompiled project or workspace source tree without assuming a pre-existing generated `.hip`, WGSL, HSACO, shader module, or code object.
+2. Let the AI split/proposal path derive GPU candidates, but keep every AI field as a hint until verified by compiler, build metadata, runtime trace, and output oracle evidence.
+3. Compile the proposed smallest safe GPU artifact through the normal backend toolchain.
+4. Publish a real runtime epoch and prove post-epoch output with visual or compute oracle artifacts.
+5. Preserve generic failure modes when the source tree lacks enough GPU evidence, build metadata, backend runtime, app hook, or output oracle proof.
+6. Record visual proof when the source-first path produces a visual target; logs alone cannot satisfy this milestone.
+
+This step must remain project-agnostic. Fixture-backed tests may be used as smoke coverage only when they exercise the same source-first ingestion, split, compile, runtime, and oracle machinery that an arbitrary user project would use. A fixture name, profile ID, or target string must never satisfy acceptance gates.
 
 ## 15. Stronger Definition Of Done
 
