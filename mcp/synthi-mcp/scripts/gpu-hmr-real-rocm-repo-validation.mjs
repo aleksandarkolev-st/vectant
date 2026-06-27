@@ -1297,6 +1297,10 @@ function compactKnownStringList(values = []) {
   });
 }
 
+function escapeRegex(value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function cmakeMissingDependencyTokens(text) {
   const combined = String(text ?? '');
   const findPackageMissingGroups = [...combined.matchAll(
@@ -10098,6 +10102,243 @@ function realRocmDeviceSidecarContractFacet({
   };
 }
 
+function realRocmCompileCommandEntries(buildMetadata = {}) {
+  try {
+    const raw = buildMetadata.compileCommandsJson ?? buildMetadata.compile_commands_json ?? '[]';
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function compileCommandArgv(entry = {}) {
+  if (Array.isArray(entry.arguments)) {
+    return entry.arguments.map((arg) => String(arg ?? '')).filter(Boolean);
+  }
+  const command = String(entry.command ?? '');
+  if (!command.trim()) return [];
+  const args = [];
+  const tokenPattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+  let match;
+  while ((match = tokenPattern.exec(command)) !== null) {
+    args.push(String(match[1] ?? match[2] ?? match[3] ?? '').replace(/\\(["'])/g, '$1'));
+  }
+  return args;
+}
+
+function cppStandardFromBuildMetadata(buildMetadata = {}, sourcePath = '') {
+  const normalizedSource = String(sourcePath ?? '').replace(/\\/g, '/');
+  const entries = realRocmCompileCommandEntries(buildMetadata);
+  const ordered = [
+    ...entries.filter((entry) => repoRelativePath(entry?.file) === normalizedSource),
+    ...entries.filter((entry) => repoRelativePath(entry?.file) !== normalizedSource),
+  ];
+  for (const entry of ordered) {
+    const argv = compileCommandArgv(entry);
+    for (let index = 0; index < argv.length; index += 1) {
+      const arg = argv[index];
+      if (arg === '-std' || arg === '--std') {
+        const value = argv[index + 1];
+        if (/^(?:gnu|c)\+\+\d/.test(value ?? '')) return value;
+      }
+      const match = arg.match(/^(?:-std=|--std=)((?:gnu|c)\+\+\d[^,\s]*)$/);
+      if (match) return match[1];
+    }
+  }
+  return 'c++17';
+}
+
+function realRocmHipDeviceSourceCandidates({ files = [], buildMetadata = {}, sidecarContract = {} } = {}) {
+  const fileMap = new Map(files.map((file) => [file.path, file.content]));
+  const sourcePaths = compactStringList([
+    ...(Array.isArray(sidecarContract.effectiveSourcePaths) ? sidecarContract.effectiveSourcePaths : []),
+    ...(Array.isArray(sidecarContract.effective_source_paths) ? sidecarContract.effective_source_paths : []),
+    ...(sidecarContract.artifactIdentity?.source_paths ?? []),
+    ...(sidecarContract.artifact_identity?.source_paths ?? []),
+    CFG.entryFile,
+  ]);
+  const entryPoints = compactKnownStringList([
+    ...(sidecarContract.artifactIdentity?.entry_points ?? []),
+    ...(sidecarContract.artifact_identity?.entry_points ?? []),
+    ...CFG.nativeLaunchSymbols,
+  ]);
+  return compactStringList(sourcePaths)
+    .filter((sourcePath) => sourceDialectFromPath(sourcePath) === 'hip_cpp')
+    .map((sourcePath) => {
+      const content = fileMap.get(sourcePath) ?? '';
+      const coverage = realRocmDeviceSidecarCoverage(files, buildMetadata, sourcePath);
+      const declaresKernel =
+        /\b(__global__|GLOBAL_KERNEL_SIGNATURE|KERNEL_SIGNATURE|CUDA_KERNEL_SIGNATURE|HIP_KERNEL_SIGNATURE)\b/.test(content)
+        || entryPoints.some((entryPoint) => new RegExp(`\\b${escapeRegex(entryPoint)}\\b`).test(content));
+      return {
+        sourcePath,
+        contentBytes: byteLength(content),
+        coverage,
+        declaresKernel,
+      };
+    });
+}
+
+function includeFlagsFromBuildMetadata(buildMetadata = {}) {
+  const includeDirs = compactStringList([
+    ...(Array.isArray(buildMetadata.targetIncludeDirs) ? buildMetadata.targetIncludeDirs : []),
+    ...(Array.isArray(buildMetadata.target_include_dirs) ? buildMetadata.target_include_dirs : []),
+  ])
+    .map((dir) => dir.replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter((dir) => dir && dir !== '.' && !path.posix.isAbsolute(dir) && !dir.startsWith('../'));
+  return compactStringList(includeDirs).map((dir) => `-I${dir}`);
+}
+
+function realRocmDerivedCompileManifestFacet({
+  files = [],
+  buildMetadata = {},
+  sidecarContract = {},
+} = {}) {
+  const blockingGaps = [];
+  const backend = sidecarContract.backend ?? 'unknown';
+  const artifactIdentity = sidecarContract.artifactIdentity ?? sidecarContract.artifact_identity ?? {};
+  const candidates = realRocmHipDeviceSourceCandidates({ files, buildMetadata, sidecarContract });
+  const coveredKernelCandidates = candidates.filter(
+    (candidate) => candidate.coverage?.covered === true && candidate.declaresKernel,
+  );
+  const preferred = coveredKernelCandidates.filter((candidate) => candidate.sourcePath === CFG.entryFile);
+  const selected = preferred.length === 1
+    ? preferred[0]
+    : coveredKernelCandidates.length === 1
+      ? coveredKernelCandidates[0]
+      : null;
+  if (backend !== 'hip') {
+    blockingGaps.push(`real_rocm_compile_manifest_backend_not_hip:${backend}`);
+  }
+  if (candidates.length === 0) {
+    blockingGaps.push('real_rocm_compile_manifest_hip_device_source_missing');
+  }
+  if (coveredKernelCandidates.length === 0) {
+    blockingGaps.push('real_rocm_compile_manifest_kernel_entry_not_covered');
+  }
+  if (coveredKernelCandidates.length > 1 && preferred.length !== 1) {
+    blockingGaps.push('real_rocm_compile_manifest_device_source_ambiguous');
+  }
+  const compileTarget = artifactIdentity.compile_target ?? CFG.gpuArch;
+  if (!compileTarget) {
+    blockingGaps.push('real_rocm_compile_manifest_compile_target_missing');
+  }
+  const entryPoints = compactKnownStringList([
+    ...(Array.isArray(artifactIdentity.entry_points) ? artifactIdentity.entry_points : []),
+    ...CFG.nativeLaunchSymbols,
+  ]);
+  if (entryPoints.length === 0) {
+    blockingGaps.push('real_rocm_compile_manifest_entry_points_missing');
+  }
+  const accepted =
+    blockingGaps.length === 0
+    && selected !== null
+    && sidecarContract.contractEvidenceComplete === true;
+  const std = selected ? cppStandardFromBuildMetadata(buildMetadata, selected.sourcePath) : 'c++17';
+  const deviceFlags = compactStringList([
+    `-std=${std}`,
+    ...includeFlagsFromBuildMetadata(buildMetadata),
+  ]);
+  const sourceFiles = compactStringList([
+    selected?.sourcePath,
+    ...(Array.isArray(buildMetadata.targetSourcePaths) ? buildMetadata.targetSourcePaths : []),
+    ...(Array.isArray(buildMetadata.buildDependencySourcePaths) ? buildMetadata.buildDependencySourcePaths : []),
+  ]);
+  const manifest = accepted ? {
+    compiler: 'g++',
+    std,
+    common_flags: [],
+    core_link_flags: [],
+    gui_link_flags: [],
+    shared_link_flags: [],
+    runner_link_flags: ['-ldl'],
+    files: sourceFiles,
+    module_files: {
+      device: selected.sourcePath,
+    },
+    system_packages: [],
+    hot_reload_mode: 'swap',
+    confidence: {
+      overall: 'medium',
+      runner_synthesis: 'medium',
+      link_flags: 'medium',
+      notes: 'Derived from CMake build metadata and verified ROCm sidecar source coverage; runtime proof gates still decide GPU HMR success.',
+    },
+    gpu: {
+      vendor: 'rocm',
+      device_compiler: 'hipcc',
+      arch: compactStringList([compileTarget]),
+      device_flags: deviceFlags,
+      runtime_libs: ['amdhip64'],
+      snapshot_mode: 'auto',
+      fatbin_strategy: 'sidecar_module',
+      device_roles: [
+        {
+          id: 'device.primary',
+          path: selected.sourcePath,
+          source_files: sourceFiles,
+          compiler: 'hipcc',
+          arch: compactStringList([compileTarget]),
+          requires_rdc: false,
+        },
+      ],
+      device_link: {
+        requires_rdc: false,
+        affected_roles: ['device.primary'],
+        supports_incremental: true,
+      },
+      generated_split_granularity: {
+        schemaVersion: 'synthi.gpu_hmr.generated_split_granularity.v1',
+        acceptedClaim: 'device_translation_unit_candidate',
+        hmrReloadScope: 'device_translation_unit',
+        smallestSafeFissionIslandProven: false,
+        proofAuthority: 'build_metadata_candidate_only_not_runtime_proof',
+      },
+    },
+  } : null;
+  const manifestHash = manifest
+    ? `sha256:${createHash('sha256').update(stableJson(manifest)).digest('hex')}`
+    : null;
+  const evidenceRefs = compactStringList([
+    `profile:${CFG.realRocmProfile.id}`,
+    `build-metadata:target:${CFG.targetName}`,
+    selected ? `build-metadata:device-source:${selected.sourcePath}` : null,
+    selected?.coverage?.reason ? `build-metadata:coverage:${selected.sourcePath}:${selected.coverage.reason}` : null,
+    manifestHash ? `compile-manifest:${manifestHash}` : null,
+  ]);
+  const facet = {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_derived_compile_manifest.v1',
+    accepted,
+    status: accepted
+      ? 'derived_compile_manifest_candidate'
+      : 'derived_compile_manifest_unavailable',
+    proofAuthority: 'build_metadata_compile_input_only_not_runtime_proof',
+    proof_authority: 'build_metadata_compile_input_only_not_runtime_proof',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    selectedDeviceSource: selected?.sourcePath ?? null,
+    selected_device_source: selected?.sourcePath ?? null,
+    candidateDeviceSources: candidates,
+    candidate_device_sources: candidates,
+    manifestHash,
+    manifest_hash: manifestHash,
+    deviceFlags,
+    device_flags: deviceFlags,
+    entryPoints,
+    entry_points: entryPoints,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+  return { facet, manifest };
+}
+
+function realRocmCompileManifestRequestArgs(derivedCompileManifest) {
+  return derivedCompileManifest ? { compile_manifest: derivedCompileManifest } : {};
+}
+
 function runtimeBackendHintsFromCmakeArgs(cmakeArgs = []) {
   const hints = [];
   for (const rawArg of Array.isArray(cmakeArgs) ? cmakeArgs : []) {
@@ -13665,6 +13906,37 @@ int main()
     files: sidecarSelfCheckFiles,
     buildMetadata: sidecarSelfCheckMetadata,
   });
+  const sidecarSelfCheckCompileTarget = CFG.gpuArch || 'gfx1201';
+  const manifestSelfCheckDevicePath = 'src/self_check_kernel.hip';
+  const manifestSelfCheckFiles = [
+    {
+      path: manifestSelfCheckDevicePath,
+      content: '#include "self_check_kernel_config.h"\nextern "C" __global__ void self_check_kernel() {}\n',
+    },
+    {
+      path: 'src/self_check_kernel_config.h',
+      content: '#define SYNTHI_REAL_ROCM_MANIFEST_SELF_CHECK 1\n',
+    },
+  ];
+  const manifestSelfCheckMetadata = {
+    compileCommandSourcePaths: [manifestSelfCheckDevicePath],
+    targetSourcePaths: [manifestSelfCheckDevicePath],
+    buildDependencySourcePaths: ['src/self_check_kernel_config.h'],
+    targetIncludeDirs: ['src'],
+  };
+  const sidecarCompileManifestContractFacet = realRocmDeviceSidecarContractFacet({
+    files: manifestSelfCheckFiles,
+    buildMetadata: manifestSelfCheckMetadata,
+    declaredContractOverride: {
+      declared: true,
+      sourcePaths: [manifestSelfCheckDevicePath],
+      artifactKind: 'hsaco',
+      entryPoints: ['self_check_kernel'],
+      compileTarget: sidecarSelfCheckCompileTarget,
+      compiler: 'hipcc',
+      evidenceRefs: ['evidence:self-check-sidecar-compile-manifest-contract'],
+    },
+  });
   const sidecarRuntimeProofFacet = realRocmDeviceSidecarContractFacet({
     files: sidecarSelfCheckFiles,
     buildMetadata: sidecarSelfCheckMetadata,
@@ -13687,20 +13959,101 @@ int main()
       evidenceRefs: ['gpu-runtime-proof:sha256:self-check-sidecar'],
     },
   });
-  if (
-    sidecarFacet.canSatisfyRuntimeProof !== false
-    || sidecarFacet.can_satisfy_runtime_proof !== false
-    || !sidecarFacet.source_coverage_complete
-    || !sidecarFacet.contract_hash?.startsWith('sha256:')
-    || !sidecarFacet.evidence_refs.some((ref) => ref.startsWith('build-metadata:coverage:'))
-    || !sidecarFacet.blocking_gaps.includes('device_sidecar_artifact_transport_runtime_not_observed')
-    || !sidecarFacet.blocking_gaps.includes('device_sidecar_dispatch_trace_runtime_not_observed')
-    || sidecarRuntimeProofFacet.status !== 'device_sidecar_runtime_proof_evidence'
-    || sidecarRuntimeProofFacet.can_satisfy_runtime_proof !== true
-    || sidecarRuntimeProofFacet.runtime_observation_complete !== true
-    || sidecarRuntimeProofFacet.blocking_gaps.length !== 0
-  ) {
-    throw new Error('real ROCm device sidecar contract self-check failed');
+  const derivedCompileManifestSelfCheck = realRocmDerivedCompileManifestFacet({
+    files: manifestSelfCheckFiles,
+    buildMetadata: manifestSelfCheckMetadata,
+    sidecarContract: sidecarCompileManifestContractFacet,
+  });
+  const unsupportedOpenClCompileManifestSelfCheck = realRocmDerivedCompileManifestFacet({
+    files: [
+      { path: 'src/kernel.cl', content: '__kernel void self_check_kernel() {}\n' },
+    ],
+    buildMetadata: {
+      compileCommandSourcePaths: ['src/kernel.cl'],
+      targetSourcePaths: ['src/kernel.cl'],
+      buildDependencySourcePaths: [],
+      targetIncludeDirs: [],
+    },
+    sidecarContract: {
+      backend: 'opencl',
+      contractEvidenceComplete: true,
+      contract_evidence_complete: true,
+      effectiveSourcePaths: ['src/kernel.cl'],
+      effective_source_paths: ['src/kernel.cl'],
+      artifactIdentity: {
+        source_paths: ['src/kernel.cl'],
+        artifact_kind: 'opencl_program',
+        entry_points: ['self_check_kernel'],
+        compile_target: 'generic',
+        compiler: 'clang',
+      },
+      artifact_identity: {
+        source_paths: ['src/kernel.cl'],
+        artifact_kind: 'opencl_program',
+        entry_points: ['self_check_kernel'],
+        compile_target: 'generic',
+        compiler: 'clang',
+      },
+    },
+  });
+  const sidecarSelfCheckFailures = compactStringList([
+    sidecarFacet.canSatisfyRuntimeProof !== false ? 'sidecar_can_satisfy_runtime_proof_camel' : null,
+    sidecarFacet.can_satisfy_runtime_proof !== false ? 'sidecar_can_satisfy_runtime_proof_snake' : null,
+    !sidecarFacet.source_coverage_complete ? 'sidecar_source_coverage_incomplete' : null,
+    !sidecarFacet.contract_hash?.startsWith('sha256:') ? 'sidecar_contract_hash_missing' : null,
+    !sidecarFacet.evidence_refs.some((ref) => ref.startsWith('build-metadata:coverage:'))
+      ? 'sidecar_build_metadata_evidence_missing'
+      : null,
+    !sidecarFacet.blocking_gaps.includes('device_sidecar_artifact_transport_runtime_not_observed')
+      ? 'sidecar_artifact_transport_gap_missing'
+      : null,
+    !sidecarFacet.blocking_gaps.includes('device_sidecar_dispatch_trace_runtime_not_observed')
+      ? 'sidecar_dispatch_trace_gap_missing'
+      : null,
+    sidecarRuntimeProofFacet.status !== 'device_sidecar_runtime_proof_evidence'
+      ? 'runtime_sidecar_status_not_evidence'
+      : null,
+    sidecarRuntimeProofFacet.can_satisfy_runtime_proof !== true
+      ? 'runtime_sidecar_can_satisfy_false'
+      : null,
+    sidecarRuntimeProofFacet.runtime_observation_complete !== true
+      ? 'runtime_sidecar_observation_incomplete'
+      : null,
+    sidecarRuntimeProofFacet.blocking_gaps.length !== 0 ? 'runtime_sidecar_blocking_gaps_present' : null,
+    derivedCompileManifestSelfCheck.facet.accepted !== true ? 'derived_manifest_not_accepted' : null,
+    derivedCompileManifestSelfCheck.facet.can_satisfy_runtime_proof !== false
+      ? 'derived_manifest_claims_runtime_proof'
+      : null,
+    derivedCompileManifestSelfCheck.facet.selected_device_source !== manifestSelfCheckDevicePath
+      ? 'derived_manifest_selected_device_source_mismatch'
+      : null,
+    derivedCompileManifestSelfCheck.manifest?.module_files?.device !== manifestSelfCheckDevicePath
+      ? 'derived_manifest_module_file_device_mismatch'
+      : null,
+    derivedCompileManifestSelfCheck.manifest?.gpu?.vendor !== 'rocm'
+      ? 'derived_manifest_vendor_not_rocm'
+      : null,
+    derivedCompileManifestSelfCheck.manifest?.gpu?.device_compiler !== 'hipcc'
+      ? 'derived_manifest_compiler_not_hipcc'
+      : null,
+    derivedCompileManifestSelfCheck.manifest?.gpu?.arch?.[0] !== sidecarSelfCheckCompileTarget
+      ? 'derived_manifest_arch_mismatch'
+      : null,
+    !derivedCompileManifestSelfCheck.facet.manifest_hash?.startsWith('sha256:')
+      ? 'derived_manifest_hash_missing'
+      : null,
+    unsupportedOpenClCompileManifestSelfCheck.facet.accepted !== false
+      ? 'opencl_manifest_unexpectedly_accepted'
+      : null,
+    unsupportedOpenClCompileManifestSelfCheck.manifest !== null
+      ? 'opencl_manifest_unexpectedly_materialized'
+      : null,
+    !unsupportedOpenClCompileManifestSelfCheck.facet.blocking_gaps.some((gap) =>
+      gap.startsWith('real_rocm_compile_manifest_backend_not_hip:opencl')
+    ) ? 'opencl_manifest_backend_gap_missing' : null,
+  ]);
+  if (sidecarSelfCheckFailures.length > 0) {
+    throw new Error(`real ROCm device sidecar contract self-check failed: ${sidecarSelfCheckFailures.join(',')}`);
   }
   const sidecarRuntimeConsistent = realRocmSidecarRuntimeConsistencyFacet({
     deviceSidecarContract: sidecarFacet,
@@ -15515,6 +15868,15 @@ async function run() {
   });
   report.realRocmDeviceSidecarContract = report.real_rocm_device_sidecar_contract;
   report.evidence.real_rocm_device_sidecar_contract = report.real_rocm_device_sidecar_contract;
+  const derivedCompileManifest = realRocmDerivedCompileManifestFacet({
+    files,
+    buildMetadata,
+    sidecarContract: report.real_rocm_device_sidecar_contract,
+  });
+  const realRocmCompileManifest = derivedCompileManifest.manifest;
+  report.real_rocm_derived_compile_manifest = derivedCompileManifest.facet;
+  report.realRocmDerivedCompileManifest = derivedCompileManifest.facet;
+  report.evidence.real_rocm_derived_compile_manifest = derivedCompileManifest.facet;
   record(
     'real ROCm device sidecar contract facet',
     'warn',
@@ -15523,6 +15885,16 @@ async function run() {
       `backend=${report.real_rocm_device_sidecar_contract.backend}`,
       `sources=${report.real_rocm_device_sidecar_contract.effective_source_paths.length}`,
       `gaps=${report.real_rocm_device_sidecar_contract.blocking_gaps.join(',') || 'none'}`,
+    ].join(' '),
+  );
+  record(
+    'real ROCm derived compile manifest facet',
+    realRocmCompileManifest ? 'pass' : 'warn',
+    [
+      `status=${derivedCompileManifest.facet.status}`,
+      `device=${derivedCompileManifest.facet.selected_device_source ?? 'none'}`,
+      `manifest=${derivedCompileManifest.facet.manifest_hash ?? 'none'}`,
+      `gaps=${derivedCompileManifest.facet.blocking_gaps.join(',') || 'none'}`,
     ].join(' '),
   );
   const primary = files.find((file) => file.path === CFG.entryFile);
@@ -15544,6 +15916,7 @@ async function run() {
     filename: CFG.entryFile,
     source: primary.content,
     ...compileProjectionRequestArgs(firstAdditionalFiles, 'first_real_repo_ai_split_compile'),
+    ...realRocmCompileManifestRequestArgs(realRocmCompileManifest),
     is_gui: CFG.renderPreview,
     use_ai_split: true,
     bypass_ai_split_cache: CFG.requireFreshAiSplit,
@@ -15585,16 +15958,23 @@ async function run() {
     markSourceDeltaWriteObserved(primaryDeltaPhase);
     updateFileContent(CFG.deltaFile, edited);
     markSourceDeltaCompileAttempted(primaryDeltaPhase);
+    const hmrRequestDeviceSource = realRocmCompileManifest?.module_files?.device ?? null;
+    const hmrRequestFilename = hmrRequestDeviceSource || CFG.deltaFile;
+    const hmrRequestSource = hmrRequestDeviceSource
+      ? contentForPath(hmrRequestDeviceSource)
+      : edited;
     hmrCompileResult = await compileViaMcp({
       language: 'cpp',
-      filename: CFG.deltaFile,
-      source: edited,
+      filename: hmrRequestFilename,
+      source: hmrRequestSource,
       ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
+      ...realRocmCompileManifestRequestArgs(realRocmCompileManifest),
       is_gui: CFG.renderPreview,
-      use_ai_split: true,
+      use_ai_split: !realRocmCompileManifest,
       bypass_ai_split_cache: CFG.requireFreshAiSplit,
       user_requested_ai: false,
-      force_gpu_ai_delta: CFG.forceGpuAiDelta,
+      user_requested_deterministic: Boolean(realRocmCompileManifest),
+      force_gpu_ai_delta: realRocmCompileManifest ? false : CFG.forceGpuAiDelta,
       prefer_gpu_pipeline: true,
       gpu_mode: CFG.gpuMode,
       gpu_arch: CFG.gpuArch,
@@ -15658,16 +16038,23 @@ async function run() {
       markSourceDeltaWriteObserved(extraDeltaPhase);
       updateFileContent(delta.file, editedSource);
       markSourceDeltaCompileAttempted(extraDeltaPhase);
+      const extraRequestDeviceSource = realRocmCompileManifest?.module_files?.device ?? null;
+      const extraRequestFilename = extraRequestDeviceSource || delta.file;
+      const extraRequestSource = extraRequestDeviceSource
+        ? contentForPath(extraRequestDeviceSource)
+        : editedSource;
       extraCompileResult = await compileViaMcp({
         language: 'cpp',
-        filename: delta.file,
-        source: editedSource,
+        filename: extraRequestFilename,
+        source: extraRequestSource,
         ...compileProjectionRequestArgs(additionalFiles, phaseName),
+        ...realRocmCompileManifestRequestArgs(realRocmCompileManifest),
         is_gui: CFG.renderPreview,
-        use_ai_split: true,
+        use_ai_split: !realRocmCompileManifest,
         bypass_ai_split_cache: CFG.requireFreshAiSplit,
         user_requested_ai: false,
-        force_gpu_ai_delta: CFG.forceGpuAiDelta,
+        user_requested_deterministic: Boolean(realRocmCompileManifest),
+        force_gpu_ai_delta: realRocmCompileManifest ? false : CFG.forceGpuAiDelta,
         prefer_gpu_pipeline: true,
         gpu_mode: CFG.gpuMode,
         gpu_arch: CFG.gpuArch,
