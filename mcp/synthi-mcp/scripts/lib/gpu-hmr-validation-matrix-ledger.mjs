@@ -798,7 +798,7 @@ function summarizeAsyncVisualProof(proof) {
     pixelCount: finiteNumber(metrics.pixelCount ?? metrics.pixel_count),
     pixel_count: finiteNumber(metrics.pixelCount ?? metrics.pixel_count),
   };
-  return {
+  const summary = {
     schemaVersion: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
     schema_version: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
     eventType: proof.eventType ?? proof.event_type ?? 'proof_ready',
@@ -895,6 +895,12 @@ function summarizeAsyncVisualProof(proof) {
       : null,
     reasons: Array.isArray(proof.reasons) ? proof.reasons : [],
     gaps: Array.isArray(proof.gaps) ? proof.gaps : [],
+  };
+  const replayHash = `sha256:${sha256Hex(stableJson(summary))}`;
+  return {
+    ...summary,
+    asyncVisualMetricsHash: replayHash,
+    async_visual_metrics_hash: replayHash,
   };
 }
 

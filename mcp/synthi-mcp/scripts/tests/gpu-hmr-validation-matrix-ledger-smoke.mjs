@@ -3511,6 +3511,21 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof
     changedPixelRatio: 0.2,
     meanAbsDelta8bit: 12,
   },
+  asyncVisualMetrics: {
+    accepted: true,
+    acceptedAsAsyncVisualMetrics: true,
+    acceptedForGpuHmr: true,
+    gpuHmrSuccess: true,
+    proofAuthority: 'async_visual_metrics_only',
+    asyncVisualMetricsHash: `sha256:${'a'.repeat(64)}`,
+  },
+  visualArtifactTransportEvidence: {
+    accepted: true,
+    acceptedAsTransportEvidence: true,
+    acceptedForGpuHmr: true,
+    gpuHmrSuccess: true,
+    proofAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
+  },
   proofLedgerQuery: {
     schemaVersion: 'synthi.gpu.hmr.proof_ledger_query.v1',
     proofId: 'gpu-ledger-proof:sha256:forged-query-only',
@@ -3915,6 +3930,14 @@ assert.equal(
 );
 assert.equal(acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr, false);
 assert.equal(acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
+assert.match(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.asyncVisualMetricsHash ?? '',
+  /^sha256:[a-f0-9]{64}$/,
+);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.asyncVisualMetricsHash,
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.async_visual_metrics_hash,
+);
 assert.equal(
   Object.prototype.hasOwnProperty.call(
     acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics ?? {},
@@ -5328,9 +5351,26 @@ assert.equal(forgedWebGpuQueryOnly?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpuQueryOnly.acceptedForGpuHmr, false);
 assert.equal(forgedWebGpuQueryOnly.visual.accepted, true);
 assert.equal(forgedWebGpuQueryOnly.visual.allImagesAreDecodedPng, true);
+assert.match(
+  forgedWebGpuQueryOnly.visual.recomputedVisualPair.asyncVisualMetrics?.asyncVisualMetricsHash ?? '',
+  /^sha256:[a-f0-9]{64}$/,
+);
+assert.notEqual(
+  forgedWebGpuQueryOnly.visual.recomputedVisualPair.asyncVisualMetrics?.asyncVisualMetricsHash,
+  `sha256:${'a'.repeat(64)}`,
+);
+assert.equal(
+  forgedWebGpuQueryOnly.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  forgedWebGpuQueryOnly.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess,
+  false,
+);
 assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
+assert.ok(forgedWebGpuQueryOnly.reasons.includes('runtime_proof_artifact_not_strictly_accepted'));
 
 const forgedWebGpuHashMismatch = ledger.rows.find((row) =>
   row.targetId === 'forged-webgpu-hash-mismatch'
