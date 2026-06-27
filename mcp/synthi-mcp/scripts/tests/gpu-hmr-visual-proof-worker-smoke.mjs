@@ -101,6 +101,35 @@ assert.ok(proof.metrics.meanLuma8bit > 0);
 assert.ok(proof.tileEvidence.changedTileCount > 0);
 assert.equal((await stat(diffPath)).isFile(), true);
 
+const portableBeforeManifest = {
+  ...beforeManifest,
+  storage: {
+    kind: beforeManifest.storage.kind,
+    relativePath: beforeManifest.storage.relativePath,
+  },
+  manifestHash: null,
+};
+const portableAfterManifest = {
+  ...afterManifest,
+  storage: {
+    kind: afterManifest.storage.kind,
+    relativePath: afterManifest.storage.relativePath,
+  },
+  manifestHash: null,
+};
+const portableProof = await computeAsyncVisualProof({
+  before: { casManifest: portableBeforeManifest },
+  after: { casManifest: portableAfterManifest },
+  tileSize: 8,
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(portableProof.accepted, true);
+assert.equal(portableProof.acceptedForGpuHmr, false);
+assert.ok(portableProof.changedRatio > 0);
+assert.ok(portableProof.metrics.changedPixelsThreshold4 > 0);
+
 const roiOutsideChangeFallback = await computeAsyncVisualProof({
   before: { casManifest: beforeManifest },
   after: { casManifest: outsideRoiAfterManifest },

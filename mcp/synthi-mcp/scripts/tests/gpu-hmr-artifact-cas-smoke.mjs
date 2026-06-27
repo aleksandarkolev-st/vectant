@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
   CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
+  GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION,
   artifactCasManifestEvidence,
   artifactIdFromHash,
   casRelativePathForHash,
@@ -16,6 +17,7 @@ import {
   normalizeSha256Hash,
   sha256Bytes,
   validateArtifactLocator,
+  validateSharedArtifactAddressing,
   writeArtifactToCas,
 } from '../lib/gpu-hmr-artifact-cas.mjs';
 
@@ -60,6 +62,85 @@ const written = await writeArtifactToCas(bytes, {
 assert.equal(written.contentHash, contentHash);
 assert.equal(written.storage.relativePath, casRelativePathForHash(contentHash));
 assert.equal(await readFile(written.storage.localPath, 'utf8'), bytes.toString('utf8'));
+
+const sharedWritten = await writeArtifactToCas(bytes, {
+  artifactRoot: root,
+  mediaType: 'image/png',
+  artifactKind: 'visual_frame',
+  producer: { name: 'cas_smoke', kind: 'self_check' },
+  producerSubsystem: 'visual_proof',
+  sessionNamespace: 'cas-smoke-session',
+  role: 'after_frame',
+  sharedCasMounts: [
+    { role: 'worker', root: '/shared/synthi-cas' },
+    { role: 'mcp', root: '/shared/synthi-cas' },
+  ],
+});
+assert.equal(sharedWritten.sharedStorage.schemaVersion, GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION);
+assert.equal(sharedWritten.sharedStorage.contentHash, contentHash);
+assert.equal(sharedWritten.sharedStorage.relativePath, casRelativePathForHash(contentHash));
+assert.deepEqual(sharedWritten.sharedStorage.mountRoles, ['mcp', 'worker']);
+assert.equal(sharedWritten.sharedStorage.mounts[0].path.endsWith(casRelativePathForHash(contentHash)), true);
+assert.equal(sharedWritten.sharedStorage.acceptedForGpuHmr, false);
+assert.equal(sharedWritten.sharedStorage.gpuHmrSuccess, false);
+
+const sharedAccepted = await validateArtifactLocator(sharedWritten, {
+  artifactRoot: root,
+  allowedRoots: [root],
+  requireReadableBytes: true,
+});
+assert.equal(sharedAccepted.accepted, true);
+assert.equal(sharedAccepted.sharedStorage.accepted, true);
+assert.equal(sharedAccepted.sharedMountCount, 2);
+assert.deepEqual(sharedAccepted.sharedMountRoles, ['mcp', 'worker']);
+
+const sharedEvidence = artifactCasManifestEvidence(sharedWritten, sharedAccepted);
+assert.equal(sharedEvidence.sharedStorageAccepted, true);
+assert.equal(sharedEvidence.sharedMountCount, 2);
+assert.deepEqual(sharedEvidence.sharedMountRoles, ['mcp', 'worker']);
+assert.equal(sharedEvidence.acceptedForGpuHmr, false);
+assert.equal(sharedEvidence.gpuHmrSuccess, false);
+
+const consumerRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-cas-consumer-'));
+const consumerRelativePath = casRelativePathForHash(contentHash);
+const consumerPath = path.join(consumerRoot, ...consumerRelativePath.split('/'));
+await mkdir(path.dirname(consumerPath), { recursive: true });
+await writeFile(consumerPath, bytes);
+const portableLocator = {
+  ...sharedWritten,
+  storage: {
+    kind: sharedWritten.storage.kind,
+    relativePath: consumerRelativePath,
+  },
+  manifestHash: null,
+};
+const portableAccepted = await validateArtifactLocator(portableLocator, {
+  artifactRoot: consumerRoot,
+  allowedRoots: [consumerRoot],
+  requireReadableBytes: true,
+});
+assert.equal(portableAccepted.accepted, true);
+assert.equal(portableAccepted.resolvedFromRelativePath, true);
+assert.equal(portableAccepted.readableContentHash, contentHash);
+assert.equal(portableAccepted.localPath, await realpath(consumerPath));
+assert.equal(path.relative(consumerRoot, portableAccepted.localPath).startsWith('..'), false);
+assert.equal(portableAccepted.acceptedForGpuHmr, false);
+assert.equal(portableAccepted.gpuHmrSuccess, false);
+
+const forgedSharedPath = {
+  ...sharedWritten.sharedStorage,
+  mounts: [
+    { ...sharedWritten.sharedStorage.mounts[0], path: '/shared/synthi-cas/sha256/ff/not-the-hash' },
+    sharedWritten.sharedStorage.mounts[1],
+  ],
+};
+const forgedSharedPathResult = validateSharedArtifactAddressing(forgedSharedPath, {
+  expectedContentHash: contentHash,
+  expectedRelativePath: casRelativePathForHash(contentHash),
+  transportKind: 'cas_shared_volume',
+});
+assert.equal(forgedSharedPathResult.accepted, false);
+assert.ok(forgedSharedPathResult.reasons.includes('shared_artifact_addressing_mount_path_mismatch'));
 
 const writtenAgain = await writeArtifactToCas(bytes, {
   artifactRoot: root,

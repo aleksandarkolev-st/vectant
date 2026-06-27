@@ -58,6 +58,8 @@ Current implementation note:
 
 ```text
 2026-06-28: `synthi_wait_hmr` now exposes a generic proof-pending dev-loop contract for non-strict applied HMR responses. The response can carry `proof_pending=true` and `gpu_hmr_dev_loop.evidence_authority=hmr_fast_path_only_not_gpu_hmr_acceptance`, with `accepted_for_gpu_hmr=false` and `gpu_hmr_success=false`. Strict callers still request `requiredGpuProofState` or `requireGpuFullRuntimeProof` and still fail closed with `gpu_hmr_proof_insufficient` when the proof ladder is missing or insufficient.
+
+2026-06-28: CAS artifact locators now support portable content-addressed consumption across container mount namespaces. A producer can omit its absolute `storage.localPath`; a consumer can resolve `sha256/<prefix>/<digest>` under its own allowed CAS root and still verify byte length plus SHA-256 before transport evidence accepts. Optional shared mount metadata records generic roles such as worker/MCP/frontend without becoming proof authority. CAS/shared-addressing evidence remains `acceptedForGpuHmr=false` and `gpuHmrSuccess=false`.
 ```
 
 ## 2. Immediate Corrections To The Previous Plan

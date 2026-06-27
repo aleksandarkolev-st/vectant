@@ -10,6 +10,9 @@ export const GPU_HMR_ARTIFACT_CAS_MANIFEST_SCHEMA_VERSION = CAS_ARTIFACT_LOCATOR
 export const GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.artifact_transport_evidence.v1';
 
+export const GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.shared_artifact_addressing.v1';
+
 export const DEFAULT_GPU_HMR_CAS_URI_SCHEME = 'synthi-cas';
 
 export const SUPPORTED_GPU_HMR_ARTIFACT_TRANSPORTS = Object.freeze([
@@ -113,6 +116,22 @@ export function defaultCasRootFromEnv(env = process.env) {
     ?? null;
 }
 
+export function defaultSharedCasMountsFromEnv(env = process.env) {
+  const raw = text(
+    env.SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON
+    ?? env.SYNTHI_GPU_HMR_CAS_MOUNTS_JSON
+    ?? env.SYNTHI_SHARED_ARTIFACT_MOUNTS_JSON,
+  );
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('shared_cas_mounts_json_invalid');
+  }
+  return normalizeSharedCasMounts(parsed);
+}
+
 export async function buildArtifactCasManifest(input = {}) {
   const bytes = await resolveInputBytes(input);
   const contentHash = sha256Bytes(bytes);
@@ -154,12 +173,23 @@ export async function buildArtifactCasManifest(input = {}) {
     gpuHmrSuccess: false,
   };
   const localPath = text(input.localPath ?? input.path);
-  if (localPath) {
+  const relativePath = input.relativePath ? normalizeRelativeCasPath(input.relativePath) : null;
+  const includeLocalPath = input.includeLocalPath !== false && input.portable !== true;
+  if (localPath || relativePath) {
     manifest.storage = {
       kind: transportKind,
-      localPath: path.resolve(localPath),
-      relativePath: input.relativePath ? normalizeRelativeCasPath(input.relativePath) : null,
+      ...(includeLocalPath && localPath ? { localPath: path.resolve(localPath) } : {}),
+      relativePath,
     };
+  }
+  const sharedStorage = buildSharedArtifactAddressing({
+    contentHash,
+    relativePath: input.relativePath,
+    mounts: firstPresent(input.sharedCasMounts, input.shared_cas_mounts, input.sharedMounts, input.shared_mounts),
+  });
+  if (sharedStorage !== null) {
+    manifest.sharedStorage = sharedStorage;
+    manifest.shared_storage = sharedStorage;
   }
   manifest.manifestHash = sha256Text(stableJson({ ...manifest, manifestHash: undefined }));
   return manifest;
@@ -196,6 +226,10 @@ export async function writeArtifactToCas(bytes, options = {}) {
     role: options.role,
     transportKind: options.transportKind ?? transportKindForRoot(root),
     uriScheme: options.uriScheme,
+    artifactRoot: root,
+    includeLocalPath: options.includeLocalPath,
+    portable: options.portable,
+    sharedCasMounts: sharedCasMountsOption(options),
   });
 }
 
@@ -305,6 +339,23 @@ export async function validateArtifactCasManifest(manifest, options = {}) {
   if (transport.bytesEmbedded === true) gaps.push('artifact_cas_manifest_embeds_bytes');
   if (transport.kind === 'serialized_fallback') gaps.push('serialized_artifact_transport_fallback');
 
+  const sharedStorage = firstObject(normalized.sharedStorage, normalized.shared_storage);
+  if (sharedStorage !== null) {
+    const shared = validateSharedArtifactAddressing(sharedStorage, {
+      expectedContentHash: contentHash,
+      expectedRelativePath: contentHash ? casRelativePathForHash(contentHash) : null,
+      transportKind: transport.kind,
+    });
+    result.sharedStorage = shared;
+    result.shared_storage = shared;
+    result.sharedMountCount = shared.mountCount;
+    result.shared_mount_count = shared.mountCount;
+    result.sharedMountRoles = shared.mountRoles;
+    result.shared_mount_roles = shared.mountRoles;
+    for (const reason of shared.reasons) fail(reason);
+    gaps.push(...shared.gaps);
+  }
+
   if (
     normalized.acceptedForGpuHmr === true
     || normalized.accepted_for_gpu_hmr === true
@@ -347,6 +398,32 @@ export async function validateArtifactCasManifest(manifest, options = {}) {
         }
       }
     }
+  } else if (options.requireReadableBytes === true && contentHash) {
+    const roots = normalizeAllowedRoots(options.allowedRoots, options.artifactRoot);
+    if (roots.length === 0) {
+      fail('artifact_cas_allowed_root_required_for_relative_path');
+    } else {
+      let relativePath;
+      try {
+        relativePath = normalizeRelativeCasPath(storage.relativePath ?? casRelativePathForHash(contentHash));
+        const expected = casRelativePathForHash(contentHash);
+        if (relativePath !== expected) fail('artifact_cas_relative_path_hash_mismatch');
+      } catch {
+        fail('artifact_cas_relative_path_invalid');
+      }
+      if (relativePath) {
+        const resolved = await resolveRelativePathInsideAnyRoot(relativePath, roots);
+        if (!resolved.accepted) {
+          fail('artifact_cas_relative_path_unreadable');
+        } else {
+          result.localPath = resolved.path;
+          result.local_path = resolved.path;
+          result.resolvedFromRelativePath = true;
+          result.resolved_from_relative_path = true;
+          await validateReadableBytes(resolved.path, result, fail);
+        }
+      }
+    }
   } else if (options.requireReadableBytes === true) {
     fail('artifact_cas_readable_path_required');
   }
@@ -373,6 +450,12 @@ export function artifactCasManifestEvidence(manifest, validation) {
     artifactId: manifest?.artifactId ?? null,
     artifactUri: manifest?.artifactUri ?? null,
     transportKind: manifest?.transport?.kind ?? null,
+    sharedStorageAccepted: validation?.sharedStorage?.accepted ?? validation?.shared_storage?.accepted ?? null,
+    shared_storage_accepted: validation?.sharedStorage?.accepted ?? validation?.shared_storage?.accepted ?? null,
+    sharedMountCount: validation?.sharedMountCount ?? validation?.shared_mount_count ?? 0,
+    shared_mount_count: validation?.sharedMountCount ?? validation?.shared_mount_count ?? 0,
+    sharedMountRoles: validation?.sharedMountRoles ?? validation?.shared_mount_roles ?? [],
+    shared_mount_roles: validation?.sharedMountRoles ?? validation?.shared_mount_roles ?? [],
     manifestHash: validation?.manifestHash ?? manifest?.manifestHash ?? null,
     reasons: Array.isArray(validation?.reasons) ? validation.reasons : [],
     gaps: Array.isArray(validation?.gaps) ? validation.gaps : [],
@@ -403,6 +486,182 @@ export function collectArtifactLocators(value) {
   };
   visit(value);
   return locators;
+}
+
+export function buildSharedArtifactAddressing(input = {}) {
+  const mounts = normalizeSharedCasMounts(input.mounts);
+  if (mounts.length === 0) return null;
+  const contentHash = normalizeSha256Hash(input.contentHash);
+  const relativePath = normalizeRelativeCasPath(input.relativePath ?? casRelativePathForHash(contentHash));
+  return {
+    schemaVersion: GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION,
+    addressing: 'content_addressed_relative_path',
+    contentHash,
+    relativePath,
+    mountCount: mounts.length,
+    mountRoles: mounts.map((mount) => mount.role).sort(),
+    mounts: mounts.map((mount) => ({
+      role: mount.role,
+      root: mount.root,
+      path: joinMountPath(mount.root, relativePath),
+      addressKind: mount.addressKind,
+      readableBytesProven: false,
+    })),
+    manifestOnly: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'shared_artifact_addressing_only',
+  };
+}
+
+export function validateSharedArtifactAddressing(sharedStorage, options = {}) {
+  const reasons = [];
+  const gaps = [];
+  const shared = isObject(sharedStorage) ? sharedStorage : {};
+  const mounts = Array.isArray(shared.mounts) ? shared.mounts : [];
+  const result = {
+    schemaVersion: GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION,
+    accepted: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'shared_artifact_addressing_only',
+    contentHash: null,
+    relativePath: null,
+    mountCount: 0,
+    mountRoles: [],
+    reasons,
+    gaps,
+  };
+
+  if (shared.schemaVersion !== GPU_HMR_SHARED_ARTIFACT_ADDRESSING_SCHEMA_VERSION) {
+    reasons.push('shared_artifact_addressing_schema_invalid');
+  }
+  if (
+    shared.acceptedForGpuHmr === true
+    || shared.accepted_for_gpu_hmr === true
+    || shared.gpuHmrSuccess === true
+    || shared.gpu_hmr_success === true
+  ) {
+    reasons.push('shared_artifact_addressing_claims_gpu_hmr_success');
+  }
+  if (!['cas_shared_volume', 'cas_tmpfs'].includes(options.transportKind)) {
+    reasons.push('shared_artifact_addressing_requires_cas_transport');
+  }
+  if (shared.manifestOnly !== true) {
+    reasons.push('shared_artifact_addressing_manifest_only_required');
+  }
+
+  try {
+    result.contentHash = normalizeSha256Hash(shared.contentHash);
+    if (options.expectedContentHash && result.contentHash !== normalizeSha256Hash(options.expectedContentHash)) {
+      reasons.push('shared_artifact_addressing_content_hash_mismatch');
+    }
+  } catch {
+    reasons.push('shared_artifact_addressing_content_hash_invalid');
+  }
+
+  try {
+    result.relativePath = normalizeRelativeCasPath(shared.relativePath ?? shared.relative_path);
+    if (options.expectedRelativePath && result.relativePath !== normalizeRelativeCasPath(options.expectedRelativePath)) {
+      reasons.push('shared_artifact_addressing_relative_path_mismatch');
+    }
+  } catch {
+    reasons.push('shared_artifact_addressing_relative_path_invalid');
+  }
+
+  const seenRoles = new Set();
+  const normalizedMounts = [];
+  for (const mount of mounts) {
+    const normalized = normalizeSharedCasMount(mount);
+    if (normalized === null) {
+      reasons.push('shared_artifact_addressing_mount_invalid');
+      continue;
+    }
+    if (seenRoles.has(normalized.role)) {
+      reasons.push('shared_artifact_addressing_mount_role_duplicate');
+      continue;
+    }
+    seenRoles.add(normalized.role);
+    const expectedPath = result.relativePath ? joinMountPath(normalized.root, result.relativePath) : null;
+    const declaredPath = text(mount.path ?? mount.localPath ?? mount.local_path);
+    if (expectedPath && declaredPath && normalizePortablePath(declaredPath) !== normalizePortablePath(expectedPath)) {
+      reasons.push('shared_artifact_addressing_mount_path_mismatch');
+    }
+    normalizedMounts.push(normalized);
+  }
+  if (normalizedMounts.length === 0) {
+    reasons.push('shared_artifact_addressing_mounts_missing');
+  }
+  result.mountCount = normalizedMounts.length;
+  result.mountRoles = normalizedMounts.map((mount) => mount.role).sort();
+  if (!normalizedMounts.some((mount) => mount.role === 'worker')) {
+    gaps.push('shared_artifact_worker_mount_not_declared');
+  }
+  if (!normalizedMounts.some((mount) => mount.role === 'mcp')) {
+    gaps.push('shared_artifact_mcp_mount_not_declared');
+  }
+  if (normalizedMounts.length < 2) {
+    gaps.push('shared_artifact_single_mount_only');
+  }
+
+  if (reasons.length === 0) {
+    result.accepted = true;
+  }
+  return result;
+}
+
+function firstObject(...values) {
+  for (const value of values) {
+    if (isObject(value)) return value;
+  }
+  return null;
+}
+
+function normalizeSharedCasMounts(value) {
+  if (value === undefined || value === null) return [];
+  const source = isObject(value) && Array.isArray(value.mounts)
+    ? value.mounts
+    : Array.isArray(value)
+      ? value
+      : isObject(value) && (value.role || value.root)
+        ? [value]
+        : isObject(value)
+          ? Object.entries(value).map(([role, root]) => ({ role, root }))
+          : [];
+  return source
+    .map((mount) => normalizeSharedCasMount(mount))
+    .filter((mount) => mount !== null);
+}
+
+function normalizeSharedCasMount(mount) {
+  const object = isObject(mount) ? mount : {};
+  try {
+    return {
+      role: normalizeCasSegment(object.role ?? object.name),
+      root: normalizePortableRoot(object.root ?? object.mountRoot ?? object.mount_root),
+      addressKind: normalizeCasSegment(object.addressKind ?? object.address_kind ?? 'shared_bind_mount'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizePortableRoot(value) {
+  const normalized = text(value);
+  if (!normalized || /[\0\r\n]/.test(normalized)) {
+    throw new Error('shared_artifact_root_invalid');
+  }
+  return normalizePortablePath(normalized).replace(/\/+$/g, '') || '/';
+}
+
+function joinMountPath(root, relativePath) {
+  const normalizedRoot = normalizePortableRoot(root);
+  const normalizedRelative = normalizeRelativeCasPath(relativePath);
+  return `${normalizedRoot}/${normalizedRelative}`;
+}
+
+function normalizePortablePath(value) {
+  return String(value ?? '').replace(/\\/g, '/').replace(/\/+/g, '/');
 }
 
 function sha256Digest(bytes) {
@@ -497,6 +756,16 @@ function firstPresent(...values) {
   return undefined;
 }
 
+function sharedCasMountsOption(options = {}) {
+  const explicit = firstPresent(
+    options.sharedCasMounts,
+    options.shared_cas_mounts,
+    options.sharedMounts,
+    options.shared_mounts,
+  );
+  return explicit === undefined ? defaultSharedCasMountsFromEnv() : explicit;
+}
+
 function normalizeRelativeCasPath(value) {
   const normalized = String(value ?? '').replace(/\\/g, '/');
   const parts = normalized.split('/').filter(Boolean);
@@ -540,6 +809,16 @@ async function resolveInsideAnyRoot(candidate, roots) {
     }
   }
   return { accepted: false, path: candidateRealPath, root: null };
+}
+
+async function resolveRelativePathInsideAnyRoot(relativePath, roots) {
+  const normalized = normalizeRelativeCasPath(relativePath);
+  for (const root of roots) {
+    const candidate = path.join(path.resolve(root), ...normalized.split('/'));
+    const inside = await resolveInsideAnyRoot(candidate, [root]);
+    if (inside.accepted) return inside;
+  }
+  return { accepted: false, path: null, root: null };
 }
 
 function resolveInsideAnyRootLexical(candidate, roots) {
