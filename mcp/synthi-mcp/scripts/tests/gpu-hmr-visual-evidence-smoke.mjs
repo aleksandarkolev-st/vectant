@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
+  collectVisualArtifactCasLocators,
   deterministicVisualModeFromMcpEvidence,
   deterministicVisualModeAccepted,
   evaluateGpuHmrDeterministicVisualMode,
   GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
   DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
   mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfied,
@@ -12,6 +18,8 @@ import {
   mcpFrameGateForScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
+  visualArtifactTransportEvidence,
+  visualEvidenceRow,
 } from '../lib/gpu-hmr-visual-evidence.mjs';
 
 const deterministicSingleFrame = {
@@ -329,6 +337,52 @@ assert.ok(
   `expected frame_capture_after_epoch_dispatch_unproven for failed GPU proof validation, got ${mcpFailedGpuProofValidation.failedGates.map((g) => g.code).join(',')}`,
 );
 
+const casRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-visual-cas-smoke-'));
+const visualLocator = await writeArtifactToCas(Buffer.from('fake-png-bytes-for-transport-only'), {
+  artifactRoot: casRoot,
+  mediaType: 'image/png',
+  artifactKind: 'visual_frame',
+  producer: { name: 'visual_smoke', kind: 'self_check' },
+  producerSubsystem: 'visual_proof',
+  sessionNamespace: 'visual-smoke-session',
+  role: 'after_frame',
+});
+const visualTransport = await visualArtifactTransportEvidence({
+  artifactCasLocators: [visualLocator],
+}, {
+  artifactRoot: casRoot,
+  allowedRoots: [casRoot],
+  requireReadableBytes: true,
+});
+assert.equal(
+  visualTransport.schemaVersion,
+  GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
+);
+assert.equal(visualTransport.acceptedAsTransportEvidence, true);
+assert.equal(visualTransport.acceptedForGpuHmr, false);
+assert.equal(visualTransport.gpuHmrSuccess, false);
+assert.equal(
+  visualTransport.proofAuthority,
+  'transport_integrity_only_not_visual_or_ledger_proof',
+);
+
+const rowWithTransport = visualEvidenceRow({
+  width: 640,
+  height: 480,
+  visible_pixels: 1000,
+  luma_stddev: 5,
+  path: visualLocator.storage.localPath,
+  artifactCasLocators: [visualLocator],
+});
+assert.equal(rowWithTransport.accepted_as_visual_evidence, true);
+assert.equal(rowWithTransport.artifact_cas_locators.length, 1);
+assert.equal(rowWithTransport.artifact_transport_authority, 'transport_integrity_only_not_visual_proof');
+assert.equal(collectVisualArtifactCasLocators(rowWithTransport).length, 1);
+
+const missingTransport = await visualArtifactTransportEvidence({});
+assert.equal(missingTransport.accepted, false);
+assert.ok(missingTransport.reasons.includes('visual_artifact_transport_locator_missing'));
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
@@ -342,5 +396,6 @@ console.log(JSON.stringify({
     'mcp_screenshot_args_derived',
     'mcp_failed_gpu_proof_validation_rejection',
     'mcp_stale_screenshot_rejection',
+    'visual_artifact_transport_evidence_not_gpu_hmr_proof',
   ],
 }, null, 2));

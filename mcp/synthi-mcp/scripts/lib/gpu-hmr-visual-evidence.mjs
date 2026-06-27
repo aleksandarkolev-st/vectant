@@ -1,4 +1,9 @@
 import sharp from 'sharp';
+import {
+  artifactCasManifestEvidence,
+  collectArtifactLocators,
+  validateArtifactLocator,
+} from './gpu-hmr-artifact-cas.mjs';
 
 const MIN_VISUAL_WIDTH = 320;
 const MIN_VISUAL_HEIGHT = 240;
@@ -15,6 +20,8 @@ const CONVERGENCE_METRICS = new Set([
 
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
+export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_artifact_transport_evidence.v1';
 export const DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS = 20 * 60 * 1000;
 
 function numeric(value) {
@@ -747,5 +754,63 @@ export function visualEvidenceRow(extra = {}) {
     ?? extra.visualQuality
     ?? classifyGpuHmrVisualEvidenceStats(row);
   row.accepted_as_visual_evidence = screenshotQualifiesAsVisualEvidence(row);
+  const artifactCasLocators = collectVisualArtifactCasLocators(extra);
+  if (artifactCasLocators.length > 0) {
+    row.artifact_cas_locators = artifactCasLocators;
+    row.artifact_transport_authority = 'transport_integrity_only_not_visual_proof';
+  }
   return row;
+}
+
+export function collectVisualArtifactCasLocators(input = {}) {
+  const source = isObject(input)
+    ? (
+      input.artifact_cas_locators
+      ?? input.artifactCasLocators
+      ?? input.artifact_locator
+      ?? input.artifactLocator
+      ?? input.transport_manifest
+      ?? input.transportManifest
+      ?? input
+    )
+    : input;
+  return collectArtifactLocators(source);
+}
+
+export async function visualArtifactTransportEvidence(input = {}, options = {}) {
+  const locators = collectVisualArtifactCasLocators(input);
+  const entries = [];
+  const reasons = [];
+  const gaps = [];
+
+  for (const locator of locators) {
+    const validation = await validateArtifactLocator(locator, {
+      artifactRoot: options.artifactRoot,
+      allowedRoots: options.allowedRoots,
+      requireReadableBytes: options.requireReadableBytes === true,
+    });
+    const evidence = artifactCasManifestEvidence(locator, validation);
+    entries.push(evidence);
+    reasons.push(...validation.reasons);
+    gaps.push(...validation.gaps);
+  }
+
+  if (locators.length === 0) {
+    reasons.push('visual_artifact_transport_locator_missing');
+  }
+
+  return {
+    schemaVersion: GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
+    accepted: locators.length > 0 && entries.every((entry) => entry.accepted === true),
+    acceptedAsTransportEvidence: locators.length > 0 && entries.every((entry) =>
+      entry.acceptedAsTransportEvidence === true
+    ),
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
+    locatorCount: locators.length,
+    entries,
+    reasons: [...new Set(reasons)],
+    gaps: [...new Set(gaps)],
+  };
 }
