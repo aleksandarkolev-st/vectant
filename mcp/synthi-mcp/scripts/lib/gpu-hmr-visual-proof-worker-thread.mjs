@@ -127,12 +127,19 @@ async function runWorker(request, options) {
     });
   }
 
+  const tileSize = normalizeTileSize(request.tileSize ?? request.tile_size, dimensions);
+  const tileEvidence = request.tileHashing === false || request.tile_hashing === false
+    ? null
+    : computeTileHashes(decodedBefore, decodedAfter, tileSize);
+
   let roiEvidence = null;
+  let roiTileConsistency = null;
   let deepDiffSkipped = false;
   let skipReason = null;
   if (roi) {
     const beforeHash = hashRawRegion(decodedBefore.data, decodedBefore.info, roi);
     const afterHash = hashRawRegion(decodedAfter.data, decodedBefore.info, roi);
+    roiTileConsistency = tileEvidence ? summarizeRoiTileConsistency(tileEvidence, roi) : null;
     roiEvidence = {
       accepted: true,
       roi,
@@ -141,17 +148,26 @@ async function runWorker(request, options) {
       afterHash,
       after_hash: afterHash,
       changed: beforeHash !== afterHash,
+      tileConsistency: roiTileConsistency,
+      tile_consistency: roiTileConsistency,
     };
     if (request.allowRoiEarlyExit === true && beforeHash === afterHash) {
-      deepDiffSkipped = true;
-      skipReason = 'roi_hash_unchanged';
+      if (roiTileConsistency && roiTileConsistency.changedTileCount > 0) {
+        skipReason = roiTileConsistency.changedTilesOutsideRoiCount > 0
+          ? 'roi_hash_unchanged_but_tiles_changed_outside_roi'
+          : 'roi_hash_unchanged_but_tile_evidence_changed';
+        roiEvidence.earlyExitAccepted = false;
+        roiEvidence.early_exit_accepted = false;
+        roiEvidence.earlyExitBlockedReason = skipReason;
+        roiEvidence.early_exit_blocked_reason = skipReason;
+      } else {
+        deepDiffSkipped = true;
+        skipReason = 'roi_hash_unchanged';
+        roiEvidence.earlyExitAccepted = true;
+        roiEvidence.early_exit_accepted = true;
+      }
     }
   }
-
-  const tileSize = normalizeTileSize(request.tileSize ?? request.tile_size, dimensions);
-  const tileEvidence = request.tileHashing === false || request.tile_hashing === false
-    ? null
-    : computeTileHashes(decodedBefore, decodedAfter, tileSize);
 
   let fullFrameDiff = null;
   let diffArtifact = null;
@@ -254,6 +270,8 @@ async function runWorker(request, options) {
     },
     roiEvidence,
     roi_evidence: roiEvidence,
+    roiTileConsistency,
+    roi_tile_consistency: roiTileConsistency,
     tileEvidence,
     tile_evidence: tileEvidence,
     diffArtifact,
@@ -298,6 +316,20 @@ async function runWorker(request, options) {
       deep_diff_skipped: deepDiffSkipped,
       skipReason,
       skip_reason: skipReason,
+      roiEarlyExitSafe: !roiTileConsistency || roiTileConsistency.changedTileCount === 0,
+      roi_early_exit_safe: !roiTileConsistency || roiTileConsistency.changedTileCount === 0,
+      roiEarlyExitBlocked: Boolean(
+        roiTileConsistency
+        && roiTileConsistency.changedTileCount > 0
+        && skipReason
+        && !deepDiffSkipped,
+      ),
+      roi_early_exit_blocked: Boolean(
+        roiTileConsistency
+        && roiTileConsistency.changedTileCount > 0
+        && skipReason
+        && !deepDiffSkipped,
+      ),
     },
   });
   result.proofHash = sha256Text(stableJson({ ...result, proofHash: undefined, proof_hash: undefined }));
@@ -488,6 +520,39 @@ function computeTileHashes(before, after, tileSize) {
     changed_tile_ratio: tiles.length ? changedTileCount / tiles.length : 0,
     tiles,
   };
+}
+
+function summarizeRoiTileConsistency(tileEvidence, roi) {
+  const tiles = Array.isArray(tileEvidence?.tiles) ? tileEvidence.tiles : [];
+  let changedTileCount = 0;
+  let changedTilesInsideRoiCount = 0;
+  let changedTilesOutsideRoiCount = 0;
+  for (const tile of tiles) {
+    if (!tile?.changed) continue;
+    changedTileCount += 1;
+    if (regionContainedBy(tile, roi)) {
+      changedTilesInsideRoiCount += 1;
+    } else {
+      changedTilesOutsideRoiCount += 1;
+    }
+  }
+  return {
+    accepted: true,
+    changedTileCount,
+    changed_tile_count: changedTileCount,
+    changedTilesInsideRoiCount,
+    changed_tiles_inside_roi_count: changedTilesInsideRoiCount,
+    changedTilesOutsideRoiCount,
+    changed_tiles_outside_roi_count: changedTilesOutsideRoiCount,
+    roi,
+  };
+}
+
+function regionContainedBy(region, container) {
+  return region.x >= container.x
+    && region.y >= container.y
+    && region.x + region.width <= container.x + container.width
+    && region.y + region.height <= container.y + container.height;
 }
 
 function hashRawFrame(data, dimensions) {

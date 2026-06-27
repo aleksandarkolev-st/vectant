@@ -48,6 +48,13 @@ const afterManifest = await writeArtifactToCas(afterPng, {
   sessionNamespace: 'visual-worker-smoke',
   producer: { name: 'visual_worker_smoke' },
 });
+const unchangedAfterManifest = await writeArtifactToCas(beforePng, {
+  artifactRoot: casRoot,
+  mediaType: 'image/png',
+  role: 'after_frame',
+  sessionNamespace: 'visual-worker-smoke',
+  producer: { name: 'visual_worker_smoke' },
+});
 const outsideRoiAfterManifest = await writeArtifactToCas(outsideRoiAfterPng, {
   artifactRoot: casRoot,
   mediaType: 'image/png',
@@ -88,7 +95,7 @@ assert.ok(proof.metrics.meanLuma8bit > 0);
 assert.ok(proof.tileEvidence.changedTileCount > 0);
 assert.equal((await stat(diffPath)).isFile(), true);
 
-const roiSkip = await computeAsyncVisualProof({
+const roiOutsideChangeFallback = await computeAsyncVisualProof({
   before: { casManifest: beforeManifest },
   after: { casManifest: outsideRoiAfterManifest },
   roi: { x: 0, y: 0, width: 8, height: 8 },
@@ -98,12 +105,40 @@ const roiSkip = await computeAsyncVisualProof({
   allowedRoots: [casRoot],
   timeoutMs: 30000,
 });
-assert.equal(roiSkip.accepted, true);
-assert.equal(roiSkip.incremental.roiEvaluated, true);
-assert.equal(roiSkip.incremental.deepDiffSkipped, true);
-assert.equal(roiSkip.incremental.fullFrameDiffComputed, false);
-assert.equal(roiSkip.incremental.skipReason, 'roi_hash_unchanged');
-assert.equal(roiSkip.roiEvidence.changed, false);
+assert.equal(roiOutsideChangeFallback.accepted, true);
+assert.equal(roiOutsideChangeFallback.incremental.roiEvaluated, true);
+assert.equal(roiOutsideChangeFallback.incremental.deepDiffSkipped, false);
+assert.equal(roiOutsideChangeFallback.incremental.fullFrameDiffComputed, true);
+assert.equal(
+  roiOutsideChangeFallback.incremental.skipReason,
+  'roi_hash_unchanged_but_tiles_changed_outside_roi',
+);
+assert.equal(roiOutsideChangeFallback.incremental.roiEarlyExitBlocked, true);
+assert.equal(roiOutsideChangeFallback.roiEvidence.changed, false);
+assert.equal(roiOutsideChangeFallback.roiEvidence.earlyExitAccepted, false);
+assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTileCount > 0);
+assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTilesOutsideRoiCount > 0);
+
+const trueRoiSkip = await computeAsyncVisualProof({
+  before: { casManifest: beforeManifest },
+  after: { casManifest: unchangedAfterManifest },
+  roi: { x: 0, y: 0, width: 8, height: 8 },
+  allowRoiEarlyExit: true,
+  tileSize: 8,
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(trueRoiSkip.accepted, true);
+assert.equal(trueRoiSkip.incremental.roiEvaluated, true);
+assert.equal(trueRoiSkip.incremental.deepDiffSkipped, true);
+assert.equal(trueRoiSkip.incremental.fullFrameDiffComputed, false);
+assert.equal(trueRoiSkip.incremental.skipReason, 'roi_hash_unchanged');
+assert.equal(trueRoiSkip.incremental.roiEarlyExitSafe, true);
+assert.equal(trueRoiSkip.incremental.roiEarlyExitBlocked, false);
+assert.equal(trueRoiSkip.roiEvidence.changed, false);
+assert.equal(trueRoiSkip.roiEvidence.earlyExitAccepted, true);
+assert.equal(trueRoiSkip.roiTileConsistency.changedTileCount, 0);
 
 const roiFallback = await computeAsyncVisualProof({
   before: { casManifest: beforeManifest },
