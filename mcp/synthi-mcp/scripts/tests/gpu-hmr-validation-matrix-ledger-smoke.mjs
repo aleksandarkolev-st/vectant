@@ -747,6 +747,10 @@ function hiprtWarmProofArtifact({
   changedPath,
   diffPath,
   oracleRegionClaimNonBlank = true,
+  visualProofThresholds = {
+    minChangedPixelRatio: 0.01,
+    minMeanAbsDelta8bit: 1,
+  },
 }) {
   const materials = runtimeProofMaterials('hot_delta_1', {
     projectId: profileId,
@@ -764,6 +768,9 @@ function hiprtWarmProofArtifact({
     cacheState: 'compiler_cache_warm',
     cache_state: 'compiler_cache_warm',
     profile: { id: profileId },
+    visualProofThresholds,
+    visual_proof_thresholds: visualProofThresholds,
+    thresholds: visualProofThresholds,
     accepted: true,
     acceptance: {
       strictProvenance: true,
@@ -3561,6 +3568,18 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProof
   diffPath: hiprtAcceptedDiff,
   oracleRegionClaimNonBlank: true,
 }));
+await writeJson(path.join(hiprtDir, 'forged-hiprt-visual-threshold-proof.json'), hiprtWarmProofArtifact({
+  slug: 'forged-hiprt-visual-threshold',
+  profileId: 'forged-hiprt-visual-threshold',
+  baselinePath: hiprtAcceptedBefore,
+  changedPath: hiprtAcceptedAfter,
+  diffPath: hiprtAcceptedDiff,
+  oracleRegionClaimNonBlank: true,
+  visualProofThresholds: {
+    minChangedPixelRatio: 1.01,
+    minMeanAbsDelta8bit: 512,
+  },
+}));
 await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
   ...runModeProofBase,
   backend: 'hiprt',
@@ -5165,8 +5184,34 @@ assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.accepted, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.scope, 'hiprt_declared_visual_profile');
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.arbitraryLibraryAccepted, false);
+assert.equal(acceptedHiprt.visual.visualThresholdValidation.accepted, true);
+assert.equal(acceptedHiprt.visual.visualThresholdValidation.source, 'matrix_recomputed_png_pixels_declared_thresholds');
 assert.ok(acceptedHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 assert.ok(acceptedHiprt.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+
+const forgedHiprtVisualThreshold = ledger.rows.find(
+  (row) => row.targetId === 'forged-hiprt-visual-threshold',
+);
+assert.equal(forgedHiprtVisualThreshold?.matrixOutcome, 'unproven');
+assert.equal(forgedHiprtVisualThreshold.acceptedForGpuHmr, false);
+assert.equal(forgedHiprtVisualThreshold.visual.accepted, false);
+assert.equal(forgedHiprtVisualThreshold.visual.visualThresholdValidation.accepted, false);
+assert.equal(
+  forgedHiprtVisualThreshold.visual.visualThresholdValidation.source,
+  'matrix_recomputed_png_pixels_declared_thresholds',
+);
+assert.ok(forgedHiprtVisualThreshold.visual.failedGates.includes(
+  'visual_changed_pixel_ratio_below_declared_threshold',
+));
+assert.ok(forgedHiprtVisualThreshold.visual.failedGates.includes(
+  'visual_mean_abs_delta_below_declared_threshold',
+));
+assert.ok(forgedHiprtVisualThreshold.reasons.includes(
+  'visual_changed_pixel_ratio_below_declared_threshold',
+));
+assert.ok(forgedHiprtVisualThreshold.openGaps.includes(
+  'visual_mean_abs_delta_below_declared_threshold',
+));
 
 const forgedHiprtMissingInstrumentation = ledger.rows.find(
   (row) => row.targetId === 'forged-hiprt-missing-instrumentation',

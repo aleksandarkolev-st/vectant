@@ -649,6 +649,90 @@ function runtimeVisualOracleEvidenceRequirements({ allowSingleFrameProof = false
   };
 }
 
+function visualThresholdRequirements(metrics = {}) {
+  const raw = compactObject(metrics);
+  const thresholds = compactObject(
+    raw.visualProofThresholds
+    ?? raw.visual_proof_thresholds
+    ?? raw.visualThresholds
+    ?? raw.visual_thresholds
+    ?? raw.thresholds,
+  );
+  const minChangedRatio = finiteNumber(
+    thresholds.minChangedRatio
+    ?? thresholds.min_changed_ratio
+    ?? thresholds.minChangedPixelRatio
+    ?? thresholds.min_changed_pixel_ratio
+    ?? thresholds.minChangedPixelRatioThreshold4
+    ?? thresholds.min_changed_pixel_ratio_threshold4
+    ?? raw.minChangedRatio
+    ?? raw.min_changed_ratio
+    ?? raw.minChangedPixelRatio
+    ?? raw.min_changed_pixel_ratio,
+  );
+  const minMeanAbsDelta8bit = finiteNumber(
+    thresholds.minMeanAbs
+    ?? thresholds.min_mean_abs
+    ?? thresholds.minMeanAbsDelta8bit
+    ?? thresholds.min_mean_abs_delta_8bit
+    ?? thresholds.minMeanAbsDelta
+    ?? thresholds.min_mean_abs_delta
+    ?? raw.minMeanAbs
+    ?? raw.min_mean_abs
+    ?? raw.minMeanAbsDelta8bit
+    ?? raw.min_mean_abs_delta_8bit,
+  );
+  return {
+    present: minChangedRatio !== null || minMeanAbsDelta8bit !== null,
+    minChangedRatio,
+    min_changed_ratio: minChangedRatio,
+    minMeanAbsDelta8bit,
+    min_mean_abs_delta_8bit: minMeanAbsDelta8bit,
+  };
+}
+
+function visualThresholdValidationForPair(visualPair = {}, thresholds = {}) {
+  if (thresholds.present !== true) {
+    return {
+      present: false,
+      accepted: true,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const changedPixelRatio = finiteNumber(
+    visualPair.changedPixelRatio ?? visualPair.changed_pixel_ratio,
+  );
+  const meanAbsDelta8bit = finiteNumber(
+    visualPair.meanAbsDelta8bit ?? visualPair.mean_abs_delta_8bit,
+  );
+  const failedGates = compactStringList([
+    visualPair.accepted === true ? null : 'visual_threshold_pair_recompute_not_accepted',
+    thresholds.minChangedRatio === null || (
+      changedPixelRatio !== null && changedPixelRatio >= thresholds.minChangedRatio
+    )
+      ? null
+      : 'visual_changed_pixel_ratio_below_declared_threshold',
+    thresholds.minMeanAbsDelta8bit === null || (
+      meanAbsDelta8bit !== null && meanAbsDelta8bit >= thresholds.minMeanAbsDelta8bit
+    )
+      ? null
+      : 'visual_mean_abs_delta_below_declared_threshold',
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    source: 'matrix_recomputed_png_pixels_declared_thresholds',
+    thresholds,
+    changedPixelRatio,
+    changed_pixel_ratio: changedPixelRatio,
+    meanAbsDelta8bit,
+    mean_abs_delta_8bit: meanAbsDelta8bit,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function preferredVisualImage(images, role) {
   return images.find((item) => item.role === role && item.exists && item.decoded)
     ?? images.find((item) => item.role === role);
@@ -896,6 +980,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
   const singleFrame = await recomputeSingleVisualFrameEvidence(evidence);
+  const visualThresholds = visualThresholdRequirements(metrics);
+  const visualThresholdValidation = visualThresholdValidationForPair(visualPair, visualThresholds);
   const hasBeforeImage = evidence.some((item) => item.role === 'before');
   const hasAfterImage = evidence.some((item) => item.role === 'after');
   const hasDiffImage = evidence.some((item) => item.role === 'diff');
@@ -931,6 +1017,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
         ? 'visual_single_frame_pixel_recompute_not_accepted'
         : 'visual_pair_pixel_recompute_not_accepted'
       : null,
+    ...(visualThresholdValidation.failedGates ?? []),
   ]);
   const accepted = imageCount === 0
     ? options.required !== true
@@ -940,6 +1027,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       && allDeclaredHashesContentAddressed
       && allDeclaredHashesMatch
       && (options.requireDiff !== true || hasDiffImage)
+      && visualThresholdValidation.accepted === true
       && (!requiresPixelProof || pixelProofAccepted === true);
   return {
     required: options.required,
@@ -982,6 +1070,10 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     changedPixelRatio: finiteNumber(metrics.changedPixelRatio ?? metrics.changed_pixel_ratio),
     meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
+    visualThresholds,
+    visual_thresholds: visualThresholds,
+    visualThresholdValidation,
+    visual_threshold_validation: visualThresholdValidation,
     recomputedVisualPair: visualPair,
     recomputed_visual_pair: visualPair,
     recomputedSingleFrame: singleFrame,
@@ -4770,6 +4862,13 @@ async function hiprtWarmRow(json, filePath, context) {
     {
       changedPixelRatio: diff.changedPixelRatioThreshold4,
       meanAbsDelta8bit: diff.meanAbsDelta8bit,
+      visualProofThresholds:
+        json.visualProofThresholds
+        ?? json.visual_proof_thresholds
+        ?? json.thresholds
+        ?? diff.visualProofThresholds
+        ?? diff.visual_proof_thresholds
+        ?? diff.thresholds,
     },
     runtimeVisualOracleEvidenceRequirements(),
   );
@@ -4901,6 +5000,7 @@ async function hiprtWarmRow(json, filePath, context) {
       runtimeProbeInstrumentation.accepted === true
         ? null
         : 'hiprt_profile_instrumentation_disclosure_not_proven',
+      ...visual.failedGates,
       ...runtimeProbeInstrumentation.failedGates,
       ...oracleRegionRecomputed.failedGates.map((failure) => failure.code),
     ]),
@@ -4910,7 +5010,10 @@ async function hiprtWarmRow(json, filePath, context) {
         ? ['source_adapted_profile_not_no_shim_gpu_hmr']
         : blankRegionRefusal
           ? ['full_runtime_gpu_hmr_not_proven_blank_oracle_region']
-          : ['hiprt_same_process_visual_proof_not_accepted'],
+          : compactStringList([
+              'hiprt_same_process_visual_proof_not_accepted',
+              ...visual.failedGates,
+            ]),
   });
 }
 
@@ -9224,7 +9327,18 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   );
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
   const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
-  const visualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
+  const visualDelta = compactObject(json.visualDelta ?? json.visual_delta);
+  const declaredVisualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
+  const visualProofThresholds =
+    visualDelta.visualProofThresholds
+    ?? visualDelta.visual_proof_thresholds
+    ?? declaredVisualMetrics.visualProofThresholds
+    ?? declaredVisualMetrics.visual_proof_thresholds;
+  const visualMetrics = {
+    ...declaredVisualMetrics,
+    visualProofThresholds,
+    visual_proof_thresholds: visualProofThresholds,
+  };
   const visual = await visualArtifactEvidence(
     visualArtifacts,
     context.repoRoot,
@@ -9386,6 +9500,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
+      ...visual.failedGates,
       ...ledger.failedInvariants.map((failure) => failure.code),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
@@ -9399,6 +9514,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
             ? 'hiprt_profile_instrumentation_disclosure_required'
             : null,
+          ...visual.failedGates,
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
         ])
       : [],
