@@ -595,6 +595,19 @@ describe("synthi_wait_hmr", () => {
       gpu_proof?: { resultState?: string };
       gpu_proof_telemetry?: { resultState?: string; degradedState?: string; proofId?: string };
       gpu_proof_validation?: { validated?: boolean; satisfied?: boolean; reason?: string };
+      proof_pending?: boolean;
+      proof_status?: string;
+      gpu_hmr_dev_loop?: {
+        mode?: string;
+        proof_pending?: boolean;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+        evidence_authority?: string;
+        reason?: string;
+        latest_proof_state?: string;
+        latest_degraded_state?: string;
+        next_strict_proof_state?: string;
+      };
     };
     expect(body.gpu_proof).toBeUndefined();
     expect(body.gpu_proof_telemetry?.resultState).toBe("gpu-hmr-symbol-bound");
@@ -603,6 +616,53 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_validation?.validated).toBe(false);
     expect(body.gpu_proof_validation?.satisfied).toBe(false);
     expect(body.gpu_proof_validation?.reason).toBe("proof_state_not_requested");
+    expect(body.proof_pending).toBe(true);
+    expect(body.proof_status).toBe("hmr_applied_proof_pending");
+    expect(body.gpu_hmr_dev_loop?.mode).toBe("non_blocking_dev_loop");
+    expect(body.gpu_hmr_dev_loop?.proof_pending).toBe(true);
+    expect(body.gpu_hmr_dev_loop?.accepted_for_gpu_hmr).toBe(false);
+    expect(body.gpu_hmr_dev_loop?.gpu_hmr_success).toBe(false);
+    expect(body.gpu_hmr_dev_loop?.evidence_authority).toBe("hmr_fast_path_only_not_gpu_hmr_acceptance");
+    expect(body.gpu_hmr_dev_loop?.reason).toBe("strict_proof_state_not_requested");
+    expect(body.gpu_hmr_dev_loop?.latest_proof_state).toBe("gpu-hmr-symbol-bound");
+    expect(body.gpu_hmr_dev_loop?.latest_degraded_state).toBe("gpu-hmr-dispatch-unobserved");
+    expect(body.gpu_hmr_dev_loop?.next_strict_proof_state).toBe("gpu-hmr-full-runtime-proven");
+  });
+
+  it("returns applied with explicit proof-pending dev-loop status when proof telemetry is absent", async () => {
+    installFakeAttached(async () => ({ status: "applied", source: "hmr_status", elapsedMs: 10 }));
+
+    const res = await waitHmrTool({ timeoutMs: 500 });
+
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      status?: string;
+      proof_pending?: boolean;
+      proof_status?: string;
+      gpu_proof?: unknown;
+      gpu_proof_telemetry?: unknown;
+      gpu_hmr_dev_loop?: {
+        proof_pending?: boolean;
+        strict_ledger_validation_requested?: boolean;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+        reason?: string;
+        latest_proof_state?: string | null;
+        next_strict_proof_state?: string;
+      };
+    };
+    expect(body.status).toBe("applied");
+    expect(body.gpu_proof).toBeUndefined();
+    expect(body.gpu_proof_telemetry).toBeUndefined();
+    expect(body.proof_pending).toBe(true);
+    expect(body.proof_status).toBe("hmr_applied_proof_pending");
+    expect(body.gpu_hmr_dev_loop?.proof_pending).toBe(true);
+    expect(body.gpu_hmr_dev_loop?.strict_ledger_validation_requested).toBe(false);
+    expect(body.gpu_hmr_dev_loop?.accepted_for_gpu_hmr).toBe(false);
+    expect(body.gpu_hmr_dev_loop?.gpu_hmr_success).toBe(false);
+    expect(body.gpu_hmr_dev_loop?.reason).toBe("proof_telemetry_missing");
+    expect(body.gpu_hmr_dev_loop?.latest_proof_state).toBeNull();
+    expect(body.gpu_hmr_dev_loop?.next_strict_proof_state).toBe("gpu-hmr-full-runtime-proven");
   });
 
   it("fails wait_hmr when requested GPU proof is stronger than observed", async () => {

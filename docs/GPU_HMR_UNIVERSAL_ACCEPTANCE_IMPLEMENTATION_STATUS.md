@@ -8,6 +8,8 @@ This document records the current implementation status against `GPU_HMR_UNIVERS
 
 The validator fast-path diagnosis is now recorded in the proof plan: the interactive path must stay `edit -> compile -> load -> epoch publish -> visible change`, while hashing, PNG decode, pixel diff, ledger recompute, matrix ingestion, and proof packaging move behind an asynchronous proof worker. This is a performance and orchestration requirement only; it does not relax strict proof gates.
 
+The first dev-loop split is now implemented at the MCP wait boundary: non-strict `synthi_wait_hmr` responses that reach `applied` can return `proof_pending=true` plus a typed `gpu_hmr_dev_loop` block. That block explicitly says the response is `hmr_fast_path_only_not_gpu_hmr_acceptance`, with `accepted_for_gpu_hmr=false` and `gpu_hmr_success=false`. Strict callers that pass `requiredGpuProofState` or `requireGpuFullRuntimeProof` still fail closed with `gpu_hmr_proof_insufficient` until the requested proof ladder validates.
+
 Generic transport groundwork was added in commit `20398e6b3 feat(gpu-hmr): add artifact cas locator contract`:
 
 ```text

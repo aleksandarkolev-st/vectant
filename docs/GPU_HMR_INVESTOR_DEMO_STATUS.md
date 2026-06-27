@@ -10,6 +10,12 @@ Safe investor-demo claim:
 On the local AMD ROCm machine, Synthi can hot-reload scoped/profiled GPU device-artifact edits, keep the runtime alive, and prove changed output with strict runtime-ledger evidence. Visual profiles use pixel-backed before/after/diff frame artifacts; compute/readback profiles use raw mapped GPU bytes plus data-derived compute cards, and those cards are not runtime frame visual proof.
 ```
 
+Dev-loop demo note:
+
+```text
+The MCP wait path can now distinguish interactive HMR from proof closure. A non-strict `synthi_wait_hmr` call may report `applied` with `proof_pending=true` and `gpu_hmr_dev_loop.evidence_authority=hmr_fast_path_only_not_gpu_hmr_acceptance`. This is useful for showing responsive editing, but it is not an investor-grade proof claim; strict demo proof still requires the accepted runtime ledger and proof artifacts.
+```
+
 Best demo surfaces:
 
 1. ROCm/HIP realistic raytrace preview: deterministic generated visual workload with a faceted diamond scene, smaller stones, wall/awning geometry, glossy car geometry, slab lighting, hot delta 1, hot delta 2 with a different edit, negative edit refusal, image-tool-inspected before/after/diff PNGs, and strict runtime-ledger artifacts.

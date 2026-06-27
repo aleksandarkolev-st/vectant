@@ -36,6 +36,7 @@ interface WaitHmrArgs {
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
 const FRAME_GATE_POLL_MS = 50;
+const DEV_LOOP_PROOF_STATUS_SCHEMA_VERSION = "synthi.gpu.hmr.dev_loop_proof_status.v1";
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
   const raw = process.env[POST_APPLY_OBSERVE_ENV];
@@ -112,6 +113,31 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
   };
 }
 
+function attachDevLoopProofPendingStatus(
+  payload: Record<string, unknown>,
+  proof: GpuHmrProofTelemetry | null,
+  requiredState: string | null
+): void {
+  if (requiredState !== null || payload.status !== "applied") return;
+  payload.proof_pending = true;
+  payload.proof_status = "hmr_applied_proof_pending";
+  payload.gpu_hmr_dev_loop = {
+    schemaVersion: DEV_LOOP_PROOF_STATUS_SCHEMA_VERSION,
+    mode: "non_blocking_dev_loop",
+    hmr_fast_path_status: "applied",
+    proof_pending: true,
+    strict_ledger_validation_requested: false,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    evidence_authority: "hmr_fast_path_only_not_gpu_hmr_acceptance",
+    reason: proof === null ? "proof_telemetry_missing" : "strict_proof_state_not_requested",
+    latest_proof_state: proof?.resultState ?? null,
+    latest_degraded_state: proof?.degradedState ?? null,
+    latest_proof_rank: proof === null ? 0 : gpuHmrProofStateRank(proof.resultState),
+    next_strict_proof_state: "gpu-hmr-full-runtime-proven",
+  };
+}
+
 async function waitForDecodedFrameAtOrAfter(
   attached: ReturnType<typeof session.require>,
   minTsMs: number,
@@ -138,6 +164,7 @@ function responseWithGpuProofValidation(
   proof: GpuHmrProofTelemetry | null,
   requiredState: string | null
 ): ToolResponse {
+  attachDevLoopProofPendingStatus(payload, proof, requiredState);
   if (proof !== null) {
     payload.gpu_proof_telemetry = gpuProofPayload(proof);
   }

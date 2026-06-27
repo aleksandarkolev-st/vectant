@@ -162,7 +162,7 @@ const TOOLS = [
   {
     name: "synthi_wait_hmr",
     description:
-      "Block until the preview's HMR pipeline reaches a terminal status (applied / rejected / compile-error / full-reload-required / discarded) or the timeout elapses. Call this immediately after editing source files so the subsequent screenshot reflects the change.",
+      "Block until the preview's HMR pipeline reaches a terminal status (applied / rejected / compile-error / full-reload-required / discarded) or the timeout elapses. Call this immediately after editing source files so the subsequent screenshot reflects the change. Without a requested GPU proof state, an applied GPU HMR response may return proof_pending/gpu_hmr_dev_loop metadata: this is the non-blocking dev-loop status only, not GPU HMR acceptance.",
     inputSchema: {
       type: "object",
       properties: {
@@ -196,7 +196,7 @@ const TOOLS = [
             "gpu-hmr-host-preservation-proven",
             "gpu-hmr-full-runtime-proven",
           ],
-          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation.",
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation. Omit this only for non-blocking dev-loop UX where proof_pending remains acceptedForGpuHmr=false.",
         },
         requireGpuFullRuntimeProof: {
           type: "boolean",

@@ -54,6 +54,12 @@ Highest-leverage operational fixes:
 
 This performance work must not weaken proof gates. It makes the proof ledger asynchronous, content-addressed, incremental, and transport-aware while preserving fail-closed acceptance.
 
+Current implementation note:
+
+```text
+2026-06-28: `synthi_wait_hmr` now exposes a generic proof-pending dev-loop contract for non-strict applied HMR responses. The response can carry `proof_pending=true` and `gpu_hmr_dev_loop.evidence_authority=hmr_fast_path_only_not_gpu_hmr_acceptance`, with `accepted_for_gpu_hmr=false` and `gpu_hmr_success=false`. Strict callers still request `requiredGpuProofState` or `requireGpuFullRuntimeProof` and still fail closed with `gpu_hmr_proof_insufficient` when the proof ladder is missing or insufficient.
+```
+
 ## 2. Immediate Corrections To The Previous Plan
 
 ### 2.1 Delta model requirement
