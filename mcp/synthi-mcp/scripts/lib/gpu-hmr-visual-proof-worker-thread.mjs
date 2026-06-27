@@ -20,8 +20,8 @@ let cachedWorkerIdentity = null;
 
 if (!isMainThread) {
   runWorker(workerData?.request ?? {}, workerData?.options ?? {})
-    .then((result) => parentPort.postMessage(result))
-    .catch((error) => parentPort.postMessage(failResult('visual_worker_uncaught_error', {
+    .then((result) => postWorkerResult(result))
+    .catch((error) => postWorkerResult(failResult('visual_worker_uncaught_error', {
       message: error?.message ?? String(error),
     })));
 }
@@ -730,6 +730,11 @@ function failResult(reason, details = {}) {
     gaps: [reason],
     details,
   });
+}
+
+function postWorkerResult(result) {
+  parentPort.postMessage(result);
+  parentPort.close();
 }
 
 async function currentVisualWorkerIdentity() {

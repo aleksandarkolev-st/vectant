@@ -31,10 +31,25 @@ export async function computeAsyncVisualProof(input = {}, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
     let worker = null;
-    const finish = (result) => {
+    const cleanupWorker = async () => {
+      const currentWorker = worker;
+      worker = null;
+      if (currentWorker) {
+        currentWorker.removeAllListeners('message');
+        currentWorker.removeAllListeners('error');
+        currentWorker.removeAllListeners('exit');
+        try {
+          await currentWorker.terminate();
+        } catch {
+          // The result is already fail-closed or accepted; cleanup must not mask it.
+        }
+      }
+    };
+    const finish = async (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      await cleanupWorker();
       resolve(normalizeWorkerResult(result, startedAt, {
         expectedWorkerExecutableHash,
       }));
@@ -46,9 +61,6 @@ export async function computeAsyncVisualProof(input = {}, options = {}) {
         durationMs: Date.now() - startedAt,
         timeoutMs,
       });
-      if (worker) {
-        worker.terminate().catch(() => {});
-      }
       finish(timeoutResult);
     }, timeoutMs);
 
