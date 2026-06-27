@@ -74,6 +74,8 @@ assert.equal(proof.acceptedAsAsyncVisualMetrics, true);
 assert.equal(proof.acceptedForGpuHmr, false);
 assert.equal(proof.gpuHmrSuccess, false);
 assert.equal(proof.worker.offMainThread, true);
+assert.match(proof.worker.executableHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(proof.worker.executableHash, proof.worker.executable_hash);
 assert.equal(proof.incremental.fullFrameDiffComputed, true);
 assert.equal(proof.incremental.tileHashing, true);
 assert.ok(proof.changedRatio > 0);
@@ -155,6 +157,19 @@ const forgedSuccess = await computeAsyncVisualProof({
 });
 assert.equal(forgedSuccess.accepted, false);
 assert.ok(forgedSuccess.reasons.includes('before_cas_manifest_rejected'));
+
+const forgedWorkerIdentity = await computeAsyncVisualProof({
+  before: { casManifest: beforeManifest },
+  after: { casManifest: afterManifest },
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+  expectedWorkerExecutableHash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+});
+assert.equal(forgedWorkerIdentity.accepted, false);
+assert.equal(forgedWorkerIdentity.acceptedForGpuHmr, false);
+assert.equal(forgedWorkerIdentity.gpuHmrSuccess, false);
+assert.ok(forgedWorkerIdentity.reasons.includes('visual_worker_executable_hash_mismatch'));
 
 const escapedManifest = {
   ...beforeManifest,

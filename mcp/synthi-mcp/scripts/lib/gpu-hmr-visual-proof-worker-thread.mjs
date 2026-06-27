@@ -14,6 +14,9 @@ import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
 } from './gpu-hmr-visual-proof-worker.mjs';
 
+let activeWorkerIdentity = null;
+let cachedWorkerIdentity = null;
+
 if (!isMainThread) {
   runWorker(workerData?.request ?? {}, workerData?.options ?? {})
     .then((result) => parentPort.postMessage(result))
@@ -32,9 +35,25 @@ async function runWorker(request, options) {
   const gaps = [];
   const allowedRoots = Array.isArray(options.allowedRoots) ? options.allowedRoots : [];
   const allowedOutputRoots = Array.isArray(options.allowedOutputRoots) ? options.allowedOutputRoots : [];
+  activeWorkerIdentity = await currentVisualWorkerIdentity();
 
   if (request?.schemaVersion && request.schemaVersion !== GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION) {
     reasons.push('visual_worker_schema_invalid');
+  }
+  const expectedWorkerExecutableHash = text(
+    options.expectedWorkerExecutableHash
+    ?? request.expectedWorkerExecutableHash
+    ?? request.expected_worker_executable_hash,
+  );
+  if (!activeWorkerIdentity.executableHash) {
+    reasons.push('visual_worker_executable_hash_missing');
+    gaps.push('visual_worker_executable_hash_missing');
+  } else if (
+    expectedWorkerExecutableHash
+    && expectedWorkerExecutableHash !== activeWorkerIdentity.executableHash
+  ) {
+    reasons.push('visual_worker_executable_hash_mismatch');
+    gaps.push('visual_worker_executable_hash_mismatch');
   }
 
   if (options?.diagnosticDelayMs) {
@@ -571,6 +590,7 @@ function finalizeResult(input) {
       thread_id: threadId,
       offMainThread: !isMainThread,
       off_main_thread: !isMainThread,
+      ...(activeWorkerIdentity ?? {}),
     },
     incremental: {
       roiEvaluated: false,
@@ -607,6 +627,23 @@ function failResult(reason, details = {}) {
     gaps: [reason],
     details,
   });
+}
+
+async function currentVisualWorkerIdentity() {
+  if (cachedWorkerIdentity) return cachedWorkerIdentity;
+  const scriptBytes = await readFile(new URL(import.meta.url));
+  const executableHash = sha256Bytes(scriptBytes);
+  cachedWorkerIdentity = {
+    identitySchemaVersion: 'synthi.gpu_hmr.visual_worker_identity.v1',
+    identity_schema_version: 'synthi.gpu_hmr.visual_worker_identity.v1',
+    executorIdentity: 'node_worker_threads_visual_proof_worker',
+    executor_identity: 'node_worker_threads_visual_proof_worker',
+    executableHash,
+    executable_hash: executableHash,
+    scriptUrl: import.meta.url,
+    script_url: import.meta.url,
+  };
+  return cachedWorkerIdentity;
 }
 
 function firstObject(...values) {
