@@ -69,10 +69,9 @@ async function runWorker(request, options) {
   let decodedBefore;
   let decodedAfter;
   try {
-    decodedBefore = await sharp(before.bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-    decodedAfter = await sharp(after.bytes)
+    decodedBefore = await imagePipeline(before.bytes, request).raw().toBuffer({ resolveWithObject: true });
+    decodedAfter = await imagePipeline(after.bytes, request)
       .resize(decodedBefore.info.width, decodedBefore.info.height, { fit: 'fill' })
-      .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
   } catch (error) {
@@ -177,8 +176,20 @@ async function runWorker(request, options) {
         changed_ratio: fullFrameDiff.changedRatio,
         meanAbs: fullFrameDiff.meanAbs,
         mean_abs: fullFrameDiff.meanAbs,
+        meanAbsDelta8bit: fullFrameDiff.meanAbsDelta8bit,
+        mean_abs_delta_8bit: fullFrameDiff.meanAbsDelta8bit,
         changedPixels: fullFrameDiff.changedPixels,
         changed_pixels: fullFrameDiff.changedPixels,
+        changedPixelsThreshold4: fullFrameDiff.changedPixelsThreshold4,
+        changed_pixels_threshold_4: fullFrameDiff.changedPixelsThreshold4,
+        changedPixelRatioThreshold4: fullFrameDiff.changedPixelRatioThreshold4,
+        changed_pixel_ratio_threshold_4: fullFrameDiff.changedPixelRatioThreshold4,
+        visiblePixelCount: fullFrameDiff.visiblePixelCount,
+        visible_pixel_count: fullFrameDiff.visiblePixelCount,
+        visiblePixelRatio: fullFrameDiff.visiblePixelRatio,
+        visible_pixel_ratio: fullFrameDiff.visiblePixelRatio,
+        meanLuma8bit: fullFrameDiff.meanLuma8bit,
+        mean_luma_8bit: fullFrameDiff.meanLuma8bit,
         pixelCount: fullFrameDiff.pixelCount,
         pixel_count: fullFrameDiff.pixelCount,
       }
@@ -187,8 +198,20 @@ async function runWorker(request, options) {
         changed_ratio: 0,
         meanAbs: 0,
         mean_abs: 0,
+        meanAbsDelta8bit: 0,
+        mean_abs_delta_8bit: 0,
         changedPixels: 0,
         changed_pixels: 0,
+        changedPixelsThreshold4: 0,
+        changed_pixels_threshold_4: 0,
+        changedPixelRatioThreshold4: 0,
+        changed_pixel_ratio_threshold_4: 0,
+        visiblePixelCount: 0,
+        visible_pixel_count: 0,
+        visiblePixelRatio: 0,
+        visible_pixel_ratio: 0,
+        meanLuma8bit: 0,
+        mean_luma_8bit: 0,
         pixelCount: Math.max(1, dimensions.width * dimensions.height),
         pixel_count: Math.max(1, dimensions.width * dimensions.height),
       };
@@ -222,8 +245,20 @@ async function runWorker(request, options) {
           changed_ratio: metrics.changedRatio,
           meanAbs: metrics.meanAbs,
           mean_abs: metrics.meanAbs,
+          meanAbsDelta8bit: metrics.meanAbsDelta8bit,
+          mean_abs_delta_8bit: metrics.meanAbsDelta8bit,
           changedPixels: metrics.changedPixels,
           changed_pixels: metrics.changedPixels,
+          changedPixelsThreshold4: metrics.changedPixelsThreshold4,
+          changed_pixels_threshold_4: metrics.changedPixelsThreshold4,
+          changedPixelRatioThreshold4: metrics.changedPixelRatioThreshold4,
+          changed_pixel_ratio_threshold_4: metrics.changedPixelRatioThreshold4,
+          visiblePixelCount: metrics.visiblePixelCount,
+          visible_pixel_count: metrics.visiblePixelCount,
+          visiblePixelRatio: metrics.visiblePixelRatio,
+          visible_pixel_ratio: metrics.visiblePixelRatio,
+          meanLuma8bit: metrics.meanLuma8bit,
+          mean_luma_8bit: metrics.meanLuma8bit,
           pixelCount: metrics.pixelCount,
           pixel_count: metrics.pixelCount,
         }
@@ -341,14 +376,33 @@ function computeFullFrameDiff(before, after) {
   const pixelCount = Math.max(1, before.info.width * before.info.height);
   const diffBytes = Buffer.alloc(pixelCount * 4);
   let changedPixels = 0;
-  let totalAbs = 0;
+  let changedPixelsThreshold4 = 0;
+  let visiblePixelCount = 0;
+  let totalLuma = 0;
+  let totalAbsRgb = 0;
+  let totalAbsAllChannels = 0;
   for (let i = 0, p = 0; i < before.data.length && i < after.data.length; i += before.info.channels, p += 4) {
     const dr = Math.abs((before.data[i] ?? 0) - (after.data[i] ?? 0));
     const dg = Math.abs((before.data[i + 1] ?? 0) - (after.data[i + 1] ?? 0));
     const db = Math.abs((before.data[i + 2] ?? 0) - (after.data[i + 2] ?? 0));
+    const da = before.info.channels >= 4
+      ? Math.abs((before.data[i + 3] ?? 0) - (after.data[i + 3] ?? 0))
+      : 0;
     const delta = dr + dg + db;
-    totalAbs += delta / 3;
+    const alpha = before.info.channels >= 4 ? (after.data[i + 3] ?? 0) : 255;
+    totalAbsRgb += delta / 3;
+    totalAbsAllChannels += delta + da;
     if (delta > 42) changedPixels += 1;
+    if (Math.max(dr, dg, db) > 4) changedPixelsThreshold4 += 1;
+    if (
+      alpha > 0
+      && ((after.data[i] ?? 0) > 4 || (after.data[i + 1] ?? 0) > 4 || (after.data[i + 2] ?? 0) > 4)
+    ) {
+      visiblePixelCount += 1;
+    }
+    totalLuma += 0.2126 * (after.data[i] ?? 0)
+      + 0.7152 * (after.data[i + 1] ?? 0)
+      + 0.0722 * (after.data[i + 2] ?? 0);
     diffBytes[p] = Math.min(255, dr * 4);
     diffBytes[p + 1] = Math.min(255, dg * 4);
     diffBytes[p + 2] = Math.min(255, db * 4);
@@ -356,11 +410,24 @@ function computeFullFrameDiff(before, after) {
   }
   return {
     changedRatio: changedPixels / pixelCount,
-    meanAbs: totalAbs / pixelCount,
+    meanAbs: totalAbsRgb / pixelCount,
+    meanAbsDelta8bit: totalAbsAllChannels / (pixelCount * Math.max(1, before.info.channels)),
     changedPixels,
+    changedPixelsThreshold4,
+    changedPixelRatioThreshold4: changedPixelsThreshold4 / pixelCount,
+    visiblePixelCount,
+    visiblePixelRatio: visiblePixelCount / pixelCount,
+    meanLuma8bit: totalLuma / pixelCount,
     pixelCount,
     diffBytes,
   };
+}
+
+function imagePipeline(bytes, request) {
+  const pipeline = sharp(bytes);
+  return (request.includeAlpha === true || request.include_alpha === true)
+    ? pipeline.ensureAlpha()
+    : pipeline.removeAlpha();
 }
 
 function computeTileHashes(before, after, tileSize) {

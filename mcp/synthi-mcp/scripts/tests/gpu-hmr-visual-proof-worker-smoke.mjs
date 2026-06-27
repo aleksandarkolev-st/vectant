@@ -78,6 +78,11 @@ assert.equal(proof.incremental.fullFrameDiffComputed, true);
 assert.equal(proof.incremental.tileHashing, true);
 assert.ok(proof.changedRatio > 0);
 assert.ok(proof.meanAbs > 0);
+assert.ok(proof.metrics.changedPixelsThreshold4 > 0);
+assert.ok(proof.metrics.changedPixelRatioThreshold4 > 0);
+assert.ok(proof.metrics.meanAbsDelta8bit > 0);
+assert.ok(proof.metrics.visiblePixelCount > 0);
+assert.ok(proof.metrics.meanLuma8bit > 0);
 assert.ok(proof.tileEvidence.changedTileCount > 0);
 assert.equal((await stat(diffPath)).isFile(), true);
 

@@ -1215,6 +1215,48 @@ await writeJson(path.join(visualDir, 'run-mode-forged-readable-no-hash-diff.json
   },
 });
 
+const visualDimensionMismatchDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-visual-dimension-mismatch',
+);
+const visualDimensionMismatchBefore = path.join(visualDimensionMismatchDir, 'before-hmr-first.png');
+const visualDimensionMismatchAfter = path.join(visualDimensionMismatchDir, 'after-hmr-first.png');
+const visualDimensionMismatchDiff = path.join(visualDimensionMismatchDir, 'before-after-diff.png');
+await writeRgbaPng(visualDimensionMismatchBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(visualDimensionMismatchAfter, 16, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
+await writeRgbaPng(visualDimensionMismatchDiff, 16, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(visualDimensionMismatchDir, 'run-mode-visual-dimension-mismatch.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:visual-dimension-mismatch',
+    'gpu-runtime-proof:sha256:visual-dimension-mismatch',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'visual-dimension-mismatch',
+    visualRoot: visualDimensionMismatchDir,
+  }),
+  targetId: 'visual-dimension-mismatch',
+  profileId: 'visual-dimension-mismatch',
+  proofId: 'agent-split-run-mode-proof:sha256:visual-dimension-mismatch',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: visualDimensionMismatchBefore,
+    after: visualDimensionMismatchAfter,
+    diff: visualDimensionMismatchDiff,
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:visual-dimension-mismatch',
+    editHash: hashValue('visual-dimension-mismatch'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+
 const webgpuSingleFrameColdDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-webgpu-single-frame-cold');
 await writeRgbaPng(path.join(webgpuSingleFrameColdDir, 'initial-frame.png'), 8, 8, (x, y) =>
   x >= y ? [20 + x, 64 + y, 180, 255] : [0, 0, 0, 255]);
@@ -3771,6 +3813,36 @@ assert.equal(acceptedFlow.acceptedForGpuHmr, true);
 assert.equal(acceptedFlow.visual.accepted, true);
 assert.equal(acceptedFlow.visual.allImagesAreDecodedPng, true);
 assert.equal(acceptedFlow.visual.decodedImageCount, 3);
+assert.equal(acceptedFlow.visual.recomputedVisualPair.source, 'matrix_recomputed_png_pixels');
+assert.equal(acceptedFlow.visual.recomputedVisualPair.recomputeEngine, 'matrix_local_sharp_rgba');
+assert.equal(acceptedFlow.visual.recomputedVisualPair.accepted, true);
+assert.equal(
+  acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.proofAuthority,
+  'async_visual_metrics_only',
+);
+assert.equal(acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr, false);
+assert.equal(acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics ?? {},
+    'proofHash',
+  ),
+  false,
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics ?? {},
+    'durationMs',
+  ),
+  false,
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.worker ?? {},
+    'threadId',
+  ),
+  false,
+);
 assert.equal(acceptedFlow.runMode.accepted, true);
 assert.equal(acceptedFlow.runMode.metricScope, 'hot_delta_1');
 assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
@@ -5028,6 +5100,30 @@ assert.equal(forgedReadableNoHashDiff.acceptedForGpuHmr, false);
 assert.equal(forgedReadableNoHashDiff.visual.present, true);
 assert.equal(forgedReadableNoHashDiff.visual.allImagesAreDecodedPng, true);
 assert.equal(forgedReadableNoHashDiff.visual.recomputedVisualPair.accepted, true);
+assert.equal(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.proofAuthority,
+  'async_visual_metrics_only',
+);
+assert.equal(forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.accepted, true);
+assert.equal(
+  forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr,
+  false,
+);
+assert.equal(forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics ?? {},
+    'proofHash',
+  ),
+  false,
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    forgedReadableNoHashDiff.visual.recomputedVisualPair.asyncVisualMetrics?.worker ?? {},
+    'threadId',
+  ),
+  false,
+);
 assert.equal(forgedReadableNoHashDiff.visual.requireDeclaredHashes, true);
 assert.equal(forgedReadableNoHashDiff.visual.requireDiff, true);
 assert.equal(forgedReadableNoHashDiff.visual.allRequiredHashesDeclared, false);
@@ -5037,6 +5133,22 @@ assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_before_ar
 assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_after_artifact_hash_missing'));
 assert.ok(forgedReadableNoHashDiff.visual.failedGates.includes('visual_diff_artifact_missing'));
 assert.ok(forgedReadableNoHashDiff.reasons.includes('visual_artifacts_not_readable'));
+
+const visualDimensionMismatch = ledger.rows.find((row) =>
+  row.targetId === 'visual-dimension-mismatch'
+);
+assert.equal(visualDimensionMismatch?.matrixOutcome, 'unproven');
+assert.equal(visualDimensionMismatch.acceptedForGpuHmr, false);
+assert.equal(visualDimensionMismatch.visual.present, true);
+assert.equal(visualDimensionMismatch.visual.allImagesAreDecodedPng, true);
+assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.accepted, false);
+assert.ok(visualDimensionMismatch.visual.recomputedVisualPair.failedGates.some((gate) =>
+  gate.code === 'visual_pair_dimension_mismatch'
+));
+assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetrics?.accepted, true);
+assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr, false);
+assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
+assert.ok(visualDimensionMismatch.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
 
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');

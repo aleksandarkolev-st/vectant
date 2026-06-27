@@ -7,6 +7,11 @@ import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
+import {
+  GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+  GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  computeAsyncVisualProof,
+} from './gpu-hmr-visual-proof-worker.mjs';
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION =
   'synthi.gpu.hmr.validation_matrix_ledger.v1';
@@ -738,6 +743,199 @@ function preferredVisualImage(images, role) {
     ?? images.find((item) => item.role === role);
 }
 
+function visualWorkerAllowedRoots(images) {
+  return [...new Set((Array.isArray(images) ? images : [])
+    .map((item) => item?.absolutePath ?? item?.path)
+    .filter(Boolean)
+    .map((filePath) => path.dirname(path.resolve(filePath))))];
+}
+
+function visualWorkerTimeoutMs() {
+  const value = Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000);
+  return Number.isSafeInteger(value) && value > 0 ? value : 30000;
+}
+
+function summarizeAsyncVisualProof(proof) {
+  if (!isObject(proof)) return null;
+  const tileEvidence = isObject(proof.tileEvidence ?? proof.tile_evidence)
+    ? proof.tileEvidence ?? proof.tile_evidence
+    : null;
+  const roiEvidence = isObject(proof.roiEvidence ?? proof.roi_evidence)
+    ? proof.roiEvidence ?? proof.roi_evidence
+    : null;
+  const inputHashes = isObject(proof.inputHashes ?? proof.input_hashes)
+    ? proof.inputHashes ?? proof.input_hashes
+    : {};
+  const metrics = isObject(proof.metrics) ? proof.metrics : {};
+  const dimensions = isObject(proof.dimensions) ? proof.dimensions : {};
+  const incremental = isObject(proof.incremental) ? proof.incremental : {};
+  const worker = isObject(proof.worker) ? proof.worker : {};
+  const stableMetrics = {
+    changedRatio: finiteNumber(metrics.changedRatio ?? metrics.changed_ratio),
+    changed_ratio: finiteNumber(metrics.changedRatio ?? metrics.changed_ratio),
+    meanAbs: finiteNumber(metrics.meanAbs ?? metrics.mean_abs),
+    mean_abs: finiteNumber(metrics.meanAbs ?? metrics.mean_abs),
+    meanAbsDelta8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
+    mean_abs_delta_8bit: finiteNumber(metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit),
+    changedPixels: finiteNumber(metrics.changedPixels ?? metrics.changed_pixels),
+    changed_pixels: finiteNumber(metrics.changedPixels ?? metrics.changed_pixels),
+    changedPixelsThreshold4: finiteNumber(metrics.changedPixelsThreshold4 ?? metrics.changed_pixels_threshold_4),
+    changed_pixels_threshold_4: finiteNumber(metrics.changedPixelsThreshold4 ?? metrics.changed_pixels_threshold_4),
+    changedPixelRatioThreshold4:
+      finiteNumber(metrics.changedPixelRatioThreshold4 ?? metrics.changed_pixel_ratio_threshold_4),
+    changed_pixel_ratio_threshold_4:
+      finiteNumber(metrics.changedPixelRatioThreshold4 ?? metrics.changed_pixel_ratio_threshold_4),
+    visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
+    visible_pixel_count: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
+    visiblePixelRatio: finiteNumber(metrics.visiblePixelRatio ?? metrics.visible_pixel_ratio),
+    visible_pixel_ratio: finiteNumber(metrics.visiblePixelRatio ?? metrics.visible_pixel_ratio),
+    meanLuma8bit: finiteNumber(metrics.meanLuma8bit ?? metrics.mean_luma_8bit),
+    mean_luma_8bit: finiteNumber(metrics.meanLuma8bit ?? metrics.mean_luma_8bit),
+    pixelCount: finiteNumber(metrics.pixelCount ?? metrics.pixel_count),
+    pixel_count: finiteNumber(metrics.pixelCount ?? metrics.pixel_count),
+  };
+  return {
+    schemaVersion: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+    schema_version: proof.schemaVersion ?? proof.schema_version ?? GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+    eventType: proof.eventType ?? proof.event_type ?? 'proof_ready',
+    event_type: proof.eventType ?? proof.event_type ?? 'proof_ready',
+    accepted: proof.accepted === true,
+    acceptedAsAsyncVisualMetrics: proof.acceptedAsAsyncVisualMetrics === true,
+    accepted_as_async_visual_metrics: proof.acceptedAsAsyncVisualMetrics === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+    proof_authority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+    worker: {
+      kind: text(worker.kind) || 'node_worker_threads',
+      offMainThread: worker.offMainThread === true,
+      off_main_thread: worker.offMainThread === true,
+      failedBeforeWorkerCompletion: worker.failedBeforeWorkerCompletion === true,
+      failed_before_worker_completion: worker.failedBeforeWorkerCompletion === true,
+    },
+    incremental: {
+      roiEvaluated: incremental.roiEvaluated === true,
+      roi_evaluated: incremental.roiEvaluated === true,
+      tileHashing: incremental.tileHashing === true,
+      tile_hashing: incremental.tileHashing === true,
+      fullFrameDiffComputed: incremental.fullFrameDiffComputed === true,
+      full_frame_diff_computed: incremental.fullFrameDiffComputed === true,
+      deepDiffSkipped: incremental.deepDiffSkipped === true,
+      deep_diff_skipped: incremental.deepDiffSkipped === true,
+      skipReason: text(incremental.skipReason ?? incremental.skip_reason) || null,
+      skip_reason: text(incremental.skipReason ?? incremental.skip_reason) || null,
+    },
+    dimensions: {
+      width: finiteNumber(dimensions.width),
+      height: finiteNumber(dimensions.height),
+      channels: finiteNumber(dimensions.channels),
+    },
+    inputHashes: {
+      beforeEncodedHash: text(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash) || null,
+      before_encoded_hash: text(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash) || null,
+      afterEncodedHash: text(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash) || null,
+      after_encoded_hash: text(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash) || null,
+      beforeRawHash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
+      before_raw_hash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
+      afterRawHash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
+      after_raw_hash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
+    },
+    input_hashes: {
+      before_encoded_hash: text(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash) || null,
+      after_encoded_hash: text(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash) || null,
+      before_raw_hash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
+      after_raw_hash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
+    },
+    metrics: stableMetrics,
+    roiEvidence: roiEvidence
+      ? {
+          accepted: roiEvidence.accepted === true,
+          changed: roiEvidence.changed === true,
+          beforeHash: text(roiEvidence.beforeHash ?? roiEvidence.before_hash) || null,
+          before_hash: text(roiEvidence.beforeHash ?? roiEvidence.before_hash) || null,
+          afterHash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
+          after_hash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
+        }
+      : null,
+    roi_evidence: roiEvidence
+      ? {
+          accepted: roiEvidence.accepted === true,
+          changed: roiEvidence.changed === true,
+          before_hash: text(roiEvidence.beforeHash ?? roiEvidence.before_hash) || null,
+          after_hash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
+        }
+      : null,
+    tileEvidence: tileEvidence
+      ? {
+          accepted: tileEvidence.accepted === true,
+          tileSize: tileEvidence.tileSize ?? tileEvidence.tile_size ?? null,
+          tile_size: tileEvidence.tileSize ?? tileEvidence.tile_size ?? null,
+          tileCount: tileEvidence.tileCount ?? tileEvidence.tile_count ?? null,
+          tile_count: tileEvidence.tileCount ?? tileEvidence.tile_count ?? null,
+          changedTileCount: tileEvidence.changedTileCount ?? tileEvidence.changed_tile_count ?? null,
+          changed_tile_count: tileEvidence.changedTileCount ?? tileEvidence.changed_tile_count ?? null,
+          changedTileRatio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
+          changed_tile_ratio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
+        }
+      : null,
+    tile_evidence: tileEvidence
+      ? {
+          accepted: tileEvidence.accepted === true,
+          tile_size: tileEvidence.tileSize ?? tileEvidence.tile_size ?? null,
+          tile_count: tileEvidence.tileCount ?? tileEvidence.tile_count ?? null,
+          changed_tile_count: tileEvidence.changedTileCount ?? tileEvidence.changed_tile_count ?? null,
+          changed_tile_ratio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
+        }
+      : null,
+    reasons: Array.isArray(proof.reasons) ? proof.reasons : [],
+    gaps: Array.isArray(proof.gaps) ? proof.gaps : [],
+  };
+}
+
+async function asyncVisualMetricsForPair(before, after, request = {}) {
+  if (!before?.absolutePath || !after?.absolutePath) return null;
+  try {
+    const proof = await computeAsyncVisualProof({
+      before: { path: before.absolutePath },
+      after: { path: after.absolutePath },
+      includeAlpha: true,
+      tileSize: 128,
+      ...request,
+    }, {
+      allowedRoots: visualWorkerAllowedRoots([before, after]),
+      timeoutMs: visualWorkerTimeoutMs(),
+    });
+    return summarizeAsyncVisualProof(proof);
+  } catch (error) {
+    return summarizeAsyncVisualProof({
+      schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+      eventType: 'proof_ready',
+      accepted: false,
+      acceptedAsAsyncVisualMetrics: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+      worker: {
+        kind: 'node_worker_threads',
+        offMainThread: true,
+        failedBeforeWorkerCompletion: true,
+      },
+      incremental: {
+        roiEvaluated: false,
+        tileHashing: false,
+        fullFrameDiffComputed: false,
+        deepDiffSkipped: false,
+        skipReason: null,
+      },
+      reasons: ['async_visual_metrics_worker_failed'],
+      gaps: ['async_visual_metrics_worker_failed'],
+      details: { message: error?.message ? String(error.message) : String(error) },
+    });
+  }
+}
+
 async function recomputeVisualPairEvidence(images) {
   const before = preferredVisualImage(images, 'before');
   const after = preferredVisualImage(images, 'after');
@@ -759,56 +957,60 @@ async function recomputeVisualPairEvidence(images) {
     };
   }
   try {
-    const beforePixels = await sharp(before.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const afterPixels = await sharp(after.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const sameResolution =
-      beforePixels.info.width === afterPixels.info.width
-      && beforePixels.info.height === afterPixels.info.height;
-    if (!sameResolution) {
+    const asyncVisualMetrics = await asyncVisualMetricsForPair(before, after);
+    if (before.width !== after.width || before.height !== after.height) {
       return {
         present: true,
         accepted: false,
         source: 'matrix_recomputed_png_pixels',
+        asyncVisualMetrics,
+        async_visual_metrics: asyncVisualMetrics,
         failedGates: [{ code: 'visual_pair_dimension_mismatch' }],
       };
     }
-    const pixelCount = beforePixels.info.width * beforePixels.info.height;
+    const beforeFrame = await sharp(before.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const afterFrame = await sharp(after.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    if (
+      beforeFrame.info.width !== afterFrame.info.width
+      || beforeFrame.info.height !== afterFrame.info.height
+      || beforeFrame.info.channels !== afterFrame.info.channels
+    ) {
+      return {
+        present: true,
+        accepted: false,
+        source: 'matrix_recomputed_png_pixels',
+        asyncVisualMetrics,
+        async_visual_metrics: asyncVisualMetrics,
+        failedGates: [{ code: 'visual_pair_dimension_mismatch' }],
+      };
+    }
+    const pixelCount = beforeFrame.info.width * beforeFrame.info.height;
     let changedPixelsThreshold4 = 0;
     let totalAbsDelta = 0;
     let visiblePixelCount = 0;
-    for (let i = 0; i < pixelCount; i += 1) {
-      const offset = i * 4;
-      const dr = Math.abs(beforePixels.data[offset] - afterPixels.data[offset]);
-      const dg = Math.abs(beforePixels.data[offset + 1] - afterPixels.data[offset + 1]);
-      const db = Math.abs(beforePixels.data[offset + 2] - afterPixels.data[offset + 2]);
-      const da = Math.abs(beforePixels.data[offset + 3] - afterPixels.data[offset + 3]);
-      const maxDelta = Math.max(dr, dg, db);
-      if (maxDelta > 4) changedPixelsThreshold4 += 1;
+    for (let i = 0; i < beforeFrame.data.length; i += 4) {
+      const dr = Math.abs(beforeFrame.data[i] - afterFrame.data[i]);
+      const dg = Math.abs(beforeFrame.data[i + 1] - afterFrame.data[i + 1]);
+      const db = Math.abs(beforeFrame.data[i + 2] - afterFrame.data[i + 2]);
+      const da = Math.abs(beforeFrame.data[i + 3] - afterFrame.data[i + 3]);
+      if (Math.max(dr, dg, db) > 4) changedPixelsThreshold4 += 1;
       if (
-        afterPixels.data[offset + 3] > 0
-        && (afterPixels.data[offset] > 4 || afterPixels.data[offset + 1] > 4 || afterPixels.data[offset + 2] > 4)
+        afterFrame.data[i + 3] > 0
+        && (afterFrame.data[i] > 4 || afterFrame.data[i + 1] > 4 || afterFrame.data[i + 2] > 4)
       ) {
         visiblePixelCount += 1;
       }
       totalAbsDelta += dr + dg + db + da;
     }
-    let diffVisiblePixelCount = null;
-    if (diff?.decoded) {
-      const diffPixels = await sharp(diff.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-      diffVisiblePixelCount = 0;
-      const diffPixelCount = diffPixels.info.width * diffPixels.info.height;
-      for (let i = 0; i < diffPixelCount; i += 1) {
-        const offset = i * 4;
-        if (
-          diffPixels.data[offset + 3] > 0
-          && (diffPixels.data[offset] > 4 || diffPixels.data[offset + 1] > 4 || diffPixels.data[offset + 2] > 4)
-        ) {
-          diffVisiblePixelCount += 1;
-        }
-      }
-    }
     const changedPixelRatio = pixelCount > 0 ? changedPixelsThreshold4 / pixelCount : null;
     const meanAbsDelta8bit = pixelCount > 0 ? totalAbsDelta / (pixelCount * 4) : null;
+    let diffVisiblePixelCount = null;
+    if (diff?.decoded) {
+      const diffFrame = await recomputeSingleVisualFrameEvidence([diff], {
+        includeAsyncVisualMetrics: false,
+      });
+      diffVisiblePixelCount = finiteNumber(diffFrame.visiblePixelCount ?? diffFrame.visible_pixel_count);
+    }
     const accepted =
       Number(changedPixelRatio) > 0
       && Number(meanAbsDelta8bit) > 0
@@ -818,8 +1020,12 @@ async function recomputeVisualPairEvidence(images) {
       present: true,
       accepted,
       source: 'matrix_recomputed_png_pixels',
-      width: beforePixels.info.width,
-      height: beforePixels.info.height,
+      recomputeEngine: 'matrix_local_sharp_rgba',
+      recompute_engine: 'matrix_local_sharp_rgba',
+      asyncVisualMetrics,
+      async_visual_metrics: asyncVisualMetrics,
+      width: beforeFrame.info.width,
+      height: beforeFrame.info.height,
       changedPixelsThreshold4,
       changedPixelRatio,
       changed_pixel_ratio: changedPixelRatio,
@@ -837,10 +1043,13 @@ async function recomputeVisualPairEvidence(images) {
       ]).map((code) => ({ code })),
     };
   } catch (error) {
+    const asyncVisualMetrics = await asyncVisualMetricsForPair(before, after);
     return {
       present: true,
       accepted: false,
       source: 'matrix_recomputed_png_pixels',
+      asyncVisualMetrics,
+      async_visual_metrics: asyncVisualMetrics,
       failedGates: [{
         code: 'visual_pair_pixel_recompute_error',
         message: error?.message ? String(error.message) : String(error),
@@ -849,7 +1058,7 @@ async function recomputeVisualPairEvidence(images) {
   }
 }
 
-async function recomputeSingleVisualFrameEvidence(images) {
+async function recomputeSingleVisualFrameEvidence(images, options = {}) {
   const image =
     preferredVisualImage(images, 'after')
     ?? preferredVisualImage(images, 'before')
@@ -872,30 +1081,37 @@ async function recomputeSingleVisualFrameEvidence(images) {
     };
   }
   try {
-    const pixels = await sharp(image.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const pixelCount = pixels.info.width * pixels.info.height;
+    const includeAsyncVisualMetrics = options.includeAsyncVisualMetrics !== false;
+    const asyncVisualMetrics = includeAsyncVisualMetrics
+      ? await asyncVisualMetricsForPair(image, image, { tileHashing: false })
+      : null;
+    const frame = await sharp(image.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pixelCount = frame.info.width * frame.info.height;
     let visiblePixelCount = 0;
-    let totalLuma = 0;
-    for (let i = 0; i < pixelCount; i += 1) {
-      const offset = i * 4;
-      const r = pixels.data[offset];
-      const g = pixels.data[offset + 1];
-      const b = pixels.data[offset + 2];
-      const a = pixels.data[offset + 3];
+    let lumaSum = 0;
+    for (let i = 0; i < frame.data.length; i += 4) {
+      const r = frame.data[i];
+      const g = frame.data[i + 1];
+      const b = frame.data[i + 2];
+      const a = frame.data[i + 3];
       if (a > 0 && (r > 4 || g > 4 || b > 4)) visiblePixelCount += 1;
-      totalLuma += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
     }
     const visiblePixelRatio = pixelCount > 0 ? visiblePixelCount / pixelCount : null;
-    const meanLuma8bit = pixelCount > 0 ? totalLuma / pixelCount : null;
+    const meanLuma8bit = pixelCount > 0 ? lumaSum / pixelCount : null;
     const accepted = pixelCount > 0 && visiblePixelCount > 0;
     return {
       present: true,
       accepted,
       source: 'matrix_recomputed_single_png_pixels',
+      recomputeEngine: 'matrix_local_sharp_rgba',
+      recompute_engine: 'matrix_local_sharp_rgba',
+      asyncVisualMetrics,
+      async_visual_metrics: asyncVisualMetrics,
       imageRole: image.role,
       image_role: image.role,
-      width: pixels.info.width,
-      height: pixels.info.height,
+      width: frame.info.width,
+      height: frame.info.height,
       visiblePixelCount,
       visible_pixel_count: visiblePixelCount,
       visiblePixelRatio,
