@@ -4006,6 +4006,8 @@ function realRocmProofSchedulingGate(input = {}) {
       accepted_as_refusal_evidence: false,
       fastFailApplied: false,
       fast_fail_applied: false,
+      skipAsyncRuntimeWaits: false,
+      skip_async_runtime_waits: false,
       failedGates: [],
       failed_gates: [],
       blockingGaps: [],
@@ -4021,6 +4023,13 @@ function realRocmProofSchedulingGate(input = {}) {
     facet.accepted_as_refusal_evidence,
   ) === true;
   const fastFailApplied = firstBool(facet.fastFailApplied, facet.fast_fail_applied) === true;
+  const events = compactObjectList(facet.events);
+  const skipAsyncRuntimeWaits = (
+    firstBool(facet.skipAsyncRuntimeWaits, facet.skip_async_runtime_waits) === true
+    || events.some((event) =>
+      firstBool(event.skipAsyncRuntimeWaits, event.skip_async_runtime_waits) === true
+    )
+  );
   const acceptedForGpuHmr = firstBool(
     facet.acceptedForGpuHmr,
     facet.accepted_for_gpu_hmr,
@@ -4030,7 +4039,6 @@ function realRocmProofSchedulingGate(input = {}) {
     facet.canSatisfyRuntimeProof,
     facet.can_satisfy_runtime_proof,
   );
-  const events = compactObjectList(facet.events);
   const validationBlockers = compactObjectList([
     ...(Array.isArray(facet.validationBlockers) ? facet.validationBlockers : []),
     ...(Array.isArray(facet.validation_blockers) ? facet.validation_blockers : []),
@@ -4065,6 +4073,12 @@ function realRocmProofSchedulingGate(input = {}) {
     acceptedAsRefusalEvidence && blockingGaps.length === 0
       ? 'real_rocm_proof_scheduling_blocking_gaps_missing'
       : null,
+    skipAsyncRuntimeWaits && !fastFailApplied
+      ? 'real_rocm_proof_scheduling_skip_without_fast_fail'
+      : null,
+    skipAsyncRuntimeWaits && !blockingGaps.includes('proof_scheduling_upstream_lifecycle_runtime_absent')
+      ? 'real_rocm_proof_scheduling_skip_without_upstream_runtime_absence'
+      : null,
     ...blockerGates.flatMap((gate) =>
       gate.failedGates.map((failure) => `validation_blocker:${failure}`)
     ),
@@ -4076,6 +4090,8 @@ function realRocmProofSchedulingGate(input = {}) {
     accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
     fastFailApplied,
     fast_fail_applied: fastFailApplied,
+    skipAsyncRuntimeWaits,
+    skip_async_runtime_waits: skipAsyncRuntimeWaits,
     status: firstText(facet.status, facet.reason),
     schemaVersion,
     schema_version: schemaVersion,

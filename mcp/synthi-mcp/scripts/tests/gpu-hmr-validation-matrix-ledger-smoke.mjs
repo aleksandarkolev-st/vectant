@@ -3425,8 +3425,8 @@ function realRocmProofSchedulingFixture(overrides = {}) {
       diagnostic_collection_budget_ms: 30000,
       proofFastFailEnabled: true,
       proof_fast_fail_enabled: true,
-      skipAsyncRuntimeWaits: false,
-      skip_async_runtime_waits: false,
+      skipAsyncRuntimeWaits: true,
+      skip_async_runtime_waits: true,
     },
     wait_policy: {
       requestedTimeoutMs: 1200000,
@@ -3437,8 +3437,8 @@ function realRocmProofSchedulingFixture(overrides = {}) {
       diagnostic_collection_budget_ms: 30000,
       proofFastFailEnabled: true,
       proof_fast_fail_enabled: true,
-      skipAsyncRuntimeWaits: false,
-      skip_async_runtime_waits: false,
+      skipAsyncRuntimeWaits: true,
+      skip_async_runtime_waits: true,
     },
     contractHash: hashValue('real-rocm-proof-scheduling-blocker'),
     contract_hash: hashValue('real-rocm-proof-scheduling-blocker'),
@@ -3459,6 +3459,8 @@ function realRocmProofSchedulingFixture(overrides = {}) {
     can_satisfy_runtime_proof: false,
     fastFailApplied: true,
     fast_fail_applied: true,
+    skipAsyncRuntimeWaits: true,
+    skip_async_runtime_waits: true,
     eventCount: 1,
     event_count: 1,
     blockingGaps,
@@ -5382,6 +5384,7 @@ assert.equal(largeRocm.realRocmProofScheduling.present, true);
 assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
 assert.equal(largeRocm.realRocmProofScheduling.fastFailApplied, true);
+assert.equal(largeRocm.realRocmProofScheduling.skipAsyncRuntimeWaits, true);
 assert.ok(largeRocm.realRocmProofScheduling.blockingGaps.includes(
   'proof_scheduling_upstream_lifecycle_runtime_absent',
 ));
@@ -5424,6 +5427,7 @@ const emptyProofSchedulingRocm = emptyProofSchedulingLedger.rows.find(
 assert.equal(emptyProofSchedulingRocm?.matrixOutcome, 'refusal_proven');
 assert.equal(emptyProofSchedulingRocm.realRocmProofScheduling.present, false);
 assert.equal(emptyProofSchedulingRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, false);
+assert.equal(emptyProofSchedulingRocm.realRocmProofScheduling.skipAsyncRuntimeWaits, false);
 assert.equal(emptyProofSchedulingRocm.attemptCompleteness.proofSchedulingPresent, false);
 assert.equal(emptyProofSchedulingRocm.attemptCompleteness.proofSchedulingAcceptedAsRefusalEvidence, false);
 assert.equal(emptyProofSchedulingRocm.reasons.some((reason) =>

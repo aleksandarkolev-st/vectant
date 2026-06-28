@@ -6544,6 +6544,9 @@ function realRocmProofSchedulingFacet({
     && acceptedAsRefusalEvidence
     && requested > minDiagnosticWaitMs;
   const effectiveTimeoutMs = fastFailApplied ? minDiagnosticWaitMs : requested;
+  const skipAsyncRuntimeWaits =
+    fastFailApplied
+    && blockingGaps.includes('proof_scheduling_upstream_lifecycle_runtime_absent');
   const waitPolicy = {
     requestedTimeoutMs: requested,
     requested_timeout_ms: requested,
@@ -6553,8 +6556,8 @@ function realRocmProofSchedulingFacet({
     diagnostic_collection_budget_ms: minDiagnosticWaitMs,
     proofFastFailEnabled: CFG.proofFastFailEnabled === true,
     proof_fast_fail_enabled: CFG.proofFastFailEnabled === true,
-    skipAsyncRuntimeWaits: false,
-    skip_async_runtime_waits: false,
+    skipAsyncRuntimeWaits,
+    skip_async_runtime_waits: skipAsyncRuntimeWaits,
   };
   const evidenceRefs = compactStringList([
     `profile:${CFG.realRocmProfile.id}`,
@@ -6610,6 +6613,7 @@ function realRocmProofSchedulingFacet({
     effectiveTimeoutMs,
     blockingGaps,
     fastFailApplied,
+    skipAsyncRuntimeWaits,
   })).digest('hex')}`;
   validationBlocker.contractHash = contractHash;
   validationBlocker.contract_hash = contractHash;
@@ -6641,6 +6645,8 @@ function realRocmProofSchedulingFacet({
     required_gpu_proof_state: configuredWaitRequiredGpuProofState(),
     fastFailApplied,
     fast_fail_applied: fastFailApplied,
+    skipAsyncRuntimeWaits,
+    skip_async_runtime_waits: skipAsyncRuntimeWaits,
     requestedTimeoutMs: requested,
     requested_timeout_ms: requested,
     effectiveTimeoutMs,
@@ -6695,6 +6701,9 @@ function recordRealRocmProofScheduling(event) {
   const fastFailApplied = events.some((entry) =>
     entry.fastFailApplied === true || entry.fast_fail_applied === true
   );
+  const skipAsyncRuntimeWaits = events.some((entry) =>
+    entry.skipAsyncRuntimeWaits === true || entry.skip_async_runtime_waits === true
+  );
   const acceptedAsRefusalEvidence = blockers.length > 0;
   const blockingGaps = compactStringList(events.flatMap((entry) => [
     ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
@@ -6737,6 +6746,8 @@ function recordRealRocmProofScheduling(event) {
     can_satisfy_runtime_proof: false,
     fastFailApplied,
     fast_fail_applied: fastFailApplied,
+    skipAsyncRuntimeWaits,
+    skip_async_runtime_waits: skipAsyncRuntimeWaits,
     eventCount: events.length,
     event_count: events.length,
     events,
@@ -6906,18 +6917,27 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
       [
         `requested=${proofScheduling.requested_timeout_ms}ms`,
         `effective=${proofScheduling.effective_timeout_ms}ms`,
+        `skip_async_runtime_waits=${proofScheduling.skip_async_runtime_waits === true}`,
         `gaps=${proofScheduling.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
-  const wait = await waitHmrForCurrentWorkspace(
-    state,
-    proofScheduling.effective_timeout_ms,
-    phaseName,
-    identityMonitor,
-    Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start,
-    compileSummaryForScheduling,
-  );
+  const waitSinceTs = Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : start;
+  const wait = proofScheduling.skip_async_runtime_waits === true
+    ? skippedAsyncRuntimeWaitResult({
+      proofScheduling,
+      phaseName,
+      startedAt: waitStart,
+      sinceTs: waitSinceTs,
+    })
+    : await waitHmrForCurrentWorkspace(
+      state,
+      proofScheduling.effective_timeout_ms,
+      phaseName,
+      identityMonitor,
+      waitSinceTs,
+      compileSummaryForScheduling,
+    );
   await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
   const phase = phaseResultFromCompileWait(
     phaseName,
@@ -7008,6 +7028,54 @@ function attachWaitEvidence(wait, waitArgs) {
     ...wait,
     wait_args: waitArgs,
     wait_contract: wait.wait_contract ?? wait.waitContract ?? waitContractFromArgs(waitArgs),
+  };
+}
+
+function skippedAsyncRuntimeWaitResult({
+  proofScheduling,
+  phaseName,
+  startedAt,
+  sinceTs = null,
+} = {}) {
+  const timeoutMs = Number(proofScheduling?.effective_timeout_ms ?? 0);
+  const requiredGpuProofState = configuredWaitRequiredGpuProofState();
+  const waitArgs = { timeoutMs, since_ts: Number.isFinite(sinceTs) ? sinceTs : startedAt };
+  if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
+  if (requiredGpuProofState) waitArgs.requiredGpuProofState = requiredGpuProofState;
+  if (CFG.requireFullRuntimeProof) waitArgs.requireGpuFullRuntimeProof = true;
+  const waitContract = waitContractFromArgs(waitArgs);
+  const detail = {
+    reason: 'proof_scheduling_skipped_async_runtime_wait',
+    phaseName,
+    phase_name: phaseName,
+    proofSchedulingStatus: proofScheduling?.status ?? null,
+    proof_scheduling_status: proofScheduling?.status ?? null,
+    decision: proofScheduling?.decision ?? null,
+    blockingGaps: proofScheduling?.blocking_gaps ?? proofScheduling?.blockingGaps ?? [],
+    blocking_gaps: proofScheduling?.blocking_gaps ?? proofScheduling?.blockingGaps ?? [],
+  };
+  return {
+    status: 'timeout',
+    source: 'real_rocm_proof_scheduling_fast_fail',
+    error: 'gpu_hmr_proof_insufficient',
+    elapsedMs: 0,
+    hmrElapsedMs: 0,
+    detail,
+    wait_args: waitArgs,
+    wait_contract: waitContract,
+    proof_scheduling: proofScheduling,
+    real_rocm_proof_scheduling: proofScheduling,
+    timeout_intelligence_failure: proofScheduling,
+    validation_blocker: proofScheduling?.validation_blocker ?? null,
+    gpu_proof_validation: {
+      satisfied: false,
+      validated: false,
+      reason: 'proof_scheduling_skipped_async_runtime_wait',
+      failedGates: (proofScheduling?.blocking_gaps ?? proofScheduling?.blockingGaps ?? [])
+        .map((code) => ({ code })),
+      failed_gates: (proofScheduling?.blocking_gaps ?? proofScheduling?.blockingGaps ?? [])
+        .map((code) => ({ code })),
+    },
   };
 }
 
@@ -14863,6 +14931,12 @@ int main()
       requestedTimeoutMs: 20000,
       compileBridgeSummary: derivedSidecarSummary,
     });
+    const skippedRuntimeWait = skippedAsyncRuntimeWaitResult({
+      proofScheduling: blockedSchedule,
+      phaseName: 'self_check_wait_hmr',
+      startedAt: Date.now(),
+      sinceTs: Date.now() - 10,
+    });
     const fakeWaitCalls = [];
     const structuralWaitResult = await waitHmrForCurrentWorkspace({
       client: {
@@ -14943,11 +15017,20 @@ int main()
     if (
       blockedSchedule.fast_fail_applied !== true
       || blockedSchedule.effective_timeout_ms !== 1000
+      || blockedSchedule.skip_async_runtime_waits !== true
+      || blockedSchedule.wait_policy?.skip_async_runtime_waits !== true
       || blockedSchedule.accepted_as_refusal_evidence !== true
       || blockedSchedule.accepted_for_gpu_hmr !== false
       || blockedSchedule.gpu_hmr_success !== false
       || blockedSchedule.validation_blocker?.accepted_as_refusal_evidence !== true
       || blockedSchedule.validation_blocker?.can_satisfy_runtime_proof !== false
+      || skippedRuntimeWait.source !== 'real_rocm_proof_scheduling_fast_fail'
+      || skippedRuntimeWait.status !== 'timeout'
+      || skippedRuntimeWait.error !== 'gpu_hmr_proof_insufficient'
+      || skippedRuntimeWait.timeout_intelligence_failure?.accepted_for_gpu_hmr !== false
+      || skippedRuntimeWait.timeout_intelligence_failure?.gpu_hmr_success !== false
+      || skippedRuntimeWait.validation_blocker?.can_satisfy_runtime_proof !== false
+      || skippedRuntimeWait.gpu_proof_validation?.reason !== 'proof_scheduling_skipped_async_runtime_wait'
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_upstream_lifecycle_runtime_absent')
       || !blockedSchedule.blocking_gaps.includes(
         'proof_scheduling_upstream_lifecycle:cmake_configure_failed',
@@ -14973,9 +15056,11 @@ int main()
         ?.missing_proof_kinds
         ?.includes('readback_or_visual_artifact')
       || preservedSchedule.fast_fail_applied !== false
+      || preservedSchedule.skip_async_runtime_waits !== false
       || preservedSchedule.effective_timeout_ms !== 20000
       || preservedSchedule.accepted_as_refusal_evidence !== false
       || runFailedOnlySchedule.fast_fail_applied !== false
+      || runFailedOnlySchedule.skip_async_runtime_waits !== false
       || runFailedOnlySchedule.effective_timeout_ms !== 20000
       || runFailedOnlySchedule.accepted_as_refusal_evidence !== false
       || runFailedOnlySchedule.blocking_gaps.includes(
