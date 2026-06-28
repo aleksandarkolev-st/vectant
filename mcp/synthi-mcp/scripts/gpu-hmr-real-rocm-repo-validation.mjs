@@ -16944,6 +16944,13 @@ int main()
       requestedTimeoutMs: 20000,
       compileBridgeSummary: derivedSidecarSummary,
     });
+    CFG.proofFastFailMinWaitMs = 30000;
+    const boundedBelowDiagnosticSchedule = realRocmProofSchedulingFacet({
+      phaseName: 'self_check_bounded_below_diagnostic_wait',
+      requestedTimeoutMs: 5000,
+      compileBridgeSummary: derivedSidecarSummary,
+    });
+    CFG.proofFastFailMinWaitMs = 1000;
     const skippedRuntimeWait = skippedAsyncRuntimeWaitResult({
       proofScheduling: blockedSchedule,
       phaseName: 'self_check_wait_hmr',
@@ -17054,6 +17061,12 @@ int main()
       || !blockedSchedule.evidence_refs.includes('evidence:upstream_lifecycle_failure')
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_output_oracle_disabled')
       || !blockedSchedule.blocking_gaps.includes('proof_scheduling_app_hook_contract_missing')
+      || boundedBelowDiagnosticSchedule.fast_fail_applied !== false
+      || boundedBelowDiagnosticSchedule.skip_async_runtime_waits !== false
+      || boundedBelowDiagnosticSchedule.requested_timeout_ms !== 5000
+      || boundedBelowDiagnosticSchedule.effective_timeout_ms !== 5000
+      || boundedBelowDiagnosticSchedule.wait_policy?.diagnostic_collection_budget_ms !== 30000
+      || boundedBelowDiagnosticSchedule.accepted_as_refusal_evidence !== true
       || fakeWaitCalls.filter((name) => name === 'synthi_wait_hmr').length !== 1
       || structuralWaitResult.status !== 'timeout'
       || structuralWaitResult.timeout_intelligence_failure?.accepted_for_gpu_hmr !== false
