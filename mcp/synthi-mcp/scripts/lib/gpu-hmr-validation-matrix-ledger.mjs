@@ -772,6 +772,11 @@ function visualWorkerTimeoutMs() {
   return Number.isSafeInteger(value) && value > 0 ? value : 30000;
 }
 
+function visualWorkerDiagnosticDelayMs() {
+  const value = Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_DIAGNOSTIC_DELAY_MS ?? 0);
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
 function summarizeAsyncVisualProof(proof) {
   if (!isObject(proof)) return null;
   const tileEvidence = isObject(proof.tileEvidence ?? proof.tile_evidence)
@@ -957,6 +962,7 @@ async function asyncVisualMetricsForPair(before, after, request = {}) {
     }, {
       allowedRoots: visualWorkerAllowedRoots([before, after]),
       timeoutMs: visualWorkerTimeoutMs(),
+      diagnosticDelayMs: visualWorkerDiagnosticDelayMs(),
     });
     return summarizeAsyncVisualProof(proof);
   } catch (error) {
@@ -1019,42 +1025,35 @@ async function recomputeVisualPairEvidence(images) {
         failedGates: [{ code: 'visual_pair_dimension_mismatch' }],
       };
     }
-    const beforeFrame = await sharp(before.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const afterFrame = await sharp(after.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    if (
-      beforeFrame.info.width !== afterFrame.info.width
-      || beforeFrame.info.height !== afterFrame.info.height
-      || beforeFrame.info.channels !== afterFrame.info.channels
-    ) {
+    if (asyncVisualMetrics?.accepted !== true) {
       return {
         present: true,
         accepted: false,
         source: 'matrix_recomputed_png_pixels',
+        recomputeEngine: 'matrix_async_visual_worker_rgba',
+        recompute_engine: 'matrix_async_visual_worker_rgba',
         asyncVisualMetrics,
         async_visual_metrics: asyncVisualMetrics,
-        failedGates: [{ code: 'visual_pair_dimension_mismatch' }],
+        failedGates: [{ code: 'visual_pair_async_worker_recompute_not_accepted' }],
       };
     }
-    const pixelCount = beforeFrame.info.width * beforeFrame.info.height;
-    let changedPixelsThreshold4 = 0;
-    let totalAbsDelta = 0;
-    let visiblePixelCount = 0;
-    for (let i = 0; i < beforeFrame.data.length; i += 4) {
-      const dr = Math.abs(beforeFrame.data[i] - afterFrame.data[i]);
-      const dg = Math.abs(beforeFrame.data[i + 1] - afterFrame.data[i + 1]);
-      const db = Math.abs(beforeFrame.data[i + 2] - afterFrame.data[i + 2]);
-      const da = Math.abs(beforeFrame.data[i + 3] - afterFrame.data[i + 3]);
-      if (Math.max(dr, dg, db) > 4) changedPixelsThreshold4 += 1;
-      if (
-        afterFrame.data[i + 3] > 0
-        && (afterFrame.data[i] > 4 || afterFrame.data[i + 1] > 4 || afterFrame.data[i + 2] > 4)
-      ) {
-        visiblePixelCount += 1;
-      }
-      totalAbsDelta += dr + dg + db + da;
-    }
-    const changedPixelRatio = pixelCount > 0 ? changedPixelsThreshold4 / pixelCount : null;
-    const meanAbsDelta8bit = pixelCount > 0 ? totalAbsDelta / (pixelCount * 4) : null;
+    const metrics = compactObject(asyncVisualMetrics.metrics);
+    const dimensions = compactObject(asyncVisualMetrics.dimensions);
+    const width = finiteNumber(dimensions.width) ?? finiteNumber(before.width);
+    const height = finiteNumber(dimensions.height) ?? finiteNumber(before.height);
+    const changedPixelsThreshold4 = finiteNumber(
+      metrics.changedPixelsThreshold4 ?? metrics.changed_pixels_threshold_4,
+    );
+    const changedPixelRatio = finiteNumber(
+      metrics.changedPixelRatioThreshold4
+        ?? metrics.changed_pixel_ratio_threshold_4
+        ?? metrics.changedRatio
+        ?? metrics.changed_ratio,
+    );
+    const meanAbsDelta8bit = finiteNumber(
+      metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit ?? metrics.meanAbs ?? metrics.mean_abs,
+    );
+    const visiblePixelCount = finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count);
     let diffVisiblePixelCount = null;
     if (diff?.decoded) {
       const diffFrame = await recomputeSingleVisualFrameEvidence([diff], {
@@ -1065,18 +1064,18 @@ async function recomputeVisualPairEvidence(images) {
     const accepted =
       Number(changedPixelRatio) > 0
       && Number(meanAbsDelta8bit) > 0
-      && visiblePixelCount > 0
+      && Number(visiblePixelCount) > 0
       && (diff ? Number(diffVisiblePixelCount) > 0 : true);
     return {
       present: true,
       accepted,
       source: 'matrix_recomputed_png_pixels',
-      recomputeEngine: 'matrix_local_sharp_rgba',
-      recompute_engine: 'matrix_local_sharp_rgba',
+      recomputeEngine: 'matrix_async_visual_worker_rgba',
+      recompute_engine: 'matrix_async_visual_worker_rgba',
       asyncVisualMetrics,
       async_visual_metrics: asyncVisualMetrics,
-      width: beforeFrame.info.width,
-      height: beforeFrame.info.height,
+      width,
+      height,
       changedPixelsThreshold4,
       changedPixelRatio,
       changed_pixel_ratio: changedPixelRatio,
@@ -1089,7 +1088,7 @@ async function recomputeVisualPairEvidence(images) {
       failedGates: compactStringList([
         Number(changedPixelRatio) > 0 ? null : 'visual_pair_zero_pixel_delta',
         Number(meanAbsDelta8bit) > 0 ? null : 'visual_pair_zero_mean_delta',
-        visiblePixelCount > 0 ? null : 'visual_pair_blank_after_frame',
+        Number(visiblePixelCount) > 0 ? null : 'visual_pair_blank_after_frame',
         diff && !(Number(diffVisiblePixelCount) > 0) ? 'visual_diff_frame_blank' : null,
       ]).map((code) => ({ code })),
     };

@@ -4600,7 +4600,7 @@ assert.equal(acceptedFlow.visual.accepted, true);
 assert.equal(acceptedFlow.visual.allImagesAreDecodedPng, true);
 assert.equal(acceptedFlow.visual.decodedImageCount, 3);
 assert.equal(acceptedFlow.visual.recomputedVisualPair.source, 'matrix_recomputed_png_pixels');
-assert.equal(acceptedFlow.visual.recomputedVisualPair.recomputeEngine, 'matrix_local_sharp_rgba');
+assert.equal(acceptedFlow.visual.recomputedVisualPair.recomputeEngine, 'matrix_async_visual_worker_rgba');
 assert.equal(acceptedFlow.visual.recomputedVisualPair.accepted, true);
 assert.equal(
   acceptedFlow.visual.recomputedVisualPair.asyncVisualMetrics?.proofAuthority,
@@ -6272,6 +6272,98 @@ assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetr
 assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr, false);
 assert.equal(visualDimensionMismatch.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
 assert.ok(visualDimensionMismatch.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
+
+const visualWorkerTimeoutRoot = path.join(tmpRoot, 'visual-worker-timeout-root');
+const visualWorkerTimeoutLogsRoot = path.join(visualWorkerTimeoutRoot, '.gpu-hmr-test-logs');
+const visualWorkerTimeoutDir = path.join(
+  visualWorkerTimeoutLogsRoot,
+  'agent-split-artifacts',
+  'synthetic-visual-worker-timeout',
+);
+const visualWorkerTimeoutBefore = path.join(visualWorkerTimeoutDir, 'before-hmr-first.png');
+const visualWorkerTimeoutAfter = path.join(visualWorkerTimeoutDir, 'after-hmr-first.png');
+const visualWorkerTimeoutDiff = path.join(visualWorkerTimeoutDir, 'before-after-diff.png');
+await writeRgbaPng(visualWorkerTimeoutBefore, 32, 32, (x, y) => [20 + x, 32 + y, 96, 255]);
+await writeRgbaPng(visualWorkerTimeoutAfter, 32, 32, (x, y) => [96 + x, 40 + y, 160, 255]);
+await writeRgbaPng(visualWorkerTimeoutDiff, 32, 32, () => [255, 255, 255, 255]);
+await writeJson(path.join(visualWorkerTimeoutDir, 'run-mode-visual-worker-timeout.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:visual-worker-timeout',
+    'gpu-runtime-proof:sha256:visual-worker-timeout',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'visual-worker-timeout',
+    visualRoot: visualWorkerTimeoutDir,
+  }),
+  targetId: 'visual-worker-timeout',
+  profileId: 'visual-worker-timeout',
+  proofId: 'agent-split-run-mode-proof:sha256:visual-worker-timeout',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: visualWorkerTimeoutBefore,
+    after: visualWorkerTimeoutAfter,
+    diff: visualWorkerTimeoutDiff,
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:visual-worker-timeout',
+    editHash: hashValue('visual-worker-timeout'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const previousVisualWorkerTimeoutMs = process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS;
+const previousVisualWorkerDiagnosticDelayMs =
+  process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_DIAGNOSTIC_DELAY_MS;
+process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS = '5';
+process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_DIAGNOSTIC_DELAY_MS = '50';
+let visualWorkerTimeoutLedger;
+try {
+  visualWorkerTimeoutLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: visualWorkerTimeoutRoot,
+    mcpRoot,
+    roots: [visualWorkerTimeoutLogsRoot],
+    generatedAt: '2026-06-09T00:00:00.000Z',
+    includeUnproven: true,
+  });
+} finally {
+  if (previousVisualWorkerTimeoutMs === undefined) {
+    delete process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS;
+  } else {
+    process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS = previousVisualWorkerTimeoutMs;
+  }
+  if (previousVisualWorkerDiagnosticDelayMs === undefined) {
+    delete process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_DIAGNOSTIC_DELAY_MS;
+  } else {
+    process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_DIAGNOSTIC_DELAY_MS =
+      previousVisualWorkerDiagnosticDelayMs;
+  }
+}
+const visualWorkerTimeout = visualWorkerTimeoutLedger.rows.find((row) =>
+  row.targetId === 'visual-worker-timeout'
+);
+assert.equal(visualWorkerTimeout?.acceptedForGpuHmr, false);
+assert.equal(visualWorkerTimeout.visual.present, true);
+assert.equal(visualWorkerTimeout.visual.allImagesAreDecodedPng, true);
+assert.equal(visualWorkerTimeout.visual.recomputedVisualPair.recomputeEngine, 'matrix_async_visual_worker_rgba');
+assert.equal(visualWorkerTimeout.visual.recomputedVisualPair.accepted, false);
+assert.ok(visualWorkerTimeout.visual.recomputedVisualPair.failedGates.some((gate) =>
+  gate.code === 'visual_pair_async_worker_recompute_not_accepted'
+));
+assert.equal(visualWorkerTimeout.visual.recomputedVisualPair.asyncVisualMetrics?.accepted, false);
+assert.equal(
+  visualWorkerTimeout.visual.recomputedVisualPair.asyncVisualMetrics?.acceptedForGpuHmr,
+  false,
+);
+assert.equal(visualWorkerTimeout.visual.recomputedVisualPair.asyncVisualMetrics?.gpuHmrSuccess, false);
+assert.ok(
+  visualWorkerTimeout.visual.recomputedVisualPair.asyncVisualMetrics?.reasons?.includes('visual_worker_timeout'),
+);
+assert.ok(visualWorkerTimeout.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
 
 const forgedWebGpu = ledger.rows.find((row) => row.targetId === 'forged-webgpu');
 assert.equal(forgedWebGpu?.matrixOutcome, 'unproven');
