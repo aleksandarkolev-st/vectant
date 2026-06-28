@@ -213,6 +213,151 @@ function optionalProfileStringList(value, field) {
   return optionalProfileStringArray(value, field);
 }
 
+function optionalProfileObjectArray(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`invalid real ROCm profile ${field}: expected array`);
+  }
+  return value.map((item, index) => objectOrEmpty(item, `${field}[${index}]`));
+}
+
+function normalizeRealRocmExternalHeaderPrerequisites(value) {
+  return optionalProfileObjectArray(value, 'externalHeaderPrerequisites').map((entry, index) => {
+    const id = requiredProfileString(entry.id, `externalHeaderPrerequisites[${index}].id`);
+    const safeId = cleanIdentifier(id);
+    if (safeId !== id) {
+      throw new Error(
+        `invalid real ROCm profile externalHeaderPrerequisites[${index}].id: expected stable safe identifier`,
+      );
+    }
+    const sourceKind = optionalProfileString(
+      entry.sourceKind ?? entry.source_kind ?? entry.source,
+      `externalHeaderPrerequisites[${index}].sourceKind`,
+    ) || 'git';
+    if (sourceKind !== 'git') {
+      throw new Error(
+        `unsupported real ROCm external header prerequisite sourceKind: ${sourceKind}`,
+      );
+    }
+    const repo = objectOrEmpty(entry.repo, `externalHeaderPrerequisites[${index}].repo`);
+    const repoUrl = optionalProfileString(
+      repo.url ?? entry.repoUrl ?? entry.repo_url ?? entry.url,
+      `externalHeaderPrerequisites[${index}].repo.url`,
+    );
+    const commitRaw = optionalProfileString(
+      repo.commit ?? entry.commit,
+      `externalHeaderPrerequisites[${index}].repo.commit`,
+    );
+    const commit = commitRaw ? commitRaw.toLowerCase() : null;
+    if (!repoUrl || !commit) {
+      throw new Error(
+        `invalid real ROCm profile externalHeaderPrerequisites[${index}]: git source requires repo.url and repo.commit`,
+      );
+    }
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
+      throw new Error(
+        `invalid real ROCm profile externalHeaderPrerequisites[${index}].repo.commit: expected full immutable hex commit`,
+      );
+    }
+    const includeRoot = (
+      optionalProfileString(
+        entry.includeRoot ?? entry.include_root,
+        `externalHeaderPrerequisites[${index}].includeRoot`,
+      ) || 'include'
+    ).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!includeRoot || includeRoot === '.' || includeRoot.includes('..')) {
+      throw new Error(
+        `invalid real ROCm profile externalHeaderPrerequisites[${index}].includeRoot`,
+      );
+    }
+    const requiredHeaders = optionalProfileStringArray(
+      entry.requiredHeaders ?? entry.required_headers,
+      `externalHeaderPrerequisites[${index}].requiredHeaders`,
+    ).map((header) => header.replace(/\\/g, '/').replace(/^\/+/, ''));
+    if (requiredHeaders.length === 0 || requiredHeaders.some((header) => !header || header.includes('..'))) {
+      throw new Error(
+        `invalid real ROCm profile externalHeaderPrerequisites[${index}].requiredHeaders`,
+      );
+    }
+    const install = objectOrEmpty(
+      entry.install ?? entry.materialization,
+      `externalHeaderPrerequisites[${index}].install`,
+    );
+    const installMode = optionalProfileString(
+      install.mode,
+      `externalHeaderPrerequisites[${index}].install.mode`,
+    );
+    if (installMode && installMode !== 'cmake_install') {
+      throw new Error(
+        `unsupported real ROCm external header prerequisite install.mode: ${installMode}`,
+      );
+    }
+    const installSubdir = (
+      optionalProfileString(
+        install.installSubdir ?? install.install_subdir,
+        `externalHeaderPrerequisites[${index}].install.installSubdir`,
+      ) || '.synthi-install'
+    ).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const buildSubdir = (
+      optionalProfileString(
+        install.buildSubdir ?? install.build_subdir,
+        `externalHeaderPrerequisites[${index}].install.buildSubdir`,
+      ) || '.synthi-build'
+    ).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    for (const [fieldName, fieldValue] of [
+      ['installSubdir', installSubdir],
+      ['buildSubdir', buildSubdir],
+    ]) {
+      if (!fieldValue || fieldValue === '.' || fieldValue.includes('..')) {
+        throw new Error(
+          `invalid real ROCm profile externalHeaderPrerequisites[${index}].install.${fieldName}`,
+        );
+      }
+    }
+    return {
+      id,
+      sourceKind,
+      source_kind: sourceKind,
+      repo: {
+        url: repoUrl,
+        commit,
+      },
+      repoUrl,
+      repo_url: repoUrl,
+      commit,
+      includeRoot,
+      include_root: includeRoot,
+      requiredHeaders,
+      required_headers: requiredHeaders,
+      evidenceRefs: optionalProfileStringArray(
+        entry.evidenceRefs ?? entry.evidence_refs,
+        `externalHeaderPrerequisites[${index}].evidenceRefs`,
+      ),
+      evidence_refs: optionalProfileStringArray(
+        entry.evidenceRefs ?? entry.evidence_refs,
+        `externalHeaderPrerequisites[${index}].evidenceRefs`,
+      ),
+      install: installMode
+        ? {
+            mode: installMode,
+            buildSubdir,
+            build_subdir: buildSubdir,
+            installSubdir,
+            install_subdir: installSubdir,
+            cmakeArgs: optionalProfileStringArray(
+              install.cmakeArgs ?? install.cmake_args,
+              `externalHeaderPrerequisites[${index}].install.cmakeArgs`,
+            ),
+            cmake_args: optionalProfileStringArray(
+              install.cmakeArgs ?? install.cmake_args,
+              `externalHeaderPrerequisites[${index}].install.cmakeArgs`,
+            ),
+          }
+        : null,
+    };
+  });
+}
+
 const REAL_ROCM_APP_HOOK_STAGES = [
   {
     key: 'artifactTransport',
@@ -525,6 +670,9 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const proofObligations = normalizeRealRocmProofObligations(
     raw.proofObligations ?? raw.proof_obligations,
   );
+  const externalHeaderPrerequisites = normalizeRealRocmExternalHeaderPrerequisites(
+    raw.externalHeaderPrerequisites ?? raw.external_header_prerequisites,
+  );
   return {
     schemaVersion,
     id: requiredProfileString(raw.id, 'id'),
@@ -581,6 +729,8 @@ function normalizeRealRocmProfile(rawProfile, source) {
     },
     appHookContract,
     deviceSidecarContract,
+    externalHeaderPrerequisites,
+    external_header_prerequisites: externalHeaderPrerequisites,
     proofObligations,
     preview: {
       renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
@@ -2344,6 +2494,12 @@ const CFG = {
     ?? REAL_ROCM_PROFILE.target.cmakeConfigName
   ) || 'Release',
   cmakeArgs: configuredCmakeArgs,
+  externalHeaderPrerequisites: process.env.SYNTHI_REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_JSON !== undefined
+    ? normalizeRealRocmExternalHeaderPrerequisites(
+      JSON.parse(process.env.SYNTHI_REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_JSON),
+    )
+    : REAL_ROCM_PROFILE.externalHeaderPrerequisites,
+  externalHeaderIncludeRoots: new Map(),
   cmakeTargetType: (
     process.env.SYNTHI_REAL_ROCM_TARGET_TYPE
     ?? REAL_ROCM_PROFILE.target.cmakeTargetType
@@ -2920,7 +3076,14 @@ function expandRocmConfigValue(value) {
   return String(value ?? '')
     .replace(/\$\{ROCM_PREFIX\}/g, CFG.rocmPrefix)
     .replace(/\$\{ROCM_LLVM_BIN\}/g, `${CFG.rocmPrefix}/llvm/bin`)
-    .replace(/\$\{ROCM_INCLUDE_DIR\}/g, `${CFG.rocmPrefix}/include`);
+    .replace(/\$\{ROCM_INCLUDE_DIR\}/g, `${CFG.rocmPrefix}/include`)
+    .replace(/\$\{REAL_ROCM_EXTERNAL_INCLUDE:([^}]+)\}/g, (_match, id) => {
+      const includeRoot = CFG.externalHeaderIncludeRoots.get(String(id ?? '').trim());
+      if (!includeRoot) {
+        throw new Error(`real ROCm profile references undeclared or unavailable external include prerequisite: ${id}`);
+      }
+      return includeRoot;
+    });
 }
 
 async function ensureRocmBuildConfig() {
@@ -4014,8 +4177,423 @@ function sourceTreeWorkerPath(root, relativePath) {
   return `${normalizedRoot}/${sourceTreePortableJoin(relativePath)}`;
 }
 
+function realRocmExternalHeaderToken(id) {
+  return `\${REAL_ROCM_EXTERNAL_INCLUDE:${id}}`;
+}
+
 function sourceTreeRelativePath(root, child) {
   return path.relative(path.resolve(root), path.resolve(child)).replace(/\\/g, '/');
+}
+
+function buildExternalHeaderPrerequisitePlan(prerequisite, {
+  mounts = sourceTreeSharedCasMounts().mounts,
+} = {}) {
+  const normalizedMounts = Array.isArray(mounts) ? mounts : [];
+  const workerMount = normalizedMounts.find((mount) => mount.role === 'worker');
+  const producerMount = normalizedMounts.find((mount) =>
+    ['host', 'runner', 'workspace'].includes(mount?.role)
+    && typeof mount.root === 'string'
+    && mount.root.trim() !== ''
+  );
+  const base = {
+    schemaVersion: 'synthi.real_rocm.external_header_prerequisite_plan.v1',
+    schema_version: 'synthi.real_rocm.external_header_prerequisite_plan.v1',
+    id: prerequisite.id,
+    sourceKind: prerequisite.sourceKind,
+    source_kind: prerequisite.sourceKind,
+    repoUrl: prerequisite.repoUrl,
+    repo_url: prerequisite.repoUrl,
+    commit: prerequisite.commit,
+    includeRoot: prerequisite.includeRoot,
+    include_root: prerequisite.includeRoot,
+    requiredHeaders: prerequisite.requiredHeaders,
+    required_headers: prerequisite.requiredHeaders,
+    install: prerequisite.install,
+    token: realRocmExternalHeaderToken(prerequisite.id),
+    usable: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  if (!producerMount?.root) {
+    return { ...base, reason: 'external_header_host_shared_mount_missing' };
+  }
+  if (!workerMount?.root) {
+    return { ...base, reason: 'external_header_worker_shared_mount_missing' };
+  }
+  const producerRoot = path.resolve(producerMount.root);
+  const relativePath = sourceTreePortableJoin(
+    'external-headers',
+    sourceTreeSafeSegment(prerequisite.repoUrl || prerequisite.id, prerequisite.id),
+    prerequisite.commit,
+  );
+  const hostRepoPath = path.join(producerRoot, ...relativePath.split('/'));
+  if (!pathIsInside(producerRoot, hostRepoPath)) {
+    return { ...base, reason: 'external_header_stage_path_outside_root' };
+  }
+  const workerRepoPath = sourceTreeWorkerPath(workerMount.root, relativePath);
+  return {
+    ...base,
+    usable: true,
+    reason: 'external_header_shared_mount_plan_ready',
+    transferOperation: 'cas_shared_volume',
+    transfer_operation: 'cas_shared_volume',
+    producerRole: producerMount.role,
+    producer_role: producerMount.role,
+    producerRoot,
+    producer_root: producerRoot,
+    workerRoot: workerMount.root,
+    worker_root: workerMount.root,
+    relativePath,
+    relative_path: relativePath,
+    hostRepoPath,
+    host_repo_path: hostRepoPath,
+    hostIncludeRoot: path.join(hostRepoPath, ...prerequisite.includeRoot.split('/')),
+    host_include_root: path.join(hostRepoPath, ...prerequisite.includeRoot.split('/')),
+    workerRepoPath,
+    worker_repo_path: workerRepoPath,
+    workerIncludeRoot: sourceTreeWorkerPath(workerRepoPath, prerequisite.includeRoot),
+    worker_include_root: sourceTreeWorkerPath(workerRepoPath, prerequisite.includeRoot),
+  };
+}
+
+async function ensureExternalHeaderPrerequisiteCheckout(prerequisite, plan) {
+  if (!plan?.usable) {
+    return {
+      materialized: false,
+      reason: plan?.reason ?? 'external_header_plan_unusable',
+      error: null,
+    };
+  }
+  await mkdir(path.dirname(plan.hostRepoPath), { recursive: true });
+  let checkoutState = await localGitCheckoutState(plan.hostRepoPath, prerequisite.repoUrl);
+  if (!checkoutState.exists) {
+    await execText(
+      'git',
+      gitLongPathArgs(['clone', prerequisite.repoUrl, plan.hostRepoPath]),
+      300000,
+      true,
+    );
+    checkoutState = await localGitCheckoutState(plan.hostRepoPath, prerequisite.repoUrl);
+  }
+  if (!checkoutState.usable) {
+    return {
+      materialized: false,
+      reason: checkoutState.reason ?? 'external_header_checkout_unusable',
+      checkoutState,
+      checkout_state: checkoutState,
+      error: null,
+    };
+  }
+  const localCommitAvailable = await gitCommitExists(plan.hostRepoPath, prerequisite.commit);
+  if (shouldFetchRequestedCommit({
+    requestedCommit: prerequisite.commit,
+    localCommitAvailable,
+  })) {
+    await execText(
+      'git',
+      gitLongPathArgs(['-C', plan.hostRepoPath, 'fetch', '--depth', '1', 'origin', prerequisite.commit]),
+      300000,
+      true,
+    );
+  }
+  await execText(
+    'git',
+    gitLongPathArgs(['-C', plan.hostRepoPath, 'checkout', '--detach', prerequisite.commit]),
+    120000,
+    true,
+  );
+  checkoutState = await localGitCheckoutState(plan.hostRepoPath, prerequisite.repoUrl);
+  const headCommit = String(await execText(
+    'git',
+    gitLongPathArgs(['-C', plan.hostRepoPath, 'rev-parse', 'HEAD']),
+    30000,
+    true,
+  ) ?? '').trim();
+  return {
+    materialized: headCommit === prerequisite.commit,
+    reason: headCommit === prerequisite.commit
+      ? 'external_header_checkout_materialized'
+      : 'external_header_commit_mismatch',
+    checkoutState,
+    checkout_state: checkoutState,
+    headCommit,
+    head_commit: headCommit,
+    error: null,
+  };
+}
+
+async function runExternalHeaderPrerequisiteInstall(prerequisite, plan) {
+  const install = prerequisite.install;
+  if (!install?.mode) {
+    return {
+      attempted: false,
+      accepted: true,
+      reason: 'external_header_install_not_declared',
+    };
+  }
+  if (install.mode !== 'cmake_install') {
+    return {
+      attempted: false,
+      accepted: false,
+      reason: `external_header_install_mode_unsupported:${install.mode}`,
+    };
+  }
+  if (!CFG.workerContainer || !plan.workerRepoPath) {
+    return {
+      attempted: false,
+      accepted: false,
+      reason: 'external_header_install_worker_unavailable',
+    };
+  }
+  const buildDir = sourceTreeWorkerPath(plan.workerRepoPath, install.buildSubdir);
+  const installDir = sourceTreeWorkerPath(plan.workerRepoPath, install.installSubdir);
+  const cmakeArgs = [
+    `-DCMAKE_INSTALL_PREFIX=${installDir}`,
+    ...(Array.isArray(install.cmakeArgs) ? install.cmakeArgs : []),
+  ].map((arg) => expandRocmConfigValue(arg));
+  const script = [
+    'set -eu',
+    `repo=${shQuote(plan.workerRepoPath)}`,
+    `build_dir=${shQuote(buildDir)}`,
+    `install_dir=${shQuote(installDir)}`,
+    'mkdir -p "$build_dir" "$install_dir"',
+    `cmake -S "$repo" -B "$build_dir" ${cmakeArgs.map(shQuote).join(' ')}`,
+    'cmake --build "$build_dir" --target install -j2',
+    'printf "external_header_install=ok\\n"',
+  ].join('\n');
+  try {
+    const output = await execText(
+      'docker',
+      ['exec', CFG.workerContainer, 'sh', '-lc', script],
+      300000,
+      true,
+    );
+    return {
+      attempted: true,
+      accepted: true,
+      reason: 'external_header_cmake_install_completed',
+      mode: install.mode,
+      buildDir,
+      build_dir: buildDir,
+      installDir,
+      install_dir: installDir,
+      outputTail: String(output ?? '').slice(-4000),
+      output_tail: String(output ?? '').slice(-4000),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      accepted: false,
+      reason: 'external_header_cmake_install_failed',
+      mode: install.mode,
+      buildDir,
+      build_dir: buildDir,
+      installDir,
+      install_dir: installDir,
+      error: error?.message ?? String(error),
+      outputTail: String(error?.output ?? '').slice(-4000),
+      output_tail: String(error?.output ?? '').slice(-4000),
+    };
+  }
+}
+
+async function inspectExternalHeaderPrerequisite(prerequisite, plan) {
+  const headerRecords = [];
+  const hashInput = [];
+  for (const header of prerequisite.requiredHeaders) {
+    const hostHeaderPath = path.join(plan.hostIncludeRoot, ...header.split('/'));
+    const hostPresent = existsSync(hostHeaderPath);
+    let hostSha256 = null;
+    if (hostPresent) {
+      hostSha256 = `sha256:${createHash('sha256').update(await readFile(hostHeaderPath)).digest('hex')}`;
+      hashInput.push(`${header}:${hostSha256}`);
+    }
+    headerRecords.push({
+      header,
+      hostHeaderPath,
+      host_header_path: hostHeaderPath,
+      workerHeaderPath: sourceTreeWorkerPath(plan.workerIncludeRoot, header),
+      worker_header_path: sourceTreeWorkerPath(plan.workerIncludeRoot, header),
+      hostPresent,
+      host_present: hostPresent,
+      hostSha256,
+      host_sha256: hostSha256,
+    });
+  }
+  const headerSetHash = hashInput.length > 0
+    ? `sha256:${createHash('sha256').update([...hashInput].sort().join('\n')).digest('hex')}`
+    : null;
+  return {
+    allRequiredHeadersPresent: headerRecords.every((record) => record.hostPresent),
+    all_required_headers_present: headerRecords.every((record) => record.hostPresent),
+    requiredHeaderCount: headerRecords.length,
+    required_header_count: headerRecords.length,
+    presentHeaderCount: headerRecords.filter((record) => record.hostPresent).length,
+    present_header_count: headerRecords.filter((record) => record.hostPresent).length,
+    headerRecords,
+    header_records: headerRecords,
+    headerSetHash,
+    header_set_hash: headerSetHash,
+  };
+}
+
+async function prepareExternalHeaderPrerequisites() {
+  const prerequisites = Array.isArray(CFG.externalHeaderPrerequisites)
+    ? CFG.externalHeaderPrerequisites
+    : [];
+  CFG.externalHeaderIncludeRoots = new Map();
+  if (prerequisites.length === 0) {
+    report.real_rocm_external_header_prerequisites = {
+      schemaVersion: 'synthi.real_rocm.external_header_prerequisites.v1',
+      schema_version: 'synthi.real_rocm.external_header_prerequisites.v1',
+      status: 'not_declared',
+      prerequisites: [],
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+    };
+    report.evidence.real_rocm_external_header_prerequisites =
+      report.real_rocm_external_header_prerequisites;
+    return report.real_rocm_external_header_prerequisites;
+  }
+  const sharedCas = sourceTreeSharedCasMounts();
+  const facets = [];
+  for (const prerequisite of prerequisites) {
+    const plan = buildExternalHeaderPrerequisitePlan(prerequisite, {
+      mounts: sharedCas.mounts,
+    });
+    let materialization = {
+      materialized: false,
+      reason: plan.reason ?? 'external_header_plan_unusable',
+      error: null,
+    };
+    let installResult = {
+      attempted: false,
+      accepted: true,
+      reason: 'external_header_install_not_declared',
+    };
+    try {
+      materialization = await ensureExternalHeaderPrerequisiteCheckout(prerequisite, plan);
+    } catch (error) {
+      materialization = {
+        materialized: false,
+        reason: 'external_header_materialization_failed',
+        error: error?.message ?? String(error),
+      };
+    }
+    if (plan.usable && materialization.materialized) {
+      installResult = await runExternalHeaderPrerequisiteInstall(prerequisite, plan);
+    }
+    let inspection = {
+      allRequiredHeadersPresent: false,
+      all_required_headers_present: false,
+      requiredHeaderCount: prerequisite.requiredHeaders.length,
+      required_header_count: prerequisite.requiredHeaders.length,
+      presentHeaderCount: 0,
+      present_header_count: 0,
+      headerRecords: [],
+      header_records: [],
+      headerSetHash: null,
+      header_set_hash: null,
+    };
+    if (plan.usable && materialization.materialized) {
+      inspection = await inspectExternalHeaderPrerequisite(prerequisite, plan);
+    }
+    const acceptedAsDependencyEvidence =
+      plan.usable === true
+      && materialization.materialized === true
+      && installResult.accepted === true
+      && inspection.allRequiredHeadersPresent === true;
+    if (acceptedAsDependencyEvidence && plan.workerIncludeRoot) {
+      CFG.externalHeaderIncludeRoots.set(prerequisite.id, plan.workerIncludeRoot);
+    }
+    const blockingGaps = compactStringList([
+      sharedCas.error ? 'external_header_shared_cas_mounts_invalid' : null,
+      plan.usable !== true ? plan.reason ?? 'external_header_plan_unusable' : null,
+      materialization.materialized !== true ? materialization.reason : null,
+      installResult.accepted !== true ? installResult.reason : null,
+      inspection.allRequiredHeadersPresent !== true ? 'external_header_required_header_missing' : null,
+    ]);
+    facets.push({
+      schemaVersion: 'synthi.real_rocm.external_header_prerequisite.v1',
+      schema_version: 'synthi.real_rocm.external_header_prerequisite.v1',
+      proofAuthority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+      proof_authority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+      id: prerequisite.id,
+      token: realRocmExternalHeaderToken(prerequisite.id),
+      sourceKind: prerequisite.sourceKind,
+      source_kind: prerequisite.sourceKind,
+      repoUrl: prerequisite.repoUrl,
+      repo_url: prerequisite.repoUrl,
+      commit: prerequisite.commit,
+      includeRoot: prerequisite.includeRoot,
+      include_root: prerequisite.includeRoot,
+      workerIncludeRoot: plan.workerIncludeRoot ?? null,
+      worker_include_root: plan.workerIncludeRoot ?? null,
+      acceptedAsDependencyEvidence,
+      accepted_as_dependency_evidence: acceptedAsDependencyEvidence,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      status: acceptedAsDependencyEvidence
+        ? 'external_header_dependency_available'
+        : 'external_header_dependency_unavailable',
+      plan,
+      materialization,
+      install: installResult,
+      inspection,
+      blockingGaps,
+      blocking_gaps: blockingGaps,
+      evidenceRefs: compactStringList([
+        ...prerequisite.evidenceRefs,
+        acceptedAsDependencyEvidence ? `external-header:${prerequisite.id}:${inspection.headerSetHash}` : null,
+      ]),
+      evidence_refs: compactStringList([
+        ...prerequisite.evidenceRefs,
+        acceptedAsDependencyEvidence ? `external-header:${prerequisite.id}:${inspection.headerSetHash}` : null,
+      ]),
+    });
+  }
+  const acceptedCount = facets.filter((facet) => facet.acceptedAsDependencyEvidence).length;
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.external_header_prerequisites.v1',
+    schema_version: 'synthi.real_rocm.external_header_prerequisites.v1',
+    proofAuthority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    status: acceptedCount === facets.length
+      ? 'external_header_prerequisites_available'
+      : 'external_header_prerequisites_incomplete',
+    acceptedDependencyCount: acceptedCount,
+    accepted_dependency_count: acceptedCount,
+    prerequisiteCount: facets.length,
+    prerequisite_count: facets.length,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    prerequisites: facets,
+    blockingGaps: facets.flatMap((entry) => entry.blockingGaps ?? []),
+    blocking_gaps: facets.flatMap((entry) => entry.blocking_gaps ?? []),
+  };
+  report.real_rocm_external_header_prerequisites = facet;
+  report.realRocmExternalHeaderPrerequisites = facet;
+  report.evidence.real_rocm_external_header_prerequisites = facet;
+  record(
+    'real ROCm external header prerequisites',
+    acceptedCount === facets.length ? 'pass' : 'warn',
+    `accepted=${acceptedCount}/${facets.length}`,
+  );
+  return facet;
 }
 
 function buildSourceTreeSharedMountPlan({
@@ -4141,7 +4719,12 @@ async function stageSharedSourceTree(plan) {
   if (!pathIsInside(plan.producerRoot, plan.hostRepoPath)) {
     throw new Error('shared_source_tree_stage_path_outside_root');
   }
-  await rm(plan.hostRepoPath, { recursive: true, force: true });
+  await rm(plan.hostRepoPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 250,
+  });
   await mkdir(path.dirname(plan.hostRepoPath), { recursive: true });
   await cp(CFG.repoPath, plan.hostRepoPath, {
     recursive: true,
@@ -7302,6 +7885,7 @@ function missingDependencyProbeIncludeRoots(buildMetadata = null) {
     .map((dir) => `${CFG.workerRepoPath.replace(/\/+$/g, '')}/${dir}`);
   return compactStringList([
     ...projectIncludeRoots,
+    ...Array.from(CFG.externalHeaderIncludeRoots.values()),
     ...REAL_ROCM_MISSING_DEPENDENCY_INCLUDE_ROOTS,
   ]);
 }
@@ -16415,6 +16999,79 @@ int main()
   ) {
     throw new Error('real ROCm source-tree shared mount planning self-check failed');
   }
+  const externalHeaderProfile = normalizeRealRocmProfile({
+    schemaVersion: REAL_ROCM_PROFILE_SCHEMA_VERSION,
+    id: 'self-check-external-header-profile',
+    repo: { url: DEFAULT_REAL_REPO_URL },
+    target: {
+      entryFile: 'HIP-Basic/saxpy/main.hip',
+      targetName: 'self-check',
+      buildSubdir: '.',
+      cmakeArgs: ['-DSELF_CHECK_INCLUDE=${REAL_ROCM_EXTERNAL_INCLUDE:self-check-half}'],
+    },
+    sourceDelta: { before: 'a', after: 'b' },
+    outputOracle: { profile: 'none' },
+    externalHeaderPrerequisites: [
+      {
+        id: 'self-check-half',
+        sourceKind: 'git',
+        repo: {
+          url: 'https://example.invalid/ROCm/half.git',
+          commit: 'd'.repeat(40),
+        },
+        install: {
+          mode: 'cmake_install',
+          buildSubdir: '.synthi-build',
+          installSubdir: '.synthi-install',
+          cmakeArgs: ['-DCMAKE_PREFIX_PATH=${ROCM_PREFIX}'],
+        },
+        includeRoot: '.synthi-install/include',
+        requiredHeaders: ['half/half.hpp'],
+      },
+    ],
+  }, 'self-check:inline');
+  const externalHeaderPlan = buildExternalHeaderPrerequisitePlan(
+    externalHeaderProfile.externalHeaderPrerequisites[0],
+    { mounts: sharedCasSelfCheckMounts },
+  );
+  const externalHeaderRoot = path.join(externalHeaderPlan.hostIncludeRoot, 'half');
+  await mkdir(externalHeaderRoot, { recursive: true });
+  await writeFile(path.join(externalHeaderRoot, 'half.hpp'), '// self-check half header\n');
+  const externalHeaderInspection = await inspectExternalHeaderPrerequisite(
+    externalHeaderProfile.externalHeaderPrerequisites[0],
+    externalHeaderPlan,
+  );
+  const previousExternalHeaderRoots = CFG.externalHeaderIncludeRoots;
+  CFG.externalHeaderIncludeRoots = new Map([
+    ['self-check-half', externalHeaderPlan.workerIncludeRoot],
+  ]);
+  const expandedExternalInclude = expandRocmConfigValue(
+    externalHeaderProfile.target.cmakeArgs[0],
+  );
+  let undeclaredExternalIncludeRejected = false;
+  try {
+    expandRocmConfigValue('-DBAD=${REAL_ROCM_EXTERNAL_INCLUDE:missing-half}');
+  } catch {
+    undeclaredExternalIncludeRejected = true;
+  }
+  const externalHeaderProbeRoots = missingDependencyProbeIncludeRoots({
+    targetIncludeDirs: ['include'],
+  });
+  CFG.externalHeaderIncludeRoots = previousExternalHeaderRoots;
+  if (
+    externalHeaderPlan.usable !== true
+    || !externalHeaderPlan.workerIncludeRoot.includes('/external-headers/half/')
+    || !externalHeaderPlan.workerIncludeRoot.endsWith('/.synthi-install/include')
+    || externalHeaderProfile.externalHeaderPrerequisites[0].install.mode !== 'cmake_install'
+    || externalHeaderInspection.allRequiredHeadersPresent !== true
+    || externalHeaderInspection.presentHeaderCount !== 1
+    || !externalHeaderInspection.headerSetHash.startsWith('sha256:')
+    || !expandedExternalInclude.includes(externalHeaderPlan.workerIncludeRoot)
+    || undeclaredExternalIncludeRejected !== true
+    || !externalHeaderProbeRoots.includes(externalHeaderPlan.workerIncludeRoot)
+  ) {
+    throw new Error('real ROCm external header prerequisite self-check failed');
+  }
   const cmakeMissingDeps = cmakeMissingDependencyTokens([
     'Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)',
     'Could not find a package configuration file provided by "msgpack" with any of the following names:',
@@ -19166,6 +19823,7 @@ async function run() {
     throw new Error('Docker daemon unavailable or timed out before real ROCm validation could resolve worker containers');
   }
   await resolveDockerContainers();
+  await prepareExternalHeaderPrerequisites();
   await ensureRocmBuildConfig();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,

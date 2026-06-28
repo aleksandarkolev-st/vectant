@@ -19,7 +19,7 @@
       "-DMIOPEN_USE_ROCBLAS=OFF",
       "-DMIOPEN_USE_HIPBLASLT=OFF",
       "-DMIOPEN_USE_MLIR=OFF",
-      "-DHALF_INCLUDE_DIR=${ROCM_INCLUDE_DIR}",
+      "-DHALF_INCLUDE_DIR=${REAL_ROCM_EXTERNAL_INCLUDE:rocm-half}",
       "-DBUILD_TESTING=OFF",
       "-DMIOPEN_ENABLE_AI_KERNEL_TUNING=OFF",
       "-DMIOPEN_ENABLE_AI_IMMED_MODE_FALLBACK=OFF",
@@ -54,6 +54,32 @@
   "outputOracle": {
     "profile": "none"
   },
+  "externalHeaderPrerequisites": [
+    {
+      "id": "rocm-half",
+      "sourceKind": "git",
+      "repo": {
+        "url": "https://github.com/ROCm/half.git",
+        "commit": "10abd99e7815f0ca5d892f58dd7d15a23b7cf92c"
+      },
+      "install": {
+        "mode": "cmake_install",
+        "buildSubdir": ".synthi-build",
+        "installSubdir": ".synthi-install",
+        "cmakeArgs": [
+          "-DCMAKE_PREFIX_PATH=${ROCM_PREFIX}"
+        ]
+      },
+      "includeRoot": ".synthi-install/include",
+      "requiredHeaders": [
+        "half/half.hpp"
+      ],
+      "evidenceRefs": [
+        "miopen:requirements.txt:ROCm/half@10abd99e7815f0ca5d892f58dd7d15a23b7cf92c",
+        "miopen:README.md:half-header-prerequisite"
+      ]
+    }
+  ],
   "proofObligations": {
     "acceptanceMode": "refusal_only",
     "targetClass": "large_rocm_ml_infrastructure",
