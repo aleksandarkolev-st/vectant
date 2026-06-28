@@ -957,6 +957,18 @@ function realRocmSameProcessRuntimeOracleSnapshot(input = {}, validationContext 
     ?? null;
 }
 
+function realRocmMissingDependencyProbeSnapshot(input = {}, validationContext = null) {
+  return objectOrNull(input.realRocmMissingDependencyProbe)
+    ?? objectOrNull(input.real_rocm_missing_dependency_probe)
+    ?? objectOrNull(input.missingDependencyProbe)
+    ?? objectOrNull(input.missing_dependency_probe)
+    ?? objectOrNull(validationContext?.realRocmMissingDependencyProbe)
+    ?? objectOrNull(validationContext?.real_rocm_missing_dependency_probe)
+    ?? objectOrNull(validationContext?.missingDependencyProbe)
+    ?? objectOrNull(validationContext?.missing_dependency_probe)
+    ?? null;
+}
+
 function realRocmAppHookContractLimitations(contract) {
   if (!objectOrNull(contract)) return [];
   const required = contract.required === true
@@ -1076,6 +1088,60 @@ function realRocmSameProcessRuntimeOracleLimitations(contract) {
     observed_state: observedState,
     degradedState: 'gpu-hmr-same-process-runtime-oracle-unproven',
     degraded_state: 'gpu-hmr-same-process-runtime-oracle-unproven',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
+function realRocmMissingDependencyProbeLimitations(probe) {
+  if (!objectOrNull(probe)) return [];
+  const acceptedForGpuHmr =
+    probe.acceptedForGpuHmr === true || probe.accepted_for_gpu_hmr === true;
+  const gpuHmrSuccess =
+    probe.gpuHmrSuccess === true || probe.gpu_hmr_success === true;
+  const canSatisfyRuntimeProof =
+    probe.canSatisfyRuntimeProof === true || probe.can_satisfy_runtime_proof === true;
+  const failedGates = compactStringList([
+    ...(Array.isArray(probe.failedGates) ? probe.failedGates : []),
+    ...(Array.isArray(probe.failed_gates) ? probe.failed_gates : []),
+    acceptedForGpuHmr ? 'missing_dependency_probe_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess ? 'missing_dependency_probe_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof ? 'missing_dependency_probe_claimed_runtime_authority' : null,
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(probe.blockingGaps) ? probe.blockingGaps : []),
+    ...(Array.isArray(probe.blocking_gaps) ? probe.blocking_gaps : []),
+    ...failedGates,
+    failedGates.length === 0 ? 'real_rocm_missing_dependency_probe_present' : null,
+  ]);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(probe.evidenceRefs) ? probe.evidenceRefs : []),
+    ...(Array.isArray(probe.evidence_refs) ? probe.evidence_refs : []),
+  ]);
+  const observedState = firstString(
+    probe.status,
+    probe.reason,
+    failedGates[0],
+    'real_rocm_missing_dependency_probe_present',
+  );
+  return [{
+    stageId: 'real-rocm-missing-dependency-probe',
+    stage_id: 'real-rocm-missing-dependency-probe',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-real-rocm-dependencies-satisfied',
+    required_state: 'gpu-hmr-real-rocm-dependencies-satisfied',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-real-rocm-build-prerequisite-missing',
+    degraded_state: 'gpu-hmr-real-rocm-build-prerequisite-missing',
     degradedReason: observedState,
     degraded_reason: observedState,
     blockingGaps,
@@ -2635,6 +2701,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     realRocmAppHookMaterializationSnapshot(input, validationContext);
   const realRocmSameProcessRuntimeOracle =
     realRocmSameProcessRuntimeOracleSnapshot(input, validationContext);
+  const realRocmMissingDependencyProbe =
+    realRocmMissingDependencyProbeSnapshot(input, validationContext);
   const adversarialPreflight = adversarialPreflightFacet(
     adversarialPreflightFromInput(input, validationContext),
   );
@@ -2735,6 +2803,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...realRocmAppHookContractLimitations(realRocmAppHookContract),
     ...realRocmAppHookMaterializationLimitations(realRocmAppHookMaterialization),
     ...realRocmSameProcessRuntimeOracleLimitations(realRocmSameProcessRuntimeOracle),
+    ...realRocmMissingDependencyProbeLimitations(realRocmMissingDependencyProbe),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -2748,6 +2817,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(realRocmAppHookContract),
     ...evidenceStringsFromValue(realRocmAppHookMaterialization),
     ...evidenceStringsFromValue(realRocmSameProcessRuntimeOracle),
+    ...evidenceStringsFromValue(realRocmMissingDependencyProbe),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
@@ -2792,6 +2862,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
     same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    realRocmMissingDependencyProbe,
+    real_rocm_missing_dependency_probe: realRocmMissingDependencyProbe,
+    missingDependencyProbe: realRocmMissingDependencyProbe,
+    missing_dependency_probe: realRocmMissingDependencyProbe,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2826,6 +2900,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     realRocmAppHookContract,
     realRocmAppHookMaterialization,
     realRocmSameProcessRuntimeOracle,
+    realRocmMissingDependencyProbe,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2894,6 +2969,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
     same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
+    realRocmMissingDependencyProbe,
+    real_rocm_missing_dependency_probe: realRocmMissingDependencyProbe,
+    missingDependencyProbe: realRocmMissingDependencyProbe,
+    missing_dependency_probe: realRocmMissingDependencyProbe,
     adversarialPreflight,
     adversarial_preflight: adversarialPreflight,
     acceptanceContract,

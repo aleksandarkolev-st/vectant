@@ -35,6 +35,12 @@ import {
 import {
   writeArtifactToCas,
 } from '../lib/gpu-hmr-artifact-cas.mjs';
+import {
+  buildValidationRuntimeProofArtifact,
+} from '../lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
+  buildGpuHmrValidationProofSummary,
+} from '../lib/gpu-hmr-validation-proof-summary.mjs';
 
 const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
 
@@ -4007,6 +4013,71 @@ function realRocmSourceTreeTransportFixture(scope, overrides = {}) {
 const largeRocmProofSchedulingFixture = realRocmProofSchedulingFixture();
 const largeRocmSourceTreeTransportFixture = realRocmSourceTreeTransportFixture('real-rocm-large-lib');
 
+function realRocmMissingDependencyProbeFixture(overrides = {}) {
+  return {
+    schemaVersion: 'synthi.real_rocm.missing_dependency_probe.v1',
+    schema_version: 'synthi.real_rocm.missing_dependency_probe.v1',
+    proofAuthority: 'missing_dependency_refusal_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'missing_dependency_refusal_evidence_only_not_gpu_hmr_success',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: 'missing_dependency_refusal_evidence',
+    dependencyCount: 1,
+    dependency_count: 1,
+    headerDependencyCount: 1,
+    header_dependency_count: 1,
+    missingHeaderCount: 1,
+    missing_header_count: 1,
+    presentHeaderCount: 0,
+    present_header_count: 0,
+    workerProbeAttempted: true,
+    worker_probe_attempted: true,
+    workerProbeAccepted: true,
+    worker_probe_accepted: true,
+    includeRoots: ['/tmp/worker/large-rocm/include', '/usr/include', '/opt/rocm/include'],
+    include_roots: ['/tmp/worker/large-rocm/include', '/usr/include', '/opt/rocm/include'],
+    dependencies: [{
+      token: 'half/half.hpp',
+      normalizedToken: 'half_half.hpp',
+      normalized_token: 'half_half.hpp',
+      kind: 'header',
+      headerProbeStatus: 'missing',
+      header_probe_status: 'missing',
+      candidatePaths: [
+        '/tmp/worker/large-rocm/include/half/half.hpp',
+        '/usr/include/half/half.hpp',
+        '/opt/rocm/include/half/half.hpp',
+      ],
+      candidate_paths: [
+        '/tmp/worker/large-rocm/include/half/half.hpp',
+        '/usr/include/half/half.hpp',
+        '/opt/rocm/include/half/half.hpp',
+      ],
+      observedPaths: [],
+      observed_paths: [],
+      packageOwners: [],
+      package_owners: [],
+      blockingGaps: ['missing_dependency:half_half.hpp', 'missing_header:half_half.hpp'],
+      blocking_gaps: ['missing_dependency:half_half.hpp', 'missing_header:half_half.hpp'],
+      evidenceRefs: ['evidence:upstream_lifecycle_failure', 'worker-include-probe:half_half.hpp'],
+      evidence_refs: ['evidence:upstream_lifecycle_failure', 'worker-include-probe:half_half.hpp'],
+    }],
+    blockingGaps: ['missing_build_dependency', 'missing_dependency:half_half.hpp', 'missing_header:half_half.hpp'],
+    blocking_gaps: ['missing_build_dependency', 'missing_dependency:half_half.hpp', 'missing_header:half_half.hpp'],
+    evidenceRefs: ['evidence:upstream_lifecycle_failure', 'phase:upstream_gpu_build_run'],
+    evidence_refs: ['evidence:upstream_lifecycle_failure', 'phase:upstream_gpu_build_run'],
+    contractHash: hashValue('real-rocm-missing-dependency-probe-fixture'),
+    contract_hash: hashValue('real-rocm-missing-dependency-probe-fixture'),
+    ...overrides,
+  };
+}
+
 const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -6209,6 +6280,109 @@ assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.
 ));
 assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportPresent, true);
 assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportAcceptedAsEvidence, false);
+
+const missingDependencyProbe = realRocmMissingDependencyProbeFixture();
+const missingDependencyProbeDir = path.join(logsRoot, 'real-rocm-missing-dependency-probe');
+await writeJson(path.join(missingDependencyProbeDir, 'real-rocm-missing-dependency-probe.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-missing-dependency-probe-20260628',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-missing-dependency-probe',
+    source: 'scripts/profiles/real-rocm-missing-dependency-probe.json',
+  },
+  upstream_lifecycle_failure: {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    reasons: ['upstream_build_failed', 'missing_build_dependency'],
+    missingDependencies: ['half/half.hpp'],
+    missing_dependencies: ['half/half.hpp'],
+  },
+  real_rocm_missing_dependency_probe: missingDependencyProbe,
+  realRocmMissingDependencyProbe: missingDependencyProbe,
+  missing_dependency_probe: missingDependencyProbe,
+  missingDependencyProbe,
+});
+const missingDependencyProbeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [missingDependencyProbeDir],
+  generatedAt: '2026-06-27T00:00:02.750Z',
+});
+const missingDependencyProbeRocm = missingDependencyProbeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(missingDependencyProbeRocm?.acceptedForGpuHmr, false);
+assert.equal(missingDependencyProbeRocm.gpuHmrSuccess, false);
+assert.equal(missingDependencyProbeRocm.realRocmMissingDependencyProbe.present, true);
+assert.equal(missingDependencyProbeRocm.realRocmMissingDependencyProbe.accepted, true);
+assert.ok(missingDependencyProbeRocm.reasons.includes(
+  'real_rocm_missing_dependency_probe:missing_dependency_refusal_evidence',
+));
+assert.ok(missingDependencyProbeRocm.openGaps.includes(
+  'real_rocm_missing_dependency_probe_required_absent',
+));
+assert.ok(missingDependencyProbeRocm.openGaps.includes(
+  'real_rocm_missing_dependency_probe:missing_header:half_half.hpp',
+));
+
+const forgedMissingDependencyProbe = realRocmMissingDependencyProbeFixture({
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+});
+const forgedMissingDependencyProbeDir = path.join(logsRoot, 'real-rocm-forged-missing-dependency-probe');
+await writeJson(
+  path.join(forgedMissingDependencyProbeDir, 'real-rocm-forged-missing-dependency-probe.json'),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-forged-missing-dependency-probe-20260628',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-forged-missing-dependency-probe',
+      source: 'scripts/profiles/real-rocm-forged-missing-dependency-probe.json',
+    },
+    upstream_lifecycle_failure: {
+      schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      acceptedAsRefusalEvidence: true,
+      accepted_as_refusal_evidence: true,
+      reasons: ['upstream_build_failed', 'missing_build_dependency'],
+      missingDependencies: ['half/half.hpp'],
+      missing_dependencies: ['half/half.hpp'],
+    },
+    real_rocm_missing_dependency_probe: forgedMissingDependencyProbe,
+    realRocmMissingDependencyProbe: forgedMissingDependencyProbe,
+    missing_dependency_probe: forgedMissingDependencyProbe,
+    missingDependencyProbe: forgedMissingDependencyProbe,
+  },
+);
+const forgedMissingDependencyProbeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedMissingDependencyProbeDir],
+  generatedAt: '2026-06-27T00:00:02.900Z',
+});
+const forgedMissingDependencyProbeRocm = forgedMissingDependencyProbeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedMissingDependencyProbeRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedMissingDependencyProbeRocm.gpuHmrSuccess, false);
+assert.equal(forgedMissingDependencyProbeRocm.realRocmMissingDependencyProbe.accepted, false);
+assert.ok(forgedMissingDependencyProbeRocm.realRocmMissingDependencyProbe.failedGates.includes(
+  'real_rocm_missing_dependency_probe_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedMissingDependencyProbeRocm.realRocmMissingDependencyProbe.failedGates.includes(
+  'real_rocm_missing_dependency_probe_claimed_gpu_hmr_success',
+));
+assert.ok(forgedMissingDependencyProbeRocm.realRocmMissingDependencyProbe.failedGates.includes(
+  'real_rocm_missing_dependency_probe_claimed_runtime_authority',
+));
 
 const forgedAppHookMaterialization = realRocmAppHookMaterializationFixture({
   acceptedForGpuHmr: true,
@@ -9166,6 +9340,83 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.dispatchTableEntryId, 'dis
 assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-target:accepted-compute-files');
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
+
+const acceptedRuntimeArtifactInput = {
+  createdAt: '2026-06-09T00:00:02.200Z',
+  workspaceSlug: 'real-rocm-missing-dependency-runtime-artifact-smoke',
+  fullRuntimeProof: {
+    resultState: 'gpu-hmr-full-runtime-proven',
+    fullRuntimeProven: true,
+    stages: [
+      'fission-candidate-verification',
+      'compile',
+      'symbol-binding',
+      'abi',
+      'artifact-transport',
+      'epoch-swap',
+      'dispatch-safe',
+      'output',
+      'artifact-identity',
+      'host-preservation',
+    ].map((stageId) => ({ stageId, status: 'passed' })),
+  },
+  proofLedgerRecord: acceptedComputeProofMaterials.proofLedger.records[0],
+  acceptanceContract: acceptedComputeProofMaterials.runtimeProofArtifact.acceptanceContract,
+  adversarialPreflight: {
+    ok: true,
+    skipped: false,
+    scriptPath: 'mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs',
+    exitCode: 0,
+    elapsedMs: 1,
+    stdoutHash: hashValue('missing-dependency-runtime-artifact-stdout'),
+    stderrHash: hashValue('missing-dependency-runtime-artifact-stderr'),
+  },
+};
+const acceptedRuntimeArtifactWithoutProbe = acceptedComputeProofMaterials.runtimeProofArtifact;
+assert.equal(acceptedRuntimeArtifactWithoutProbe.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(acceptedRuntimeArtifactWithoutProbe.gpuHmrSuccess, true);
+const missingDependencyRuntimeArtifact = buildValidationRuntimeProofArtifact({
+  ...acceptedRuntimeArtifactInput,
+  realRocmMissingDependencyProbe: missingDependencyProbe,
+  real_rocm_missing_dependency_probe: missingDependencyProbe,
+});
+assert.equal(missingDependencyRuntimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(missingDependencyRuntimeArtifact.gpuHmrSuccess, false);
+assert.ok(missingDependencyRuntimeArtifact.limitations.some(
+  (limitation) => limitation.stageId === 'real-rocm-missing-dependency-probe',
+));
+const missingDependencyRuntimeSummary = buildGpuHmrValidationProofSummary({
+  workspaceSlug: 'real-rocm-missing-dependency-runtime-summary-smoke',
+  fullRuntimeProof: acceptedRuntimeArtifactInput.fullRuntimeProof,
+  runtimeProofArtifactRecords: [acceptedRuntimeArtifactWithoutProbe],
+  proofLedgerQuery: acceptedRuntimeArtifactWithoutProbe.proofLedgerQuery,
+  acceptanceContractEvaluation: acceptedRuntimeArtifactWithoutProbe.acceptanceContractEvaluation,
+  acceptanceContractConsistency: acceptedRuntimeArtifactWithoutProbe.acceptanceContractConsistency,
+  realRocmMissingDependencyProbe: missingDependencyProbe,
+});
+assert.equal(missingDependencyRuntimeSummary.proof_states.real_rocm_missing_dependency_probe.accepted_as_refusal_evidence, true);
+assert.equal(missingDependencyRuntimeSummary.gpu_hmr_success, false);
+assert.ok(missingDependencyRuntimeSummary.limitations.some(
+  (limitation) => limitation.stage_id === 'real-rocm-missing-dependency-probe',
+));
+
+const acceptedComputeSafetyLedger = buildGpuHmrValidationMatrixLedger([
+  {
+    ...acceptedComputeRocm,
+    rowId: 'gpu-validation-matrix-row:sha256:' + 'f'.repeat(64),
+    row_id: 'gpu-validation-matrix-row:sha256:' + 'f'.repeat(64),
+    realRocmMissingDependencyProbe: missingDependencyProbe,
+    real_rocm_missing_dependency_probe: missingDependencyProbe,
+    missingDependencyProbe,
+    missing_dependency_probe: missingDependencyProbe,
+  },
+], { includeUnproven: true, latestPerTarget: false });
+assert.equal(acceptedComputeSafetyLedger.rows.length, 1);
+assert.equal(acceptedComputeSafetyLedger.rows[0].acceptedForGpuHmr, true);
+assert.equal(acceptedComputeSafetyLedger.rows[0].safety.accepted, false);
+assert.ok(acceptedComputeSafetyLedger.rows[0].safety.failedGates.some(
+  (gate) => gate.code === 'gpu_hmr_success_cannot_have_real_rocm_missing_dependency_probe',
+));
 
 const acceptedNativeBridgeRocmDir = path.join(logsRoot, 'real-rocm-accepted-native-runtime-bridge');
 const acceptedNativeBridgeReadback = path.join(acceptedNativeBridgeRocmDir, 'readback.bin');

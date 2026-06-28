@@ -99,6 +99,15 @@ import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-c
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const REAL_ROCM_MISSING_DEPENDENCY_PROBE_SCHEMA_VERSION =
+  'synthi.real_rocm.missing_dependency_probe.v1';
+const REAL_ROCM_MISSING_DEPENDENCY_PROBE_AUTHORITY =
+  'missing_dependency_refusal_evidence_only_not_gpu_hmr_success';
+const REAL_ROCM_MISSING_DEPENDENCY_INCLUDE_ROOTS = [
+  '/usr/include',
+  '/usr/local/include',
+  '/opt/rocm/include',
+];
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const DEFAULT_REAL_ROCM_REPO_PARENT = path.resolve(REPO_ROOT, 'tmp/real-rocm');
 const PROFILE_DIR = existsSync(path.join(__dirname, 'profiles'))
@@ -2532,6 +2541,10 @@ const report = {
   proof_scheduling: null,
   timeout_intelligence_failure: null,
   timeoutIntelligenceFailure: null,
+  real_rocm_missing_dependency_probe: null,
+  realRocmMissingDependencyProbe: null,
+  missing_dependency_probe: null,
+  missingDependencyProbe: null,
   adversarial_preflight: null,
   hiprt_runtime_probe: {
     enabled: CFG.hiprtRuntimeProbe,
@@ -5725,6 +5738,7 @@ exit 0
     report.upstream_lifecycle_failure = upstreamLifecycleFailure;
     report.upstream_lifecycle_failure_facet = upstreamLifecycleFailure;
     report.evidence.upstream_lifecycle_failure = upstreamLifecycleFailure;
+    await recordRealRocmMissingDependencyProbe(upstreamLifecycleFailure, cachedMetadata);
   }
   const phase = {
     name: 'upstream_gpu_build_run',
@@ -5747,6 +5761,7 @@ exit 0
         }
       : null,
     upstream_lifecycle_failure: upstreamLifecycleFailure,
+    real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
     upstream_run_environment: upstreamRunLaunch,
     runtime_capability_preflight: report.runtime_capability_preflight,
     native_launch_observer: CFG.nativeLaunchObserver
@@ -5778,6 +5793,13 @@ exit 0
         target_source_count: recoveredBuildMetadata.targetSourcePaths.length,
       };
       report.evidence.upstream_lifecycle_metadata_recovery = report.upstream_lifecycle_metadata_recovery;
+      if (upstreamLifecycleFailure) {
+        const refreshedMissingDependencyProbe =
+          await recordRealRocmMissingDependencyProbe(upstreamLifecycleFailure, recoveredBuildMetadata);
+        if (refreshedMissingDependencyProbe) {
+          phase.real_rocm_missing_dependency_probe = refreshedMissingDependencyProbe;
+        }
+      }
       record(
         'upstream lifecycle metadata recovery',
         'warn',
@@ -6975,6 +6997,313 @@ function proofSchedulingGapToken(value) {
     .replace(/[^a-z0-9_.:-]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 120);
+}
+
+function missingDependencyKind(value) {
+  const token = String(value ?? '').trim();
+  if (!token) return 'unknown';
+  if (/[\\/]/.test(token) && /\.(?:h|hh|hpp|hxx|inc|cuh|cl|ocl)$/i.test(token)) {
+    return 'header';
+  }
+  if (
+    /^CMAKE_[A-Za-z0-9_]+_COMPILER$/i.test(token)
+    || /(?:^|[\\/])(?:cc|c\+\+|gcc|g\+\+|clang|clang\+\+|hipcc|amdclang\+\+?)$/i.test(token)
+    || /\b(?:compiler|python|perl|ruby|ninja|make|pkg-config)\b/i.test(token)
+  ) {
+    return 'tool_or_program';
+  }
+  return 'package_or_config';
+}
+
+function missingDependencyGapToken(value) {
+  return proofSchedulingGapToken(value);
+}
+
+function parseMissingDependencyProbeOutput(output) {
+  const records = new Map();
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const parts = line.split('\t');
+    if (parts[0] === 'HEADER' && parts.length >= 3) {
+      const token = String(parts[1] ?? '').trim();
+      if (!token) continue;
+      const current = records.get(token) ?? {
+        token,
+        observedPaths: [],
+        observed_paths: [],
+        packageOwners: [],
+        package_owners: [],
+        headerProbeStatus: 'unknown',
+        header_probe_status: 'unknown',
+      };
+      const status = String(parts[2] ?? '').trim();
+      if (status === 'present' && parts[3]) {
+        current.headerProbeStatus = 'present';
+        current.header_probe_status = 'present';
+        current.observedPaths.push(String(parts[3]).trim());
+        current.observed_paths = current.observedPaths;
+      } else if (status === 'missing' && current.headerProbeStatus !== 'present') {
+        current.headerProbeStatus = 'missing';
+        current.header_probe_status = 'missing';
+      }
+      records.set(token, current);
+    } else if (parts[0] === 'DPKG' && parts.length >= 3) {
+      const token = String(parts[1] ?? '').trim();
+      if (!token) continue;
+      const current = records.get(token) ?? {
+        token,
+        observedPaths: [],
+        observed_paths: [],
+        packageOwners: [],
+        package_owners: [],
+        headerProbeStatus: 'unknown',
+        header_probe_status: 'unknown',
+      };
+      current.packageOwners.push(parts.slice(2).join('\t').trim());
+      current.package_owners = current.packageOwners;
+      records.set(token, current);
+    }
+  }
+  return records;
+}
+
+function missingDependencyProbeIncludeRoots(buildMetadata = null) {
+  const projectIncludeRoots = compactStringList([
+    ...(Array.isArray(buildMetadata?.targetIncludeDirs) ? buildMetadata.targetIncludeDirs : []),
+    ...(Array.isArray(buildMetadata?.target_include_dirs) ? buildMetadata.target_include_dirs : []),
+  ])
+    .map((dir) => dir.replace(/\\/g, '/').replace(/\/+$/, ''))
+    .filter((dir) => dir && dir !== '.' && !path.posix.isAbsolute(dir) && !dir.startsWith('../'))
+    .map((dir) => `${CFG.workerRepoPath.replace(/\/+$/g, '')}/${dir}`);
+  return compactStringList([
+    ...projectIncludeRoots,
+    ...REAL_ROCM_MISSING_DEPENDENCY_INCLUDE_ROOTS,
+  ]);
+}
+
+function missingDependencyProbeFacet({
+  lifecycle,
+  workerProbeOutput = '',
+  workerProbeError = null,
+  includeRoots = REAL_ROCM_MISSING_DEPENDENCY_INCLUDE_ROOTS,
+} = {}) {
+  const missingDependencies = compactStringList([
+    ...listFromMaybeAliases(lifecycle, 'missingDependencies', 'missing_dependencies'),
+  ]);
+  if (missingDependencies.length === 0) return null;
+  const lifecycleAccepted =
+    lifecycle?.acceptedAsRefusalEvidence === true
+    || lifecycle?.accepted_as_refusal_evidence === true;
+  const probeRecords = parseMissingDependencyProbeOutput(workerProbeOutput);
+  const dependencies = missingDependencies.map((token) => {
+    const normalizedToken = missingDependencyGapToken(token);
+    const kind = missingDependencyKind(token);
+    const probe = probeRecords.get(token) ?? {};
+    const headerProbeStatus =
+      kind === 'header'
+        ? probe.headerProbeStatus ?? probe.header_probe_status ?? 'not_observed'
+        : 'not_applicable';
+    const observedPaths = compactStringList([
+      ...(Array.isArray(probe.observedPaths) ? probe.observedPaths : []),
+      ...(Array.isArray(probe.observed_paths) ? probe.observed_paths : []),
+    ]);
+    const packageOwners = compactStringList([
+      ...(Array.isArray(probe.packageOwners) ? probe.packageOwners : []),
+      ...(Array.isArray(probe.package_owners) ? probe.package_owners : []),
+    ]);
+    const candidatePaths = kind === 'header'
+      ? includeRoots.map((root) => `${root.replace(/\/+$/g, '')}/${token}`)
+      : [];
+    const blockingGaps = compactStringList([
+      normalizedToken ? `missing_dependency:${normalizedToken}` : 'missing_dependency:unknown',
+      kind === 'header' && headerProbeStatus === 'missing'
+        ? `missing_header:${normalizedToken}`
+        : null,
+      kind === 'header' && headerProbeStatus === 'not_observed'
+        ? `missing_header_probe_not_observed:${normalizedToken}`
+        : null,
+      kind === 'header' && headerProbeStatus === 'present'
+        ? `missing_dependency_include_path_or_build_config:${normalizedToken}`
+        : null,
+    ]);
+    return {
+      token,
+      normalizedToken,
+      normalized_token: normalizedToken,
+      kind,
+      headerProbeStatus,
+      header_probe_status: headerProbeStatus,
+      candidatePaths,
+      candidate_paths: candidatePaths,
+      observedPaths,
+      observed_paths: observedPaths,
+      packageOwners,
+      package_owners: packageOwners,
+      blockingGaps,
+      blocking_gaps: blockingGaps,
+      evidenceRefs: compactStringList([
+        'evidence:upstream_lifecycle_failure',
+        kind === 'header' ? `worker-include-probe:${normalizedToken}` : null,
+      ]),
+      evidence_refs: compactStringList([
+        'evidence:upstream_lifecycle_failure',
+        kind === 'header' ? `worker-include-probe:${normalizedToken}` : null,
+      ]),
+    };
+  });
+  const headerDependencies = dependencies.filter((entry) => entry.kind === 'header');
+  const missingHeaderCount = headerDependencies.filter((entry) =>
+    entry.headerProbeStatus === 'missing'
+  ).length;
+  const presentHeaderCount = headerDependencies.filter((entry) =>
+    entry.headerProbeStatus === 'present'
+  ).length;
+  const workerProbeAttempted = headerDependencies.length > 0;
+  const workerProbeAccepted =
+    workerProbeAttempted
+    && !workerProbeError
+    && headerDependencies.every((entry) =>
+      ['present', 'missing'].includes(entry.headerProbeStatus)
+    );
+  const acceptedAsRefusalEvidence =
+    lifecycleAccepted
+    && missingDependencies.length > 0
+    && (!workerProbeAttempted || workerProbeAccepted)
+    && presentHeaderCount === 0;
+  const blockingGaps = compactStringList([
+    'missing_build_dependency',
+    ...dependencies.flatMap((entry) => entry.blockingGaps),
+    workerProbeAttempted && !workerProbeAccepted ? 'missing_dependency_worker_probe_unaccepted' : null,
+  ]);
+  const status = workerProbeAttempted && !workerProbeAccepted
+    ? 'missing_dependency_probe_unaccepted'
+    : presentHeaderCount > 0
+      ? 'missing_dependency_probe_conflict'
+      : 'missing_dependency_refusal_evidence';
+  return {
+    schemaVersion: REAL_ROCM_MISSING_DEPENDENCY_PROBE_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_MISSING_DEPENDENCY_PROBE_SCHEMA_VERSION,
+    proofAuthority: REAL_ROCM_MISSING_DEPENDENCY_PROBE_AUTHORITY,
+    proof_authority: REAL_ROCM_MISSING_DEPENDENCY_PROBE_AUTHORITY,
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status,
+    dependencyCount: dependencies.length,
+    dependency_count: dependencies.length,
+    headerDependencyCount: headerDependencies.length,
+    header_dependency_count: headerDependencies.length,
+    missingHeaderCount,
+    missing_header_count: missingHeaderCount,
+    presentHeaderCount,
+    present_header_count: presentHeaderCount,
+    workerProbeAttempted,
+    worker_probe_attempted: workerProbeAttempted,
+    workerProbeAccepted,
+    worker_probe_accepted: workerProbeAccepted,
+    workerProbeError: workerProbeError ? String(workerProbeError.message ?? workerProbeError).slice(0, 2000) : null,
+    worker_probe_error: workerProbeError ? String(workerProbeError.message ?? workerProbeError).slice(0, 2000) : null,
+    includeRoots,
+    include_roots: includeRoots,
+    dependencies,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      'evidence:upstream_lifecycle_failure',
+      'phase:upstream_gpu_build_run',
+      workerProbeAttempted ? 'worker:include-root-probe' : null,
+    ]),
+    evidence_refs: compactStringList([
+      'evidence:upstream_lifecycle_failure',
+      'phase:upstream_gpu_build_run',
+      workerProbeAttempted ? 'worker:include-root-probe' : null,
+    ]),
+    workerProbeOutputTail: String(workerProbeOutput ?? '').slice(-4000),
+    worker_probe_output_tail: String(workerProbeOutput ?? '').slice(-4000),
+  };
+}
+
+async function collectMissingDependencyProbeFromWorker(lifecycle, buildMetadata = null) {
+  const missingDependencies = compactStringList([
+    ...listFromMaybeAliases(lifecycle, 'missingDependencies', 'missing_dependencies'),
+  ]);
+  if (missingDependencies.length === 0) return null;
+  const headerDependencies = missingDependencies.filter((token) =>
+    missingDependencyKind(token) === 'header'
+  );
+  const includeRoots = missingDependencyProbeIncludeRoots(buildMetadata);
+  let workerProbeOutput = '';
+  let workerProbeError = null;
+  if (headerDependencies.length > 0 && CFG.workerContainer) {
+    const depList = headerDependencies.map(shQuote).join(' ');
+    const rootList = includeRoots.map(shQuote).join(' ');
+    const script = [
+      'set -u',
+      `for dep in ${depList}; do`,
+      '  found=0',
+      `  for root in ${rootList}; do`,
+      '    candidate="${root%/}/$dep"',
+      '    if [ -e "$candidate" ]; then',
+      '      printf "HEADER\\t%s\\tpresent\\t%s\\n" "$dep" "$candidate"',
+      '      found=1',
+      '    fi',
+      '  done',
+      '  if [ "$found" -eq 0 ]; then',
+      '    printf "HEADER\\t%s\\tmissing\\t\\n" "$dep"',
+      '  fi',
+      '  if command -v dpkg >/dev/null 2>&1; then',
+      '    for root in /usr/include /usr/local/include /opt/rocm/include; do',
+      '      candidate="${root%/}/$dep"',
+      '      dpkg -S "$candidate" 2>/dev/null | sed "s/^/DPKG\\t$dep\\t/" | head -20 || true',
+      '    done',
+      '  fi',
+      'done',
+    ].join('\n');
+    try {
+      workerProbeOutput = await execText(
+        'docker',
+        ['exec', CFG.workerContainer, 'sh', '-lc', script],
+        30000,
+        false,
+      );
+    } catch (err) {
+      workerProbeError = err;
+      workerProbeOutput = String(err.output ?? '');
+    }
+  }
+  return missingDependencyProbeFacet({
+    lifecycle,
+    workerProbeOutput,
+    workerProbeError,
+    includeRoots,
+  });
+}
+
+async function recordRealRocmMissingDependencyProbe(lifecycle, buildMetadata = null) {
+  const missingDependencyProbe =
+    await collectMissingDependencyProbeFromWorker(lifecycle, buildMetadata);
+  if (!missingDependencyProbe) return null;
+  report.real_rocm_missing_dependency_probe = missingDependencyProbe;
+  report.realRocmMissingDependencyProbe = missingDependencyProbe;
+  report.missing_dependency_probe = missingDependencyProbe;
+  report.missingDependencyProbe = missingDependencyProbe;
+  report.evidence.real_rocm_missing_dependency_probe = missingDependencyProbe;
+  record(
+    'upstream missing dependency probe',
+    missingDependencyProbe.acceptedAsRefusalEvidence === true ? 'pass' : 'warn',
+    [
+      `deps=${missingDependencyProbe.dependencyCount}`,
+      `headers=${missingDependencyProbe.headerDependencyCount}`,
+      `missing_headers=${missingDependencyProbe.missingHeaderCount}`,
+      `present_headers=${missingDependencyProbe.presentHeaderCount}`,
+      `status=${missingDependencyProbe.status}`,
+    ].join(' '),
+  );
+  return missingDependencyProbe;
 }
 
 function realRocmUpstreamLifecycleProofSchedulingGaps() {
@@ -15857,6 +16186,36 @@ int main()
   ) {
     throw new Error('upstream lifecycle build-failure classifier self-check failed');
   }
+  const missingDependencyProbeRoots = missingDependencyProbeIncludeRoots({
+    targetIncludeDirs: ['include', '/abs-ignored', '../escape-ignored'],
+  });
+  const expectedWorkerIncludeRoot = `${CFG.workerRepoPath.replace(/\/+$/g, '')}/include`;
+  const missingDependencyProbe = missingDependencyProbeFacet({
+    lifecycle: buildFailureClassification,
+    includeRoots: missingDependencyProbeRoots,
+    workerProbeOutput: "HEADER\thalf/half.hpp\tmissing\t\n",
+  });
+  const presentDependencyProbe = missingDependencyProbeFacet({
+    lifecycle: buildFailureClassification,
+    includeRoots: missingDependencyProbeRoots,
+    workerProbeOutput: "HEADER\thalf/half.hpp\tpresent\t/tmp/worker/include/half/half.hpp\n",
+  });
+  if (
+    !missingDependencyProbeRoots.includes(expectedWorkerIncludeRoot)
+    || missingDependencyProbeRoots.some((root) => root.includes('escape-ignored'))
+    || missingDependencyProbe.acceptedAsRefusalEvidence !== true
+    || missingDependencyProbe.acceptedForGpuHmr !== false
+    || missingDependencyProbe.gpuHmrSuccess !== false
+    || missingDependencyProbe.canSatisfyRuntimeProof !== false
+    || !missingDependencyProbe.blockingGaps.includes('missing_header:half_half.hpp')
+    || presentDependencyProbe.acceptedAsRefusalEvidence !== false
+    || presentDependencyProbe.presentHeaderCount !== 1
+    || !presentDependencyProbe.blockingGaps.includes(
+      'missing_dependency_include_path_or_build_config:half_half.hpp',
+    )
+  ) {
+    throw new Error('missing dependency probe facet self-check failed');
+  }
   const transferFailure = workerRepoTransferFailureFacet({
     operation: 'docker_cp',
     sourcePath: '/tmp/source',
@@ -18075,6 +18434,10 @@ async function writeResults() {
     real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
     proofScheduling: report.real_rocm_proof_scheduling,
     proof_scheduling: report.real_rocm_proof_scheduling,
+    realRocmMissingDependencyProbe: report.real_rocm_missing_dependency_probe,
+    real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
+    missingDependencyProbe: report.real_rocm_missing_dependency_probe,
+    missing_dependency_probe: report.real_rocm_missing_dependency_probe,
     timeoutIntelligenceFailure: report.timeout_intelligence_failure,
     timeout_intelligence_failure: report.timeout_intelligence_failure,
     validationBlockers: report.validation_blockers,
@@ -18198,6 +18561,10 @@ async function writeResults() {
       real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
       proofScheduling: report.real_rocm_proof_scheduling,
       proof_scheduling: report.real_rocm_proof_scheduling,
+      realRocmMissingDependencyProbe: report.real_rocm_missing_dependency_probe,
+      real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
+      missingDependencyProbe: report.real_rocm_missing_dependency_probe,
+      missing_dependency_probe: report.real_rocm_missing_dependency_probe,
       timeoutIntelligenceFailure: report.timeout_intelligence_failure,
       timeout_intelligence_failure: report.timeout_intelligence_failure,
       validationBlockers: report.validation_blockers,
@@ -18234,6 +18601,10 @@ async function writeResults() {
       real_rocm_app_hook_materialization: written.artifact.real_rocm_app_hook_materialization,
       appHookMaterialization: written.artifact.appHookMaterialization,
       app_hook_materialization: written.artifact.app_hook_materialization,
+      realRocmMissingDependencyProbe: written.artifact.realRocmMissingDependencyProbe,
+      real_rocm_missing_dependency_probe: written.artifact.real_rocm_missing_dependency_probe,
+      missingDependencyProbe: written.artifact.missingDependencyProbe,
+      missing_dependency_probe: written.artifact.missing_dependency_probe,
       gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     };
   }
@@ -18285,6 +18656,10 @@ async function writeResults() {
     real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
     appHookMaterialization: report.real_rocm_app_hook_materialization,
     app_hook_materialization: report.real_rocm_app_hook_materialization,
+    realRocmMissingDependencyProbe: report.real_rocm_missing_dependency_probe,
+    real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
+    missingDependencyProbe: report.real_rocm_missing_dependency_probe,
+    missing_dependency_probe: report.real_rocm_missing_dependency_probe,
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
@@ -18319,18 +18694,25 @@ async function writeResults() {
   const strictProofGatesPassed = report.strict_proof_gates.every((gate) => gate.status !== 'fail');
   const targetProgressionGatesPassed =
     report.target_progression_gates.every((gate) => gate.status !== 'fail');
+  const missingDependencyProbePresent =
+    !!report.real_rocm_missing_dependency_probe
+    && typeof report.real_rocm_missing_dependency_probe === 'object'
+    && !Array.isArray(report.real_rocm_missing_dependency_probe);
+  const missingDependencyProbeAbsent = !missingDependencyProbePresent;
   const realRocmGpuHmrSuccess =
     fullRuntimeProven
     && runtimeProofArtifactGpuHmrSuccess
     && strictRuntimeProofArtifactAccepted
     && strictProofGatesPassed
-    && targetProgressionGatesPassed;
+    && targetProgressionGatesPassed
+    && missingDependencyProbeAbsent;
   const verdictFailedGates = compactStringList([
     fullRuntimeProven ? null : 'full_runtime_ladder_not_proven',
     runtimeProofArtifactGpuHmrSuccess ? null : 'strict_runtime_proof_artifact_gpu_hmr_success_false',
     strictRuntimeProofArtifactAccepted ? null : 'strict_runtime_proof_artifact_not_accepted',
     strictProofGatesPassed ? null : 'strict_proof_gates_failed',
     targetProgressionGatesPassed ? null : 'target_progression_gates_failed',
+    missingDependencyProbeAbsent ? null : 'real_rocm_missing_dependency_probe_present',
   ]);
   report.real_rocm_gpu_hmr_verdict = {
     schemaVersion: 'synthi.real_rocm.gpu_hmr_verdict.v1',
@@ -18348,6 +18730,8 @@ async function writeResults() {
     strict_proof_gates_passed: strictProofGatesPassed,
     targetProgressionGatesPassed,
     target_progression_gates_passed: targetProgressionGatesPassed,
+    missingDependencyProbeAbsent,
+    missing_dependency_probe_absent: missingDependencyProbeAbsent,
     failedGates: verdictFailedGates,
     failed_gates: verdictFailedGates,
   };

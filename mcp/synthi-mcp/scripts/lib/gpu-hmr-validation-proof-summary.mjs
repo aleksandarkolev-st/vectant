@@ -187,6 +187,47 @@ function limitationsFromRuntimeArtifacts(records) {
     })));
 }
 
+function realRocmMissingDependencyProbeLimitations(probe) {
+  if (!isObject(probe)) return [];
+  const acceptedForGpuHmr =
+    probe.acceptedForGpuHmr === true || probe.accepted_for_gpu_hmr === true;
+  const gpuHmrSuccess =
+    probe.gpuHmrSuccess === true || probe.gpu_hmr_success === true;
+  const canSatisfyRuntimeProof =
+    probe.canSatisfyRuntimeProof === true || probe.can_satisfy_runtime_proof === true;
+  const failedGates = compactStringList([
+    ...(Array.isArray(probe.failedGates) ? probe.failedGates : []),
+    ...(Array.isArray(probe.failed_gates) ? probe.failed_gates : []),
+    acceptedForGpuHmr ? 'missing_dependency_probe_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess ? 'missing_dependency_probe_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof ? 'missing_dependency_probe_claimed_runtime_authority' : null,
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(probe.blockingGaps) ? probe.blockingGaps : []),
+    ...(Array.isArray(probe.blocking_gaps) ? probe.blocking_gaps : []),
+    ...failedGates,
+    failedGates.length === 0 ? 'real_rocm_missing_dependency_probe_present' : null,
+  ]);
+  const observedState = firstString(
+    probe.status,
+    probe.reason,
+    failedGates[0],
+    'real_rocm_missing_dependency_probe_present',
+  );
+  return [{
+    stage_id: 'real-rocm-missing-dependency-probe',
+    status: 'blocked',
+    required_state: 'gpu-hmr-real-rocm-dependencies-satisfied',
+    observed_state: observedState,
+    degraded_state: 'gpu-hmr-real-rocm-build-prerequisite-missing',
+    degraded_reason: observedState,
+    blocking_gaps: blockingGaps,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
 function uniqueLimitations(limitations) {
   const seen = new Set();
   return limitations.filter((limitation) => {
@@ -388,6 +429,22 @@ function realRocmAppHookMaterialization(input, validationContext) {
   }
   if (isObject(validationContext?.appHookMaterialization)) return validationContext.appHookMaterialization;
   if (isObject(validationContext?.app_hook_materialization)) return validationContext.app_hook_materialization;
+  return null;
+}
+
+function realRocmMissingDependencyProbe(input, validationContext) {
+  if (isObject(input.realRocmMissingDependencyProbe)) return input.realRocmMissingDependencyProbe;
+  if (isObject(input.real_rocm_missing_dependency_probe)) return input.real_rocm_missing_dependency_probe;
+  if (isObject(input.missingDependencyProbe)) return input.missingDependencyProbe;
+  if (isObject(input.missing_dependency_probe)) return input.missing_dependency_probe;
+  if (isObject(validationContext?.realRocmMissingDependencyProbe)) {
+    return validationContext.realRocmMissingDependencyProbe;
+  }
+  if (isObject(validationContext?.real_rocm_missing_dependency_probe)) {
+    return validationContext.real_rocm_missing_dependency_probe;
+  }
+  if (isObject(validationContext?.missingDependencyProbe)) return validationContext.missingDependencyProbe;
+  if (isObject(validationContext?.missing_dependency_probe)) return validationContext.missing_dependency_probe;
   return null;
 }
 
@@ -763,8 +820,19 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
       ?? null
     ),
   ]).at(-1) ?? null;
+  const missingDependencyProbe = compactObjects([
+    realRocmMissingDependencyProbe(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmMissingDependencyProbe
+      ?? record.real_rocm_missing_dependency_probe
+      ?? record.missingDependencyProbe
+      ?? record.missing_dependency_probe
+      ?? null
+    ),
+  ]).at(-1) ?? null;
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
+    ...realRocmMissingDependencyProbeLimitations(missingDependencyProbe),
     ...acceptanceContractLimitations(acceptanceContractEvaluations),
     ...acceptanceContractConsistencyLimitations(acceptanceContractConsistencyEvaluations),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluations),
@@ -919,6 +987,47 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             status: appHookMaterialization.status ?? null,
           }
         : null,
+      real_rocm_missing_dependency_probe: missingDependencyProbe
+        ? {
+            accepted_as_refusal_evidence:
+              missingDependencyProbe.acceptedAsRefusalEvidence === true
+              || missingDependencyProbe.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              missingDependencyProbe.acceptedForGpuHmr === true
+              || missingDependencyProbe.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              missingDependencyProbe.gpuHmrSuccess === true
+              || missingDependencyProbe.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              missingDependencyProbe.canSatisfyRuntimeProof === true
+              || missingDependencyProbe.can_satisfy_runtime_proof === true,
+            dependency_count:
+              missingDependencyProbe.dependencyCount
+              ?? missingDependencyProbe.dependency_count
+              ?? null,
+            header_dependency_count:
+              missingDependencyProbe.headerDependencyCount
+              ?? missingDependencyProbe.header_dependency_count
+              ?? null,
+            missing_header_count:
+              missingDependencyProbe.missingHeaderCount
+              ?? missingDependencyProbe.missing_header_count
+              ?? null,
+            present_header_count:
+              missingDependencyProbe.presentHeaderCount
+              ?? missingDependencyProbe.present_header_count
+              ?? null,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(missingDependencyProbe.blockingGaps)
+                ? missingDependencyProbe.blockingGaps
+                : []),
+              ...(Array.isArray(missingDependencyProbe.blocking_gaps)
+                ? missingDependencyProbe.blocking_gaps
+                : []),
+            ]).length,
+            status: missingDependencyProbe.status ?? null,
+          }
+        : null,
       runtime_artifacts: runtimeArtifactRecords.map((record) => ({
         phase: record.phase ?? null,
         name: record.name ?? null,
@@ -947,6 +1056,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     real_rocm_app_hook_materialization: appHookMaterialization,
     appHookMaterialization,
     app_hook_materialization: appHookMaterialization,
+    realRocmMissingDependencyProbe: missingDependencyProbe,
+    real_rocm_missing_dependency_probe: missingDependencyProbe,
+    missingDependencyProbe,
+    missing_dependency_probe: missingDependencyProbe,
     gpu_hmr_success: gpuHmrSuccess,
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,
