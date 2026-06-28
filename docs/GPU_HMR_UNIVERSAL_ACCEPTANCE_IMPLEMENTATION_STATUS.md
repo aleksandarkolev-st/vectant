@@ -27,6 +27,7 @@ Additional 2026-06-29 large-ROCm prerequisite and transport progress:
 implementation: real ROCm profiles now support generic `externalHeaderPrerequisites` with git source URL, exact commit, optional `cmake_install` materialization, required-header inspection, and `${REAL_ROCM_EXTERNAL_INCLUDE:<id>}` CMake token expansion only after dependency evidence is accepted
 proof authority: external_header_dependency_evidence_only_not_gpu_hmr_success
 not proof: external header materialization has acceptedForGpuHmr=false, gpuHmrSuccess=false, canSatisfyRuntimeProof=false, and cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, app-hook, output-oracle, firewall, or strict runtime proof gates
+matrix follow-up: validation matrix ingestion now normalizes `real_rocm_external_header_prerequisites` / `externalHeaderPrerequisites` from top-level reports, summaries, runtime proof artifacts, and evidence blocks. A present facet must keep dependency-only authority, schema-correct aggregate and child prerequisite records, exact immutable commits, materialization/install/header inspection evidence, content-addressed header-set hashes, and no blocking gaps. The matrix and accepted-row safety reject forged external-header facets that claim GPU HMR acceptance, GPU HMR success, runtime authority, or dispatch authority.
 MIOpen profile change: `-DHALF_INCLUDE_DIR=${REAL_ROCM_EXTERNAL_INCLUDE:rocm-half}` plus upstream `ROCm/half.git` at commit `10abd99e7815f0ca5d892f58dd7d15a23b7cf92c`, installed through the project's own CMake install path into shared CAS
 latest retained MIOpen slug: gpu-real-rocm-MIOpen-20260628230159
 latest retained MIOpen json: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628230159.json
@@ -41,6 +42,11 @@ verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validat
 verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
 verification: git diff --check -- mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs mcp/synthi-mcp/scripts/profiles/real-rocm-miopen-activation-large-ml.json -> passed
+matrix verification: node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+matrix verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+matrix verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:e6ca7aed37a793f30314180aa72af4ea171ff97d92054d02fbf62ddffccba5a3, rows=58
+matrix verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed on retry with longer timeout; smoke proof gpu-validation-matrix-ledger:sha256:16f6bb05e9402a64a7496701103b6a5e5ad7197d732937935eb7c9358685046f, matrix self-check proof gpu-validation-matrix-ledger:sha256:f7ba2e448080490fd185cd22e1d20662a6a08b0c17fef54e4b60209787792165, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
+new smoke coverage: accepted dependency-only external-header prerequisite evidence is preserved on large real ROCm rows; forged aggregate/child prerequisite facets are rejected when they claim GPU HMR/runtime/dispatch authority; accepted-row safety rejects a forged external-header prerequisite facet on an otherwise accepted row
 ```
 
 Fresh 2026-06-29 source-first/no-precompiled user-path check:

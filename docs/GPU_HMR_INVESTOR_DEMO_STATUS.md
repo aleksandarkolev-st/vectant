@@ -27,6 +27,8 @@ Large real ROCm source-tree transport now records generic source-tree CAS/integr
 
 The newest retained MIOpen rerun, `gpu-real-rocm-MIOpen-20260628230159`, is still a refusal. It proves the shared-CAS source transport path plus a generic external-header prerequisite path: upstream `ROCm/half.git` was materialized at exact commit `10abd99e7815f0ca5d892f58dd7d15a23b7cf92c`, installed through its own CMake install recipe, verified for `half/half.hpp`, and exposed through `${REAL_ROCM_EXTERNAL_INCLUDE:rocm-half}`. That is dependency evidence only, not a shim or success shortcut. The build then configured and entered the real MIOpen compile before the bounded upstream window expired. GPU HMR remains refused because app-hook, epoch, dispatch, host-identity, output-oracle, and strict runtime proof closure are still missing. No frame-gated visual proof is claimed for that compute/upstream-lifecycle profile.
 
+The validation matrix now carries that external-header prerequisite evidence as a first-class real ROCm facet rather than report-only context. Accepted dependency evidence can coexist with a later accepted runtime row, but it cannot authorize one: forged aggregate or child records that claim GPU HMR, runtime, or dispatch authority are rejected, and accepted-row safety rejects a bad prerequisite facet on an otherwise accepted row.
+
 Real ROCm diagnostic screenshots are now explicitly separated from runtime visual proof. A readable/nonblank screenshot may still be retained as diagnostic evidence, but if it is not frame-gated after an epoch dispatch it is marked supplemental and excluded from runtime visual-proof counts, proof summaries, target-progression accepted visual counts, and matrix small-oracle visual fallback.
 ```
 
