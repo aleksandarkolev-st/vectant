@@ -3705,6 +3705,50 @@ function sourceTreeSharedCasMounts(env = process.env) {
   }
 }
 
+function sourceTreeProducerCasRootFromMounts(mounts = []) {
+  const producerMount = (Array.isArray(mounts) ? mounts : []).find((mount) =>
+    ['host', 'runner', 'workspace'].includes(mount?.role)
+    && typeof mount.root === 'string'
+    && mount.root.trim() !== ''
+  );
+  return producerMount?.root ? path.resolve(producerMount.root) : '';
+}
+
+function sourceTreeProducerCasRootFromResolution(mountResolution) {
+  const root = mountResolution?.producerRoot ?? mountResolution?.producer_root;
+  return typeof root === 'string' && root.trim() !== '' ? path.resolve(root) : '';
+}
+
+function resolveSourceTreeCasRoot({ mountResolution = null, sharedMounts = [] } = {}) {
+  const configuredRoot = CFG.sourceTreeCasRoot
+    ? path.resolve(CFG.sourceTreeCasRoot)
+    : '';
+  if (configuredRoot) {
+    return {
+      root: configuredRoot,
+      source: 'configured_source_tree_cas_root',
+    };
+  }
+  const resolutionRoot = sourceTreeProducerCasRootFromResolution(mountResolution);
+  if (resolutionRoot) {
+    return {
+      root: resolutionRoot,
+      source: 'resolved_source_tree_mount_producer_root',
+    };
+  }
+  const mountRoot = sourceTreeProducerCasRootFromMounts(sharedMounts);
+  if (mountRoot) {
+    return {
+      root: mountRoot,
+      source: 'resolved_source_tree_shared_mount',
+    };
+  }
+  return {
+    root: '',
+    source: 'unresolved',
+  };
+}
+
 function sourceTreeSafeSegment(value, fallback = 'source-tree') {
   const normalized = String(value ?? '')
     .trim()
@@ -3997,13 +4041,17 @@ async function buildRealRocmSourceTreeTransportFacet({
     if (sharedCasMountError) {
       failedGates.push('source_tree_shared_cas_mounts_invalid');
     }
+    const resolvedSourceTreeCas = resolveSourceTreeCasRoot({
+      mountResolution,
+      sharedMounts: sharedCas.mounts,
+    });
     const producer = {
       name: 'real_rocm_repo_validation',
       kind: 'proof_runner',
     };
-    if (CFG.sourceTreeCasRoot) {
+    if (resolvedSourceTreeCas.root) {
       artifactCasManifest = await writeArtifactToCas(manifestBytes, {
-        artifactRoot: CFG.sourceTreeCasRoot,
+        artifactRoot: resolvedSourceTreeCas.root,
         artifactKind: 'real_rocm_source_tree_manifest',
         mediaType: 'application/vnd.synthi.real-rocm-source-tree-manifest+json',
         role: 'source_tree_manifest',
@@ -4013,8 +4061,8 @@ async function buildRealRocmSourceTreeTransportFacet({
         sharedCasMounts: sharedCas.mounts,
       });
       artifactCasValidation = await validateArtifactCasManifest(artifactCasManifest, {
-        artifactRoot: CFG.sourceTreeCasRoot,
-        allowedRoots: [CFG.sourceTreeCasRoot],
+        artifactRoot: resolvedSourceTreeCas.root,
+        allowedRoots: [resolvedSourceTreeCas.root],
         requireReadableBytes: true,
       });
     } else {
@@ -4046,9 +4094,12 @@ async function buildRealRocmSourceTreeTransportFacet({
       ?? artifactCasValidation?.shared_mount_count
       ?? 0,
     );
-    if (CFG.sourceTreeCasRoot && sharedMountCount < 2) {
+    if (resolvedSourceTreeCas.root && sharedMountCount < 2) {
       blockingGaps.push('source_tree_shared_cas_mounts_not_declared');
     }
+    report.source_tree_cas_root_resolution = resolvedSourceTreeCas;
+    report.sourceTreeCasRootResolution = resolvedSourceTreeCas;
+    report.evidence.source_tree_cas_root_resolution = resolvedSourceTreeCas;
   } catch (error) {
     artifactCasError = error?.message ?? String(error);
     failedGates.push('source_tree_transport_facet_build_failed');
@@ -4119,6 +4170,12 @@ async function buildRealRocmSourceTreeTransportFacet({
     artifact_cas_error: artifactCasError,
     sourceTreeCasRootConfigured: Boolean(CFG.sourceTreeCasRoot),
     source_tree_cas_root_configured: Boolean(CFG.sourceTreeCasRoot),
+    sourceTreeCasRootResolved: Boolean(report.source_tree_cas_root_resolution?.root),
+    source_tree_cas_root_resolved: Boolean(report.source_tree_cas_root_resolution?.root),
+    sourceTreeCasRoot: report.source_tree_cas_root_resolution?.root ?? CFG.sourceTreeCasRoot ?? '',
+    source_tree_cas_root: report.source_tree_cas_root_resolution?.root ?? CFG.sourceTreeCasRoot ?? '',
+    sourceTreeCasRootSource: report.source_tree_cas_root_resolution?.source ?? 'unresolved',
+    source_tree_cas_root_source: report.source_tree_cas_root_resolution?.source ?? 'unresolved',
     requireSourceTreeCas: CFG.requireSourceTreeCas,
     require_source_tree_cas: CFG.requireSourceTreeCas,
     sharedCasMountError,
@@ -15665,6 +15722,28 @@ int main()
     || disabledDefaultSharedCasSelfCheckMounts.length !== 0
   ) {
     throw new Error('default source-tree shared CAS self-check failed');
+  }
+  if (
+    sourceTreeProducerCasRootFromResolution({ producerRoot: sharedCasSelfCheckRoot })
+      !== path.resolve(sharedCasSelfCheckRoot)
+    || sourceTreeProducerCasRootFromMounts([
+      { role: 'host', root: sharedCasSelfCheckRoot },
+      { role: 'worker', root: '/var/lib/synthi/source-tree-cas' },
+    ]) !== path.resolve(sharedCasSelfCheckRoot)
+  ) {
+    throw new Error('source-tree CAS producer root resolution self-check failed');
+  }
+  if (!CFG.sourceTreeCasRoot) {
+    const inferredSourceTreeCasRoot = resolveSourceTreeCasRoot({
+      mountResolution: { producerRoot: sharedCasSelfCheckRoot },
+      sharedMounts: [],
+    });
+    if (
+      inferredSourceTreeCasRoot.root !== path.resolve(sharedCasSelfCheckRoot)
+      || inferredSourceTreeCasRoot.source !== 'resolved_source_tree_mount_producer_root'
+    ) {
+      throw new Error('source-tree CAS inferred root self-check failed');
+    }
   }
   const sharedCasSelfCheckMounts = sourceTreeSharedCasMounts({
     SYNTHI_REAL_ROCM_SOURCE_TREE_MOUNTS_JSON: JSON.stringify([
