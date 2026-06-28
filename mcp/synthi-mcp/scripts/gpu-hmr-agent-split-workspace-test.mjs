@@ -80,6 +80,12 @@ const CFG = {
   visualDeltaWindowMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_WINDOW_MS ?? 6000),
   visualDeltaSampleIntervalMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_SAMPLE_INTERVAL_MS ?? 500),
   visualDeltaMinSamples: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_MIN_SAMPLES ?? 8),
+  visualWorkerParallelism: boundedPositiveInt(
+    process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_PARALLELISM
+      ?? process.env.SYNTHI_GPU_AGENT_VISUAL_WORKER_PARALLELISM,
+    4,
+    { min: 1, max: 16 },
+  ),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -122,6 +128,12 @@ function cleanVisibleWorkspaceDir(value) {
 function fail(message) {
   record('fatal', 'fail', message);
   throw new Error(message);
+}
+
+function boundedPositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(value);
+  const base = Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return Math.max(min, Math.min(max, base));
 }
 
 function profileString(value, field, { required = false } = {}) {
@@ -245,6 +257,15 @@ function normalizeAgentVisualProof(rawValue = {}) {
     controlMeanAbsPadding,
     control_mean_abs_padding: controlMeanAbsPadding,
   };
+  if (raw.workerParallelism !== undefined || raw.worker_parallelism !== undefined) {
+    const workerParallelism = boundedPositiveInt(
+      raw.workerParallelism ?? raw.worker_parallelism,
+      CFG.visualWorkerParallelism,
+      { min: 1, max: 16 },
+    );
+    normalized.workerParallelism = workerParallelism;
+    normalized.worker_parallelism = workerParallelism;
+  }
   const proofHash = `sha256:${sha256Hex(stableJson(normalized))}`;
   return {
     ...normalized,
@@ -3914,6 +3935,13 @@ function selfCheckAgentVisualProfile() {
       sawGpuSplit: { matched: false },
       splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(forgedSourceFirstSplit),
     });
+    const defaultVisualParallelism = visualWorkerParallelismForProof({}, 2);
+    const declaredVisualParallelism = visualWorkerParallelismForProof({ workerParallelism: 9 }, 3);
+    const schedulingEvidence = visualDeltaSchedulingEvidence({
+      workerParallelism: declaredVisualParallelism,
+      candidateCount: 3,
+      controlComparisonCount: 1,
+    });
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -3963,6 +3991,12 @@ function selfCheckAgentVisualProfile() {
       || rejectedForgedSourceFirst.accepted !== false
       || rejectedForgedSourceFirst.generatedArtifactPathsInGeneratedNamespace !== false
       || !rejectedForgedSourceFirst.failedGates.includes('source_first_generated_artifact_namespace_unproven')
+      || defaultVisualParallelism !== 2
+      || declaredVisualParallelism !== 3
+      || schedulingEvidence.acceptedForGpuHmr !== false
+      || schedulingEvidence.gpuHmrSuccess !== false
+      || schedulingEvidence.proofAuthority !== 'visual_worker_scheduling_support_only'
+      || schedulingEvidence.strategy !== 'bounded_concurrent_worker_threads'
     ) {
       throw new Error('agent visual profile self-check failed');
     }
@@ -4974,6 +5008,57 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   };
 }
 
+function visualWorkerParallelismForProof(visualProof = {}, candidateCount = 1) {
+  const declared = visualProof.workerParallelism ?? visualProof.worker_parallelism;
+  const configured = declared !== undefined && declared !== null
+    ? declared
+    : CFG.visualWorkerParallelism;
+  return boundedPositiveInt(configured, CFG.visualWorkerParallelism, {
+    min: 1,
+    max: Math.max(1, Math.min(16, candidateCount)),
+  });
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return [];
+  const concurrency = boundedPositiveInt(limit, 1, { min: 1, max: list.length });
+  const results = new Array(list.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (nextIndex < list.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(list[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function visualDeltaSchedulingEvidence({ workerParallelism, candidateCount, controlComparisonCount }) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.visual_delta_worker_scheduling.v1',
+    schema_version: 'synthi.gpu_hmr.visual_delta_worker_scheduling.v1',
+    accepted: true,
+    acceptedAsSchedulingEvidence: true,
+    accepted_as_scheduling_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'visual_worker_scheduling_support_only',
+    proof_authority: 'visual_worker_scheduling_support_only',
+    strategy: 'bounded_concurrent_worker_threads',
+    workerParallelism,
+    worker_parallelism: workerParallelism,
+    candidateComparisonCount: candidateCount,
+    candidate_comparison_count: candidateCount,
+    controlComparisonCount,
+    control_comparison_count: controlComparisonCount,
+  };
+}
+
 async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'before-after-diff', recordLabel = 'mcp screenshot visual delta') {
   const beforeSamples = [beforeShot?.first, beforeShot?.second, ...(beforeShot?.samples ?? [])]
     .filter((sample, index, all) => sample?.imageData && all.findIndex((candidate) => candidate?.seq === sample.seq) === index);
@@ -4985,22 +5070,36 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
   }
 
   const baseline = beforeShot?.second?.imageData ? beforeShot.second : beforeSamples[beforeSamples.length - 1];
-  const control = beforeSamples.length >= 2
-    ? await screenshotDelta(beforeSamples[0], beforeSamples[beforeSamples.length - 1])
-    : { changedRatio: 0, meanAbs: 0 };
+  const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
+  const workerParallelism = visualWorkerParallelismForProof(visualProof, afterSamples.length);
+  const controlComparisonCount = beforeSamples.length >= 2 ? 1 : 0;
+  const schedulingEvidence = visualDeltaSchedulingEvidence({
+    workerParallelism,
+    candidateCount: afterSamples.length,
+    controlComparisonCount,
+  });
+  const controlResultPromise = (beforeSamples.length >= 2
+    ? screenshotDelta(beforeSamples[0], beforeSamples[beforeSamples.length - 1])
+    : Promise.resolve({ changedRatio: 0, meanAbs: 0 })
+  ).then(
+    (value) => ({ ok: true, value }),
+    (error) => ({ ok: false, error }),
+  );
+  const candidateStats = await mapWithConcurrency(afterSamples, workerParallelism, async (candidate) => ({
+    ...(await screenshotDelta(baseline, candidate)),
+    shot: candidate,
+  }));
+  const controlResult = await controlResultPromise;
+  if (!controlResult.ok) throw controlResult.error;
+  const control = controlResult.value;
   let best = null;
-  for (const candidate of afterSamples) {
-    const stats = await screenshotDelta(baseline, candidate);
+  for (const stats of candidateStats) {
     if (!best || stats.changedRatio > best.changedRatio || (
       stats.changedRatio === best.changedRatio && stats.meanAbs > best.meanAbs
     )) {
-      best = {
-        ...stats,
-        shot: candidate,
-      };
+      best = stats;
     }
   }
-  const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
   const controlMultiplier = Number.isFinite(visualProof.controlMultiplier)
     ? visualProof.controlMultiplier
     : Number.isFinite(visualProof.control_multiplier)
@@ -5117,6 +5216,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     async_visual_proof: best.asyncVisualProof ?? null,
     controlAsyncVisualProof: control.asyncVisualProof ?? null,
     control_async_visual_proof: control.asyncVisualProof ?? null,
+    visualDeltaScheduling: schedulingEvidence,
+    visual_delta_scheduling: schedulingEvidence,
   };
 }
 
