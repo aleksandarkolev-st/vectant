@@ -1809,6 +1809,9 @@ function sourceFirstIngestionFacet(row = {}) {
     ...pathListFromValue(supplied.generatedArtifactPaths ?? supplied.generated_artifact_paths),
     ...pathListFromValue(generatedArtifacts),
   ]);
+  const generatedArtifactPathsInGeneratedNamespace =
+    generatedArtifactPaths.length > 0
+    && generatedArtifactPaths.every(sourceFirstGeneratedArtifactPath);
   const generatedArtifactHashes = compactStringList([
     ...(Array.isArray(supplied.generatedArtifactHashes) ? supplied.generatedArtifactHashes : []),
     ...(Array.isArray(supplied.generated_artifact_hashes) ? supplied.generated_artifact_hashes : []),
@@ -1826,6 +1829,24 @@ function sourceFirstIngestionFacet(row = {}) {
     supplied.manifestHash,
     supplied.manifest_hash,
   );
+  const generatedBoundaryHashSet = new Set(compactStringList([
+    ...generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+  ])
+    .map(normalizedArtifactHash)
+    .filter(Boolean));
+  const preexistingGeneratedArtifactHashOverlaps = initialFileEntries
+    .map((entry) => {
+      const contentHash = normalizedArtifactHash(entry.contentHash ?? entry.content_hash);
+      if (!contentHash || !generatedBoundaryHashSet.has(contentHash)) return null;
+      return {
+        path: entry.path,
+        contentHash,
+        content_hash: contentHash,
+      };
+    })
+    .filter(Boolean);
   const targetId = firstText(supplied.targetId, supplied.target_id);
   const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
   const targetIdBoundToRow = Boolean(targetId) && Boolean(rowTargetId) && targetId === rowTargetId;
@@ -1873,6 +1894,7 @@ function sourceFirstIngestionFacet(row = {}) {
       ? null
       : 'source_first_generated_artifact_boundary_not_proven',
     generatedArtifactPaths.length > 0 ? null : 'source_first_generated_artifact_paths_missing',
+    generatedArtifactPathsInGeneratedNamespace ? null : 'source_first_generated_artifact_namespace_unproven',
     generatedArtifactHashesAccepted ? null : 'source_first_generated_artifact_hashes_missing',
     contentAddressedSha256(sidecarHash) ? null : 'source_first_sidecar_hash_missing',
     contentAddressedSha256(compileManifestHash) ? null : 'source_first_compile_manifest_hash_missing',
@@ -1880,6 +1902,9 @@ function sourceFirstIngestionFacet(row = {}) {
     preexistingGeneratedArtifactsPresent === false && preexistingGeneratedArtifactPaths.length === 0
       ? null
       : 'source_first_precompiled_generated_artifacts_present',
+    preexistingGeneratedArtifactHashOverlaps.length === 0
+      ? null
+      : 'source_first_precompiled_generated_artifact_hash_overlap',
     evidenceRefs.length > 0 ? null : 'source_first_evidence_refs_missing',
   ]);
   return {
@@ -1929,8 +1954,12 @@ function sourceFirstIngestionFacet(row = {}) {
     preexisting_generated_artifacts_present: preexistingGeneratedArtifactsPresent,
     preexistingGeneratedArtifactPaths,
     preexisting_generated_artifact_paths: preexistingGeneratedArtifactPaths,
+    preexistingGeneratedArtifactHashOverlaps,
+    preexisting_generated_artifact_hash_overlaps: preexistingGeneratedArtifactHashOverlaps,
     generatedArtifactPaths,
     generated_artifact_paths: generatedArtifactPaths,
+    generatedArtifactPathsInGeneratedNamespace,
+    generated_artifact_paths_in_generated_namespace: generatedArtifactPathsInGeneratedNamespace,
     generatedArtifactHashes,
     generated_artifact_hashes: generatedArtifactHashes,
     sidecarHash,

@@ -186,6 +186,12 @@ function contentAddressedSha256(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? ''));
 }
 
+function normalizedProofContentHash(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  const match = raw.match(/^(?:artifact:)?(sha256:[a-f0-9]{64})$/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 function sourceContentHash(sourceText) {
   return `sha256:${sha256Hex(sourceText ?? '')}`;
 }
@@ -2942,12 +2948,31 @@ function sourceFirstIngestionEvidence({
   const compileManifestHash = split?.manifest
     ? `sha256:${sha256Hex(stableJson(split.manifest))}`
     : null;
+  const generatedBoundaryHashSet = new Set([
+    ...generatedArtifactHashes,
+    sidecarHash,
+    compileManifestHash,
+  ]
+    .map(normalizedProofContentHash)
+    .filter(Boolean));
+  const preexistingGeneratedArtifactHashOverlaps = initialFiles
+    .map((entry) => {
+      const contentHash = normalizedProofContentHash(entry.contentHash ?? entry.content_hash);
+      if (!contentHash || !generatedBoundaryHashSet.has(contentHash)) return null;
+      return {
+        path: entry.path,
+        contentHash,
+        content_hash: contentHash,
+      };
+    })
+    .filter(Boolean);
   const initialManifestHash = `sha256:${sha256Hex(stableJson(initialFiles))}`;
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactBoundaryProven =
     gpuSplitEndpointObserved
     && preexistingGeneratedArtifactPaths.length === 0
+    && preexistingGeneratedArtifactHashOverlaps.length === 0
     && generatedArtifacts.length > 0;
   const seed = {
     sourceContentHash,
@@ -3054,6 +3079,8 @@ function sourceFirstIngestionEvidence({
     preexisting_generated_artifacts_present: preexistingGeneratedArtifactPaths.length > 0,
     preexistingGeneratedArtifactPaths,
     preexisting_generated_artifact_paths: preexistingGeneratedArtifactPaths,
+    preexistingGeneratedArtifactHashOverlaps,
+    preexisting_generated_artifact_hash_overlaps: preexistingGeneratedArtifactHashOverlaps,
     initialSourceFilePresent,
     initial_source_file_present: initialSourceFilePresent,
     initialSourceHashMatches,
@@ -3098,6 +3125,9 @@ function sourceFirstIngestionEvidence({
       initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
       gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
       preexistingGeneratedArtifactPaths.length === 0 ? null : 'source_first_precompiled_generated_artifacts_present',
+      preexistingGeneratedArtifactHashOverlaps.length === 0
+        ? null
+        : 'source_first_precompiled_generated_artifact_hash_overlap',
       generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
       generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
       sidecarHash ? null : 'source_first_sidecar_hash_missing',
@@ -3113,6 +3143,9 @@ function sourceFirstIngestionEvidence({
       initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
       gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
       preexistingGeneratedArtifactPaths.length === 0 ? null : 'source_first_precompiled_generated_artifacts_present',
+      preexistingGeneratedArtifactHashOverlaps.length === 0
+        ? null
+        : 'source_first_precompiled_generated_artifact_hash_overlap',
       generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
       generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
       sidecarHash ? null : 'source_first_sidecar_hash_missing',

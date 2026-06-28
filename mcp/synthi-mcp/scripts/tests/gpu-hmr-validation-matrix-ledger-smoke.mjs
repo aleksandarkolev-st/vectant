@@ -1304,6 +1304,81 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-smuggled-precompiled.json'),
   },
 });
 
+await writeJson(path.join(visualDir, 'run-mode-hot1-forged-generated-source-path.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-forged-generated-source-path',
+    'gpu-runtime-proof:sha256:synthetic-hot1-forged-generated-source-path',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-forged-generated-source-path',
+  }),
+  targetId: 'flow-forged-generated-source-path',
+  profileId: 'flow-forged-generated-source-path',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-forged-generated-source-path',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-forged-generated-source-path',
+    generatedArtifactPaths: ['src/main.cpp'],
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-forged-generated-source-path',
+    editHash: hashValue('source-edit:hot1-forged-generated-source-path'),
+  },
+});
+
+const precompiledHashOverlapGeneratedHash = hashValue('flow-precompiled-hash-overlap:generated-device');
+await writeJson(path.join(visualDir, 'run-mode-hot1-precompiled-hash-overlap.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-precompiled-hash-overlap',
+    'gpu-runtime-proof:sha256:synthetic-hot1-precompiled-hash-overlap',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-precompiled-hash-overlap',
+  }),
+  targetId: 'flow-precompiled-hash-overlap',
+  profileId: 'flow-precompiled-hash-overlap',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-precompiled-hash-overlap',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-precompiled-hash-overlap',
+    generatedArtifactHashes: [precompiledHashOverlapGeneratedHash],
+    initialFiles: [
+      {
+        path: 'src/main.cpp',
+        contentHash: hashValue('flow-precompiled-hash-overlap:seed-source'),
+        content_hash: hashValue('flow-precompiled-hash-overlap:seed-source'),
+        byteLength: 4096,
+        byte_length: 4096,
+      },
+      {
+        path: 'build/cache/device.hip',
+        contentHash: precompiledHashOverlapGeneratedHash,
+        content_hash: precompiledHashOverlapGeneratedHash,
+        byteLength: 8192,
+        byte_length: 8192,
+      },
+    ],
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-precompiled-hash-overlap',
+    editHash: hashValue('source-edit:hot1-precompiled-hash-overlap'),
+  },
+});
+
 await writeJson(path.join(visualDir, 'run-mode-hot1-empty-source-manifest.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
@@ -6100,6 +6175,40 @@ assert.equal(smuggledPrecompiledRunMode.sourceFirstIngestion.accepted, false);
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_ingestion_not_accepted'));
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_compile_use_ai_split_missing'));
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_precompiled_generated_artifacts_present'));
+
+const forgedGeneratedSourcePathRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-forged-generated-source-path'
+);
+assert.equal(forgedGeneratedSourcePathRunMode?.matrixOutcome, 'unproven');
+assert.equal(forgedGeneratedSourcePathRunMode.acceptedForGpuHmr, false);
+assert.equal(forgedGeneratedSourcePathRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(forgedGeneratedSourcePathRunMode.sourceFirstIngestion.generatedArtifactPathsInGeneratedNamespace, false);
+assert.ok(forgedGeneratedSourcePathRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_generated_artifact_namespace_unproven',
+));
+assert.ok(forgedGeneratedSourcePathRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(forgedGeneratedSourcePathRunMode.reasons.includes(
+  'source_first_generated_artifact_namespace_unproven',
+));
+
+const hashOverlapRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-precompiled-hash-overlap'
+);
+assert.equal(hashOverlapRunMode?.matrixOutcome, 'unproven');
+assert.equal(hashOverlapRunMode.acceptedForGpuHmr, false);
+assert.equal(hashOverlapRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(hashOverlapRunMode.sourceFirstIngestion.preexistingGeneratedArtifactHashOverlaps.length, 1);
+assert.equal(
+  hashOverlapRunMode.sourceFirstIngestion.preexistingGeneratedArtifactHashOverlaps[0].path,
+  'build/cache/device.hip',
+);
+assert.ok(hashOverlapRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_precompiled_generated_artifact_hash_overlap',
+));
+assert.ok(hashOverlapRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(hashOverlapRunMode.reasons.includes(
+  'source_first_precompiled_generated_artifact_hash_overlap',
+));
 
 const emptySourceManifestRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-empty-source-manifest'
