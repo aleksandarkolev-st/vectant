@@ -169,6 +169,97 @@ function visualArtifactSet({ before, after, diff, diagnosticScreenshot } = {}, e
   };
 }
 
+function casLocatorForVisualArtifact({ filePath, hash, role, sessionNamespace = 'smoke-visual-cas' }) {
+  return {
+    schemaVersion: 'synthi.cas.artifact_locator.v1',
+    artifactId: `artifact:${hash}`,
+    contentHash: hash,
+    artifactKind: 'visual_frame',
+    byteLength: fsSync.statSync(filePath).size,
+    mediaType: 'image/png',
+    role,
+    producer: {
+      name: 'validation_matrix_smoke_fixture',
+      kind: 'visual_proof_worker',
+    },
+    producerSubsystem: 'agent_split_visual_proof',
+    sessionNamespace,
+    artifactUri: `synthi-cas://${sessionNamespace}/${hash.replace(':', '/')}`,
+    transport: {
+      kind: 'cas_shared_volume',
+      contentAddressed: true,
+      manifestOnly: true,
+      bytesEmbedded: false,
+      hotPathOptimized: true,
+    },
+    proofAuthority: 'transport_integrity_only',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    storage: {
+      kind: 'cas_shared_volume',
+      relativePath: hash.replace(':', '/'),
+    },
+    manifestHash: contentHashFor({ hash, role, sessionNamespace }),
+  };
+}
+
+function visualArtifactSetWithCas({ before, after, diff }, extra = {}) {
+  const base = visualArtifactSet({ before, after, diff }, extra);
+  const artifactCasLocators = [
+    before
+      ? casLocatorForVisualArtifact({
+          filePath: before,
+          hash: base.beforeImageHash,
+          role: 'before_frame',
+        })
+      : null,
+    after
+      ? casLocatorForVisualArtifact({
+          filePath: after,
+          hash: base.afterImageHash,
+          role: 'after_frame',
+        })
+      : null,
+    diff
+      ? casLocatorForVisualArtifact({
+          filePath: diff,
+          hash: base.diffImageHash,
+          role: 'diff_frame',
+        })
+      : null,
+  ].filter(Boolean);
+  return {
+    ...base,
+    artifactCasLocators,
+    visualArtifactTransportEvidence: {
+      schemaVersion: 'synthi.gpu_hmr.visual_artifact_transport_evidence.v1',
+      accepted: true,
+      acceptedAsTransportEvidence: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
+      locatorCount: artifactCasLocators.length,
+      entries: artifactCasLocators.map((locator) => ({
+        schemaVersion: 'synthi.gpu_hmr.artifact_transport_evidence.v1',
+        accepted: true,
+        acceptedAsTransportEvidence: true,
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        proofAuthority: 'transport_integrity_only',
+        contentHash: locator.contentHash,
+        artifactId: locator.artifactId,
+        artifactUri: locator.artifactUri,
+        transportKind: locator.transport.kind,
+        manifestHash: locator.manifestHash,
+        reasons: [],
+        gaps: [],
+      })),
+      reasons: [],
+      gaps: [],
+    },
+  };
+}
+
 function modelProvenance(requestMode, requestedModel) {
   return {
     provider: 'google_gemini',
@@ -1008,7 +1099,7 @@ const runModeProofBase = {
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
-  visualArtifacts: visualArtifactSet({
+  visualArtifacts: visualArtifactSetWithCas({
     before: path.join(visualDir, 'before-hmr-first.png'),
     after: path.join(visualDir, 'after-hmr-first.png'),
     diff: path.join(visualDir, 'before-after-diff.png'),
@@ -1255,6 +1346,41 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1',
     editHash: hashValue('source-edit:hot1'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-no-cas.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-first-no-cas',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-first-no-cas',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-first-no-cas',
+  }),
+  targetId: 'flow-source-first-no-cas',
+  profileId: 'flow-source-first-no-cas',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-first-no-cas',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-first-no-cas',
+  }),
+  visualArtifacts: visualArtifactSet({
+    before: path.join(visualDir, 'before-hmr-first.png'),
+    after: path.join(visualDir, 'after-hmr-first.png'),
+    diff: path.join(visualDir, 'before-after-diff.png'),
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-first-no-cas',
+    editHash: hashValue('source-edit:hot1-source-first-no-cas'),
   },
 });
 
@@ -6191,10 +6317,10 @@ assert.equal(forgedLegacyPreview.runtimeProofArtifact.present, false);
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_recomputed_proof_ledger_missing'));
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_runtime_proof_artifact_missing'));
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 2);
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 3);
 assert.equal(ledger.summary.broadFullRuntimeGpuHmrRows, 0);
-assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 2);
-assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 2);
+assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 3);
+assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 3);
 assert.ok(ledger.summary.visualProfileAcceptedRows >= 1);
 assert.equal(
   Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),
@@ -6217,6 +6343,48 @@ assert.ok(flowVisualCoverage.rows.some((row) =>
 assert.ok(flowVisualCoverage.rows.some((row) =>
   row.validationProfileEvidence?.accepted === true
   && row.validationProfileEvidence.source === 'agent_split_profile_runtime_visual_proof'
+));
+const sourceFirstCoverage = coverageById.get('source_first_uncompiled_project_validation');
+assert.equal(sourceFirstCoverage?.status, 'accepted');
+assert.equal(
+  sourceFirstCoverage?.proofAuthority,
+  'source_first_ingestion_provenance_only_not_runtime_proof',
+);
+assert.equal(
+  sourceFirstCoverage?.sourceFirstEvidenceAuthority,
+  'source_first_provenance_only_plus_strict_runtime_ledger',
+);
+assert.equal(
+  sourceFirstCoverage?.asyncVisualCasSupportAuthority,
+  'async_visual_metrics_and_transport_only',
+);
+assert.ok(sourceFirstCoverage?.rows.length >= 1);
+assert.ok(sourceFirstCoverage.rows.every((row) =>
+  row.matrixOutcome === 'full_runtime_gpu_hmr'
+  && row.sourceFirstIngestion?.accepted === true
+  && row.sourceFirstIngestion?.acceptedForGpuHmr === false
+  && row.asyncVisualCasBundle?.accepted === true
+  && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
+  && row.asyncVisualCasBundle?.gpuHmrSuccess === false
+  && row.asyncVisualCasBundle?.proofAuthority === 'async_visual_metrics_and_transport_only'
+  && row.asyncVisualCasBundle?.proofReady === true
+  && row.asyncVisualCasBundle?.offMainThread === true
+  && row.asyncVisualCasBundle?.transportAccepted === true
+  && row.asyncVisualCasBundle?.casHashesMatchDeclaredVisualHashes === true
+  && row.asyncVisualCasBundle?.casHashesMatchMatrixVisualHashes === true
+  && row.asyncVisualCasBundle?.tileEvidenceAccepted === true
+  && row.fullRuntimeEvidenceAuthority?.accepted === true
+  && (
+    row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
+    || row.fullRuntimeEvidenceAuthority?.computeOracleAccepted === true
+  )
+));
+assert.ok(!sourceFirstCoverage.rows.some((row) =>
+  row.targetId === 'flow-smuggled-precompiled'
+  || row.targetId === 'flow-forged-generated-source-path'
+  || row.targetId === 'flow-source-first-no-cas'
+  || row.targetId === 'flow-source-tree-manifest-mismatch'
+  || row.targetId === 'flow-empty-source-manifest'
 ));
 assert.equal(coverageById.get('opencl_dispatch_readback')?.status, 'refused');
 assert.ok(!coverageById.get('opencl_dispatch_readback')?.rows.some((row) =>
@@ -6445,6 +6613,32 @@ assert.equal(hot1RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hot1RunMode.artifactSchema, 'synthi.gpu.hmr.agent_split_run_mode_proof.v1');
 assert.equal(hot1RunMode.sourceFirstIngestion.accepted, true);
 assert.equal(hot1RunMode.sourceFirstIngestion.proofAuthority, 'source_first_ingestion_provenance_only_not_runtime_proof');
+assert.equal(hot1RunMode.asyncVisualCasBundle.accepted, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.acceptedForGpuHmr, false);
+assert.equal(hot1RunMode.asyncVisualCasBundle.gpuHmrSuccess, false);
+assert.equal(hot1RunMode.asyncVisualCasBundle.proofAuthority, 'async_visual_metrics_and_transport_only');
+assert.equal(hot1RunMode.asyncVisualCasBundle.proofReady, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.offMainThread, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.transportAccepted, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.casHashesMatchDeclaredVisualHashes, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.casHashesMatchMatrixVisualHashes, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.tileEvidenceAccepted, true);
+assert.match(hot1RunMode.asyncVisualCasBundle.workerExecutableHash, /^sha256:[a-f0-9]{64}$/);
+
+const sourceFirstNoCasRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-first-no-cas'
+);
+assert.equal(sourceFirstNoCasRunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(sourceFirstNoCasRunMode.sourceFirstIngestion.accepted, true);
+assert.equal(sourceFirstNoCasRunMode.asyncVisualCasBundle.accepted, false);
+assert.equal(sourceFirstNoCasRunMode.asyncVisualCasBundle.acceptedForGpuHmr, false);
+assert.equal(sourceFirstNoCasRunMode.asyncVisualCasBundle.gpuHmrSuccess, false);
+assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
+  'visual_artifact_transport_not_accepted',
+));
+assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
+  'visual_artifact_cas_locators_not_accepted',
+));
 
 const profilePriorityRunMode = ledger.rows.find((row) =>
   row.proofIds?.includes('agent-split-run-mode-proof:sha256:profile-priority-hot1')

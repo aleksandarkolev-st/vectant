@@ -968,6 +968,7 @@ Current source-first gate requirements:
 7. Worker log text about AI split activity is corroborating evidence only. The accepted source-first boundary requires structured split/sidecar evidence, generated artifact hashes, and later runtime ledger closure.
 8. The gate must not depend on a fixed split file count, target name, fixture id, source-tree shape, or project-specific success branch.
 9. Runner-level source-first provenance must fail before matrix ingestion when generated artifacts are not in the generated artifact namespace. Matrix recomputation remains the aggregate authority and repeats the same namespace, manifest, hash-overlap, proof-id, and target-binding checks.
+10. Source-first visual coverage also requires support-only async visual/CAS evidence: `proof_ready` off-main-thread visual metrics, a content-addressed worker executable hash, tile evidence, manifest-only CAS locators for before/after/diff visual artifacts, and CAS hashes matching the matrix-recomputed image hashes. This facet is `proofAuthority=async_visual_metrics_and_transport_only`, `acceptedForGpuHmr=false`, and `gpuHmrSuccess=false`; it can support dev-loop viability evidence but cannot authorize GPU HMR acceptance without strict runtime-ledger closure.
 
 ## 15. Stronger Definition Of Done
 

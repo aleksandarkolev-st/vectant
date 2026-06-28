@@ -55,6 +55,8 @@ const AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION =
   'synthi.gpu.hmr.agent_split_source_first_ingestion.v1';
 const AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY =
   'source_first_ingestion_provenance_only_not_runtime_proof';
+const ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY =
+  'async_visual_metrics_and_transport_only';
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],
   ['proofId', 'proof_id'],
@@ -1629,6 +1631,241 @@ function rawSourceFirstIngestionEvidence(row = {}) {
   );
 }
 
+function rawVisualArtifactTransportEvidence(row = {}) {
+  const visualArtifacts = compactObject(
+    row.visualArtifacts
+      ?? row.visual_artifacts
+      ?? row.visualOracleArtifacts
+      ?? row.visual_oracle_artifacts,
+  );
+  return {
+    visualArtifacts,
+    locators: compactObjectList(
+      visualArtifacts.artifactCasLocators
+        ?? visualArtifacts.artifact_cas_locators,
+    ),
+    transportEvidence: compactObject(
+      visualArtifacts.visualArtifactTransportEvidence
+        ?? visualArtifacts.visual_artifact_transport_evidence,
+    ),
+  };
+}
+
+function normalizedVisualArtifactRole(value) {
+  const role = String(value ?? '').trim().toLowerCase();
+  if (role === 'before' || role === 'before_frame' || role === 'baseline_frame') return 'before';
+  if (role === 'after' || role === 'after_frame' || role === 'changed_frame') return 'after';
+  if (role === 'diff' || role === 'diff_frame' || role === 'difference_frame') return 'diff';
+  return role || null;
+}
+
+function visualImageHashesByRole(visual = {}) {
+  const byRole = new Map();
+  for (const image of compactObjectList(visual.images)) {
+    const role = normalizedVisualArtifactRole(image.role);
+    const hash = normalizedArtifactHash(
+      image.sha256
+        ?? image.expectedHash
+        ?? image.expected_hash
+        ?? image.hash
+        ?? image.contentHash
+        ?? image.content_hash,
+    );
+    if (role && hash) byRole.set(role, hash);
+  }
+  return byRole;
+}
+
+function declaredVisualArtifactHashesByRole(visualArtifacts = {}) {
+  return new Map([
+    ['before', normalizedArtifactHash(
+      visualArtifacts.beforeImageHash
+        ?? visualArtifacts.before_image_hash
+        ?? visualArtifacts.baselineImageHash
+        ?? visualArtifacts.baseline_image_hash,
+    )],
+    ['after', normalizedArtifactHash(
+      visualArtifacts.afterImageHash
+        ?? visualArtifacts.after_image_hash
+        ?? visualArtifacts.changedImageHash
+        ?? visualArtifacts.changed_image_hash,
+    )],
+    ['diff', normalizedArtifactHash(
+      visualArtifacts.diffImageHash
+        ?? visualArtifacts.diff_image_hash
+        ?? visualArtifacts.differenceImageHash
+        ?? visualArtifacts.difference_image_hash,
+    )],
+  ].filter(([, hash]) => Boolean(hash)));
+}
+
+function locatorHashesByRole(locators = []) {
+  const byRole = new Map();
+  for (const locator of compactObjectList(locators)) {
+    const role = normalizedVisualArtifactRole(locator.role ?? locator.artifactRole ?? locator.artifact_role);
+    const hash = normalizedArtifactHash(locator.contentHash ?? locator.content_hash ?? locator.artifactId ?? locator.artifact_id);
+    if (role && hash) byRole.set(role, hash);
+  }
+  return byRole;
+}
+
+function visualHashesMatchByRole(expectedByRole, actualByRole, roles) {
+  return roles.every((role) => {
+    const expected = expectedByRole.get(role);
+    const actual = actualByRole.get(role);
+    return Boolean(expected) && Boolean(actual) && expected === actual;
+  });
+}
+
+function visualLocatorTransportAccepted(locator) {
+  const transport = compactObject(locator.transport);
+  const transportKind = firstText(transport.kind, locator.transportKind, locator.transport_kind);
+  return contentAddressedArtifactHash(locator.contentHash ?? locator.content_hash ?? locator.artifactId ?? locator.artifact_id)
+    && firstBool(transport.contentAddressed, transport.content_addressed) === true
+    && firstBool(transport.manifestOnly, transport.manifest_only) === true
+    && firstBool(transport.bytesEmbedded, transport.bytes_embedded) === false
+    && firstText(locator.proofAuthority, locator.proof_authority) === 'transport_integrity_only'
+    && firstBool(locator.acceptedForGpuHmr, locator.accepted_for_gpu_hmr) === false
+    && firstBool(locator.gpuHmrSuccess, locator.gpu_hmr_success) === false
+    && Boolean(transportKind);
+}
+
+function asyncVisualMetricsFromVisualEvidence(visual = {}) {
+  return compactObject(
+    visual.recomputedVisualPair?.asyncVisualMetrics
+      ?? visual.recomputedVisualPair?.async_visual_metrics
+      ?? visual.recomputed_visual_pair?.asyncVisualMetrics
+      ?? visual.recomputed_visual_pair?.async_visual_metrics
+      ?? visual.recomputedSingleFrame?.asyncVisualMetrics
+      ?? visual.recomputedSingleFrame?.async_visual_metrics
+      ?? visual.recomputed_single_frame?.asyncVisualMetrics
+      ?? visual.recomputed_single_frame?.async_visual_metrics,
+  );
+}
+
+function asyncVisualCasBundleFacet(row = {}, visual = {}) {
+  const { visualArtifacts, locators, transportEvidence } = rawVisualArtifactTransportEvidence(row);
+  const asyncMetrics = asyncVisualMetricsFromVisualEvidence(visual);
+  const worker = compactObject(asyncMetrics.worker);
+  const incremental = compactObject(asyncMetrics.incremental);
+  const tileEvidence = compactObject(asyncMetrics.tileEvidence ?? asyncMetrics.tile_evidence);
+  const inputHashes = compactObject(asyncMetrics.inputHashes ?? asyncMetrics.input_hashes);
+  const declaredByRole = declaredVisualArtifactHashesByRole(visualArtifacts);
+  const locatorByRole = locatorHashesByRole(locators);
+  const matrixByRole = visualImageHashesByRole(visual);
+  const requiredRoles = compactStringList([
+    visual.hasBeforeImage || visual.has_before_image ? 'before' : null,
+    visual.hasAfterImage || visual.has_after_image ? 'after' : null,
+    visual.hasDiffImage || visual.has_diff_image || visual.requireDiff || visual.require_diff ? 'diff' : null,
+  ]);
+  const requiredRoleSet = requiredRoles.length > 0 ? requiredRoles : ['before', 'after'];
+  const locatorRolesPresent = requiredRoleSet.every((role) => locatorByRole.has(role));
+  const casHashesMatchDeclaredVisualHashes = visualHashesMatchByRole(declaredByRole, locatorByRole, requiredRoleSet);
+  const casHashesMatchMatrixVisualHashes = visualHashesMatchByRole(matrixByRole, locatorByRole, requiredRoleSet);
+  const asyncBeforeHash = normalizedArtifactHash(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash);
+  const asyncAfterHash = normalizedArtifactHash(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash);
+  const asyncInputHashesMatchCas =
+    (!locatorByRole.has('before') || locatorByRole.get('before') === asyncBeforeHash)
+    && (!locatorByRole.has('after') || locatorByRole.get('after') === asyncAfterHash);
+  const transportAccepted =
+    transportEvidence.accepted === true
+    && transportEvidence.acceptedAsTransportEvidence === true
+    && firstText(transportEvidence.proofAuthority, transportEvidence.proof_authority)
+      === 'transport_integrity_only_not_visual_or_ledger_proof'
+    && firstBool(transportEvidence.acceptedForGpuHmr, transportEvidence.accepted_for_gpu_hmr) === false
+    && firstBool(transportEvidence.gpuHmrSuccess, transportEvidence.gpu_hmr_success) === false;
+  const locatorsAccepted = locators.length >= requiredRoleSet.length
+    && locators.every(visualLocatorTransportAccepted);
+  const workerExecutableHash = firstText(worker.executableHash, worker.executable_hash);
+  const asyncMetricsAccepted =
+    firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
+      === GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION
+    && firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
+    && asyncMetrics.accepted === true
+    && firstBool(asyncMetrics.acceptedAsAsyncVisualMetrics, asyncMetrics.accepted_as_async_visual_metrics) === true
+    && firstText(asyncMetrics.proofAuthority, asyncMetrics.proof_authority)
+      === GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY
+    && firstBool(asyncMetrics.acceptedForGpuHmr, asyncMetrics.accepted_for_gpu_hmr) === false
+    && firstBool(asyncMetrics.gpuHmrSuccess, asyncMetrics.gpu_hmr_success) === false
+    && firstBool(worker.offMainThread, worker.off_main_thread) === true
+    && contentAddressedSha256(workerExecutableHash);
+  const tileEvidenceAccepted =
+    tileEvidence.accepted === true
+    && Number(tileEvidence.tileCount ?? tileEvidence.tile_count ?? 0) > 0;
+  const tileHashingEnabled = firstBool(incremental.tileHashing, incremental.tile_hashing) === true;
+  const roiEarlyExitClaimed =
+    firstBool(asyncMetrics.roiEarlyExitUsed, asyncMetrics.roi_early_exit_used) === true
+    || firstBool(incremental.deepDiffSkipped, incremental.deep_diff_skipped) === true
+    || firstBool(asyncMetrics.roiEvidence?.earlyExit, asyncMetrics.roiEvidence?.early_exit) === true
+    || firstBool(asyncMetrics.roi_evidence?.early_exit) === true;
+  const failedGates = compactStringList([
+    Object.keys(visualArtifacts).length > 0 ? null : 'async_visual_cas_artifacts_missing',
+    visual.accepted === true ? null : 'visual_artifacts_not_accepted',
+    Object.keys(asyncMetrics).length > 0 ? null : 'async_visual_metrics_missing',
+    asyncMetricsAccepted ? null : 'async_visual_worker_proof_not_accepted',
+    firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
+      ? null
+      : 'async_visual_proof_ready_event_missing',
+    firstBool(worker.offMainThread, worker.off_main_thread) === true
+      ? null
+      : 'async_visual_worker_not_off_main_thread',
+    contentAddressedSha256(workerExecutableHash)
+      ? null
+      : 'async_visual_worker_executable_hash_missing',
+    transportAccepted ? null : 'visual_artifact_transport_not_accepted',
+    locatorsAccepted ? null : 'visual_artifact_cas_locators_not_accepted',
+    locatorRolesPresent ? null : 'visual_artifact_cas_roles_missing',
+    casHashesMatchDeclaredVisualHashes ? null : 'visual_artifact_cas_declared_hash_mismatch',
+    casHashesMatchMatrixVisualHashes ? null : 'visual_artifact_cas_matrix_hash_mismatch',
+    asyncInputHashesMatchCas ? null : 'async_visual_input_hash_cas_mismatch',
+    tileHashingEnabled ? null : 'async_visual_tile_hashing_missing',
+    tileEvidenceAccepted ? null : 'async_visual_tile_evidence_missing',
+    roiEarlyExitClaimed && !tileEvidenceAccepted
+      ? 'async_visual_roi_early_exit_tile_evidence_missing'
+      : null,
+  ]);
+  return {
+    present: Object.keys(visualArtifacts).length > 0 || Object.keys(asyncMetrics).length > 0,
+    accepted: failedGates.length === 0,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    proof_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    asyncVisualProofAccepted: asyncMetricsAccepted,
+    async_visual_proof_accepted: asyncMetricsAccepted,
+    proofReady: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
+    proof_ready: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
+    offMainThread: firstBool(worker.offMainThread, worker.off_main_thread),
+    off_main_thread: firstBool(worker.offMainThread, worker.off_main_thread),
+    workerExecutableHash,
+    worker_executable_hash: workerExecutableHash,
+    transportAccepted,
+    transport_accepted: transportAccepted,
+    locatorCount: locators.length,
+    locator_count: locators.length,
+    requiredRoles: requiredRoleSet,
+    required_roles: requiredRoleSet,
+    casHashesMatchDeclaredVisualHashes,
+    cas_hashes_match_declared_visual_hashes: casHashesMatchDeclaredVisualHashes,
+    casHashesMatchMatrixVisualHashes,
+    cas_hashes_match_matrix_visual_hashes: casHashesMatchMatrixVisualHashes,
+    asyncInputHashesMatchCas,
+    async_input_hashes_match_cas: asyncInputHashesMatchCas,
+    tileHashingEnabled,
+    tile_hashing_enabled: tileHashingEnabled,
+    tileEvidenceAccepted,
+    tile_evidence_accepted: tileEvidenceAccepted,
+    roiEarlyExitClaimed,
+    roi_early_exit_claimed: roiEarlyExitClaimed,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function normalizedEvidenceRelPath(value) {
   return String(value ?? '')
     .trim()
@@ -1939,6 +2176,12 @@ function sourceFirstIngestionFacet(row = {}) {
     schema_version: schemaVersion,
     proofAuthority,
     proof_authority: proofAuthority,
+    acceptedForGpuHmr,
+    accepted_for_gpu_hmr: acceptedForGpuHmr,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    canSatisfyRuntimeProof,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof,
     proofId: suppliedProofId,
     proof_id: suppliedProofId,
     recomputedProofId,
@@ -10476,6 +10719,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       allowSingleFrameProof: runMode.metricScope === 'cold',
     }),
   );
+  const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';
   const cpuHmrUsed = boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used);
@@ -10617,6 +10861,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     source_adaptation: sourceAdaptation,
     sourceFirstIngestion,
     source_first_ingestion: sourceFirstIngestion,
+    asyncVisualCasBundle,
+    async_visual_cas_bundle: asyncVisualCasBundle,
     visual,
     runMode,
     cpuHmrUsed,
@@ -11203,6 +11449,10 @@ function rowRefs(rows) {
     proofIds: row.proofIds,
     runMode: row.runMode,
     runModeCoverageSupport: row.runModeCoverageSupport,
+    sourceFirstIngestion: row.sourceFirstIngestion,
+    source_first_ingestion: row.sourceFirstIngestion,
+    asyncVisualCasBundle: row.asyncVisualCasBundle,
+    async_visual_cas_bundle: row.asyncVisualCasBundle,
     validationProfileEvidence: row.validationProfileEvidence,
     externalProfileSelection: row.externalProfileSelection,
     externalSourceDelta: row.externalSourceDelta,
@@ -11888,6 +12138,23 @@ function planCoverage(rows) {
     rowHasAcceptedVisualEvidence(row)
     && rowHasAcceptedExternalProjectContract(row, { profileClass: 'external_engine_visual_profile' })
   );
+  const sourceFirstFullRuntimeRows = acceptedRows(rows, (row) =>
+    row.sourceFirstIngestion?.accepted === true
+    && row.sourceFirstIngestion?.proofAuthority === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
+    && row.sourceFirstIngestion?.acceptedForGpuHmr === false
+    && row.sourceFirstIngestion?.gpuHmrSuccess === false
+    && row.sourceFirstIngestion?.canSatisfyRuntimeProof === false
+    && row.asyncVisualCasBundle?.accepted === true
+    && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
+    && row.asyncVisualCasBundle?.gpuHmrSuccess === false
+    && row.asyncVisualCasBundle?.proofAuthority === ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY
+    && row.fullRuntimeEvidenceAuthority?.accepted === true
+    && (
+      row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
+      || row.fullRuntimeEvidenceAuthority?.computeOracleAccepted === true
+      || row.outputOracleFacet?.accepted === true
+    )
+  );
   const fissionRows = deterministicFissionRows(rows, () => true);
 
   return [
@@ -11900,6 +12167,21 @@ function planCoverage(rows) {
     }),
     hipModuleScopedRuntimeCoverage(rows),
     ...validationProfileCoverageEntries(rows),
+    coverageEntry({
+      id: 'source_first_uncompiled_project_validation',
+      requirement: 'Source-first uncompiled project ingestion through split, compile, runtime proof, and output oracle',
+      status: sourceFirstFullRuntimeRows.length > 0 ? 'accepted' : 'missing',
+      rows: sourceFirstFullRuntimeRows,
+      openGaps: sourceFirstFullRuntimeRows.length > 0
+        ? []
+        : ['source_first_full_runtime_visual_or_compute_proof_with_async_cas_support_required'],
+      proofAuthority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
+      proof_authority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
+      sourceFirstEvidenceAuthority: 'source_first_provenance_only_plus_strict_runtime_ledger',
+      source_first_evidence_authority: 'source_first_provenance_only_plus_strict_runtime_ledger',
+      asyncVisualCasSupportAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+      async_visual_cas_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    }),
     coverageEntry({
       id: 'hiprt_visual_path',
       requirement: 'HIPRT same-process ray-traced visual path',
