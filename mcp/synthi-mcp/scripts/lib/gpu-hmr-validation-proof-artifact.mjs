@@ -933,6 +933,18 @@ function realRocmAppHookContractSnapshot(input = {}, validationContext = null) {
     ?? null;
 }
 
+function realRocmAppHookMaterializationSnapshot(input = {}, validationContext = null) {
+  return objectOrNull(input.realRocmAppHookMaterialization)
+    ?? objectOrNull(input.real_rocm_app_hook_materialization)
+    ?? objectOrNull(input.appHookMaterialization)
+    ?? objectOrNull(input.app_hook_materialization)
+    ?? objectOrNull(validationContext?.realRocmAppHookMaterialization)
+    ?? objectOrNull(validationContext?.real_rocm_app_hook_materialization)
+    ?? objectOrNull(validationContext?.appHookMaterialization)
+    ?? objectOrNull(validationContext?.app_hook_materialization)
+    ?? null;
+}
+
 function realRocmSameProcessRuntimeOracleSnapshot(input = {}, validationContext = null) {
   return objectOrNull(input.realRocmSameProcessRuntimeOracle)
     ?? objectOrNull(input.real_rocm_same_process_runtime_oracle)
@@ -976,6 +988,48 @@ function realRocmAppHookContractLimitations(contract) {
     observed_state: observedState,
     degradedState: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
     degraded_state: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
+function realRocmAppHookMaterializationLimitations(materialization) {
+  if (!objectOrNull(materialization)) return [];
+  const required = materialization.required === true;
+  const complete = materialization.materializationComplete === true
+    || materialization.materialization_complete === true;
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(materialization.blockingGaps) ? materialization.blockingGaps : []),
+    ...(Array.isArray(materialization.blocking_gaps) ? materialization.blocking_gaps : []),
+  ]);
+  if (!required || complete) return [];
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(materialization.evidenceRefs) ? materialization.evidenceRefs : []),
+    ...(Array.isArray(materialization.evidence_refs) ? materialization.evidence_refs : []),
+  ]);
+  const observedState = firstString(
+    materialization.status,
+    materialization.reason,
+    'real_rocm_app_hook_materialization_incomplete',
+  );
+  return [{
+    stageId: 'real-rocm-app-hook-materialization',
+    stage_id: 'real-rocm-app-hook-materialization',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-real-rocm-app-hook-materialized',
+    required_state: 'gpu-hmr-real-rocm-app-hook-materialized',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-real-rocm-app-hook-materialization-incomplete',
+    degraded_state: 'gpu-hmr-real-rocm-app-hook-materialization-incomplete',
     degradedReason: observedState,
     degraded_reason: observedState,
     blockingGaps,
@@ -2577,6 +2631,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
   const realRocmAppHookContract = realRocmAppHookContractSnapshot(input, validationContext);
+  const realRocmAppHookMaterialization =
+    realRocmAppHookMaterializationSnapshot(input, validationContext);
   const realRocmSameProcessRuntimeOracle =
     realRocmSameProcessRuntimeOracleSnapshot(input, validationContext);
   const adversarialPreflight = adversarialPreflightFacet(
@@ -2677,6 +2733,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
     ...realRocmAppHookContractLimitations(realRocmAppHookContract),
+    ...realRocmAppHookMaterializationLimitations(realRocmAppHookMaterialization),
     ...realRocmSameProcessRuntimeOracleLimitations(realRocmSameProcessRuntimeOracle),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
@@ -2689,6 +2746,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(targetProgressionLedger),
     ...evidenceStringsFromValue(adversarialPreflight),
     ...evidenceStringsFromValue(realRocmAppHookContract),
+    ...evidenceStringsFromValue(realRocmAppHookMaterialization),
     ...evidenceStringsFromValue(realRocmSameProcessRuntimeOracle),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
@@ -2726,6 +2784,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionGates,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmAppHookMaterialization,
+    real_rocm_app_hook_materialization: realRocmAppHookMaterialization,
+    appHookMaterialization: realRocmAppHookMaterialization,
+    app_hook_materialization: realRocmAppHookMaterialization,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
@@ -2762,6 +2824,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionLedger,
     targetProgressionGates,
     realRocmAppHookContract,
+    realRocmAppHookMaterialization,
     realRocmSameProcessRuntimeOracle,
     adversarialPreflight,
     acceptanceContract,
@@ -2823,6 +2886,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_gates: targetProgressionGates,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmAppHookMaterialization,
+    real_rocm_app_hook_materialization: realRocmAppHookMaterialization,
+    appHookMaterialization: realRocmAppHookMaterialization,
+    app_hook_materialization: realRocmAppHookMaterialization,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,

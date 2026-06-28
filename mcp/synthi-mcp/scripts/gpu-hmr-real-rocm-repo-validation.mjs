@@ -10572,6 +10572,376 @@ function realRocmRuntimeStageObligationsFacet({
   };
 }
 
+function realRocmAppHookMaterializationFacet({
+  profileProofObligations = {},
+  appHookContract = {},
+  deviceSidecarContract = {},
+  compileBridge = {},
+  outputOracleResolution = {},
+  sourceDeltaExecution = {},
+  runtimeStageObligations = {},
+  runtimeEligibility = {},
+} = {}) {
+  const obligations = profileProofObligations && typeof profileProofObligations === 'object'
+    ? profileProofObligations
+    : {};
+  const appHook = appHookContract && typeof appHookContract === 'object' ? appHookContract : {};
+  const sidecar = deviceSidecarContract && typeof deviceSidecarContract === 'object'
+    ? deviceSidecarContract
+    : {};
+  const compile = compileBridge && typeof compileBridge === 'object' ? compileBridge : {};
+  const oracle = outputOracleResolution && typeof outputOracleResolution === 'object'
+    ? outputOracleResolution
+    : {};
+  const sourceDelta = sourceDeltaExecution && typeof sourceDeltaExecution === 'object'
+    ? sourceDeltaExecution
+    : {};
+  const runtimeStages = runtimeStageObligations && typeof runtimeStageObligations === 'object'
+    ? runtimeStageObligations
+    : {};
+  const eligibility = runtimeEligibility && typeof runtimeEligibility === 'object'
+    ? runtimeEligibility
+    : {};
+
+  const required =
+    appHook.required === true
+    || appHook.declared === true
+    || obligations.requiresAppHookContract === true
+    || obligations.requires_app_hook_contract === true
+    || obligations.largeMlFinalAcceptance === true
+    || obligations.large_ml_final_acceptance === true
+    || eligibility.appHookContractStatus === 'required_app_hook_contract_missing'
+    || eligibility.app_hook_contract_status === 'required_app_hook_contract_missing';
+  const requiredTemplateHash = appHook.requiredContractTemplateHash
+    ?? appHook.required_contract_template_hash
+    ?? appHook.requiredContractTemplate?.templateHash
+    ?? appHook.required_contract_template?.template_hash
+    ?? null;
+  const templateAvailable = Boolean(requiredTemplateHash);
+  const contractDeclared = appHook.declared === true;
+  const sourceDeltaPresent =
+    sourceDelta.present === true
+    || sourceDelta.accepted === true
+    || sourceDelta.source_delta_execution_accepted === true
+    || Array.isArray(sourceDelta.phases)
+    || Array.isArray(sourceDelta.run_modes);
+  const sourceDeltaAccepted =
+    sourceDelta.accepted === true
+    || sourceDelta.source_delta_execution_accepted === true;
+  const sourceDeltaRequired =
+    obligations.requiresRunModes === true
+    || obligations.requires_run_modes === true
+    || obligations.requiresNegativeEdit === true
+    || obligations.requires_negative_edit === true
+    || sourceDeltaPresent;
+  const artifactIdentity = sidecar.artifactIdentity ?? sidecar.artifact_identity ?? {};
+  const sidecarEvidenceComplete =
+    sidecar.contractEvidenceComplete === true
+    || sidecar.contract_evidence_complete === true;
+  const sidecarSourceCoverageComplete =
+    sidecar.sourceCoverageComplete === true
+    || sidecar.source_coverage_complete === true;
+  const sidecarBackend = String(
+    sidecar.backend
+    ?? sidecar.hmrBackend
+    ?? sidecar.hmr_backend
+    ?? '',
+  ).trim().toLowerCase();
+  const sidecarSourcePaths = compactStringList([
+    ...(Array.isArray(sidecar.effectiveSourcePaths) ? sidecar.effectiveSourcePaths : []),
+    ...(Array.isArray(sidecar.effective_source_paths) ? sidecar.effective_source_paths : []),
+    ...(Array.isArray(artifactIdentity.source_paths) ? artifactIdentity.source_paths : []),
+  ]);
+  const sidecarEntryPoints = compactKnownStringList([
+    ...(Array.isArray(artifactIdentity.entry_points) ? artifactIdentity.entry_points : []),
+  ]);
+  const sidecarArtifactKind = artifactIdentity.artifact_kind ?? sidecar.artifact_kind ?? null;
+  const sidecarCandidateMaterialized =
+    sidecarEvidenceComplete
+    && sidecarSourceCoverageComplete
+    && sidecarSourcePaths.length > 0
+    && sidecarEntryPoints.length > 0
+    && Boolean(sidecarArtifactKind)
+    && sidecarArtifactKind !== 'unknown'
+    && sidecarBackend !== ''
+    && sidecarBackend !== 'unknown'
+    && sidecarBackend !== 'cuda';
+  const compileBridgeCandidate =
+    compile.status === 'compile_bridge_linked_to_runtime_proof'
+    || compile.status === 'compile_bridge_candidate_observed_not_runtime_proof'
+    || compile.status === 'compile_bridge_candidate_derived_not_runtime_proof'
+    || compile.signals?.derived_device_sidecar_candidate === true
+    || compile.signals?.device_sidecar_declared === true;
+  const outputOracleDisabled =
+    oracle.mode === 'none'
+    || oracle.requestedProfile === 'none'
+    || oracle.requested_profile === 'none'
+    || oracle.disabledReason === 'profile_disabled'
+    || oracle.disabled_reason === 'profile_disabled';
+  const outputOracleMaterialized =
+    outputOracleDisabled !== true
+    && (
+      oracle.contractPresent === true
+      || oracle.contract_present === true
+      || oracle.runtimeProfilePresent === true
+      || oracle.runtime_profile_present === true
+    )
+    && Boolean(
+      oracle.selectedSource
+      ?? oracle.selected_source
+      ?? oracle.selectedProfileId
+      ?? oracle.selected_profile_id
+      ?? oracle.requestedProfile
+      ?? oracle.requested_profile
+    );
+  const outputOracleRequired =
+    obligations.requiresOutputOracle === true
+    || obligations.requires_output_oracle === true
+    || required;
+  const appHookStageResults = appHook.stageResults ?? appHook.stage_results ?? {};
+  const runtimeStageResults = runtimeStages.stageResults ?? runtimeStages.stage_results ?? {};
+  const stagePlans = {};
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const appHookStage = appHookStageResults[stage.key]
+      ?? appHookStageResults[stage.snake]
+      ?? appHook.stages?.[stage.key]
+      ?? appHook[stage.key]
+      ?? appHook[stage.snake]
+      ?? {};
+    const runtimeStage = runtimeStageResults[stage.key]
+      ?? runtimeStageResults[stage.snake]
+      ?? {};
+    const contractEvidencePresent =
+      appHookStage.contractEvidencePresent === true
+      || appHookStage.contract_evidence_present === true
+      || (
+        appHookStage.declared === true
+        && compactStringList([
+          ...(Array.isArray(appHookStage.evidenceRefs) ? appHookStage.evidenceRefs : []),
+          ...(Array.isArray(appHookStage.evidence_refs) ? appHookStage.evidence_refs : []),
+          appHookStage.proofId,
+          appHookStage.proof_id,
+        ]).length > 0
+      );
+    const runtimeObserved =
+      runtimeStage.observed === true
+      || runtimeStage.runtimeObserved === true
+      || runtimeStage.runtime_observed === true
+      || appHookStage.runtimeObserved === true
+      || appHookStage.runtime_observed === true;
+    const candidateEvidencePresent = stage.key === 'artifactTransport'
+      ? sidecarCandidateMaterialized && compileBridgeCandidate
+      : stage.key === 'dispatchTrace'
+        ? sidecarCandidateMaterialized && compileBridgeCandidate && sidecarEntryPoints.length > 0
+        : stage.key === 'outputOracle'
+          ? outputOracleMaterialized
+          : contractEvidencePresent;
+    const planAvailable = templateAvailable && required;
+    const stagePlan = {
+      stage: stage.snake,
+      required,
+      planAvailable,
+      plan_available: planAvailable,
+      candidateEvidencePresent,
+      candidate_evidence_present: candidateEvidencePresent,
+      contractEvidencePresent,
+      contract_evidence_present: contractEvidencePresent,
+      runtimeObserved,
+      runtime_observed: runtimeObserved,
+      proofKinds: realRocmStageProofKinds(stage.key),
+      proof_kinds: realRocmStageProofKinds(stage.key),
+      evidenceRefs: compactStringList([
+        ...(Array.isArray(appHookStage.evidenceRefs) ? appHookStage.evidenceRefs : []),
+        ...(Array.isArray(appHookStage.evidence_refs) ? appHookStage.evidence_refs : []),
+        ...(Array.isArray(runtimeStage.evidenceRefs) ? runtimeStage.evidenceRefs : []),
+        ...(Array.isArray(runtimeStage.evidence_refs) ? runtimeStage.evidence_refs : []),
+      ]),
+      evidence_refs: compactStringList([
+        ...(Array.isArray(appHookStage.evidenceRefs) ? appHookStage.evidenceRefs : []),
+        ...(Array.isArray(appHookStage.evidence_refs) ? appHookStage.evidence_refs : []),
+        ...(Array.isArray(runtimeStage.evidenceRefs) ? runtimeStage.evidenceRefs : []),
+        ...(Array.isArray(runtimeStage.evidence_refs) ? runtimeStage.evidence_refs : []),
+      ]),
+      status: runtimeObserved
+        ? 'runtime_observed'
+        : contractEvidencePresent
+          ? 'contract_materialized_runtime_missing'
+          : candidateEvidencePresent
+            ? 'candidate_materialized_contract_missing'
+            : planAvailable
+              ? 'planned_candidate_missing'
+              : 'missing',
+    };
+    stagePlans[stage.key] = stagePlan;
+    stagePlans[stage.snake] = stagePlan;
+  }
+  const candidateComplete = REAL_ROCM_APP_HOOK_STAGES.every((stage) =>
+    stagePlans[stage.key].candidateEvidencePresent === true
+  );
+  const contractComplete = REAL_ROCM_APP_HOOK_STAGES.every((stage) =>
+    stagePlans[stage.key].contractEvidencePresent === true
+  );
+  const runtimeObservedComplete = REAL_ROCM_APP_HOOK_STAGES.every((stage) =>
+    stagePlans[stage.key].runtimeObserved === true
+  );
+  const appHookAuthoringReady =
+    required
+    && templateAvailable
+    && (!sourceDeltaRequired || sourceDeltaAccepted)
+    && sidecarCandidateMaterialized
+    && compileBridgeCandidate
+    && (!outputOracleRequired || outputOracleMaterialized);
+  const materializationComplete =
+    appHookAuthoringReady
+    && contractDeclared
+    && candidateComplete
+    && contractComplete;
+  const blockingGaps = compactStringList([
+    required && !templateAvailable ? 'app_hook_materialization_required_template_missing' : null,
+    required && sourceDeltaRequired && !sourceDeltaPresent
+      ? 'app_hook_materialization_source_delta_execution_missing'
+      : null,
+    required && sourceDeltaRequired && sourceDeltaPresent && !sourceDeltaAccepted
+      ? 'app_hook_materialization_source_delta_execution_not_accepted'
+      : null,
+    required && !sidecarEvidenceComplete ? 'app_hook_materialization_device_sidecar_contract_incomplete' : null,
+    required && !sidecarSourceCoverageComplete ? 'app_hook_materialization_source_coverage_incomplete' : null,
+    required && sidecarBackend === '' ? 'app_hook_materialization_device_sidecar_backend_missing' : null,
+    required && sidecarBackend === 'unknown' ? 'app_hook_materialization_device_sidecar_backend_unknown' : null,
+    required && sidecarBackend === 'cuda' ? 'app_hook_materialization_cuda_sidecar_not_provable_on_rocm_host' : null,
+    required && sidecarSourcePaths.length === 0 ? 'app_hook_materialization_source_paths_missing' : null,
+    required && sidecarEntryPoints.length === 0 ? 'app_hook_materialization_entry_points_missing' : null,
+    required && (!sidecarArtifactKind || sidecarArtifactKind === 'unknown')
+      ? 'app_hook_materialization_artifact_kind_missing'
+      : null,
+    required && !compileBridgeCandidate ? 'app_hook_materialization_compile_bridge_candidate_missing' : null,
+    required && outputOracleRequired && !outputOracleMaterialized
+      ? 'app_hook_materialization_output_oracle_contract_missing'
+      : null,
+    required && !contractDeclared ? 'app_hook_materialization_contract_not_declared' : null,
+    ...REAL_ROCM_APP_HOOK_STAGES.flatMap((stage) => [
+      required && !stagePlans[stage.key].candidateEvidencePresent
+        ? `app_hook_materialization_${stage.snake}_candidate_missing`
+        : null,
+      required && contractDeclared && !stagePlans[stage.key].contractEvidencePresent
+        ? `app_hook_materialization_${stage.snake}_contract_evidence_missing`
+        : null,
+    ]),
+  ]);
+  const evidenceRefs = compactStringList([
+    `profile:${CFG.realRocmProfile.id}`,
+    requiredTemplateHash,
+    sourceDelta.proofId,
+    sourceDelta.proof_id,
+    ...(Array.isArray(sourceDelta.evidenceRefs) ? sourceDelta.evidenceRefs : []),
+    ...(Array.isArray(sourceDelta.evidence_refs) ? sourceDelta.evidence_refs : []),
+    ...(Array.isArray(sidecar.evidenceRefs) ? sidecar.evidenceRefs : []),
+    ...(Array.isArray(sidecar.evidence_refs) ? sidecar.evidence_refs : []),
+    ...(Array.isArray(compile.evidenceRefs) ? compile.evidenceRefs : []),
+    ...(Array.isArray(compile.evidence_refs) ? compile.evidence_refs : []),
+    oracle.selectedSource ? `output-oracle:selected-source:${oracle.selectedSource}` : null,
+    oracle.selected_source ? `output-oracle:selected-source:${oracle.selected_source}` : null,
+    oracle.selectedProfileId ? `output-oracle:selected-profile:${oracle.selectedProfileId}` : null,
+    oracle.selected_profile_id ? `output-oracle:selected-profile:${oracle.selected_profile_id}` : null,
+  ]);
+  const materializationHash = `sha256:${createHash('sha256').update(stableJson({
+    profileId: CFG.realRocmProfile.id,
+    required,
+    requiredTemplateHash,
+    sourceDeltaAccepted,
+    sidecarBackend,
+    artifactIdentity,
+    compileBridgeStatus: compile.status,
+    outputOracleMaterialized,
+    contractDeclared,
+    stagePlans,
+  })).digest('hex')}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    status: !required
+      ? 'not_required'
+      : materializationComplete
+        ? 'app_hook_materialization_ready_for_runtime_observation'
+        : appHookAuthoringReady
+          ? 'app_hook_materialization_plan_ready_contract_missing'
+          : 'app_hook_materialization_incomplete',
+    proofAuthority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    proof_authority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    required,
+    acceptedAsPlanningEvidence: required && templateAvailable,
+    accepted_as_planning_evidence: required && templateAvailable,
+    acceptedAsRefusalEvidence: required && blockingGaps.length > 0,
+    accepted_as_refusal_evidence: required && blockingGaps.length > 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    appHookAuthoringReady,
+    app_hook_authoring_ready: appHookAuthoringReady,
+    materializationComplete,
+    materialization_complete: materializationComplete,
+    candidateComplete,
+    candidate_complete: candidateComplete,
+    contractComplete,
+    contract_complete: contractComplete,
+    runtimeObservedComplete,
+    runtime_observed_complete: runtimeObservedComplete,
+    templateAvailable,
+    template_available: templateAvailable,
+    requiredTemplateHash,
+    required_template_hash: requiredTemplateHash,
+    sourceDeltaRequired,
+    source_delta_required: sourceDeltaRequired,
+    sourceDeltaPresent,
+    source_delta_present: sourceDeltaPresent,
+    sourceDeltaAccepted,
+    source_delta_accepted: sourceDeltaAccepted,
+    sidecarCandidateMaterialized,
+    sidecar_candidate_materialized: sidecarCandidateMaterialized,
+    sidecarEvidenceComplete,
+    sidecar_evidence_complete: sidecarEvidenceComplete,
+    sidecarSourceCoverageComplete,
+    sidecar_source_coverage_complete: sidecarSourceCoverageComplete,
+    sidecarBackend: sidecarBackend || null,
+    sidecar_backend: sidecarBackend || null,
+    sidecarSourcePaths,
+    sidecar_source_paths: sidecarSourcePaths,
+    sidecarEntryPoints,
+    sidecar_entry_points: sidecarEntryPoints,
+    sidecarArtifactKind,
+    sidecar_artifact_kind: sidecarArtifactKind,
+    compileBridgeCandidate,
+    compile_bridge_candidate: compileBridgeCandidate,
+    compileBridgeStatus: compile.status ?? null,
+    compile_bridge_status: compile.status ?? null,
+    outputOracleRequired,
+    output_oracle_required: outputOracleRequired,
+    outputOracleMaterialized,
+    output_oracle_materialized: outputOracleMaterialized,
+    outputOracleRequestedProfile: oracle.requestedProfile ?? oracle.requested_profile ?? null,
+    output_oracle_requested_profile: oracle.requestedProfile ?? oracle.requested_profile ?? null,
+    outputOracleSelectedSource: oracle.selectedSource ?? oracle.selected_source ?? null,
+    output_oracle_selected_source: oracle.selectedSource ?? oracle.selected_source ?? null,
+    contractDeclared,
+    contract_declared: contractDeclared,
+    stagePlans,
+    stage_plans: stagePlans,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    materializationHash,
+    materialization_hash: materializationHash,
+    contractHash: materializationHash,
+    contract_hash: materializationHash,
+  };
+}
+
 function refreshRealRocmRuntimeProofObligationFacets({
   appHookContract = CFG.appHookContract,
   profileProofObligations = report.real_rocm_profile_proof_obligations,
@@ -14847,6 +15217,96 @@ int main()
   ) {
     throw new Error('compile response bridge evidence self-check failed');
   }
+  const materializationObligationsSelfCheck = {
+    requiresFullRuntimeProof: true,
+    requires_full_runtime_proof: true,
+    requiresOutputOracle: true,
+    requires_output_oracle: true,
+    requiresAppHookContract: true,
+    requires_app_hook_contract: true,
+    requiresRunModes: true,
+    requires_run_modes: true,
+    requiresNegativeEdit: true,
+    requires_negative_edit: true,
+    largeMlFinalAcceptance: true,
+    large_ml_final_acceptance: true,
+  };
+  const materializationAppHookSelfCheck = realRocmAppHookContractFacet({
+    appHookContract: { declared: false },
+    profileProofObligations: materializationObligationsSelfCheck,
+  });
+  const acceptedSourceDeltaSelfCheck = {
+    present: true,
+    accepted: true,
+    source_delta_execution_accepted: true,
+    proofId: `real-rocm-source-delta-execution:sha256:${'6'.repeat(64)}`,
+    phases: [
+      { phase: 'hot_delta_1', accepted: true },
+      { phase: 'hot_delta_2', accepted: true },
+      { phase: 'negative_edit', accepted: true },
+    ],
+    evidenceRefs: [`real-rocm-source-delta-execution:sha256:${'6'.repeat(64)}`],
+  };
+  const materializedOutputOracleSelfCheck = {
+    requestedProfile: 'profile_runtime_profile',
+    requested_profile: 'profile_runtime_profile',
+    selectedSource: 'profile_runtime_profile',
+    selected_source: 'profile_runtime_profile',
+    contractPresent: true,
+    contract_present: true,
+    runtimeProfilePresent: true,
+    runtime_profile_present: true,
+    runtimeProfileSynced: true,
+    runtime_profile_synced: true,
+  };
+  const plannedMaterializationSelfCheck = realRocmAppHookMaterializationFacet({
+    profileProofObligations: materializationObligationsSelfCheck,
+    appHookContract: materializationAppHookSelfCheck,
+    deviceSidecarContract: derivedSidecarContractSelfCheck,
+    compileBridge: derivedSidecarCompileBridge,
+    outputOracleResolution: materializedOutputOracleSelfCheck,
+    sourceDeltaExecution: acceptedSourceDeltaSelfCheck,
+    runtimeStageObligations: realRocmRuntimeStageObligationsFacet({
+      sourceDeltaExecution: acceptedSourceDeltaSelfCheck,
+      deviceSidecarContract: derivedSidecarContractSelfCheck,
+      compileBridge: derivedSidecarCompileBridge,
+      appHookContract: materializationAppHookSelfCheck,
+      profileProofObligations: materializationObligationsSelfCheck,
+    }),
+  });
+  const missingOracleMaterializationSelfCheck = realRocmAppHookMaterializationFacet({
+    profileProofObligations: materializationObligationsSelfCheck,
+    appHookContract: materializationAppHookSelfCheck,
+    deviceSidecarContract: derivedSidecarContractSelfCheck,
+    compileBridge: derivedSidecarCompileBridge,
+    outputOracleResolution: {
+      requestedProfile: 'none',
+      requested_profile: 'none',
+      mode: 'none',
+      contractPresent: false,
+      contract_present: false,
+      runtimeProfilePresent: false,
+      runtime_profile_present: false,
+    },
+    sourceDeltaExecution: acceptedSourceDeltaSelfCheck,
+  });
+  if (
+    plannedMaterializationSelfCheck.schemaVersion !== 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1'
+    || plannedMaterializationSelfCheck.proofAuthority !== 'plan_only_app_hook_materialization_not_runtime_proof'
+    || plannedMaterializationSelfCheck.acceptedForGpuHmr !== false
+    || plannedMaterializationSelfCheck.gpuHmrSuccess !== false
+    || plannedMaterializationSelfCheck.canSatisfyRuntimeProof !== false
+    || plannedMaterializationSelfCheck.appHookAuthoringReady !== true
+    || plannedMaterializationSelfCheck.materializationComplete !== false
+    || plannedMaterializationSelfCheck.status !== 'app_hook_materialization_plan_ready_contract_missing'
+    || !plannedMaterializationSelfCheck.blockingGaps.includes('app_hook_materialization_contract_not_declared')
+    || plannedMaterializationSelfCheck.blockingGaps.includes('app_hook_materialization_output_oracle_contract_missing')
+    || missingOracleMaterializationSelfCheck.appHookAuthoringReady !== false
+    || !missingOracleMaterializationSelfCheck.blockingGaps.includes('app_hook_materialization_output_oracle_contract_missing')
+    || missingOracleMaterializationSelfCheck.acceptedAsRefusalEvidence !== true
+  ) {
+    throw new Error('real ROCm app-hook materialization self-check failed');
+  }
   const savedProofSchedulingSelfCheck = {
     requireFullRuntimeProof: CFG.requireFullRuntimeProof,
     proofFastFailEnabled: CFG.proofFastFailEnabled,
@@ -16180,6 +16640,21 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   report.runtime_stage_obligations = report.real_rocm_runtime_stage_obligations;
   report.evidence.real_rocm_runtime_stage_obligations =
     report.real_rocm_runtime_stage_obligations;
+  report.real_rocm_app_hook_materialization = realRocmAppHookMaterializationFacet({
+    profileProofObligations: report.real_rocm_profile_proof_obligations,
+    appHookContract: report.real_rocm_app_hook_contract,
+    deviceSidecarContract: report.real_rocm_device_sidecar_contract,
+    compileBridge: report.real_rocm_compile_bridge,
+    outputOracleResolution: report.output_oracle_resolution,
+    sourceDeltaExecution: report.real_rocm_source_delta_execution,
+    runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
+    runtimeEligibility: report.real_rocm_runtime_eligibility,
+  });
+  report.realRocmAppHookMaterialization = report.real_rocm_app_hook_materialization;
+  report.appHookMaterialization = report.real_rocm_app_hook_materialization;
+  report.app_hook_materialization = report.real_rocm_app_hook_materialization;
+  report.evidence.real_rocm_app_hook_materialization =
+    report.real_rocm_app_hook_materialization;
   if (report.native_rocm_launch_boundary.observed) {
     record(
       'native ROCm launch boundary refusal facet',
@@ -16268,6 +16743,19 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
         `status=${report.real_rocm_runtime_stage_obligations.status}`,
         `missing_stages=${report.real_rocm_runtime_stage_obligations.missing_stages.join(',') || 'none'}`,
         `gaps=${report.real_rocm_runtime_stage_obligations.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
+  if (report.real_rocm_app_hook_materialization.required) {
+    record(
+      'real ROCm app-hook materialization facet',
+      report.real_rocm_app_hook_materialization.materialization_complete ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_app_hook_materialization.status}`,
+        `authoring_ready=${report.real_rocm_app_hook_materialization.app_hook_authoring_ready}`,
+        `sidecar=${report.real_rocm_app_hook_materialization.sidecar_backend ?? 'none'}`,
+        `oracle=${report.real_rocm_app_hook_materialization.output_oracle_materialized}`,
+        `gaps=${report.real_rocm_app_hook_materialization.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
@@ -16667,6 +17155,10 @@ async function writeResults() {
     real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
     runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
     runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+    realRocmAppHookMaterialization: report.real_rocm_app_hook_materialization,
+    real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
+    appHookMaterialization: report.real_rocm_app_hook_materialization,
+    app_hook_materialization: report.real_rocm_app_hook_materialization,
     realRocmProofScheduling: report.real_rocm_proof_scheduling,
     real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
     proofScheduling: report.real_rocm_proof_scheduling,
@@ -16786,6 +17278,10 @@ async function writeResults() {
       real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
       runtimeStageObligations: report.real_rocm_runtime_stage_obligations,
       runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+      realRocmAppHookMaterialization: report.real_rocm_app_hook_materialization,
+      real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
+      appHookMaterialization: report.real_rocm_app_hook_materialization,
+      app_hook_materialization: report.real_rocm_app_hook_materialization,
       realRocmProofScheduling: report.real_rocm_proof_scheduling,
       real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
       proofScheduling: report.real_rocm_proof_scheduling,
@@ -16822,6 +17318,10 @@ async function writeResults() {
       deterministicVisualModeEvaluation: written.artifact.deterministicVisualModeEvaluation,
       proofLedger: written.artifact.proofLedger,
       proofLedgerQuery: written.artifact.proofLedgerQuery,
+      realRocmAppHookMaterialization: written.artifact.realRocmAppHookMaterialization,
+      real_rocm_app_hook_materialization: written.artifact.real_rocm_app_hook_materialization,
+      appHookMaterialization: written.artifact.appHookMaterialization,
+      app_hook_materialization: written.artifact.app_hook_materialization,
       gpuHmrSuccess: written.artifact.gpuHmrSuccess === true,
     };
   }
@@ -16869,6 +17369,10 @@ async function writeResults() {
     targetProgressionLedgerEntry: report.target_progression_ledger_entry,
     targetProgressionLedgerArtifact: report.target_progression_ledger_artifact,
     targetProgressionGates: report.target_progression_gates,
+    realRocmAppHookMaterialization: report.real_rocm_app_hook_materialization,
+    real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
+    appHookMaterialization: report.real_rocm_app_hook_materialization,
+    app_hook_materialization: report.real_rocm_app_hook_materialization,
     docker: report.docker,
     timings: validationContext.timings,
     screenshots: report.screenshots,
@@ -16986,6 +17490,7 @@ async function writeResults() {
     `real_rocm_device_sidecar_contract: ${JSON.stringify(report.real_rocm_device_sidecar_contract)}`,
     `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
     `real_rocm_runtime_stage_obligations: ${JSON.stringify(report.real_rocm_runtime_stage_obligations)}`,
+    `real_rocm_app_hook_materialization: ${JSON.stringify(report.real_rocm_app_hook_materialization)}`,
     `model: ${report.model}`,
     `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,

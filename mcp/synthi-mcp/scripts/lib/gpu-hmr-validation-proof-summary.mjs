@@ -375,6 +375,22 @@ function targetProgressionGates(input, validationContext) {
   return Array.isArray(gates) ? compactObjects(gates) : [];
 }
 
+function realRocmAppHookMaterialization(input, validationContext) {
+  if (isObject(input.realRocmAppHookMaterialization)) return input.realRocmAppHookMaterialization;
+  if (isObject(input.real_rocm_app_hook_materialization)) return input.real_rocm_app_hook_materialization;
+  if (isObject(input.appHookMaterialization)) return input.appHookMaterialization;
+  if (isObject(input.app_hook_materialization)) return input.app_hook_materialization;
+  if (isObject(validationContext?.realRocmAppHookMaterialization)) {
+    return validationContext.realRocmAppHookMaterialization;
+  }
+  if (isObject(validationContext?.real_rocm_app_hook_materialization)) {
+    return validationContext.real_rocm_app_hook_materialization;
+  }
+  if (isObject(validationContext?.appHookMaterialization)) return validationContext.appHookMaterialization;
+  if (isObject(validationContext?.app_hook_materialization)) return validationContext.app_hook_materialization;
+  return null;
+}
+
 function targetProgressionGateLimitations(input, validationContext) {
   return targetProgressionGates(input, validationContext)
     .filter((gate) => gate.status === 'fail')
@@ -737,6 +753,16 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const fullRuntimeStates = proofArrayStates(input.runtimeFullProofs);
   const qualityRows = visualEvidenceQuality(input);
   const progressionGates = targetProgressionGates(input, validationContext);
+  const appHookMaterialization = compactObjects([
+    realRocmAppHookMaterialization(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmAppHookMaterialization
+      ?? record.real_rocm_app_hook_materialization
+      ?? record.appHookMaterialization
+      ?? record.app_hook_materialization
+      ?? null
+    ),
+  ]).at(-1) ?? null;
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
     ...acceptanceContractLimitations(acceptanceContractEvaluations),
@@ -864,6 +890,35 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             proof_mode: deterministicVisualModeEvaluation.proofMode ?? null,
           }
         : null,
+      real_rocm_app_hook_materialization: appHookMaterialization
+        ? {
+            required: appHookMaterialization.required === true,
+            accepted_as_refusal_evidence:
+              appHookMaterialization.acceptedAsRefusalEvidence === true
+              || appHookMaterialization.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              appHookMaterialization.acceptedForGpuHmr === true
+              || appHookMaterialization.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              appHookMaterialization.gpuHmrSuccess === true
+              || appHookMaterialization.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              appHookMaterialization.canSatisfyRuntimeProof === true
+              || appHookMaterialization.can_satisfy_runtime_proof === true,
+            materialization_complete:
+              appHookMaterialization.materializationComplete === true
+              || appHookMaterialization.materialization_complete === true,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(appHookMaterialization.blockingGaps)
+                ? appHookMaterialization.blockingGaps
+                : []),
+              ...(Array.isArray(appHookMaterialization.blocking_gaps)
+                ? appHookMaterialization.blocking_gaps
+                : []),
+            ]).length,
+            status: appHookMaterialization.status ?? null,
+          }
+        : null,
       runtime_artifacts: runtimeArtifactRecords.map((record) => ({
         phase: record.phase ?? null,
         name: record.name ?? null,
@@ -888,6 +943,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluations: deterministicVisualModeEvaluations,
+    realRocmAppHookMaterialization: appHookMaterialization,
+    real_rocm_app_hook_materialization: appHookMaterialization,
+    appHookMaterialization,
+    app_hook_materialization: appHookMaterialization,
     gpu_hmr_success: gpuHmrSuccess,
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,

@@ -93,6 +93,8 @@ const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
 const REAL_ROCM_RUNTIME_STAGE_OBLIGATIONS_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1';
+const REAL_ROCM_APP_HOOK_MATERIALIZATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1';
 const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
@@ -3922,6 +3924,134 @@ function realRocmRuntimeStageObligationsGate(input = {}) {
     proof_authority: proofAuthority,
     missingStages,
     missing_stages: missingStages,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function realRocmAppHookMaterializationGate(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      status: null,
+      required: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const status = firstText(facet.status, facet.reason);
+  const required = firstBool(facet.required) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const acceptedAsRefusalEvidence = firstBool(
+    facet.acceptedAsRefusalEvidence,
+    facet.accepted_as_refusal_evidence,
+  );
+  const appHookAuthoringReady = firstBool(
+    facet.appHookAuthoringReady,
+    facet.app_hook_authoring_ready,
+  );
+  const materializationComplete = firstBool(
+    facet.materializationComplete,
+    facet.materialization_complete,
+  );
+  const stagePlans = compactObject(facet.stagePlans ?? facet.stage_plans);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const stagePlanFailures = required
+    ? REAL_ROCM_APP_HOOK_REQUIRED_STAGES.flatMap((stageName) => {
+      const camelStage = stageName.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+      const stage = compactObject(stagePlans[stageName] ?? stagePlans[camelStage]);
+      const proofKinds = compactStringList([
+        ...(Array.isArray(stage.proofKinds) ? stage.proofKinds : []),
+        ...(Array.isArray(stage.proof_kinds) ? stage.proof_kinds : []),
+      ]);
+      return compactStringList([
+        Object.keys(stage).length === 0
+          ? `app_hook_materialization_${stageName}_plan_missing`
+          : null,
+        Object.keys(stage).length > 0 && proofKinds.length === 0
+          ? `app_hook_materialization_${stageName}_proof_kinds_missing`
+          : null,
+      ]);
+    })
+    : [];
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_app_hook_materialization_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_APP_HOOK_MATERIALIZATION_SCHEMA_VERSION
+      ? 'real_rocm_app_hook_materialization_schema_unknown'
+      : null,
+    proofAuthority === 'plan_only_app_hook_materialization_not_runtime_proof'
+      ? null
+      : 'real_rocm_app_hook_materialization_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_app_hook_materialization_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_app_hook_materialization_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_app_hook_materialization_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_app_hook_materialization_claimed_dispatch_authority'
+      : null,
+    acceptedAsRefusalEvidence === true && blockingGaps.length === 0
+      ? 'real_rocm_app_hook_materialization_refusal_gaps_missing'
+      : null,
+    materializationComplete === true && blockingGaps.length > 0
+      ? 'real_rocm_app_hook_materialization_complete_with_blocking_gaps'
+      : null,
+    appHookAuthoringReady === true && blockingGaps.some((gap) =>
+      text(gap)?.includes('candidate_missing')
+      || text(gap)?.includes('sidecar')
+      || text(gap)?.includes('compile_bridge_candidate_missing')
+      || text(gap)?.includes('output_oracle_contract_missing')
+    )
+      ? 'real_rocm_app_hook_materialization_authoring_ready_with_candidate_gaps'
+      : null,
+    required && Object.keys(stagePlans).length === 0
+      ? 'real_rocm_app_hook_materialization_stage_plans_missing'
+      : null,
+    ...stagePlanFailures,
+  ]);
+  return {
+    present: true,
+    required,
+    accepted: failedGates.length === 0,
+    status: status ?? null,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    appHookAuthoringReady,
+    app_hook_authoring_ready: appHookAuthoringReady,
+    materializationComplete,
+    materialization_complete: materializationComplete,
+    acceptedAsRefusalEvidence: acceptedAsRefusalEvidence === true,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence === true,
     blockingGaps,
     blocking_gaps: blockingGaps,
     failedGates,
@@ -9547,6 +9677,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.runtime_stage_obligations
     ?? runtimeProofArtifact.runtimeStageObligations,
   );
+  const realRocmAppHookMaterialization = compactObject(
+    json.real_rocm_app_hook_materialization
+    ?? json.realRocmAppHookMaterialization
+    ?? json.app_hook_materialization
+    ?? json.appHookMaterialization
+    ?? summary.real_rocm_app_hook_materialization
+    ?? summary.realRocmAppHookMaterialization
+    ?? summary.app_hook_materialization
+    ?? summary.appHookMaterialization
+    ?? runtimeProofArtifact.real_rocm_app_hook_materialization
+    ?? runtimeProofArtifact.realRocmAppHookMaterialization
+    ?? runtimeProofArtifact.app_hook_materialization
+    ?? runtimeProofArtifact.appHookMaterialization,
+  );
   const topLevelValidationBlockers = compactObjectList([
     ...(Array.isArray(json.validation_blockers) ? json.validation_blockers : []),
     ...(Array.isArray(json.validationBlockers) ? json.validationBlockers : []),
@@ -9662,6 +9806,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ? realRocmProofScheduling.failed_gates
       : []),
   ]);
+  const realRocmAppHookMaterializationGaps = compactStringList([
+    ...(Array.isArray(realRocmAppHookMaterialization.blockingGaps)
+      ? realRocmAppHookMaterialization.blockingGaps
+      : []),
+    ...(Array.isArray(realRocmAppHookMaterialization.blocking_gaps)
+      ? realRocmAppHookMaterialization.blocking_gaps
+      : []),
+  ]);
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -9701,6 +9853,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmProofSchedulingReason =
     realRocmProofScheduling.present === true
       ? firstText(realRocmProofScheduling.status, realRocmProofScheduling.reason)
+      : null;
+  const realRocmAppHookMaterializationReason =
+    Object.keys(realRocmAppHookMaterialization).length > 0
+      ? firstText(realRocmAppHookMaterialization.status, realRocmAppHookMaterialization.reason)
       : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
@@ -9786,6 +9942,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeStageObligationsAccepted =
     runtimeStageObligationsGate.present !== true
     || runtimeStageObligationsGate.accepted === true;
+  const appHookMaterializationGate = realRocmAppHookMaterializationGate(
+    realRocmAppHookMaterialization,
+  );
+  const appHookMaterializationAccepted =
+    appHookMaterializationGate.present !== true
+    || appHookMaterializationGate.accepted === true;
   const profileProofObligationsAccepted = realRocmProfileProofObligationsGaps.length === 0;
   const fullRuntimeProven = boolOrNull(
     json.fullRuntimeProven
@@ -9866,6 +10028,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
     && runtimeStageObligationsAccepted === true
+    && appHookMaterializationAccepted === true
     && profileProofObligationsAccepted === true
     && targetProgressionGateFailures.length === 0
     && realRocmFirewall.accepted === true
@@ -10070,6 +10233,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     runtime_stage_obligations: realRocmRuntimeStageObligations,
     realRocmRuntimeStageObligationsGate: runtimeStageObligationsGate,
     real_rocm_runtime_stage_obligations_gate: runtimeStageObligationsGate,
+    realRocmAppHookMaterialization,
+    real_rocm_app_hook_materialization: realRocmAppHookMaterialization,
+    appHookMaterialization: realRocmAppHookMaterialization,
+    app_hook_materialization: realRocmAppHookMaterialization,
+    realRocmAppHookMaterializationGate: appHookMaterializationGate,
+    real_rocm_app_hook_materialization_gate: appHookMaterializationGate,
     realRocmProofScheduling,
     real_rocm_proof_scheduling: realRocmProofScheduling,
     proofScheduling: realRocmProofScheduling,
@@ -10120,6 +10289,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...runtimeStageObligationsGate.failedGates.map((gap) =>
         `real_rocm_runtime_stage_obligations:${gap}`
       ),
+      realRocmAppHookMaterializationReason
+        ? `real_rocm_app_hook_materialization:${realRocmAppHookMaterializationReason}`
+        : null,
+      ...realRocmAppHookMaterializationGaps.map((gap) =>
+        `real_rocm_app_hook_materialization:${gap}`
+      ),
+      ...appHookMaterializationGate.failedGates.map((gap) =>
+        `real_rocm_app_hook_materialization:${gap}`
+      ),
       realRocmRuntimeCapabilityPreflightReason
         ? `real_rocm_runtime_capability_preflight:${realRocmRuntimeCapabilityPreflightReason}`
         : null,
@@ -10143,6 +10321,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeStageObligationsAccepted ? null : 'real_rocm_runtime_stage_obligations_not_met',
       ...runtimeStageObligationsGate.failedGates.map((failure) =>
         `real_rocm_runtime_stage_obligations:${failure}`
+      ),
+      appHookMaterializationAccepted ? null : 'real_rocm_app_hook_materialization_not_accepted',
+      ...appHookMaterializationGate.failedGates.map((failure) =>
+        `real_rocm_app_hook_materialization:${failure}`
       ),
       realRocmProofSchedulingReason
         ? `real_rocm_proof_scheduling:${realRocmProofSchedulingReason}`
@@ -10197,6 +10379,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeStageObligationsAccepted ? null : 'real_rocm_runtime_stage_obligations_required',
       ...runtimeStageObligationsGate.failedGates.map((failure) =>
         `real_rocm_runtime_stage_obligations:${failure}`
+      ),
+      appHookMaterializationAccepted ? null : 'real_rocm_app_hook_materialization_required',
+      ...realRocmAppHookMaterializationGaps.map((gap) =>
+        `real_rocm_app_hook_materialization:${gap}`
+      ),
+      ...appHookMaterializationGate.failedGates.map((failure) =>
+        `real_rocm_app_hook_materialization:${failure}`
       ),
       ...realRocmProofSchedulingGaps.map((gap) =>
         `real_rocm_proof_scheduling:${gap}`
@@ -11604,6 +11793,19 @@ function realRocmRepositoryTargetCoverage(rows) {
         facetKeys: ['realRocmAppHookContract', 'real_rocm_app_hook_contract'],
         missingOrUnprovenStatus: 'contract_missing_or_unproven',
       });
+      const appHookMaterializationAudit = realRocmCoverageContractAudit(targetRows, {
+        gateKeys: [
+          'realRocmAppHookMaterializationGate',
+          'real_rocm_app_hook_materialization_gate',
+        ],
+        facetKeys: [
+          'realRocmAppHookMaterialization',
+          'real_rocm_app_hook_materialization',
+          'appHookMaterialization',
+          'app_hook_materialization',
+        ],
+        missingOrUnprovenStatus: 'materialization_missing_or_unproven',
+      });
       const sameProcessRuntimeOracleAudit = realRocmCoverageContractAudit(targetRows, {
         gateKeys: ['realRocmSameProcessRuntimeOracleGate', 'real_rocm_same_process_runtime_oracle_gate'],
         facetKeys: ['realRocmSameProcessRuntimeOracle', 'real_rocm_same_process_runtime_oracle'],
@@ -11631,6 +11833,8 @@ function realRocmRepositoryTargetCoverage(rows) {
           : compactStringList(refused.flatMap((row) => row.openGaps)),
         appHookContract: appHookContractAudit,
         app_hook_contract: appHookContractAudit,
+        appHookMaterialization: appHookMaterializationAudit,
+        app_hook_materialization: appHookMaterializationAudit,
         sameProcessRuntimeOracleContract: sameProcessRuntimeOracleAudit,
         same_process_runtime_oracle_contract: sameProcessRuntimeOracleAudit,
         deviceSidecarContract: deviceSidecarContractAudit,

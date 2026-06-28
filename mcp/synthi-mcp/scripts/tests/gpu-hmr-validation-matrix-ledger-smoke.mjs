@@ -3382,6 +3382,122 @@ function realRocmRuntimeStageObligationsFixture(overrides = {}) {
   };
 }
 
+function realRocmAppHookMaterializationFixture(overrides = {}) {
+  const stageProofKinds = {
+    artifact_transport: ['changed_artifact_hash', 'same_process_transport_event', 'loaded_artifact_hash'],
+    epoch_publication: ['published_epoch', 'published_artifact_hash', 'same_process_epoch_event'],
+    dispatch_trace: ['dispatch_id', 'dispatch_epoch', 'dispatch_artifact_hash'],
+    host_identity: ['process_id', 'device_identity', 'context_or_queue_identity'],
+    output_oracle: ['after_dispatch_id', 'output_target_id', 'readback_or_visual_artifact'],
+  };
+  const stagePlans = Object.fromEntries(Object.entries(stageProofKinds).map(([stage, proofKinds]) => [
+    stage,
+    {
+      stage,
+      required: true,
+      planAvailable: true,
+      plan_available: true,
+      candidateEvidencePresent: false,
+      candidate_evidence_present: false,
+      contractEvidencePresent: false,
+      contract_evidence_present: false,
+      runtimeObserved: false,
+      runtime_observed: false,
+      proofKinds,
+      proof_kinds: proofKinds,
+      evidenceRefs: [],
+      evidence_refs: [],
+      status: 'planned_candidate_missing',
+    },
+  ]));
+  const blockingGaps = [
+    'app_hook_materialization_output_oracle_contract_missing',
+    'app_hook_materialization_contract_not_declared',
+    ...Object.keys(stageProofKinds).map((stage) =>
+      `app_hook_materialization_${stage}_candidate_missing`
+    ),
+  ];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    status: 'app_hook_materialization_incomplete',
+    proofAuthority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    proof_authority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    required: true,
+    acceptedAsPlanningEvidence: true,
+    accepted_as_planning_evidence: true,
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    appHookAuthoringReady: false,
+    app_hook_authoring_ready: false,
+    materializationComplete: false,
+    materialization_complete: false,
+    candidateComplete: false,
+    candidate_complete: false,
+    contractComplete: false,
+    contract_complete: false,
+    runtimeObservedComplete: false,
+    runtime_observed_complete: false,
+    templateAvailable: true,
+    template_available: true,
+    requiredTemplateHash: hashValue('real-rocm-app-hook-materialization-template'),
+    required_template_hash: hashValue('real-rocm-app-hook-materialization-template'),
+    sourceDeltaRequired: true,
+    source_delta_required: true,
+    sourceDeltaPresent: true,
+    source_delta_present: true,
+    sourceDeltaAccepted: true,
+    source_delta_accepted: true,
+    sidecarCandidateMaterialized: true,
+    sidecar_candidate_materialized: true,
+    sidecarEvidenceComplete: true,
+    sidecar_evidence_complete: true,
+    sidecarSourceCoverageComplete: true,
+    sidecar_source_coverage_complete: true,
+    sidecarBackend: 'hip',
+    sidecar_backend: 'hip',
+    sidecarSourcePaths: ['src/kernels/entry_kernel.hip'],
+    sidecar_source_paths: ['src/kernels/entry_kernel.hip'],
+    sidecarEntryPoints: ['entry_kernel'],
+    sidecar_entry_points: ['entry_kernel'],
+    sidecarArtifactKind: 'hsaco',
+    sidecar_artifact_kind: 'hsaco',
+    compileBridgeCandidate: true,
+    compile_bridge_candidate: true,
+    compileBridgeStatus: 'compile_bridge_candidate_observed_not_runtime_proof',
+    compile_bridge_status: 'compile_bridge_candidate_observed_not_runtime_proof',
+    outputOracleRequired: true,
+    output_oracle_required: true,
+    outputOracleMaterialized: false,
+    output_oracle_materialized: false,
+    outputOracleRequestedProfile: 'none',
+    output_oracle_requested_profile: 'none',
+    outputOracleSelectedSource: null,
+    output_oracle_selected_source: null,
+    contractDeclared: false,
+    contract_declared: false,
+    stagePlans,
+    stage_plans: stagePlans,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: ['profile:real-rocm-large-lib', 'real-rocm-source-delta-execution:sha256:fixture'],
+    evidence_refs: ['profile:real-rocm-large-lib', 'real-rocm-source-delta-execution:sha256:fixture'],
+    materializationHash: hashValue('real-rocm-app-hook-materialization-fixture'),
+    materialization_hash: hashValue('real-rocm-app-hook-materialization-fixture'),
+    contractHash: hashValue('real-rocm-app-hook-materialization-fixture'),
+    contract_hash: hashValue('real-rocm-app-hook-materialization-fixture'),
+    ...overrides,
+  };
+}
+
 function realRocmProofSchedulingFixture(overrides = {}) {
   const blockingGaps = [
     'proof_obligation_output_oracle_profile_missing',
@@ -3660,6 +3776,7 @@ const largeRocmLatestReport = {
     blocking_gaps: ['sidecar_runtime_sidecar_observation_missing'],
   },
   real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligationsFixture(),
+  real_rocm_app_hook_materialization: realRocmAppHookMaterializationFixture(),
   real_rocm_proof_scheduling: largeRocmProofSchedulingFixture,
   proof_scheduling: largeRocmProofSchedulingFixture,
   timeout_intelligence_failure: largeRocmProofSchedulingFixture,
@@ -5380,6 +5497,21 @@ assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
 assert.ok(largeRocm.realRocmRuntimeStageObligationsGate.failedGates.includes(
   'runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
 ));
+assert.equal(largeRocm.realRocmAppHookMaterialization.status, 'app_hook_materialization_incomplete');
+assert.equal(largeRocm.realRocmAppHookMaterialization.acceptedForGpuHmr, false);
+assert.equal(largeRocm.realRocmAppHookMaterialization.gpuHmrSuccess, false);
+assert.equal(largeRocm.realRocmAppHookMaterialization.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmAppHookMaterialization.outputOracleMaterialized, false);
+assert.equal(largeRocm.realRocmAppHookMaterialization.sidecarCandidateMaterialized, true);
+assert.equal(largeRocm.realRocmAppHookMaterializationGate.present, true);
+assert.equal(largeRocm.realRocmAppHookMaterializationGate.accepted, true);
+assert.equal(largeRocm.realRocmAppHookMaterializationGate.acceptedAsRefusalEvidence, true);
+assert.ok(largeRocm.realRocmAppHookMaterialization.blockingGaps.includes(
+  'app_hook_materialization_output_oracle_contract_missing',
+));
+assert.ok(largeRocm.realRocmAppHookMaterialization.blockingGaps.includes(
+  'app_hook_materialization_contract_not_declared',
+));
 assert.equal(largeRocm.realRocmProofScheduling.present, true);
 assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
@@ -5495,6 +5627,68 @@ assert.deepEqual(timeoutIntelligenceRocm.realRocmRuntimeStageObligationsGate.mis
 assert.ok(timeoutIntelligenceRocm.reasons.includes('real_rocm_runtime_stage_obligations_not_met'));
 assert.ok(timeoutIntelligenceRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
 
+const forgedAppHookMaterialization = realRocmAppHookMaterializationFixture({
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+});
+const forgedAppHookMaterializationDir = path.join(logsRoot, 'real-rocm-forged-app-hook-materialization');
+await writeJson(path.join(forgedAppHookMaterializationDir, 'real-rocm-forged-app-hook-materialization.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-forged-app-hook-materialization-20260627',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-forged-app-hook-materialization',
+    source: 'scripts/profiles/real-rocm-forged-app-hook-materialization.json',
+  },
+  source_url: 'https://example.invalid/rocm/forged-app-hook-materialization.git',
+  target_name: 'ForgedAppHookMaterializationDriver',
+  real_rocm_app_hook_materialization: forgedAppHookMaterialization,
+  realRocmAppHookMaterialization: forgedAppHookMaterialization,
+  app_hook_materialization: forgedAppHookMaterialization,
+  appHookMaterialization: forgedAppHookMaterialization,
+});
+const forgedAppHookMaterializationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAppHookMaterializationDir],
+  generatedAt: '2026-06-27T00:00:03.000Z',
+});
+const forgedAppHookMaterializationRocm = forgedAppHookMaterializationLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedAppHookMaterializationRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedAppHookMaterializationRocm.gpuHmrSuccess, false);
+assert.equal(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.accepted, false);
+assert.ok(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_authority_unknown',
+));
+assert.ok(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_claimed_gpu_hmr_success',
+));
+assert.ok(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_claimed_runtime_authority',
+));
+assert.ok(forgedAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_claimed_dispatch_authority',
+));
+assert.ok(forgedAppHookMaterializationRocm.reasons.includes(
+  'real_rocm_app_hook_materialization_not_accepted',
+));
+assert.ok(forgedAppHookMaterializationRocm.openGaps.includes(
+  'real_rocm_app_hook_materialization_required',
+));
+
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
 assert.ok(largeRocm.reasons.includes('proof_state_missing'));
 assert.ok(largeRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
@@ -5521,6 +5715,12 @@ assert.ok(largeRocm.reasons.includes(
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_runtime_stage_obligations:runtime_stage_obligation_output_oracle_readback_or_visual_artifact_missing',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_app_hook_materialization:app_hook_materialization_incomplete',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_app_hook_materialization:app_hook_materialization_output_oracle_contract_missing',
 ));
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_proof_scheduling:fast_fail_wait_budget_applied',
@@ -5568,6 +5768,12 @@ assert.ok(largeRocm.openGaps.includes(
 assert.ok(largeRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_runtime_stage_obligations:runtime_stage_obligation_dispatch_trace_dispatch_epoch_missing',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_app_hook_materialization:app_hook_materialization_contract_not_declared',
+));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_app_hook_materialization:app_hook_materialization_output_oracle_contract_missing',
 ));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_proof_scheduling:proof_scheduling_output_oracle_disabled',
@@ -6033,6 +6239,12 @@ assert.equal(largeRocmCoverage?.appHookContract.required, true);
 assert.equal(largeRocmCoverage.appHookContract.proven, false);
 assert.equal(largeRocmCoverage.appHookContract.status, 'contract_missing_or_unproven');
 assert.ok(largeRocmCoverage.appHookContract.blockingGaps.includes('real_rocm_app_hook_contract_required'));
+assert.equal(largeRocmCoverage.appHookMaterialization.required, true);
+assert.equal(largeRocmCoverage.appHookMaterialization.proven, false);
+assert.equal(largeRocmCoverage.appHookMaterialization.status, 'materialization_missing_or_unproven');
+assert.ok(largeRocmCoverage.appHookMaterialization.blockingGaps.includes(
+  'app_hook_materialization_output_oracle_contract_missing',
+));
 assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.required, true);
 assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.proven, false);
 assert.equal(largeRocmCoverage.sameProcessRuntimeOracleContract.status, 'contract_missing_or_unproven');
