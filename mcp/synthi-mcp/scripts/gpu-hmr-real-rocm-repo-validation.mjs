@@ -7258,7 +7258,7 @@ async function collectMissingDependencyProbeFromWorker(lifecycle, buildMetadata 
       '  if command -v dpkg >/dev/null 2>&1; then',
       '    for root in /usr/include /usr/local/include /opt/rocm/include; do',
       '      candidate="${root%/}/$dep"',
-      '      dpkg -S "$candidate" 2>/dev/null | sed "s/^/DPKG\\t$dep\\t/" | head -20 || true',
+      '      dpkg -S "$candidate" 2>/dev/null | head -20 | while IFS= read -r owner; do printf "DPKG\\t%s\\t%s\\n" "$dep" "$owner"; done || true',
       '    done',
       '  fi',
       'done',
