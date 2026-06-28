@@ -6,6 +6,7 @@ export type TherapeuticClaimResult = "pass" | "fail" | "not_checked";
 export type TherapeuticClaimCategory = "machine_verifiable" | "human_reviewed" | "narrative";
 export type TherapeuticAccessMode = "read_only" | "write";
 export type TherapeuticRiskLevel = "low" | "medium" | "high" | "critical";
+export type TherapeuticProbeOutputSchemaType = "string" | "number" | "boolean" | "object";
 
 export interface TherapeuticAuthorityDose {
   id: string;
@@ -44,6 +45,7 @@ export interface TherapeuticProbeContract {
   forbidden_data_classes: string[];
   input_schema: Record<string, string>;
   allowed_output_shape: string[];
+  allowed_output_schema: Record<string, TherapeuticProbeOutputSchemaType>;
   forbidden_outputs: string[];
   privacy_cost: number;
   expected_information_gain: number;
@@ -64,6 +66,7 @@ export interface TherapeuticProjectionProbe {
   forbidden_data_classes: string[];
   input_schema: Record<string, string>;
   allowed_output_shape: string[];
+  allowed_output_schema: Record<string, TherapeuticProbeOutputSchemaType>;
   privacy_cost: number;
   expected_information_gain: number;
   actual_information_gain: number;
@@ -234,6 +237,12 @@ export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
     forbidden_data_classes: ["raw_prod_logs", "customer_identifiers", "model_weights"],
     input_schema: { time_window: "string", metric: "string" },
     allowed_output_shape: ["affected_segment", "quality_delta", "confidence", "time_window"],
+    allowed_output_schema: {
+      affected_segment: "string",
+      quality_delta: "number",
+      confidence: "number",
+      time_window: "string",
+    },
     forbidden_outputs: ["raw_user_logs", "customer_identifiers", "prompts", "full_database_rows"],
     privacy_cost: 1,
     expected_information_gain: 8,
@@ -251,6 +260,13 @@ export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
     forbidden_data_classes: ["raw_training_rows", "raw_user_logs", "customer_identifiers"],
     input_schema: { affected_segment: "string", time_window: "string" },
     allowed_output_shape: ["top_feature", "drift_score", "affected_segment", "confidence", "time_window"],
+    allowed_output_schema: {
+      top_feature: "string",
+      drift_score: "number",
+      affected_segment: "string",
+      confidence: "number",
+      time_window: "string",
+    },
     forbidden_outputs: ["raw_training_rows", "full_feature_table", "customer_identifiers"],
     privacy_cost: 2,
     expected_information_gain: 9,
@@ -268,6 +284,12 @@ export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
     forbidden_data_classes: ["raw_prod_logs", "customer_identifiers"],
     input_schema: { time_window: "string" },
     allowed_output_shape: ["route_changed", "route_delta", "confidence", "time_window"],
+    allowed_output_schema: {
+      route_changed: "boolean",
+      route_delta: "number",
+      confidence: "number",
+      time_window: "string",
+    },
     forbidden_outputs: ["raw_requests", "customer_identifiers"],
     privacy_cost: 1,
     expected_information_gain: 6,
@@ -285,6 +307,13 @@ export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
     forbidden_data_classes: ["raw_prod_logs", "raw_training_rows", "full_feature_table"],
     input_schema: { feature_name: "string" },
     allowed_output_shape: ["feature_name", "training_transform_hash", "serving_transform_hash", "skew_detected", "confidence"],
+    allowed_output_schema: {
+      feature_name: "string",
+      training_transform_hash: "string",
+      serving_transform_hash: "string",
+      skew_detected: "boolean",
+      confidence: "number",
+    },
     forbidden_outputs: ["raw_feature_values", "customer_identifiers", "full_lineage_graph"],
     privacy_cost: 3,
     expected_information_gain: 8,
@@ -387,6 +416,7 @@ export function buildProjectionProbe(input: {
     forbidden_data_classes: [...input.contract.forbidden_data_classes],
     input_schema: { ...input.contract.input_schema },
     allowed_output_shape: [...input.contract.allowed_output_shape],
+    allowed_output_schema: { ...input.contract.allowed_output_schema },
     privacy_cost: input.contract.privacy_cost,
     expected_information_gain: input.contract.expected_information_gain,
     actual_information_gain: input.actual_information_gain,
@@ -832,8 +862,24 @@ function claim(
 
 function probeOutputShapeValid(contract: TherapeuticProbeContract, output: Record<string, unknown>): boolean {
   const allowed = new Set(contract.allowed_output_shape);
+  const schemaEntries = Object.entries(contract.allowed_output_schema);
   return Object.keys(output).every((key) => allowed.has(key))
-    && contract.forbidden_outputs.every((key) => !(key in output));
+    && schemaEntries.every(([key, type]) => valueMatchesSchemaType(output[key], type))
+    && contract.forbidden_outputs.every((key) => !containsForbiddenOutputMarker(output, key));
+}
+
+function valueMatchesSchemaType(value: unknown, type: TherapeuticProbeOutputSchemaType): boolean {
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "object") return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return typeof value === type;
+}
+
+function containsForbiddenOutputMarker(value: unknown, marker: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((item) => containsForbiddenOutputMarker(item, marker));
+  return Object.entries(value as Record<string, unknown>).some(([key, nestedValue]) => (
+    key === marker || containsForbiddenOutputMarker(nestedValue, marker)
+  ));
 }
 
 function probeUsefulnessRatio(contract: TherapeuticProbeContract): number {

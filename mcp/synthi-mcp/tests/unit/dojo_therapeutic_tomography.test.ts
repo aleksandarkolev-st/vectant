@@ -12,6 +12,7 @@ import {
   THERAPEUTIC_DEFAULT_POLICY,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   type TherapeuticAccessRequest,
+  type TherapeuticProbeContract,
 } from "../../src/dojo/tomography/index.js";
 
 describe("Dojo therapeutic tomography", () => {
@@ -85,6 +86,63 @@ describe("Dojo therapeutic tomography", () => {
     });
 
     expect(probe.allowed_output_shape_valid).toBe(false);
+  });
+
+  it("validates required probe output fields, primitive types, and nested forbidden markers", () => {
+    const contract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary");
+    expect(contract).toBeDefined();
+
+    const missingRequired = buildProjectionProbe({
+      id: "probe-missing-required",
+      task_id: "task-schema",
+      contract: contract!,
+      target_uncertainty: "cause",
+      result_summary: {
+        top_feature: "customer_plan",
+        drift_score: 0.91,
+        affected_segment: "enterprise_users",
+        confidence: 0.88,
+      },
+      actual_information_gain: 8,
+      confidence: 0.88,
+    });
+    const wrongType = buildProjectionProbe({
+      id: "probe-wrong-type",
+      task_id: "task-schema",
+      contract: contract!,
+      target_uncertainty: "cause",
+      result_summary: {
+        top_feature: "customer_plan",
+        drift_score: "0.91",
+        affected_segment: "enterprise_users",
+        confidence: 0.88,
+        time_window: "last_24h",
+      },
+      actual_information_gain: 8,
+      confidence: 0.88,
+    });
+    const objectContract: TherapeuticProbeContract = {
+      ...contract!,
+      name: "object_summary_probe",
+      allowed_output_shape: ["summary"],
+      allowed_output_schema: { summary: "object" },
+      forbidden_outputs: ["raw_training_rows"],
+    };
+    const nestedLeak = buildProjectionProbe({
+      id: "probe-nested-leak",
+      task_id: "task-schema",
+      contract: objectContract,
+      target_uncertainty: "cause",
+      result_summary: {
+        summary: { raw_training_rows: [{ id: "leak" }] },
+      },
+      actual_information_gain: 8,
+      confidence: 0.88,
+    });
+
+    expect(missingRequired.allowed_output_shape_valid).toBe(false);
+    expect(wrongType.allowed_output_shape_valid).toBe(false);
+    expect(nestedLeak.allowed_output_shape_valid).toBe(false);
   });
 
   it("builds strict proof capsules that separate machine, human, and narrative claims", () => {
