@@ -70,6 +70,8 @@ Current implementation note:
 2026-06-28: the source-first agent-split proof runner MCP client sends newline-delimited JSON for the installed Node MCP SDK and can parse either newline-delimited or Content-Length-framed MCP responses. A direct docker MCP initialize probe passed on the newline path. This is generic stdio transport compatibility only; it cannot satisfy artifact transport, epoch, dispatch, oracle, or ledger acceptance gates.
 
 2026-06-28: the source-first agent-split proof runner now exposes first-class npm scripts (`proof:agent-split:source-first`, `proof:agent-split:source-first:self-check`, `proof:agent-split:source-first:seed-only`, and `proof:agent-split:source-first:realistic-raytrace`). The runner-level source-first provenance gate now requires generated artifacts to live in the generated artifact namespace before it can emit accepted provenance-only evidence, and the self-check covers both a valid multi-file source tree and a forged ordinary source path such as `src/generated-device.hip`. This remains provenance-only evidence; strict GPU HMR acceptance still requires the runtime ledger and output oracle.
+
+2026-06-28: the realistic raytrace source-first profile now declares a multi-file source tree (`src/main.cpp` plus `src/scene_config.h`) with explicit sha256 hashes. This is a generic source-tree manifest exercise, not a profile-name shortcut. The profile self-check passed, while the live two-file rerun failed before AI split because the configured Gemini API consumer returned `403 CONSUMER_SUSPENDED`; that failure is infrastructure evidence only and does not supersede the previous accepted source-first visual proof.
 ```
 
 ## 2. Immediate Corrections To The Previous Plan

@@ -9,7 +9,12 @@
       {
         "path": "src/main.cpp",
         "sourcePath": "sources/agent-realistic-raytrace-scene/main.cpp",
-        "contentHash": "sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc"
+        "contentHash": "sha256:057c83a0a2af53eea19ba3f189836978c804a0048dfd2436bb2cc41bc882662e"
+      },
+      {
+        "path": "src/scene_config.h",
+        "sourcePath": "sources/agent-realistic-raytrace-scene/scene_config.h",
+        "contentHash": "sha256:347d94f7f096ecbfaa1bc25817ebb09a7f1e1b50fd727d6e05d7a38eb2fb96f6"
       }
     ]
   },
