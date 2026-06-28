@@ -17,6 +17,8 @@ import {
   analyzeGpuHmrImageEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
+  visualEvidenceAcceptedAsRuntimeProof,
+  visualEvidenceIsSupplementalOnly,
 } from './gpu-hmr-visual-evidence.mjs';
 import {
   adversarialPreflightStrictGate,
@@ -453,6 +455,10 @@ function evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath = ne
     acceptedAsVisualEvidence: visualArtifact?.acceptedAsVisualEvidence
       ?? visualArtifact?.accepted_as_visual_evidence
       ?? null,
+    visualEvidenceSupplementalOnly:
+      visualArtifact?.visualEvidenceSupplementalOnly
+      ?? visualArtifact?.visual_evidence_supplemental_only
+      ?? null,
     readError: visualArtifact?.readError ?? visualArtifact?.read_error ?? null,
     summary: visualArtifact?.summary ?? ref,
   };
@@ -747,6 +753,10 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
       artifact.acceptedAsVisualEvidence
       ?? artifact.accepted_as_visual_evidence
       ?? null,
+    visualEvidenceSupplementalOnly:
+      artifact.visualEvidenceSupplementalOnly
+      ?? artifact.visual_evidence_supplemental_only
+      ?? null,
     visualQuality: artifact.visualQuality ?? artifact.visual_quality ?? null,
     bytes: Number.isFinite(artifact.bytes) ? artifact.bytes : null,
     readError: artifact.readError ?? artifact.read_error ?? null,
@@ -890,7 +900,7 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
       visualEvidenceRefs: compactStringList(input.visualEvidenceRefs),
       artifactCount: visualArtifacts.length,
       acceptedArtifactCount: visualArtifacts.filter((artifact) =>
-        artifact.acceptedAsVisualEvidence === true
+        visualEvidenceAcceptedAsRuntimeProof(artifact)
       ).length,
       artifacts: visualArtifacts,
     },
@@ -1372,8 +1382,7 @@ function visualArtifactHash(artifact) {
 }
 
 function visualArtifactAccepted(artifact) {
-  return artifact.acceptedAsVisualEvidence === true
-    || artifact.accepted_as_visual_evidence === true;
+  return visualEvidenceAcceptedAsRuntimeProof(artifact);
 }
 
 function visualArtifactQuality(artifact) {
@@ -1422,8 +1431,12 @@ function visualProofArtifactLimitations({
     }
     if (!visualArtifactAccepted(artifact)) {
       limitations.push({
-        degradedReason: 'visual_artifact_not_accepted',
-        observedState: visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
+        degradedReason: visualEvidenceIsSupplementalOnly(artifact)
+          ? 'visual_artifact_supplemental_only'
+          : 'visual_artifact_not_accepted',
+        observedState: visualEvidenceIsSupplementalOnly(artifact)
+          ? 'diagnostic_visual_not_runtime_proof'
+          : visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
         proofArtifactPath: visualArtifactPath(artifact),
       });
     }

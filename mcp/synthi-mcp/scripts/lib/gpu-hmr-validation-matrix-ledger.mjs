@@ -6,7 +6,10 @@ import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
-import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
+import {
+  evaluateGpuHmrDeterministicVisualMode,
+  visualEvidenceIsSupplementalOnly,
+} from './gpu-hmr-visual-evidence.mjs';
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
@@ -7075,6 +7078,7 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     .filter((artifact) =>
       artifact.acceptedAsVisualEvidence === true
       && artifact.accepted_as_visual_evidence === true
+      && !visualEvidenceIsSupplementalOnly(artifact)
       && !artifact.readError
       && !artifact.read_error
       && !artifact.visualAnalysisError
@@ -8944,7 +8948,15 @@ async function targetProgressionSmallOracleLedgerEvidence(entry, repoRoot, baseD
     ...(Array.isArray(entry.visualEvidenceRefs) ? entry.visualEvidenceRefs : []),
     ...(Array.isArray(entry.visual_evidence_refs) ? entry.visual_evidence_refs : []),
   ]);
-  const visualInputs = visualArtifacts.length > 0 ? visualArtifacts : visualRefs;
+  const primaryVisualArtifacts = visualArtifacts.filter((artifact) =>
+    typeof artifact === 'string' || !visualEvidenceIsSupplementalOnly(artifact));
+  const visualInputs = primaryVisualArtifacts.length > 0 ? primaryVisualArtifacts : visualRefs;
+  if (visualArtifacts.length > 0 && primaryVisualArtifacts.length === 0) {
+    return {
+      accepted: false,
+      detail: 'visual oracle artifacts are supplemental diagnostics only',
+    };
+  }
   if (visualInputs.length > 0) {
     const visual = await visualArtifactEvidence(visualInputs, repoRoot, baseDir, {}, {
       required: true,

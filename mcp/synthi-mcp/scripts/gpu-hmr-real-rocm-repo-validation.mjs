@@ -64,6 +64,7 @@ import {
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
   screenshotQualifiesAsVisualEvidence,
+  visualEvidenceAcceptedAsRuntimeProof,
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import {
@@ -1443,7 +1444,7 @@ function visualEvidenceArtifactProof(entry) {
   for (const artifact of artifacts) {
     const artifactPath = maybeStringField(artifact, ['path', 'filePath', 'file_path']);
     const expectedHash = maybeStringField(artifact, ['contentHash', 'content_hash']);
-    const accepted = (artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence) === true;
+    const accepted = visualEvidenceAcceptedAsRuntimeProof(artifact);
     const readError = artifact.readError ?? artifact.read_error ?? null;
     const width = positiveIntegerField(artifact, ['width']);
     const height = positiveIntegerField(artifact, ['height']);
@@ -2058,9 +2059,7 @@ function buildTargetProgressionLedgerEntry({
     .filter((artifact) => artifact.readError ?? artifact.read_error)
     .length;
   const visualAcceptedCount = visualArtifacts
-    .filter((artifact) => (
-      artifact.acceptedAsVisualEvidence ?? artifact.accepted_as_visual_evidence
-    ) === true)
+    .filter((artifact) => visualEvidenceAcceptedAsRuntimeProof(artifact))
     .length;
   const computeOracleArtifacts = computeOracleArtifactsFromProof(report.output_proof);
   return {
@@ -7298,6 +7297,11 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot, wait 
       await writeFile(outPath, bytes);
       const stats = await analyzeGpuHmrImageEvidence(bytes);
       const screenshotMetadata = mcpScreenshotMetadataFromToolResult(shot);
+      const frameCaptureAfterEpochDispatch = mcpFrameGateSatisfiedByScreenshot(wait, {
+        ...screenshotMetadata,
+        seq: Number(screenshotMetadata?.seq || 0),
+        ts: Number(screenshotMetadata?.ts || 0),
+      });
       const row = visualEvidenceRow({
         label,
         path: outPath,
@@ -7306,11 +7310,9 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot, wait 
         attempt,
         screenshot_metadata: screenshotMetadata,
         wait_frame_gate: wait?.frame_gate ?? wait?.frameGate ?? null,
-        frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(wait, {
-          ...screenshotMetadata,
-          seq: Number(screenshotMetadata?.seq || 0),
-          ts: Number(screenshotMetadata?.ts || 0),
-        }),
+        frame_capture_after_epoch_dispatch: frameCaptureAfterEpochDispatch,
+        visualEvidenceSupplementalOnly: !frameCaptureAfterEpochDispatch,
+        visual_evidence_supplemental_only: !frameCaptureAfterEpochDispatch,
       });
       report.screenshots.push(row);
       const ok = screenshotQualifiesAsVisualEvidence(row);
@@ -7571,7 +7573,7 @@ async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, opt
 async function writeRuntimeVisualOracleArtifactsFromFrames(frames = [], afterFrame = null, options = {}) {
   const acceptedFrames = (Array.isArray(frames) ? frames : [])
     .filter((frame) =>
-      frame?.accepted_as_visual_evidence === true
+      visualEvidenceAcceptedAsRuntimeProof(frame)
       && typeof frame?.path === 'string'
       && frame.path.trim()
     );
@@ -11662,7 +11664,7 @@ function preferredRuntimeArtifactId({ selectedArtifactIds, epochProof } = {}) {
 
 function hiprtNativeVisualFrame(frames = []) {
   return (Array.isArray(frames) ? frames : []).find((frame) =>
-    frame?.accepted_as_visual_evidence === true
+    visualEvidenceAcceptedAsRuntimeProof(frame)
     && (
       frame?.source === 'hiprt-runtime-device-framebuffer'
       || frame?.label === 'hiprt-runtime-framebuffer'
@@ -12276,6 +12278,52 @@ async function selfCheckRuntimeDispatchEvidence() {
   ].filter(screenshotQualifiesAsVisualEvidence);
   if (visualRows.length !== 1 || visualRows[0]?.path !== 'fresh.png') {
     throw new Error('visual evidence frame predicate accepted a diagnostic-only screenshot');
+  }
+  const savedScreenshots = report.screenshots;
+  try {
+    report.screenshots = [
+      {
+        ...visualRows[0],
+        label: 'diagnostic',
+        frame_capture_after_epoch_dispatch: false,
+        visualEvidenceSupplementalOnly: true,
+      },
+      {
+        ...visualRows[0],
+        label: 'post-epoch',
+        path: 'post-epoch.png',
+        frame_capture_after_epoch_dispatch: true,
+      },
+    ];
+    const runtimeVisualFrames = visualEvidenceFrames();
+    if (runtimeVisualFrames.length !== 1 || runtimeVisualFrames[0]?.label !== 'post-epoch') {
+      throw new Error('visual evidence frame gate accepted supplemental diagnostic screenshot');
+    }
+    const summary = buildGpuHmrValidationProofSummary({
+      screenshots: report.screenshots,
+      visualArtifactPaths: ['diagnostic.png', 'post-epoch.png'],
+      visualEvidenceArtifacts: [
+        {
+          path: 'diagnostic.png',
+          acceptedAsVisualEvidence: true,
+          visualEvidenceSupplementalOnly: true,
+        },
+        {
+          path: 'post-epoch.png',
+          acceptedAsVisualEvidence: true,
+          visualEvidenceSupplementalOnly: false,
+        },
+      ],
+      visualEvidenceExpected: true,
+    });
+    if (
+      summary.visual_artifact_paths.includes('diagnostic.png')
+      || !summary.visual_artifact_paths.includes('post-epoch.png')
+    ) {
+      throw new Error('validation proof summary counted supplemental diagnostic visual as proof');
+    }
+  } finally {
+    report.screenshots = savedScreenshots;
   }
   const waitArgs = {
     timeoutMs: 12_345,
@@ -16600,7 +16648,11 @@ async function writeResults() {
     acceptedAsVisualEvidence: shot.accepted_as_visual_evidence === true,
     visualEvidenceSupplementalOnly:
       shot.visualEvidenceSupplementalOnly === true
-      || shot.visual_evidence_supplemental_only === true,
+      || shot.visual_evidence_supplemental_only === true
+      || (
+        shot.frame_capture_after_epoch_dispatch !== true
+        && shot.frameCaptureAfterEpochDispatch !== true
+      ),
   }));
   let runtimeProofVisualEvidenceArtifacts = [];
   if (report.full_runtime_proof) {
@@ -16737,6 +16789,7 @@ async function writeResults() {
     screenshots: report.screenshots,
     visualEvidenceExpected: renderingVisualEvidenceExpected(),
     visualArtifactPaths,
+    visualEvidenceArtifacts: capturedVisualEvidenceArtifacts,
     proof_artifacts: report.proof_artifacts,
     runtimeProofArtifactRecords: report.runtime_proof_artifact ? [report.runtime_proof_artifact] : [],
     runtimeProofArtifactPaths: report.runtime_proof_artifact_paths,

@@ -43,6 +43,8 @@ verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 transport note: the agent-split proof runner MCP client now sends newline-delimited JSON for the installed Node MCP SDK and tolerates both newline-delimited and Content-Length-framed responses. A direct docker MCP initialize probe passed with the newline path. This is transport compatibility only, not proof authority.
 ```
 
+Real ROCm diagnostic visual evidence now has a generic supplemental-only path. Screenshots that are readable and nonblank but not frame-gated after an epoch dispatch are retained for diagnostics, while runtime visual proof counts, proof summaries, target-progression accepted visual counts, visual proof-artifact limitations, and matrix small-oracle visual fallback use only non-supplemental runtime visual evidence. This preserves visual inspection without letting preview screenshots stand in for post-dispatch output-oracle proof.
+
 The proof plan now tracks source-first uncompiled project validation as the next user-facing axis. The intended test path starts from an uncompiled source tree/workspace, lets AI propose GPU split candidates, compiles through the normal backend toolchain, publishes a runtime epoch, and requires post-epoch visual or compute proof. Fixture/profile runs can only serve as smoke coverage when they exercise the same generic source-first machinery; fixture names, target strings, and profile IDs remain non-authoritative.
 
 Fresh source-first realistic ROCm raytrace visual proof was rerun from profile-declared source files rather than a precompiled GPU artifact, after hardening source-first provenance against empty initial manifests, stale proof IDs, fixed split counts, generated artifact namespace forgery, pre-existing generated artifact path/content smuggling, and fixture-only source authority:
@@ -83,16 +85,17 @@ Fresh large ROCm ML validation was started against the explicit MIOpen profile, 
 
 ```text
 profile: real-rocm-miopen-activation-large-ml
-slug: gpu-real-rocm-MIOpen-20260627172556
+latest rerun slug: gpu-real-rocm-MIOpen-20260628043512
 result: strict refusal, not GPU HMR acceptance
-retained result: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260627172556.json
-runtime proof artifact: gpu-runtime-proof:sha256:da758064743debe7e8dd4c51484594fff2ea518d5add71fd92912ce25e869729
-matrix row: gpu-validation-matrix-row:sha256:fa8fd836cb1ec6bb845cc78dbf8edeffd63a74d4f89ef8e5e8469a4cf225a9c1
-matrix proof ids: gpu-ledger-proof:sha256:4604b65e2a8b6d6ca5041fe34a05a939b6e6141298bf7ee5276e4a595b49de81, gpu-runtime-proof:sha256:da758064743debe7e8dd4c51484594fff2ea518d5add71fd92912ce25e869729, real-rocm-validation:sha256:963c696f2097a563389c5e856519d55604ca416d6fe2fa6ec6abf4fe1854b17e
+retained result: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628043512.json
+runtime proof artifact: gpu-runtime-proof:sha256:70843f0c2a121c0a0dd979f9429f5696635146c0fbe499013df8b9081d85ecd7
+proof ledger: gpu-ledger-proof:sha256:e19fd7ed4e398908c45a3f39fec04fbd27d40a3f26fa0111147cec779ed871f4
+target-progression ledger: target-progression-ledger:sha256:56f1ed33dce8b7c1ec258d35c6d618197632f9c5777f114d2812cae0d3215be3
+matrix note: this latest standalone attempt is retained refusal evidence; the generated validation matrix remains the aggregate authority until the next full matrix rerun
 upstream lifecycle: configure_exit_code=0, build_exit_code=2, run_exit_code=not-run
 source-delta execution: first split, hot delta 1, hot delta 2, and negative edit compile projections executed from profile-declared source deltas
 upstream blocker: `MIOpenDriver` build reached the source compile path and failed on `half/half.hpp`; no compatibility shim, symlink, or vendored header was added
-visual artifacts: diagnostic preview screenshots were opened locally and were nonblank, but they are not MIOpen visual proof because no MIOpen post-epoch dispatch/output target was observed
+visual artifacts: four diagnostic preview screenshots were opened locally and were nonblank, but each has `frame_capture_after_epoch_dispatch=false`; they are supplemental diagnostics only, not MIOpen visual proof, because no MIOpen post-epoch dispatch/output target was observed
 strict blockers: no Synthi artifact transport, epoch publication, dispatch trace, host identity, app-hook contract, or post-dispatch output/visual oracle was observed; runtime capability preflight still reports ROCm array/texture capability gaps
 proof scheduling: long waits were bounded once upstream lifecycle, output oracle, and app-hook obligations made full runtime proof structurally impossible; the row remains `refusal_proven`
 ```
@@ -381,17 +384,18 @@ visuals inspected locally with the image tool: profiled hot1 diff `webgpu-runtim
 visual result: hot1 and hot2 rendered nonblank profile-driven triangles with visible diffs derived from the post-epoch frame
 ```
 
-Current 2026-06-27 large ROCm ML refresh:
+Current 2026-06-28 large ROCm ML refresh:
 
 ```text
 worker image prerequisites committed generically: ninja-build, Python dev/setuptools/venv, SQLite dev, BZip2/bzip2 tool, msgpack C/C++ dev, nlohmann JSON, gfortran, Boost filesystem/program-options/system development packages, zstd development headers, and the real native launch observer library in the worker Dockerfiles. These are build prerequisites, not HMR proof gates or project-specific success branches.
 rebuilt image proof: active compose worker image `sha256:3974e9ec25d3ca9390cf6b15c3bfcb7dbe7c994098b65160fa6ea850a3ab3f18`; the running `vectant-ade-worker-1` container verified `/usr/bin/bzip2`, `libboost-filesystem-dev`, `libboost-program-options-dev`, `libboost-system-dev`, the Boost filesystem config package, ROCm `gfx1201`, and `hipcc`
-MIOpen selected matrix row: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json, backed by the retained latest-attempt artifact mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260627172556.json
+MIOpen selected matrix row: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json, backed by retained matrix-selected artifact mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260627172556.json
 MIOpen matrix row id: gpu-validation-matrix-row:sha256:fa8fd836cb1ec6bb845cc78dbf8edeffd63a74d4f89ef8e5e8469a4cf225a9c1
 MIOpen proof ids: gpu-ledger-proof:sha256:4604b65e2a8b6d6ca5041fe34a05a939b6e6141298bf7ee5276e4a595b49de81, gpu-runtime-proof:sha256:da758064743debe7e8dd4c51484594fff2ea518d5add71fd92912ce25e869729, real-rocm-validation:sha256:963c696f2097a563389c5e856519d55604ca416d6fe2fa6ec6abf4fe1854b17e
 MIOpen target-progression ledger: target-progression-ledger:sha256:2dd5bc2de0f2c4ef50652d59b3239b7bec82cf2b0339048116b4808d3c1cc20c, mcp/synthi-mcp/.gpu-hmr-test-logs/target-progression-ledgers/gpu-real-rocm-MIOpen-20260627144058-final-acceptance-2dd5bc2de0f2c4ef50652d59b3239b7bec82cf2b0339048116b4808d3c1cc20c.json
+latest retained standalone MIOpen attempt: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628043512.json, gpuHmrSuccess=false, acceptedForGpuHmr=false, fullRuntimeProven=false, runtime proof gpu-runtime-proof:sha256:70843f0c2a121c0a0dd979f9429f5696635146c0fbe499013df8b9081d85ecd7, ledger gpu-ledger-proof:sha256:e19fd7ed4e398908c45a3f39fec04fbd27d40a3f26fa0111147cec779ed871f4
 MIOpen latest source-delta execution: configured successfully, recovered upstream metadata, and executed first split, hot_delta_1, hot_delta_2, and negative-edit compile-projection phases under `real-rocm-source-delta-execution:sha256:518087b65ec428e3510323bccacc6bc4ed906cfda3815e674ee04c9bacda295b`, but none are accepted as GPU HMR because the compile bridge emitted no load-device, device-sidecar, artifact-reference, or runtime-proof material
-MIOpen latest upstream/runtime blocker: upstream configure succeeded (`configure_exit_code=0`) and build reached the `MIOpenDriver` target before failing on missing `half/half.hpp` (`build_exit_code=2`, run not run). All screenshot attempts ended `no_frame_yet`, so there is no MIOpen visual proof. App-hook contract status is `required_app_hook_contract_missing`, same-process runtime oracle status is `same_process_runtime_oracle_contract_unproven`, runtime eligibility is refused, and Synthi artifact transport, epoch publication, dispatch trace, host identity, and post-dispatch output/visual oracle proof were not observed
+MIOpen latest upstream/runtime blocker: upstream configure succeeded (`configure_exit_code=0`) and build reached the `MIOpenDriver` target before failing on missing `half/half.hpp` (`build_exit_code=2`, run not run). The latest standalone run captured four readable nonblank diagnostic preview screenshots, but all have `frame_capture_after_epoch_dispatch=false` and remain supplemental diagnostics only. App-hook contract status is `required_app_hook_contract_missing`, same-process runtime oracle status is `same_process_runtime_oracle_contract_unproven`, runtime eligibility is refused, and Synthi artifact transport, epoch publication, dispatch trace, host identity, and post-dispatch output/visual oracle proof were not observed
 Composable Kernel selected matrix row: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-composable-kernel-20260626205543.json
 Composable Kernel matrix row id: gpu-validation-matrix-row:sha256:2d2c7e1edab76bbeaafbd855a9810751250203460cbef063692b73e0954364ab
 Composable Kernel proof ids: gpu-ledger-proof:sha256:47b87d7f99629443df636ab4feffda4d96e896b6693adc6908e6a7d966df437f, gpu-runtime-proof:sha256:e4b7490798b73ac22cb238481fb7140c17e69fc52fa4f0515ac880f5e42b8917, real-rocm-validation:sha256:0ef6a766db88c27608969c3148dbb044397e9edd01b345abbddadcf4054bddb5

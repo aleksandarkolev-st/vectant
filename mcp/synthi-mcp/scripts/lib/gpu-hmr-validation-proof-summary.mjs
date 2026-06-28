@@ -2,6 +2,8 @@ import {
   classifyGpuHmrVisualEvidenceStats,
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
+  visualEvidenceAcceptedAsRuntimeProof,
+  visualEvidenceIsSupplementalOnly,
   visualEvidenceRow,
 } from './gpu-hmr-visual-evidence.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
@@ -217,15 +219,33 @@ function screenshotPaths(input) {
 }
 
 function visualArtifactPaths(input) {
+  const artifacts = compactObjects([
+    ...(Array.isArray(input.visualEvidenceArtifacts) ? input.visualEvidenceArtifacts : []),
+    ...(Array.isArray(input.visual_evidence_artifacts) ? input.visual_evidence_artifacts : []),
+  ]);
+  const supplementalArtifactKeys = new Set(compactStringList(artifacts
+    .filter(visualEvidenceIsSupplementalOnly)
+    .flatMap((artifact) => [
+      artifact.path,
+      artifact.filePath,
+      artifact.file_path,
+      artifact.evidenceId,
+      artifact.evidence_id,
+      artifact.contentHash,
+      artifact.content_hash,
+    ])));
   const explicit = compactStringList([
     ...(Array.isArray(input.visualArtifactPaths) ? input.visualArtifactPaths : []),
     ...(Array.isArray(input.visual_artifact_paths) ? input.visual_artifact_paths : []),
-  ]);
+  ]).filter((artifactPath) => !supplementalArtifactKeys.has(artifactPath));
+  const artifactPaths = artifacts
+    .filter((artifact) => visualEvidenceAcceptedAsRuntimeProof(artifact))
+    .flatMap((artifact) => [artifact.path, artifact.filePath, artifact.file_path]);
   const screenshots = compactObjects(input.screenshots)
     .map((shot) => visualEvidenceRow(shot))
-    .filter((shot) => shot.accepted_as_visual_evidence)
+    .filter((shot) => visualEvidenceAcceptedAsRuntimeProof(shot))
     .flatMap((shot) => [shot.path, shot.filePath, shot.file_path]);
-  return compactStringList([...explicit, ...screenshots]);
+  return compactStringList([...explicit, ...artifactPaths, ...screenshots]);
 }
 
 function visualEvidenceQuality(input) {
@@ -247,6 +267,9 @@ function visualEvidenceQuality(input) {
       unique_color_sample_count: row.unique_color_sample_count,
       visual_quality: row.visual_quality,
       accepted_as_visual_evidence: row.accepted_as_visual_evidence,
+      visual_evidence_supplemental_only:
+        row.visualEvidenceSupplementalOnly === true
+        || row.visual_evidence_supplemental_only === true,
     };
   });
   const measuredPaths = new Set(measured.map((row) => row.path).filter(Boolean));
@@ -264,6 +287,7 @@ function visualEvidenceQuality(input) {
       unique_color_sample_count: null,
       visual_quality: 'gpu-hmr-visual-unmeasured',
       accepted_as_visual_evidence: true,
+      visual_evidence_supplemental_only: false,
     }));
   return [...measured, ...unmeasured];
 }
@@ -369,7 +393,7 @@ function targetProgressionGateLimitations(input, validationContext) {
 
 function missingVisualEvidenceLimitation(input, qualityRows) {
   if (!visualEvidenceExpected(input)) return [];
-  if (compactObjects(qualityRows).some((row) => row.accepted_as_visual_evidence === true)) {
+  if (compactObjects(qualityRows).some((row) => visualEvidenceAcceptedAsRuntimeProof(row))) {
     return [];
   }
   return [{

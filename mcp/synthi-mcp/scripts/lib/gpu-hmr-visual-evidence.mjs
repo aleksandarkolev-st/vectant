@@ -718,6 +718,21 @@ export function screenshotQualifiesAsVisualEvidence(shot) {
   );
 }
 
+export function visualEvidenceIsSupplementalOnly(artifact) {
+  return artifact?.visualEvidenceSupplementalOnly === true
+    || artifact?.visual_evidence_supplemental_only === true;
+}
+
+export function visualEvidenceAcceptedAsImage(artifact) {
+  return artifact?.acceptedAsVisualEvidence === true
+    || artifact?.accepted_as_visual_evidence === true;
+}
+
+export function visualEvidenceAcceptedAsRuntimeProof(artifact) {
+  return visualEvidenceAcceptedAsImage(artifact)
+    && !visualEvidenceIsSupplementalOnly(artifact);
+}
+
 export async function analyzeGpuHmrImageEvidence(input) {
   const { data, info } = await sharp(input).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   let visible = 0;
