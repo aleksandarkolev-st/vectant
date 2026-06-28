@@ -62,6 +62,8 @@ Current implementation note:
 2026-06-28: strict `synthi_wait_hmr` now has generic post-apply timeout intelligence. After HMR reaches `applied`, an observed matching proof slice that is structurally incapable of satisfying the requested strict proof state can return immediately with `gpu_hmr_proof_insufficient`, `gpu_proof_wait.status=failed_fast`, and `proof_wait_timeout_intelligence.evidence_authority=strict_proof_wait_timeout_intelligence_not_gpu_hmr_acceptance`. Missing proof or lower-rank partial proof still waits for a later valid strict proof. This reduces dead wait windows without turning refusal evidence into GPU HMR acceptance.
 
 2026-06-28: CAS artifact locators now support portable content-addressed consumption across container mount namespaces. A producer can omit its absolute `storage.localPath`; a consumer can resolve `sha256/<prefix>/<digest>` under its own allowed CAS root and still verify byte length plus SHA-256 before transport evidence accepts. Optional shared mount metadata records generic roles such as worker/MCP/frontend without becoming proof authority. CAS/shared-addressing evidence remains `acceptedForGpuHmr=false` and `gpuHmrSuccess=false`.
+
+2026-06-28: the source-first agent-split proof runner MCP client sends newline-delimited JSON for the installed Node MCP SDK and can parse either newline-delimited or Content-Length-framed MCP responses. A direct docker MCP initialize probe passed on the newline path. This is generic stdio transport compatibility only; it cannot satisfy artifact transport, epoch, dispatch, oracle, or ledger acceptance gates.
 ```
 
 ## 2. Immediate Corrections To The Previous Plan

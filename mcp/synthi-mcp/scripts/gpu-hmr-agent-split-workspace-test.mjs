@@ -920,9 +920,9 @@ class McpClient {
     this.proc = proc;
     this.nextId = 1;
     this.pending = new Map();
-    this.buffer = '';
+    this.buffer = Buffer.alloc(0);
     this.stderrTail = [];
-    proc.stdout.on('data', (chunk) => this.onData(chunk.toString()));
+    proc.stdout.on('data', (chunk) => this.onData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     proc.stderr.on('data', (chunk) => {
       const s = chunk.toString();
       this.stderrTail.push(s);
@@ -937,21 +937,68 @@ class McpClient {
     });
   }
 
-  onData(text) {
-    this.buffer += text;
-    let idx;
-    while ((idx = this.buffer.indexOf('\n')) >= 0) {
-      const line = this.buffer.slice(0, idx).trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (!line) continue;
-      let msg;
-      try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.id != null && this.pending.has(msg.id)) {
-        const pending = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error) pending.reject(new Error(`MCP error: ${JSON.stringify(msg.error)}`));
-        else pending.resolve(msg.result);
+  onData(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    this.drainBuffer();
+  }
+
+  drainBuffer() {
+    while (this.buffer.length > 0) {
+      const header = this.readContentLengthHeader();
+      if (header === 'partial') return;
+      if (header) {
+        const { bodyStart, length } = header;
+        const bodyEnd = bodyStart + length;
+        if (this.buffer.length < bodyEnd) return;
+        const body = this.buffer.subarray(bodyStart, bodyEnd).toString('utf8');
+        this.buffer = this.buffer.subarray(bodyEnd);
+        this.handleMessageText(body);
+        continue;
       }
+
+      const newline = this.buffer.indexOf(0x0a);
+      if (newline < 0) return;
+      const line = this.buffer.subarray(0, newline).toString('utf8').trim();
+      this.buffer = this.buffer.subarray(newline + 1);
+      if (line) this.handleMessageText(line);
+    }
+  }
+
+  readContentLengthHeader() {
+    const preview = this.buffer.subarray(0, Math.min(this.buffer.length, 32)).toString('ascii').toLowerCase();
+    if (!preview.startsWith('content-length:')) return null;
+    const crlfEnd = this.buffer.indexOf('\r\n\r\n');
+    const lfEnd = this.buffer.indexOf('\n\n');
+    let headerEnd = -1;
+    let separatorLength = 0;
+    if (crlfEnd >= 0 && (lfEnd < 0 || crlfEnd <= lfEnd)) {
+      headerEnd = crlfEnd;
+      separatorLength = 4;
+    } else if (lfEnd >= 0) {
+      headerEnd = lfEnd;
+      separatorLength = 2;
+    }
+    if (headerEnd < 0) return 'partial';
+    const headerText = this.buffer.subarray(0, headerEnd).toString('ascii');
+    const match = /^content-length:\s*(\d+)\s*$/im.exec(headerText);
+    if (!match) {
+      this.buffer = this.buffer.subarray(headerEnd + separatorLength);
+      return null;
+    }
+    return {
+      bodyStart: headerEnd + separatorLength,
+      length: Number(match[1]),
+    };
+  }
+
+  handleMessageText(text) {
+    let msg;
+    try { msg = JSON.parse(text); } catch { return; }
+    if (msg.id != null && this.pending.has(msg.id)) {
+      const pending = this.pending.get(msg.id);
+      this.pending.delete(msg.id);
+      if (msg.error) pending.reject(new Error(`MCP error: ${JSON.stringify(msg.error)}`));
+      else pending.resolve(msg.result);
     }
   }
 
@@ -967,7 +1014,7 @@ class McpClient {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (err) => { clearTimeout(timer); reject(err); },
       });
-      this.proc.stdin.write(JSON.stringify(frame) + '\n');
+      this.proc.stdin.write(`${JSON.stringify(frame)}\n`);
     });
   }
 
