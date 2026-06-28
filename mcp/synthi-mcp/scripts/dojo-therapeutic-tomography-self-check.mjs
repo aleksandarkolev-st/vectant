@@ -1,16 +1,24 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  analyzeScreenshotVisualEvidence,
+  collectRouteLayoutMetrics,
+  evaluateVisualProofCapture,
+  sha256File,
+} from "./lib/dojo-visual-proof-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const requireFromMcp = createRequire(path.join(MCP_ROOT, "package.json"));
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -45,6 +53,13 @@ export async function runDojoTherapeuticTomographySelfCheck({
   const traceText = await readFile(tracePath, "utf8");
   const htmlText = await readFile(htmlPath, "utf8");
   const svgText = await readFile(svgPath, "utf8");
+  const renderedVisuals = await renderVisualArtifacts({
+    outputDir,
+    htmlPath,
+    svgPath,
+    svgText,
+    trace,
+  });
   const durationMs = performance.now() - startedAt;
   const evidence = {
     schema_version: "synthi.dojo.therapeuticTomographyEvidence.v1",
@@ -62,6 +77,7 @@ export async function runDojoTherapeuticTomographySelfCheck({
       broad_access_avoided: validation.checks.broad_access_avoided,
       diagnosis_verified: validation.checks.diagnosis_verified,
       visual_artifacts_written: true,
+      visual_artifacts_rendered: renderedVisuals.ok,
     },
     failed_checks: validation.failed_checks,
     trace_path: tracePath,
@@ -73,19 +89,141 @@ export async function runDojoTherapeuticTomographySelfCheck({
     svg_visual_proof_path: svgPath,
     svg_visual_proof_sha256: sha256(svgText),
     svg_visual_proof_bytes: Buffer.byteLength(svgText),
+    rendered_visuals: renderedVisuals,
     proof_capsule_id: trace.proof_capsules[0]?.id ?? null,
     avoided_access: trace.avoided_access,
   };
   const evidencePath = path.join(outputDir, "therapeutic-tomography.evidence.json");
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   assert.equal(evidence.ok, true, `therapeutic tomography self-check failed: ${evidence.failed_checks.join(",")}`);
+  assert.equal(renderedVisuals.ok, true, `therapeutic tomography visual proof failed: ${renderedVisuals.failed_visual_gates.join(",")}`);
   return {
     evidence_path: evidencePath,
     trace_path: tracePath,
     html_visual_proof_path: htmlPath,
     svg_visual_proof_path: svgPath,
+    rendered_visuals: renderedVisuals,
     evidence,
   };
+}
+
+async function renderVisualArtifacts({
+  outputDir,
+  htmlPath,
+  svgPath,
+  svgText,
+  trace,
+}) {
+  const sharp = requireFromMcp("sharp");
+  const { chromium } = requireFromMcp("playwright-core");
+  const requiredText = requiredTraceVisualText(trace);
+  const requiredSvgText = requiredTraceSvgText(trace);
+  const svgPngPath = path.join(outputDir, "therapeutic-trace-svg-render.png");
+  await sharp(svgPath).png().toFile(svgPngPath);
+  const svgPngStats = await stat(svgPngPath);
+  const svgImageMetrics = await analyzeScreenshotVisualEvidence({ sharp, screenshotPath: svgPngPath });
+  const svgChecks = Object.fromEntries(requiredSvgText
+    .map((text) => [`svg_source_text:${text}`, svgText.includes(text)]));
+
+  const htmlPngPath = path.join(outputDir, "therapeutic-trace-html-render.png");
+  const browser = await chromium.launch({ headless: true });
+  let htmlText = "";
+  let layoutMetrics;
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 920 } });
+    await page.goto(pathToFileURL(htmlPath).href, { waitUntil: "networkidle" });
+    await page.waitForSelector("[data-testid=\"therapeutic-tomography-static-proof\"]", { timeout: 10_000 });
+    htmlText = await page.locator("[data-testid=\"therapeutic-tomography-static-proof\"]").innerText();
+    layoutMetrics = await collectRouteLayoutMetrics(page, "[data-testid=\"therapeutic-tomography-static-proof\"]");
+    await page.screenshot({ path: htmlPngPath, fullPage: true });
+    await page.close();
+  } finally {
+    await browser.close();
+  }
+  const htmlPngStats = await stat(htmlPngPath);
+  const htmlImageMetrics = await analyzeScreenshotVisualEvidence({ sharp, screenshotPath: htmlPngPath });
+  const htmlChecks = Object.fromEntries(requiredText.map((text) => [`html_text:${text}`, htmlText.includes(text)]));
+  const htmlDecision = evaluateVisualProofCapture({
+    checks: htmlChecks,
+    screenshotBytes: htmlPngStats.size,
+    imageMetrics: htmlImageMetrics,
+    layoutMetrics,
+    viewport: { width: 1280, height: 920 },
+  });
+  const svgDecision = evaluateVisualProofCapture({
+    checks: svgChecks,
+    screenshotBytes: svgPngStats.size,
+    imageMetrics: svgImageMetrics,
+    layoutMetrics: {
+      selector_found: true,
+      selector_visible: true,
+      horizontal_overflow_px: 0,
+      selector_visible_area_px: svgImageMetrics.width * svgImageMetrics.height,
+    },
+    viewport: { width: svgImageMetrics.width, height: svgImageMetrics.height },
+    thresholds: {
+      min_screenshot_bytes: 5_000,
+      min_unique_color_sample_count: 4,
+      min_luma_stddev: 1,
+      min_background_diff_pixel_ratio: 0.005,
+      max_horizontal_overflow_px: 4,
+      min_selector_visible_area_px: 900,
+    },
+  });
+  return {
+    ok: htmlDecision.ok && svgDecision.ok,
+    failed_visual_gates: [
+      ...htmlDecision.failed_visual_gates.map((gate) => `html:${gate}`),
+      ...svgDecision.failed_visual_gates.map((gate) => `svg:${gate}`),
+    ],
+    html_render: {
+      path: htmlPngPath,
+      sha256: await sha256File(htmlPngPath),
+      bytes: htmlPngStats.size,
+      image_metrics: htmlImageMetrics,
+      layout_metrics: layoutMetrics,
+      checks: htmlChecks,
+      failed_visual_gates: htmlDecision.failed_visual_gates,
+    },
+    svg_render: {
+      path: svgPngPath,
+      sha256: await sha256File(svgPngPath),
+      bytes: svgPngStats.size,
+      image_metrics: svgImageMetrics,
+      checks: svgChecks,
+      failed_visual_gates: svgDecision.failed_visual_gates,
+    },
+  };
+}
+
+function requiredTraceVisualText(trace) {
+  const proof = trace.proof_capsules[0];
+  return [
+    "Agent Therapeutic Tomography",
+    "Current authority dose",
+    trace.blocked_overreach_attempts[0]?.requested_access.data_classes.join(", ") || "",
+    trace.projection_probes[0]?.name || "",
+    trace.projection_probes[1]?.name || "",
+    proof?.id || "",
+    trace.authority_doses[0]?.scope || "",
+    trace.avoided_access[0] || "",
+    trace.avoided_access[trace.avoided_access.length - 1] || "",
+    trace.diagnosis,
+  ].filter(Boolean);
+}
+
+function requiredTraceSvgText(trace) {
+  return [
+    "Agent Therapeutic Tomography",
+    "raw_prod_logs",
+    "eval_slice_compare",
+    "feature_drift_summary",
+    "machine claims pass",
+    trace.authority_doses[0]?.scope || "",
+    "train/serve skew",
+    trace.avoided_access[0] || "",
+    trace.avoided_access[trace.avoided_access.length - 1] || "",
+  ].filter(Boolean);
 }
 
 async function importTomographyModule() {
