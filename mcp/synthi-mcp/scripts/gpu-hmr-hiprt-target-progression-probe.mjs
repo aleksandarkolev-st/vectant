@@ -15,6 +15,13 @@ import {
   visualEvidenceRow,
 } from './lib/gpu-hmr-visual-evidence.mjs';
 import {
+  runtimeArtifactTransportEvidence,
+  runtimeEpochSwapEvidence,
+  runtimeHostIdentityEvidence,
+  runtimeOriginalHostPathEvidence,
+  runtimeOutputOracleEvidence,
+} from './lib/gpu-hmr-runtime-evidence.mjs';
+import {
   visualEvidenceArtifactsFromFiles,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
@@ -154,14 +161,27 @@ function keyValueRecord(line) {
 
 function runtimeEvidenceFromLines(lines) {
   const records = lines.map(keyValueRecord);
+  const outputOracleEvidence = runtimeOutputOracleEvidence(lines);
+  const artifactTransportEvidence = runtimeArtifactTransportEvidence(lines);
+  const epochSwapEvidence = runtimeEpochSwapEvidence(lines);
+  const hostIdentityEvidence = runtimeHostIdentityEvidence(lines, {
+    expectedGenerationLineage: {
+      previousGeneration: 1,
+      activeGeneration: 2,
+    },
+  });
+  const originalHostPathEvidence = runtimeOriginalHostPathEvidence(lines);
   const launches = records.filter((record) =>
-    record.line.includes('synthi_gpu_launch') && record.dispatch === 'ok'
+    (
+      record.line.includes('synthi_gpu_launch')
+      || record.line.includes('native_runtime_dispatch')
+    ) && record.dispatch === 'ok'
   );
   const outputOracles = records.filter((record) =>
-    record.line.includes('output_oracle') && record.passed === 'true'
+    record.line.includes('output_oracle')
   );
   const artifactTransports = records.filter((record) =>
-    record.line.includes('artifact_transport') && record.loader_transport === 'ram'
+    record.line.includes('artifact_transport')
   );
   const epochPublications = records.filter((record) =>
     record.line.includes('dispatcher_epoch') && record.event === 'published'
@@ -192,21 +212,30 @@ function runtimeEvidenceFromLines(lines) {
     afterHost,
     runtimeSessionIds,
     dispatchSlots,
-    outputOracleProven: outputOracles.length >= 2
-      && outputOracles.every((record) => record.expected && record.actual && record.expected === record.actual),
-    dispatchSafeProven: launches.length >= 2
-      && dispatchSlots.length === 1
-      && launches.some((record) => record.generation === '1')
-      && launches.some((record) => record.generation === '2'),
-    originalHostPathProven: originalHostPath !== null
-      && originalHostPath.dispatch_entry_runtime_verified === 'true'
-      && originalHostPath.dispatch_boundary_observed === 'true',
-    hostPreservationProven: beforeHost !== null
-      && afterHost !== null
-      && beforeHost.pid === afterHost.pid
-      && afterHost.preserved === 'true',
-    ramArtifactTransportProven: artifactTransports.length >= 2,
-    epochPublicationObserved: epochPublications.length >= 2,
+    outputOracleEvidence,
+    artifactTransportEvidence,
+    epochSwapEvidence,
+    hostIdentityEvidence,
+    originalHostPathEvidence,
+    outputOracleProven: outputOracleEvidence.matched_count >= 2
+      && outputOracleEvidence.passed_count >= 2
+      && outputOracleEvidence.deterministic_oracle_passed === true
+      && outputOracles.every((record) =>
+        record.expected && record.actual && record.expected === record.actual && record.passed === 'true'
+      ),
+    dispatchSafeProven: originalHostPathEvidence.runtime_evidence_observed === true
+      && originalHostPathEvidence.matching_launch_boundary_observed === true
+      && originalHostPathEvidence.matching_dispatch_boundary_observed === true,
+    originalHostPathProven: originalHostPathEvidence.attached_to_original_host_path === true
+      && originalHostPathEvidence.dispatch_boundary_observed === true
+      && originalHostPathEvidence.dispatch_entry_runtime_verified === true,
+    hostPreservationProven: hostIdentityEvidence.identity_checks_passed === true,
+    ramArtifactTransportProven: artifactTransportEvidence.ram_transport_proven === true
+      && artifactTransportEvidence.matched_count >= 2,
+    epochPublicationObserved: epochSwapEvidence.published_count >= 2
+      && epochSwapEvidence.published === true
+      && epochSwapEvidence.generation_lineage_observed === true
+      && epochSwapEvidence.runtime_session_consistent === true,
   };
 }
 
@@ -438,17 +467,24 @@ function buildLedgerEntries({
 
 async function selfCheck() {
   const lines = runtimeBoundaryLines(`
-    [gpu-runtime-boundary] synthi_gpu_launch kernel=TestCopyKernelRestrict dispatch=ok generation=1 dispatch_table_entry_id=hiprt-testcopy-slot runtime_session=s1
-    [gpu-runtime-boundary] output_oracle id=a kind=buffer_checksum expected=sum_d:1 actual=sum_d:1 passed=true runtime_session=s1
-    [gpu-runtime-boundary] synthi_gpu_launch kernel=TestCopyKernelRestrict dispatch=ok generation=2 dispatch_table_entry_id=hiprt-testcopy-slot runtime_session=s1
-    [gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true dispatch_entry_runtime_verified=true runtime_session=s1
-    [gpu-runtime-boundary] host_identity role=original_host event=before_hmr pid=12 runtime_session=s1
-    [gpu-runtime-boundary] host_identity role=original_host event=after_hmr pid=12 preserved=true runtime_session=s1
-    [gpu-runtime-boundary] output_oracle id=b kind=buffer_checksum expected=sum_d:2 actual=sum_d:2 passed=true runtime_session=s1
-    [gpu-runtime-boundary] artifact_transport event=loaded loader_transport=ram artifact_id=a runtime_session=s1
-    [gpu-runtime-boundary] artifact_transport event=loaded loader_transport=ram artifact_id=b runtime_session=s1
-    [gpu-runtime-boundary] dispatcher_epoch event=published active_generation=1 runtime_session=s1
-    [gpu-runtime-boundary] dispatcher_epoch event=published active_generation=2 runtime_session=s1
+    [gpu-runtime-boundary] runtime_session event=started runtime_session=hiprt-small-probe:pid:12 host_pid=12
+    [gpu-runtime-boundary] host_identity role=runner_process event=before_hmr generation=1 ptr=0xc aux=pid:12 runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] host_identity role=original_host_state event=before_hmr generation=1 ptr=0x100 aux=host_path:hiprt-small-probe runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] host_identity role=hip_stream_resource event=before_hmr generation=1 ptr=0x200 aux=stream:hmr runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] artifact_transport event=loaded generation=1 artifact_hash=sha256:1111111111111111111111111111111111111111111111111111111111111111 artifact_bytes=8 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:sha256:1111111111111111111111111111111111111111111111111111111111111111 ram_transport_proven=true load_result=ok runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] dispatcher_epoch event=published previous_generation=0 active_generation=1 changed_symbols=TestCopyKernelRestrict fission_island_id=fission:hiprt:testcopyrestrict stream_ordering_proven=true runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] launch_arg_provenance kernel=TestCopyKernelRestrict generation=1 dispatch_table_entry_id=hiprt-testcopy-slot artifact_id=artifact:sha256:1111111111111111111111111111111111111111111111111111111111111111 complete=true runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] native_runtime_dispatch kernel=TestCopyKernelRestrict dispatch=ok generation=1 dispatch_id=dispatch:sha256:1111111111111111111111111111111111111111111111111111111111111111 dispatch_table_entry_id=hiprt-testcopy-slot artifact_id=artifact:sha256:1111111111111111111111111111111111111111111111111111111111111111 proof_bridge=complete attachment_provenance=native_runtime_bridge runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] output_oracle id=hiprt.testcopy.v1.sum kind=buffer_checksum expected=sum_d:1 actual=sum_d:1 passed=true generation=1 producer=hiprt-small-probe output_target_id=buffer_d artifact_id=artifact:sha256:1111111111111111111111111111111111111111111111111111111111111111 after_dispatch_id=dispatch:sha256:1111111111111111111111111111111111111111111111111111111111111111 runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] artifact_transport event=loaded generation=2 artifact_hash=sha256:2222222222222222222222222222222222222222222222222222222222222222 artifact_bytes=8 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:sha256:2222222222222222222222222222222222222222222222222222222222222222 ram_transport_proven=true load_result=ok runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] dispatcher_epoch event=published previous_generation=1 active_generation=2 changed_symbols=TestCopyKernelRestrict fission_island_id=fission:hiprt:testcopyrestrict stream_ordering_proven=true runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] launch_arg_provenance kernel=TestCopyKernelRestrict generation=2 dispatch_table_entry_id=hiprt-testcopy-slot artifact_id=artifact:sha256:2222222222222222222222222222222222222222222222222222222222222222 complete=true runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] native_runtime_dispatch kernel=TestCopyKernelRestrict dispatch=ok generation=2 dispatch_id=dispatch:sha256:2222222222222222222222222222222222222222222222222222222222222222 dispatch_table_entry_id=hiprt-testcopy-slot artifact_id=artifact:sha256:2222222222222222222222222222222222222222222222222222222222222222 proof_bridge=complete attachment_provenance=native_runtime_bridge runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=native_runtime_bridge host_path_id=hiprt-small-probe dispatch_table_entry_id=hiprt-testcopy-slot runtime_dispatch_table_entry_id=hiprt-testcopy-slot dispatch_entry_runtime_verified=true generation=2 runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] host_identity role=runner_process event=after_hmr generation=2 ptr=0xc aux=pid:12 runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] host_identity role=original_host_state event=after_hmr generation=2 ptr=0x100 aux=host_path:hiprt-small-probe runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] host_identity role=hip_stream_resource event=after_hmr generation=2 ptr=0x200 aux=stream:hmr runtime_session=hiprt-small-probe:pid:12
+    [gpu-runtime-boundary] output_oracle id=hiprt.testcopy.v2.sum kind=buffer_checksum expected=sum_d:2 actual=sum_d:2 passed=true generation=2 producer=hiprt-small-probe output_target_id=buffer_d artifact_id=artifact:sha256:2222222222222222222222222222222222222222222222222222222222222222 after_dispatch_id=dispatch:sha256:2222222222222222222222222222222222222222222222222222222222222222 runtime_session=hiprt-small-probe:pid:12
   `);
   const evidence = runtimeEvidenceFromLines(lines);
   if (
@@ -612,10 +648,14 @@ async function main() {
       '-o',
       shellQuote(`${workerTmp}/hiprt_target_progression_host`),
     ].join(' '),
+    `v1_hash=$(sha256sum ${shellQuote(`${workerTmp}/testcopy-v1.hsaco`)} | cut -d ' ' -f 1)`,
+    `v2_hash=$(sha256sum ${shellQuote(`${workerTmp}/testcopy-v2.hsaco`)} | cut -d ' ' -f 1)`,
     [
       shellQuote(`${workerTmp}/hiprt_target_progression_host`),
       shellQuote(`${workerTmp}/testcopy-v1.hsaco`),
       shellQuote(`${workerTmp}/testcopy-v2.hsaco`),
+      '"$v1_hash"',
+      '"$v2_hash"',
     ].join(' '),
   ].join('\n');
 

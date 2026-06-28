@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import {
   runtimeArtifactTransportEvidence,
+  runtimeHostIdentityEvidence,
+  runtimeOriginalHostPathEvidence,
   runtimeOutputOracleEvidence,
 } from '../lib/gpu-hmr-runtime-evidence.mjs';
 
@@ -98,9 +100,138 @@ assert.deepEqual(transportEvidence.artifact_content_hashes, [
   'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
 ]);
 
+const bridgeRuntimeSession = 'bridge:pid:4242';
+const bridgeLines = [
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=runner_process',
+    'generation=1',
+    'ptr=0x1092',
+    'aux=pid:4242',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=original_host_state',
+    'generation=1',
+    'ptr=0x2000',
+    'aux=host_path:app',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=hip_stream_resource',
+    'generation=1',
+    'ptr=0x3000',
+    'aux=stream:hmr',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] launch_arg_provenance',
+    'kernel=BridgeKernel',
+    'generation=2',
+    'dispatch_table_entry_id=bridge-slot',
+    'artifact_id=artifact:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    'complete=true',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] native_runtime_dispatch',
+    'kernel=BridgeKernel',
+    'dispatch=ok',
+    'generation=2',
+    'dispatch_id=dispatch:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    'dispatch_table_entry_id=bridge-slot',
+    'artifact_id=artifact:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    'proof_bridge=complete',
+    'attachment_provenance=native_runtime_bridge',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] original_host_path',
+    'event=attached',
+    'attached=true',
+    'dispatch_boundary_observed=true',
+    'attachment_provenance=native_runtime_bridge',
+    'host_path_id=bridge-host',
+    'dispatch_table_entry_id=bridge-slot',
+    'runtime_dispatch_table_entry_id=bridge-slot',
+    'dispatch_entry_runtime_verified=true',
+    'generation=2',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=runner_process',
+    'generation=2',
+    'ptr=0x1092',
+    'aux=pid:4242',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=original_host_state',
+    'generation=2',
+    'ptr=0x2000',
+    'aux=host_path:app',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] host_identity',
+    'role=hip_stream_resource',
+    'generation=2',
+    'ptr=0x3000',
+    'aux=stream:hmr',
+    `runtime_session=${bridgeRuntimeSession}`,
+  ].join(' '),
+];
+const bridgeHostEvidence = runtimeOriginalHostPathEvidence(bridgeLines);
+assert.equal(bridgeHostEvidence.runtime_evidence_observed, true);
+assert.equal(bridgeHostEvidence.dispatch_entry_runtime_verified, true);
+assert.equal(bridgeHostEvidence.matching_dispatch_boundary_observed, true);
+
+const hostEvidence = runtimeHostIdentityEvidence(bridgeLines, {
+  expectedGenerationLineage: {
+    previousGeneration: 1,
+    activeGeneration: 2,
+  },
+});
+assert.equal(hostEvidence.identity_checks_passed, true);
+assert.deepEqual(hostEvidence.preserved_role_categories.sort(), [
+  'host_state',
+  'runner_process',
+  'runtime_resource',
+].sort());
+
+const forgedBridgeEvidence = runtimeOriginalHostPathEvidence(bridgeLines.map((candidate) =>
+  candidate.replace('proof_bridge=complete', 'proof_bridge=missing')
+));
+assert.equal(forgedBridgeEvidence.runtime_evidence_observed, false);
+assert.equal(forgedBridgeEvidence.matching_dispatch_boundary_observed, false);
+
+const missingRamIdentityEvidence = runtimeArtifactTransportEvidence([
+  [
+    '[gpu-runtime-boundary] artifact_transport',
+    'runtime_session=pid1',
+    'generation=3',
+    'artifact_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'artifact_bytes=8',
+    'reload_request_transport=ram_bytes',
+    'selected_loader_transport=ram_bytes',
+    'loader_api=hipModuleLoadData',
+    'ram_reference=true',
+    'ram_blob_id=artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'ram_transport_proven=true',
+    'load_result=ok',
+  ].join(' '),
+]);
+assert.equal(missingRamIdentityEvidence.ram_transport_proven, false);
+assert.equal(missingRamIdentityEvidence.degraded_reason, 'ram_blob_identity_not_proven');
+
 console.log(JSON.stringify({
   ok: true,
   parsedReadbackSampleBytes: evidence.output_oracle.readbackBytes,
   oracleId: evidence.output_oracle.oracleId,
   transportArtifactId: transportEvidence.artifact_id,
+  bridgeRuntimeEvidenceObserved: bridgeHostEvidence.runtime_evidence_observed,
 }, null, 2));
