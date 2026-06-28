@@ -10,6 +10,8 @@ The validator fast-path diagnosis is now recorded in the proof plan: the interac
 
 The first dev-loop split is now implemented at the MCP wait boundary: non-strict `synthi_wait_hmr` responses that reach `applied` can return `proof_pending=true` plus a typed `gpu_hmr_dev_loop` block. That block explicitly says the response is `hmr_fast_path_only_not_gpu_hmr_acceptance`, with `accepted_for_gpu_hmr=false` and `gpu_hmr_success=false`. Strict callers that pass `requiredGpuProofState` or `requireGpuFullRuntimeProof` still fail closed with `gpu_hmr_proof_insufficient` until the requested proof ladder validates.
 
+Strict proof waits now include generic post-apply timeout intelligence. Once HMR reaches `applied`, a matching observed proof slice that cannot structurally satisfy the requested strict proof state can fail closed immediately with `gpu_proof_wait.status=failed_fast` and `proof_wait_timeout_intelligence.evidence_authority=strict_proof_wait_timeout_intelligence_not_gpu_hmr_acceptance`. Missing proof and lower-rank partial proof still wait for later valid proof material, so this reduces wasted validator wall time without weakening acceptance.
+
 Generic transport groundwork was added in commit `20398e6b3 feat(gpu-hmr): add artifact cas locator contract`:
 
 ```text

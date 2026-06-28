@@ -17,6 +17,7 @@ import {
   gpuHmrProofStateRank,
   gpuHmrFullRuntimeProofMaterials,
   type GpuHmrProofMatchOpts,
+  type GpuHmrProofValidation,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
   type GpuHmrProofTelemetry,
@@ -37,6 +38,19 @@ const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
 const FRAME_GATE_POLL_MS = 50;
 const DEV_LOOP_PROOF_STATUS_SCHEMA_VERSION = "synthi.gpu.hmr.dev_loop_proof_status.v1";
+const STRICT_PROOF_WAIT_DECISION_SCHEMA_VERSION = "synthi.gpu.hmr.strict_proof_wait_decision.v1";
+const STRUCTURAL_PROOF_GAP_REASONS = new Set([
+  "unknown_result_proof_state",
+  "unknown_degraded_proof_state",
+  "degraded_state_blocks_required_proof",
+  "proof_material_identity_unverifiable",
+  "proof_stage_missing",
+  "proof_stage_not_passed",
+  "proof_ledger_missing",
+  "proof_ledger_rejected",
+  "runtime_proof_artifact_missing",
+  "runtime_proof_artifact_rejected",
+]);
 
 function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
   const raw = process.env[POST_APPLY_OBSERVE_ENV];
@@ -110,6 +124,71 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
     label: proof.label,
     source: proof.source,
     observedAt: proof.observedAt,
+  };
+}
+
+function strictProofStructuralGap(
+  validation: GpuHmrProofValidation,
+  requiredState: string
+): string | null {
+  if (validation.satisfied) return null;
+  if (validation.reason === undefined) return null;
+  if (!STRUCTURAL_PROOF_GAP_REASONS.has(validation.reason)) return null;
+  if (validation.reason === "proof_state_missing" || validation.reason === "proof_state_below_required") {
+    return null;
+  }
+  if (
+    validation.reason === "proof_ledger_missing"
+    || validation.reason === "proof_ledger_rejected"
+    || validation.reason === "runtime_proof_artifact_missing"
+    || validation.reason === "runtime_proof_artifact_rejected"
+  ) {
+    return validation.resultRank >= gpuHmrProofStateRank(requiredState)
+      ? validation.reason
+      : null;
+  }
+  return validation.reason;
+}
+
+function proofWaitDecisionPayload(
+  proof: GpuHmrProofTelemetry | null,
+  validation: GpuHmrProofValidation,
+  reason: string,
+  elapsedMs: number,
+  timeoutMs: number,
+  hmrObservedAt: number | null
+): Record<string, unknown> {
+  const failedRuntimeProofArtifactGates =
+    validation.runtimeProofArtifactValidation?.failedGates?.map((gate) => gate.code) ?? [];
+  const failedLedgerInvariants =
+    validation.proofLedgerValidation?.failedInvariants?.map((failure) => failure.code) ?? [];
+  return {
+    schemaVersion: STRICT_PROOF_WAIT_DECISION_SCHEMA_VERSION,
+    decision: "fail_fast_structural_gap",
+    reason,
+    evidence_authority: "strict_proof_wait_timeout_intelligence_not_gpu_hmr_acceptance",
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    required_state: validation.requiredState,
+    result_state: validation.resultState,
+    degraded_state: validation.degradedState,
+    result_rank: validation.resultRank,
+    effective_result_rank: validation.effectiveResultRank,
+    required_rank: validation.requiredRank,
+    proof_id: proof?.proofId ?? null,
+    proof_artifact_path: proof?.proofArtifactPath ?? null,
+    hmr_observed_at: hmrObservedAt,
+    proof_observed_at: proof?.observedAt ?? null,
+    elapsed_ms: elapsedMs,
+    timeout_ms: timeoutMs,
+    remaining_timeout_ms: Math.max(0, timeoutMs - elapsedMs),
+    failed_runtime_proof_artifact_gates: failedRuntimeProofArtifactGates,
+    failed_ledger_invariants: failedLedgerInvariants,
+    basis: [
+      "observed_gpu_proof_validation_failed",
+      `reason:${reason}`,
+      "strict_wait_can_fail_closed_without_waiting_for_timeout",
+    ],
   };
 }
 
@@ -267,6 +346,20 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       return requiredProofState !== null
         && validateGpuHmrProofState(latestGpuProof, requiredProofState).satisfied;
     };
+    const requiredProofStructuralGap = (minObservedAt?: number): string | null => {
+      if (requiredProofState === null) return null;
+      if (
+        minObservedAt !== undefined
+        && latestGpuProof !== null
+        && latestGpuProof.observedAt < minObservedAt
+      ) {
+        return null;
+      }
+      return strictProofStructuralGap(
+        validateGpuHmrProofState(latestGpuProof, requiredProofState),
+        requiredProofState
+      );
+    };
     unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
       const proof = classifyGpuHmrProofMessage(msg);
       if (gpuHmrProofMatches(proof, proofMatchOpts)) {
@@ -314,11 +407,15 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
 
     const waitForRequiredGpuProof = (
       timeoutMs: number,
-      opts: { settleOnTerminal?: boolean } = {}
-    ): { promise: Promise<"satisfied" | "terminal" | "timeout">; cancel: () => void } => {
+      opts: { settleOnTerminal?: boolean; allowStructuralGap?: boolean; minProofObservedAt?: number } = {}
+    ): { promise: Promise<"satisfied" | "terminal" | "structural_gap" | "timeout">; cancel: () => void } => {
       const settleOnTerminal = opts.settleOnTerminal !== false;
+      const allowStructuralGap = opts.allowStructuralGap === true;
       if (requiredProofState === null || requiredProofSatisfied()) {
         return { promise: Promise.resolve("satisfied"), cancel: () => {} };
+      }
+      if (allowStructuralGap && requiredProofStructuralGap(opts.minProofObservedAt) !== null) {
+        return { promise: Promise.resolve("structural_gap"), cancel: () => {} };
       }
       if (settleOnTerminal && postApplyTerminal) {
         return { promise: Promise.resolve("terminal"), cancel: () => {} };
@@ -327,9 +424,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         return { promise: Promise.resolve("timeout"), cancel: () => {} };
       }
       let cancel = (): void => {};
-      const promise = new Promise<"satisfied" | "terminal" | "timeout">((resolve) => {
+      const promise = new Promise<"satisfied" | "terminal" | "structural_gap" | "timeout">((resolve) => {
         let settled = false;
-        const settle = (value: "satisfied" | "terminal" | "timeout"): void => {
+        const settle = (value: "satisfied" | "terminal" | "structural_gap" | "timeout"): void => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
@@ -339,6 +436,8 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         const onProofOrTerminal = (): void => {
           if (requiredProofSatisfied()) {
             settle("satisfied");
+          } else if (allowStructuralGap && requiredProofStructuralGap(opts.minProofObservedAt) !== null) {
+            settle("structural_gap");
           } else if (settleOnTerminal && postApplyTerminal) {
             settle("terminal");
           }
@@ -348,6 +447,45 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         cancel = (): void => settle("timeout");
       });
       return { promise, cancel };
+    };
+
+    const structuralGapResponse = (hmrObservedAt: number | null = null): ToolResponse | null => {
+      if (requiredProofState === null) return null;
+      const validation = validateGpuHmrProofState(latestGpuProof, requiredProofState);
+      const reason = strictProofStructuralGap(validation, requiredProofState);
+      if (reason === null) return null;
+      const elapsedMs = Date.now() - start;
+      const decision = proofWaitDecisionPayload(
+        latestGpuProof,
+        validation,
+        reason,
+        elapsedMs,
+        timeoutMs,
+        hmrObservedAt
+      );
+      return responseWithGpuProofValidation({
+        status: "applied",
+        elapsedMs,
+        source: "gpu_proof",
+        detail: {
+          reason: "strict_gpu_hmr_proof_structural_gap",
+          proof_wait_reason: reason,
+        },
+        wait_contract: waitContract,
+        proof_wait_decision: "fail_fast_structural_gap",
+        gpu_proof_wait: {
+          status: "failed_fast",
+          reason: "post_apply_gpu_proof_insufficient",
+          validation_reason: reason,
+          required_gpu_proof_state: validation.requiredState,
+          latest_proof_state: validation.resultState,
+          hmr_observed_at: hmrObservedAt,
+          proof_observed_at: latestGpuProof?.observedAt ?? null,
+          accepted_for_gpu_hmr: false,
+          gpu_hmr_success: false,
+        },
+        proof_wait_timeout_intelligence: decision,
+      }, latestGpuProof, requiredProofState);
     };
 
     const terminalWait = attached.channels.hmr.waitForTerminal({
@@ -523,9 +661,17 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
 
     if (result.status === "applied" && requiredProofState !== null && !requiredProofSatisfied()) {
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
-      const proofWait = waitForRequiredGpuProof(remaining);
+      const hmrObservedAtForProofWait = result.observedAt ?? start;
+      const proofWait = waitForRequiredGpuProof(remaining, {
+        allowStructuralGap: true,
+        minProofObservedAt: hmrObservedAtForProofWait,
+      });
       const proofOutcome = await proofWait.promise;
       proofWait.cancel();
+      if (proofOutcome === "structural_gap") {
+        const gap = structuralGapResponse(hmrObservedAtForProofWait);
+        if (gap !== null) return gap;
+      }
       if (proofOutcome === "terminal" && postApplyTerminal) {
         const late = terminalEventFromClassification(postApplyTerminal, Date.now() - start);
         return responseWithGpuProofValidation({

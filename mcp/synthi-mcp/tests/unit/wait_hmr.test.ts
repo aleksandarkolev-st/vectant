@@ -716,6 +716,48 @@ describe("synthi_wait_hmr", () => {
     expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
   });
 
+  it("does not fail fast for a partial proof when a later full runtime proof arrives", async () => {
+    const ledger = passingProofLedger();
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({
+        status: "gpu-proof-state",
+        resultState: "gpu-hmr-symbol-bound",
+        proofId: "gpu-proof:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        proofArtifactPath: ".synthi/gpu-hmr/proofs/symbol-bound.json",
+      });
+      setTimeout(
+        () =>
+          fake.feedHmr({
+            status: "gpu-proof-state",
+            resultState: "gpu-hmr-full-runtime-proven",
+            proofLedger: ledger,
+            runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+          }),
+        25
+      );
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const started = Date.now();
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(20);
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      proof_wait_timeout_intelligence?: unknown;
+      gpu_proof_validation?: {
+        satisfied?: boolean;
+        runtimeProofArtifactValidation?: { accepted?: boolean };
+      };
+    };
+    expect(body.proof_wait_timeout_intelligence).toBeUndefined();
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+  });
+
   it("treats a valid full runtime proof as terminal-equivalent when applied is missing", async () => {
     const ledger = passingProofLedger();
     const fake = installFakeAttached(async () =>
@@ -772,17 +814,38 @@ describe("synthi_wait_hmr", () => {
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });
 
+    const started = Date.now();
     const res = await waitHmrTool({ timeoutMs: 500, requireGpuFullRuntimeProof: true });
 
+    expect(Date.now() - started).toBeLessThan(250);
     expect(res.isError).toBe(true);
     const body = res.structuredContent as {
       error?: string;
       gpu_proof_validation?: { reason?: string };
       gpu_proof_ledger_validation?: unknown;
+      proof_wait_decision?: string;
+      proof_wait_timeout_intelligence?: {
+        decision?: string;
+        reason?: string;
+        evidence_authority?: string;
+        accepted_for_gpu_hmr?: boolean;
+        gpu_hmr_success?: boolean;
+        result_state?: string | null;
+        failed_ledger_invariants?: string[];
+      };
     };
     expect(body.error).toBe("gpu_hmr_proof_insufficient");
     expect(body.gpu_proof_validation?.reason).toBe("proof_ledger_missing");
     expect(body.gpu_proof_ledger_validation).toBeNull();
+    expect(body.proof_wait_decision).toBe("fail_fast_structural_gap");
+    expect(body.proof_wait_timeout_intelligence?.decision).toBe("fail_fast_structural_gap");
+    expect(body.proof_wait_timeout_intelligence?.reason).toBe("proof_ledger_missing");
+    expect(body.proof_wait_timeout_intelligence?.evidence_authority)
+      .toBe("strict_proof_wait_timeout_intelligence_not_gpu_hmr_acceptance");
+    expect(body.proof_wait_timeout_intelligence?.accepted_for_gpu_hmr).toBe(false);
+    expect(body.proof_wait_timeout_intelligence?.gpu_hmr_success).toBe(false);
+    expect(body.proof_wait_timeout_intelligence?.result_state).toBe("gpu-hmr-full-runtime-proven");
+    expect(body.proof_wait_timeout_intelligence?.failed_ledger_invariants).toEqual([]);
   });
 
   it("rejects output oracle proof telemetry without proof ledger", async () => {

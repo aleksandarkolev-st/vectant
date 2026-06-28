@@ -15,6 +15,8 @@ Dev-loop demo note:
 ```text
 The MCP wait path can now distinguish interactive HMR from proof closure. A non-strict `synthi_wait_hmr` call may report `applied` with `proof_pending=true` and `gpu_hmr_dev_loop.evidence_authority=hmr_fast_path_only_not_gpu_hmr_acceptance`. This is useful for showing responsive editing, but it is not an investor-grade proof claim; strict demo proof still requires the accepted runtime ledger and proof artifacts.
 
+Strict `synthi_wait_hmr` calls can now fail closed faster after HMR applies when the observed proof slice is structurally unable to satisfy the requested proof state. The response remains `gpu_hmr_proof_insufficient` and carries refusal-only `gpu_proof_wait` / `proof_wait_timeout_intelligence` fields; it is not a success path and does not weaken ledger acceptance.
+
 The artifact path is also moving toward the same split: CAS locators can now be consumed portably by content hash under a consumer-local allowed CAS root, so worker/MCP/frontend layers do not need to pass producer-local absolute paths through the hot path. This is transport optimization evidence only, not proof acceptance.
 ```
 
