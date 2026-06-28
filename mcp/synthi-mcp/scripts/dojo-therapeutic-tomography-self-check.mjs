@@ -44,6 +44,7 @@ export async function runDojoTherapeuticTomographySelfCheck({
   const tomography = await importTomographyModule();
   const trace = tomography.buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
   const validation = validateTrace(trace);
+  const adversarialMatrix = validateAdversarialMatrix(tomography, trace);
   const tracePath = path.join(outputDir, "therapeutic-trace.json");
   const htmlPath = path.join(outputDir, "therapeutic-trace.html");
   const svgPath = path.join(outputDir, "therapeutic-trace.svg");
@@ -78,8 +79,10 @@ export async function runDojoTherapeuticTomographySelfCheck({
       diagnosis_verified: validation.checks.diagnosis_verified,
       visual_artifacts_written: true,
       visual_artifacts_rendered: renderedVisuals.ok,
+      adversarial_negative_controls_passed: adversarialMatrix.ok,
     },
     failed_checks: validation.failed_checks,
+    adversarial_negative_controls: adversarialMatrix.cases,
     trace_path: tracePath,
     trace_sha256: sha256(traceText),
     trace_bytes: Buffer.byteLength(traceText),
@@ -97,6 +100,7 @@ export async function runDojoTherapeuticTomographySelfCheck({
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   assert.equal(evidence.ok, true, `therapeutic tomography self-check failed: ${evidence.failed_checks.join(",")}`);
   assert.equal(renderedVisuals.ok, true, `therapeutic tomography visual proof failed: ${renderedVisuals.failed_visual_gates.join(",")}`);
+  assert.equal(adversarialMatrix.ok, true, `therapeutic tomography negative controls failed: ${adversarialMatrix.failed_cases.join(",")}`);
   return {
     evidence_path: evidencePath,
     trace_path: tracePath,
@@ -104,6 +108,110 @@ export async function runDojoTherapeuticTomographySelfCheck({
     svg_visual_proof_path: svgPath,
     rendered_visuals: renderedVisuals,
     evidence,
+  };
+}
+
+function validateAdversarialMatrix(tomography, trace) {
+  const baseRequest = trace.proof_capsules[0].requested_access;
+  const cases = [];
+
+  const narrativeOnlyCapsule = tomography.buildStrictProofCapsule({
+    id: "proof_negative_narrative_only",
+    task_id: trace.task_id,
+    trace,
+    request: baseRequest,
+    current_authority_dose: 4,
+    machine_verifiable_claims: [],
+    unverifiable_narrative_claims: [{ claim: "Agent believes broader access will help.", status: "context_only" }],
+  });
+  cases.push({
+    id: "narrative_only_proof_rejected",
+    ok: narrativeOnlyCapsule.approved === false && narrativeOnlyCapsule.failed_claims.includes("narrative_only_proof"),
+    expected_block: "narrative_only_proof",
+    observed: narrativeOnlyCapsule.failed_claims,
+  });
+
+  const missingExpirationRequest = { ...baseRequest, id: "negative_missing_expiration", expiration: "" };
+  const missingExpirationCapsule = tomography.buildStrictProofCapsule({
+    id: "proof_negative_missing_expiration",
+    task_id: trace.task_id,
+    trace,
+    request: missingExpirationRequest,
+    current_authority_dose: 4,
+  });
+  cases.push({
+    id: "missing_expiration_rejected",
+    ok: missingExpirationCapsule.approved === false && missingExpirationCapsule.failed_claims.includes("expiration_defined"),
+    expected_block: "expiration_defined",
+    observed: missingExpirationCapsule.failed_claims,
+  });
+
+  const writeRequest = { ...baseRequest, id: "negative_write_diagnosis", mode: "write" };
+  const writeCapsule = tomography.buildStrictProofCapsule({
+    id: "proof_negative_write_diagnosis",
+    task_id: trace.task_id,
+    trace,
+    request: writeRequest,
+    current_authority_dose: 4,
+    human_reviewed_claims: [{
+      claim: "write_is_reasonable",
+      reviewer_role: "incident_commander",
+      status: "approved",
+      rationale: "negative control still requires mutation separation.",
+    }],
+  });
+  const writeDecision = tomography.evaluateAuthorityBroker({ trace, request: writeRequest, proof_capsule: writeCapsule });
+  cases.push({
+    id: "diagnosis_write_access_rejected",
+    ok: writeCapsule.approved === false
+      && writeCapsule.failed_claims.includes("request_is_read_only")
+      && writeDecision.blocked_by.includes("mutation_not_allowed_by_policy"),
+    expected_block: "mutation_not_allowed_by_policy",
+    observed: [...writeCapsule.failed_claims, ...writeDecision.blocked_by],
+  });
+
+  const driftContract = tomography.THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary");
+  const leakyProbe = tomography.buildProjectionProbe({
+    id: "negative_leaky_probe",
+    task_id: trace.task_id,
+    contract: driftContract,
+    target_uncertainty: "quality_drop_cause",
+    result_summary: {
+      top_feature: "customer_plan",
+      drift_score: 0.91,
+      affected_segment: "enterprise_users",
+      confidence: 0.88,
+      time_window: "last_24h",
+      raw_training_rows: [{ customer_id: "blocked" }],
+    },
+    actual_information_gain: 8,
+    confidence: 0.88,
+  });
+  cases.push({
+    id: "leaky_probe_output_rejected",
+    ok: leakyProbe.allowed_output_shape_valid === false,
+    expected_block: "probe_output_shape_check",
+    observed: { allowed_output_shape_valid: leakyProbe.allowed_output_shape_valid },
+  });
+
+  const tier2Request = {
+    ...baseRequest,
+    id: "negative_tier2_multi_feature",
+    scope: "feature:customer_plan,feature:billing_country",
+    data_classes: ["multi_feature_lineage"],
+  };
+  const tier2Route = tomography.classifyTherapeuticProofRoute({ request: tier2Request });
+  cases.push({
+    id: "multi_feature_lineage_routes_to_tier2",
+    ok: tier2Route.tier === 2 && tier2Route.required_gates.includes("judgment_claim_review"),
+    expected_block: "judgment_claim_review",
+    observed: tier2Route,
+  });
+
+  return {
+    ok: cases.every((item) => item.ok),
+    failed_cases: cases.filter((item) => !item.ok).map((item) => item.id),
+    cases,
   };
 }
 
