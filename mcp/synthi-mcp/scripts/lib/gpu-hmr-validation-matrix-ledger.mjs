@@ -4194,25 +4194,42 @@ function realRocmRuntimeStageObligationsGate(input = {}) {
   };
 }
 
-function realRocmAppHookMaterializationGate(input = {}) {
+function realRocmAppHookMaterializationGate(input = {}, options = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
+  const requiredByProfile = firstBool(
+    options.requiredByProfile,
+    options.required_by_profile,
+  ) === true;
   if (!present) {
+    const failedGates = requiredByProfile
+      ? [
+        'real_rocm_app_hook_materialization_missing',
+        'app_hook_materialization_required_by_profile_obligation',
+      ]
+      : [];
+    const blockingGaps = requiredByProfile
+      ? ['app_hook_materialization_required_by_profile_obligation']
+      : [];
     return {
-      present: false,
-      accepted: null,
+      present: requiredByProfile,
+      materializationPresent: false,
+      materialization_present: false,
+      accepted: requiredByProfile ? false : null,
       status: null,
-      required: false,
-      failedGates: [],
-      failed_gates: [],
-      blockingGaps: [],
-      blocking_gaps: [],
+      required: requiredByProfile,
+      requiredByProfile,
+      required_by_profile: requiredByProfile,
+      failedGates,
+      failed_gates: failedGates,
+      blockingGaps,
+      blocking_gaps: blockingGaps,
     };
   }
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const status = firstText(facet.status, facet.reason);
-  const required = firstBool(facet.required) === true;
+  const required = requiredByProfile || firstBool(facet.required) === true;
   const acceptedForGpuHmr = firstBool(
     facet.acceptedForGpuHmr,
     facet.accepted_for_gpu_hmr,
@@ -4302,7 +4319,11 @@ function realRocmAppHookMaterializationGate(input = {}) {
   ]);
   return {
     present: true,
+    materializationPresent: true,
+    materialization_present: true,
     required,
+    requiredByProfile,
+    required_by_profile: requiredByProfile,
     accepted: failedGates.length === 0,
     status: status ?? null,
     schemaVersion,
@@ -10455,11 +10476,17 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeStageObligationsAccepted =
     runtimeStageObligationsGate.present !== true
     || runtimeStageObligationsGate.accepted === true;
+  const appHookMaterializationRequiredByProfile =
+    realRocmProfileProofObligations.requiresAppHookContract === true
+    || realRocmProfileProofObligations.requires_app_hook_contract === true
+    || realRocmProfileProofObligations.largeMlFinalAcceptance === true
+    || realRocmProfileProofObligations.large_ml_final_acceptance === true;
   const appHookMaterializationGate = realRocmAppHookMaterializationGate(
     realRocmAppHookMaterialization,
+    { requiredByProfile: appHookMaterializationRequiredByProfile },
   );
   const appHookMaterializationAccepted =
-    appHookMaterializationGate.present !== true
+    appHookMaterializationGate.required !== true
     || appHookMaterializationGate.accepted === true;
   const profileProofObligationsAccepted = realRocmProfileProofObligationsGaps.length === 0;
   const fullRuntimeProven = boolOrNull(

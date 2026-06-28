@@ -3027,6 +3027,96 @@ function acceptedRealRocmAppHookContract(scope, overrides = {}) {
   };
 }
 
+function acceptedRealRocmAppHookMaterialization(scope, overrides = {}) {
+  const stageNames = [
+    'artifact_transport',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+  ];
+  const stagePlans = Object.fromEntries(stageNames.flatMap((stage) => {
+    const plan = {
+      stage,
+      required: true,
+      planAvailable: true,
+      plan_available: true,
+      candidateEvidencePresent: true,
+      candidate_evidence_present: true,
+      contractEvidencePresent: true,
+      contract_evidence_present: true,
+      runtimeObserved: true,
+      runtime_observed: true,
+      proofKinds: [
+        `${stage}_contract_ref`,
+        `${stage}_runtime_event`,
+      ],
+      proof_kinds: [
+        `${stage}_contract_ref`,
+        `${stage}_runtime_event`,
+      ],
+      evidenceRefs: [`evidence:app-hook-materialization:${scope}:${stage}`],
+      evidence_refs: [`evidence:app-hook-materialization:${scope}:${stage}`],
+      status: 'materialized_and_observed',
+    };
+    const camel = stage.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+    return [[stage, plan], [camel, plan]];
+  }));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1',
+    status: 'app_hook_materialization_complete',
+    proofAuthority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    proof_authority: 'plan_only_app_hook_materialization_not_runtime_proof',
+    required: true,
+    acceptedAsPlanningEvidence: true,
+    accepted_as_planning_evidence: true,
+    acceptedAsRefusalEvidence: false,
+    accepted_as_refusal_evidence: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    appHookAuthoringReady: true,
+    app_hook_authoring_ready: true,
+    materializationComplete: true,
+    materialization_complete: true,
+    candidateComplete: true,
+    candidate_complete: true,
+    contractComplete: true,
+    contract_complete: true,
+    runtimeObservedComplete: true,
+    runtime_observed_complete: true,
+    outputOracleMaterialized: true,
+    output_oracle_materialized: true,
+    outputOracleRequestedProfile: 'profile.tensor.checksum.v1',
+    output_oracle_requested_profile: 'profile.tensor.checksum.v1',
+    outputOracleSelectedSource: 'profile_runtime_profile',
+    output_oracle_selected_source: 'profile_runtime_profile',
+    contractDeclared: true,
+    contract_declared: true,
+    stagePlans,
+    stage_plans: stagePlans,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: stageNames.map((stage) =>
+      `evidence:app-hook-materialization:${scope}:${stage}`
+    ),
+    evidence_refs: stageNames.map((stage) =>
+      `evidence:app-hook-materialization:${scope}:${stage}`
+    ),
+    materializationHash: hashValue(`app-hook-materialization:${scope}`),
+    materialization_hash: hashValue(`app-hook-materialization:${scope}`),
+    contractHash: hashValue(`app-hook-materialization:${scope}`),
+    contract_hash: hashValue(`app-hook-materialization:${scope}`),
+    ...overrides,
+  };
+}
+
 function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
   const closureRefs = [
     `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`,
@@ -5781,6 +5871,99 @@ assert.equal(largeRocm.realRocmProofScheduling.validationBlockers[0].acceptedFor
 assert.equal(largeRocm.realRocmProofScheduling.validationBlockers[0].gpuHmrSuccess, false);
 assert.equal(largeRocm.attemptCompleteness.proofSchedulingAcceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.attemptCompleteness.score, 80);
+
+const missingAppHookMaterializationRocmDir = path.join(
+  logsRoot,
+  'real-rocm-missing-app-hook-materialization',
+);
+await writeJson(
+  path.join(
+    missingAppHookMaterializationRocmDir,
+    'real-rocm-missing-app-hook-materialization.json',
+  ),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-missing-app-hook-materialization-20260627',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-missing-app-hook-materialization',
+      source: 'scripts/profiles/real-rocm-missing-app-hook-materialization.json',
+      proofObligations: {
+        targetClass: 'large_rocm_ml_infrastructure',
+        requiresAppHookContract: true,
+      },
+      proof_obligations: {
+        target_class: 'large_rocm_ml_infrastructure',
+        requires_app_hook_contract: true,
+      },
+    },
+    source_url: 'https://example.invalid/rocm/missing-app-hook-materialization.git',
+    target_name: 'MissingAppHookMaterializationDriver',
+    real_rocm_profile_proof_obligations: {
+      ...largeRocmLatestReport.real_rocm_profile_proof_obligations,
+      requiresAppHookContract: true,
+      requires_app_hook_contract: true,
+    },
+    real_rocm_app_hook_materialization: null,
+    realRocmAppHookMaterialization: null,
+    app_hook_materialization: null,
+    appHookMaterialization: null,
+  },
+);
+const missingAppHookMaterializationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [missingAppHookMaterializationRocmDir],
+  generatedAt: '2026-06-27T00:00:00.500Z',
+});
+const missingAppHookMaterializationRocm = missingAppHookMaterializationLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(missingAppHookMaterializationRocm?.matrixOutcome, 'refusal_proven');
+assert.equal(missingAppHookMaterializationRocm.acceptedForGpuHmr, false);
+assert.equal(missingAppHookMaterializationRocm.gpuHmrSuccess, false);
+assert.equal(
+  missingAppHookMaterializationRocm.realRocmProfileProofObligations.requiresAppHookContract,
+  true,
+);
+assert.equal(missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.present, true);
+assert.equal(missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.required, true);
+assert.equal(
+  missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.requiredByProfile,
+  true,
+);
+assert.equal(
+  missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.materializationPresent,
+  false,
+);
+assert.equal(missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.accepted, false);
+assert.ok(missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'real_rocm_app_hook_materialization_missing',
+));
+assert.ok(missingAppHookMaterializationRocm.realRocmAppHookMaterializationGate.failedGates.includes(
+  'app_hook_materialization_required_by_profile_obligation',
+));
+assert.ok(missingAppHookMaterializationRocm.reasons.includes(
+  'real_rocm_app_hook_materialization_not_accepted',
+));
+assert.ok(missingAppHookMaterializationRocm.openGaps.includes(
+  'real_rocm_app_hook_materialization_required',
+));
+assert.ok(missingAppHookMaterializationRocm.openGaps.includes(
+  'real_rocm_app_hook_materialization:real_rocm_app_hook_materialization_missing',
+));
+const missingAppHookMaterializationCoverage = new Map(
+  missingAppHookMaterializationLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+).get('large_real_rocm_repo:real-rocm-missing-app-hook-materialization');
+assert.equal(missingAppHookMaterializationCoverage?.appHookMaterialization.required, true);
+assert.equal(missingAppHookMaterializationCoverage.appHookMaterialization.proven, false);
+assert.equal(
+  missingAppHookMaterializationCoverage.appHookMaterialization.status,
+  'materialization_missing_or_unproven',
+);
+assert.ok(missingAppHookMaterializationCoverage.appHookMaterialization.blockingGaps.includes(
+  'app_hook_materialization_required_by_profile_obligation',
+));
 
 const emptyProofSchedulingRocmDir = path.join(logsRoot, 'real-rocm-empty-proof-scheduling');
 await writeJson(path.join(emptyProofSchedulingRocmDir, 'real-rocm-empty-proof-scheduling.json'), {
@@ -9111,6 +9294,8 @@ const acceptedLargeMlProofMaterials = realRocmComputeProofLedgerMaterials(
   },
 );
 const acceptedLargeMlAppHook = acceptedRealRocmAppHookContract('accepted-large-ml-generic-hook');
+const acceptedLargeMlAppHookMaterialization =
+  acceptedRealRocmAppHookMaterialization('accepted-large-ml-generic-hook');
 const acceptedLargeMlSameProcessOracle =
   acceptedSameProcessRuntimeOracle('accepted-large-ml-generic-hook');
 const acceptedLargeMlPriorArtifacts = acceptedLargeMlProofMaterials.computeOracleArtifacts;
@@ -9199,11 +9384,14 @@ await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-g
   real_rocm_source_delta_execution:
     acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
   real_rocm_app_hook_contract: acceptedLargeMlAppHook,
+  real_rocm_app_hook_materialization: acceptedLargeMlAppHookMaterialization,
   real_rocm_same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
   runtime_proof_artifact: {
     ...acceptedLargeMlProofMaterials.runtime_proof_artifact,
     realRocmAppHookContract: acceptedLargeMlAppHook,
     real_rocm_app_hook_contract: acceptedLargeMlAppHook,
+    realRocmAppHookMaterialization: acceptedLargeMlAppHookMaterialization,
+    real_rocm_app_hook_materialization: acceptedLargeMlAppHookMaterialization,
     realRocmSameProcessRuntimeOracle: acceptedLargeMlSameProcessOracle,
     real_rocm_same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
     sameProcessRuntimeOracle: acceptedLargeMlSameProcessOracle,
@@ -9246,6 +9434,8 @@ const acceptedLargeMlRocm = acceptedLargeMlRocmLedger.rows.find(
 assert.equal(acceptedLargeMlRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedLargeMlRocm.acceptedForGpuHmr, true);
 assert.equal(acceptedLargeMlRocm.realRocmAppHookContractGate.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmAppHookMaterializationGate.required, true);
+assert.equal(acceptedLargeMlRocm.realRocmAppHookMaterializationGate.accepted, true);
 assert.equal(acceptedLargeMlRocm.realRocmSameProcessRuntimeOracleGate.accepted, true);
 assert.equal(acceptedLargeMlRocm.realRocmSameProcessRuntimeOracleGate.proven, true);
 assert.equal(acceptedLargeMlRocm.realRocmSourceDeltaExecution.accepted, true);
