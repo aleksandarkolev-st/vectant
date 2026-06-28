@@ -366,6 +366,9 @@ function normalizeAgentProfileSourceFiles(source, profileDir) {
       raw.contentHash ?? raw.content_hash ?? raw.sha256,
       `source.files[${index}].contentHash`,
     ).toLowerCase();
+    if (!declaredContentHash) {
+      throw new Error(`invalid agent visual profile source.files[${index}].contentHash: expected explicit sha256 content hash`);
+    }
     const hostPath = profileString(
       raw.sourcePath
         ?? raw.source_path
@@ -3786,6 +3789,22 @@ function selfCheckAgentVisualProfile() {
         replace: 'kSceneLight * (kExposure + 0.25f)',
       }],
     });
+    let sourceFileHashMissingRejected = false;
+    try {
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-source-file-hash-missing',
+        source: {
+          entryPath: 'src/main.cpp',
+          files: [{
+            path: 'src/main.cpp',
+            inline: multiFileEntrySource,
+          }],
+        },
+      });
+    } catch (err) {
+      sourceFileHashMissingRejected = String(err.message).includes('source.files[0].contentHash');
+    }
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -3825,6 +3844,7 @@ function selfCheckAgentVisualProfile() {
       || !hot2.edited.includes('const float exposure = 0.82f;')
       || hot2.mutation?.selector !== 'regex'
       || !sourceHashMismatchRejected
+      || !sourceFileHashMissingRejected
       || !sceneManifestHashMismatchRejected
       || !ambiguousRejected
       || fixtureBackedIdentity !== 'ray-light'
