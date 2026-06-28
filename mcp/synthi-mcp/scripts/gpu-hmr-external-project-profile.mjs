@@ -1174,6 +1174,28 @@ function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
+async function sha256File(filePath) {
+  return `sha256:${createHash('sha256').update(await fs.readFile(filePath)).digest('hex')}`;
+}
+
+async function visualOracleArtifactsForPaths({ beforePath, afterPath, diffPath, extra = {} }) {
+  return {
+    before_image: beforePath,
+    beforeImage: beforePath,
+    before_image_hash: await sha256File(beforePath),
+    beforeImageHash: await sha256File(beforePath),
+    after_image: afterPath,
+    afterImage: afterPath,
+    after_image_hash: await sha256File(afterPath),
+    afterImageHash: await sha256File(afterPath),
+    diff_image: diffPath,
+    diffImage: diffPath,
+    diff_image_hash: await sha256File(diffPath),
+    diffImageHash: await sha256File(diffPath),
+    ...extra,
+  };
+}
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -2381,12 +2403,14 @@ async function runProfile(profile, profileSelection) {
     const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-external-diff-${Date.now()}.png`);
     report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
-    report.visualOracleArtifacts = {
-      before_image: before.path,
-      after_image: after.path,
-      diff_image: report.visualDiff.diffImagePath,
+    report.visualOracleArtifacts = await visualOracleArtifactsForPaths({
+      beforePath: before.path,
+      afterPath: after.path,
+      diffPath: report.visualDiff.diffImagePath,
+      extra: {
       capture_backend: 'external_runtime_screenshot',
-    };
+      },
+    });
     report.deterministicVisualMode = deterministicVisualModeForExternal(profile, before, after);
     report.deterministicVisualModeEvaluation = report.deterministicVisualMode
       ? evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode)
@@ -2524,17 +2548,19 @@ async function runMcpPreviewProfile(profile, dir, report) {
     const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-mcp-diff-${Date.now()}.png`);
     report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
-    report.visualOracleArtifacts = {
-      before_image: before.path,
-      after_image: after.path,
-      diff_image: report.visualDiff.diffImagePath,
+    report.visualOracleArtifacts = await visualOracleArtifactsForPaths({
+      beforePath: before.path,
+      afterPath: after.path,
+      diffPath: report.visualDiff.diffImagePath,
+      extra: {
       blank_frame_rejection: report.screenshots.every((row) => row.accepted_as_visual_evidence === true),
       same_frame_rejection: report.visualDiff.changedPixelRatio > 0,
       capture_backend: 'mcp:synthi_screenshot',
       frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(afterCompile.wait, after),
       wait_frame_gate: afterCompile.wait?.frame_gate ?? afterCompile.wait?.frameGate ?? null,
       wait_contract: waitContractFromCompileResult(afterCompile),
-    };
+      },
+    });
     report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
     report.deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode);
