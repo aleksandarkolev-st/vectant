@@ -17,6 +17,8 @@ verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matri
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:8cd389beb821ec01b95c7b9e9d7e3be9179e861c78de2a3e28af7e1f5c1265a6, rows=58
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; smoke proof gpu-validation-matrix-ledger:sha256:c040dc473c714a470f2c6d2e0cee015994551344e971fc6db203ea55c5228b3a, matrix self-check proof gpu-validation-matrix-ledger:sha256:386bde575244f12919c85f15a388951b211cf92baee61b0e52772bf34576e7f4, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 new smoke coverage: imported adapter-result bridge remains evidence-only/non-success; forged bridge row refuses claimed GPU HMR/runtime/dispatch authority; accepted-row safety rejects a forged bridge facet even when attached to an otherwise accepted real-ROCm row
+verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed; large ROCm ML package scripts preserve caller-provided SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS while keeping strict runtime proof and native observer gates enabled
+verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; proof scheduling now verifies a structurally blocked requested wait below the diagnostic budget remains bounded instead of being inflated
 ```
 
 Follow-up validation in the same checkpoint kept the large-project and source-first paths honest:
