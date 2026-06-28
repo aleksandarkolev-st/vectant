@@ -242,6 +242,7 @@ export const DOJO_FULL_VISUAL_ROUTE_IDS = Object.freeze([
   "skill-passport",
   "skill-cortex",
   "practice-world",
+  "therapeutic-tomography",
   "source-api",
   "evidence",
   "case-law",
