@@ -18,6 +18,8 @@ verification: npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -
 verification: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check -> passed
 verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:runtime-profile:self-check -> passed
+verification: node node_modules/vitest/vitest.mjs run tests/unit/gpu_hmr_runtime_proof.test.ts from mcp/synthi-mcp -> 279 passed
 verification: node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
@@ -60,6 +62,8 @@ The first dev-loop split is now implemented at the MCP wait boundary: non-strict
 Strict proof waits now include generic post-apply timeout intelligence. Once HMR reaches `applied`, a matching observed proof slice that cannot structurally satisfy the requested strict proof state can fail closed immediately with `gpu_proof_wait.status=failed_fast` and `proof_wait_timeout_intelligence.evidence_authority=strict_proof_wait_timeout_intelligence_not_gpu_hmr_acceptance`. Missing proof and lower-rank partial proof still wait for later valid proof material, so this reduces wasted validator wall time without weakening acceptance. Real ROCm proof scheduling now also records `skip_async_runtime_waits=true` only when upstream lifecycle evidence already proves runtime stages are absent; the matrix accepts that flag only as refusal evidence and rejects forged skip claims that lack fast-fail scheduling plus the upstream-runtime-absent blocker.
 
 Large real ROCm app-hook materialization is now surfaced as a generic evidence-only facet, not a success shortcut. The runner derives `real_rocm_app_hook_materialization` from profile obligations, source-delta execution, device-sidecar candidates, compile-bridge evidence, output-oracle materialization, and per-stage plans for `artifact_transport`, `epoch_publication`, `dispatch_trace`, `host_identity`, and `output_oracle`. Retained reports, strict runtime proof artifacts, proof summaries, matrix rows, and large-ROCm per-target coverage now preserve the facet. The matrix accepts well-formed incomplete materialization as refusal/planning evidence, but rejects forged facets that claim GPU HMR, runtime-proof, or dispatch authority.
+
+Runtime-profile adapters now emit generic content-addressed result manifests and the real ROCm runner can import them as evidence-only bridge facets. `gpu-hmr-runtime-profile-proof.mjs --result-path` writes `synthi.gpu_hmr.runtime_profile_adapter_result.v1` with captured runner output hashes, proof JSON byte hashes, and strict runtime-proof summary fields. Real ROCm profiles can declare that result path through runtime-profile fields or env, but the imported `synthi.real_rocm.runtime_profile_adapter_result_bridge.v1` facet remains `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. It connects adapter evidence to the audit trail without replacing observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall proof, or accepted strict runtime proof closure.
 
 Generic transport groundwork was added in commit `20398e6b3 feat(gpu-hmr): add artifact cas locator contract`:
 
