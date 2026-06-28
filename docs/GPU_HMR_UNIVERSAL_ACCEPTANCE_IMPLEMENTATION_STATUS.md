@@ -21,6 +21,28 @@ verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:se
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; proof scheduling now verifies a structurally blocked requested wait below the diagnostic budget remains bounded instead of being inflated
 ```
 
+Additional 2026-06-29 large-ROCm prerequisite and transport progress:
+
+```text
+implementation: real ROCm profiles now support generic `externalHeaderPrerequisites` with git source URL, exact commit, optional `cmake_install` materialization, required-header inspection, and `${REAL_ROCM_EXTERNAL_INCLUDE:<id>}` CMake token expansion only after dependency evidence is accepted
+proof authority: external_header_dependency_evidence_only_not_gpu_hmr_success
+not proof: external header materialization has acceptedForGpuHmr=false, gpuHmrSuccess=false, canSatisfyRuntimeProof=false, and cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, app-hook, output-oracle, firewall, or strict runtime proof gates
+MIOpen profile change: `-DHALF_INCLUDE_DIR=${REAL_ROCM_EXTERNAL_INCLUDE:rocm-half}` plus upstream `ROCm/half.git` at commit `10abd99e7815f0ca5d892f58dd7d15a23b7cf92c`, installed through the project's own CMake install path into shared CAS
+latest retained MIOpen slug: gpu-real-rocm-MIOpen-20260628230159
+latest retained MIOpen json: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628230159.json
+external headers: status=external_header_prerequisites_available, acceptedDependencyCount=1, prerequisiteCount=1, blockingGaps=[]
+source-tree transport: status=source_tree_transport_evidence_accepted, transferOperation=cas_shared_volume, hotPathOptimized=true, blockingGaps=[]
+upstream lifecycle: configured successfully and entered the real MIOpen compile; `half/half.hpp` is no longer the selected blocker in this retained run, and the bounded upstream command window expired while the build was still compiling
+runtime proof: gpu-runtime-proof:sha256:fbb672517b92a1f526e689bace06cac54a364df6361d4dab052be2fbc69c09b8, fullRuntimeProven=false, gpuHmrSuccess=false, degradedReason=compile_evidence_not_collected
+large ROCm verdict: still refused, acceptedForGpuHmr=false; no Synthi artifact transport, epoch publication, dispatch trace, host identity, app-hook contract/runtime observation, or post-dispatch output/visual oracle proof was collected
+visual proof: none for this compute/upstream-lifecycle profile because no post-epoch MIOpen output target or frame-gated visual oracle was observed
+cleanup: a later detached long MIOpen build continued after the host validator timeout and was stopped because no live validator process remained to collect proof artifacts
+verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
+verification: git diff --check -- mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs mcp/synthi-mcp/scripts/profiles/real-rocm-miopen-activation-large-ml.json -> passed
+```
+
 Follow-up validation in the same checkpoint kept the large-project and source-first paths honest:
 
 ```text
