@@ -19,6 +19,36 @@ verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 new smoke coverage: imported adapter-result bridge remains evidence-only/non-success; forged bridge row refuses claimed GPU HMR/runtime/dispatch authority; accepted-row safety rejects a forged bridge facet even when attached to an otherwise accepted real-ROCm row
 ```
 
+Follow-up validation in the same checkpoint kept the large-project and source-first paths honest:
+
+```text
+large ROCm command: bounded direct MIOpen profile run with SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000, SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS=60000, SYNTHI_REAL_ROCM_PROOF_FAST_FAIL=1, reuse worker repo on, clean build off
+large ROCm result slug: gpu-real-rocm-MIOpen-20260628214946
+large ROCm retained json: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628214946.json
+large ROCm retained txt: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results/gpu-real-rocm-MIOpen-20260628214946.txt
+large ROCm result: refused, acceptedForGpuHmr=false, gpuHmrSuccess=false, fullRuntimeProven=false
+large ROCm source-tree transport: source_tree_transport_evidence_accepted, gaps=[]
+large ROCm missing dependency proof: missing_dependency_refusal_evidence, gaps=missing_build_dependency,missing_dependency:half_half.hpp,missing_header:half_half.hpp
+large ROCm runtime proof: gpu-runtime-proof:sha256:bf1be9ca501dfaa08c629f49a035f77d5eb641afb6ad859fb8f56fd72c13ed42
+large ROCm target progression ledger: target-progression-ledger:sha256:8d39e9609ed37566bbceac9424c73b9137a189daf8bfd58f6a6d1ddc14ae947b
+large ROCm app-hook/runtime status: required_app_hook_contract_missing, refused_missing_runtime_proof
+
+source-first realistic command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace
+source-first realistic workspace: gpu-agent-split-1782683642905
+source-first realistic result: failed closed at compile/proof gate before AI split verification
+source-first realistic reason: ai_provider_account_suspended from provider preflight; acceptedForGpuHmr=false and no visual HMR artifact was produced by this rerun
+source-first realistic timing: cold total_validator_wall_time=613146300ns, device_compile_wall_time=11617800ns, runtime_probe_time=601292900ns
+source-first seed-only command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:seed-only -> passed
+source-first seed-only workspace: gpu-agent-split-1782683658537
+source-first seed-only url: http://localhost:3000/workspace/gpu-agent-split-1782683658537
+
+matrix refresh command: npm --prefix mcp/synthi-mcp run proof:validation-matrix -> process exceeded the shell timeout but completed and emitted a new ledger
+matrix refresh proof: gpu-validation-matrix-ledger:sha256:99c1f2bfcc7767b4d7c209477787bb9e5a40cc087d24bddb75c8f741f4329e14
+matrix refresh json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260628T220032Z.json
+matrix refresh summary: rowCount=56, acceptedFullRuntimeGpuHmrRows=14, scopedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0, refusalProvenRows=29
+matrix MIOpen row: gpu-validation-matrix-row:sha256:c69995d9009b1146ffe358f89dbc195133d174de81038da791d25b6d0ae34201, outcome=refusal_proven, proofChain=real_rocm_strict_runtime_refusal, sourceTreeTransport=source_tree_transport_evidence_accepted, missingDependency=missing_dependency_refusal_evidence
+```
+
 ## 2026-06-28 Continuation Checkpoint
 
 The validator fast-path diagnosis is now recorded in the proof plan: the interactive path must stay `edit -> compile -> load -> epoch publish -> visible change`, while hashing, PNG decode, pixel diff, ledger recompute, matrix ingestion, and proof packaging move behind an asynchronous proof worker. This is a performance and orchestration requirement only; it does not relax strict proof gates.
