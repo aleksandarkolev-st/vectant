@@ -31,6 +31,9 @@ services:
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics,video"
       HSA_ENABLE_DXG_DETECTION: ""
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
     gpus: all
     devices: !reset []
-    volumes: !reset []
+    volumes: !override
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas

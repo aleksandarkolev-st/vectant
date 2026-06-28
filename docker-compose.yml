@@ -92,6 +92,10 @@ services:
       NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
+    volumes:
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     depends_on:
       postgres:
         condition: service_healthy
@@ -242,6 +246,11 @@ services:
       # Expose Prometheus /metrics to the host so live-test.mjs can scrape
       # http://127.0.0.1:9464/metrics without a second `docker exec`.
       - "127.0.0.1:9464:9464"
+    environment:
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
+    volumes:
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     depends_on:
       - signaling-server
       - worker
@@ -287,10 +296,13 @@ services:
       # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
       # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
       HSA_ENABLE_DXG_DETECTION: "1"
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
     devices:
       - "/dev/dxg:/dev/dxg"
     volumes:
       - collab-data:/data:ro
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
       - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
     cap_drop:
       - ALL

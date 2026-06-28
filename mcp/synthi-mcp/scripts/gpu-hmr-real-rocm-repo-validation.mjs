@@ -10,7 +10,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -2379,6 +2379,18 @@ const CFG = {
     ?? process.env.SYNTHI_REAL_ROCM_CAS_ROOT
     ?? defaultCasRootFromEnv(process.env)
     ?? '',
+  sourceTreeHostRoot:
+    process.env.SYNTHI_REAL_ROCM_SOURCE_TREE_HOST_ROOT
+    ?? process.env.SYNTHI_GPU_HMR_HOST_CAS_ROOT
+    ?? '',
+  sourceTreeWorkerRoot:
+    process.env.SYNTHI_REAL_ROCM_WORKER_SOURCE_TREE_CAS_ROOT
+    ?? process.env.SYNTHI_GPU_HMR_WORKER_CAS_ROOT
+    ?? '',
+  sourceTreeMcpRoot:
+    process.env.SYNTHI_REAL_ROCM_MCP_SOURCE_TREE_CAS_ROOT
+    ?? process.env.SYNTHI_GPU_HMR_MCP_CAS_ROOT
+    ?? '',
   requireSourceTreeCas: booleanFromEnv(
     process.env,
     'SYNTHI_REAL_ROCM_REQUIRE_SOURCE_TREE_CAS',
@@ -3538,7 +3550,11 @@ function parseGitLsTreeRecords(raw) {
     });
 }
 
-async function buildRealRocmSourceTreeManifest({ transferOperation, workerRepoReuse } = {}) {
+async function buildRealRocmSourceTreeManifest({
+  transferOperation,
+  workerRepoReuse,
+  mountResolution = null,
+} = {}) {
   const lsTreeRaw = await execText(
     'git',
     gitLongPathArgs(['-C', CFG.repoPath, 'ls-tree', '-r', '-z', '--full-tree', 'HEAD']),
@@ -3573,6 +3589,8 @@ async function buildRealRocmSourceTreeManifest({ transferOperation, workerRepoRe
     sample_entries: entries.slice(0, 24),
     transferOperation,
     transfer_operation: transferOperation,
+    sourceTreeMountResolution: mountResolution,
+    source_tree_mount_resolution: mountResolution,
     workerRepoPath: CFG.workerRepoPath,
     worker_repo_path: CFG.workerRepoPath,
     workerRepoReuse: workerRepoReuse ?? report.worker_repo_reuse ?? null,
@@ -3589,10 +3607,94 @@ async function buildRealRocmSourceTreeManifest({ transferOperation, workerRepoRe
   return manifest;
 }
 
-function sourceTreeSharedCasMounts() {
+function normalizeSharedMountsForEnv(mounts) {
+  return defaultSharedCasMountsFromEnv({
+    SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: JSON.stringify(mounts),
+  });
+}
+
+function mergeSourceTreeMounts(baseMounts, extraMounts) {
+  const byRole = new Map();
+  for (const mount of [...baseMounts, ...extraMounts]) {
+    if (!mount?.role) continue;
+    byRole.set(mount.role, mount);
+  }
+  return normalizeSharedMountsForEnv([...byRole.values()]);
+}
+
+function defaultSourceTreeSharedCasMounts(env = process.env) {
+  if (booleanFromEnv(env, 'SYNTHI_REAL_ROCM_DISABLE_DEFAULT_SOURCE_TREE_CAS', false)) {
+    return [];
+  }
+  const localCasRoot = env.SYNTHI_REAL_ROCM_SOURCE_TREE_HOST_ROOT
+    ?? env.SYNTHI_GPU_HMR_HOST_CAS_ROOT
+    ?? env.SYNTHI_REAL_ROCM_SOURCE_TREE_CAS_ROOT
+    ?? env.SYNTHI_REAL_ROCM_CAS_ROOT
+    ?? env.SYNTHI_GPU_HMR_CAS_ROOT
+    ?? env.SYNTHI_GPU_HMR_SHARED_ARTIFACT_ROOT
+    ?? env.SYNTHI_ARTIFACT_CAS_ROOT
+    ?? path.resolve(__dirname, '..', '.gpu-hmr-shared-cas');
+  const workerRoot = env.SYNTHI_REAL_ROCM_WORKER_SOURCE_TREE_CAS_ROOT
+    ?? env.SYNTHI_GPU_HMR_WORKER_CAS_ROOT
+    ?? '/var/lib/synthi/artifact-cas';
+  const mcpRoot = env.SYNTHI_REAL_ROCM_MCP_SOURCE_TREE_CAS_ROOT
+    ?? env.SYNTHI_GPU_HMR_MCP_CAS_ROOT
+    ?? '/var/lib/synthi/artifact-cas';
+  const frontendRoot = env.SYNTHI_REAL_ROCM_FRONTEND_SOURCE_TREE_CAS_ROOT
+    ?? env.SYNTHI_GPU_HMR_FRONTEND_CAS_ROOT
+    ?? '/var/lib/synthi/artifact-cas';
+  return normalizeSharedMountsForEnv([
+    { role: 'host', root: localCasRoot, addressKind: 'shared_bind_mount' },
+    { role: 'worker', root: workerRoot, addressKind: 'shared_bind_mount' },
+    { role: 'mcp', root: mcpRoot, addressKind: 'shared_bind_mount' },
+    { role: 'frontend', root: frontendRoot, addressKind: 'shared_bind_mount' },
+  ]);
+}
+
+function sourceTreeSharedCasMounts(env = process.env) {
   try {
+    const rawSourceTreeMounts = env.SYNTHI_REAL_ROCM_SOURCE_TREE_MOUNTS_JSON
+      ?? env.SYNTHI_REAL_ROCM_SOURCE_TREE_SHARED_MOUNTS_JSON;
+    const baseMounts = rawSourceTreeMounts
+      ? defaultSharedCasMountsFromEnv({
+          SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: rawSourceTreeMounts,
+        })
+      : defaultSharedCasMountsFromEnv(env);
+    const extraMounts = [];
+    const hostRoot = env.SYNTHI_REAL_ROCM_SOURCE_TREE_HOST_ROOT
+      ?? env.SYNTHI_GPU_HMR_HOST_CAS_ROOT
+      ?? env.SYNTHI_REAL_ROCM_SOURCE_TREE_CAS_ROOT
+      ?? env.SYNTHI_REAL_ROCM_CAS_ROOT;
+    if (hostRoot) {
+      extraMounts.push({
+        role: 'host',
+        root: hostRoot,
+        addressKind: 'shared_bind_mount',
+      });
+    }
+    const workerRoot = env.SYNTHI_REAL_ROCM_WORKER_SOURCE_TREE_CAS_ROOT
+      ?? env.SYNTHI_GPU_HMR_WORKER_CAS_ROOT;
+    if (workerRoot) {
+      extraMounts.push({
+        role: 'worker',
+        root: workerRoot,
+        addressKind: 'shared_bind_mount',
+      });
+    }
+    const mcpRoot = env.SYNTHI_REAL_ROCM_MCP_SOURCE_TREE_CAS_ROOT
+      ?? env.SYNTHI_GPU_HMR_MCP_CAS_ROOT;
+    if (mcpRoot) {
+      extraMounts.push({
+        role: 'mcp',
+        root: mcpRoot,
+        addressKind: 'shared_bind_mount',
+      });
+    }
+    const defaultMounts = rawSourceTreeMounts || baseMounts.length || extraMounts.length
+      ? []
+      : defaultSourceTreeSharedCasMounts(env);
     return {
-      mounts: defaultSharedCasMountsFromEnv(process.env),
+      mounts: mergeSourceTreeMounts(defaultMounts, mergeSourceTreeMounts(baseMounts, extraMounts)),
       error: null,
     };
   } catch (error) {
@@ -3603,10 +3705,278 @@ function sourceTreeSharedCasMounts() {
   }
 }
 
+function sourceTreeSafeSegment(value, fallback = 'source-tree') {
+  const normalized = String(value ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    ?.replace(/\.git$/i, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
+  return normalized || fallback;
+}
+
+function sourceTreePortableJoin(...parts) {
+  return parts
+    .map((part) => String(part ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean)
+    .join('/');
+}
+
+function sourceTreeWorkerPath(root, relativePath) {
+  const normalizedRoot = String(root ?? '').replace(/\\/g, '/').replace(/\/+$/g, '');
+  return `${normalizedRoot}/${sourceTreePortableJoin(relativePath)}`;
+}
+
+function sourceTreeRelativePath(root, child) {
+  return path.relative(path.resolve(root), path.resolve(child)).replace(/\\/g, '/');
+}
+
+function buildSourceTreeSharedMountPlan({
+  repoPath = CFG.repoPath,
+  repoCommit = report.repo_commit,
+  repoName = CFG.repoName,
+  repoUrl = CFG.repoUrl,
+  mounts = sourceTreeSharedCasMounts().mounts,
+} = {}) {
+  const expectedCommit = String(repoCommit ?? '').trim();
+  const normalizedMounts = Array.isArray(mounts) ? mounts : [];
+  const workerMount = normalizedMounts.find((mount) => mount.role === 'worker');
+  const producerMounts = normalizedMounts.filter((mount) =>
+    ['host', 'runner', 'workspace'].includes(mount.role),
+  );
+  const base = {
+    schemaVersion: 'synthi.real_rocm.source_tree_shared_mount_plan.v1',
+    schema_version: 'synthi.real_rocm.source_tree_shared_mount_plan.v1',
+    usable: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    repoPath,
+    repo_path: repoPath,
+    repoUrl,
+    repo_url: repoUrl,
+    expectedCommit,
+    expected_commit: expectedCommit,
+    mountRoles: normalizedMounts.map((mount) => mount.role).sort(),
+    mount_roles: normalizedMounts.map((mount) => mount.role).sort(),
+  };
+  if (!expectedCommit) {
+    return { ...base, reason: 'expected_commit_missing' };
+  }
+  if (!workerMount?.root) {
+    return { ...base, reason: 'worker_shared_mount_missing' };
+  }
+  if (producerMounts.length === 0) {
+    return { ...base, reason: 'host_shared_mount_missing' };
+  }
+
+  for (const producerMount of producerMounts) {
+    const producerRoot = path.resolve(producerMount.root);
+    const resolvedRepoPath = path.resolve(repoPath);
+    if (pathIsInside(producerRoot, resolvedRepoPath)) {
+      const relativePath = sourceTreeRelativePath(producerRoot, resolvedRepoPath);
+      return {
+        ...base,
+        usable: true,
+        mode: 'existing_shared_source_tree',
+        reason: 'repo_already_inside_declared_shared_mount',
+        transferOperation: 'cas_shared_volume',
+        transfer_operation: 'cas_shared_volume',
+        producerRole: producerMount.role,
+        producer_role: producerMount.role,
+        producerRoot,
+        producer_root: producerRoot,
+        workerRoot: workerMount.root,
+        worker_root: workerMount.root,
+        relativePath,
+        relative_path: relativePath,
+        hostRepoPath: resolvedRepoPath,
+        host_repo_path: resolvedRepoPath,
+        workerRepoPath: sourceTreeWorkerPath(workerMount.root, relativePath),
+        worker_repo_path: sourceTreeWorkerPath(workerMount.root, relativePath),
+      };
+    }
+  }
+
+  const stageProducer = producerMounts[0];
+  const stageRoot = path.resolve(stageProducer.root);
+  const relativePath = sourceTreePortableJoin(
+    'source-trees',
+    sourceTreeSafeSegment(repoUrl || repoName, sourceTreeSafeSegment(repoName)),
+    expectedCommit,
+  );
+  const hostRepoPath = path.join(stageRoot, ...relativePath.split('/'));
+  if (!pathIsInside(stageRoot, hostRepoPath)) {
+    return { ...base, reason: 'shared_source_tree_stage_path_outside_root' };
+  }
+  return {
+    ...base,
+    usable: true,
+    mode: 'staged_shared_source_tree',
+    reason: 'stage_repo_into_declared_shared_mount',
+    transferOperation: 'cas_shared_volume',
+    transfer_operation: 'cas_shared_volume',
+    producerRole: stageProducer.role,
+    producer_role: stageProducer.role,
+    producerRoot: stageRoot,
+    producer_root: stageRoot,
+    workerRoot: workerMount.root,
+    worker_root: workerMount.root,
+    relativePath,
+    relative_path: relativePath,
+    hostRepoPath,
+    host_repo_path: hostRepoPath,
+    workerRepoPath: sourceTreeWorkerPath(workerMount.root, relativePath),
+    worker_repo_path: sourceTreeWorkerPath(workerMount.root, relativePath),
+  };
+}
+
+async function stageSharedSourceTree(plan) {
+  if (!plan?.usable) {
+    return {
+      staged: false,
+      reason: plan?.reason ?? 'shared_source_tree_plan_unusable',
+    };
+  }
+  if (plan.mode === 'existing_shared_source_tree') {
+    return {
+      staged: false,
+      reusedExistingSharedTree: true,
+      reused_existing_shared_tree: true,
+      reason: plan.reason,
+      hostRepoPath: plan.hostRepoPath,
+      host_repo_path: plan.hostRepoPath,
+    };
+  }
+  if (!pathIsInside(plan.producerRoot, plan.hostRepoPath)) {
+    throw new Error('shared_source_tree_stage_path_outside_root');
+  }
+  await rm(plan.hostRepoPath, { recursive: true, force: true });
+  await mkdir(path.dirname(plan.hostRepoPath), { recursive: true });
+  await cp(CFG.repoPath, plan.hostRepoPath, {
+    recursive: true,
+    force: true,
+    verbatimSymlinks: true,
+  });
+  return {
+    staged: true,
+    reusedExistingSharedTree: false,
+    reused_existing_shared_tree: false,
+    reason: 'copied_repo_into_shared_source_tree_root',
+    sourcePath: CFG.repoPath,
+    source_path: CFG.repoPath,
+    hostRepoPath: plan.hostRepoPath,
+    host_repo_path: plan.hostRepoPath,
+  };
+}
+
+async function inspectSharedSourceTreeWorkerPath(plan) {
+  if (!plan?.usable) {
+    return {
+      usable: false,
+      reason: plan?.reason ?? 'shared_source_tree_plan_unusable',
+    };
+  }
+  const expectedCommit = String(plan.expectedCommit ?? '').trim();
+  const output = await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `
+set +e
+repo=${shQuote(plan.workerRepoPath)}
+expected=${shQuote(expectedCommit)}
+build_subdir=${shQuote(CFG.buildSubdir)}
+printf 'worker_repo_path=%s\\n' "$repo"
+printf 'expected_commit=%s\\n' "$expected"
+if [ ! -d "$repo" ]; then
+  printf 'usable=0\\nreason=shared_worker_repo_missing\\n'
+  exit 0
+fi
+inside=$(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null)
+inside_status=$?
+printf 'inside_work_tree=%s\\n' "$inside"
+if [ "$inside_status" -ne 0 ] || [ "$inside" != "true" ]; then
+  printf 'usable=0\\nreason=shared_worker_repo_not_git_worktree\\n'
+  exit 0
+fi
+actual=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+git_status=$?
+printf 'actual_commit=%s\\n' "$actual"
+if [ "$git_status" -ne 0 ]; then
+  printf 'usable=0\\nreason=shared_worker_git_rev_parse_failed\\n'
+  exit 0
+fi
+if [ "$actual" != "$expected" ]; then
+  printf 'usable=0\\nreason=shared_worker_commit_mismatch\\n'
+  exit 0
+fi
+remote=$(git -C "$repo" config --get remote.origin.url 2>/dev/null)
+printf 'remote_url=%s\\n' "$remote"
+printf 'dirty_count=not_checked\\n'
+printf 'content_clean_check=skipped_shared_mount_filemode_scan\\n'
+file_count=$(git -C "$repo" ls-files 2>/dev/null | wc -l | tr -d ' ')
+printf 'file_count=%s\\n' "$file_count"
+if [ "$file_count" = "0" ]; then
+  printf 'usable=0\\nreason=shared_worker_repo_file_count_missing\\n'
+  exit 0
+fi
+if [ ! -d "$repo/$build_subdir" ]; then
+  printf 'usable=0\\nreason=shared_worker_repo_missing_build_subdir\\n'
+  exit 0
+fi
+printf 'usable=1\\nreason=clean_matching_shared_source_tree\\n'
+`,
+    ],
+    180000,
+    false,
+  );
+  const fields = parseWorkerReuseInspection(output ?? '');
+  const inspectionReturned = Boolean(Object.keys(fields).length);
+  const remoteMatches = inspectionReturned && gitRemoteMatches(fields.remote_url, CFG.repoUrl);
+  const usable = fields.usable === '1' && remoteMatches;
+  return {
+    usable,
+    reason: usable
+      ? fields.reason ?? 'clean_matching_shared_source_tree'
+      : (
+          inspectionReturned
+            ? ((remoteMatches ? fields.reason : 'shared_worker_repo_origin_mismatch') ?? 'shared_worker_repo_unusable')
+            : 'shared_worker_repo_inspection_failed_or_timeout'
+        ),
+    workerRepoPath: fields.worker_repo_path ?? plan.workerRepoPath,
+    worker_repo_path: fields.worker_repo_path ?? plan.workerRepoPath,
+    expectedCommit: fields.expected_commit ?? expectedCommit,
+    expected_commit: fields.expected_commit ?? expectedCommit,
+    actualCommit: fields.actual_commit ?? null,
+    actual_commit: fields.actual_commit ?? null,
+    remoteUrl: fields.remote_url ?? null,
+    remote_url: fields.remote_url ?? null,
+    dirtyCount: /^\d+$/.test(String(fields.dirty_count ?? '')) ? Number(fields.dirty_count) : null,
+    dirty_count: /^\d+$/.test(String(fields.dirty_count ?? '')) ? Number(fields.dirty_count) : null,
+    contentCleanCheck: fields.content_clean_check ?? null,
+    content_clean_check: fields.content_clean_check ?? null,
+    fileCount: fields.file_count === undefined ? null : Number(fields.file_count),
+    file_count: fields.file_count === undefined ? null : Number(fields.file_count),
+    raw: output ?? '',
+  };
+}
+
 async function buildRealRocmSourceTreeTransportFacet({
   transferOperation,
   destinationPath,
   workerRepoReuse,
+  mountResolution = null,
 } = {}) {
   const blockingGaps = [];
   const failedGates = [];
@@ -3619,6 +3989,7 @@ async function buildRealRocmSourceTreeTransportFacet({
     sourceTreeManifest = await buildRealRocmSourceTreeManifest({
       transferOperation,
       workerRepoReuse,
+      mountResolution,
     });
     const manifestBytes = Buffer.from(stableJson(sourceTreeManifest), 'utf8');
     const sharedCas = sourceTreeSharedCasMounts();
@@ -3701,14 +4072,18 @@ async function buildRealRocmSourceTreeTransportFacet({
   const sharedStorageAccepted =
     artifactCasValidation?.sharedStorage?.accepted === true
     || artifactCasValidation?.shared_storage?.accepted === true;
+  const sharedStorageGaps = compactStringList([
+    ...(Array.isArray(artifactCasValidation?.gaps) ? artifactCasValidation.gaps : []),
+  ]);
   const sharedHotPathProven =
     ['cas_shared_volume', 'cas_tmpfs'].includes(transportKind)
     && sharedMountCount >= 2
-    && sharedStorageAccepted;
+    && sharedStorageAccepted
+    && sharedStorageGaps.length === 0;
   const hotPathOptimized =
     transferOperation === 'worker_repo_reuse'
     || transportKind === 'direct_worker_path'
-    || sharedHotPathProven;
+    || (transferOperation !== 'docker_cp' && sharedHotPathProven);
   const acceptedAsTransportEvidence = failedGates.length === 0
     && sourceTreeManifest !== null
     && artifactCasValidation?.accepted === true;
@@ -3732,6 +4107,8 @@ async function buildRealRocmSourceTreeTransportFacet({
     can_satisfy_dispatch_proof: false,
     sourceTreeManifest,
     source_tree_manifest: sourceTreeManifest,
+    sourceTreeMountResolution: mountResolution,
+    source_tree_mount_resolution: mountResolution,
     sourceTreeManifestHash: sourceTreeManifest?.manifestHash ?? null,
     source_tree_manifest_hash: sourceTreeManifest?.manifestHash ?? null,
     artifactCasManifest,
@@ -4954,7 +5331,6 @@ async function prepareUpstreamBuild() {
     return cachedMetadata;
   }
 
-  const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   const workerReuse = await inspectWorkerRepoReuse();
   report.worker_repo_reuse = workerReuse;
   let sourceTreeTransferOperation = 'docker_cp';
@@ -4984,46 +5360,119 @@ async function prepareUpstreamBuild() {
       `path=${CFG.workerRepoPath} commit=${String(report.repo_commit).slice(0, 12)} build_dir_present=${workerReuse.buildDirPresent}`,
     );
   } else {
-    const shell = [
-      'set -e',
-      `rm -rf ${shQuote(CFG.workerTempDir)}`,
-      `mkdir -p ${shQuote(CFG.workerTempDir)}`,
-    ].join('; ');
-    await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
-    const destination = `${CFG.workerContainer}:${CFG.workerRepoPath}`;
-    try {
-      await execText('docker', ['cp', CFG.repoPath, destination], 180000, true);
-    } catch (err) {
-      const transferFailure = workerRepoTransferFailureFacet({
-        operation: 'docker_cp',
-        sourcePath: CFG.repoPath,
-        destinationPath: destination,
-        workerContainer: CFG.workerContainer,
-        error: err,
-      });
-      report.worker_repo_transfer_failure = transferFailure;
-      report.workerRepoTransferFailure = transferFailure;
-      report.evidence.worker_repo_transfer_failure = transferFailure;
+    const sharedMountPlan = buildSourceTreeSharedMountPlan();
+    report.source_tree_shared_mount_plan = sharedMountPlan;
+    report.sourceTreeSharedMountPlan = sharedMountPlan;
+    report.evidence.source_tree_shared_mount_plan = sharedMountPlan;
+    if (sharedMountPlan.usable) {
+      try {
+        const staging = await stageSharedSourceTree(sharedMountPlan);
+        const workerInspection = await inspectSharedSourceTreeWorkerPath(sharedMountPlan);
+        const resolvedSharedMountPlan = {
+          ...sharedMountPlan,
+          staging,
+          workerInspection,
+          worker_inspection: workerInspection,
+        };
+        report.source_tree_shared_mount_plan = resolvedSharedMountPlan;
+        report.sourceTreeSharedMountPlan = resolvedSharedMountPlan;
+        report.evidence.source_tree_shared_mount_plan = resolvedSharedMountPlan;
+        if (workerInspection.usable) {
+          CFG.workerRepoPath = sharedMountPlan.workerRepoPath;
+          await execText(
+            'docker',
+            [
+              'exec',
+              CFG.workerContainer,
+              'sh',
+              '-lc',
+              `set -e; mkdir -p ${shQuote(CFG.workerTempDir)}`,
+            ],
+            30000,
+            true,
+          );
+          sourceTreeTransferOperation = sharedMountPlan.transferOperation;
+          sourceTreeTransferDestination = sharedMountPlan.workerRepoPath;
+          record(
+            'worker repo shared source tree',
+            'pass',
+            `path=${CFG.workerRepoPath} commit=${String(report.repo_commit).slice(0, 12)} mode=${sharedMountPlan.mode}`,
+          );
+        } else {
+          record(
+            'worker repo shared source tree',
+            'warn',
+            `unusable reason=${workerInspection.reason} path=${sharedMountPlan.workerRepoPath}`,
+          );
+        }
+      } catch (err) {
+        const failedSharedMountPlan = {
+          ...sharedMountPlan,
+          stagingError: err?.message ?? String(err),
+          staging_error: err?.message ?? String(err),
+        };
+        report.source_tree_shared_mount_plan = failedSharedMountPlan;
+        report.sourceTreeSharedMountPlan = failedSharedMountPlan;
+        report.evidence.source_tree_shared_mount_plan = failedSharedMountPlan;
+        record(
+          'worker repo shared source tree',
+          'warn',
+          `failed reason=${err?.message ?? String(err)} path=${sharedMountPlan.workerRepoPath}`,
+        );
+      }
+    } else {
       record(
-        'worker repo transfer',
-        'fail',
-        `operation=docker_cp reasons=${transferFailure.reasons.join(',') || 'unknown'} source=${CFG.repoPath} destination=${destination}`,
-      );
-      throw err;
-    }
-    if (CFG.reuseWorkerRepo) {
-      record(
-        'worker repo warm reuse',
+        'worker repo shared source tree',
         'info',
-        `falling back to cold worker copy reason=${workerReuse.reason}`,
+        `not configured reason=${sharedMountPlan.reason}`,
       );
+    }
+
+    if (sourceTreeTransferOperation === 'docker_cp') {
+      const shell = [
+        'set -e',
+        `rm -rf ${shQuote(CFG.workerTempDir)}`,
+        `mkdir -p ${shQuote(CFG.workerTempDir)}`,
+      ].join('; ');
+      await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
+      const destination = `${CFG.workerContainer}:${CFG.workerRepoPath}`;
+      sourceTreeTransferDestination = destination;
+      try {
+        await execText('docker', ['cp', CFG.repoPath, destination], 180000, true);
+      } catch (err) {
+        const transferFailure = workerRepoTransferFailureFacet({
+          operation: 'docker_cp',
+          sourcePath: CFG.repoPath,
+          destinationPath: destination,
+          workerContainer: CFG.workerContainer,
+          error: err,
+        });
+        report.worker_repo_transfer_failure = transferFailure;
+        report.workerRepoTransferFailure = transferFailure;
+        report.evidence.worker_repo_transfer_failure = transferFailure;
+        record(
+          'worker repo transfer',
+          'fail',
+          `operation=docker_cp reasons=${transferFailure.reasons.join(',') || 'unknown'} source=${CFG.repoPath} destination=${destination}`,
+        );
+        throw err;
+      }
+      if (CFG.reuseWorkerRepo) {
+        record(
+          'worker repo warm reuse',
+          'info',
+          `falling back to cold worker copy reason=${workerReuse.reason}`,
+        );
+      }
     }
   }
   await recordRealRocmSourceTreeTransportEvidence({
     transferOperation: sourceTreeTransferOperation,
     destinationPath: sourceTreeTransferDestination,
     workerRepoReuse: report.worker_repo_reuse,
+    mountResolution: report.source_tree_shared_mount_plan ?? null,
   });
+  const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   report.runtime_capability_preflight = await runRocmArrayAllocationPreflight();
   if (report.runtime_capability_preflight?.skipped) {
     record(
@@ -15200,6 +15649,81 @@ int main()
     || rootInvalidCheckoutPlan.canAutoQuarantine
   ) {
     throw new Error('repo checkout recovery safety self-check failed');
+  }
+  const sharedCasSelfCheckRoot = path.join(REPO_ROOT, 'tmp', 'source-tree-cas-self-check');
+  const defaultSharedCasSelfCheckMounts = sourceTreeSharedCasMounts({}).mounts;
+  const disabledDefaultSharedCasSelfCheckMounts = sourceTreeSharedCasMounts({
+    SYNTHI_REAL_ROCM_DISABLE_DEFAULT_SOURCE_TREE_CAS: '1',
+  }).mounts;
+  if (
+    !defaultSharedCasSelfCheckMounts.some((mount) =>
+      mount.role === 'host' && mount.root.endsWith('.gpu-hmr-shared-cas')
+    )
+    || !defaultSharedCasSelfCheckMounts.some((mount) =>
+      mount.role === 'worker' && mount.root === '/var/lib/synthi/artifact-cas'
+    )
+    || disabledDefaultSharedCasSelfCheckMounts.length !== 0
+  ) {
+    throw new Error('default source-tree shared CAS self-check failed');
+  }
+  const sharedCasSelfCheckMounts = sourceTreeSharedCasMounts({
+    SYNTHI_REAL_ROCM_SOURCE_TREE_MOUNTS_JSON: JSON.stringify([
+      { role: 'host', root: sharedCasSelfCheckRoot },
+      { role: 'worker', root: '/var/lib/synthi/source-tree-cas' },
+      { role: 'mcp', root: '/var/lib/synthi/source-tree-cas' },
+      { role: 'frontend', root: '/var/lib/synthi/source-tree-cas' },
+    ]),
+  }).mounts;
+  const existingSharedTreePlan = buildSourceTreeSharedMountPlan({
+    repoPath: path.join(sharedCasSelfCheckRoot, 'repos', 'already-shared'),
+    repoCommit: 'a'.repeat(40),
+    repoName: 'already-shared',
+    repoUrl: 'https://example.invalid/rocm/already-shared.git',
+    mounts: sharedCasSelfCheckMounts,
+  });
+  const stagedSharedTreePlan = buildSourceTreeSharedMountPlan({
+    repoPath: path.join(REPO_ROOT, 'tmp', 'outside-shared-source'),
+    repoCommit: 'b'.repeat(40),
+    repoName: 'large-rocm-lib',
+    repoUrl: 'https://example.invalid/rocm/large-rocm-lib.git',
+    mounts: sharedCasSelfCheckMounts,
+  });
+  const missingWorkerSharedTreePlan = buildSourceTreeSharedMountPlan({
+    repoPath: path.join(REPO_ROOT, 'tmp', 'outside-shared-source'),
+    repoCommit: 'c'.repeat(40),
+    repoName: 'missing-worker',
+    repoUrl: 'https://example.invalid/rocm/missing-worker.git',
+    mounts: sourceTreeSharedCasMounts({
+      SYNTHI_REAL_ROCM_SOURCE_TREE_MOUNTS_JSON: JSON.stringify([
+        { role: 'host', root: sharedCasSelfCheckRoot },
+        { role: 'mcp', root: '/var/lib/synthi/source-tree-cas' },
+      ]),
+    }).mounts,
+  });
+  const traversalSafePlan = buildSourceTreeSharedMountPlan({
+    repoPath: path.join(REPO_ROOT, 'tmp', 'outside-shared-source'),
+    repoCommit: '../bad-commit',
+    repoName: '../bad-lib',
+    repoUrl: 'https://example.invalid/rocm/../bad-lib.git',
+    mounts: sharedCasSelfCheckMounts,
+  });
+  if (
+    existingSharedTreePlan.usable !== true
+    || existingSharedTreePlan.mode !== 'existing_shared_source_tree'
+    || !existingSharedTreePlan.workerRepoPath.endsWith('/repos/already-shared')
+    || stagedSharedTreePlan.usable !== true
+    || stagedSharedTreePlan.mode !== 'staged_shared_source_tree'
+    || !pathIsInside(sharedCasSelfCheckRoot, stagedSharedTreePlan.hostRepoPath)
+    || !stagedSharedTreePlan.workerRepoPath.includes('/source-trees/')
+    || missingWorkerSharedTreePlan.usable !== false
+    || missingWorkerSharedTreePlan.reason !== 'worker_shared_mount_missing'
+    || traversalSafePlan.hostRepoPath.includes('..')
+    || !pathIsInside(sharedCasSelfCheckRoot, traversalSafePlan.hostRepoPath)
+    || existingSharedTreePlan.acceptedForGpuHmr !== false
+    || existingSharedTreePlan.gpuHmrSuccess !== false
+    || existingSharedTreePlan.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error('real ROCm source-tree shared mount planning self-check failed');
   }
   const cmakeMissingDeps = cmakeMissingDependencyTokens([
     'Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)',
