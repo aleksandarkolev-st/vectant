@@ -1355,14 +1355,12 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           writeJson(res, 200, {
             ok: true,
             workspaceBrowser: {
-              url: openUrl,
               tab_id: opened.tab_id,
               navigation_started: opened.navigation_started,
               tabId: opened.tab_id,
               navigationStarted: opened.navigation_started,
             },
             opened: {
-              url: openUrl,
               tab_id: opened.tab_id,
               navigation_started: opened.navigation_started,
               tabId: opened.tab_id,
