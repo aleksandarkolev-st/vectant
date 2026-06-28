@@ -43,15 +43,19 @@ export async function runDojoTherapeuticTomographySelfCheck({
   await mkdir(outputDir, { recursive: true });
   const tomography = await importTomographyModule();
   const trace = tomography.buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
-  const validation = validateTrace(trace);
+  const derivedProofControls = buildDerivedProofControls(tomography, trace);
+  const validation = validateTrace(trace, derivedProofControls);
   const adversarialMatrix = validateAdversarialMatrix(tomography, trace);
   const tracePath = path.join(outputDir, "therapeutic-trace.json");
+  const controlsPath = path.join(outputDir, "therapeutic-proof-controls.json");
   const htmlPath = path.join(outputDir, "therapeutic-trace.html");
   const svgPath = path.join(outputDir, "therapeutic-trace.svg");
   await writeFile(tracePath, `${JSON.stringify(trace, null, 2)}\n`, "utf8");
-  await writeFile(htmlPath, buildTraceHtml(trace, validation), "utf8");
-  await writeFile(svgPath, buildTraceSvg(trace, validation), "utf8");
+  await writeFile(controlsPath, `${JSON.stringify(derivedProofControls, null, 2)}\n`, "utf8");
+  await writeFile(htmlPath, buildTraceHtml(trace, validation, derivedProofControls), "utf8");
+  await writeFile(svgPath, buildTraceSvg(trace, validation, derivedProofControls), "utf8");
   const traceText = await readFile(tracePath, "utf8");
+  const controlsText = await readFile(controlsPath, "utf8");
   const htmlText = await readFile(htmlPath, "utf8");
   const svgText = await readFile(svgPath, "utf8");
   const renderedVisuals = await renderVisualArtifacts({
@@ -80,12 +84,20 @@ export async function runDojoTherapeuticTomographySelfCheck({
       visual_artifacts_written: true,
       visual_artifacts_rendered: renderedVisuals.ok,
       adversarial_negative_controls_passed: adversarialMatrix.ok,
+      probe_bundle_allowed: validation.checks.probe_bundle_allowed,
+      cached_proof_reused: validation.checks.cached_proof_reused,
+      proof_metrics_computed: validation.checks.proof_metrics_computed,
+      under_escalation_detected: validation.checks.under_escalation_detected,
+      remediation_gate_separated: validation.checks.remediation_gate_separated,
     },
     failed_checks: validation.failed_checks,
     adversarial_negative_controls: adversarialMatrix.cases,
     trace_path: tracePath,
     trace_sha256: sha256(traceText),
     trace_bytes: Buffer.byteLength(traceText),
+    proof_controls_path: controlsPath,
+    proof_controls_sha256: sha256(controlsText),
+    proof_controls_bytes: Buffer.byteLength(controlsText),
     html_visual_proof_path: htmlPath,
     html_visual_proof_sha256: sha256(htmlText),
     html_visual_proof_bytes: Buffer.byteLength(htmlText),
@@ -95,6 +107,13 @@ export async function runDojoTherapeuticTomographySelfCheck({
     rendered_visuals: renderedVisuals,
     proof_capsule_id: trace.proof_capsules[0]?.id ?? null,
     avoided_access: trace.avoided_access,
+    proof_controls_summary: {
+      probe_bundle: derivedProofControls.probe_bundle.name,
+      cache_template: derivedProofControls.proof_cache.template_id,
+      metrics: derivedProofControls.proof_metrics,
+      under_escalation_flags: derivedProofControls.under_escalation.flags,
+      remediation_blocked_by: derivedProofControls.remediation_gate.blocked_by,
+    },
   };
   const evidencePath = path.join(outputDir, "therapeutic-tomography.evidence.json");
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
@@ -108,6 +127,98 @@ export async function runDojoTherapeuticTomographySelfCheck({
     svg_visual_proof_path: svgPath,
     rendered_visuals: renderedVisuals,
     evidence,
+  };
+}
+
+function buildDerivedProofControls(tomography, trace) {
+  const proofCapsule = trace.proof_capsules[0];
+  const lineageRequest = proofCapsule.requested_access;
+  const probeBundle = tomography.buildSafeProbeBundle({
+    name: "safe_quality_drop_probe_bundle",
+    task_class: trace.task_class,
+    current_authority_dose: 2,
+    contracts: tomography.THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+  });
+  const proofCache = tomography.evaluateProofCache({
+    trace,
+    request: lineageRequest,
+    proof_capsule: proofCapsule,
+  });
+  const metrics = tomography.summarizeProofMetrics({
+    decisions: [
+      {
+        decision: "denied",
+        tier: 3,
+        blocked_by: trace.blocked_overreach_attempts[0]?.reason || [],
+        suggested_alternatives: trace.suggested_lower_risk_alternatives,
+        verification_latency_ms: 7,
+        human_reviewed: true,
+        token_count: 0,
+      },
+      {
+        decision: "approved",
+        tier: 1,
+        blocked_by: [],
+        suggested_alternatives: [],
+        verification_latency_ms: 18,
+        cache_hit: proofCache.cache_hit,
+        probe_bundle_success: probeBundle.decision === "allowed",
+        token_count: 0,
+      },
+    ],
+  });
+  const underEscalationTrace = {
+    ...trace,
+    uncertainties: trace.uncertainties.map((uncertainty) => ({
+      ...uncertainty,
+      blocking_status: "blocked",
+      severity: "high",
+    })),
+  };
+  const underEscalation = tomography.evaluateUnderEscalation({
+    trace: underEscalationTrace,
+    available_requests: [lineageRequest],
+  });
+  const remediationGate = tomography.evaluateRemediationGate({
+    trace,
+    proposal: {
+      id: "remediation_visual_negative_control",
+      task_id: trace.task_id,
+      diagnosis_verified: true,
+      proposed_change: "Align the scoped serving transform after separate approval.",
+      requested_access: {
+        ...lineageRequest,
+        id: "remediation_write_visual_negative_control",
+        authority_dose: 7,
+        mode: "write",
+        data_classes: ["serving_config_patch"],
+        tools: ["serving_config_patch"],
+        purpose: "Apply the scoped serving transform remediation.",
+      },
+      blast_radius: "single feature transform",
+      rollback_plan: "",
+      postcondition_checks: [],
+      human_approval: null,
+    },
+  });
+  return {
+    schema_version: "synthi.dojo.therapeuticProofControls.v1",
+    probe_bundle: {
+      name: probeBundle.name,
+      decision: probeBundle.decision,
+      probes: probeBundle.probes.map((probe) => probe.name),
+      required_authority_dose: probeBundle.required_authority_dose,
+      required_data_classes: probeBundle.required_data_classes,
+      denied_by: probeBundle.denied_by,
+    },
+    proof_cache: proofCache,
+    proof_metrics: metrics,
+    under_escalation: {
+      under_escalated: underEscalation.under_escalated,
+      recommended_scope: underEscalation.recommended_request?.scope || null,
+      flags: underEscalation.flags,
+    },
+    remediation_gate: remediationGate,
   };
 }
 
@@ -317,6 +428,10 @@ function requiredTraceVisualText(trace) {
     trace.avoided_access[0] || "",
     trace.avoided_access[trace.avoided_access.length - 1] || "",
     trace.diagnosis,
+    "safe_quality_drop_probe_bundle",
+    "ml_quality_drop_feature_lineage_v1",
+    "Under-escalation",
+    "Remediation gate",
   ].filter(Boolean);
 }
 
@@ -331,6 +446,9 @@ function requiredTraceSvgText(trace) {
     "train/serve skew",
     trace.avoided_access[0] || "",
     trace.avoided_access[trace.avoided_access.length - 1] || "",
+    "proof cache hit",
+    "safe probe bundle",
+    "remediation gated",
   ].filter(Boolean);
 }
 
@@ -342,7 +460,7 @@ async function importTomographyModule() {
   return import(pathToFileURL(distPath).href);
 }
 
-function validateTrace(trace) {
+function validateTrace(trace, derivedProofControls) {
   const firstBlock = trace.blocked_overreach_attempts?.[0];
   const proof = trace.proof_capsules?.[0];
   const dose = trace.authority_doses?.[0];
@@ -367,6 +485,19 @@ function validateTrace(trace) {
     diagnosis_verified: trace.final_outcome === "diagnosed"
       && String(trace.diagnosis).includes("train_serve_skew")
       && String(trace.diagnosis).includes("customer_plan"),
+    probe_bundle_allowed: derivedProofControls.probe_bundle.decision === "allowed"
+      && ["eval_slice_compare", "feature_drift_summary", "model_route_compare"]
+        .every((name) => derivedProofControls.probe_bundle.probes.includes(name)),
+    cached_proof_reused: derivedProofControls.proof_cache.cache_hit === true
+      && derivedProofControls.proof_cache.template_id === "ml_quality_drop_feature_lineage_v1",
+    proof_metrics_computed: derivedProofControls.proof_metrics.percent_decisions_deterministic > 0
+      && derivedProofControls.proof_metrics.average_tokens_per_access_decision === 0,
+    under_escalation_detected: derivedProofControls.under_escalation.under_escalated === true
+      && derivedProofControls.under_escalation.recommended_scope === "feature:customer_plan",
+    remediation_gate_separated: derivedProofControls.remediation_gate.decision === "denied"
+      && derivedProofControls.remediation_gate.blocked_by.includes("rollback_plan_missing")
+      && derivedProofControls.remediation_gate.blocked_by.includes("postcondition_checks_missing")
+      && derivedProofControls.remediation_gate.blocked_by.includes("human_approval_required"),
   };
   const failedChecks = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
   return {
@@ -376,7 +507,7 @@ function validateTrace(trace) {
   };
 }
 
-function buildTraceHtml(trace, validation) {
+function buildTraceHtml(trace, validation, derivedProofControls) {
   const proof = trace.proof_capsules[0];
   const rows = [
     ["Current authority dose", String(trace.current_authority_dose)],
@@ -389,6 +520,11 @@ function buildTraceHtml(trace, validation) {
     ["Narrative claims", String(proof?.unverifiable_narrative_claims.length || 0)],
     ["Avoided access", trace.avoided_access.join(", ")],
     ["Diagnosis", trace.diagnosis],
+    ["Safe probe bundle", `${derivedProofControls.probe_bundle.name}: ${derivedProofControls.probe_bundle.probes.join(" -> ")}`],
+    ["Proof cache", `${derivedProofControls.proof_cache.cache_hit ? "hit" : "miss"}: ${derivedProofControls.proof_cache.template_id || "none"}`],
+    ["Proof metrics", `deterministic ${derivedProofControls.proof_metrics.percent_decisions_deterministic}% | p95 ${derivedProofControls.proof_metrics.proof_verification_latency_p95}ms | tokens ${derivedProofControls.proof_metrics.average_tokens_per_access_decision}`],
+    ["Under-escalation", `${derivedProofControls.under_escalation.under_escalated ? "detected" : "clear"}: ${derivedProofControls.under_escalation.flags.join(", ")}`],
+    ["Remediation gate", `${derivedProofControls.remediation_gate.decision}: ${derivedProofControls.remediation_gate.blocked_by.join(", ")}`],
   ];
   return `<!doctype html>
 <html lang="en">
@@ -409,6 +545,8 @@ function buildTraceHtml(trace, validation) {
     th { color: #9eadad; font-weight: 600; width: 230px; }
     .rail { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 8px; margin-top: 18px; }
     .rail div { border: 1px solid #3d5247; border-radius: 6px; padding: 10px; color: #f0c98b; background: #251f15; }
+    .control { margin-top: 18px; border: 1px solid #3c5264; border-radius: 8px; padding: 14px; background: #141d24; }
+    .control strong { display: block; color: #9cc9f0; margin-bottom: 6px; }
   </style>
 </head>
 <body>
@@ -430,13 +568,21 @@ function buildTraceHtml(trace, validation) {
     <section class="rail" aria-label="Avoided access">
       ${trace.avoided_access.map((item) => `<div>${escapeHtml(item)}</div>`).join("\n")}
     </section>
+    <section class="control" aria-label="Proof latency controls">
+      <strong>safe_quality_drop_probe_bundle</strong>
+      <span>${escapeHtml(derivedProofControls.probe_bundle.probes.join(" -> "))}</span>
+    </section>
+    <section class="control" aria-label="Proof cache and remediation controls">
+      <strong>ml_quality_drop_feature_lineage_v1</strong>
+      <span>Under-escalation ${escapeHtml(derivedProofControls.under_escalation.under_escalated ? "detected" : "clear")} | Remediation gate ${escapeHtml(derivedProofControls.remediation_gate.decision)}</span>
+    </section>
   </main>
 </body>
 </html>
 `;
 }
 
-function buildTraceSvg(trace, validation) {
+function buildTraceSvg(trace, validation, derivedProofControls) {
   const stages = [
     ["Blocked", "raw_prod_logs"],
     ["Probe", "eval_slice_compare"],
@@ -446,7 +592,7 @@ function buildTraceSvg(trace, validation) {
     ["Diagnosis", "train/serve skew"],
   ];
   const width = 1120;
-  const height = 360;
+  const height = 420;
   const stepWidth = 170;
   const startX = 42;
   const y = 128;
@@ -463,6 +609,9 @@ function buildTraceSvg(trace, validation) {
   <text x="${x + 12}" y="${y + 58}" fill="#eef5ef" font-family="Inter, Segoe UI, sans-serif" font-size="12">${escapeXml(value)}</text>`;
   }).join("\n")}
   <text x="42" y="286" fill="#f0c98b" font-family="Inter, Segoe UI, sans-serif" font-size="15">Avoided access: ${escapeXml(trace.avoided_access.join(" | "))}</text>
+  <text x="42" y="322" fill="#9cc9f0" font-family="Inter, Segoe UI, sans-serif" font-size="15">safe probe bundle: ${escapeXml(derivedProofControls.probe_bundle.probes.join(" -> "))}</text>
+  <text x="42" y="350" fill="#9be7ba" font-family="Inter, Segoe UI, sans-serif" font-size="15">proof cache hit: ${escapeXml(derivedProofControls.proof_cache.template_id || "none")}</text>
+  <text x="42" y="378" fill="#ffc2c2" font-family="Inter, Segoe UI, sans-serif" font-size="15">remediation gated: ${escapeXml(derivedProofControls.remediation_gate.blocked_by.join(" | "))}</text>
 </svg>
 `;
 }
