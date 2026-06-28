@@ -945,6 +945,18 @@ function realRocmAppHookMaterializationSnapshot(input = {}, validationContext = 
     ?? null;
 }
 
+function realRocmRuntimeProfileAdapterResultSnapshot(input = {}, validationContext = null) {
+  return objectOrNull(input.realRocmRuntimeProfileAdapterResult)
+    ?? objectOrNull(input.real_rocm_runtime_profile_adapter_result)
+    ?? objectOrNull(input.runtimeProfileAdapterResult)
+    ?? objectOrNull(input.runtime_profile_adapter_result)
+    ?? objectOrNull(validationContext?.realRocmRuntimeProfileAdapterResult)
+    ?? objectOrNull(validationContext?.real_rocm_runtime_profile_adapter_result)
+    ?? objectOrNull(validationContext?.runtimeProfileAdapterResult)
+    ?? objectOrNull(validationContext?.runtime_profile_adapter_result)
+    ?? null;
+}
+
 function realRocmSameProcessRuntimeOracleSnapshot(input = {}, validationContext = null) {
   return objectOrNull(input.realRocmSameProcessRuntimeOracle)
     ?? objectOrNull(input.real_rocm_same_process_runtime_oracle)
@@ -967,6 +979,49 @@ function realRocmMissingDependencyProbeSnapshot(input = {}, validationContext = 
     ?? objectOrNull(validationContext?.missingDependencyProbe)
     ?? objectOrNull(validationContext?.missing_dependency_probe)
     ?? null;
+}
+
+function realRocmRuntimeProfileAdapterResultLimitations(result) {
+  if (!objectOrNull(result)) return [];
+  if (result.declared !== true) return [];
+  const strictAccepted =
+    result.strictRuntimeProofAccepted === true
+    || result.strict_runtime_proof_accepted === true;
+  if (strictAccepted) return [];
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(result.blockingGaps) ? result.blockingGaps : []),
+    ...(Array.isArray(result.blocking_gaps) ? result.blocking_gaps : []),
+  ]);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(result.evidenceRefs) ? result.evidenceRefs : []),
+    ...(Array.isArray(result.evidence_refs) ? result.evidence_refs : []),
+  ]);
+  const observedState = firstString(
+    result.status,
+    result.reason,
+    'real_rocm_runtime_profile_adapter_result_unproven',
+  );
+  return [{
+    stageId: 'real-rocm-runtime-profile-adapter-result',
+    stage_id: 'real-rocm-runtime-profile-adapter-result',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-runtime-profile-adapter-result-proven',
+    required_state: 'gpu-hmr-runtime-profile-adapter-result-proven',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-runtime-profile-adapter-result-unproven',
+    degraded_state: 'gpu-hmr-runtime-profile-adapter-result-unproven',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
 }
 
 function realRocmAppHookContractLimitations(contract) {
@@ -2699,6 +2754,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const realRocmAppHookContract = realRocmAppHookContractSnapshot(input, validationContext);
   const realRocmAppHookMaterialization =
     realRocmAppHookMaterializationSnapshot(input, validationContext);
+  const realRocmRuntimeProfileAdapterResult =
+    realRocmRuntimeProfileAdapterResultSnapshot(input, validationContext);
   const realRocmSameProcessRuntimeOracle =
     realRocmSameProcessRuntimeOracleSnapshot(input, validationContext);
   const realRocmMissingDependencyProbe =
@@ -2802,6 +2859,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...proofLedgerLimitations(proofLedgerQuery),
     ...realRocmAppHookContractLimitations(realRocmAppHookContract),
     ...realRocmAppHookMaterializationLimitations(realRocmAppHookMaterialization),
+    ...realRocmRuntimeProfileAdapterResultLimitations(realRocmRuntimeProfileAdapterResult),
     ...realRocmSameProcessRuntimeOracleLimitations(realRocmSameProcessRuntimeOracle),
     ...realRocmMissingDependencyProbeLimitations(realRocmMissingDependencyProbe),
     ...targetProgressionGateLimitations(targetProgressionGates),
@@ -2816,6 +2874,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(adversarialPreflight),
     ...evidenceStringsFromValue(realRocmAppHookContract),
     ...evidenceStringsFromValue(realRocmAppHookMaterialization),
+    ...evidenceStringsFromValue(realRocmRuntimeProfileAdapterResult),
     ...evidenceStringsFromValue(realRocmSameProcessRuntimeOracle),
     ...evidenceStringsFromValue(realRocmMissingDependencyProbe),
   ]);
@@ -2858,6 +2917,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     real_rocm_app_hook_materialization: realRocmAppHookMaterialization,
     appHookMaterialization: realRocmAppHookMaterialization,
     app_hook_materialization: realRocmAppHookMaterialization,
+    realRocmRuntimeProfileAdapterResult,
+    real_rocm_runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
+    runtimeProfileAdapterResult: realRocmRuntimeProfileAdapterResult,
+    runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
@@ -2899,6 +2962,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgressionGates,
     realRocmAppHookContract,
     realRocmAppHookMaterialization,
+    realRocmRuntimeProfileAdapterResult,
     realRocmSameProcessRuntimeOracle,
     realRocmMissingDependencyProbe,
     adversarialPreflight,
@@ -2965,6 +3029,10 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     real_rocm_app_hook_materialization: realRocmAppHookMaterialization,
     appHookMaterialization: realRocmAppHookMaterialization,
     app_hook_materialization: realRocmAppHookMaterialization,
+    realRocmRuntimeProfileAdapterResult,
+    real_rocm_runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
+    runtimeProfileAdapterResult: realRocmRuntimeProfileAdapterResult,
+    runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,

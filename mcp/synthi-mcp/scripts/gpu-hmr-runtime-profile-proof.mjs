@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,7 @@ function parseArgs(argv) {
     profilePath: '',
     profileJson: '',
     mode: '',
+    resultPath: '',
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -48,9 +50,45 @@ function parseArgs(argv) {
       parsed.mode = argv[++index] ?? '';
       continue;
     }
+    if (arg === '--result-path') {
+      parsed.resultPath = argv[++index] ?? '';
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
   return parsed;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Text(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+function compactString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    const normalized = compactString(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function firstBool(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
 }
 
 function adapterForProfile(profile) {
@@ -99,42 +137,43 @@ function resolveProfileRunnerPath(runnerPath) {
   return resolved;
 }
 
-function spawnNodeScript(scriptPath, env, runnerArgs = []) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath, ...runnerArgs], {
-      cwd: REPO_ROOT,
-      env,
-      stdio: 'inherit',
-      windowsHide: true,
-    });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (signal) {
-        resolve(128);
-        return;
-      }
-      resolve(code ?? 1);
-    });
-  });
-}
-
-function spawnProcess(command, args, env) {
+function spawnWithCapturedOutput(command, args, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: REPO_ROOT,
       env,
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stdout += text;
+      process.stdout.write(text);
+    });
+    child.stderr?.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      process.stderr.write(text);
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (signal) {
-        resolve(128);
+        resolve({ exitCode: 128, signal, stdout, stderr });
         return;
       }
-      resolve(code ?? 1);
+      resolve({ exitCode: code ?? 1, signal: null, stdout, stderr });
     });
   });
+}
+
+function spawnNodeScript(scriptPath, env, runnerArgs = []) {
+  return spawnWithCapturedOutput(process.execPath, [scriptPath, ...runnerArgs], env);
+}
+
+function spawnProcess(command, args, env) {
+  return spawnWithCapturedOutput(command, args, env);
 }
 
 function envForAdapter(profile, adapter) {
@@ -148,6 +187,243 @@ function envForAdapter(profile, adapter) {
     Object.assign(env, runtimeProfileToHiprtWarmEnv(profile));
   }
   return env;
+}
+
+function resolveResultPath(rawPath) {
+  const raw = compactString(rawPath);
+  if (!raw) return null;
+  const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(REPO_ROOT, raw);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`runtime profile result path must stay inside the repo: ${rawPath}`);
+  }
+  return resolved;
+}
+
+function resolveProofPath(rawPath) {
+  const raw = compactString(rawPath);
+  if (!raw) return null;
+  const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(REPO_ROOT, raw);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) return null;
+  return resolved;
+}
+
+function parseJsonLine(line) {
+  const trimmed = String(line ?? '').trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function proofPathFromRunnerOutput(output) {
+  const lines = String(output ?? '').split(/\r?\n/);
+  for (const line of [...lines].reverse()) {
+    const match = /^\s*(proof_json|proofPath|proof_path|proof)\s*[:=]\s*(.+?)\s*$/.exec(line);
+    if (match?.[2]) return match[2].replace(/^["']|["']$/g, '');
+    const parsed = parseJsonLine(line);
+    const candidate = firstString(
+      parsed?.proofPath,
+      parsed?.proof_path,
+      parsed?.proofJson,
+      parsed?.proof_json,
+      parsed?.artifactPath,
+      parsed?.artifact_path,
+    );
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+async function readJsonIfPresent(filePath) {
+  if (!filePath) return { present: false, value: null, error: null };
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    return {
+      present: true,
+      value: JSON.parse(text),
+      rawSha256: `sha256:${sha256Text(text)}`,
+      byteLength: Buffer.byteLength(text, 'utf8'),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      present: false,
+      value: null,
+      rawSha256: null,
+      byteLength: 0,
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+function summarizeProofArtifact(proof) {
+  const runtimeProofArtifact =
+    proof?.runtimeProofArtifact
+    ?? proof?.runtime_proof_artifact
+    ?? proof?.strictRuntimeProofArtifact
+    ?? proof?.strict_runtime_proof_artifact
+    ?? null;
+  const proofLedger =
+    proof?.proofLedger
+    ?? proof?.proof_ledger
+    ?? proof?.ledger
+    ?? runtimeProofArtifact?.proofLedger
+    ?? runtimeProofArtifact?.proof_ledger
+    ?? null;
+  const strictRuntimeProofId = firstString(
+    runtimeProofArtifact?.proofId,
+    runtimeProofArtifact?.proof_id,
+    proof?.strictRuntimeProofId,
+    proof?.strict_runtime_proof_id,
+    proof?.runtimeProofId,
+    proof?.runtime_proof_id,
+  );
+  const proofLedgerId = firstString(
+    proofLedger?.proofId,
+    proofLedger?.proof_id,
+    proof?.ledgerId,
+    proof?.ledger_id,
+    proof?.proofLedgerId,
+    proof?.proof_ledger_id,
+  );
+  const gpuHmrSuccess = firstBool(
+    runtimeProofArtifact?.gpuHmrSuccess,
+    runtimeProofArtifact?.gpu_hmr_success,
+    proof?.gpuHmrSuccess,
+    proof?.gpu_hmr_success,
+  );
+  const fullRuntimeProven = firstBool(
+    runtimeProofArtifact?.fullRuntimeProven,
+    runtimeProofArtifact?.full_runtime_proven,
+    proof?.fullRuntimeProven,
+    proof?.full_runtime_proven,
+  );
+  const limitations = [
+    ...(Array.isArray(runtimeProofArtifact?.limitations) ? runtimeProofArtifact.limitations : []),
+    ...(Array.isArray(proof?.limitations) ? proof.limitations : []),
+  ];
+  return {
+    strictRuntimeProofArtifactPresent: Boolean(runtimeProofArtifact),
+    strict_runtime_proof_artifact_present: Boolean(runtimeProofArtifact),
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
+    proofLedgerPresent: Boolean(proofLedger),
+    proof_ledger_present: Boolean(proofLedger),
+    proofLedgerId,
+    proof_ledger_id: proofLedgerId,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    limitationsPresent: limitations.length > 0,
+    limitations_present: limitations.length > 0,
+    limitationCount: limitations.length,
+    limitation_count: limitations.length,
+  };
+}
+
+async function writeRuntimeProfileAdapterResult({
+  profile,
+  adapter,
+  resultPath,
+  startedAt,
+  finishedAt,
+  spawnResult,
+}) {
+  const combinedOutput = `${spawnResult.stdout ?? ''}\n${spawnResult.stderr ?? ''}`;
+  const rawProofPath = proofPathFromRunnerOutput(combinedOutput);
+  const proofPath = resolveProofPath(rawProofPath);
+  const proofRead = await readJsonIfPresent(proofPath);
+  const proofSummary = summarizeProofArtifact(proofRead.value ?? {});
+  const runnerSucceeded = spawnResult.exitCode === 0;
+  const strictRuntimeProofAccepted =
+    proofSummary.strictRuntimeProofArtifactPresent === true
+    && proofSummary.gpuHmrSuccess === true
+    && proofSummary.fullRuntimeProven === true
+    && proofSummary.limitationsPresent !== true;
+  const blockingGaps = [
+    runnerSucceeded ? null : 'runtime_profile_adapter_runner_failed',
+    rawProofPath ? null : 'runtime_profile_adapter_proof_path_missing',
+    rawProofPath && !proofPath ? 'runtime_profile_adapter_proof_path_outside_repo' : null,
+    proofPath && !proofRead.present ? 'runtime_profile_adapter_proof_json_unreadable' : null,
+    proofRead.present && !proofSummary.strictRuntimeProofArtifactPresent
+      ? 'runtime_profile_adapter_strict_runtime_proof_artifact_missing'
+      : null,
+    proofSummary.strictRuntimeProofArtifactPresent && proofSummary.gpuHmrSuccess !== true
+      ? 'runtime_profile_adapter_gpu_hmr_success_false'
+      : null,
+    proofSummary.strictRuntimeProofArtifactPresent && proofSummary.fullRuntimeProven !== true
+      ? 'runtime_profile_adapter_full_runtime_not_proven'
+      : null,
+    proofSummary.limitationsPresent ? 'runtime_profile_adapter_limitations_present' : null,
+  ].filter(Boolean);
+  const result = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
+    proofAuthority: 'adapter_result_manifest_not_matrix_authority',
+    proof_authority: 'adapter_result_manifest_not_matrix_authority',
+    profileId: profile.id,
+    profile_id: profile.id,
+    adapterFamily: profile.adapter.family,
+    adapter_family: profile.adapter.family,
+    proofRunner: profile.adapter.proofRunner,
+    proof_runner: profile.adapter.proofRunner,
+    runnerKind: adapter.runnerKind,
+    runner_kind: adapter.runnerKind,
+    runnerPath: path.relative(REPO_ROOT, adapter.runner).replace(/\\/g, '/'),
+    runner_path: path.relative(REPO_ROOT, adapter.runner).replace(/\\/g, '/'),
+    startedAt,
+    started_at: startedAt,
+    finishedAt,
+    finished_at: finishedAt,
+    exitCode: spawnResult.exitCode,
+    exit_code: spawnResult.exitCode,
+    signal: spawnResult.signal,
+    runnerSucceeded,
+    runner_succeeded: runnerSucceeded,
+    rawProofPath: rawProofPath ?? null,
+    raw_proof_path: rawProofPath ?? null,
+    proofPath: proofPath ? path.relative(REPO_ROOT, proofPath).replace(/\\/g, '/') : null,
+    proof_path: proofPath ? path.relative(REPO_ROOT, proofPath).replace(/\\/g, '/') : null,
+    proofJsonPresent: proofRead.present,
+    proof_json_present: proofRead.present,
+    proofJsonSha256: proofRead.rawSha256 ?? null,
+    proof_json_sha256: proofRead.rawSha256 ?? null,
+    proofJsonByteLength: proofRead.byteLength ?? 0,
+    proof_json_byte_length: proofRead.byteLength ?? 0,
+    proofReadError: proofRead.error,
+    proof_read_error: proofRead.error,
+    ...proofSummary,
+    strictRuntimeProofAccepted,
+    strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    stdoutSha256: `sha256:${sha256Text(spawnResult.stdout ?? '')}`,
+    stdout_sha256: `sha256:${sha256Text(spawnResult.stdout ?? '')}`,
+    stderrSha256: `sha256:${sha256Text(spawnResult.stderr ?? '')}`,
+    stderr_sha256: `sha256:${sha256Text(spawnResult.stderr ?? '')}`,
+    stdoutTail: String(spawnResult.stdout ?? '').slice(-4000),
+    stdout_tail: String(spawnResult.stdout ?? '').slice(-4000),
+    stderrTail: String(spawnResult.stderr ?? '').slice(-4000),
+    stderr_tail: String(spawnResult.stderr ?? '').slice(-4000),
+  };
+  const resultHash = `sha256:${sha256Text(stableJson(result))}`;
+  result.resultHash = resultHash;
+  result.result_hash = resultHash;
+  if (resultPath) {
+    await fs.mkdir(path.dirname(resultPath), { recursive: true });
+    await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+    console.log(`runtime_profile_result=${resultPath}`);
+  }
+  return result;
 }
 
 async function loadPackagedProfile(profilePath) {
@@ -257,6 +533,56 @@ async function selfCheck() {
     adapter: external.adapter.family,
     runner: path.relative(REPO_ROOT, externalAdapter.runner).replace(/\\/g, '/'),
   });
+  const resultSmokeDir = path.join(
+    REPO_ROOT,
+    'mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-profile-self-check',
+    `adapter-result-${Date.now()}`,
+  );
+  const resultSmokeProofPath = path.join(resultSmokeDir, 'adapter-proof.json');
+  const resultSmokePath = path.join(resultSmokeDir, 'adapter-result.json');
+  const resultSmoke = normalizeRuntimeProofProfile({
+    ...baseProfile,
+    id: 'external-adapter-result-smoke',
+    adapter: {
+      family: 'external-adapter-result-smoke',
+      proofRunner: 'profile-runner',
+      runnerKind: 'node-script',
+      runnerPath: 'mcp/synthi-mcp/scripts/fixtures/runtime-profile-external-adapter-result-smoke.mjs',
+    },
+  });
+  const resultSmokeAdapter = adapterForProfile(resultSmoke);
+  const resultSmokeEnv = {
+    ...envForAdapter(resultSmoke, resultSmokeAdapter),
+    SYNTHI_GPU_HMR_RUNTIME_RESULT_SMOKE_PROOF_PATH: resultSmokeProofPath,
+  };
+  const resultSmokeStartedAt = new Date().toISOString();
+  const resultSmokeSpawn = await spawnNodeScript(
+    resultSmokeAdapter.runner,
+    resultSmokeEnv,
+    resultSmokeAdapter.runnerArgs ?? [],
+  );
+  const resultSmokeFinishedAt = new Date().toISOString();
+  const resultSmokeArtifact = await writeRuntimeProfileAdapterResult({
+    profile: resultSmoke,
+    adapter: resultSmokeAdapter,
+    resultPath: resultSmokePath,
+    startedAt: resultSmokeStartedAt,
+    finishedAt: resultSmokeFinishedAt,
+    spawnResult: resultSmokeSpawn,
+  });
+  checks.push({
+    name: 'profile-declared-adapter-result-contract',
+    ok:
+      resultSmokeSpawn.exitCode === 0
+      && resultSmokeArtifact.schemaVersion === 'synthi.gpu_hmr.runtime_profile_adapter_result.v1'
+      && resultSmokeArtifact.proofJsonPresent === true
+      && resultSmokeArtifact.strictRuntimeProofAccepted === true
+      && resultSmokeArtifact.acceptedForGpuHmr === false
+      && resultSmokeArtifact.canSatisfyRuntimeProof === false
+      && resultSmokeArtifact.blockingGaps.length === 0,
+    adapter: resultSmoke.adapter.family,
+    resultPath: path.relative(REPO_ROOT, resultSmokePath).replace(/\\/g, '/'),
+  });
   const controlled = normalizeRuntimeProofProfile({
     ...baseProfile,
     id: 'profile-controls-smoke',
@@ -345,16 +671,31 @@ async function main() {
   }
   const adapter = adapterForProfile(profile);
   const env = envForAdapter(profile, adapter);
+  const resultPath = resolveResultPath(
+    args.resultPath
+      || process.env.SYNTHI_GPU_HMR_RUNTIME_RESULT_PATH
+      || process.env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_RESULT_PATH,
+  );
 
-  let exitCode;
+  const startedAt = new Date().toISOString();
+  let spawnResult;
   if (adapter.runnerKind === 'node-script') {
-    exitCode = await spawnNodeScript(adapter.runner, env, adapter.runnerArgs ?? []);
+    spawnResult = await spawnNodeScript(adapter.runner, env, adapter.runnerArgs ?? []);
   } else if (adapter.runnerKind === 'process') {
-    exitCode = await spawnProcess(adapter.runner, adapter.runnerArgs ?? [], env);
+    spawnResult = await spawnProcess(adapter.runner, adapter.runnerArgs ?? [], env);
   } else {
     throw new Error(`unsupported adapter runner kind: ${adapter.runnerKind}`);
   }
-  process.exitCode = exitCode;
+  const finishedAt = new Date().toISOString();
+  await writeRuntimeProfileAdapterResult({
+    profile,
+    adapter,
+    resultPath,
+    startedAt,
+    finishedAt,
+    spawnResult,
+  });
+  process.exitCode = spawnResult.exitCode;
 }
 
 main().catch((err) => {

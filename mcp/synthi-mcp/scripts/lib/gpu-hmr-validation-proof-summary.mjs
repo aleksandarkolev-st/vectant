@@ -432,6 +432,28 @@ function realRocmAppHookMaterialization(input, validationContext) {
   return null;
 }
 
+function realRocmRuntimeProfileAdapterResult(input, validationContext) {
+  if (isObject(input.realRocmRuntimeProfileAdapterResult)) return input.realRocmRuntimeProfileAdapterResult;
+  if (isObject(input.real_rocm_runtime_profile_adapter_result)) {
+    return input.real_rocm_runtime_profile_adapter_result;
+  }
+  if (isObject(input.runtimeProfileAdapterResult)) return input.runtimeProfileAdapterResult;
+  if (isObject(input.runtime_profile_adapter_result)) return input.runtime_profile_adapter_result;
+  if (isObject(validationContext?.realRocmRuntimeProfileAdapterResult)) {
+    return validationContext.realRocmRuntimeProfileAdapterResult;
+  }
+  if (isObject(validationContext?.real_rocm_runtime_profile_adapter_result)) {
+    return validationContext.real_rocm_runtime_profile_adapter_result;
+  }
+  if (isObject(validationContext?.runtimeProfileAdapterResult)) {
+    return validationContext.runtimeProfileAdapterResult;
+  }
+  if (isObject(validationContext?.runtime_profile_adapter_result)) {
+    return validationContext.runtime_profile_adapter_result;
+  }
+  return null;
+}
+
 function realRocmMissingDependencyProbe(input, validationContext) {
   if (isObject(input.realRocmMissingDependencyProbe)) return input.realRocmMissingDependencyProbe;
   if (isObject(input.real_rocm_missing_dependency_probe)) return input.real_rocm_missing_dependency_probe;
@@ -820,6 +842,16 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
       ?? null
     ),
   ]).at(-1) ?? null;
+  const runtimeProfileAdapterResult = compactObjects([
+    realRocmRuntimeProfileAdapterResult(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmRuntimeProfileAdapterResult
+      ?? record.real_rocm_runtime_profile_adapter_result
+      ?? record.runtimeProfileAdapterResult
+      ?? record.runtime_profile_adapter_result
+      ?? null
+    ),
+  ]).at(-1) ?? null;
   const missingDependencyProbe = compactObjects([
     realRocmMissingDependencyProbe(input, validationContext),
     ...runtimeArtifactRecords.map((record) =>
@@ -987,6 +1019,44 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             status: appHookMaterialization.status ?? null,
           }
         : null,
+      real_rocm_runtime_profile_adapter_result: runtimeProfileAdapterResult
+        ? {
+            declared: runtimeProfileAdapterResult.declared === true,
+            present: runtimeProfileAdapterResult.present === true,
+            accepted_as_refusal_evidence:
+              runtimeProfileAdapterResult.acceptedAsRefusalEvidence === true
+              || runtimeProfileAdapterResult.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              runtimeProfileAdapterResult.acceptedForGpuHmr === true
+              || runtimeProfileAdapterResult.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              runtimeProfileAdapterResult.gpuHmrSuccess === true
+              || runtimeProfileAdapterResult.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              runtimeProfileAdapterResult.canSatisfyRuntimeProof === true
+              || runtimeProfileAdapterResult.can_satisfy_runtime_proof === true,
+            strict_runtime_proof_accepted:
+              runtimeProfileAdapterResult.strictRuntimeProofAccepted === true
+              || runtimeProfileAdapterResult.strict_runtime_proof_accepted === true,
+            strict_runtime_proof_id:
+              runtimeProfileAdapterResult.strictRuntimeProofId
+              ?? runtimeProfileAdapterResult.strict_runtime_proof_id
+              ?? null,
+            adapter_result_hash:
+              runtimeProfileAdapterResult.adapterResultHash
+              ?? runtimeProfileAdapterResult.adapter_result_hash
+              ?? null,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(runtimeProfileAdapterResult.blockingGaps)
+                ? runtimeProfileAdapterResult.blockingGaps
+                : []),
+              ...(Array.isArray(runtimeProfileAdapterResult.blocking_gaps)
+                ? runtimeProfileAdapterResult.blocking_gaps
+                : []),
+            ]).length,
+            status: runtimeProfileAdapterResult.status ?? null,
+          }
+        : null,
       real_rocm_missing_dependency_probe: missingDependencyProbe
         ? {
             accepted_as_refusal_evidence:
@@ -1056,6 +1126,10 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     real_rocm_app_hook_materialization: appHookMaterialization,
     appHookMaterialization,
     app_hook_materialization: appHookMaterialization,
+    realRocmRuntimeProfileAdapterResult: runtimeProfileAdapterResult,
+    real_rocm_runtime_profile_adapter_result: runtimeProfileAdapterResult,
+    runtimeProfileAdapterResult,
+    runtime_profile_adapter_result: runtimeProfileAdapterResult,
     realRocmMissingDependencyProbe: missingDependencyProbe,
     real_rocm_missing_dependency_probe: missingDependencyProbe,
     missingDependencyProbe,

@@ -501,7 +501,15 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const repo = objectOrEmpty(raw.repo, 'repo');
   const target = objectOrEmpty(raw.target, 'target');
   const sourceDelta = objectOrEmpty(raw.sourceDelta ?? raw.source_delta, 'sourceDelta');
-  const secondDelta = objectOrEmpty(sourceDelta.second ?? sourceDelta.secondDelta, 'sourceDelta.second');
+  const secondDelta = objectOrEmpty(
+    sourceDelta.second ?? sourceDelta.secondDelta ?? sourceDelta.second_delta,
+    'sourceDelta.second',
+  );
+  const normalizedExtraDeltas = Array.isArray(sourceDelta.extraDeltas)
+    ? sourceDelta.extraDeltas
+    : Array.isArray(sourceDelta.extra_deltas)
+      ? sourceDelta.extra_deltas
+      : [];
   const outputOracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle, 'outputOracle');
   const appHookContract = normalizeRealRocmAppHookContract(
     raw.appHookContract ?? raw.app_hook_contract,
@@ -556,7 +564,8 @@ function normalizeRealRocmProfile(rawProfile, source) {
         before: optionalProfileString(secondDelta.before, 'sourceDelta.second.before'),
         after: optionalProfileString(secondDelta.after, 'sourceDelta.second.after'),
       },
-      extraDeltas: Array.isArray(sourceDelta.extraDeltas) ? sourceDelta.extraDeltas : [],
+      extraDeltas: normalizedExtraDeltas,
+      extra_deltas: normalizedExtraDeltas,
     },
     outputOracle: {
       profile: optionalProfileString(outputOracle.profile, 'outputOracle.profile'),
@@ -724,6 +733,42 @@ async function selfCheckRealRocmProfiles() {
         }
       }
     }
+  }
+  const snakeCaseDeltaProfile = normalizeRealRocmProfile({
+    schemaVersion: REAL_ROCM_PROFILE_SCHEMA_VERSION,
+    id: 'real-rocm-snake-case-source-delta-self-check',
+    repo: { url: DEFAULT_REAL_REPO_URL },
+    target: {
+      entryFile: 'HIP-Basic/saxpy/main.hip',
+      deltaFile: 'HIP-Basic/saxpy/main.hip',
+      targetName: 'hip_saxpy',
+      buildSubdir: 'HIP-Basic/saxpy',
+      nativeLaunchSymbols: ['saxpy_kernel'],
+    },
+    source_delta: {
+      before: 'before_one',
+      after: 'after_one',
+      second_delta: {
+        file: 'HIP-Basic/saxpy/main.hip',
+        before: 'before_two',
+        after: 'after_two',
+      },
+      extra_deltas: [{
+        kind: 'negative_edit',
+        file: 'HIP-Basic/saxpy/main.hip',
+        before: 'before_three',
+        after: 'after_three',
+      }],
+    },
+    output_oracle: { profile: 'none' },
+  }, 'self-check:snake-case-source-delta');
+  if (
+    snakeCaseDeltaProfile.sourceDelta.second.before !== 'before_two'
+    || snakeCaseDeltaProfile.sourceDelta.extraDeltas.length !== 1
+    || snakeCaseDeltaProfile.sourceDelta.extra_deltas.length !== 1
+    || realRocmSourceDeltaFixtures(snakeCaseDeltaProfile).negativeEditDeclared !== true
+  ) {
+    throw new Error('real ROCm profile snake-case source_delta normalization self-check failed');
   }
   console.log(`real ROCm profile self-check passed profiles=${profiles.map((profile) => profile.id).join(',')}`);
 }
@@ -2214,6 +2259,18 @@ const configuredOutputOracleRuntimeProfileSource =
   ?? (REAL_ROCM_PROFILE.outputOracle.runtimeProfile
     ? 'profile:outputOracle.runtimeProfile'
     : 'none');
+const configuredRuntimeProfileAdapterResultPath =
+  process.env.SYNTHI_REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_PATH
+  ?? process.env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_ADAPTER_RESULT_PATH
+  ?? stringField(configuredOutputOracleRuntimeProfile, [
+    'runtimeProfileAdapterResultPath',
+    'runtime_profile_adapter_result_path',
+    'adapterResultPath',
+    'adapter_result_path',
+    'resultPath',
+    'result_path',
+  ])
+  ?? '';
 const configuredAppHookContractInput = firstJsonObjectEnv([
   'SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON',
   'SYNTHI_GPU_HMR_APP_HOOK_CONTRACT_JSON',
@@ -2434,6 +2491,7 @@ const CFG = {
   ),
   outputOracleRuntimeProfile: configuredOutputOracleRuntimeProfile,
   outputOracleRuntimeProfileSource: configuredOutputOracleRuntimeProfileSource,
+  runtimeProfileAdapterResultPath: configuredRuntimeProfileAdapterResultPath,
   outputOracleProfile: configuredOutputOracleProfile,
   appHookContract: configuredAppHookContract,
   appHookContractSource: configuredAppHookContractSource,
@@ -2541,6 +2599,10 @@ const report = {
   proof_scheduling: null,
   timeout_intelligence_failure: null,
   timeoutIntelligenceFailure: null,
+  real_rocm_runtime_profile_adapter_result: null,
+  realRocmRuntimeProfileAdapterResult: null,
+  runtime_profile_adapter_result: null,
+  runtimeProfileAdapterResult: null,
   real_rocm_missing_dependency_probe: null,
   realRocmMissingDependencyProbe: null,
   missing_dependency_probe: null,
@@ -2981,6 +3043,170 @@ async function syncWorkerRuntimeOutputOracleProfile(profile) {
   );
   report.output_oracle_resolution.runtimeProfileSynced = true;
   report.output_oracle_resolution.syncSkippedReason = null;
+}
+
+function resolveRepoBoundEvidencePath(rawPath) {
+  const raw = typeof rawPath === 'string' && rawPath.trim() ? rawPath.trim() : '';
+  if (!raw) return null;
+  const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(REPO_ROOT, raw);
+  return pathIsInside(REPO_ROOT, resolved) ? resolved : null;
+}
+
+function runtimeProfileAdapterStrictSummary(result = {}) {
+  const strictRuntimeProofId = stringField(result, [
+    'strictRuntimeProofId',
+    'strict_runtime_proof_id',
+    'runtimeProofId',
+    'runtime_proof_id',
+  ]);
+  const proofLedgerId = stringField(result, [
+    'proofLedgerId',
+    'proof_ledger_id',
+    'ledgerId',
+    'ledger_id',
+  ]);
+  return {
+    strictRuntimeProofAccepted:
+      result.strictRuntimeProofAccepted === true
+      || result.strict_runtime_proof_accepted === true,
+    strict_runtime_proof_accepted:
+      result.strictRuntimeProofAccepted === true
+      || result.strict_runtime_proof_accepted === true,
+    strictRuntimeProofArtifactPresent:
+      result.strictRuntimeProofArtifactPresent === true
+      || result.strict_runtime_proof_artifact_present === true,
+    strict_runtime_proof_artifact_present:
+      result.strictRuntimeProofArtifactPresent === true
+      || result.strict_runtime_proof_artifact_present === true,
+    strictRuntimeProofId: strictRuntimeProofId || null,
+    strict_runtime_proof_id: strictRuntimeProofId || null,
+    proofLedgerPresent:
+      result.proofLedgerPresent === true
+      || result.proof_ledger_present === true,
+    proof_ledger_present:
+      result.proofLedgerPresent === true
+      || result.proof_ledger_present === true,
+    proofLedgerId: proofLedgerId || null,
+    proof_ledger_id: proofLedgerId || null,
+    adapterResultHash: stringField(result, ['resultHash', 'result_hash']) || null,
+    adapter_result_hash: stringField(result, ['resultHash', 'result_hash']) || null,
+  };
+}
+
+async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
+  if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
+    report.evidence = {};
+  }
+  const declaredPath = CFG.runtimeProfileAdapterResultPath;
+  const declared = Boolean(declaredPath);
+  const runtimeProfileId = stringField(runtimeProfile, ['profileId', 'profile_id', 'id']);
+  const base = {
+    schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+    schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+    proofAuthority: 'declared_adapter_result_import_not_runtime_authority',
+    proof_authority: 'declared_adapter_result_import_not_runtime_authority',
+    declared,
+    runtimeProfilePresent: runtimeProfile !== null,
+    runtime_profile_present: runtimeProfile !== null,
+    runtimeProfileId: runtimeProfileId || null,
+    runtime_profile_id: runtimeProfileId || null,
+    declaredPath: declaredPath || null,
+    declared_path: declaredPath || null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  if (!declared) {
+    const facet = {
+      ...base,
+      status: runtimeProfile ? 'runtime_profile_adapter_result_not_declared' : 'not_required',
+      present: false,
+      acceptedAsRefusalEvidence: false,
+      accepted_as_refusal_evidence: false,
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+    };
+    report.real_rocm_runtime_profile_adapter_result = facet;
+    report.realRocmRuntimeProfileAdapterResult = facet;
+    report.runtimeProfileAdapterResult = facet;
+    report.evidence.real_rocm_runtime_profile_adapter_result = facet;
+    return facet;
+  }
+  const resolvedPath = resolveRepoBoundEvidencePath(declaredPath);
+  const blockingGaps = [];
+  let parsed = null;
+  let rawSha256 = null;
+  let byteLength = 0;
+  let readError = null;
+  if (!resolvedPath) {
+    blockingGaps.push('runtime_profile_adapter_result_path_outside_repo');
+  } else {
+    try {
+      const text = await readFile(resolvedPath, 'utf8');
+      rawSha256 = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+      byteLength = Buffer.byteLength(text, 'utf8');
+      parsed = JSON.parse(text);
+    } catch (err) {
+      readError = err?.message ?? String(err);
+      blockingGaps.push('runtime_profile_adapter_result_unreadable');
+    }
+  }
+  if (parsed && parsed.schemaVersion !== 'synthi.gpu_hmr.runtime_profile_adapter_result.v1') {
+    blockingGaps.push('runtime_profile_adapter_result_schema_mismatch');
+  }
+  const strictSummary = runtimeProfileAdapterStrictSummary(parsed ?? {});
+  if (parsed && strictSummary.strictRuntimeProofAccepted !== true) {
+    blockingGaps.push('runtime_profile_adapter_strict_runtime_proof_not_accepted');
+  }
+  const evidenceRefs = compactStringList([
+    rawSha256,
+    strictSummary.adapterResultHash,
+    strictSummary.strictRuntimeProofId,
+    strictSummary.proofLedgerId,
+  ]);
+  const facet = {
+    ...base,
+    status: blockingGaps.length === 0
+      ? 'runtime_profile_adapter_result_imported'
+      : 'runtime_profile_adapter_result_refusal_evidence',
+    present: parsed !== null,
+    resultPath: resolvedPath ? path.relative(REPO_ROOT, resolvedPath).replace(/\\/g, '/') : null,
+    result_path: resolvedPath ? path.relative(REPO_ROOT, resolvedPath).replace(/\\/g, '/') : null,
+    rawSha256,
+    raw_sha256: rawSha256,
+    byteLength,
+    byte_length: byteLength,
+    readError,
+    read_error: readError,
+    ...strictSummary,
+    acceptedAsRefusalEvidence: blockingGaps.length > 0,
+    accepted_as_refusal_evidence: blockingGaps.length > 0,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+  facet.bridgeHash = `sha256:${createHash('sha256').update(stableJson({
+    ...facet,
+    bridgeHash: undefined,
+    bridge_hash: undefined,
+  })).digest('hex')}`;
+  facet.bridge_hash = facet.bridgeHash;
+  report.real_rocm_runtime_profile_adapter_result = facet;
+  report.realRocmRuntimeProfileAdapterResult = facet;
+  report.runtimeProfileAdapterResult = facet;
+  report.evidence.real_rocm_runtime_profile_adapter_result = facet;
+  record(
+    'runtime profile adapter result bridge',
+    blockingGaps.length === 0 ? 'pass' : 'warn',
+    `status=${facet.status} strict=${facet.strict_runtime_proof_accepted} gaps=${blockingGaps.join(',') || 'none'}`,
+  );
+  return facet;
 }
 
 function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
@@ -14022,6 +14248,62 @@ async function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime output oracle sync plan did not clear stale worker profile for docker worker');
   }
+  const adapterResultSelfCheckDir = path.join(LOG_DIR, 'runtime-profile-adapter-result-self-check');
+  const adapterResultSelfCheckPath = path.join(adapterResultSelfCheckDir, 'adapter-result.json');
+  const adapterResultSelfCheck = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
+    profileId: 'self-check-runtime-profile',
+    profile_id: 'self-check-runtime-profile',
+    strictRuntimeProofAccepted: true,
+    strict_runtime_proof_accepted: true,
+    strictRuntimeProofArtifactPresent: true,
+    strict_runtime_proof_artifact_present: true,
+    strictRuntimeProofId: `gpu-runtime-proof:sha256:${'c'.repeat(64)}`,
+    strict_runtime_proof_id: `gpu-runtime-proof:sha256:${'c'.repeat(64)}`,
+    proofLedgerPresent: true,
+    proof_ledger_present: true,
+    proofLedgerId: `gpu-ledger-proof:sha256:${'d'.repeat(64)}`,
+    proof_ledger_id: `gpu-ledger-proof:sha256:${'d'.repeat(64)}`,
+    resultHash: `sha256:${'e'.repeat(64)}`,
+    result_hash: `sha256:${'e'.repeat(64)}`,
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+  const savedRuntimeProfileAdapterResultPath = CFG.runtimeProfileAdapterResultPath;
+  const savedRuntimeProfileAdapterResultFacet = report.real_rocm_runtime_profile_adapter_result;
+  const savedRuntimeProfileAdapterResultEvidence =
+    report.evidence?.real_rocm_runtime_profile_adapter_result;
+  try {
+    await mkdir(adapterResultSelfCheckDir, { recursive: true });
+    await writeFile(
+      adapterResultSelfCheckPath,
+      `${JSON.stringify(adapterResultSelfCheck, null, 2)}\n`,
+    );
+    CFG.runtimeProfileAdapterResultPath =
+      path.relative(REPO_ROOT, adapterResultSelfCheckPath).replace(/\\/g, '/');
+    const importedAdapterResult = await collectRuntimeProfileAdapterResultBridge({
+      profileId: 'self-check-runtime-profile',
+    });
+    if (
+      importedAdapterResult.status !== 'runtime_profile_adapter_result_imported'
+      || importedAdapterResult.strictRuntimeProofAccepted !== true
+      || importedAdapterResult.acceptedForGpuHmr !== false
+      || importedAdapterResult.canSatisfyRuntimeProof !== false
+      || importedAdapterResult.blockingGaps.length !== 0
+    ) {
+      throw new Error('runtime profile adapter result bridge self-check failed');
+    }
+  } finally {
+    CFG.runtimeProfileAdapterResultPath = savedRuntimeProfileAdapterResultPath;
+    report.real_rocm_runtime_profile_adapter_result = savedRuntimeProfileAdapterResultFacet;
+    report.realRocmRuntimeProfileAdapterResult = savedRuntimeProfileAdapterResultFacet;
+    report.runtime_profile_adapter_result = savedRuntimeProfileAdapterResultFacet;
+    report.runtimeProfileAdapterResult = savedRuntimeProfileAdapterResultFacet;
+    if (report.evidence) {
+      report.evidence.real_rocm_runtime_profile_adapter_result =
+        savedRuntimeProfileAdapterResultEvidence;
+    }
+  }
   const parsedCmakeArgs = parseStringArrayEnv(
     '["-DNAME=value with spaces","-DENABLE_FEATURE=ON"]',
     'SELF_CHECK_CMAKE_ARGS',
@@ -18430,6 +18712,10 @@ async function writeResults() {
     real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
     appHookMaterialization: report.real_rocm_app_hook_materialization,
     app_hook_materialization: report.real_rocm_app_hook_materialization,
+    realRocmRuntimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+    real_rocm_runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
+    runtimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+    runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
     realRocmProofScheduling: report.real_rocm_proof_scheduling,
     real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
     proofScheduling: report.real_rocm_proof_scheduling,
@@ -18557,6 +18843,10 @@ async function writeResults() {
       real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
       appHookMaterialization: report.real_rocm_app_hook_materialization,
       app_hook_materialization: report.real_rocm_app_hook_materialization,
+      realRocmRuntimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+      real_rocm_runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
+      runtimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+      runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
       realRocmProofScheduling: report.real_rocm_proof_scheduling,
       real_rocm_proof_scheduling: report.real_rocm_proof_scheduling,
       proofScheduling: report.real_rocm_proof_scheduling,
@@ -18601,6 +18891,11 @@ async function writeResults() {
       real_rocm_app_hook_materialization: written.artifact.real_rocm_app_hook_materialization,
       appHookMaterialization: written.artifact.appHookMaterialization,
       app_hook_materialization: written.artifact.app_hook_materialization,
+      realRocmRuntimeProfileAdapterResult: written.artifact.realRocmRuntimeProfileAdapterResult,
+      real_rocm_runtime_profile_adapter_result:
+        written.artifact.real_rocm_runtime_profile_adapter_result,
+      runtimeProfileAdapterResult: written.artifact.runtimeProfileAdapterResult,
+      runtime_profile_adapter_result: written.artifact.runtime_profile_adapter_result,
       realRocmMissingDependencyProbe: written.artifact.realRocmMissingDependencyProbe,
       real_rocm_missing_dependency_probe: written.artifact.real_rocm_missing_dependency_probe,
       missingDependencyProbe: written.artifact.missingDependencyProbe,
@@ -18656,6 +18951,10 @@ async function writeResults() {
     real_rocm_app_hook_materialization: report.real_rocm_app_hook_materialization,
     appHookMaterialization: report.real_rocm_app_hook_materialization,
     app_hook_materialization: report.real_rocm_app_hook_materialization,
+    realRocmRuntimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+    real_rocm_runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
+    runtimeProfileAdapterResult: report.real_rocm_runtime_profile_adapter_result,
+    runtime_profile_adapter_result: report.real_rocm_runtime_profile_adapter_result,
     realRocmMissingDependencyProbe: report.real_rocm_missing_dependency_probe,
     real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
     missingDependencyProbe: report.real_rocm_missing_dependency_probe,
@@ -18787,6 +19086,7 @@ async function writeResults() {
     `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
     `real_rocm_runtime_stage_obligations: ${JSON.stringify(report.real_rocm_runtime_stage_obligations)}`,
     `real_rocm_app_hook_materialization: ${JSON.stringify(report.real_rocm_app_hook_materialization)}`,
+    `real_rocm_runtime_profile_adapter_result: ${JSON.stringify(report.real_rocm_runtime_profile_adapter_result)}`,
     `model: ${report.model}`,
     `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,
@@ -18896,6 +19196,7 @@ async function run() {
   };
   const outputOracleProfile = applyOutputOracleProfileAdaptation(files, updateFileContent);
   await syncWorkerRuntimeOutputOracleProfile(outputOracleProfile?.runtimeProfile ?? null);
+  await collectRuntimeProfileAdapterResultBridge(outputOracleProfile?.runtimeProfile ?? null);
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
     files,
     buildMetadata,
