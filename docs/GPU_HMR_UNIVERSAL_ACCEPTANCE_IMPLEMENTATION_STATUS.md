@@ -43,6 +43,23 @@ verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> pass
 verification: git diff --check -- mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs mcp/synthi-mcp/scripts/profiles/real-rocm-miopen-activation-large-ml.json -> passed
 ```
 
+Fresh 2026-06-29 source-first/no-precompiled user-path check:
+
+```text
+source-first seed-only command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:seed-only -> passed
+source-first seed-only workspace: gpu-agent-split-1782689734473
+source-first seed-only url: http://localhost:3000/workspace/gpu-agent-split-1782689734473
+source-first seed-only artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782689734473/agent-split-seed-results.txt
+source-first realistic command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace -> failed closed before AI split verification
+source-first realistic workspace: gpu-agent-split-1782689740584
+source-first realistic artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782689740584/agent-split-results.txt
+source-first provider diagnostic: source-first-provider-diagnostic:sha256:dec0f1aa6adfa3903bac78832b4ce974095b4b6bdce72f69df61e8bad54e002a
+source-first provider reason: ai_provider_account_suspended
+source-first realistic timing: cold total_validator_wall_time=565145100ns, device_compile_wall_time=5323300ns, runtime_probe_time=559599600ns
+source-first realistic verdict: acceptedForGpuHmr=false, gpuHmrSuccess=false, canSatisfyRuntimeProof=false
+source-first visual proof: none for this rerun because the provider failed before AI split and no post-epoch HMR frame existed; previous accepted realistic-raytrace visual rows remain the current visual proof authority
+```
+
 Follow-up validation in the same checkpoint kept the large-project and source-first paths honest:
 
 ```text
