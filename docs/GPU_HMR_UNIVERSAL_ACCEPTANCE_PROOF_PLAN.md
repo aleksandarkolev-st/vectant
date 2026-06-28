@@ -64,6 +64,8 @@ Current implementation note:
 2026-06-28: CAS artifact locators now support portable content-addressed consumption across container mount namespaces. A producer can omit its absolute `storage.localPath`; a consumer can resolve `sha256/<prefix>/<digest>` under its own allowed CAS root and still verify byte length plus SHA-256 before transport evidence accepts. Optional shared mount metadata records generic roles such as worker/MCP/frontend without becoming proof authority. CAS/shared-addressing evidence remains `acceptedForGpuHmr=false` and `gpuHmrSuccess=false`.
 
 2026-06-28: the source-first agent-split proof runner MCP client sends newline-delimited JSON for the installed Node MCP SDK and can parse either newline-delimited or Content-Length-framed MCP responses. A direct docker MCP initialize probe passed on the newline path. This is generic stdio transport compatibility only; it cannot satisfy artifact transport, epoch, dispatch, oracle, or ledger acceptance gates.
+
+2026-06-28: the source-first agent-split proof runner now exposes first-class npm scripts (`proof:agent-split:source-first`, `proof:agent-split:source-first:self-check`, `proof:agent-split:source-first:seed-only`, and `proof:agent-split:source-first:realistic-raytrace`). The runner-level source-first provenance gate now requires generated artifacts to live in the generated artifact namespace before it can emit accepted provenance-only evidence, and the self-check covers both a valid multi-file source tree and a forged ordinary source path such as `src/generated-device.hip`. This remains provenance-only evidence; strict GPU HMR acceptance still requires the runtime ledger and output oracle.
 ```
 
 ## 2. Immediate Corrections To The Previous Plan
@@ -961,6 +963,7 @@ Current source-first gate requirements:
 6. Generated artifact paths must resolve to the generated artifact namespace, and the initial manifest must not contain a file whose content hash overlaps the later generated artifact, sidecar, or compile-manifest hash. Ordinary-looking paths such as build caches cannot bypass this content-addressed boundary.
 7. Worker log text about AI split activity is corroborating evidence only. The accepted source-first boundary requires structured split/sidecar evidence, generated artifact hashes, and later runtime ledger closure.
 8. The gate must not depend on a fixed split file count, target name, fixture id, source-tree shape, or project-specific success branch.
+9. Runner-level source-first provenance must fail before matrix ingestion when generated artifacts are not in the generated artifact namespace. Matrix recomputation remains the aggregate authority and repeats the same namespace, manifest, hash-overlap, proof-id, and target-binding checks.
 
 ## 15. Stronger Definition Of Done
 

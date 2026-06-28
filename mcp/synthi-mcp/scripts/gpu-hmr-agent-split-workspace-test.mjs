@@ -3172,10 +3172,14 @@ function sourceFirstIngestionEvidence({
   const sourceTreeManifestHashMatches = sourceTreeManifestHash === initialManifestHash;
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
+  const generatedArtifactPathsInGeneratedNamespace =
+    generatedArtifacts.length > 0
+    && generatedArtifacts.every((entry) => sourceFirstPreexistingGeneratedArtifactPath(entry.path));
   const generatedArtifactBoundaryProven =
     gpuSplitEndpointObserved
     && preexistingGeneratedArtifactPaths.length === 0
     && preexistingGeneratedArtifactHashOverlaps.length === 0
+    && generatedArtifactPathsInGeneratedNamespace
     && generatedArtifacts.length > 0;
   const seed = {
     sourceContentHash,
@@ -3306,6 +3310,8 @@ function sourceFirstIngestionEvidence({
     gpu_split_endpoint_evidence: splitEndpointEvidence,
     generatedArtifactCreatedAfterAiSplit: generatedArtifactBoundaryProven,
     generated_artifact_created_after_ai_split: generatedArtifactBoundaryProven,
+    generatedArtifactPathsInGeneratedNamespace,
+    generated_artifact_paths_in_generated_namespace: generatedArtifactPathsInGeneratedNamespace,
     generatedArtifacts,
     generated_artifacts: generatedArtifacts,
     generatedArtifactPaths: generatedArtifacts.map((entry) => entry.path),
@@ -3342,6 +3348,7 @@ function sourceFirstIngestionEvidence({
         : 'source_first_precompiled_generated_artifact_hash_overlap',
       generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
       generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
+      generatedArtifactPathsInGeneratedNamespace ? null : 'source_first_generated_artifact_namespace_unproven',
       sidecarHash ? null : 'source_first_sidecar_hash_missing',
       compileManifestHash ? null : 'source_first_compile_manifest_hash_missing',
     ].filter(Boolean),
@@ -3361,6 +3368,7 @@ function sourceFirstIngestionEvidence({
         : 'source_first_precompiled_generated_artifact_hash_overlap',
       generatedArtifactBoundaryProven ? null : 'source_first_generated_artifact_boundary_not_proven',
       generatedArtifacts.length > 0 ? null : 'source_first_generated_artifacts_missing',
+      generatedArtifactPathsInGeneratedNamespace ? null : 'source_first_generated_artifact_namespace_unproven',
       sidecarHash ? null : 'source_first_sidecar_hash_missing',
       compileManifestHash ? null : 'source_first_compile_manifest_hash_missing',
     ].filter(Boolean),
@@ -3820,6 +3828,92 @@ function selfCheckAgentVisualProfile() {
       multiFileProfile.source.entryPath,
       multiFileResolvedSource,
     );
+    const sourceFirstGeneratedPath = '.synthi/generated/gpu/device.hip';
+    const sourceFirstGeneratedDevice = 'extern "C" __global__ void render(unsigned int* pixels) { pixels[0] = 0xff336699u; }\n';
+    const sourceFirstSplit = {
+      files: {
+        [sourceFirstGeneratedPath]: sourceFirstGeneratedDevice,
+      },
+      roles: {
+        device: sourceFirstGeneratedPath,
+      },
+      sidecar: {
+        agentic_split_report: { accepted: true },
+        generated_artifact_purity_report: { accepted: true },
+        device_mapping_report: { accepted: true },
+      },
+      manifest: {
+        project_id: 'self-check-source-first-target',
+        profile_id: 'self-check-source-first-profile',
+        module_files: {
+          device: sourceFirstGeneratedPath,
+        },
+        gpu: {
+          vendor: 'rocm',
+          device_roles: [{
+            id: 'device',
+            path: sourceFirstGeneratedPath,
+            compiler: 'hipcc',
+            arch: ['gfx-self-check'],
+          }],
+        },
+      },
+    };
+    sourceFirstSplit.sidecarRaw = stableJson(sourceFirstSplit.sidecar);
+    const sourceFirstInitialCompileArgs = {
+      language: 'cpp',
+      filename: multiFileProfile.source.entryPath,
+      files: multiFileInitialFiles,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: 'rocm',
+      gpu_arch: 'gfx-self-check',
+    };
+    const acceptedSourceFirst = sourceFirstIngestionEvidence({
+      source: multiFileResolvedSource,
+      entryPath: multiFileProfile.source.entryPath,
+      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource),
+      initialCompileArgs: sourceFirstInitialCompileArgs,
+      initialCompileResult: { waitSummary: { status: 'applied' } },
+      split: sourceFirstSplit,
+      sawGpuSplit: { matched: false },
+      splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
+    });
+    const forgedSourceFirstPath = 'src/generated-device.hip';
+    const forgedSourceFirstSplit = {
+      ...sourceFirstSplit,
+      files: {
+        [forgedSourceFirstPath]: sourceFirstGeneratedDevice,
+      },
+      roles: {
+        device: forgedSourceFirstPath,
+      },
+      manifest: {
+        ...sourceFirstSplit.manifest,
+        module_files: {
+          device: forgedSourceFirstPath,
+        },
+        gpu: {
+          ...sourceFirstSplit.manifest.gpu,
+          device_roles: [{
+            ...sourceFirstSplit.manifest.gpu.device_roles[0],
+            path: forgedSourceFirstPath,
+          }],
+        },
+      },
+    };
+    forgedSourceFirstSplit.sidecarRaw = sourceFirstSplit.sidecarRaw;
+    const rejectedForgedSourceFirst = sourceFirstIngestionEvidence({
+      source: multiFileResolvedSource,
+      entryPath: multiFileProfile.source.entryPath,
+      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource),
+      initialCompileArgs: sourceFirstInitialCompileArgs,
+      initialCompileResult: { waitSummary: { status: 'applied' } },
+      split: forgedSourceFirstSplit,
+      sawGpuSplit: { matched: false },
+      splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(forgedSourceFirstSplit),
+    });
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -3860,6 +3954,15 @@ function selfCheckAgentVisualProfile() {
       || !multiFileInitialFiles.some((entry) =>
         entry.path === 'src/main.cpp' && entry.content === multiFileEntrySource
       )
+      || acceptedSourceFirst.accepted !== true
+      || acceptedSourceFirst.generatedArtifactPathsInGeneratedNamespace !== true
+      || acceptedSourceFirst.sourceTreeManifestHashMatches !== true
+      || acceptedSourceFirst.acceptedForGpuHmr !== false
+      || acceptedSourceFirst.gpuHmrSuccess !== false
+      || acceptedSourceFirst.canSatisfyRuntimeProof !== false
+      || rejectedForgedSourceFirst.accepted !== false
+      || rejectedForgedSourceFirst.generatedArtifactPathsInGeneratedNamespace !== false
+      || !rejectedForgedSourceFirst.failedGates.includes('source_first_generated_artifact_namespace_unproven')
     ) {
       throw new Error('agent visual profile self-check failed');
     }
