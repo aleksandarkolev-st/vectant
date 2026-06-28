@@ -4,7 +4,14 @@
   "profileClass": "generated_rocm_hip_preview_visual",
   "source": {
     "entryPath": "src/main.cpp",
-    "fixture": "realistic-raytrace"
+    "fixture": "realistic-raytrace",
+    "files": [
+      {
+        "path": "src/main.cpp",
+        "sourcePath": "sources/agent-realistic-raytrace-scene/main.cpp",
+        "contentHash": "sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc"
+      }
+    ]
   },
   "compile": {
     "width": 800,
