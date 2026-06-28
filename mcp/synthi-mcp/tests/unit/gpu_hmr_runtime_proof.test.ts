@@ -9029,6 +9029,7 @@ describe("GPU HMR runtime output proof classification", () => {
       fixed_swapchain_image_count: true,
       frame_capture_after_epoch_dispatch: true,
       presentation_fence_or_frame_boundary: true,
+      seed_policy_fixed: true,
       convergence_window: {
         frame_start: 12,
         frame_end: 20,
@@ -9044,9 +9045,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(convergenceMode.accepted).toBe(true);
     expect(convergenceMode.proofMode).toBe("convergence_window");
-    expect(convergenceMode.warnings.map((warning) => warning.code)).toContain(
-      "convergence_window_without_fixed_seed_policy",
-    );
+    expect(convergenceMode.failedGates).toEqual([]);
   });
 
   it("surfaces deterministic visual-mode failures in the proof summary", () => {
