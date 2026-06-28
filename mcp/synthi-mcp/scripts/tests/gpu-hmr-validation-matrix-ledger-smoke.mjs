@@ -4012,6 +4012,115 @@ function realRocmSourceTreeTransportFixture(scope, overrides = {}) {
 
 const largeRocmProofSchedulingFixture = realRocmProofSchedulingFixture();
 const largeRocmSourceTreeTransportFixture = realRocmSourceTreeTransportFixture('real-rocm-large-lib');
+const largeRocmExternalHeaderPrerequisitesFixture =
+  realRocmExternalHeaderPrerequisitesFixture('real-rocm-large-lib');
+
+function realRocmExternalHeaderPrerequisitesFixture(scope, overrides = {}) {
+  const prerequisiteOverrides = overrides.prerequisiteOverrides ?? overrides.prerequisite_overrides ?? {};
+  const {
+    prerequisiteOverrides: _prerequisiteOverrides,
+    prerequisite_overrides: _prerequisiteOverridesSnake,
+    ...facetOverrides
+  } = overrides;
+  const headerSetHash = hashValue(`${scope}:external-header-set`);
+  const prerequisite = {
+    schemaVersion: 'synthi.real_rocm.external_header_prerequisite.v1',
+    schema_version: 'synthi.real_rocm.external_header_prerequisite.v1',
+    proofAuthority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    id: `${scope}-headers`,
+    token: `\${REAL_ROCM_EXTERNAL_INCLUDE:${scope}-headers}`,
+    sourceKind: 'git',
+    source_kind: 'git',
+    repoUrl: `https://example.invalid/rocm/${scope}-headers.git`,
+    repo_url: `https://example.invalid/rocm/${scope}-headers.git`,
+    commit: '1234567890abcdef1234567890abcdef12345678',
+    includeRoot: 'include',
+    include_root: 'include',
+    workerIncludeRoot: `/tmp/synthi-real-rocm/external-headers/${scope}/include`,
+    worker_include_root: `/tmp/synthi-real-rocm/external-headers/${scope}/include`,
+    acceptedAsDependencyEvidence: true,
+    accepted_as_dependency_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    status: 'external_header_dependency_available',
+    materialization: {
+      materialized: true,
+      transportKind: 'cas_shared_volume',
+      transport_kind: 'cas_shared_volume',
+      sourceHash: hashValue(`${scope}:external-header-source`),
+      source_hash: hashValue(`${scope}:external-header-source`),
+    },
+    install: {
+      attempted: true,
+      accepted: true,
+      mode: 'cmake_install',
+      reason: 'external_header_install_accepted',
+    },
+    inspection: {
+      allRequiredHeadersPresent: true,
+      all_required_headers_present: true,
+      requiredHeaderCount: 1,
+      required_header_count: 1,
+      presentHeaderCount: 1,
+      present_header_count: 1,
+      headerRecords: [{
+        header: 'half/half.hpp',
+        hostPresent: true,
+        host_present: true,
+        workerPath: `/tmp/synthi-real-rocm/external-headers/${scope}/include/half/half.hpp`,
+        worker_path: `/tmp/synthi-real-rocm/external-headers/${scope}/include/half/half.hpp`,
+      }],
+      header_records: [{
+        header: 'half/half.hpp',
+        hostPresent: true,
+        host_present: true,
+        workerPath: `/tmp/synthi-real-rocm/external-headers/${scope}/include/half/half.hpp`,
+        worker_path: `/tmp/synthi-real-rocm/external-headers/${scope}/include/half/half.hpp`,
+      }],
+      headerSetHash,
+      header_set_hash: headerSetHash,
+    },
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: [`external-header:${scope}:${headerSetHash}`],
+    evidence_refs: [`external-header:${scope}:${headerSetHash}`],
+    ...prerequisiteOverrides,
+  };
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.external_header_prerequisites.v1',
+    schema_version: 'synthi.real_rocm.external_header_prerequisites.v1',
+    proofAuthority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'external_header_dependency_evidence_only_not_gpu_hmr_success',
+    status: 'external_header_prerequisites_available',
+    acceptedDependencyCount: 1,
+    accepted_dependency_count: 1,
+    prerequisiteCount: 1,
+    prerequisite_count: 1,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    prerequisites: [prerequisite],
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+  return {
+    ...facet,
+    ...facetOverrides,
+    prerequisites: [prerequisite],
+  };
+}
 
 function realRocmMissingDependencyProbeFixture(overrides = {}) {
   return {
@@ -4266,6 +4375,10 @@ const largeRocmLatestReport = {
   real_rocm_app_hook_materialization: realRocmAppHookMaterializationFixture(),
   real_rocm_source_tree_transport: largeRocmSourceTreeTransportFixture,
   source_tree_transport: largeRocmSourceTreeTransportFixture,
+  real_rocm_external_header_prerequisites: largeRocmExternalHeaderPrerequisitesFixture,
+  realRocmExternalHeaderPrerequisites: largeRocmExternalHeaderPrerequisitesFixture,
+  external_header_prerequisites: largeRocmExternalHeaderPrerequisitesFixture,
+  externalHeaderPrerequisites: largeRocmExternalHeaderPrerequisitesFixture,
   real_rocm_proof_scheduling: largeRocmProofSchedulingFixture,
   proof_scheduling: largeRocmProofSchedulingFixture,
   timeout_intelligence_failure: largeRocmProofSchedulingFixture,
@@ -6077,6 +6190,16 @@ assert.equal(largeRocm.realRocmSourceTreeTransport.sharedStorageAccepted, true);
 assert.equal(largeRocm.realRocmSourceTreeTransport.failedGates.length, 0);
 assert.equal(largeRocm.attemptCompleteness.sourceTreeTransportPresent, true);
 assert.equal(largeRocm.attemptCompleteness.sourceTreeTransportAcceptedAsEvidence, true);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.present, true);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.accepted, true);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.acceptedAsDependencyEvidence, true);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.acceptedForGpuHmr, false);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.gpuHmrSuccess, false);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.prerequisiteCount, 1);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.acceptedDependencyCount, 1);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.prerequisites[0].accepted, true);
+assert.equal(largeRocm.realRocmExternalHeaderPrerequisites.failedGates.length, 0);
 assert.equal(largeRocm.realRocmProofScheduling.present, true);
 assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
@@ -6343,6 +6466,92 @@ assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.
 ));
 assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportPresent, true);
 assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportAcceptedAsEvidence, false);
+
+const forgedExternalHeaderPrerequisites = realRocmExternalHeaderPrerequisitesFixture(
+  'real-rocm-forged-external-header-prerequisites',
+  {
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+    prerequisiteOverrides: {
+      acceptedForGpuHmr: true,
+      accepted_for_gpu_hmr: true,
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      canSatisfyRuntimeProof: true,
+      can_satisfy_runtime_proof: true,
+      canSatisfyDispatchProof: true,
+      can_satisfy_dispatch_proof: true,
+    },
+  },
+);
+const forgedExternalHeaderPrerequisitesDir = path.join(
+  logsRoot,
+  'real-rocm-forged-external-header-prerequisites',
+);
+await writeJson(
+  path.join(
+    forgedExternalHeaderPrerequisitesDir,
+    'real-rocm-forged-external-header-prerequisites.json',
+  ),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-forged-external-header-prerequisites-20260628',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-forged-external-header-prerequisites',
+      source: 'scripts/profiles/real-rocm-forged-external-header-prerequisites.json',
+    },
+    source_url: 'https://example.invalid/rocm/forged-external-header-prerequisites.git',
+    target_name: 'ForgedExternalHeaderPrerequisitesDriver',
+    real_rocm_external_header_prerequisites: forgedExternalHeaderPrerequisites,
+    realRocmExternalHeaderPrerequisites: forgedExternalHeaderPrerequisites,
+    external_header_prerequisites: forgedExternalHeaderPrerequisites,
+    externalHeaderPrerequisites: forgedExternalHeaderPrerequisites,
+  },
+);
+const forgedExternalHeaderPrerequisitesLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedExternalHeaderPrerequisitesDir],
+  generatedAt: '2026-06-27T00:00:02.650Z',
+});
+const forgedExternalHeaderPrerequisitesRocm = forgedExternalHeaderPrerequisitesLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedExternalHeaderPrerequisitesRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedExternalHeaderPrerequisitesRocm.gpuHmrSuccess, false);
+assert.equal(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.present, true);
+assert.equal(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.accepted, false);
+assert.equal(
+  forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.acceptedForGpuHmr,
+  false,
+);
+assert.equal(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.gpuHmrSuccess, false);
+assert.equal(
+  forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.canSatisfyRuntimeProof,
+  false,
+);
+assert.ok(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.failedGates.includes(
+  'real_rocm_external_header_prerequisites_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.failedGates.includes(
+  'real_rocm_external_header_prerequisites_claimed_gpu_hmr_success',
+));
+assert.ok(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.failedGates.includes(
+  'real_rocm_external_header_prerequisites_claimed_runtime_authority',
+));
+assert.ok(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.failedGates.includes(
+  'real_rocm_external_header_prerequisites_claimed_dispatch_authority',
+));
+assert.ok(forgedExternalHeaderPrerequisitesRocm.realRocmExternalHeaderPrerequisites.failedGates.some(
+  (gate) => gate.includes('real_rocm_external_header_prerequisite_claimed_gpu_hmr_acceptance'),
+));
 
 const missingDependencyProbe = realRocmMissingDependencyProbeFixture();
 const missingDependencyProbeDir = path.join(logsRoot, 'real-rocm-missing-dependency-probe');
@@ -9625,6 +9834,29 @@ assert.ok(acceptedComputeSafetyLedger.rows[0].safety.failedGates.some(
   (gate) => gate.code === 'gpu_hmr_success_cannot_have_real_rocm_missing_dependency_probe',
 ));
 
+const acceptedComputeExternalHeaderSafetyLedger = buildGpuHmrValidationMatrixLedger([
+  {
+    ...acceptedComputeRocm,
+    rowId: 'gpu-validation-matrix-row:sha256:' + 'e'.repeat(64),
+    row_id: 'gpu-validation-matrix-row:sha256:' + 'e'.repeat(64),
+    realRocmExternalHeaderPrerequisites: forgedExternalHeaderPrerequisites,
+    real_rocm_external_header_prerequisites: forgedExternalHeaderPrerequisites,
+    externalHeaderPrerequisites: forgedExternalHeaderPrerequisites,
+    external_header_prerequisites: forgedExternalHeaderPrerequisites,
+  },
+], { includeUnproven: true, latestPerTarget: false });
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows.length, 1);
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].acceptedForGpuHmr, true);
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].safety.accepted, false);
+assert.ok(acceptedComputeExternalHeaderSafetyLedger.rows[0].safety.failedGates.some(
+  (gate) =>
+    gate.code
+    === 'gpu_hmr_success_cannot_have_failed_real_rocm_external_header_prerequisites',
+));
+assert.ok(acceptedComputeExternalHeaderSafetyLedger.rows[0].safety.failedGates.some(
+  (gate) => gate.code === 'real_rocm_external_header_prerequisites_claimed_gpu_hmr_acceptance',
+));
+
 const acceptedNativeBridgeRocmDir = path.join(logsRoot, 'real-rocm-accepted-native-runtime-bridge');
 const acceptedNativeBridgeReadback = path.join(acceptedNativeBridgeRocmDir, 'readback.bin');
 const acceptedNativeBridgeBytes = Buffer.from([9, 18, 27, 36, 45, 54, 63, 72]);
@@ -9956,6 +10188,10 @@ await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-g
     acceptedLargeRocmProfileObligations('accepted-large-ml-generic-hook'),
   real_rocm_source_delta_execution:
     acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
+  real_rocm_external_header_prerequisites:
+    realRocmExternalHeaderPrerequisitesFixture('accepted-large-ml-generic-hook'),
+  realRocmExternalHeaderPrerequisites:
+    realRocmExternalHeaderPrerequisitesFixture('accepted-large-ml-generic-hook'),
   real_rocm_app_hook_contract: acceptedLargeMlAppHook,
   real_rocm_app_hook_materialization: acceptedLargeMlAppHookMaterialization,
   real_rocm_same_process_runtime_oracle: acceptedLargeMlSameProcessOracle,
@@ -9977,6 +10213,10 @@ await writeJson(path.join(acceptedLargeMlRocmDir, 'real-rocm-accepted-large-ml-g
       acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
     real_rocm_source_delta_execution:
       acceptedLargeRocmSourceDeltaExecution('accepted-large-ml-generic-hook'),
+    realRocmExternalHeaderPrerequisites:
+      realRocmExternalHeaderPrerequisitesFixture('accepted-large-ml-generic-hook'),
+    real_rocm_external_header_prerequisites:
+      realRocmExternalHeaderPrerequisitesFixture('accepted-large-ml-generic-hook'),
   },
   proof_ledger: acceptedLargeMlProofMaterials.proof_ledger,
   timingMetrics: {
@@ -10017,6 +10257,12 @@ assert.equal(acceptedLargeMlRocm.realRocmSourceDeltaExecution.negativeEditPhaseE
 assert.equal(acceptedLargeMlRocm.realRocmProfileProofObligations.blockingGaps.length, 0);
 assert.equal(acceptedLargeMlRocm.outputOracleFacet.kind, 'compute_oracle');
 assert.equal(acceptedLargeMlRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.present, true);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.accepted, true);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.acceptedAsDependencyEvidence, true);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.acceptedForGpuHmr, false);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.gpuHmrSuccess, false);
+assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.canSatisfyRuntimeProof, false);
 
 async function writeSameProcessOracleNegative({
   scope,

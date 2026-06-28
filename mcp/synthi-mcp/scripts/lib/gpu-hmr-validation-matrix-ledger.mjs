@@ -110,6 +110,12 @@ const REAL_ROCM_MISSING_DEPENDENCY_PROBE_SCHEMA_VERSION =
   'synthi.real_rocm.missing_dependency_probe.v1';
 const REAL_ROCM_MISSING_DEPENDENCY_PROBE_AUTHORITY =
   'missing_dependency_refusal_evidence_only_not_gpu_hmr_success';
+const REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_SCHEMA_VERSION =
+  'synthi.real_rocm.external_header_prerequisites.v1';
+const REAL_ROCM_EXTERNAL_HEADER_PREREQUISITE_SCHEMA_VERSION =
+  'synthi.real_rocm.external_header_prerequisite.v1';
+const REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_AUTHORITY =
+  'external_header_dependency_evidence_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_BRIDGE_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1';
 const REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_BRIDGE_AUTHORITY =
@@ -4939,6 +4945,292 @@ function realRocmMissingDependencyProbeFacet(input = {}) {
   };
 }
 
+function realRocmExternalHeaderPrerequisiteGate(prerequisite = {}, index = 0) {
+  const entry = compactObject(prerequisite);
+  const schemaVersion = firstText(entry.schemaVersion, entry.schema_version, entry.schema);
+  const proofAuthority = firstText(entry.proofAuthority, entry.proof_authority);
+  const id = firstText(entry.id, entry.name);
+  const evidenceId = id ?? `external-header-${index}`;
+  const sourceKind = firstText(entry.sourceKind, entry.source_kind);
+  const repoUrl = firstText(entry.repoUrl, entry.repo_url);
+  const commit = firstText(entry.commit, entry.repoCommit, entry.repo_commit);
+  const acceptedAsDependencyEvidence = firstBool(
+    entry.acceptedAsDependencyEvidence,
+    entry.accepted_as_dependency_evidence,
+  );
+  const acceptedForGpuHmr = firstBool(
+    entry.acceptedForGpuHmr,
+    entry.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(entry.gpuHmrSuccess, entry.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    entry.canSatisfyRuntimeProof,
+    entry.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    entry.canSatisfyDispatchProof,
+    entry.can_satisfy_dispatch_proof,
+  );
+  const materialization = compactObject(entry.materialization);
+  const install = compactObject(entry.install);
+  const inspection = compactObject(entry.inspection);
+  const materialized = firstBool(materialization.materialized);
+  const installAccepted = Object.keys(install).length === 0
+    ? null
+    : firstBool(install.accepted);
+  const allRequiredHeadersPresent = firstBool(
+    inspection.allRequiredHeadersPresent,
+    inspection.all_required_headers_present,
+  );
+  const requiredHeaderCount = finiteNumber(
+    inspection.requiredHeaderCount
+    ?? inspection.required_header_count
+    ?? entry.requiredHeaderCount
+    ?? entry.required_header_count,
+  );
+  const presentHeaderCount = finiteNumber(
+    inspection.presentHeaderCount
+    ?? inspection.present_header_count
+    ?? entry.presentHeaderCount
+    ?? entry.present_header_count,
+  );
+  const headerSetHash = normalizeSha256(firstText(
+    inspection.headerSetHash,
+    inspection.header_set_hash,
+    entry.headerSetHash,
+    entry.header_set_hash,
+  ));
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(entry.failedGates) ? entry.failedGates : []),
+    ...(Array.isArray(entry.failed_gates) ? entry.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
+    ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
+  ]);
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_external_header_prerequisite_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_EXTERNAL_HEADER_PREREQUISITE_SCHEMA_VERSION
+      ? 'real_rocm_external_header_prerequisite_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_AUTHORITY
+      ? null
+      : 'real_rocm_external_header_prerequisite_authority_unknown',
+    id ? null : 'real_rocm_external_header_prerequisite_id_missing',
+    sourceKind ? null : 'real_rocm_external_header_prerequisite_source_kind_missing',
+    sourceKind && sourceKind !== 'git'
+      ? 'real_rocm_external_header_prerequisite_source_kind_unsupported'
+      : null,
+    repoUrl ? null : 'real_rocm_external_header_prerequisite_repo_url_missing',
+    commit ? null : 'real_rocm_external_header_prerequisite_commit_missing',
+    commit && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(commit)
+      ? 'real_rocm_external_header_prerequisite_commit_not_immutable'
+      : null,
+    acceptedForGpuHmr === true
+      ? 'real_rocm_external_header_prerequisite_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_external_header_prerequisite_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_external_header_prerequisite_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_external_header_prerequisite_claimed_dispatch_authority'
+      : null,
+    acceptedAsDependencyEvidence === true && materialized !== true
+      ? 'real_rocm_external_header_prerequisite_materialization_missing'
+      : null,
+    acceptedAsDependencyEvidence === true && installAccepted === false
+      ? 'real_rocm_external_header_prerequisite_install_not_accepted'
+      : null,
+    acceptedAsDependencyEvidence === true && allRequiredHeadersPresent !== true
+      ? 'real_rocm_external_header_prerequisite_required_headers_missing'
+      : null,
+    acceptedAsDependencyEvidence === true && !contentAddressedSha256(headerSetHash)
+      ? 'real_rocm_external_header_prerequisite_header_set_hash_missing'
+      : null,
+    acceptedAsDependencyEvidence === true
+      && requiredHeaderCount !== null
+      && presentHeaderCount !== null
+      && presentHeaderCount < requiredHeaderCount
+      ? 'real_rocm_external_header_prerequisite_header_count_mismatch'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  const accepted = acceptedAsDependencyEvidence === true && failedGates.length === 0;
+  return {
+    ...entry,
+    id: evidenceId,
+    present: true,
+    accepted,
+    acceptedAsDependencyEvidence: accepted,
+    accepted_as_dependency_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    sourceKind,
+    source_kind: sourceKind,
+    repoUrl,
+    repo_url: repoUrl,
+    commit,
+    headerSetHash,
+    header_set_hash: headerSetHash,
+    requiredHeaderCount,
+    required_header_count: requiredHeaderCount,
+    presentHeaderCount,
+    present_header_count: presentHeaderCount,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function realRocmExternalHeaderPrerequisitesFacet(input = {}) {
+  const facet = compactObject(input);
+  const prerequisites = compactObjectList(facet.prerequisites);
+  const status = firstText(facet.status, facet.reason);
+  const notDeclared = status === 'not_declared' && prerequisites.length === 0;
+  const present = Object.keys(facet).length > 0 && !notDeclared;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsDependencyEvidence: false,
+      accepted_as_dependency_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      prerequisites: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const normalizedPrerequisites = prerequisites.map((entry, index) =>
+    realRocmExternalHeaderPrerequisiteGate(entry, index)
+  );
+  const childAcceptedCount = normalizedPrerequisites.filter((entry) => entry.accepted).length;
+  const acceptedDependencyCount =
+    finiteNumber(facet.acceptedDependencyCount ?? facet.accepted_dependency_count)
+    ?? childAcceptedCount;
+  const prerequisiteCount =
+    finiteNumber(facet.prerequisiteCount ?? facet.prerequisite_count)
+    ?? normalizedPrerequisites.length;
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...normalizedPrerequisites.flatMap((entry) => [
+      ...(Array.isArray(entry.blockingGaps) ? entry.blockingGaps : []),
+      ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
+    ]),
+  ]);
+  const childFailedGates = normalizedPrerequisites.flatMap((entry) =>
+    compactStringList([
+      ...(Array.isArray(entry.failedGates) ? entry.failedGates : []),
+      ...(Array.isArray(entry.failed_gates) ? entry.failed_gates : []),
+    ]).map((failure) => `prerequisite:${entry.id}:${failure}`)
+  );
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_external_header_prerequisites_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_SCHEMA_VERSION
+      ? 'real_rocm_external_header_prerequisites_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_EXTERNAL_HEADER_PREREQUISITES_AUTHORITY
+      ? null
+      : 'real_rocm_external_header_prerequisites_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_external_header_prerequisites_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_external_header_prerequisites_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_external_header_prerequisites_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_external_header_prerequisites_claimed_dispatch_authority'
+      : null,
+    prerequisiteCount > 0 ? null : 'real_rocm_external_header_prerequisites_empty',
+    prerequisiteCount !== normalizedPrerequisites.length
+      ? 'real_rocm_external_header_prerequisites_count_mismatch'
+      : null,
+    acceptedDependencyCount !== childAcceptedCount
+      ? 'real_rocm_external_header_prerequisites_accepted_count_mismatch'
+      : null,
+    ...childFailedGates,
+    ...serializedFailedGates,
+  ]);
+  const acceptedAsDependencyEvidence =
+    prerequisiteCount > 0
+    && acceptedDependencyCount === prerequisiteCount
+    && childAcceptedCount === prerequisiteCount;
+  const accepted = acceptedAsDependencyEvidence && failedGates.length === 0;
+  return {
+    present: true,
+    accepted,
+    acceptedAsDependencyEvidence: accepted,
+    accepted_as_dependency_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    status,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    acceptedDependencyCount,
+    accepted_dependency_count: acceptedDependencyCount,
+    prerequisiteCount,
+    prerequisite_count: prerequisiteCount,
+    prerequisites: normalizedPrerequisites,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -5803,6 +6095,30 @@ function rowSafetyFailures(row) {
     );
     if (Object.keys(missingDependencyProbe).length > 0) {
       failures.push({ code: 'gpu_hmr_success_cannot_have_real_rocm_missing_dependency_probe' });
+    }
+    const externalHeaderPrerequisites = realRocmExternalHeaderPrerequisitesFacet(compactObject(
+      row.realRocmExternalHeaderPrerequisites
+      ?? row.real_rocm_external_header_prerequisites
+      ?? row.externalHeaderPrerequisites
+      ?? row.external_header_prerequisites,
+    ));
+    if (
+      externalHeaderPrerequisites.present === true
+      && externalHeaderPrerequisites.accepted !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_external_header_prerequisites',
+      });
+      failures.push(
+        ...compactStringList([
+          ...(Array.isArray(externalHeaderPrerequisites.failedGates)
+            ? externalHeaderPrerequisites.failedGates
+            : []),
+          ...(Array.isArray(externalHeaderPrerequisites.failed_gates)
+            ? externalHeaderPrerequisites.failed_gates
+            : []),
+        ]).map((code) => ({ code })),
+      );
     }
     const sourceAdaptation = sourceAdaptationProofFacet(row);
     if (sourceAdaptation.acceptedForNoShimHmr !== true) {
@@ -10570,6 +10886,7 @@ function mergeTargetProgressionGateRows(reportedRows = [], derivedRows = []) {
 async function realRocmRepoValidationRow(json, filePath, context) {
   const profile = compactObject(json.real_rocm_profile ?? json.realRocmProfile);
   const summary = compactObject(json.validation_proof_summary ?? json.validationProofSummary);
+  const evidence = compactObject(json.evidence);
   const checks = Array.isArray(json.checks) ? json.checks : [];
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
@@ -10644,6 +10961,24 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.realRocmMissingDependencyProbe
     ?? runtimeProofArtifact.missing_dependency_probe
     ?? runtimeProofArtifact.missingDependencyProbe,
+  ));
+  const realRocmExternalHeaderPrerequisites = realRocmExternalHeaderPrerequisitesFacet(compactObject(
+    json.real_rocm_external_header_prerequisites
+    ?? json.realRocmExternalHeaderPrerequisites
+    ?? json.external_header_prerequisites
+    ?? json.externalHeaderPrerequisites
+    ?? summary.real_rocm_external_header_prerequisites
+    ?? summary.realRocmExternalHeaderPrerequisites
+    ?? summary.external_header_prerequisites
+    ?? summary.externalHeaderPrerequisites
+    ?? runtimeProofArtifact.real_rocm_external_header_prerequisites
+    ?? runtimeProofArtifact.realRocmExternalHeaderPrerequisites
+    ?? runtimeProofArtifact.external_header_prerequisites
+    ?? runtimeProofArtifact.externalHeaderPrerequisites
+    ?? evidence.real_rocm_external_header_prerequisites
+    ?? evidence.realRocmExternalHeaderPrerequisites
+    ?? evidence.external_header_prerequisites
+    ?? evidence.externalHeaderPrerequisites,
   ));
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
@@ -11028,6 +11363,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         : []),
     ])
     : [];
+  const realRocmExternalHeaderPrerequisitesGaps =
+    realRocmExternalHeaderPrerequisites.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmExternalHeaderPrerequisites.blockingGaps)
+          ? realRocmExternalHeaderPrerequisites.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmExternalHeaderPrerequisites.blocking_gaps)
+          ? realRocmExternalHeaderPrerequisites.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmExternalHeaderPrerequisites.failedGates)
+          ? realRocmExternalHeaderPrerequisites.failedGates
+          : []),
+        ...(Array.isArray(realRocmExternalHeaderPrerequisites.failed_gates)
+          ? realRocmExternalHeaderPrerequisites.failed_gates
+          : []),
+      ])
+      : [];
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -11071,6 +11423,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmMissingDependencyProbeReason =
     realRocmMissingDependencyProbe.present === true
       ? firstText(realRocmMissingDependencyProbe.status, realRocmMissingDependencyProbe.reason)
+      : null;
+  const realRocmExternalHeaderPrerequisitesReason =
+    realRocmExternalHeaderPrerequisites.present === true
+      ? firstText(
+        realRocmExternalHeaderPrerequisites.status,
+        realRocmExternalHeaderPrerequisites.reason,
+      )
       : null;
   const realRocmAppHookMaterializationReason =
     Object.keys(realRocmAppHookMaterialization).length > 0
@@ -11179,6 +11538,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeProfileAdapterResultAccepted =
     realRocmRuntimeProfileAdapterResult.present !== true
     || realRocmRuntimeProfileAdapterResult.accepted === true;
+  const externalHeaderPrerequisitesAccepted =
+    realRocmExternalHeaderPrerequisites.present !== true
+    || realRocmExternalHeaderPrerequisites.accepted === true;
   const missingDependencyBlockerPresent =
     realRocmMissingDependencyProbe.present === true;
   const profileProofObligationsAccepted = realRocmProfileProofObligationsGaps.length === 0;
@@ -11263,6 +11625,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeStageObligationsAccepted === true
     && appHookMaterializationAccepted === true
     && runtimeProfileAdapterResultAccepted === true
+    && externalHeaderPrerequisitesAccepted === true
     && missingDependencyBlockerPresent !== true
     && profileProofObligationsAccepted === true
     && targetProgressionGateFailures.length === 0
@@ -11434,6 +11797,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_missing_dependency_probe: realRocmMissingDependencyProbe,
     missingDependencyProbe: realRocmMissingDependencyProbe,
     missing_dependency_probe: realRocmMissingDependencyProbe,
+    realRocmExternalHeaderPrerequisites,
+    real_rocm_external_header_prerequisites: realRocmExternalHeaderPrerequisites,
+    externalHeaderPrerequisites: realRocmExternalHeaderPrerequisites,
+    external_header_prerequisites: realRocmExternalHeaderPrerequisites,
     attemptCompleteness,
     attempt_completeness: attemptCompleteness,
     outputOracleResolution,
@@ -11596,6 +11963,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         `real_rocm_missing_dependency_probe:${gap}`
       ),
       missingDependencyBlockerPresent ? 'real_rocm_missing_dependency_probe_present' : null,
+      realRocmExternalHeaderPrerequisitesReason
+        ? `real_rocm_external_header_prerequisites:${realRocmExternalHeaderPrerequisitesReason}`
+        : null,
+      ...realRocmExternalHeaderPrerequisitesGaps.map((gap) =>
+        `real_rocm_external_header_prerequisites:${gap}`
+      ),
+      externalHeaderPrerequisitesAccepted
+        ? null
+        : 'real_rocm_external_header_prerequisites_not_accepted',
       ...realRocmSourceTreeTransportGaps.map((gap) =>
         `real_rocm_source_tree_transport:${gap}`
       ),
@@ -11666,6 +12042,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       missingDependencyBlockerPresent ? 'real_rocm_missing_dependency_probe_required_absent' : null,
       ...realRocmMissingDependencyProbeGaps.map((gap) =>
         `real_rocm_missing_dependency_probe:${gap}`
+      ),
+      externalHeaderPrerequisitesAccepted
+        ? null
+        : 'real_rocm_external_header_prerequisites_required',
+      ...realRocmExternalHeaderPrerequisitesGaps.map((gap) =>
+        `real_rocm_external_header_prerequisites:${gap}`
       ),
       ...realRocmSourceTreeTransportGaps.map((gap) =>
         `real_rocm_source_tree_transport:${gap}`
@@ -12494,6 +12876,8 @@ function rowRefs(rows) {
     externalProfileSelection: row.externalProfileSelection,
     externalSourceDelta: row.externalSourceDelta,
     externalVisualProofArtifact: row.externalVisualProofArtifact,
+    realRocmExternalHeaderPrerequisites: row.realRocmExternalHeaderPrerequisites,
+    real_rocm_external_header_prerequisites: row.realRocmExternalHeaderPrerequisites,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
