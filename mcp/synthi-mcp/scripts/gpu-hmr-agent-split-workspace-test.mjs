@@ -2389,7 +2389,11 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   const compileStartNs = process.hrtime.bigint();
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   const compileEndNs = process.hrtime.bigint();
-  if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
+  if (!compile?.ok) {
+    const error = new Error(`synthi_compile failed: ${JSON.stringify(sanitizeProofLogValue(compile)).slice(0, 4000)}`);
+    error.compileResult = compile;
+    throw error;
+  }
   const waitContract = waitContractForCompile({ args, compile, timeoutMs, options });
   const waitStartNs = process.hrtime.bigint();
   const wait = await state.client.toolCall(
@@ -3437,6 +3441,119 @@ function sourceFirstIngestionEvidence({
   };
 }
 
+function collectAiProviderReasonCodes(value, seen = new Set()) {
+  if (value === null || value === undefined) return [];
+  if (typeof value === 'string') {
+    const codes = value.match(/\bai_provider_[a-z0-9_]+\b/g) ?? [];
+    const lowered = value.toLowerCase();
+    if (
+      lowered.includes('consumer_suspended')
+      || lowered.includes('account suspended')
+      || lowered.includes('has been suspended')
+    ) {
+      codes.push('ai_provider_account_suspended');
+    } else if (
+      lowered.includes('permissiondenied')
+      || lowered.includes('permission denied')
+      || lowered.includes('unauthenticated')
+      || lowered.includes('unauthorized')
+      || lowered.includes('auth denied')
+      || lowered.includes('invalid api key')
+      || lowered.includes('api key not valid')
+      || lowered.includes('403')
+    ) {
+      codes.push('ai_provider_auth_denied');
+    } else if (lowered.includes('timeout')) {
+      codes.push('ai_provider_timeout');
+    } else if (lowered.includes('rate limit') || lowered.includes('429')) {
+      codes.push('ai_provider_rate_limited');
+    } else if (lowered.includes('unavailable') || lowered.includes('overload') || lowered.includes('503')) {
+      codes.push('ai_provider_unavailable');
+    }
+    return [...new Set(codes)];
+  }
+  if (typeof value !== 'object' || seen.has(value)) return [];
+  seen.add(value);
+  const directCodes = [];
+  const rule = value.rule ?? value.code ?? value.reasonCode ?? value.reason_code;
+  if (typeof rule === 'string' && rule.startsWith('ai_provider_')) {
+    directCodes.push(rule);
+  }
+  return [...new Set([
+    ...directCodes,
+    ...Object.values(value).flatMap((entry) => collectAiProviderReasonCodes(entry, seen)),
+  ])];
+}
+
+function sourceFirstProviderDiagnosticEvidence({
+  error,
+  initialCompileArgs,
+  source,
+  entryPath,
+}) {
+  const compileResult = error?.compileResult ?? error?.compile_result ?? null;
+  const sanitizedCompileResult = sanitizeProofLogValue(compileResult);
+  const sanitizedMessage = sanitizeProofLogString(error?.stack || error?.message || String(error ?? ''));
+  const reasonCodes = collectAiProviderReasonCodes({
+    message: sanitizedMessage,
+    compileResult: sanitizedCompileResult,
+  });
+  const initialFiles = sourceFirstInitialFileManifest(initialCompileArgs?.files);
+  const normalizedEntryPath = cleanRel(entryPath);
+  const sourceContentHash = `sha256:${sha256Hex(source)}`;
+  const providerFailureDetected = reasonCodes.length > 0;
+  const proofSeed = {
+    sourceContentHash,
+    entryPath: normalizedEntryPath,
+    reasonCodes,
+    useAiSplit: initialCompileArgs?.use_ai_split === true,
+  };
+  const proofId = `source-first-provider-diagnostic:sha256:${sha256Hex(stableJson(proofSeed))}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.source_first_provider_diagnostic.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_provider_diagnostic.v1',
+    proofId,
+    proof_id: proofId,
+    proofAuthority: 'provider_diagnostic_only_not_runtime_proof',
+    proof_authority: 'provider_diagnostic_only_not_runtime_proof',
+    accepted: false,
+    acceptedAsDiagnostic: providerFailureDetected,
+    accepted_as_diagnostic: providerFailureDetected,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    providerFailureDetected,
+    provider_failure_detected: providerFailureDetected,
+    reasonCodes,
+    reason_codes: reasonCodes,
+    blockingGaps: providerFailureDetected
+      ? reasonCodes
+      : ['ai_provider_failure_reason_missing'],
+    blocking_gaps: providerFailureDetected
+      ? reasonCodes
+      : ['ai_provider_failure_reason_missing'],
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    entryPath: normalizedEntryPath,
+    entry_path: normalizedEntryPath,
+    initialFileCount: initialFiles.length,
+    initial_file_count: initialFiles.length,
+    useAiSplit: initialCompileArgs?.use_ai_split === true,
+    use_ai_split: initialCompileArgs?.use_ai_split === true,
+    userRequestedAi: initialCompileArgs?.user_requested_ai === true,
+    user_requested_ai: initialCompileArgs?.user_requested_ai === true,
+    preferGpuPipeline: initialCompileArgs?.prefer_gpu_pipeline === true,
+    prefer_gpu_pipeline: initialCompileArgs?.prefer_gpu_pipeline === true,
+    sanitizedErrorMessage: sanitizedMessage.slice(0, 4000),
+    sanitized_error_message: sanitizedMessage.slice(0, 4000),
+    sanitizedCompileResult,
+    sanitized_compile_result: sanitizedCompileResult,
+  };
+}
+
 function findMatchingBrace(source, openIndex) {
   let depth = 0;
   for (let i = openIndex; i < source.length; i += 1) {
@@ -4002,6 +4119,37 @@ function selfCheckAgentVisualProfile() {
       && redactedProviderObject.apiKey === REDACTED_SECRET
       && !redactedProviderObject.nested.message.includes(redactionFixtureKey)
       && !redactedProviderObject.nested.bearer.includes('payload.signature');
+    const providerDiagnostic = sourceFirstProviderDiagnosticEvidence({
+      error: Object.assign(
+        new Error(
+          `synthi_compile failed: PermissionDenied: Consumer api_key:${redactionFixtureKey} `
+          + 'has been suspended. reason=CONSUMER_SUSPENDED '
+          + 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature',
+        ),
+        {
+          compileResult: {
+            ok: false,
+            error: {
+              detail: {
+                message: 'GPU split AI provider failed before verification',
+                verification: {
+                  ok: false,
+                  violations: [{
+                    rule: 'ai_provider_account_suspended',
+                    message: `PermissionDenied: Consumer api_key:${redactionFixtureKey} `
+                      + 'has been suspended. reason=CONSUMER_SUSPENDED',
+                  }],
+                },
+              },
+            },
+          },
+        },
+      ),
+      initialCompileArgs: sourceFirstInitialCompileArgs,
+      source: multiFileResolvedSource,
+      entryPath: multiFileProfile.source.entryPath,
+    });
+    const providerDiagnosticSerialized = JSON.stringify(providerDiagnostic);
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -4058,6 +4206,14 @@ function selfCheckAgentVisualProfile() {
       || schedulingEvidence.proofAuthority !== 'visual_worker_scheduling_support_only'
       || schedulingEvidence.strategy !== 'bounded_concurrent_worker_threads'
       || !redactionAccepted
+      || providerDiagnostic.accepted !== false
+      || providerDiagnostic.acceptedAsDiagnostic !== true
+      || providerDiagnostic.acceptedForGpuHmr !== false
+      || providerDiagnostic.gpuHmrSuccess !== false
+      || providerDiagnostic.canSatisfyRuntimeProof !== false
+      || !providerDiagnostic.reasonCodes.includes('ai_provider_account_suspended')
+      || providerDiagnosticSerialized.includes(redactionFixtureKey)
+      || providerDiagnosticSerialized.includes('payload.signature')
     ) {
       throw new Error('agent visual profile self-check failed');
     }
@@ -5488,14 +5644,36 @@ async function run() {
     width: renderWidth,
     height: renderHeight,
   };
-  const initialCompileResult = await compileViaMcp(initialCompileArgs, CFG.hmrTimeoutMs, {
-    metricScope: 'cold',
-    cacheState: 'clean',
-    editId: 'initial-ai-split',
-    editHash: `sha256:${sha256Hex(source)}`,
-    editKind: 'cold_split',
-    requiredGpuProofState: 'gpu-hmr-compile-proven',
-  });
+  let initialCompileResult = null;
+  try {
+    initialCompileResult = await compileViaMcp(initialCompileArgs, CFG.hmrTimeoutMs, {
+      metricScope: 'cold',
+      cacheState: 'clean',
+      editId: 'initial-ai-split',
+      editHash: `sha256:${sha256Hex(source)}`,
+      editKind: 'cold_split',
+      requiredGpuProofState: 'gpu-hmr-compile-proven',
+    });
+  } catch (err) {
+    const providerDiagnostic = sourceFirstProviderDiagnosticEvidence({
+      error: err,
+      initialCompileArgs,
+      source,
+      entryPath,
+    });
+    if (providerDiagnostic.providerFailureDetected) {
+      const diagnosticPath = await writeJsonArtifact('source-first-provider-diagnostic', providerDiagnostic);
+      record('source-first AI provider diagnostic', 'fail', {
+        artifactPath: diagnosticPath,
+        proofId: providerDiagnostic.proofId,
+        reasonCodes: providerDiagnostic.reasonCodes,
+        acceptedForGpuHmr: providerDiagnostic.acceptedForGpuHmr,
+        gpuHmrSuccess: providerDiagnostic.gpuHmrSuccess,
+        canSatisfyRuntimeProof: providerDiagnostic.canSatisfyRuntimeProof,
+      });
+    }
+    throw err;
+  }
   record('first compile via MCP', 'pass', 'use_ai_split=true prefer_gpu_pipeline=true');
 
   const sawGpuSplit = await awaitWorkerLogRegex(

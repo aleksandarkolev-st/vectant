@@ -2494,8 +2494,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 if verification.violations
                 else "ai_provider_error"
             )
+            status_code = 504 if rule == "ai_provider_timeout" else 503
+            if rule in {"ai_provider_auth_denied", "ai_provider_account_suspended"}:
+                status_code = 403
             raise HTTPException(
-                status_code=504 if rule == "ai_provider_timeout" else 503,
+                status_code=status_code,
                 detail={
                     "message": "GPU split AI provider failed before verification",
                     "verification": verification.to_dict(),

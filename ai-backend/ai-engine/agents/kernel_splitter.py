@@ -35,6 +35,7 @@ manifest, and the same call covers the GPU sub-block).
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import posixpath
@@ -249,6 +250,44 @@ class KernelSplitProviderError(Exception):
         super().__init__(message)
 
 
+class KernelSplitProviderPreflightError(RuntimeError):
+    """Diagnostic-only provider readiness failure before generation."""
+
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        provider: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ):
+        self.reason_code = reason_code
+        self.provider = provider
+        self.metadata = dict(metadata or {})
+        super().__init__(message)
+
+
+_PROVIDER_SECRET_PATTERNS = (
+    (re.compile(r"\bapi_key:[A-Za-z0-9._~+/\-=:-]{8,}", re.IGNORECASE), "api_key:[REDACTED]"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_GOOGLE_API_KEY]"),
+    (
+        re.compile(
+            r"\b((?:GOOGLE|GEMINI|OPENAI|ANTHROPIC|SYNTHI)?_?(?:API_?KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\"',\s\\]+",
+            re.IGNORECASE,
+        ),
+        r"\1=[REDACTED]",
+    ),
+    (re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-=]{12,}", re.IGNORECASE), r"\1[REDACTED]"),
+)
+
+
+def sanitize_provider_error_detail(value: str) -> str:
+    sanitized = str(value or "")
+    for pattern, replacement in _PROVIDER_SECRET_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized
+
+
 def split_provider_failure_verification(exc: BaseException) -> SplitVerificationResult:
     """Represent an AI provider failure as reason-coded split evidence."""
 
@@ -256,16 +295,96 @@ def split_provider_failure_verification(exc: BaseException) -> SplitVerification
     err_type = type(original).__name__
     message = str(original)
     lowered = f"{err_type} {message}".lower()
-    if isinstance(original, TimeoutError) or "timeout" in lowered:
+    explicit_reason = getattr(original, "reason_code", None)
+    if isinstance(explicit_reason, str) and explicit_reason.startswith("ai_provider_"):
+        rule = explicit_reason
+    elif isinstance(original, TimeoutError) or "timeout" in lowered:
         rule = "ai_provider_timeout"
+    elif "consumer_suspended" in lowered or "account suspended" in lowered or "has been suspended" in lowered:
+        rule = "ai_provider_account_suspended"
+    elif (
+        "permissiondenied" in lowered
+        or "permission denied" in lowered
+        or "unauthenticated" in lowered
+        or "unauthorized" in lowered
+        or "auth denied" in lowered
+        or "invalid api key" in lowered
+        or "api key not valid" in lowered
+        or "403" in lowered
+    ):
+        rule = "ai_provider_auth_denied"
     elif "rate limit" in lowered or "429" in lowered:
         rule = "ai_provider_rate_limited"
     elif "unavailable" in lowered or "overload" in lowered or "503" in lowered:
         rule = "ai_provider_unavailable"
     else:
         rule = "ai_provider_error"
-    detail = f"{err_type}: {message}" if message else err_type
+    detail = sanitize_provider_error_detail(f"{err_type}: {message}" if message else err_type)
     return split_failure_verification(rule, detail)
+
+
+def _provider_preflight_failure_reason(preflight: Mapping[str, Any]) -> str:
+    for key in ("reasonCode", "reason_code", "rule", "code"):
+        value = preflight.get(key)
+        if isinstance(value, str) and value.startswith("ai_provider_"):
+            return value
+    return "ai_provider_error"
+
+
+def _provider_preflight_failure_message(preflight: Mapping[str, Any]) -> str:
+    for key in ("message", "detail", "error", "errorMessage", "error_message"):
+        value = preflight.get(key)
+        if value:
+            return sanitize_provider_error_detail(str(value))
+    reason = _provider_preflight_failure_reason(preflight)
+    return f"provider preflight failed: {reason}"
+
+
+async def _run_provider_preflight(
+    provider: "AiProvider",
+    *,
+    model: Optional[str],
+    api_key: Optional[str],
+    mode: str,
+    request_mode: str,
+) -> Mapping[str, Any]:
+    preflight = getattr(provider, "preflight", None)
+    if not callable(preflight):
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_not_available",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    result = preflight(
+        model=model,
+        api_key=api_key,
+        mode=mode,
+        request_mode=request_mode,
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    if result is None:
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_empty_diagnostic",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    if not isinstance(result, Mapping):
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_unstructured_diagnostic",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1796,6 +1915,20 @@ async def run_kernel_splitter(
     )
 
     try:
+        preflight = await _run_provider_preflight(
+            provider,
+            model=model,
+            api_key=api_key,
+            mode="split",
+            request_mode="split",
+        )
+        if preflight.get("ok") is False:
+            raise KernelSplitProviderPreflightError(
+                _provider_preflight_failure_reason(preflight),
+                _provider_preflight_failure_message(preflight),
+                provider=str(preflight.get("provider") or getattr(provider, "name", "")),
+                metadata=preflight,
+            )
         raw = await provider.ask_llm(
             user_code,
             lang,

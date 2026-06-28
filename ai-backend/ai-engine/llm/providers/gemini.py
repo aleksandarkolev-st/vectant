@@ -34,6 +34,51 @@ from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt,
 load_dotenv()  # Load once at import
 
 
+_PROVIDER_SECRET_PATTERNS = (
+    (re.compile(r"\bapi_key:[A-Za-z0-9._~+/\-=:-]{8,}", re.IGNORECASE), "api_key:[REDACTED]"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_GOOGLE_API_KEY]"),
+    (
+        re.compile(
+            r"\b((?:GOOGLE|GEMINI|OPENAI|ANTHROPIC|SYNTHI)?_?(?:API_?KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\"',\s\\]+",
+            re.IGNORECASE,
+        ),
+        r"\1=[REDACTED]",
+    ),
+    (re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-=]{12,}", re.IGNORECASE), r"\1[REDACTED]"),
+)
+
+
+def _sanitize_provider_error_detail(value: Any) -> str:
+    sanitized = str(value or "")
+    for pattern, replacement in _PROVIDER_SECRET_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized
+
+
+def _provider_failure_reason_from_text(value: Any) -> str:
+    lowered = str(value or "").lower()
+    if "timeout" in lowered:
+        return "ai_provider_timeout"
+    if "consumer_suspended" in lowered or "account suspended" in lowered or "has been suspended" in lowered:
+        return "ai_provider_account_suspended"
+    if (
+        "permissiondenied" in lowered
+        or "permission denied" in lowered
+        or "unauthenticated" in lowered
+        or "unauthorized" in lowered
+        or "auth denied" in lowered
+        or "invalid api key" in lowered
+        or "api key not valid" in lowered
+        or "403" in lowered
+    ):
+        return "ai_provider_auth_denied"
+    if "rate limit" in lowered or "429" in lowered:
+        return "ai_provider_rate_limited"
+    if "unavailable" in lowered or "overload" in lowered or "503" in lowered:
+        return "ai_provider_unavailable"
+    return "ai_provider_error"
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if not raw:
@@ -201,7 +246,7 @@ def _list_live_models(api_key: Optional[str]) -> tuple[Sequence[Any], Optional[s
         genai.configure(api_key=key)
         models = list(genai.list_models())
     except Exception as exc:  # pragma: no cover - SDK/network failures vary by environment
-        return [], f"{type(exc).__name__}: {exc}"
+        return [], _sanitize_provider_error_detail(f"{type(exc).__name__}: {exc}")
     _MODEL_LIST_CACHE[key] = (now, models)
     return models, None
 
@@ -418,6 +463,65 @@ class GeminiProvider(AiProvider):
         if mode == "delta":
             return _env_float("SYNTHI_GEMINI_DELTA_TIMEOUT_SEC", default_timeout)
         return default_timeout
+
+    async def preflight(
+        self,
+        *,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        mode: Optional[str] = None,
+        request_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        requested_model = model or self.model_name
+        mode_lower = mode.lower() if isinstance(mode, str) else ""
+        request_mode_value = _request_mode_name(mode_lower, request_mode)
+        base: Dict[str, Any] = {
+            "provider": self.name,
+            "requested_model": requested_model,
+            "mode": mode_lower,
+            "request_mode": request_mode_value,
+            "proof_authority": "provider_preflight_diagnostic_only",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+        if not api_key and not os.getenv("GEMINI_API_KEY"):
+            return {
+                **base,
+                "ok": False,
+                "reasonCode": "ai_provider_auth_denied",
+                "message": "GEMINI_API_KEY is not set and no api_key was provided.",
+            }
+
+        provider_status = _provider_model_status(requested_model, api_key=api_key)
+        status_metadata = _provider_status_metadata(provider_status)
+        live_error = provider_status.get("provider_live_model_list_error")
+        if provider_status.get("provider_model_status") == "shutdown":
+            return {
+                **base,
+                **status_metadata,
+                "ok": False,
+                "reasonCode": "ai_provider_unavailable",
+                "message": _sanitize_provider_error_detail(
+                    f"Requested model {requested_model} is marked shutdown."
+                ),
+            }
+        if live_error:
+            reason = _provider_failure_reason_from_text(live_error)
+            if reason != "ai_provider_error":
+                return {
+                    **base,
+                    **status_metadata,
+                    "ok": False,
+                    "reasonCode": reason,
+                    "message": _sanitize_provider_error_detail(live_error),
+                }
+
+        return {
+            **base,
+            **status_metadata,
+            "ok": True,
+        }
 
     async def ask_llm(
         self,

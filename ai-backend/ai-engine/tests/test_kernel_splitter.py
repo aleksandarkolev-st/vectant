@@ -447,6 +447,99 @@ def test_split_provider_timeout_is_reason_coded():
     assert "TimeoutError" in verification.violations[0].message
 
 
+def test_split_provider_account_suspended_is_reason_coded_and_redacted():
+    raw_key = "AIzaSyProviderSuspendedFixtureKey000000000"
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError(
+                "PermissionDenied: Consumer api_key:"
+                f"{raw_key} has been suspended. reason=CONSUMER_SUSPENDED"
+            )
+        )
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_account_suspended"
+    assert "CONSUMER_SUSPENDED" in verification.violations[0].message
+    assert raw_key not in verification.violations[0].message
+    assert "api_key:[REDACTED]" in verification.violations[0].message
+
+
+def test_split_provider_auth_denied_is_reason_coded():
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError("PermissionDenied: 403 API key not valid for this provider")
+        )
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_auth_denied"
+    assert "PermissionDenied" in verification.violations[0].message
+
+
+def test_run_kernel_splitter_preflight_refusal_skips_provider_call():
+    raw_key = "AIzaSyPreflightSuspendedFixtureKey0000000"
+
+    class Provider:
+        called = False
+        preflight_called = False
+        name = "fixture-provider"
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            return {
+                "ok": False,
+                "provider": self.name,
+                "reasonCode": "ai_provider_account_suspended",
+                "message": (
+                    "PermissionDenied: Consumer api_key:"
+                    f"{raw_key} has been suspended. reason=CONSUMER_SUSPENDED"
+                ),
+                "proof_authority": "provider_preflight_diagnostic_only",
+                "accepted_for_gpu_hmr": False,
+                "gpu_hmr_success": False,
+                "can_satisfy_runtime_proof": False,
+            }
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("ask_llm must not run after failed preflight")
+
+    source = """
+    #include <hip/hip_runtime.h>
+    extern "C" __global__ void k(float* out) { out[threadIdx.x] = 1.0f; }
+    int main() { return 0; }
+    """
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/main.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+
+    with pytest.raises(KernelSplitProviderError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=source,
+                lang="cpp",
+                detection=detection,
+                files=[{"name": "src/main.hip", "content": source}],
+                focus="src/main.hip",
+                model="fixture-model",
+                gpu_arch_hint="gfx1201",
+            )
+        )
+
+    verification = split_provider_failure_verification(exc.value)
+    assert provider.preflight_called is True
+    assert provider.called is False
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_account_suspended"
+    assert raw_key not in verification.violations[0].message
+    assert "api_key:[REDACTED]" in verification.violations[0].message
+
+
 def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
     class Provider:
         called = False
@@ -560,6 +653,11 @@ def test_run_kernel_splitter_rejects_ambiguous_cmake_target_before_ai_provider()
 def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provider(monkeypatch):
     class Provider:
         called = False
+        preflight_called = False
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            raise AssertionError("preflight should not be called for deterministic source-owned split")
 
         async def ask_llm(self, *_args, **_kwargs):
             self.called = True
@@ -636,6 +734,7 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     )
 
     assert provider.called is False
+    assert provider.preflight_called is False
     assert result.verification and result.verification.ok is True
     assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
     assert result.raw_response == ""

@@ -163,7 +163,7 @@ fn summarize_ai_error_body(body: &str) -> String {
             summarize_ai_error_json(detail)
         })
         .unwrap_or_else(|| trimmed.to_string());
-    summary.chars().take(1200).collect()
+    redact_sensitive_ai_text(&summary).chars().take(1200).collect()
 }
 
 fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
@@ -171,6 +171,72 @@ fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
     if !part.is_empty() && !parts.iter().any(|existing| existing == &part) {
         parts.push(part);
     }
+}
+
+fn redact_until_delimiter(input: &str, marker: &str, replacement: &str) -> String {
+    let mut output = String::new();
+    let mut search_from = 0;
+    let lower = input.to_lowercase();
+    let marker_lower = marker.to_lowercase();
+    while let Some(relative_start) = lower[search_from..].find(&marker_lower) {
+        let start = search_from + relative_start;
+        let value_start = start + marker.len();
+        let mut end = value_start;
+        for (offset, ch) in input[value_start..].char_indices() {
+            if ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '\\' | '}' | ']' | ')') {
+                break;
+            }
+            end = value_start + offset + ch.len_utf8();
+        }
+        output.push_str(&input[search_from..start]);
+        output.push_str(replacement);
+        search_from = end;
+    }
+    output.push_str(&input[search_from..]);
+    output
+}
+
+fn redact_google_api_keys(input: &str) -> String {
+    let mut output = String::new();
+    let mut search_from = 0;
+    while let Some(relative_start) = input[search_from..].find("AIza") {
+        let start = search_from + relative_start;
+        let mut end = start;
+        for (offset, ch) in input[start..].char_indices() {
+            if offset == 0 || ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                end = start + offset + ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+        output.push_str(&input[search_from..start]);
+        if end - start >= 20 {
+            output.push_str("[REDACTED_GOOGLE_API_KEY]");
+        } else {
+            output.push_str(&input[start..end]);
+        }
+        search_from = end;
+    }
+    output.push_str(&input[search_from..]);
+    output
+}
+
+fn redact_sensitive_ai_text(input: &str) -> String {
+    let mut redacted = input.to_string();
+    for (marker, replacement) in [
+        ("api_key:", "api_key:[REDACTED]"),
+        ("api_key=", "api_key=[REDACTED]"),
+        ("apikey:", "apikey:[REDACTED]"),
+        ("GOOGLE_API_KEY=", "GOOGLE_API_KEY=[REDACTED]"),
+        ("GEMINI_API_KEY=", "GEMINI_API_KEY=[REDACTED]"),
+        ("OPENAI_API_KEY=", "OPENAI_API_KEY=[REDACTED]"),
+        ("ANTHROPIC_API_KEY=", "ANTHROPIC_API_KEY=[REDACTED]"),
+        ("Authorization: Bearer ", "Authorization: Bearer [REDACTED]"),
+        ("Bearer ", "Bearer [REDACTED]"),
+    ] {
+        redacted = redact_until_delimiter(&redacted, marker, replacement);
+    }
+    redact_google_api_keys(&redacted)
 }
 
 fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
@@ -2085,6 +2151,49 @@ mod tests {
         assert!(summary.contains("GPU split AI provider failed before verification"));
         assert!(summary.contains("ai_provider_timeout"));
         assert!(summary.contains("TimeoutError"));
+    }
+
+    #[test]
+    fn summarizes_ai_provider_auth_failure_without_secrets() {
+        let raw_key = "AIzaSyProviderSuspendedFixtureKey000000000";
+        let body = json!({
+            "detail": {
+                "message": "GPU split AI provider failed before verification",
+                "provider_preflight": {
+                    "ok": false,
+                    "reasonCode": "ai_provider_account_suspended",
+                    "message": format!(
+                        "PermissionDenied: Consumer api_key:{} has been suspended. Authorization: Bearer eyJhbGciOiJIUzI1Ni.payload.signature",
+                        raw_key
+                    ),
+                    "accepted_for_gpu_hmr": false,
+                    "gpu_hmr_success": false
+                },
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {
+                            "rule": "ai_provider_account_suspended",
+                            "message": format!(
+                                "PermissionDenied: Consumer api_key:{} has been suspended. reason=CONSUMER_SUSPENDED Authorization: Bearer eyJhbGciOiJIUzI1Ni.payload.signature",
+                                raw_key
+                            )
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU split AI provider failed before verification"));
+        assert!(summary.contains("ai_provider_account_suspended"));
+        assert!(summary.contains("CONSUMER_SUSPENDED"));
+        assert!(summary.contains("api_key:[REDACTED]"));
+        assert!(summary.contains("Bearer [REDACTED]"));
+        assert!(!summary.contains(raw_key));
+        assert!(!summary.contains("payload.signature"));
     }
 
     #[test]
