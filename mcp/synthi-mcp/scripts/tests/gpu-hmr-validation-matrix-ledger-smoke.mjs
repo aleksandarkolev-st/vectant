@@ -3715,7 +3715,121 @@ function realRocmProofSchedulingFixture(overrides = {}) {
   };
 }
 
+function realRocmSourceTreeTransportFixture(scope, overrides = {}) {
+  const sourceTreeManifest = {
+    schemaVersion: 'synthi.real_rocm.source_tree_manifest.v1',
+    schema_version: 'synthi.real_rocm.source_tree_manifest.v1',
+    sourceUrl: `https://example.invalid/rocm/${scope}.git`,
+    source_url: `https://example.invalid/rocm/${scope}.git`,
+    repoCommit: '0123456789abcdef0123456789abcdef01234567',
+    repo_commit: '0123456789abcdef0123456789abcdef01234567',
+    gitTreeHash: 'abcdef0123456789abcdef0123456789abcdef01',
+    git_tree_hash: 'abcdef0123456789abcdef0123456789abcdef01',
+    fileCount: 12000,
+    file_count: 12000,
+    listingHash: hashValue(`${scope}:git-ls-tree`),
+    listing_hash: hashValue(`${scope}:git-ls-tree`),
+    parseErrorCount: 0,
+    parse_error_count: 0,
+    proofAuthority: 'source_tree_identity_only_not_runtime_proof',
+    proof_authority: 'source_tree_identity_only_not_runtime_proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    manifestHash: hashValue(`${scope}:source-tree-manifest`),
+    manifest_hash: hashValue(`${scope}:source-tree-manifest`),
+  };
+  const artifactCasValidation = {
+    schemaVersion: 'synthi.gpu_hmr.artifact_transport_evidence.v1',
+    accepted: true,
+    acceptedAsTransportEvidence: true,
+    accepted_as_transport_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'transport_integrity_only',
+    proof_authority: 'transport_integrity_only',
+    manifestHash: hashValue(`${scope}:artifact-cas-manifest`),
+    manifest_hash: hashValue(`${scope}:artifact-cas-manifest`),
+    contentHash: hashValue(`${scope}:source-tree-manifest-bytes`),
+    content_hash: hashValue(`${scope}:source-tree-manifest-bytes`),
+    artifactId: `artifact:${hashValue(`${scope}:source-tree-manifest-bytes`)}`,
+    artifact_id: `artifact:${hashValue(`${scope}:source-tree-manifest-bytes`)}`,
+    transportKind: 'cas_shared_volume',
+    transport_kind: 'cas_shared_volume',
+    sharedMountCount: 3,
+    shared_mount_count: 3,
+    sharedMountRoles: ['frontend', 'mcp', 'worker'],
+    shared_mount_roles: ['frontend', 'mcp', 'worker'],
+    sharedStorage: {
+      accepted: true,
+      mountCount: 3,
+      mount_count: 3,
+    },
+    shared_storage: {
+      accepted: true,
+      mountCount: 3,
+      mount_count: 3,
+    },
+    byteLength: 2048,
+    mediaType: 'application/vnd.synthi.real-rocm-source-tree-manifest+json',
+    reasons: [],
+    gaps: [],
+  };
+  return {
+    schemaVersion: 'synthi.real_rocm.source_tree_transport.v1',
+    schema_version: 'synthi.real_rocm.source_tree_transport.v1',
+    status: 'source_tree_transport_evidence_accepted',
+    proofAuthority: 'source_tree_transport_integrity_only_not_runtime_proof',
+    proof_authority: 'source_tree_transport_integrity_only_not_runtime_proof',
+    acceptedAsTransportEvidence: true,
+    accepted_as_transport_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceTreeManifest,
+    source_tree_manifest: sourceTreeManifest,
+    sourceTreeManifestHash: sourceTreeManifest.manifestHash,
+    source_tree_manifest_hash: sourceTreeManifest.manifestHash,
+    artifactCasValidation,
+    artifact_cas_validation: artifactCasValidation,
+    artifactCasManifestHash: artifactCasValidation.manifestHash,
+    artifact_cas_manifest_hash: artifactCasValidation.manifestHash,
+    sourceTreeCasRootConfigured: true,
+    source_tree_cas_root_configured: true,
+    transportKind: 'cas_shared_volume',
+    transport_kind: 'cas_shared_volume',
+    transferOperation: 'cas_shared_volume',
+    transfer_operation: 'cas_shared_volume',
+    hotPathOptimized: true,
+    hot_path_optimized: true,
+    blockingGaps: [],
+    blocking_gaps: [],
+    failedGates: [],
+    failed_gates: [],
+    evidenceRefs: [
+      `source-tree-manifest:${sourceTreeManifest.manifestHash}`,
+      `artifact-cas-manifest:${artifactCasValidation.manifestHash}`,
+    ],
+    evidence_refs: [
+      `source-tree-manifest:${sourceTreeManifest.manifestHash}`,
+      `artifact-cas-manifest:${artifactCasValidation.manifestHash}`,
+    ],
+    contractHash: hashValue(`${scope}:source-tree-transport`),
+    contract_hash: hashValue(`${scope}:source-tree-transport`),
+    ...overrides,
+  };
+}
+
 const largeRocmProofSchedulingFixture = realRocmProofSchedulingFixture();
+const largeRocmSourceTreeTransportFixture = realRocmSourceTreeTransportFixture('real-rocm-large-lib');
 
 const largeRocmLatestReport = {
   slug: 'gpu-real-rocm-large-lib-20260623',
@@ -3903,6 +4017,8 @@ const largeRocmLatestReport = {
   },
   real_rocm_runtime_stage_obligations: realRocmRuntimeStageObligationsFixture(),
   real_rocm_app_hook_materialization: realRocmAppHookMaterializationFixture(),
+  real_rocm_source_tree_transport: largeRocmSourceTreeTransportFixture,
+  source_tree_transport: largeRocmSourceTreeTransportFixture,
   real_rocm_proof_scheduling: largeRocmProofSchedulingFixture,
   proof_scheduling: largeRocmProofSchedulingFixture,
   timeout_intelligence_failure: largeRocmProofSchedulingFixture,
@@ -5638,6 +5754,19 @@ assert.ok(largeRocm.realRocmAppHookMaterialization.blockingGaps.includes(
 assert.ok(largeRocm.realRocmAppHookMaterialization.blockingGaps.includes(
   'app_hook_materialization_contract_not_declared',
 ));
+assert.equal(largeRocm.realRocmSourceTreeTransport.present, true);
+assert.equal(largeRocm.realRocmSourceTreeTransport.accepted, true);
+assert.equal(largeRocm.realRocmSourceTreeTransport.acceptedAsTransportEvidence, true);
+assert.equal(largeRocm.realRocmSourceTreeTransport.acceptedForGpuHmr, false);
+assert.equal(largeRocm.realRocmSourceTreeTransport.gpuHmrSuccess, false);
+assert.equal(largeRocm.realRocmSourceTreeTransport.canSatisfyRuntimeProof, false);
+assert.equal(largeRocm.realRocmSourceTreeTransport.transportKind, 'cas_shared_volume');
+assert.equal(largeRocm.realRocmSourceTreeTransport.hotPathOptimized, true);
+assert.equal(largeRocm.realRocmSourceTreeTransport.sharedMountCount, 3);
+assert.equal(largeRocm.realRocmSourceTreeTransport.sharedStorageAccepted, true);
+assert.equal(largeRocm.realRocmSourceTreeTransport.failedGates.length, 0);
+assert.equal(largeRocm.attemptCompleteness.sourceTreeTransportPresent, true);
+assert.equal(largeRocm.attemptCompleteness.sourceTreeTransportAcceptedAsEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.present, true);
 assert.equal(largeRocm.realRocmProofScheduling.acceptedAsRefusalEvidence, true);
 assert.equal(largeRocm.realRocmProofScheduling.accepted, true);
@@ -5752,6 +5881,65 @@ assert.deepEqual(timeoutIntelligenceRocm.realRocmRuntimeStageObligationsGate.mis
 ]);
 assert.ok(timeoutIntelligenceRocm.reasons.includes('real_rocm_runtime_stage_obligations_not_met'));
 assert.ok(timeoutIntelligenceRocm.openGaps.includes('real_rocm_runtime_stage_obligations_required'));
+
+const forgedSourceTreeTransport = realRocmSourceTreeTransportFixture(
+  'real-rocm-forged-source-tree-transport',
+  {
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+  },
+);
+const forgedSourceTreeTransportDir = path.join(logsRoot, 'real-rocm-forged-source-tree-transport');
+await writeJson(path.join(forgedSourceTreeTransportDir, 'real-rocm-forged-source-tree-transport.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-forged-source-tree-transport-20260627',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-forged-source-tree-transport',
+    source: 'scripts/profiles/real-rocm-forged-source-tree-transport.json',
+  },
+  source_url: 'https://example.invalid/rocm/forged-source-tree-transport.git',
+  target_name: 'ForgedSourceTreeTransportDriver',
+  real_rocm_source_tree_transport: forgedSourceTreeTransport,
+  realRocmSourceTreeTransport: forgedSourceTreeTransport,
+  source_tree_transport: forgedSourceTreeTransport,
+  sourceTreeTransport: forgedSourceTreeTransport,
+});
+const forgedSourceTreeTransportLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedSourceTreeTransportDir],
+  generatedAt: '2026-06-27T00:00:02.500Z',
+});
+const forgedSourceTreeTransportRocm = forgedSourceTreeTransportLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedSourceTreeTransportRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedSourceTreeTransportRocm.gpuHmrSuccess, false);
+assert.equal(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.present, true);
+assert.equal(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.accepted, false);
+assert.equal(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.acceptedForGpuHmr, false);
+assert.equal(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.gpuHmrSuccess, false);
+assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.includes(
+  'real_rocm_source_tree_transport_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.includes(
+  'real_rocm_source_tree_transport_claimed_gpu_hmr_success',
+));
+assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.includes(
+  'real_rocm_source_tree_transport_claimed_runtime_authority',
+));
+assert.ok(forgedSourceTreeTransportRocm.realRocmSourceTreeTransport.failedGates.includes(
+  'real_rocm_source_tree_transport_claimed_dispatch_authority',
+));
+assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportPresent, true);
+assert.equal(forgedSourceTreeTransportRocm.attemptCompleteness.sourceTreeTransportAcceptedAsEvidence, false);
 
 const forgedAppHookMaterialization = realRocmAppHookMaterializationFixture({
   acceptedForGpuHmr: true,

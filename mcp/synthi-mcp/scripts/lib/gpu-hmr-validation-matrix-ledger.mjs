@@ -99,6 +99,8 @@ const REAL_ROCM_APP_HOOK_MATERIALIZATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_app_hook_materialization.v1';
 const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
+const REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION =
+  'synthi.real_rocm.source_tree_transport.v1';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
@@ -3317,6 +3319,7 @@ function realRocmAttemptCompletenessFacet({
   accepted = false,
   upstreamLifecycleFailure = {},
   workerRepoTransferFailure = {},
+  sourceTreeTransport = {},
   proofScheduling = {},
   runtimeProofArtifact = {},
   strictGateFailures = [],
@@ -3332,6 +3335,15 @@ function realRocmAttemptCompletenessFacet({
     workerRepoTransferFailure.acceptedAsRefusalEvidence,
     workerRepoTransferFailure.accepted_as_refusal_evidence,
   ) === true;
+  const sourceTreeTransportPresent = Object.keys(compactObject(sourceTreeTransport)).length > 0
+    && sourceTreeTransport.present !== false;
+  const sourceTreeTransportAccepted =
+    sourceTreeTransportPresent
+    && sourceTreeTransport.accepted === true
+    && firstBool(
+      sourceTreeTransport.acceptedAsTransportEvidence,
+      sourceTreeTransport.accepted_as_transport_evidence,
+    ) === true;
   const proofSchedulingHasPresentFlag = Object.prototype.hasOwnProperty.call(
     proofScheduling,
     'present',
@@ -3352,22 +3364,26 @@ function realRocmAttemptCompletenessFacet({
     : upstreamAccepted
       ? 80
       : proofSchedulingAccepted
-        ? 80
-        : transferAccepted
-          ? 70
-          : upstreamPresent
-            ? 60
+      ? 80
+      : transferAccepted
+        ? 70
+        : upstreamPresent
+          ? 60
+          : sourceTreeTransportAccepted
+            ? 55
             : transferPresent
               ? 50
-              : proofSchedulingPresent
-                ? 40
-                : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
-                  ? 30
-                  : runtimeProofPresent
-                    ? 20
-                    : ledgerPresent
-                      ? 10
-                      : 0;
+              : sourceTreeTransportPresent
+                ? 45
+                : proofSchedulingPresent
+                  ? 40
+                  : ledgerPresent && runtimeProofPresent && strictGateFailures.length > 0
+                    ? 30
+                    : runtimeProofPresent
+                      ? 20
+                      : ledgerPresent
+                        ? 10
+                        : 0;
   return {
     accepted: score >= 80,
     score,
@@ -3379,6 +3395,10 @@ function realRocmAttemptCompletenessFacet({
     worker_repo_transfer_present: transferPresent,
     workerRepoTransferAcceptedAsRefusalEvidence: transferAccepted,
     worker_repo_transfer_accepted_as_refusal_evidence: transferAccepted,
+    sourceTreeTransportPresent,
+    source_tree_transport_present: sourceTreeTransportPresent,
+    sourceTreeTransportAcceptedAsEvidence: sourceTreeTransportAccepted,
+    source_tree_transport_accepted_as_evidence: sourceTreeTransportAccepted,
     proofSchedulingPresent,
     proof_scheduling_present: proofSchedulingPresent,
     proofSchedulingAcceptedAsRefusalEvidence: proofSchedulingAccepted,
@@ -3392,6 +3412,7 @@ function realRocmAttemptCompletenessFacet({
         ? null
         : 'real_rocm_refusal_evidence_not_accepted',
       upstreamPresent || proofSchedulingPresent || transferPresent || accepted
+        || sourceTreeTransportPresent
         ? null
         : 'real_rocm_attempt_evidence_missing',
     ]),
@@ -4478,6 +4499,226 @@ function realRocmProofSchedulingGate(input = {}) {
     validation_blockers: validationBlockers,
     validationBlockerGates: blockerGates,
     validation_blocker_gates: blockerGates,
+  };
+}
+
+function realRocmSourceTreeTransportFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsTransportEvidence: false,
+      accepted_as_transport_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      hotPathOptimized: false,
+      hot_path_optimized: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedAsTransportEvidence = firstBool(
+    facet.acceptedAsTransportEvidence,
+    facet.accepted_as_transport_evidence,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const sourceTreeManifest = compactObject(
+    facet.sourceTreeManifest
+    ?? facet.source_tree_manifest,
+  );
+  const artifactCasValidation = compactObject(
+    facet.artifactCasValidation
+    ?? facet.artifact_cas_validation
+    ?? facet.casValidation
+    ?? facet.cas_validation,
+  );
+  const sourceTreeManifestHash = normalizeSha256(firstText(
+    facet.sourceTreeManifestHash,
+    facet.source_tree_manifest_hash,
+    sourceTreeManifest.manifestHash,
+    sourceTreeManifest.manifest_hash,
+  ));
+  const artifactCasManifestHash = normalizeSha256(firstText(
+    artifactCasValidation.manifestHash,
+    artifactCasValidation.manifest_hash,
+    facet.artifactCasManifest?.manifestHash,
+    facet.artifact_cas_manifest?.manifest_hash,
+  ));
+  const repoCommit = firstText(
+    sourceTreeManifest.repoCommit,
+    sourceTreeManifest.repo_commit,
+    facet.repoCommit,
+    facet.repo_commit,
+  );
+  const fileCount = finiteNumber(
+    sourceTreeManifest.fileCount
+    ?? sourceTreeManifest.file_count
+    ?? facet.fileCount
+    ?? facet.file_count,
+  );
+  const transferOperation = firstText(
+    facet.transferOperation,
+    facet.transfer_operation,
+    'unknown',
+  );
+  const transportKind = firstText(
+    facet.transportKind,
+    facet.transport_kind,
+    artifactCasValidation.transportKind,
+    artifactCasValidation.transport_kind,
+    facet.artifactCasManifest?.transport?.kind,
+    facet.artifact_cas_manifest?.transport?.kind,
+  );
+  const artifactCasAccepted = Object.keys(artifactCasValidation).length === 0
+    ? false
+    : (
+      firstBool(
+        artifactCasValidation.accepted,
+        artifactCasValidation.acceptedAsTransportEvidence,
+        artifactCasValidation.accepted_as_transport_evidence,
+      ) === true
+    );
+  const sharedMountCount = finiteNumber(
+    artifactCasValidation.sharedMountCount
+    ?? artifactCasValidation.shared_mount_count
+    ?? facet.sharedMountCount
+    ?? facet.shared_mount_count,
+  ) ?? 0;
+  const sharedStorageAccepted = firstBool(
+    artifactCasValidation.sharedStorage?.accepted,
+    artifactCasValidation.shared_storage?.accepted,
+    facet.sharedStorageAccepted,
+    facet.shared_storage_accepted,
+  ) === true;
+  const hotPathOptimized = firstBool(facet.hotPathOptimized, facet.hot_path_optimized) === true;
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...(Array.isArray(artifactCasValidation.gaps) ? artifactCasValidation.gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+    ...(Array.isArray(artifactCasValidation.reasons)
+      ? artifactCasValidation.reasons.map((reason) => `artifact_cas:${reason}`)
+      : []),
+  ]);
+  const supportedTransportKinds = new Set([
+    'cas_shared_volume',
+    'cas_tmpfs',
+    'direct_worker_path',
+    'serialized_fallback',
+  ]);
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_source_tree_transport_schema_missing',
+    schemaVersion && schemaVersion !== REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION
+      ? 'real_rocm_source_tree_transport_schema_unknown'
+      : null,
+    proofAuthority === 'source_tree_transport_integrity_only_not_runtime_proof'
+      ? null
+      : 'real_rocm_source_tree_transport_authority_unknown',
+    acceptedAsTransportEvidence ? null : 'real_rocm_source_tree_transport_not_accepted_as_evidence',
+    acceptedForGpuHmr === true ? 'real_rocm_source_tree_transport_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess === true ? 'real_rocm_source_tree_transport_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_source_tree_transport_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_source_tree_transport_claimed_dispatch_authority'
+      : null,
+    contentAddressedSha256(sourceTreeManifestHash) ? null : 'real_rocm_source_tree_manifest_hash_missing',
+    repoCommit ? null : 'real_rocm_source_tree_repo_commit_missing',
+    Number.isFinite(fileCount) && fileCount > 0
+      ? null
+      : 'real_rocm_source_tree_file_count_missing',
+    transferOperation === 'unknown' ? 'real_rocm_source_tree_transfer_operation_missing' : null,
+    supportedTransportKinds.has(transportKind)
+      ? null
+      : 'real_rocm_source_tree_transport_kind_unknown',
+    artifactCasAccepted ? null : 'real_rocm_source_tree_artifact_cas_not_accepted',
+    hotPathOptimized
+      && ['cas_shared_volume', 'cas_tmpfs'].includes(transportKind)
+      && (sharedMountCount < 2 || !sharedStorageAccepted)
+      ? 'real_rocm_source_tree_hot_path_shared_mount_evidence_missing'
+      : null,
+    artifactCasManifestHash && !contentAddressedSha256(artifactCasManifestHash)
+      ? 'real_rocm_source_tree_artifact_cas_manifest_hash_invalid'
+      : null,
+    ...suppliedFailedGates,
+  ]);
+  const accepted = acceptedAsTransportEvidence && failedGates.length === 0;
+  return {
+    present: true,
+    accepted,
+    acceptedAsTransportEvidence,
+    accepted_as_transport_evidence: acceptedAsTransportEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    status: firstText(facet.status, facet.reason),
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    sourceTreeManifestHash,
+    source_tree_manifest_hash: sourceTreeManifestHash,
+    artifactCasManifestHash,
+    artifact_cas_manifest_hash: artifactCasManifestHash,
+    artifactCasAccepted,
+    artifact_cas_accepted: artifactCasAccepted,
+    transportKind,
+    transport_kind: transportKind,
+    transferOperation,
+    transfer_operation: transferOperation,
+    hotPathOptimized,
+    hot_path_optimized: hotPathOptimized,
+    sharedMountCount,
+    shared_mount_count: sharedMountCount,
+    sharedStorageAccepted,
+    shared_storage_accepted: sharedStorageAccepted,
+    sourceTreeCasRootConfigured: firstBool(
+      facet.sourceTreeCasRootConfigured,
+      facet.source_tree_cas_root_configured,
+    ) === true,
+    source_tree_cas_root_configured: firstBool(
+      facet.sourceTreeCasRootConfigured,
+      facet.source_tree_cas_root_configured,
+    ) === true,
+    repoCommit,
+    repo_commit: repoCommit,
+    fileCount,
+    file_count: fileCount,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
   };
 }
 
@@ -9737,6 +9978,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.worker_repo_transfer_failure
     ?? runtimeProofArtifact.workerRepoTransferFailure,
   );
+  const realRocmSourceTreeTransport = realRocmSourceTreeTransportFacet(compactObject(
+    json.real_rocm_source_tree_transport
+    ?? json.realRocmSourceTreeTransport
+    ?? json.source_tree_transport
+    ?? json.sourceTreeTransport
+    ?? summary.real_rocm_source_tree_transport
+    ?? summary.realRocmSourceTreeTransport
+    ?? summary.source_tree_transport
+    ?? summary.sourceTreeTransport
+    ?? runtimeProofArtifact.real_rocm_source_tree_transport
+    ?? runtimeProofArtifact.realRocmSourceTreeTransport
+    ?? runtimeProofArtifact.source_tree_transport
+    ?? runtimeProofArtifact.sourceTreeTransport,
+  ));
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
     ?? json.outputOracleResolution
@@ -10057,6 +10312,22 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ? realRocmAppHookMaterialization.blocking_gaps
       : []),
   ]);
+  const realRocmSourceTreeTransportGaps = realRocmSourceTreeTransport.present === true
+    ? compactStringList([
+      ...(Array.isArray(realRocmSourceTreeTransport.blockingGaps)
+        ? realRocmSourceTreeTransport.blockingGaps
+        : []),
+      ...(Array.isArray(realRocmSourceTreeTransport.blocking_gaps)
+        ? realRocmSourceTreeTransport.blocking_gaps
+        : []),
+      ...(Array.isArray(realRocmSourceTreeTransport.failedGates)
+        ? realRocmSourceTreeTransport.failedGates
+        : []),
+      ...(Array.isArray(realRocmSourceTreeTransport.failed_gates)
+        ? realRocmSourceTreeTransport.failed_gates
+        : []),
+    ])
+    : [];
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -10303,6 +10574,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     accepted,
     upstreamLifecycleFailure,
     workerRepoTransferFailure,
+    sourceTreeTransport: realRocmSourceTreeTransport,
     proofScheduling: realRocmProofScheduling,
     runtimeProofArtifact: runtimeProofArtifactGate,
     strictGateFailures,
@@ -10433,6 +10705,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     upstream_lifecycle_failure: upstreamLifecycleFailure,
     workerRepoTransferFailure,
     worker_repo_transfer_failure: workerRepoTransferFailure,
+    realRocmSourceTreeTransport,
+    real_rocm_source_tree_transport: realRocmSourceTreeTransport,
+    sourceTreeTransport: realRocmSourceTreeTransport,
+    source_tree_transport: realRocmSourceTreeTransport,
     attemptCompleteness,
     attempt_completeness: attemptCompleteness,
     outputOracleResolution,
@@ -10575,6 +10851,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmProofSchedulingGaps.map((gap) =>
         `real_rocm_proof_scheduling:${gap}`
       ),
+      ...realRocmSourceTreeTransportGaps.map((gap) =>
+        `real_rocm_source_tree_transport:${gap}`
+      ),
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_not_proven',
       ledger.present === true ? null : 'proof_ledger_record_missing',
@@ -10632,6 +10911,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ),
       ...realRocmProofSchedulingGaps.map((gap) =>
         `real_rocm_proof_scheduling:${gap}`
+      ),
+      ...realRocmSourceTreeTransportGaps.map((gap) =>
+        `real_rocm_source_tree_transport:${gap}`
       ),
       ...realRocmRuntimeCapabilityPreflightGaps.map((gap) =>
         `real_rocm_runtime_capability_preflight:${gap}`

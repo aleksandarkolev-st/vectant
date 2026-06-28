@@ -88,6 +88,13 @@ import {
   canContinueWithCachedMetadataAfterLifecycleFailure,
 } from './lib/real-rocm-upstream-lifecycle.mjs';
 import { realRocmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
+import {
+  buildArtifactCasManifest,
+  defaultCasRootFromEnv,
+  defaultSharedCasMountsFromEnv,
+  validateArtifactCasManifest,
+  writeArtifactToCas,
+} from './lib/gpu-hmr-artifact-cas.mjs';
 import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2367,6 +2374,16 @@ const CFG = {
     'SYNTHI_REAL_ROCM_PROOF_FAST_FAIL_MIN_WAIT_MS',
     30000,
   ),
+  sourceTreeCasRoot:
+    process.env.SYNTHI_REAL_ROCM_SOURCE_TREE_CAS_ROOT
+    ?? process.env.SYNTHI_REAL_ROCM_CAS_ROOT
+    ?? defaultCasRootFromEnv(process.env)
+    ?? '',
+  requireSourceTreeCas: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_REQUIRE_SOURCE_TREE_CAS',
+    false,
+  ),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
   dockerPreflightTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_DOCKER_PREFLIGHT_TIMEOUT_MS', 8000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
@@ -2438,6 +2455,8 @@ const REAL_ROCM_SOURCE_DELTA_EXECUTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_source_delta_execution.v1';
 const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
+const REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION =
+  'synthi.real_rocm.source_tree_transport.v1';
 
 const report = {
   slug: CFG.slug,
@@ -2575,6 +2594,8 @@ const report = {
     reused: false,
     reason: CFG.reuseWorkerRepo ? 'not_evaluated' : 'disabled',
   },
+  real_rocm_source_tree_transport: null,
+  realRocmSourceTreeTransport: null,
   fresh_ai_split_required: CFG.requireFreshAiSplit,
   original_host_path_required: CFG.requireOriginalHostPath,
   original_host_path_proof_required: CFG.requireOriginalHostPathProof,
@@ -3493,6 +3514,285 @@ async function listTrackedFiles() {
   if (CFG.initSubmodules) args.push('--recurse-submodules');
   const raw = await execText('git', gitLongPathArgs(args), 120000, true);
   return raw.split('\0').filter(Boolean).sort();
+}
+
+function parseGitLsTreeRecords(raw) {
+  return String(raw ?? '')
+    .split('\0')
+    .filter(Boolean)
+    .map((line) => {
+      const match = /^([0-7]{6})\s+(\S+)\s+([a-f0-9]{40,64})\t(.+)$/.exec(line);
+      if (!match) {
+        return {
+          parseError: true,
+          raw: line.slice(0, 500),
+        };
+      }
+      return {
+        mode: match[1],
+        type: match[2],
+        objectId: match[3],
+        object_id: match[3],
+        path: match[4],
+      };
+    });
+}
+
+async function buildRealRocmSourceTreeManifest({ transferOperation, workerRepoReuse } = {}) {
+  const lsTreeRaw = await execText(
+    'git',
+    gitLongPathArgs(['-C', CFG.repoPath, 'ls-tree', '-r', '-z', '--full-tree', 'HEAD']),
+    120000,
+    true,
+  );
+  const rootTreeHash = (await execText(
+    'git',
+    gitLongPathArgs(['-C', CFG.repoPath, 'rev-parse', 'HEAD^{tree}']),
+    30000,
+    true,
+  )).trim();
+  const entries = parseGitLsTreeRecords(lsTreeRaw);
+  const parseErrorCount = entries.filter((entry) => entry.parseError).length;
+  const listingHash = sha256Text(lsTreeRaw);
+  const manifest = {
+    schemaVersion: 'synthi.real_rocm.source_tree_manifest.v1',
+    schema_version: 'synthi.real_rocm.source_tree_manifest.v1',
+    sourceUrl: CFG.repoUrl,
+    source_url: CFG.repoUrl,
+    repoCommit: report.repo_commit,
+    repo_commit: report.repo_commit,
+    gitTreeHash: rootTreeHash,
+    git_tree_hash: rootTreeHash,
+    fileCount: entries.length,
+    file_count: entries.length,
+    listingHash,
+    listing_hash: listingHash,
+    parseErrorCount,
+    parse_error_count: parseErrorCount,
+    sampleEntries: entries.slice(0, 24),
+    sample_entries: entries.slice(0, 24),
+    transferOperation,
+    transfer_operation: transferOperation,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    workerRepoReuse: workerRepoReuse ?? report.worker_repo_reuse ?? null,
+    worker_repo_reuse: workerRepoReuse ?? report.worker_repo_reuse ?? null,
+    proofAuthority: 'source_tree_identity_only_not_runtime_proof',
+    proof_authority: 'source_tree_identity_only_not_runtime_proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+  manifest.manifestHash = sha256Text(stableJson({ ...manifest, manifestHash: undefined, manifest_hash: undefined }));
+  manifest.manifest_hash = manifest.manifestHash;
+  return manifest;
+}
+
+function sourceTreeSharedCasMounts() {
+  try {
+    return {
+      mounts: defaultSharedCasMountsFromEnv(process.env),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      mounts: [],
+      error: error?.message ?? String(error),
+    };
+  }
+}
+
+async function buildRealRocmSourceTreeTransportFacet({
+  transferOperation,
+  destinationPath,
+  workerRepoReuse,
+} = {}) {
+  const blockingGaps = [];
+  const failedGates = [];
+  let sourceTreeManifest = null;
+  let artifactCasManifest = null;
+  let artifactCasValidation = null;
+  let artifactCasError = null;
+  let sharedCasMountError = null;
+  try {
+    sourceTreeManifest = await buildRealRocmSourceTreeManifest({
+      transferOperation,
+      workerRepoReuse,
+    });
+    const manifestBytes = Buffer.from(stableJson(sourceTreeManifest), 'utf8');
+    const sharedCas = sourceTreeSharedCasMounts();
+    sharedCasMountError = sharedCas.error;
+    if (sharedCasMountError) {
+      failedGates.push('source_tree_shared_cas_mounts_invalid');
+    }
+    const producer = {
+      name: 'real_rocm_repo_validation',
+      kind: 'proof_runner',
+    };
+    if (CFG.sourceTreeCasRoot) {
+      artifactCasManifest = await writeArtifactToCas(manifestBytes, {
+        artifactRoot: CFG.sourceTreeCasRoot,
+        artifactKind: 'real_rocm_source_tree_manifest',
+        mediaType: 'application/vnd.synthi.real-rocm-source-tree-manifest+json',
+        role: 'source_tree_manifest',
+        producer,
+        producerSubsystem: 'real_rocm_source_tree_transport',
+        sessionNamespace: CFG.slug,
+        sharedCasMounts: sharedCas.mounts,
+      });
+      artifactCasValidation = await validateArtifactCasManifest(artifactCasManifest, {
+        artifactRoot: CFG.sourceTreeCasRoot,
+        allowedRoots: [CFG.sourceTreeCasRoot],
+        requireReadableBytes: true,
+      });
+    } else {
+      artifactCasManifest = await buildArtifactCasManifest({
+        bytes: manifestBytes,
+        artifactKind: 'real_rocm_source_tree_manifest',
+        mediaType: 'application/vnd.synthi.real-rocm-source-tree-manifest+json',
+        role: 'source_tree_manifest',
+        producer,
+        producerSubsystem: 'real_rocm_source_tree_transport',
+        sessionNamespace: CFG.slug,
+        transportKind: 'serialized_fallback',
+        sharedCasMounts: [],
+      });
+      artifactCasValidation = await validateArtifactCasManifest(artifactCasManifest, {
+        requireReadableBytes: false,
+      });
+      blockingGaps.push('source_tree_cas_shared_root_not_configured');
+      if (CFG.requireSourceTreeCas) {
+        failedGates.push('source_tree_cas_required_but_unavailable');
+      }
+    }
+    if (artifactCasValidation?.accepted !== true) {
+      failedGates.push('source_tree_artifact_cas_manifest_not_accepted');
+    }
+    blockingGaps.push(...(artifactCasValidation?.gaps ?? []));
+    const sharedMountCount = Number(
+      artifactCasValidation?.sharedMountCount
+      ?? artifactCasValidation?.shared_mount_count
+      ?? 0,
+    );
+    if (CFG.sourceTreeCasRoot && sharedMountCount < 2) {
+      blockingGaps.push('source_tree_shared_cas_mounts_not_declared');
+    }
+  } catch (error) {
+    artifactCasError = error?.message ?? String(error);
+    failedGates.push('source_tree_transport_facet_build_failed');
+  }
+
+  if (sourceTreeManifest?.parseErrorCount > 0) {
+    failedGates.push('source_tree_manifest_parse_errors_present');
+  }
+  if (transferOperation === 'docker_cp') {
+    blockingGaps.push('source_tree_transfer_used_docker_cp');
+  }
+
+  const transportKind = artifactCasValidation?.transportKind
+    ?? artifactCasManifest?.transport?.kind
+    ?? 'unknown';
+  const sharedMountCount = Number(
+    artifactCasValidation?.sharedMountCount
+    ?? artifactCasValidation?.shared_mount_count
+    ?? 0,
+  );
+  const sharedStorageAccepted =
+    artifactCasValidation?.sharedStorage?.accepted === true
+    || artifactCasValidation?.shared_storage?.accepted === true;
+  const sharedHotPathProven =
+    ['cas_shared_volume', 'cas_tmpfs'].includes(transportKind)
+    && sharedMountCount >= 2
+    && sharedStorageAccepted;
+  const hotPathOptimized =
+    transferOperation === 'worker_repo_reuse'
+    || transportKind === 'direct_worker_path'
+    || sharedHotPathProven;
+  const acceptedAsTransportEvidence = failedGates.length === 0
+    && sourceTreeManifest !== null
+    && artifactCasValidation?.accepted === true;
+  const facet = {
+    schemaVersion: REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION,
+    status: acceptedAsTransportEvidence
+      ? 'source_tree_transport_evidence_accepted'
+      : 'source_tree_transport_evidence_rejected',
+    proofAuthority: 'source_tree_transport_integrity_only_not_runtime_proof',
+    proof_authority: 'source_tree_transport_integrity_only_not_runtime_proof',
+    acceptedAsTransportEvidence,
+    accepted_as_transport_evidence: acceptedAsTransportEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceTreeManifest,
+    source_tree_manifest: sourceTreeManifest,
+    sourceTreeManifestHash: sourceTreeManifest?.manifestHash ?? null,
+    source_tree_manifest_hash: sourceTreeManifest?.manifestHash ?? null,
+    artifactCasManifest,
+    artifact_cas_manifest: artifactCasManifest,
+    artifactCasValidation,
+    artifact_cas_validation: artifactCasValidation,
+    artifactCasError,
+    artifact_cas_error: artifactCasError,
+    sourceTreeCasRootConfigured: Boolean(CFG.sourceTreeCasRoot),
+    source_tree_cas_root_configured: Boolean(CFG.sourceTreeCasRoot),
+    requireSourceTreeCas: CFG.requireSourceTreeCas,
+    require_source_tree_cas: CFG.requireSourceTreeCas,
+    sharedCasMountError,
+    shared_cas_mount_error: sharedCasMountError,
+    transportKind,
+    transport_kind: transportKind,
+    transferOperation: transferOperation ?? 'unknown',
+    transfer_operation: transferOperation ?? 'unknown',
+    destinationPath: destinationPath ?? CFG.workerRepoPath,
+    destination_path: destinationPath ?? CFG.workerRepoPath,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    workerRepoReuse: workerRepoReuse ?? report.worker_repo_reuse ?? null,
+    worker_repo_reuse: workerRepoReuse ?? report.worker_repo_reuse ?? null,
+    hotPathOptimized,
+    hot_path_optimized: hotPathOptimized,
+    sharedMountCount,
+    shared_mount_count: sharedMountCount,
+    sharedStorageAccepted,
+    shared_storage_accepted: sharedStorageAccepted,
+    blockingGaps: [...new Set(blockingGaps)],
+    blocking_gaps: [...new Set(blockingGaps)],
+    failedGates: [...new Set(failedGates)],
+    failed_gates: [...new Set(failedGates)],
+    evidenceRefs: compactStringList([
+      sourceTreeManifest?.manifestHash ? `source-tree-manifest:${sourceTreeManifest.manifestHash}` : null,
+      artifactCasValidation?.manifestHash ? `artifact-cas-manifest:${artifactCasValidation.manifestHash}` : null,
+    ]),
+    evidence_refs: compactStringList([
+      sourceTreeManifest?.manifestHash ? `source-tree-manifest:${sourceTreeManifest.manifestHash}` : null,
+      artifactCasValidation?.manifestHash ? `artifact-cas-manifest:${artifactCasValidation.manifestHash}` : null,
+    ]),
+  };
+  facet.contractHash = sha256Text(stableJson({ ...facet, contractHash: undefined, contract_hash: undefined }));
+  facet.contract_hash = facet.contractHash;
+  return facet;
+}
+
+async function recordRealRocmSourceTreeTransportEvidence(input = {}) {
+  const facet = await buildRealRocmSourceTreeTransportFacet(input);
+  report.real_rocm_source_tree_transport = facet;
+  report.realRocmSourceTreeTransport = facet;
+  report.evidence.real_rocm_source_tree_transport = facet;
+  record(
+    'real ROCm source tree transport evidence',
+    facet.acceptedAsTransportEvidence ? 'pass' : 'warn',
+    `operation=${facet.transferOperation} transport=${facet.transportKind} hot_path=${facet.hotPathOptimized ? 'true' : 'false'} gaps=${facet.blockingGaps.join(',') || 'none'} failures=${facet.failedGates.join(',') || 'none'}`,
+  );
+  return facet;
 }
 
 function parseUpstreamRunExitCode(timings) {
@@ -4657,6 +4957,8 @@ async function prepareUpstreamBuild() {
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   const workerReuse = await inspectWorkerRepoReuse();
   report.worker_repo_reuse = workerReuse;
+  let sourceTreeTransferOperation = 'docker_cp';
+  let sourceTreeTransferDestination = `${CFG.workerContainer}:${CFG.workerRepoPath}`;
   if (workerReuse.reusable) {
     await execText(
       'docker',
@@ -4674,6 +4976,8 @@ async function prepareUpstreamBuild() {
       ...workerReuse,
       reused: true,
     };
+    sourceTreeTransferOperation = 'worker_repo_reuse';
+    sourceTreeTransferDestination = CFG.workerRepoPath;
     record(
       'worker repo warm reuse',
       'pass',
@@ -4715,6 +5019,11 @@ async function prepareUpstreamBuild() {
       );
     }
   }
+  await recordRealRocmSourceTreeTransportEvidence({
+    transferOperation: sourceTreeTransferOperation,
+    destinationPath: sourceTreeTransferDestination,
+    workerRepoReuse: report.worker_repo_reuse,
+  });
   report.runtime_capability_preflight = await runRocmArrayAllocationPreflight();
   if (report.runtime_capability_preflight?.skipped) {
     record(
