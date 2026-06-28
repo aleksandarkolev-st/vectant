@@ -11,6 +11,11 @@ import {
   visualEvidenceIsSupplementalOnly,
 } from './gpu-hmr-visual-evidence.mjs';
 import {
+  collectArtifactLocators,
+  defaultCasRootFromEnv,
+  validateArtifactCasManifest,
+} from './gpu-hmr-artifact-cas.mjs';
+import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
   computeAsyncVisualProof,
@@ -551,6 +556,67 @@ function visualArtifactHashForRole(object, role) {
   ));
 }
 
+function visualArtifactCasLocators(input) {
+  const locators = collectArtifactLocators(input).filter((locator) =>
+    firstText(locator.schemaVersion, locator.schema_version) === 'synthi.cas.artifact_locator.v1'
+  );
+  const seen = new Set();
+  return locators.filter((locator) => {
+    const role = normalizedVisualArtifactRole(locator.role ?? locator.artifactRole ?? locator.artifact_role) ?? 'artifact';
+    const hash = normalizedArtifactHash(
+      locator.contentHash
+        ?? locator.content_hash
+        ?? locator.artifactId
+        ?? locator.artifact_id,
+    ) ?? 'unknown';
+    const manifestHash = firstText(locator.manifestHash, locator.manifest_hash) ?? 'no-manifest';
+    const key = `${role}:${hash}:${manifestHash}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function visualArtifactCasLocatorForEntry(locators, role, expectedHash) {
+  const normalizedRole = normalizedVisualArtifactRole(role);
+  const normalizedHash = normalizedArtifactHash(expectedHash);
+  return compactObjectList(locators).find((locator) => {
+    const locatorRole = normalizedVisualArtifactRole(
+      locator.role
+        ?? locator.artifactRole
+        ?? locator.artifact_role,
+    );
+    const locatorHash = normalizedArtifactHash(
+      locator.contentHash
+        ?? locator.content_hash
+        ?? locator.artifactId
+        ?? locator.artifact_id,
+    );
+    const roleMatches = !normalizedRole || !locatorRole || normalizedRole === locatorRole;
+    const hashMatches = !normalizedHash || !locatorHash || normalizedHash === locatorHash;
+    return roleMatches && hashMatches;
+  }) ?? null;
+}
+
+function visualArtifactEntryFromCasLocator(locator, index, count) {
+  const role = normalizedVisualArtifactRole(
+    locator.role
+      ?? locator.artifactRole
+      ?? locator.artifact_role,
+  ) ?? inferredVisualArtifactRole('', index, count);
+  return {
+    role,
+    sourcePath: null,
+    expectedHash: normalizeSha256(firstText(
+      locator.contentHash,
+      locator.content_hash,
+      locator.artifactHash,
+      locator.artifact_hash,
+    )) ?? normalizedArtifactHash(locator.artifactId ?? locator.artifact_id),
+    artifactCasLocator: locator,
+  };
+}
+
 function visualArtifactEntries(input) {
   if (Array.isArray(input)) {
     return input.flatMap((value, index) => {
@@ -577,16 +643,20 @@ function visualArtifactEntries(input) {
       );
       if (!sourcePath) return visualArtifactEntries(value);
       const role = visualArtifactRole(value.role ?? value.artifactRole ?? value.artifact_role, sourcePath, index, input.length);
+      const expectedHash = visualArtifactHashForRole(value, role);
+      const locators = visualArtifactCasLocators(value);
       return [{
         role,
         sourcePath,
-        expectedHash: visualArtifactHashForRole(value, role),
+        expectedHash,
+        artifactCasLocator: visualArtifactCasLocatorForEntry(locators, role, expectedHash),
       }];
     });
   }
   const object = compactObject(input);
   if (Object.keys(object).length === 0) return [];
   const entries = [];
+  const locators = visualArtifactCasLocators(object);
   const directSourcePath = firstText(
     object.path,
     object.sourcePath,
@@ -602,19 +672,23 @@ function visualArtifactEntries(input) {
   );
   if (directSourcePath) {
     const role = visualArtifactRole(object.role ?? object.artifactRole ?? object.artifact_role, directSourcePath, 0, 1);
+    const expectedHash = visualArtifactHashForRole(object, role);
     entries.push({
       role,
       sourcePath: directSourcePath,
-      expectedHash: visualArtifactHashForRole(object, role),
+      expectedHash,
+      artifactCasLocator: visualArtifactCasLocatorForEntry(locators, role, expectedHash),
     });
   }
   const push = (role, pathValues, hashValues = []) => {
     const sourcePath = firstText(...pathValues);
     if (!sourcePath) return;
+    const expectedHash = normalizeSha256(firstText(...hashValues));
     entries.push({
       role,
       sourcePath,
-      expectedHash: normalizeSha256(firstText(...hashValues)),
+      expectedHash,
+      artifactCasLocator: visualArtifactCasLocatorForEntry(locators, role, expectedHash),
     });
   };
   push('before', [object.before_image, object.beforeImage], [object.before_image_hash, object.beforeImageHash]);
@@ -624,6 +698,18 @@ function visualArtifactEntries(input) {
   push('after', [object.changed_image, object.changedImage, object.changedCapturePath, object.changed_capture_path]);
   push('artifact', [object.rendered_card_png, object.renderedCardPng]);
   push('artifact', [object.diagnostic_screenshot, object.diagnosticScreenshot]);
+  const existingCasKeys = new Set(entries.map((entry) => {
+    const hash = normalizedArtifactHash(entry.expectedHash) ?? 'unknown';
+    return `${normalizedVisualArtifactRole(entry.role) ?? entry.role}:${hash}`;
+  }));
+  for (const locator of locators) {
+    const locatorEntry = visualArtifactEntryFromCasLocator(locator, entries.length, locators.length);
+    const hash = normalizedArtifactHash(locatorEntry.expectedHash) ?? 'unknown';
+    const key = `${normalizedVisualArtifactRole(locatorEntry.role) ?? locatorEntry.role}:${hash}`;
+    if (existingCasKeys.has(key)) continue;
+    existingCasKeys.add(key);
+    entries.push(locatorEntry);
+  }
   return entries;
 }
 
@@ -652,6 +738,18 @@ function visualArtifactEvidenceOptions(required) {
           required.allowSingleFrameVisualProof,
           required.allow_single_frame_visual_proof,
         ) === true,
+      artifactCasRoots: compactStringList([
+        ...(Array.isArray(required.artifactCasRoots) ? required.artifactCasRoots : []),
+        ...(Array.isArray(required.artifact_cas_roots) ? required.artifact_cas_roots : []),
+        ...(Array.isArray(required.allowedCasRoots) ? required.allowedCasRoots : []),
+        ...(Array.isArray(required.allowed_cas_roots) ? required.allowed_cas_roots : []),
+        required.artifactCasRoot,
+        required.artifact_cas_root,
+        required.casRoot,
+        required.cas_root,
+        required.artifactRoot,
+        required.artifact_root,
+      ]),
     };
   }
   return {
@@ -659,7 +757,49 @@ function visualArtifactEvidenceOptions(required) {
     requireDeclaredHashes: false,
     requireDiff: false,
     allowSingleFrameProof: false,
+    artifactCasRoots: [],
   };
+}
+
+function visualArtifactCasAllowedRoots(repoRoot, baseDir, options = {}) {
+  const envRoot = defaultCasRootFromEnv();
+  return [...new Set(compactStringList([
+    repoRoot,
+    baseDir,
+    ...(Array.isArray(options.artifactCasRoots) ? options.artifactCasRoots : []),
+    options.artifactCasRoot,
+    options.artifactRoot,
+    envRoot,
+  ]).map((root) => path.resolve(root)))];
+}
+
+async function validateVisualArtifactCasLocator(locator, repoRoot, baseDir, options = {}) {
+  if (!isObject(locator)) return null;
+  try {
+    return await validateArtifactCasManifest(locator, {
+      allowedRoots: visualArtifactCasAllowedRoots(repoRoot, baseDir, options),
+      artifactRoot: firstText(options.artifactCasRoot, options.artifactRoot),
+      requireReadableBytes: true,
+    });
+  } catch (error) {
+    return {
+      accepted: false,
+      acceptedAsTransportEvidence: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: 'transport_integrity_only',
+      manifestHash: firstText(locator.manifestHash, locator.manifest_hash),
+      contentHash: normalizeSha256(firstText(locator.contentHash, locator.content_hash)),
+      artifactId: firstText(locator.artifactId, locator.artifact_id),
+      localPath: null,
+      local_path: null,
+      reasons: ['artifact_cas_validation_exception'],
+      gaps: [],
+      details: {
+        message: error?.message ? String(error.message) : String(error),
+      },
+    };
+  }
 }
 
 function runtimeVisualOracleEvidenceRequirements({ allowSingleFrameProof = false } = {}) {
@@ -1196,7 +1336,13 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     }));
   const evidence = [];
   for (const entry of resolvedEntries) {
-    const fileEvidence = entry.resolvedPath
+    const casValidation = await validateVisualArtifactCasLocator(
+      entry.artifactCasLocator,
+      repoRoot,
+      baseDir,
+      options,
+    );
+    let fileEvidence = entry.resolvedPath
       ? await pngEvidence(entry.resolvedPath)
       : {
           path: null,
@@ -1210,8 +1356,29 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
           width: null,
           height: null,
         };
-    const expectedHash = normalizeSha256(entry.expectedHash);
+    let resolvedFromCas = false;
+    if (
+      (!fileEvidence.exists || !fileEvidence.decoded)
+      && casValidation?.accepted === true
+      && firstText(casValidation.localPath, casValidation.local_path)
+    ) {
+      fileEvidence = await pngEvidence(firstText(casValidation.localPath, casValidation.local_path));
+      resolvedFromCas = true;
+    }
+    const casContentHash = normalizeSha256(firstText(
+      casValidation?.contentHash,
+      casValidation?.content_hash,
+      entry.artifactCasLocator?.contentHash,
+      entry.artifactCasLocator?.content_hash,
+      entry.artifactCasLocator?.artifactHash,
+      entry.artifactCasLocator?.artifact_hash,
+    )) ?? normalizedArtifactHash(
+      entry.artifactCasLocator?.artifactId
+        ?? entry.artifactCasLocator?.artifact_id,
+    );
+    const expectedHash = normalizeSha256(entry.expectedHash) ?? casContentHash;
     const hashMatches = expectedHash ? fileEvidence.sha256 === expectedHash : null;
+    const artifactCasHashMatches = casContentHash ? fileEvidence.sha256 === casContentHash : null;
     evidence.push({
       ...fileEvidence,
       role: entry.role,
@@ -1224,6 +1391,50 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       expected_hash: expectedHash,
       hashMatches,
       hash_matches: hashMatches,
+      artifactCasLocatorPresent: isObject(entry.artifactCasLocator),
+      artifact_cas_locator_present: isObject(entry.artifactCasLocator),
+      artifactCasLocatorAccepted: casValidation ? casValidation.accepted === true : null,
+      artifact_cas_locator_accepted: casValidation ? casValidation.accepted === true : null,
+      artifactCasContentHash: casContentHash,
+      artifact_cas_content_hash: casContentHash,
+      artifactCasManifestHash: firstText(casValidation?.manifestHash, casValidation?.manifest_hash),
+      artifact_cas_manifest_hash: firstText(casValidation?.manifestHash, casValidation?.manifest_hash),
+      artifactCasHashMatches,
+      artifact_cas_hash_matches: artifactCasHashMatches,
+      artifactCasResolvedPath: firstText(casValidation?.localPath, casValidation?.local_path),
+      artifact_cas_resolved_path: firstText(casValidation?.localPath, casValidation?.local_path),
+      resolvedFromCas,
+      resolved_from_cas: resolvedFromCas,
+      artifactCasValidation: casValidation ? {
+        accepted: casValidation.accepted === true,
+        acceptedAsTransportEvidence: casValidation.acceptedAsTransportEvidence === true,
+        accepted_as_transport_evidence: casValidation.acceptedAsTransportEvidence === true,
+        proofAuthority: firstText(casValidation.proofAuthority, casValidation.proof_authority),
+        contentHash: casValidation.contentHash ?? null,
+        content_hash: casValidation.contentHash ?? null,
+        artifactId: casValidation.artifactId ?? null,
+        artifact_id: casValidation.artifactId ?? null,
+        manifestHash: casValidation.manifestHash ?? null,
+        manifest_hash: casValidation.manifestHash ?? null,
+        localPath: casValidation.localPath ?? null,
+        local_path: casValidation.local_path ?? casValidation.localPath ?? null,
+        resolvedFromRelativePath: casValidation.resolvedFromRelativePath === true,
+        resolved_from_relative_path: casValidation.resolved_from_relative_path === true,
+        reasons: Array.isArray(casValidation.reasons) ? casValidation.reasons : [],
+        gaps: Array.isArray(casValidation.gaps) ? casValidation.gaps : [],
+      } : null,
+      artifact_cas_validation: casValidation ? {
+        accepted: casValidation.accepted === true,
+        accepted_as_transport_evidence: casValidation.acceptedAsTransportEvidence === true,
+        proof_authority: firstText(casValidation.proofAuthority, casValidation.proof_authority),
+        content_hash: casValidation.contentHash ?? null,
+        artifact_id: casValidation.artifactId ?? null,
+        manifest_hash: casValidation.manifestHash ?? null,
+        local_path: casValidation.local_path ?? casValidation.localPath ?? null,
+        resolved_from_relative_path: casValidation.resolved_from_relative_path === true,
+        reasons: Array.isArray(casValidation.reasons) ? casValidation.reasons : [],
+        gaps: Array.isArray(casValidation.gaps) ? casValidation.gaps : [],
+      } : null,
     });
   }
   const imageCount = evidence.length;
@@ -1235,6 +1446,13 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     item.expectedHash && contentAddressedSha256(item.expectedHash)
   ).length;
   const hashMatchedCount = evidence.filter((item) => item.expectedHash && item.hashMatches === true).length;
+  const artifactCasLocatorCount = evidence.filter((item) => item.artifactCasLocatorPresent).length;
+  const artifactCasLocatorAcceptedCount = evidence.filter((item) =>
+    item.artifactCasLocatorPresent && item.artifactCasLocatorAccepted === true
+  ).length;
+  const artifactCasHashMatchedCount = evidence.filter((item) =>
+    item.artifactCasLocatorPresent && item.artifactCasHashMatches === true
+  ).length;
   const allImagesExist = imageCount > 0 && existingImageCount === imageCount;
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
   const allImagesDecode = imageCount > 0 && decodedImageCount === imageCount;
@@ -1244,6 +1462,10 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const allDeclaredHashesContentAddressed =
     declaredHashCount === 0 || contentAddressedHashCount === declaredHashCount;
   const allDeclaredHashesMatch = declaredHashCount === 0 || hashMatchedCount === declaredHashCount;
+  const allCasLocatorsAccepted =
+    artifactCasLocatorCount === 0 || artifactCasLocatorAcceptedCount === artifactCasLocatorCount;
+  const allCasLocatorHashesMatch =
+    artifactCasLocatorCount === 0 || artifactCasHashMatchedCount === artifactCasLocatorCount;
   const visualPair = await recomputeVisualPairEvidence(evidence);
   const singleFrame = await recomputeSingleVisualFrameEvidence(evidence);
   const visualThresholds = visualThresholdRequirements(metrics);
@@ -1272,6 +1494,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allRequiredHashesDeclared ? null : 'visual_artifact_declared_hash_missing',
     allDeclaredHashesContentAddressed ? null : 'visual_artifact_hash_not_content_addressed',
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
+    allCasLocatorsAccepted ? null : 'visual_artifact_cas_locator_validation_failed',
+    allCasLocatorHashesMatch ? null : 'visual_artifact_cas_locator_hash_mismatch',
     options.required === true && options.allowSingleFrameProof !== true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
     options.required === true && options.allowSingleFrameProof !== true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
     options.requireDiff === true && !hasDiffImage ? 'visual_diff_artifact_missing' : null,
@@ -1292,6 +1516,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       && allRequiredHashesDeclared
       && allDeclaredHashesContentAddressed
       && allDeclaredHashesMatch
+      && allCasLocatorsAccepted
+      && allCasLocatorHashesMatch
       && (options.requireDiff !== true || hasDiffImage)
       && visualThresholdValidation.accepted === true
       && (!requiresPixelProof || pixelProofAccepted === true);
@@ -1312,6 +1538,12 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     declaredHashCount,
     contentAddressedHashCount,
     hashMatchedCount,
+    artifactCasLocatorCount,
+    artifact_cas_locator_count: artifactCasLocatorCount,
+    artifactCasLocatorAcceptedCount,
+    artifact_cas_locator_accepted_count: artifactCasLocatorAcceptedCount,
+    artifactCasHashMatchedCount,
+    artifact_cas_hash_matched_count: artifactCasHashMatchedCount,
     allRequiredHashesDeclared,
     all_required_hashes_declared: allRequiredHashesDeclared,
     allDeclaredHashesContentAddressed,
@@ -1321,6 +1553,10 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allImagesDecode,
     allImagesAreDecodedPng,
     allDeclaredHashesMatch,
+    allCasLocatorsAccepted,
+    all_cas_locators_accepted: allCasLocatorsAccepted,
+    allCasLocatorHashesMatch,
+    all_cas_locator_hashes_match: allCasLocatorHashesMatch,
     hasBeforeImage,
     has_before_image: hasBeforeImage,
     hasAfterImage,
@@ -1677,6 +1913,32 @@ function visualImageHashesByRole(visual = {}) {
   return byRole;
 }
 
+function validatedVisualCasHashesByRole(visual = {}) {
+  const byRole = new Map();
+  for (const image of compactObjectList(visual.images)) {
+    const role = normalizedVisualArtifactRole(image.role);
+    const hash = normalizedArtifactHash(
+      image.artifactCasContentHash
+        ?? image.artifact_cas_content_hash
+        ?? image.artifactCasValidation?.contentHash
+        ?? image.artifactCasValidation?.content_hash
+        ?? image.artifact_cas_validation?.content_hash,
+    );
+    const accepted = firstBool(
+      image.artifactCasLocatorAccepted,
+      image.artifact_cas_locator_accepted,
+      image.artifactCasValidation?.accepted,
+      image.artifact_cas_validation?.accepted,
+    ) === true;
+    const hashMatches = firstBool(
+      image.artifactCasHashMatches,
+      image.artifact_cas_hash_matches,
+    ) !== false;
+    if (role && hash && accepted && hashMatches) byRole.set(role, hash);
+  }
+  return byRole;
+}
+
 function declaredVisualArtifactHashesByRole(visualArtifacts = {}) {
   return new Map([
     ['before', normalizedArtifactHash(
@@ -1753,6 +2015,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const inputHashes = compactObject(asyncMetrics.inputHashes ?? asyncMetrics.input_hashes);
   const declaredByRole = declaredVisualArtifactHashesByRole(visualArtifacts);
   const locatorByRole = locatorHashesByRole(locators);
+  const validatedLocatorByRole = validatedVisualCasHashesByRole(visual);
   const matrixByRole = visualImageHashesByRole(visual);
   const requiredRoles = compactStringList([
     visual.hasBeforeImage || visual.has_before_image ? 'before' : null,
@@ -1761,13 +2024,15 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   ]);
   const requiredRoleSet = requiredRoles.length > 0 ? requiredRoles : ['before', 'after'];
   const locatorRolesPresent = requiredRoleSet.every((role) => locatorByRole.has(role));
-  const casHashesMatchDeclaredVisualHashes = visualHashesMatchByRole(declaredByRole, locatorByRole, requiredRoleSet);
-  const casHashesMatchMatrixVisualHashes = visualHashesMatchByRole(matrixByRole, locatorByRole, requiredRoleSet);
+  const casHashesMatchDeclaredVisualHashes =
+    visualHashesMatchByRole(declaredByRole, validatedLocatorByRole, requiredRoleSet);
+  const casHashesMatchMatrixVisualHashes =
+    visualHashesMatchByRole(matrixByRole, validatedLocatorByRole, requiredRoleSet);
   const asyncBeforeHash = normalizedArtifactHash(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash);
   const asyncAfterHash = normalizedArtifactHash(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash);
   const asyncInputHashesMatchCas =
-    (!locatorByRole.has('before') || locatorByRole.get('before') === asyncBeforeHash)
-    && (!locatorByRole.has('after') || locatorByRole.get('after') === asyncAfterHash);
+    (!validatedLocatorByRole.has('before') || validatedLocatorByRole.get('before') === asyncBeforeHash)
+    && (!validatedLocatorByRole.has('after') || validatedLocatorByRole.get('after') === asyncAfterHash);
   const transportAccepted =
     transportEvidence.accepted === true
     && transportEvidence.acceptedAsTransportEvidence === true
@@ -1776,7 +2041,11 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && firstBool(transportEvidence.acceptedForGpuHmr, transportEvidence.accepted_for_gpu_hmr) === false
     && firstBool(transportEvidence.gpuHmrSuccess, transportEvidence.gpu_hmr_success) === false;
   const locatorsAccepted = locators.length >= requiredRoleSet.length
-    && locators.every(visualLocatorTransportAccepted);
+    && requiredRoleSet.every((role) => validatedLocatorByRole.has(role));
+  const casLocatorValidationFailed =
+    Number(visual.artifactCasLocatorCount ?? visual.artifact_cas_locator_count ?? 0) > 0
+    && visual.allCasLocatorsAccepted !== true
+    && visual.all_cas_locators_accepted !== true;
   const workerExecutableHash = firstText(worker.executableHash, worker.executable_hash);
   const asyncMetricsAccepted =
     firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
@@ -1814,6 +2083,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
       ? null
       : 'async_visual_worker_executable_hash_missing',
     transportAccepted ? null : 'visual_artifact_transport_not_accepted',
+    casLocatorValidationFailed ? 'visual_artifact_cas_locator_validation_failed' : null,
     locatorsAccepted ? null : 'visual_artifact_cas_locators_not_accepted',
     locatorRolesPresent ? null : 'visual_artifact_cas_roles_missing',
     casHashesMatchDeclaredVisualHashes ? null : 'visual_artifact_cas_declared_hash_mismatch',
@@ -1848,6 +2118,8 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     transport_accepted: transportAccepted,
     locatorCount: locators.length,
     locator_count: locators.length,
+    validatedLocatorCount: validatedLocatorByRole.size,
+    validated_locator_count: validatedLocatorByRole.size,
     requiredRoles: requiredRoleSet,
     required_roles: requiredRoleSet,
     casHashesMatchDeclaredVisualHashes,
