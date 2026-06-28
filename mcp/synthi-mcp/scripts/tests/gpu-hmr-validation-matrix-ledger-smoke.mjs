@@ -1100,6 +1100,8 @@ function sourceFirstIngestionEvidenceFor({
   targetId = 'flow',
   entryPath = 'src/main.cpp',
   sourceHash = hashValue(`${targetId}:seed-source`),
+  sourceAuthority = 'builtin_fixture_source',
+  sourceTreeManifestHash = null,
   useAiSplit = true,
   userRequestedAi = true,
   preferGpuPipeline = true,
@@ -1120,6 +1122,8 @@ function sourceFirstIngestionEvidenceFor({
     byte_length: 4096,
   }];
   const initialManifestHash = contentHashFor(normalizedInitialFiles);
+  const effectiveSourceTreeManifestHash = sourceTreeManifestHash
+    ?? (sourceAuthority === 'profile_source_files' ? initialManifestHash : null);
   const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson({
     sourceContentHash: sourceHash,
     entryPath,
@@ -1137,6 +1141,8 @@ function sourceFirstIngestionEvidenceFor({
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
     canSatisfyRuntimeProof: false,
+    sourceAuthority,
+    source_authority: sourceAuthority,
     sourceContentHash: sourceHash,
     noSynthiAbiInSeedSource: true,
     entryPath,
@@ -1146,6 +1152,7 @@ function sourceFirstIngestionEvidenceFor({
       initialFilePaths: normalizedInitialFiles.map((entry) => entry.path),
       initialFiles: normalizedInitialFiles,
       initialManifestHash,
+      sourceTreeManifestHash: effectiveSourceTreeManifestHash,
       useAiSplit,
       userRequestedAi,
       preferGpuPipeline,
@@ -1153,6 +1160,7 @@ function sourceFirstIngestionEvidenceFor({
     initialFilePaths: normalizedInitialFiles.map((entry) => entry.path),
     initialFiles: normalizedInitialFiles,
     initialManifestHash,
+    sourceTreeManifestHash: effectiveSourceTreeManifestHash,
     initialSourceFilePresent: normalizedInitialFiles.some((entry) => entry.path === entryPath),
     initialSourceHashMatches: normalizedInitialFiles.some((entry) =>
       entry.path === entryPath && (entry.contentHash ?? entry.content_hash) === sourceHash
@@ -1170,10 +1178,11 @@ function sourceFirstIngestionEvidenceFor({
       proofId,
       sourceHash,
       initialManifestHash,
+      effectiveSourceTreeManifestHash,
       sidecarHash,
       compileManifestHash,
       ...generatedArtifactHashes,
-    ],
+    ].filter(Boolean),
   };
 }
 
@@ -1376,6 +1385,70 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-precompiled-hash-overlap.jso
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1-precompiled-hash-overlap',
     editHash: hashValue('source-edit:hot1-precompiled-hash-overlap'),
+  },
+});
+
+const sourceTreeManifestMismatchMainHash = hashValue('flow-source-tree-manifest-mismatch:seed-source');
+const sourceTreeManifestMismatchFullTree = [
+  {
+    path: 'CMakeLists.txt',
+    contentHash: hashValue('flow-source-tree-manifest-mismatch:cmake'),
+    content_hash: hashValue('flow-source-tree-manifest-mismatch:cmake'),
+    byteLength: 128,
+    byte_length: 128,
+  },
+  {
+    path: 'include/params.hpp',
+    contentHash: hashValue('flow-source-tree-manifest-mismatch:params'),
+    content_hash: hashValue('flow-source-tree-manifest-mismatch:params'),
+    byteLength: 256,
+    byte_length: 256,
+  },
+  {
+    path: 'src/main.cpp',
+    contentHash: sourceTreeManifestMismatchMainHash,
+    content_hash: sourceTreeManifestMismatchMainHash,
+    byteLength: 4096,
+    byte_length: 4096,
+  },
+];
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-tree-manifest-mismatch.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-tree-manifest-mismatch',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-tree-manifest-mismatch',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-tree-manifest-mismatch',
+  }),
+  targetId: 'flow-source-tree-manifest-mismatch',
+  profileId: 'flow-source-tree-manifest-mismatch',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-tree-manifest-mismatch',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-tree-manifest-mismatch',
+    sourceHash: sourceTreeManifestMismatchMainHash,
+    sourceAuthority: 'profile_source_files',
+    sourceTreeManifestHash: contentHashFor(sourceTreeManifestMismatchFullTree),
+    initialFiles: [
+      {
+        path: 'src/main.cpp',
+        contentHash: sourceTreeManifestMismatchMainHash,
+        content_hash: sourceTreeManifestMismatchMainHash,
+        byteLength: 4096,
+        byte_length: 4096,
+      },
+    ],
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-tree-manifest-mismatch',
+    editHash: hashValue('source-edit:hot1-source-tree-manifest-mismatch'),
   },
 });
 
@@ -6208,6 +6281,23 @@ assert.ok(hashOverlapRunMode.sourceFirstIngestion.failedGates.includes(
 assert.ok(hashOverlapRunMode.reasons.includes('source_first_ingestion_not_accepted'));
 assert.ok(hashOverlapRunMode.reasons.includes(
   'source_first_precompiled_generated_artifact_hash_overlap',
+));
+
+const sourceTreeManifestMismatchRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-tree-manifest-mismatch'
+);
+assert.equal(sourceTreeManifestMismatchRunMode?.matrixOutcome, 'unproven');
+assert.equal(sourceTreeManifestMismatchRunMode.acceptedForGpuHmr, false);
+assert.equal(sourceTreeManifestMismatchRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(sourceTreeManifestMismatchRunMode.sourceFirstIngestion.sourceAuthority, 'profile_source_files');
+assert.equal(sourceTreeManifestMismatchRunMode.sourceFirstIngestion.sourceTreeManifestRequired, true);
+assert.equal(sourceTreeManifestMismatchRunMode.sourceFirstIngestion.sourceTreeManifestHashMatches, false);
+assert.ok(sourceTreeManifestMismatchRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_source_tree_manifest_mismatch',
+));
+assert.ok(sourceTreeManifestMismatchRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(sourceTreeManifestMismatchRunMode.reasons.includes(
+  'source_first_source_tree_manifest_mismatch',
 ));
 
 const emptySourceManifestRunMode = ledger.rows.find((row) =>

@@ -307,11 +307,117 @@ function agentProfileSourceForHash(source) {
     resolvedPath: source.resolvedPath,
     resolved_path: source.resolved_path,
     fixture: source.fixture,
+    files: Array.isArray(source.files)
+      ? source.files.map((entry) => ({
+          path: entry.path,
+          contentHash: entry.contentHash,
+          content_hash: entry.content_hash,
+          byteLength: entry.byteLength,
+          byte_length: entry.byte_length,
+        }))
+      : [],
+    manifestHash: source.manifestHash ?? null,
+    manifest_hash: source.manifest_hash ?? null,
     contentHash: source.contentHash ?? null,
     content_hash: source.content_hash ?? null,
     declaredContentHash: source.declaredContentHash ?? null,
     declared_content_hash: source.declared_content_hash ?? null,
   };
+}
+
+function sourceFileHashEntry(entry) {
+  return {
+    path: cleanRel(entry.path),
+    contentHash: entry.contentHash,
+    content_hash: entry.content_hash,
+    byteLength: entry.byteLength,
+    byte_length: entry.byte_length,
+  };
+}
+
+function sourceFilesManifestHash(files) {
+  return `sha256:${sha256Hex(stableJson(files.map(sourceFileHashEntry)))}`;
+}
+
+function normalizeAgentProfileSourceFiles(source, profileDir) {
+  const entries = profileArray(
+    source.files
+      ?? source.sourceFiles
+      ?? source.source_files
+      ?? source.initialFiles
+      ?? source.initial_files,
+    'source.files',
+  );
+  const normalized = entries.map((entry, index) => {
+    const raw = profileObject(entry, `source.files[${index}]`);
+    const workspacePath = cleanRel(profileString(
+      raw.workspacePath
+        ?? raw.workspace_path
+        ?? raw.path
+        ?? raw.name
+        ?? raw.filename,
+      `source.files[${index}].path`,
+      { required: true },
+    ));
+    if (!workspacePath) {
+      throw new Error(`invalid agent visual profile source.files[${index}].path: expected non-empty relative path`);
+    }
+    const declaredContentHash = profileString(
+      raw.contentHash ?? raw.content_hash ?? raw.sha256,
+      `source.files[${index}].contentHash`,
+    ).toLowerCase();
+    const hostPath = profileString(
+      raw.sourcePath
+        ?? raw.source_path
+        ?? raw.hostPath
+        ?? raw.host_path
+        ?? raw.filePath
+        ?? raw.file_path,
+      `source.files[${index}].sourcePath`,
+    );
+    const resolvedSourcePath = hostPath ? resolveProfilePath(hostPath, profileDir) : '';
+    const fallbackSourcePath = !resolvedSourcePath
+      ? path.resolve(profileDir, workspacePath)
+      : '';
+    const inlineContent = typeof raw.inline === 'string'
+      ? raw.inline
+      : typeof raw.content === 'string'
+        ? raw.content
+        : '';
+    const sourcePathToRead = resolvedSourcePath
+      || (fallbackSourcePath && existsSync(fallbackSourcePath) ? fallbackSourcePath : '');
+    if (!inlineContent && !sourcePathToRead) {
+      throw new Error(`invalid agent visual profile source.files[${index}]: expected inline content or readable sourcePath`);
+    }
+    const content = inlineContent || readFileSync(sourcePathToRead, 'utf8');
+    const contentHash = sourceContentHash(content);
+    validateDeclaredSourceHash(declaredContentHash, contentHash, `source.files[${index}].contentHash`);
+    return {
+      path: workspacePath,
+      name: workspacePath,
+      content,
+      sourcePath: hostPath || (sourcePathToRead ? workspacePath : null),
+      source_path: hostPath || (sourcePathToRead ? workspacePath : null),
+      resolvedPath: sourcePathToRead || null,
+      resolved_path: sourcePathToRead || null,
+      contentHash,
+      content_hash: contentHash,
+      declaredContentHash: declaredContentHash || null,
+      declared_content_hash: declaredContentHash || null,
+      byteLength: Buffer.byteLength(content, 'utf8'),
+      byte_length: Buffer.byteLength(content, 'utf8'),
+      evidenceRef: `evidence:agent-profile-source-file:${contentHash}`,
+      evidence_ref: `evidence:agent-profile-source-file:${contentHash}`,
+    };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  const seen = new Set();
+  for (const entry of normalized) {
+    if (seen.has(entry.path)) {
+      throw new Error(`invalid agent visual profile source.files: duplicate workspace path ${entry.path}`);
+    }
+    seen.add(entry.path);
+  }
+  return normalized;
 }
 
 function agentProfileHash(profile) {
@@ -368,8 +474,11 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
   });
   const profileDir = profilePath ? path.dirname(resolveProfilePath(profilePath)) : process.cwd();
   const profileId = profileString(raw.profileId ?? raw.profile_id ?? raw.id, 'profileId', { required: true });
+  const entryPath = cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp');
   const sourcePath = profileString(source.path ?? source.sourcePath ?? source.source_path, 'source.path');
   const resolvedSourcePath = sourcePath ? resolveProfilePath(sourcePath, profileDir) : '';
+  const sourceFiles = normalizeAgentProfileSourceFiles(source, profileDir);
+  const entrySourceFile = sourceFiles.find((entry) => entry.path === entryPath);
   const inlineSource = typeof source.inline === 'string'
     ? source.inline
     : typeof source.content === 'string'
@@ -380,12 +489,19 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
     source.contentHash ?? source.content_hash ?? source.sha256,
     'source.contentHash',
   ).toLowerCase();
-  const actualSourceContentHash = inlineSource
-    ? sourceContentHash(inlineSource)
-    : resolvedSourcePath && existsSync(resolvedSourcePath)
-      ? sourceContentHash(readFileSync(resolvedSourcePath, 'utf8'))
-      : null;
+  const actualSourceContentHash = entrySourceFile
+    ? entrySourceFile.contentHash
+    : inlineSource
+      ? sourceContentHash(inlineSource)
+      : resolvedSourcePath && existsSync(resolvedSourcePath)
+        ? sourceContentHash(readFileSync(resolvedSourcePath, 'utf8'))
+        : null;
+  if (sourceFiles.length > 0 && !entrySourceFile) {
+    throw new Error(`invalid agent visual profile source.files: entryPath ${entryPath} is missing from source tree manifest`);
+  }
   validateDeclaredSourceHash(declaredSourceContentHash, actualSourceContentHash, 'source.contentHash');
+  const sourceFilesHashEntries = sourceFiles.map(sourceFileHashEntry);
+  const sourceFilesHash = sourceFiles.length > 0 ? sourceFilesManifestHash(sourceFiles) : null;
   const visualProof = normalizeAgentVisualProof(raw.visualProof ?? raw.visual_proof);
   const declaredVisualSceneManifestHash = profileString(
     raw.visualSceneManifestHash
@@ -414,13 +530,20 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
     profile_class:
       profileString(raw.profileClass ?? raw.profile_class, 'profileClass') || profileClassForFixture(profileId),
     source: {
-      entryPath: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
-      entry_path: cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp'),
+      entryPath,
+      entry_path: entryPath,
       path: sourcePath,
       resolvedPath: resolvedSourcePath,
       resolved_path: resolvedSourcePath,
       inline: inlineSource,
       fixture: fixtureSource,
+      files: sourceFiles,
+      sourceFiles: sourceFiles,
+      source_files: sourceFiles,
+      fileManifest: sourceFilesHashEntries,
+      file_manifest: sourceFilesHashEntries,
+      manifestHash: sourceFilesHash,
+      manifest_hash: sourceFilesHash,
       contentHash: actualSourceContentHash,
       content_hash: actualSourceContentHash,
       declaredContentHash: declaredSourceContentHash || null,
@@ -442,20 +565,24 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
       'requireDeclaredEdits',
       editSpecs.length > 0,
     ),
-    sourceAuthority: sourcePath
-      ? 'profile_source_file'
-      : inlineSource
-        ? 'profile_inline_source'
-        : fixtureSource
-          ? 'profile_declared_builtin_fixture_source'
-          : 'missing',
-    source_authority: sourcePath
-      ? 'profile_source_file'
-      : inlineSource
-        ? 'profile_inline_source'
-        : fixtureSource
-          ? 'profile_declared_builtin_fixture_source'
-          : 'missing',
+    sourceAuthority: sourceFiles.length > 0
+      ? 'profile_source_files'
+      : sourcePath
+        ? 'profile_source_file'
+        : inlineSource
+          ? 'profile_inline_source'
+          : fixtureSource
+            ? 'profile_declared_builtin_fixture_source'
+            : 'missing',
+    source_authority: sourceFiles.length > 0
+      ? 'profile_source_files'
+      : sourcePath
+        ? 'profile_source_file'
+        : inlineSource
+          ? 'profile_inline_source'
+          : fixtureSource
+            ? 'profile_declared_builtin_fixture_source'
+            : 'missing',
     deviceEdits: editSpecs,
     device_edits: editSpecs,
     deterministicVisualMode,
@@ -490,7 +617,12 @@ function loadAgentVisualProfile(profilePath = CFG.profilePath) {
 
 function sourceFromAgentVisualProfile(profile, vendor) {
   if (!profile) return null;
-  const sourceText = profile.source.inline
+  const sourceFiles = Array.isArray(profile.source.files) ? profile.source.files : [];
+  const entryPath = profile.source.entryPath ?? profile.source.entry_path ?? 'main.cpp';
+  const entryFile = sourceFiles.find((entry) => entry.path === entryPath);
+  const sourceText = entryFile
+    ? entryFile.content
+    : profile.source.inline
     ? profile.source.inline
     : profile.source.resolvedPath
       ? readFileSync(profile.source.resolvedPath, 'utf8')
@@ -512,6 +644,22 @@ function sourceFromAgentVisualProfile(profile, vendor) {
     return sourceText;
   }
   throw new Error('agent visual profile must provide source.inline, source.path, or source.fixture');
+}
+
+function sourceFilesForInitialCompile(entryPath, sourceText) {
+  const profileFiles = ACTIVE_AGENT_PROFILE?.source?.files;
+  if (Array.isArray(profileFiles) && profileFiles.length > 0) {
+    return profileFiles.map((entry) => ({
+      path: entry.path,
+      name: entry.path,
+      content: entry.content,
+    }));
+  }
+  return [{
+    path: entryPath,
+    name: entryPath,
+    content: sourceText,
+  }];
 }
 
 function validationProfileId() {
@@ -2967,6 +3115,11 @@ function sourceFirstIngestionEvidence({
     })
     .filter(Boolean);
   const initialManifestHash = `sha256:${sha256Hex(stableJson(initialFiles))}`;
+  const sourceTreeManifestHash =
+    ACTIVE_AGENT_PROFILE?.source?.manifestHash
+    ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
+    ?? initialManifestHash;
+  const sourceTreeManifestHashMatches = sourceTreeManifestHash === initialManifestHash;
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactBoundaryProven =
@@ -3007,6 +3160,7 @@ function sourceFirstIngestionEvidence({
     && userRequestedAi
     && preferGpuPipeline
     && initialFiles.length > 0
+    && sourceTreeManifestHashMatches
     && initialSourceFilePresent
     && initialSourceHashMatches
     && gpuSplitEndpointObserved
@@ -3047,6 +3201,8 @@ function sourceFirstIngestionEvidence({
       initial_file_count: initialFiles.length,
       initialManifestHash,
       initial_manifest_hash: initialManifestHash,
+      sourceTreeManifestHash,
+      source_tree_manifest_hash: sourceTreeManifestHash,
       initialFiles,
       initial_files: initialFiles,
       initialFilePaths,
@@ -3067,6 +3223,7 @@ function sourceFirstIngestionEvidence({
       filename: cleanRel(initialCompileArgs?.filename),
       initial_file_count: initialFiles.length,
       initial_manifest_hash: initialManifestHash,
+      source_tree_manifest_hash: sourceTreeManifestHash,
       initial_files: initialFiles,
       initial_file_paths: initialFilePaths,
       use_ai_split: useAiSplit,
@@ -3087,6 +3244,10 @@ function sourceFirstIngestionEvidence({
     initial_source_hash_matches: initialSourceHashMatches,
     initialManifestHash,
     initial_manifest_hash: initialManifestHash,
+    sourceTreeManifestHash,
+    source_tree_manifest_hash: sourceTreeManifestHash,
+    sourceTreeManifestHashMatches,
+    source_tree_manifest_hash_matches: sourceTreeManifestHashMatches,
     gpuSplitLogObserved,
     gpu_split_log_observed: gpuSplitLogObserved,
     gpuSplitEndpointObserved,
@@ -3121,6 +3282,7 @@ function sourceFirstIngestionEvidence({
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
       initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+      sourceTreeManifestHashMatches ? null : 'source_first_source_tree_manifest_mismatch',
       initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
       initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
       gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
@@ -3139,6 +3301,7 @@ function sourceFirstIngestionEvidence({
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
       initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+      sourceTreeManifestHashMatches ? null : 'source_first_source_tree_manifest_mismatch',
       initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
       initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
       gpuSplitEndpointObserved ? null : 'source_first_gpu_split_endpoint_not_observed',
@@ -3530,6 +3693,52 @@ function selfCheckAgentVisualProfile() {
         fixture: 'ray-light',
       },
     });
+    const multiFileEntrySource = [
+      '#include "params.hpp"',
+      'extern "C" __global__ void render(unsigned int* pixels) {',
+      '  pixels[0] = (unsigned int)(kSceneLight * kExposure);',
+      '}',
+      '',
+    ].join('\n');
+    const multiFileHeaderSource = [
+      '#pragma once',
+      'static constexpr float kSceneLight = 1.25f;',
+      'static constexpr float kExposure = 1.10f;',
+      '',
+    ].join('\n');
+    const multiFileProfile = normalizeAgentVisualProfile({
+      schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+      profileId: 'self-check-multifile-source-profile',
+      profileClass: 'self_check_visual_gpu_path',
+      source: {
+        entryPath: 'src/main.cpp',
+        files: [
+          {
+            path: 'include/params.hpp',
+            inline: multiFileHeaderSource,
+            contentHash: sourceContentHash(multiFileHeaderSource),
+          },
+          {
+            path: 'src/main.cpp',
+            inline: multiFileEntrySource,
+            contentHash: sourceContentHash(multiFileEntrySource),
+          },
+        ],
+      },
+      compile: {
+        width: 320,
+        height: 240,
+      },
+      visualProof: {
+        minChangedRatio: 0.02,
+        minMeanAbs: 1.5,
+      },
+      deviceEdits: [{
+        runMode: 'hot_delta_1',
+        find: 'kSceneLight * kExposure',
+        replace: 'kSceneLight * (kExposure + 0.25f)',
+      }],
+    });
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -3539,6 +3748,12 @@ function selfCheckAgentVisualProfile() {
     }
     ACTIVE_AGENT_PROFILE = fixtureBackedProfile;
     const fixtureBackedIdentity = validationFixtureId();
+    ACTIVE_AGENT_PROFILE = multiFileProfile;
+    const multiFileResolvedSource = sourceFromAgentVisualProfile(multiFileProfile, 'rocm');
+    const multiFileInitialFiles = sourceFilesForInitialCompile(
+      multiFileProfile.source.entryPath,
+      multiFileResolvedSource,
+    );
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -3566,6 +3781,18 @@ function selfCheckAgentVisualProfile() {
       || !sceneManifestHashMismatchRejected
       || !ambiguousRejected
       || fixtureBackedIdentity !== 'ray-light'
+      || multiFileProfile.sourceAuthority !== 'profile_source_files'
+      || multiFileProfile.source.files.length !== 2
+      || !multiFileProfile.source.manifestHash?.startsWith('sha256:')
+      || multiFileResolvedSource !== multiFileEntrySource
+      || multiFileProfile.source.contentHash !== sourceContentHash(multiFileEntrySource)
+      || multiFileInitialFiles.length !== 2
+      || !multiFileInitialFiles.some((entry) =>
+        entry.path === 'include/params.hpp' && entry.content === multiFileHeaderSource
+      )
+      || !multiFileInitialFiles.some((entry) =>
+        entry.path === 'src/main.cpp' && entry.content === multiFileEntrySource
+      )
     ) {
       throw new Error('agent visual profile self-check failed');
     }
@@ -4886,6 +5113,7 @@ async function run() {
 
   const sourcePurityEvidence = assertNoSynthiAbi(source);
   const entryPath = validationProfileEntryPath();
+  const initialSourceFiles = sourceFilesForInitialCompile(entryPath, source);
   const renderWidth = validationProfileWidth();
   const renderHeight = validationProfileHeight();
 
@@ -4895,8 +5123,12 @@ async function run() {
   });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
 
-  await writeFilesBatch({ slug: CFG.slug, files: [{ path: entryPath, content: source }] });
-  record('seed profile/fixture source', 'pass', entryPath);
+  await writeFilesBatch({ slug: CFG.slug, files: initialSourceFiles });
+  record(
+    'seed profile/fixture source',
+    'pass',
+    `${entryPath} files=${initialSourceFiles.length}${ACTIVE_AGENT_PROFILE?.source?.manifestHash ? ` manifest=${ACTIVE_AGENT_PROFILE.source.manifestHash}` : ''}`,
+  );
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: seed monolithic source' })
     .then(() => record('workspace commit seed', 'pass'))
     .catch((e) => record('workspace commit seed', 'warn', e.message.slice(0, 200)));
@@ -4913,7 +5145,7 @@ async function run() {
     language: 'cpp',
     filename: entryPath,
     source,
-    files: [{ name: entryPath, content: source }],
+    files: initialSourceFiles,
     is_gui: true,
     use_ai_split: true,
     user_requested_ai: true,

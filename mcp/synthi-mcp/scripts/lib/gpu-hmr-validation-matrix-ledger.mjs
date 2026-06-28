@@ -1671,6 +1671,12 @@ function sourceFirstIngestionFacet(row = {}) {
   const acceptedFlag = firstBool(supplied.accepted, supplied.sourceFirstAccepted, supplied.source_first_accepted);
   const acceptedForGpuHmr = firstBool(supplied.acceptedForGpuHmr, supplied.accepted_for_gpu_hmr);
   const gpuHmrSuccess = firstBool(supplied.gpuHmrSuccess, supplied.gpu_hmr_success);
+  const sourceAuthority = firstText(
+    supplied.sourceAuthority,
+    supplied.source_authority,
+    row.sourceAuthority,
+    row.source_authority,
+  );
   const canSatisfyRuntimeProof = firstBool(
     supplied.canSatisfyRuntimeProof,
     supplied.can_satisfy_runtime_proof,
@@ -1773,6 +1779,19 @@ function sourceFirstIngestionFacet(row = {}) {
     contentAddressedSha256(initialManifestHash)
     && Boolean(recomputedInitialManifestHash)
     && initialManifestHash === recomputedInitialManifestHash;
+  const sourceTreeManifestHash = firstText(
+    supplied.sourceTreeManifestHash,
+    supplied.source_tree_manifest_hash,
+    compileContract.sourceTreeManifestHash,
+    compileContract.source_tree_manifest_hash,
+  );
+  const sourceTreeManifestRequired = sourceAuthority === 'profile_source_files';
+  const sourceTreeManifestHashMatches =
+    sourceTreeManifestHash
+      ? contentAddressedSha256(sourceTreeManifestHash)
+        && Boolean(recomputedInitialManifestHash)
+        && sourceTreeManifestHash === recomputedInitialManifestHash
+      : !sourceTreeManifestRequired;
   const entryPath = normalizedEvidenceRelPath(firstText(
     supplied.entryPath,
     supplied.entry_path,
@@ -1889,6 +1908,7 @@ function sourceFirstIngestionFacet(row = {}) {
     initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
     initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
     initialManifestHashMatches ? null : 'source_first_initial_manifest_hash_mismatch',
+    sourceTreeManifestHashMatches ? null : 'source_first_source_tree_manifest_mismatch',
     gpuSplitEndpointObserved === true ? null : 'source_first_gpu_split_endpoint_not_observed',
     generatedArtifactCreatedAfterAiSplit === true
       ? null
@@ -1920,6 +1940,8 @@ function sourceFirstIngestionFacet(row = {}) {
     recomputed_proof_id: recomputedProofId,
     proofIdMatches,
     proof_id_matches: proofIdMatches,
+    sourceAuthority,
+    source_authority: sourceAuthority,
     sourceContentHash,
     source_content_hash: sourceContentHash,
     entryPath,
@@ -1946,6 +1968,12 @@ function sourceFirstIngestionFacet(row = {}) {
     recomputed_initial_manifest_hash: recomputedInitialManifestHash,
     initialManifestHashMatches,
     initial_manifest_hash_matches: initialManifestHashMatches,
+    sourceTreeManifestHash,
+    source_tree_manifest_hash: sourceTreeManifestHash,
+    sourceTreeManifestRequired,
+    source_tree_manifest_required: sourceTreeManifestRequired,
+    sourceTreeManifestHashMatches,
+    source_tree_manifest_hash_matches: sourceTreeManifestHashMatches,
     initialSourceFilePresent,
     initial_source_file_present: initialSourceFilePresent,
     initialSourceHashMatches,
