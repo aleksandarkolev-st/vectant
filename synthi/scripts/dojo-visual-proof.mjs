@@ -82,6 +82,24 @@ const ROUTES = [
     requiredText: ["Practice World", "Duplicate client names", "Fake success toast", "Stable ID guardrail"],
   },
   {
+    id: "therapeutic-tomography",
+    path: `/workspace/${WORKSPACE_SLUG}/dojo/therapeutic-trace`,
+    selector: "[data-testid=\"therapeutic-tomography-trace\"]",
+    requiredText: [
+      "Therapeutic Tomography",
+      "Raw production logs",
+      "eval_slice_compare",
+      "feature_drift_summary",
+      "Strict Proof Gate approved",
+      "Machine-verifiable claims",
+      "Human-reviewed claims",
+      "Narrative claims",
+      "customer_plan",
+      "Avoided Access",
+      "model_weights",
+    ],
+  },
+  {
     id: "source-api",
     path: `/workspace/${WORKSPACE_SLUG}/dojo/source`,
     selector: "[data-testid=\"dojo-source-api\"]",
@@ -474,6 +492,7 @@ function buildBridgeState() {
           ],
           review_checklist: ["Confirm every risky action has a proof hook."],
         },
+        therapeuticTomography: buildTherapeuticTomographyTrace(),
         agentReadyUiContract: {
           contract_id: "ui-contract-save-invoice",
           target_origin: "https://billing.example.test",
@@ -665,11 +684,177 @@ function buildBridgeState() {
   };
 }
 
+function buildTherapeuticTomographyTrace() {
+  return {
+    schema_version: "synthi.dojo.therapeuticTrace.v1",
+    task_id: "quality_drop_demo_001",
+    task_class: "ml_quality_drop",
+    user_goal: "Diagnose why a production AI model dropped 9% in quality.",
+    current_authority_dose: 5,
+    uncertainties: [{
+      id: "quality_drop_cause",
+      description: "Which segment and feature caused the quality drop?",
+      current_confidence: 0.2,
+      possible_causes: ["data_drift", "model_routing", "train_serve_skew", "evaluation_pipeline_change"],
+      useful_probes: ["eval_slice_compare", "feature_drift_summary", "model_route_compare"],
+      blocking_status: "open",
+      severity: "high",
+    }],
+    authority_doses: [{
+      id: "dose_lineage_customer_plan_001",
+      level: 5,
+      scope: "feature:customer_plan",
+      permitted_tools: ["feature_lineage_hash"],
+      permitted_data_classes: ["feature_lineage_hash"],
+      forbidden_data_classes: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges", "write_access"],
+      mutation_allowed: false,
+      max_blast_radius: "single_feature_lineage_hash",
+      expiration_condition: "end_of_task",
+      revoke_plan: "revoke temporary lineage grant when trace closes",
+      expected_effect: "confirm or reject train/serve skew for customer_plan",
+      measured_effect: "training_transform_hash != serving_transform_hash",
+      side_effects: [],
+      decision: "approved",
+    }],
+    projection_probes: [
+      {
+        id: "probe_eval_slice_001",
+        task_id: "quality_drop_demo_001",
+        name: "eval_slice_compare",
+        task_class: "ml_quality_drop",
+        target_uncertainty: "quality_drop_cause",
+        required_authority_dose: 2,
+        required_data_classes: ["aggregate_evaluation_reports"],
+        forbidden_data_classes: ["raw_prod_logs", "customer_identifiers", "model_weights"],
+        input_schema: { time_window: "string", metric: "string" },
+        allowed_output_shape: ["affected_segment", "quality_delta", "confidence", "time_window"],
+        privacy_cost: 1,
+        expected_information_gain: 8,
+        actual_information_gain: 7,
+        confidence: 0.84,
+        status: "completed",
+        result_summary: {
+          affected_segment: "enterprise_users",
+          quality_delta: -0.09,
+          confidence: 0.84,
+          time_window: "last_24h",
+        },
+        failure_modes: [],
+        verifier: "allowed_shape",
+        allowed_output_shape_valid: true,
+      },
+      {
+        id: "probe_feature_drift_001",
+        task_id: "quality_drop_demo_001",
+        name: "feature_drift_summary",
+        task_class: "ml_quality_drop",
+        target_uncertainty: "quality_drop_cause",
+        required_authority_dose: 4,
+        required_data_classes: ["aggregate_feature_statistics"],
+        forbidden_data_classes: ["raw_training_rows", "raw_user_logs", "customer_identifiers"],
+        input_schema: { affected_segment: "string", time_window: "string" },
+        allowed_output_shape: ["top_feature", "drift_score", "affected_segment", "confidence", "time_window"],
+        privacy_cost: 2,
+        expected_information_gain: 9,
+        actual_information_gain: 8,
+        confidence: 0.88,
+        status: "completed",
+        result_summary: {
+          top_feature: "customer_plan",
+          drift_score: 0.91,
+          affected_segment: "enterprise_users",
+          confidence: 0.88,
+          time_window: "last_24h",
+        },
+        failure_modes: [],
+        verifier: "allowed_shape",
+        allowed_output_shape_valid: true,
+      },
+    ],
+    proof_capsules: [{
+      id: "proof_001",
+      task_id: "quality_drop_demo_001",
+      requested_access: {
+        id: "access_lineage_customer_plan_001",
+        task_id: "quality_drop_demo_001",
+        authority_dose: 5,
+        scope: "feature:customer_plan",
+        mode: "read_only",
+        data_classes: ["feature_lineage_hash"],
+        tools: ["feature_lineage_hash"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Verify whether customer_plan drift is train/serve skew.",
+      },
+      current_authority_dose: 4,
+      requested_authority_dose: 5,
+      machine_verifiable_claims: [
+        { claim: "eval_slice_compare_attempted", expected: true, evidence: "trace.projection_probes.eval_slice_compare.status", verifier: "trace_lookup", result: "pass", critical: true },
+        { claim: "feature_drift_summary_attempted", expected: true, evidence: "trace.projection_probes.feature_drift_summary.status", verifier: "trace_lookup", result: "pass", critical: true },
+        { claim: "requested_scope_is_supported_minimal_scope", expected: ["feature:customer_plan"], evidence: "access_request.scope", verifier: "scope_subset_check", result: "pass", critical: true },
+        { claim: "request_is_read_only", expected: true, evidence: "access_request.mode", verifier: "permission_diff_check", result: "pass", critical: true },
+        { claim: "forbidden_data_not_requested", expected: ["raw_prod_logs", "full_database", "model_weights"], evidence: "access_request.data_classes", verifier: "forbidden_class_check", result: "pass", critical: true },
+      ],
+      human_reviewed_claims: [{
+        claim: "lineage_access_is_reasonable_next_step",
+        reviewer_role: "ml_engineer",
+        status: "approved",
+        rationale: "customer_plan drift is the strongest current machine-verifiable lead.",
+      }],
+      unverifiable_narrative_claims: [{
+        claim: "Agent believes lineage will confirm train/serve skew.",
+        status: "context_only",
+      }],
+      evidence_links: ["trace.projection_probes.eval_slice_compare.status", "trace.projection_probes.feature_drift_summary.status"],
+      verifier_results: ["eval_slice_compare_attempted:pass", "request_is_read_only:pass"],
+      failed_claims: [],
+      risk_score: 5,
+      minimality_score: 1,
+      approved: true,
+      reviewer: "deterministic-proof-router",
+      timestamp: "2026-06-28T00:00:00.000Z",
+    }],
+    blocked_overreach_attempts: [{
+      requested_access: {
+        id: "access_raw_logs_001",
+        task_id: "quality_drop_demo_001",
+        authority_dose: 8,
+        scope: "production",
+        mode: "read_only",
+        data_classes: ["Raw production logs"],
+        tools: ["log_query"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Agent requested raw logs before lower-risk probes.",
+      },
+      decision: "denied",
+      reason: ["forbidden_data_requested", "lower_risk_probe_available", "no_probe_attempted"],
+      suggested_alternative: ["eval_slice_compare", "feature_drift_summary"],
+    }],
+    suggested_lower_risk_alternatives: ["eval_slice_compare", "feature_drift_summary"],
+    human_overrides: [],
+    final_outcome: "diagnosed",
+    diagnosis: "train_serve_skew in customer_plan transformation",
+    remediation_plan: "Prepare a separate remediation proof before any serving transform write; include blast-radius estimate, rollback, and postcondition checks.",
+    avoided_access: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges", "write_access"],
+    over_escalation_flags: [],
+    under_escalation_flags: [],
+    learned_policy_delta: [
+      "For ml_quality_drop, prefer eval_slice_compare and feature_drift_summary before lineage.",
+      "Approve one-feature read-only lineage when aggregate drift identifies a single suspicious feature and forbidden classes are absent.",
+    ],
+  };
+}
+
 async function startDevServer({ port }) {
   const logPath = path.join(OUT_DIR, "dev-server.log");
   const nextCli = path.join(SYNTHI_ROOT, "node_modules", "next", "dist", "bin", "next");
   const releaseLock = await acquireVisualProofDevServerLock({ lockPath: DEV_SERVER_LOCK_PATH });
-  const child = spawn(process.execPath, [nextCli, "dev", "--turbopack", "--hostname", HOST, "--port", String(port)], {
+  const devArgs = [nextCli, "dev", "--hostname", HOST, "--port", String(port)];
+  if (shouldUseTurbopackForVisualProof()) {
+    devArgs.splice(2, 0, "--turbopack");
+  }
+  const child = spawn(process.execPath, devArgs, {
     cwd: SYNTHI_ROOT,
     env: buildVisualProofDevServerEnv(),
     stdio: ["ignore", "pipe", "pipe"],
@@ -687,6 +872,13 @@ async function startDevServer({ port }) {
   }
   await writeFile(logPath, logs.join(""), "utf8");
   return { child, releaseLock };
+}
+
+function shouldUseTurbopackForVisualProof() {
+  const configured = process.env.SYNTHI_DOJO_VISUAL_TURBOPACK?.trim().toLowerCase();
+  if (configured === "1" || configured === "true") return true;
+  if (configured === "0" || configured === "false") return false;
+  return process.platform !== "win32";
 }
 
 async function stopDevServer(server) {

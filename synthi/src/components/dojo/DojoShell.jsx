@@ -48,6 +48,7 @@ export default function DojoShell({
     ['Passport', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref],
     ['Cortex', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref],
     ['Practice', `${baseHref}/practice`],
+    ['Tomography', `${baseHref}/therapeutic-trace`],
     ['Source/API', `${baseHref}/source`],
     ['Debugger', `${baseHref}/debug/time-machine`],
     ['Evidence', `${baseHref}/evidence`],

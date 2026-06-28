@@ -142,6 +142,16 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         antibodyCount: 0,
       },
     },
+    tomography: {
+      trace: null,
+      metrics: {
+        probeCount: 0,
+        machineClaimCount: 0,
+        humanClaimCount: 0,
+        narrativeClaimCount: 0,
+        avoidedAccessCount: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -1372,6 +1382,148 @@ function normalizeCaseLawState(state, dojo) {
   };
 }
 
+function normalizeTomographyAccessRequest(item = {}) {
+  return {
+    id: item.id || item.request_id || item.requestId || '',
+    taskId: item.task_id || item.taskId || '',
+    authorityDose: Number(item.authority_dose ?? item.authorityDose ?? 0),
+    scope: item.scope || '',
+    mode: item.mode || '',
+    dataClasses: compactStrings(item.data_classes || item.dataClasses),
+    tools: compactStrings(item.tools),
+    expiration: item.expiration || item.expiration_condition || item.expirationCondition || '',
+    revocable: Boolean(item.revocable),
+    purpose: item.purpose || '',
+  };
+}
+
+function normalizeTomographyClaim(item = {}) {
+  return {
+    claim: item.claim || item.name || '',
+    expected: item.expected,
+    evidence: item.evidence || '',
+    verifier: item.verifier || '',
+    result: item.result || item.status || '',
+    actual: item.actual,
+    critical: Boolean(item.critical),
+    reviewerRole: item.reviewer_role || item.reviewerRole || '',
+    rationale: item.rationale || '',
+  };
+}
+
+function normalizeTomographyTrace(state, dojo) {
+  const raw = dojo.therapeuticTomography
+    || dojo.therapeutic_tomography
+    || dojo.tomography
+    || state.therapeuticTomography
+    || state.therapeutic_tomography
+    || state.tomography
+    || null;
+  if (!raw) {
+    return {
+      trace: null,
+      metrics: {
+        probeCount: 0,
+        machineClaimCount: 0,
+        humanClaimCount: 0,
+        narrativeClaimCount: 0,
+        avoidedAccessCount: 0,
+      },
+    };
+  }
+  const proofCapsules = asArray(raw.proof_capsules || raw.proofCapsules).map((capsule) => ({
+    id: capsule.id || capsule.proof_id || capsule.proofId || '',
+    approved: Boolean(capsule.approved),
+    riskScore: Number(capsule.risk_score ?? capsule.riskScore ?? 0),
+    minimalityScore: Number(capsule.minimality_score ?? capsule.minimalityScore ?? 0),
+    reviewer: capsule.reviewer || '',
+    timestamp: capsule.timestamp || '',
+    failedClaims: compactStrings(capsule.failed_claims || capsule.failedClaims),
+    machineClaims: asArray(capsule.machine_verifiable_claims || capsule.machineVerifiableClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    humanClaims: asArray(capsule.human_reviewed_claims || capsule.humanReviewedClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    narrativeClaims: asArray(capsule.unverifiable_narrative_claims || capsule.unverifiableNarrativeClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    requestedAccess: normalizeTomographyAccessRequest(capsule.requested_access || capsule.requestedAccess || {}),
+    evidenceLinks: compactStrings(capsule.evidence_links || capsule.evidenceLinks),
+  }));
+  const projectionProbes = asArray(raw.projection_probes || raw.projectionProbes).map((probe) => ({
+    id: probe.id || '',
+    name: probe.name || '',
+    status: probe.status || '',
+    targetUncertainty: probe.target_uncertainty || probe.targetUncertainty || '',
+    requiredAuthorityDose: Number(probe.required_authority_dose ?? probe.requiredAuthorityDose ?? 0),
+    privacyCost: Number(probe.privacy_cost ?? probe.privacyCost ?? 0),
+    expectedInformationGain: Number(probe.expected_information_gain ?? probe.expectedInformationGain ?? 0),
+    actualInformationGain: Number(probe.actual_information_gain ?? probe.actualInformationGain ?? 0),
+    confidence: Number(probe.confidence ?? 0),
+    allowedOutputShapeValid: Boolean(probe.allowed_output_shape_valid ?? probe.allowedOutputShapeValid),
+    resultSummary: probe.result_summary || probe.resultSummary || {},
+  })).filter((probe) => probe.name);
+  const blockedOverreachAttempts = asArray(raw.blocked_overreach_attempts || raw.blockedOverreachAttempts).map((attempt) => ({
+    requestedAccess: normalizeTomographyAccessRequest(attempt.requested_access || attempt.requestedAccess || {}),
+    decision: attempt.decision || '',
+    reason: compactStrings(attempt.reason || attempt.blocked_by || attempt.blockedBy),
+    suggestedAlternative: compactStrings(attempt.suggested_alternative || attempt.suggestedAlternative),
+  }));
+  const authorityDoses = asArray(raw.authority_doses || raw.authorityDoses).map((dose) => ({
+    id: dose.id || '',
+    level: Number(dose.level ?? 0),
+    scope: dose.scope || '',
+    decision: dose.decision || '',
+    mutationAllowed: Boolean(dose.mutation_allowed ?? dose.mutationAllowed),
+    permittedTools: compactStrings(dose.permitted_tools || dose.permittedTools),
+    permittedDataClasses: compactStrings(dose.permitted_data_classes || dose.permittedDataClasses),
+    forbiddenDataClasses: compactStrings(dose.forbidden_data_classes || dose.forbiddenDataClasses),
+    expirationCondition: dose.expiration_condition || dose.expirationCondition || '',
+    revokePlan: dose.revoke_plan || dose.revokePlan || '',
+    measuredEffect: dose.measured_effect || dose.measuredEffect || '',
+  }));
+  const trace = {
+    schemaVersion: raw.schema_version || raw.schemaVersion || '',
+    taskId: raw.task_id || raw.taskId || '',
+    taskClass: raw.task_class || raw.taskClass || '',
+    userGoal: raw.user_goal || raw.userGoal || '',
+    currentAuthorityDose: Number(raw.current_authority_dose ?? raw.currentAuthorityDose ?? 0),
+    uncertainties: asArray(raw.uncertainties).map((uncertainty) => ({
+      id: uncertainty.id || '',
+      description: uncertainty.description || '',
+      currentConfidence: Number(uncertainty.current_confidence ?? uncertainty.currentConfidence ?? 0),
+      possibleCauses: compactStrings(uncertainty.possible_causes || uncertainty.possibleCauses),
+      usefulProbes: compactStrings(uncertainty.useful_probes || uncertainty.usefulProbes),
+      blockingStatus: uncertainty.blocking_status || uncertainty.blockingStatus || '',
+      severity: uncertainty.severity || '',
+    })),
+    authorityDoses,
+    projectionProbes,
+    proofCapsules,
+    blockedOverreachAttempts,
+    suggestedLowerRiskAlternatives: compactStrings(raw.suggested_lower_risk_alternatives || raw.suggestedLowerRiskAlternatives),
+    finalOutcome: raw.final_outcome || raw.finalOutcome || '',
+    diagnosis: raw.diagnosis || '',
+    remediationPlan: raw.remediation_plan || raw.remediationPlan || '',
+    avoidedAccess: compactStrings(raw.avoided_access || raw.avoidedAccess),
+    overEscalationFlags: compactStrings(raw.over_escalation_flags || raw.overEscalationFlags),
+    underEscalationFlags: compactStrings(raw.under_escalation_flags || raw.underEscalationFlags),
+    learnedPolicyDelta: compactStrings(raw.learned_policy_delta || raw.learnedPolicyDelta),
+  };
+  const firstProof = proofCapsules[0] || {};
+  return {
+    trace,
+    metrics: {
+      probeCount: projectionProbes.length,
+      machineClaimCount: firstProof.machineClaims?.length || 0,
+      humanClaimCount: firstProof.humanClaims?.length || 0,
+      narrativeClaimCount: firstProof.narrativeClaims?.length || 0,
+      avoidedAccessCount: trace.avoidedAccess.length,
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -1388,6 +1540,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       source: normalizeSourceState(state, dojo, null),
       evidence: normalizeEvidenceState(state, dojo, null),
       caseLaw: normalizeCaseLawState(state, dojo),
+      tomography: normalizeTomographyTrace(state, dojo),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -1447,6 +1600,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     source: skill.source,
     evidence: skill.evidence,
     caseLaw: skill.caseLaw,
+    tomography: normalizeTomographyTrace(state, dojo),
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
