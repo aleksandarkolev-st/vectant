@@ -206,6 +206,12 @@ export interface TherapeuticBrokerDecision {
   proof_capsule?: TherapeuticStrictProofCapsule;
 }
 
+export interface TherapeuticProofRoute {
+  tier: TherapeuticProofTier;
+  decision_mechanism: "auto_allow" | "deterministic_verifier" | "human_or_llm_review" | "high_risk_human_approval";
+  required_gates: string[];
+}
+
 export interface TherapeuticActionScore {
   action: string;
   score: number;
@@ -402,16 +408,18 @@ export function evaluateAuthorityBroker(input: {
   const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
   const blockedBy: string[] = [];
   const alternatives = lowerRiskAlternatives(input.trace, policy);
-  const tier = routeTherapeuticProof({ request: input.request, policy });
+  const proofRoute = classifyTherapeuticProofRoute({ request: input.request, policy });
+  const tier = proofRoute.tier;
   const includesForbidden = input.request.data_classes.some((dataClass) => policy.forbidden_data_classes.includes(dataClass));
   const includesSensitive = input.request.data_classes.some((dataClass) => policy.sensitive_data_classes.includes(dataClass));
   const broad = isBroadAccessRequest(input.request, policy);
+  const diagnosticEscalationNeedsProof = tier >= 1 && input.request.authority_dose >= 5;
   if (input.request.authority_dose > policy.max_authority_dose) blockedBy.push("authority_dose_exceeds_policy");
   if (includesForbidden) blockedBy.push("forbidden_data_requested");
   if (input.request.mode === "write" && !policy.mutation_allowed) blockedBy.push("mutation_not_allowed_by_policy");
   if (broad && alternatives.length > 0) blockedBy.push("lower_risk_probe_available");
   if (broad && completedProbeNames(input.trace).length === 0) blockedBy.push("no_probe_attempted");
-  if (includesSensitive && !input.proof_capsule) blockedBy.push("strict_proof_capsule_required");
+  if ((includesSensitive || diagnosticEscalationNeedsProof) && !input.proof_capsule) blockedBy.push("strict_proof_capsule_required");
   if (input.proof_capsule && !input.proof_capsule.approved) blockedBy.push("strict_proof_capsule_invalid");
   if (policy.human_approval_required_for.includes(input.request.authority_dose) && !hasApprovedHumanClaim(input.proof_capsule)) {
     blockedBy.push("human_approval_required");
@@ -438,13 +446,43 @@ export function routeTherapeuticProof(input: {
   request: TherapeuticAccessRequest;
   policy?: TherapeuticPolicy;
 }): TherapeuticProofTier {
+  return classifyTherapeuticProofRoute(input).tier;
+}
+
+export function classifyTherapeuticProofRoute(input: {
+  request: TherapeuticAccessRequest;
+  policy?: TherapeuticPolicy;
+}): TherapeuticProofRoute {
   const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
-  if (input.request.authority_dose <= 1 && input.request.mode === "read_only") return 0;
-  if (input.request.mode === "write" || input.request.authority_dose >= 7) return 3;
-  if (input.request.data_classes.some((dataClass) => policy.sensitive_data_classes.includes(dataClass))) return 3;
-  if (isBroadAccessRequest(input.request, policy)) return 3;
-  if (input.request.authority_dose >= 5) return 1;
-  return 1;
+  if (input.request.authority_dose <= 1 && input.request.mode === "read_only") {
+    return { tier: 0, decision_mechanism: "auto_allow", required_gates: ["light_trace_log"] };
+  }
+  if (input.request.mode === "write" || input.request.authority_dose >= 7) {
+    return {
+      tier: 3,
+      decision_mechanism: "high_risk_human_approval",
+      required_gates: ["deterministic_verifier", "strict_proof_capsule", "human_approval", "rollback_plan", "postcondition_check"],
+    };
+  }
+  if (input.request.data_classes.some((dataClass) => policy.sensitive_data_classes.includes(dataClass)) || isBroadAccessRequest(input.request, policy)) {
+    return {
+      tier: 3,
+      decision_mechanism: "high_risk_human_approval",
+      required_gates: ["deterministic_verifier", "strict_proof_capsule", "forbidden_data_gate", "human_approval"],
+    };
+  }
+  if (isAmbiguousScopedRequest(input.request)) {
+    return {
+      tier: 2,
+      decision_mechanism: "human_or_llm_review",
+      required_gates: ["deterministic_verifier", "strict_proof_capsule", "judgment_claim_review"],
+    };
+  }
+  return {
+    tier: 1,
+    decision_mechanism: "deterministic_verifier",
+    required_gates: ["trace_lookup_gate", "probe_output_schema_gate", "scope_subset_gate", "forbidden_data_gate", "expiration_gate", "revocation_gate"],
+  };
 }
 
 export function buildStrictProofCapsule(input: {
@@ -455,6 +493,7 @@ export function buildStrictProofCapsule(input: {
   current_authority_dose: TherapeuticAuthorityLevel;
   supported_scope_values?: string[];
   policy?: TherapeuticPolicy;
+  machine_verifiable_claims?: TherapeuticMachineClaim[];
   human_reviewed_claims?: TherapeuticHumanReviewedClaim[];
   unverifiable_narrative_claims?: TherapeuticNarrativeClaim[];
   timestamp?: string;
@@ -464,17 +503,18 @@ export function buildStrictProofCapsule(input: {
   const supportedScopeValues = input.supported_scope_values?.length
     ? input.supported_scope_values
     : inferSupportedScopeValues(input.trace);
-  const machineClaims = verifyMachineClaims({
-    trace: input.trace,
-    request: input.request,
-    supported_scope_values: supportedScopeValues,
-    policy,
-  });
+  const machineClaims = input.machine_verifiable_claims ?? verifyMachineClaims({
+      trace: input.trace,
+      request: input.request,
+      supported_scope_values: supportedScopeValues,
+      policy,
+    });
   const failedClaims = machineClaims
     .filter((claim) => claim.result === "fail")
     .map((claim) => claim.claim);
   const criticalFailures = machineClaims.some((claim) => claim.critical && claim.result !== "pass");
   const narrativeOnly = machineClaims.length === 0 && (input.human_reviewed_claims ?? []).length === 0;
+  if (narrativeOnly) failedClaims.push("narrative_only_proof");
   const riskScore = authorityRiskScore(input.request, policy);
   const minimalityScore = minimalityScoreForRequest(input.request, supportedScopeValues, failedClaims);
   const approved = !criticalFailures
@@ -497,7 +537,7 @@ export function buildStrictProofCapsule(input: {
       .filter((claim) => claim.result === "pass")
       .map((claim) => claim.evidence),
     verifier_results: machineClaims.map((claim) => `${claim.claim}:${claim.result}`),
-    failed_claims: failedClaims,
+    failed_claims: uniqueStrings(failedClaims),
     risk_score: riskScore,
     minimality_score: minimalityScore,
     approved,
@@ -805,6 +845,21 @@ function isBroadAccessRequest(request: TherapeuticAccessRequest, policy: Therape
   return policy.broad_scopes.includes(request.scope.toLowerCase())
     || request.data_classes.some((dataClass) => policy.broad_data_classes.includes(dataClass))
     || request.authority_dose >= 8;
+}
+
+function isAmbiguousScopedRequest(request: TherapeuticAccessRequest): boolean {
+  const scopedTargets = request.scope
+    .split(/[,\s]+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return scopedTargets.length > 1
+    || request.data_classes.some((dataClass) => [
+      "redacted_failure_cluster",
+      "redacted_failure_samples",
+      "scoped_service_config",
+      "multi_feature_lineage",
+    ].includes(dataClass))
+    || request.tools.length > 1;
 }
 
 function lowerRiskAlternatives(trace: TherapeuticTrace, policy: TherapeuticPolicy): string[] {

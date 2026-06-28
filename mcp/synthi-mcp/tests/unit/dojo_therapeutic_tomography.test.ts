@@ -3,6 +3,7 @@ import {
   buildMlQualityDropTherapeuticDemoTrace,
   buildProjectionProbe,
   buildStrictProofCapsule,
+  classifyTherapeuticProofRoute,
   emptyTherapeuticTrace,
   evaluateAuthorityBroker,
   inferSupportedScopeValues,
@@ -139,6 +140,85 @@ describe("Dojo therapeutic tomography", () => {
       decision: "denied",
       blocked_by: expect.arrayContaining(["strict_proof_capsule_invalid"]),
     }));
+  });
+
+  it("requires deterministic proof for scoped diagnostic escalation", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const request: TherapeuticAccessRequest = {
+      id: "lineage-without-proof",
+      task_id: trace.task_id,
+      authority_dose: 5,
+      scope: "feature:customer_plan",
+      mode: "read_only",
+      data_classes: ["feature_lineage_hash"],
+      tools: ["feature_lineage_hash"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "try scoped lineage without proof",
+    };
+
+    const decision = evaluateAuthorityBroker({ trace, request });
+
+    expect(decision).toEqual(expect.objectContaining({
+      decision: "denied",
+      tier: 1,
+      blocked_by: expect.arrayContaining(["strict_proof_capsule_required"]),
+    }));
+  });
+
+  it("routes ambiguous scoped diagnostic requests to Tier 2 judgment review", () => {
+    const request: TherapeuticAccessRequest = {
+      id: "multi-feature-lineage",
+      task_id: "task-tier-2",
+      authority_dose: 5,
+      scope: "feature:customer_plan,feature:billing_country",
+      mode: "read_only",
+      data_classes: ["multi_feature_lineage"],
+      tools: ["feature_lineage_hash"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "compare multiple plausible features",
+    };
+
+    expect(classifyTherapeuticProofRoute({ request })).toEqual({
+      tier: 2,
+      decision_mechanism: "human_or_llm_review",
+      required_gates: ["deterministic_verifier", "strict_proof_capsule", "judgment_claim_review"],
+    });
+  });
+
+  it("rejects narrative-only proof capsules as weak evidence", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const request: TherapeuticAccessRequest = {
+      id: "narrative-only-lineage",
+      task_id: trace.task_id,
+      authority_dose: 5,
+      scope: "feature:customer_plan",
+      mode: "read_only",
+      data_classes: ["feature_lineage_hash"],
+      tools: ["feature_lineage_hash"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "try lineage with narrative only",
+    };
+
+    const capsule = buildStrictProofCapsule({
+      id: "proof-narrative-only",
+      task_id: trace.task_id,
+      trace,
+      request,
+      current_authority_dose: 4,
+      machine_verifiable_claims: [],
+      unverifiable_narrative_claims: [{
+        claim: "Agent believes lineage will probably help.",
+        status: "context_only",
+      }],
+    });
+
+    expect(capsule.approved).toBe(false);
+    expect(capsule.failed_claims).toContain("narrative_only_proof");
+    expect(evaluateAuthorityBroker({ trace, request, proof_capsule: capsule }).blocked_by)
+      .toContain("strict_proof_capsule_invalid");
   });
 
   it("derives supported scopes from probe evidence without scenario-specific feature names", () => {
