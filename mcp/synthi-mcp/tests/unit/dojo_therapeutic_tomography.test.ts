@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   buildMlQualityDropTherapeuticDemoTrace,
   buildProjectionProbe,
+  buildSafeProbeBundle,
   buildStrictProofCapsule,
   classifyTherapeuticProofRoute,
   emptyTherapeuticTrace,
   evaluateAuthorityBroker,
+  evaluateProofCache,
+  evaluateRemediationGate,
+  evaluateUnderEscalation,
   inferSupportedScopeValues,
   scoreTherapeuticAction,
   selectLowestRiskProbe,
+  summarizeProofMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   type TherapeuticAccessRequest,
@@ -62,6 +67,24 @@ describe("Dojo therapeutic tomography", () => {
     });
 
     expect(selected?.name).toBe("eval_slice_compare");
+  });
+
+  it("builds safe low-risk probe bundles without including sensitive or forbidden data classes", () => {
+    const bundle = buildSafeProbeBundle({
+      name: "safe_quality_drop_probe_bundle",
+      task_class: "ml_quality_drop",
+      current_authority_dose: 2,
+      contracts: THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+    });
+
+    expect(bundle.decision).toBe("allowed");
+    expect(bundle.probes.map((probe) => probe.name)).toEqual(expect.arrayContaining([
+      "eval_slice_compare",
+      "feature_drift_summary",
+      "model_route_compare",
+    ]));
+    expect(bundle.probes.map((probe) => probe.name)).not.toContain("feature_lineage_hash");
+    expect(bundle.required_data_classes).not.toEqual(expect.arrayContaining(THERAPEUTIC_DEFAULT_POLICY.forbidden_data_classes));
   });
 
   it("validates probe outputs against allowed shapes so probes cannot leak hidden raw data", () => {
@@ -224,6 +247,30 @@ describe("Dojo therapeutic tomography", () => {
     }));
   });
 
+  it("reuses cached proof templates only when the deterministic path matches", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const capsule = trace.proof_capsules[0]!;
+    const cacheDecision = evaluateProofCache({
+      trace,
+      request: capsule.requested_access,
+      proof_capsule: capsule,
+    });
+    const mismatched = evaluateProofCache({
+      trace,
+      request: { ...capsule.requested_access, scope: "service:ranking-api" },
+      proof_capsule: capsule,
+    });
+
+    expect(cacheDecision).toEqual({
+      cache_hit: true,
+      template_id: "ml_quality_drop_feature_lineage_v1",
+      reusable: true,
+      blocked_by: [],
+    });
+    expect(mismatched.cache_hit).toBe(false);
+    expect(mismatched.blocked_by).toContain("no_matching_safe_template");
+  });
+
   it("routes ambiguous scoped diagnostic requests to Tier 2 judgment review", () => {
     const request: TherapeuticAccessRequest = {
       id: "multi-feature-lineage",
@@ -277,6 +324,134 @@ describe("Dojo therapeutic tomography", () => {
     expect(capsule.failed_claims).toContain("narrative_only_proof");
     expect(evaluateAuthorityBroker({ trace, request, proof_capsule: capsule }).blocked_by)
       .toContain("strict_proof_capsule_invalid");
+  });
+
+  it("detects under-escalation when serious blocked uncertainty has a scoped read-only next step", () => {
+    const trace = emptyTherapeuticTrace({
+      task_id: "task-under-escalation",
+      task_class: "ml_quality_drop",
+      user_goal: "Diagnose a serious quality drop.",
+      current_authority_dose: 4,
+    });
+    trace.uncertainties.push({
+      id: "cause",
+      description: "Cause remains blocked after aggregate probes.",
+      current_confidence: 0.55,
+      possible_causes: ["train_serve_skew"],
+      useful_probes: ["feature_lineage_hash"],
+      blocking_status: "blocked",
+      severity: "high",
+    });
+    trace.projection_probes.push(buildProjectionProbe({
+      id: "probe-drift",
+      task_id: trace.task_id,
+      contract: THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary")!,
+      target_uncertainty: "cause",
+      result_summary: {
+        top_feature: "billing_country",
+        drift_score: 0.83,
+        affected_segment: "trial_accounts",
+        confidence: 0.86,
+        time_window: "last_6h",
+      },
+      actual_information_gain: 7,
+      confidence: 0.86,
+    }));
+
+    const result = evaluateUnderEscalation({
+      trace,
+      available_requests: [{
+        id: "lineage-billing-country",
+        task_id: trace.task_id,
+        authority_dose: 5,
+        scope: "feature:billing_country",
+        mode: "read_only",
+        data_classes: ["feature_lineage_hash"],
+        tools: ["feature_lineage_hash"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Verify scoped lineage.",
+      }],
+    });
+
+    expect(result.under_escalated).toBe(true);
+    expect(result.recommended_request?.scope).toBe("feature:billing_country");
+    expect(result.flags).toEqual(expect.arrayContaining([
+      "uncertainty_blocked",
+      "serious_incident",
+      "lower_risk_probe_attempted",
+      "scoped_read_only_escalation_available",
+    ]));
+  });
+
+  it("keeps remediation writes behind a separate diagnosis, rollback, postcondition, and human gate", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const writeRequest: TherapeuticAccessRequest = {
+      id: "write-serving-transform",
+      task_id: trace.task_id,
+      authority_dose: 7,
+      scope: "feature:customer_plan",
+      mode: "write",
+      data_classes: ["serving_config_patch"],
+      tools: ["serving_config_patch"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "Apply serving transform fix.",
+    };
+
+    const denied = evaluateRemediationGate({
+      trace,
+      proposal: {
+        id: "remediate-missing-gates",
+        task_id: trace.task_id,
+        diagnosis_verified: true,
+        proposed_change: "Align serving customer_plan transform with training transform.",
+        requested_access: writeRequest,
+        blast_radius: "single feature transform",
+        rollback_plan: "",
+        postcondition_checks: [],
+        human_approval: null,
+      },
+    });
+    const approved = evaluateRemediationGate({
+      trace,
+      policy: { ...THERAPEUTIC_DEFAULT_POLICY, mutation_allowed: true },
+      proposal: {
+        id: "remediate-complete",
+        task_id: trace.task_id,
+        diagnosis_verified: true,
+        proposed_change: "Align serving customer_plan transform with training transform.",
+        requested_access: writeRequest,
+        blast_radius: "single feature transform",
+        rollback_plan: "restore previous serving transform hash",
+        postcondition_checks: ["quality recovers for affected segment", "skew hash check passes"],
+        human_approval: {
+          claim: "remediation_is_operationally_reasonable",
+          reviewer_role: "incident_commander",
+          status: "approved",
+          rationale: "Scoped write with rollback and postcondition checks.",
+        },
+      },
+    });
+
+    expect(denied.decision).toBe("denied");
+    expect(denied.blocked_by).toEqual(expect.arrayContaining([
+      "mutation_not_allowed_by_policy",
+      "rollback_plan_missing",
+      "postcondition_checks_missing",
+      "human_approval_required",
+    ]));
+    expect(approved).toEqual({
+      decision: "approved",
+      blocked_by: [],
+      required_gates: [
+        "diagnosis_proof_gate",
+        "remediation_proposal_gate",
+        "write_authority_gate",
+        "rollback_gate",
+        "postcondition_verification_gate",
+      ],
+    });
   });
 
   it("derives supported scopes from probe evidence without scenario-specific feature names", () => {
@@ -416,5 +591,28 @@ describe("Dojo therapeutic tomography", () => {
 
     expect(aggregate.score).toBeGreaterThan(rawLogs.score);
     expect(THERAPEUTIC_DEFAULT_POLICY.mutation_allowed).toBe(false);
+  });
+
+  it("summarizes proof latency and routing metrics without an LLM judge for deterministic decisions", () => {
+    const metrics = summarizeProofMetrics({
+      decisions: [
+        { decision: "denied", tier: 3, blocked_by: ["forbidden_data_requested"], suggested_alternatives: ["eval_slice_compare"], verification_latency_ms: 7, human_reviewed: true, token_count: 0 },
+        { decision: "approved", tier: 1, blocked_by: [], suggested_alternatives: [], verification_latency_ms: 18, cache_hit: true, probe_bundle_success: true, token_count: 0 },
+        { decision: "needs_human_approval", tier: 2, blocked_by: [], suggested_alternatives: [], verification_latency_ms: 120, llm_reviewed: true, token_count: 80 },
+      ],
+    });
+
+    expect(metrics).toEqual(expect.objectContaining({
+      proof_verification_latency_p50: 18,
+      proof_verification_latency_p95: 120,
+      percent_decisions_deterministic: 33.333,
+      percent_decisions_llm_reviewed: 33.333,
+      percent_decisions_human_reviewed: 33.333,
+      average_tokens_per_access_decision: 26.667,
+      cached_proof_hit_rate: 33.333,
+      probe_bundle_success_rate: 33.333,
+      tier_1_auto_approval_rate: 100,
+      tier_3_escalation_rate: 33.333,
+    }));
   });
 });

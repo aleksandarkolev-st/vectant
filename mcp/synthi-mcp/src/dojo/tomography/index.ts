@@ -227,6 +227,70 @@ export interface TherapeuticActionScore {
   compliance_cost: number;
 }
 
+export interface TherapeuticProbeBundle {
+  name: string;
+  task_class: string;
+  probes: TherapeuticProbeContract[];
+  required_authority_dose: TherapeuticAuthorityLevel;
+  required_data_classes: string[];
+  forbidden_data_classes: string[];
+  privacy_cost: number;
+  expected_information_gain: number;
+  decision: "allowed" | "denied";
+  denied_by: string[];
+}
+
+export interface TherapeuticCachedProofTemplate {
+  template_id: string;
+  task_class: string;
+  required_probe_sequence: string[];
+  requested_authority_dose: TherapeuticAuthorityLevel;
+  requested_data_classes: string[];
+  scope_prefixes: string[];
+  required_claims: string[];
+  forbidden_data_classes: string[];
+  expiration_required: boolean;
+  revocation_required: boolean;
+}
+
+export interface TherapeuticProofCacheDecision {
+  cache_hit: boolean;
+  template_id: string | null;
+  reusable: boolean;
+  blocked_by: string[];
+}
+
+export interface TherapeuticProofMetrics {
+  proof_verification_latency_p50: number;
+  proof_verification_latency_p95: number;
+  percent_decisions_deterministic: number;
+  percent_decisions_llm_reviewed: number;
+  percent_decisions_human_reviewed: number;
+  average_tokens_per_access_decision: number;
+  cached_proof_hit_rate: number;
+  probe_bundle_success_rate: number;
+  tier_1_auto_approval_rate: number;
+  tier_3_escalation_rate: number;
+}
+
+export interface TherapeuticRemediationProposal {
+  id: string;
+  task_id: string;
+  diagnosis_verified: boolean;
+  proposed_change: string;
+  requested_access: TherapeuticAccessRequest;
+  blast_radius: string;
+  rollback_plan: string;
+  postcondition_checks: string[];
+  human_approval: TherapeuticHumanReviewedClaim | null;
+}
+
+export interface TherapeuticRemediationGateDecision {
+  decision: TherapeuticDecision;
+  blocked_by: string[];
+  required_gates: string[];
+}
+
 export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
   {
     name: "eval_slice_compare",
@@ -336,6 +400,29 @@ export const THERAPEUTIC_DEFAULT_POLICY: TherapeuticPolicy = {
   human_approval_required_for: [7, 8],
 };
 
+export const THERAPEUTIC_PROOF_CACHE_TEMPLATES: TherapeuticCachedProofTemplate[] = [
+  {
+    template_id: "ml_quality_drop_feature_lineage_v1",
+    task_class: "ml_quality_drop",
+    required_probe_sequence: ["eval_slice_compare", "feature_drift_summary"],
+    requested_authority_dose: 5,
+    requested_data_classes: ["feature_lineage_hash"],
+    scope_prefixes: ["feature:"],
+    required_claims: [
+      "lower_risk_probe_attempted",
+      "completed_probe_outputs_shape_valid",
+      "requested_scope_is_supported_minimal_scope",
+      "request_is_read_only",
+      "forbidden_data_not_requested",
+      "expiration_defined",
+      "revocation_defined",
+    ],
+    forbidden_data_classes: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges"],
+    expiration_required: true,
+    revocation_required: true,
+  },
+];
+
 export function scoreTherapeuticAction(input: {
   action: string;
   expected_information_gain: number;
@@ -370,6 +457,50 @@ export function scoreTherapeuticAction(input: {
   };
 }
 
+export function buildSafeProbeBundle(input: {
+  name: string;
+  task_class: string;
+  current_authority_dose: TherapeuticAuthorityLevel;
+  contracts: TherapeuticProbeContract[];
+  policy?: TherapeuticPolicy;
+  max_probe_count?: number;
+  max_bundle_authority_dose?: TherapeuticAuthorityLevel;
+}): TherapeuticProbeBundle {
+  const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
+  const maxProbeCount = Math.max(1, input.max_probe_count ?? 3);
+  const maxBundleAuthorityDose = input.max_bundle_authority_dose ?? 4;
+  const probes = input.contracts
+    .filter((contract) => contract.task_class === input.task_class)
+    .filter((contract) => policy.allowed_projection_probes.includes(contract.name))
+    .filter((contract) => contract.required_authority_dose <= maxBundleAuthorityDose)
+    .filter((contract) => contract.sensitivity_level === "low")
+    .filter((contract) => contract.required_data_classes.every((dataClass) => !policy.sensitive_data_classes.includes(dataClass)))
+    .sort((left, right) => {
+      const scoreDelta = probeUsefulnessRatio(right) - probeUsefulnessRatio(left);
+      if (scoreDelta !== 0) return scoreDelta;
+      return left.required_authority_dose - right.required_authority_dose;
+    })
+    .slice(0, maxProbeCount);
+  const requiredDataClasses = uniqueStrings(probes.flatMap((probe) => probe.required_data_classes));
+  const forbiddenDataClasses = uniqueStrings(probes.flatMap((probe) => probe.forbidden_data_classes));
+  const deniedBy: string[] = [];
+  if (probes.length === 0) deniedBy.push("no_safe_probe_available");
+  if (requiredDataClasses.some((dataClass) => policy.forbidden_data_classes.includes(dataClass))) deniedBy.push("forbidden_data_required");
+  if (probes.some((probe) => probe.required_authority_dose > policy.max_authority_dose)) deniedBy.push("authority_dose_exceeds_policy");
+  return {
+    name: input.name,
+    task_class: input.task_class,
+    probes,
+    required_authority_dose: maxAuthorityDose(probes),
+    required_data_classes: requiredDataClasses,
+    forbidden_data_classes: forbiddenDataClasses,
+    privacy_cost: probes.reduce((sum, probe) => sum + probe.privacy_cost, 0),
+    expected_information_gain: probes.reduce((sum, probe) => sum + probe.expected_information_gain, 0),
+    decision: deniedBy.length === 0 ? "allowed" : "denied",
+    denied_by: deniedBy,
+  };
+}
+
 export function selectLowestRiskProbe(input: {
   task_class: string;
   uncertainty_id: string;
@@ -393,6 +524,118 @@ export function selectLowestRiskProbe(input: {
     return left.required_authority_dose - right.required_authority_dose;
   });
   return candidates[0] ?? null;
+}
+
+export function evaluateProofCache(input: {
+  trace: TherapeuticTrace;
+  request: TherapeuticAccessRequest;
+  proof_capsule: TherapeuticStrictProofCapsule;
+  templates?: TherapeuticCachedProofTemplate[];
+}): TherapeuticProofCacheDecision {
+  const templates = input.templates ?? THERAPEUTIC_PROOF_CACHE_TEMPLATES;
+  for (const template of templates) {
+    const blockedBy = proofTemplateBlockedBy(template, input.trace, input.request, input.proof_capsule);
+    if (blockedBy.length === 0) {
+      return {
+        cache_hit: true,
+        template_id: template.template_id,
+        reusable: true,
+        blocked_by: [],
+      };
+    }
+  }
+  return {
+    cache_hit: false,
+    template_id: null,
+    reusable: false,
+    blocked_by: ["no_matching_safe_template"],
+  };
+}
+
+export function evaluateUnderEscalation(input: {
+  trace: TherapeuticTrace;
+  severity?: TherapeuticRiskLevel;
+  blocked_uncertainty_ids?: string[];
+  available_requests?: TherapeuticAccessRequest[];
+  policy?: TherapeuticPolicy;
+}): { under_escalated: boolean; recommended_request: TherapeuticAccessRequest | null; flags: string[] } {
+  const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
+  const severity = input.severity ?? highestTraceSeverity(input.trace);
+  const blockedIds = new Set(input.blocked_uncertainty_ids ?? input.trace.uncertainties
+    .filter((uncertainty) => uncertainty.blocking_status === "blocked")
+    .map((uncertainty) => uncertainty.id));
+  const completed = new Set(completedProbeNames(input.trace));
+  const usableRequests = (input.available_requests ?? [])
+    .filter((request) => request.authority_dose <= policy.max_authority_dose)
+    .filter((request) => request.mode === "read_only")
+    .filter((request) => request.data_classes.every((dataClass) => !policy.forbidden_data_classes.includes(dataClass)))
+    .sort((left, right) => left.authority_dose - right.authority_dose);
+  const flags: string[] = [];
+  if (blockedIds.size > 0) flags.push("uncertainty_blocked");
+  if (["high", "critical"].includes(severity)) flags.push("serious_incident");
+  if (completed.size > 0) flags.push("lower_risk_probe_attempted");
+  if (usableRequests.length > 0) flags.push("scoped_read_only_escalation_available");
+  const underEscalated = flags.includes("uncertainty_blocked")
+    && flags.includes("serious_incident")
+    && flags.includes("lower_risk_probe_attempted")
+    && flags.includes("scoped_read_only_escalation_available");
+  return {
+    under_escalated: underEscalated,
+    recommended_request: underEscalated ? usableRequests[0] ?? null : null,
+    flags,
+  };
+}
+
+export function evaluateRemediationGate(input: {
+  trace: TherapeuticTrace;
+  proposal: TherapeuticRemediationProposal;
+  policy?: TherapeuticPolicy;
+}): TherapeuticRemediationGateDecision {
+  const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
+  const blockedBy: string[] = [];
+  const requiredGates = ["diagnosis_proof_gate", "remediation_proposal_gate", "write_authority_gate", "rollback_gate", "postcondition_verification_gate"];
+  if (!input.proposal.diagnosis_verified || input.trace.final_outcome !== "diagnosed") blockedBy.push("diagnosis_not_verified");
+  if (input.proposal.requested_access.mode !== "write") blockedBy.push("write_access_not_requested_for_remediation");
+  if (input.proposal.requested_access.authority_dose < 7) blockedBy.push("write_authority_dose_too_low");
+  if (!policy.mutation_allowed) blockedBy.push("mutation_not_allowed_by_policy");
+  if (!input.proposal.blast_radius.trim()) blockedBy.push("blast_radius_missing");
+  if (!input.proposal.rollback_plan.trim()) blockedBy.push("rollback_plan_missing");
+  if (input.proposal.postcondition_checks.length === 0) blockedBy.push("postcondition_checks_missing");
+  if (input.proposal.human_approval?.status !== "approved") blockedBy.push("human_approval_required");
+  if (input.proposal.requested_access.data_classes.some((dataClass) => policy.forbidden_data_classes.includes(dataClass))) {
+    blockedBy.push("forbidden_data_requested");
+  }
+  return {
+    decision: blockedBy.length === 0 ? "approved" : "denied",
+    blocked_by: uniqueStrings(blockedBy),
+    required_gates: requiredGates,
+  };
+}
+
+export function summarizeProofMetrics(input: {
+  decisions: Array<TherapeuticBrokerDecision & {
+    verification_latency_ms?: number;
+    llm_reviewed?: boolean;
+    human_reviewed?: boolean;
+    token_count?: number;
+    cache_hit?: boolean;
+    probe_bundle_success?: boolean;
+  }>;
+}): TherapeuticProofMetrics {
+  const decisions = input.decisions;
+  const latencies = decisions.map((decision) => decision.verification_latency_ms ?? 0).sort((left, right) => left - right);
+  return {
+    proof_verification_latency_p50: percentile(latencies, 0.5),
+    proof_verification_latency_p95: percentile(latencies, 0.95),
+    percent_decisions_deterministic: percent(decisions, (decision) => decision.tier <= 1 && !decision.llm_reviewed && !decision.human_reviewed),
+    percent_decisions_llm_reviewed: percent(decisions, (decision) => decision.llm_reviewed === true),
+    percent_decisions_human_reviewed: percent(decisions, (decision) => decision.human_reviewed === true || decision.tier === 3),
+    average_tokens_per_access_decision: average(decisions.map((decision) => decision.token_count ?? 0)),
+    cached_proof_hit_rate: percent(decisions, (decision) => decision.cache_hit === true),
+    probe_bundle_success_rate: percent(decisions, (decision) => decision.probe_bundle_success === true),
+    tier_1_auto_approval_rate: percent(decisions.filter((decision) => decision.tier === 1), (decision) => decision.decision === "approved"),
+    tier_3_escalation_rate: percent(decisions, (decision) => decision.tier === 3),
+  };
 }
 
 export function buildProjectionProbe(input: {
@@ -944,6 +1187,79 @@ function minimalityScoreForRequest(
   if (failedClaims.includes("requested_scope_is_supported_minimal_scope")) score -= 0.35;
   if (request.authority_dose >= 8) score -= 0.5;
   return Math.max(0, Number(score.toFixed(3)));
+}
+
+function proofTemplateBlockedBy(
+  template: TherapeuticCachedProofTemplate,
+  trace: TherapeuticTrace,
+  request: TherapeuticAccessRequest,
+  proofCapsule: TherapeuticStrictProofCapsule
+): string[] {
+  const blockedBy: string[] = [];
+  if (trace.task_class !== template.task_class) blockedBy.push("task_class_mismatch");
+  if (request.authority_dose !== template.requested_authority_dose) blockedBy.push("authority_dose_mismatch");
+  if (!template.scope_prefixes.some((prefix) => request.scope.startsWith(prefix))) blockedBy.push("scope_prefix_mismatch");
+  if (!arraySubset(template.requested_data_classes, request.data_classes)) blockedBy.push("data_class_mismatch");
+  if (request.data_classes.some((dataClass) => template.forbidden_data_classes.includes(dataClass))) blockedBy.push("forbidden_data_requested");
+  if (template.expiration_required && !request.expiration.trim()) blockedBy.push("expiration_missing");
+  if (template.revocation_required && request.revocable !== true) blockedBy.push("revocation_missing");
+  if (!containsOrderedSubsequence(completedProbeNames(trace), template.required_probe_sequence)) blockedBy.push("probe_sequence_mismatch");
+  const passedClaims = new Set(proofCapsule.machine_verifiable_claims
+    .filter((claim) => claim.result === "pass")
+    .map((claim) => claim.claim));
+  for (const claim of template.required_claims) {
+    if (!passedClaims.has(claim)) blockedBy.push(`required_claim_missing:${claim}`);
+  }
+  if (!proofCapsule.approved) blockedBy.push("proof_capsule_not_approved");
+  return uniqueStrings(blockedBy);
+}
+
+function maxAuthorityDose(probes: TherapeuticProbeContract[]): TherapeuticAuthorityLevel {
+  const level = probes.reduce((max, probe) => Math.max(max, probe.required_authority_dose), 0);
+  return clampAuthorityLevel(level);
+}
+
+function clampAuthorityLevel(level: number): TherapeuticAuthorityLevel {
+  if (level <= 0) return 0;
+  if (level >= 8) return 8;
+  return level as TherapeuticAuthorityLevel;
+}
+
+function highestTraceSeverity(trace: TherapeuticTrace): TherapeuticRiskLevel {
+  const order: TherapeuticRiskLevel[] = ["low", "medium", "high", "critical"];
+  return trace.uncertainties
+    .map((uncertainty) => uncertainty.severity)
+    .sort((left, right) => order.indexOf(right) - order.indexOf(left))[0] ?? "medium";
+}
+
+function containsOrderedSubsequence(values: string[], expected: string[]): boolean {
+  let cursor = 0;
+  for (const value of values) {
+    if (value === expected[cursor]) cursor += 1;
+    if (cursor === expected.length) return true;
+  }
+  return expected.length === 0;
+}
+
+function arraySubset(expectedSubset: string[], actualValues: string[]): boolean {
+  const actual = new Set(actualValues);
+  return expectedSubset.every((value) => actual.has(value));
+}
+
+function percentile(values: number[], ratio: number): number {
+  if (values.length === 0) return 0;
+  const index = Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * ratio) - 1));
+  return Number((values[index] ?? 0).toFixed(3));
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3));
+}
+
+function percent<T>(values: T[], predicate: (value: T) => boolean): number {
+  if (values.length === 0) return 0;
+  return Number(((values.filter(predicate).length / values.length) * 100).toFixed(3));
 }
 
 function hasApprovedHumanClaim(capsule: Pick<TherapeuticStrictProofCapsule, "human_reviewed_claims"> | undefined): boolean {
