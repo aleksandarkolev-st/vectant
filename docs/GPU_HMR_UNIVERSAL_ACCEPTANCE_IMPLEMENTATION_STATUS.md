@@ -34,11 +34,15 @@ Async visual proof worker hardening was added without project-specific branches:
 ```text
 commit: d9c0aeb05 fix(gpu-hmr): bind async visual worker identity
 commit: 708b1a3b4 fix(gpu-hmr): guard roi early exits with tile evidence
+commit: 016eabef3 fix(gpu-hmr): schedule visual proof workers concurrently
 current checkpoint: direct worker paths and diff output paths require explicit allowed roots; readable CAS paths are realpath-bound before bytes are consumed; the parent wrapper now terminates worker threads on success/error/timeout and the worker thread closes its parent port after posting the proof result
 worker identity gate: accepted-looking async visual worker results now require proof_ready, off-main-thread execution, and a matching sha256 worker executable manifest hash covering the worker entry, parent wrapper, and artifact-CAS helper
 ROI/tile gate: unchanged ROI hashes can skip full-frame diff only when tile hashes prove no changed tiles; outside-ROI, ambiguous tile changes, or disabled tile hashing force full-frame visual proof
+runner scheduling: agent-split visual candidate comparisons now use bounded concurrent worker-thread tasks instead of serially awaiting every post-HMR frame comparison; `SYNTHI_GPU_HMR_VISUAL_WORKER_PARALLELISM` and profile `visualProof.workerParallelism` control the cap, and the runner records `synthi.gpu_hmr.visual_delta_worker_scheduling.v1` as support-only evidence
 matrix summary: async visual worker summaries retain stable executor identity, executable manifest hash/schema/module count, and still strip volatile thread IDs
-not proof by itself: async worker events, CAS locators, ROI hashes, and tile hashes still remain acceptedForGpuHmr=false and gpuHmrSuccess=false unless the strict runtime ledger closes
+not proof by itself: async worker events, CAS locators, ROI hashes, tile hashes, and visual-worker scheduling evidence still remain acceptedForGpuHmr=false and gpuHmrSuccess=false unless the strict runtime ledger closes
+verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check -> passed
 verification: npm --prefix mcp/synthi-mcp run proof:visual-proof-worker:self-check -> passed
 verification: npm --prefix mcp/synthi-mcp run proof:artifact-cas:self-check -> passed
 verification: npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed
