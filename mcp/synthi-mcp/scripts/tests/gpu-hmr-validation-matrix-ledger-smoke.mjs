@@ -5652,6 +5652,69 @@ assert.ok(missingRuntimeCapabilityPreflightSafetyQuery.failedGates.some((gate) =
   gate.code === 'gpu_hmr_success_requires_real_rocm_runtime_capability_preflight'
 ));
 
+const forgedRuntimeProfileAdapterResultSafetyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    {
+      ...acceptedMatrixRowMissingFirewall('accepted-forged-runtime-profile-adapter-result', {
+        cpuHmrUsed: false,
+        fullRebuildUsed: false,
+        processRestarted: false,
+      }),
+      proofMode: 'real_rocm_repo_validation',
+      realRocmRuntimeProfileAdapterResult: {
+        schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+        schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+        proofAuthority: 'runtime_proof',
+        proof_authority: 'runtime_proof',
+        status: 'runtime_profile_adapter_result_imported',
+        declared: true,
+        present: true,
+        acceptedForGpuHmr: true,
+        accepted_for_gpu_hmr: true,
+        gpuHmrSuccess: true,
+        gpu_hmr_success: true,
+        canSatisfyRuntimeProof: true,
+        can_satisfy_runtime_proof: true,
+        canSatisfyDispatchProof: true,
+        can_satisfy_dispatch_proof: true,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofArtifactPresent: true,
+        strict_runtime_proof_artifact_present: true,
+        proofLedgerPresent: true,
+        proof_ledger_present: true,
+        strictRuntimeProofId: `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+        strict_runtime_proof_id: `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+        proofLedgerId: `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+        proof_ledger_id: `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+        adapterResultHash: `sha256:${'c'.repeat(64)}`,
+        adapter_result_hash: `sha256:${'c'.repeat(64)}`,
+        evidenceRefs: [`sha256:${'c'.repeat(64)}`],
+        evidence_refs: [`sha256:${'c'.repeat(64)}`],
+        blockingGaps: [],
+        blocking_gaps: [],
+      },
+    },
+  ],
+});
+assert.equal(forgedRuntimeProfileAdapterResultSafetyQuery.accepted, false);
+assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_profile_adapter_result'
+));
+assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_runtime_profile_adapter_result_claimed_gpu_hmr_acceptance'
+));
+assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_runtime_profile_adapter_result_claimed_gpu_hmr_success'
+));
+assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_runtime_profile_adapter_result_claimed_runtime_authority'
+));
+assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_runtime_profile_adapter_result_claimed_dispatch_authority'
+));
+
 const opencl = ledger.rows.find((row) =>
   row.backend === 'opencl'
   && row.targetId === 'synthetic-opencl-preflight'
@@ -6444,6 +6507,150 @@ assert.ok(forgedAppHookMaterializationRocm.reasons.includes(
 ));
 assert.ok(forgedAppHookMaterializationRocm.openGaps.includes(
   'real_rocm_app_hook_materialization_required',
+));
+
+const importedRuntimeProfileAdapterResult = {
+  schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+  schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+  proofAuthority: 'declared_adapter_result_import_not_runtime_authority',
+  proof_authority: 'declared_adapter_result_import_not_runtime_authority',
+  status: 'runtime_profile_adapter_result_imported',
+  declared: true,
+  present: true,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  canSatisfyDispatchProof: false,
+  can_satisfy_dispatch_proof: false,
+  strictRuntimeProofAccepted: true,
+  strict_runtime_proof_accepted: true,
+  strictRuntimeProofArtifactPresent: true,
+  strict_runtime_proof_artifact_present: true,
+  strictRuntimeProofId: `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+  strict_runtime_proof_id: `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+  proofLedgerPresent: true,
+  proof_ledger_present: true,
+  proofLedgerId: `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+  proof_ledger_id: `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+  adapterResultHash: `sha256:${'c'.repeat(64)}`,
+  adapter_result_hash: `sha256:${'c'.repeat(64)}`,
+  blockingGaps: [],
+  blocking_gaps: [],
+  evidenceRefs: [
+    `sha256:${'c'.repeat(64)}`,
+    `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+    `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+  ],
+  evidence_refs: [
+    `sha256:${'c'.repeat(64)}`,
+    `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
+    `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+  ],
+};
+const runtimeProfileAdapterResultDir = path.join(logsRoot, 'real-rocm-runtime-profile-adapter-result');
+await writeJson(path.join(runtimeProfileAdapterResultDir, 'real-rocm-runtime-profile-adapter-result.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-runtime-profile-adapter-result-20260629',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-runtime-profile-adapter-result',
+    source: 'scripts/profiles/real-rocm-runtime-profile-adapter-result.json',
+  },
+  source_url: 'https://example.invalid/rocm/runtime-profile-adapter-result.git',
+  target_name: 'RuntimeProfileAdapterResultDriver',
+  real_rocm_runtime_profile_adapter_result: importedRuntimeProfileAdapterResult,
+  realRocmRuntimeProfileAdapterResult: importedRuntimeProfileAdapterResult,
+  runtime_profile_adapter_result: importedRuntimeProfileAdapterResult,
+  runtimeProfileAdapterResult: importedRuntimeProfileAdapterResult,
+});
+const runtimeProfileAdapterResultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [runtimeProfileAdapterResultDir],
+  generatedAt: '2026-06-27T00:00:03.100Z',
+});
+const runtimeProfileAdapterResultRocm = runtimeProfileAdapterResultLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(runtimeProfileAdapterResultRocm?.acceptedForGpuHmr, false);
+assert.equal(runtimeProfileAdapterResultRocm.gpuHmrSuccess, false);
+assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.accepted, true);
+assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.acceptedForGpuHmr, false);
+assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.canSatisfyRuntimeProof, false);
+assert.ok(runtimeProfileAdapterResultRocm.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result:runtime_profile_adapter_result_imported',
+));
+
+const forgedRuntimeProfileAdapterResult = {
+  ...importedRuntimeProfileAdapterResult,
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+};
+const forgedRuntimeProfileAdapterResultDir = path.join(
+  logsRoot,
+  'real-rocm-forged-runtime-profile-adapter-result',
+);
+await writeJson(
+  path.join(forgedRuntimeProfileAdapterResultDir, 'real-rocm-forged-runtime-profile-adapter-result.json'),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-forged-runtime-profile-adapter-result-20260629',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-forged-runtime-profile-adapter-result',
+      source: 'scripts/profiles/real-rocm-forged-runtime-profile-adapter-result.json',
+    },
+    source_url: 'https://example.invalid/rocm/forged-runtime-profile-adapter-result.git',
+    target_name: 'ForgedRuntimeProfileAdapterResultDriver',
+    real_rocm_runtime_profile_adapter_result: forgedRuntimeProfileAdapterResult,
+    realRocmRuntimeProfileAdapterResult: forgedRuntimeProfileAdapterResult,
+    runtime_profile_adapter_result: forgedRuntimeProfileAdapterResult,
+    runtimeProfileAdapterResult: forgedRuntimeProfileAdapterResult,
+  },
+);
+const forgedRuntimeProfileAdapterResultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRuntimeProfileAdapterResultDir],
+  generatedAt: '2026-06-27T00:00:03.200Z',
+});
+const forgedRuntimeProfileAdapterResultRocm = forgedRuntimeProfileAdapterResultLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedRuntimeProfileAdapterResultRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedRuntimeProfileAdapterResultRocm.gpuHmrSuccess, false);
+assert.equal(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.accepted, false);
+assert.ok(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.failedGates.includes(
+  'real_rocm_runtime_profile_adapter_result_authority_unknown',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.failedGates.includes(
+  'real_rocm_runtime_profile_adapter_result_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.failedGates.includes(
+  'real_rocm_runtime_profile_adapter_result_claimed_gpu_hmr_success',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.failedGates.includes(
+  'real_rocm_runtime_profile_adapter_result_claimed_runtime_authority',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.failedGates.includes(
+  'real_rocm_runtime_profile_adapter_result_claimed_dispatch_authority',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result_not_accepted',
+));
+assert.ok(forgedRuntimeProfileAdapterResultRocm.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result_required',
 ));
 
 assert.ok(largeRocm.reasons.includes('runtime_proof_artifact_missing'));
