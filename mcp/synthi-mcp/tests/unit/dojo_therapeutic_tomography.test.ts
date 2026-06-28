@@ -5,6 +5,7 @@ import {
   buildStrictProofCapsule,
   emptyTherapeuticTrace,
   evaluateAuthorityBroker,
+  inferSupportedScopeValues,
   scoreTherapeuticAction,
   selectLowestRiskProbe,
   THERAPEUTIC_DEFAULT_POLICY,
@@ -138,6 +139,90 @@ describe("Dojo therapeutic tomography", () => {
       decision: "denied",
       blocked_by: expect.arrayContaining(["strict_proof_capsule_invalid"]),
     }));
+  });
+
+  it("derives supported scopes from probe evidence without scenario-specific feature names", () => {
+    const trace = emptyTherapeuticTrace({
+      task_id: "task-generic-feature",
+      task_class: "ml_quality_drop",
+      user_goal: "Diagnose a quality drop for a different feature.",
+      current_authority_dose: 4,
+    });
+    const evalContract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "eval_slice_compare");
+    const driftContract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary");
+    expect(evalContract).toBeDefined();
+    expect(driftContract).toBeDefined();
+    trace.projection_probes.push(
+      buildProjectionProbe({
+        id: "probe-eval-generic",
+        task_id: trace.task_id,
+        contract: evalContract!,
+        target_uncertainty: "cause",
+        result_summary: {
+          affected_segment: "trial_accounts",
+          quality_delta: -0.07,
+          confidence: 0.81,
+          time_window: "last_6h",
+        },
+        actual_information_gain: 6,
+        confidence: 0.81,
+      }),
+      buildProjectionProbe({
+        id: "probe-drift-generic",
+        task_id: trace.task_id,
+        contract: driftContract!,
+        target_uncertainty: "cause",
+        result_summary: {
+          top_feature: "billing_country",
+          drift_score: 0.83,
+          affected_segment: "trial_accounts",
+          confidence: 0.86,
+          time_window: "last_6h",
+        },
+        actual_information_gain: 7,
+        confidence: 0.86,
+      })
+    );
+    const request: TherapeuticAccessRequest = {
+      id: "lineage-billing-country",
+      task_id: trace.task_id,
+      authority_dose: 5,
+      scope: "feature:billing_country",
+      mode: "read_only",
+      data_classes: ["feature_lineage_hash"],
+      tools: ["feature_lineage_hash"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "verify feature drift with scoped lineage",
+    };
+
+    const capsule = buildStrictProofCapsule({
+      id: "proof-generic-feature",
+      task_id: trace.task_id,
+      trace,
+      request,
+      current_authority_dose: 4,
+      human_reviewed_claims: [{
+        claim: "lineage_access_is_reasonable_next_step",
+        reviewer_role: "ml_engineer",
+        status: "approved",
+        rationale: "aggregate drift identified a single feature.",
+      }],
+    });
+
+    expect(inferSupportedScopeValues(trace)).toEqual(expect.arrayContaining([
+      "feature:billing_country",
+      "segment:trial_accounts",
+    ]));
+    expect(capsule.approved).toBe(true);
+    expect(capsule.failed_claims).toEqual([]);
+    expect(capsule.machine_verifiable_claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        claim: "feature_drift_summary_top_feature_identified",
+        expected: "billing_country",
+        result: "pass",
+      }),
+    ]));
   });
 
   it("proves the quality-drop demo solves the task while avoiding broad access", () => {

@@ -453,7 +453,7 @@ export function buildStrictProofCapsule(input: {
   trace: TherapeuticTrace;
   request: TherapeuticAccessRequest;
   current_authority_dose: TherapeuticAuthorityLevel;
-  supported_scope_values: string[];
+  supported_scope_values?: string[];
   policy?: TherapeuticPolicy;
   human_reviewed_claims?: TherapeuticHumanReviewedClaim[];
   unverifiable_narrative_claims?: TherapeuticNarrativeClaim[];
@@ -461,10 +461,13 @@ export function buildStrictProofCapsule(input: {
   reviewer?: string;
 }): TherapeuticStrictProofCapsule {
   const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
+  const supportedScopeValues = input.supported_scope_values?.length
+    ? input.supported_scope_values
+    : inferSupportedScopeValues(input.trace);
   const machineClaims = verifyMachineClaims({
     trace: input.trace,
     request: input.request,
-    supported_scope_values: input.supported_scope_values,
+    supported_scope_values: supportedScopeValues,
     policy,
   });
   const failedClaims = machineClaims
@@ -473,7 +476,7 @@ export function buildStrictProofCapsule(input: {
   const criticalFailures = machineClaims.some((claim) => claim.critical && claim.result !== "pass");
   const narrativeOnly = machineClaims.length === 0 && (input.human_reviewed_claims ?? []).length === 0;
   const riskScore = authorityRiskScore(input.request, policy);
-  const minimalityScore = minimalityScoreForRequest(input.request, input.supported_scope_values, failedClaims);
+  const minimalityScore = minimalityScoreForRequest(input.request, supportedScopeValues, failedClaims);
   const approved = !criticalFailures
     && !narrativeOnly
     && minimalityScore >= 0.75
@@ -695,15 +698,29 @@ function verifyMachineClaims(input: {
   supported_scope_values: string[];
   policy: TherapeuticPolicy;
 }): TherapeuticMachineClaim[] {
-  const evalProbe = probeByName(input.trace, "eval_slice_compare");
-  const driftProbe = probeByName(input.trace, "feature_drift_summary");
+  const completedProbes = input.trace.projection_probes.filter((probe) => probe.status === "completed");
+  const lowerRiskCompletedProbes = completedProbes.filter((probe) => probe.required_authority_dose < input.request.authority_dose);
+  const completedProbeNamesValue = lowerRiskCompletedProbes.map((probe) => probe.name);
   return [
-    claim("eval_slice_compare_attempted", true, "trace.projection_probes.eval_slice_compare.status", "trace_lookup", evalProbe?.status === "completed", evalProbe?.status, true),
-    claim("eval_slice_compare_output_shape_valid", true, "trace.projection_probes.eval_slice_compare.allowed_output_shape_valid", "probe_output_shape_check", evalProbe?.allowed_output_shape_valid === true, evalProbe?.allowed_output_shape_valid, true),
-    claim("affected_segment_identified", "enterprise_users", "trace.projection_probes.eval_slice_compare.output.affected_segment", "equality_check", evalProbe?.result_summary["affected_segment"] === "enterprise_users", evalProbe?.result_summary["affected_segment"], false),
-    claim("feature_drift_summary_attempted", true, "trace.projection_probes.feature_drift_summary.status", "trace_lookup", driftProbe?.status === "completed", driftProbe?.status, true),
-    claim("feature_drift_summary_output_shape_valid", true, "trace.projection_probes.feature_drift_summary.allowed_output_shape_valid", "probe_output_shape_check", driftProbe?.allowed_output_shape_valid === true, driftProbe?.allowed_output_shape_valid, true),
-    claim("suspicious_feature_identified", "customer_plan", "trace.projection_probes.feature_drift_summary.output.top_feature", "equality_check", driftProbe?.result_summary["top_feature"] === "customer_plan", driftProbe?.result_summary["top_feature"], false),
+    claim(
+      "lower_risk_probe_attempted",
+      "at_least_one_completed_lower_risk_probe",
+      "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+      "trace_lookup",
+      lowerRiskCompletedProbes.length > 0,
+      completedProbeNamesValue,
+      input.request.authority_dose > 1
+    ),
+    claim(
+      "completed_probe_outputs_shape_valid",
+      true,
+      "trace.projection_probes.completed.allowed_output_shape_valid",
+      "probe_output_shape_check",
+      lowerRiskCompletedProbes.length > 0 && lowerRiskCompletedProbes.every((probe) => probe.allowed_output_shape_valid === true),
+      lowerRiskCompletedProbes.map((probe) => ({ name: probe.name, allowed_output_shape_valid: probe.allowed_output_shape_valid })),
+      input.request.authority_dose > 1
+    ),
+    ...buildEvidenceValueClaims(input.trace),
     claim("requested_scope_is_supported_minimal_scope", input.supported_scope_values, "access_request.scope", "scope_subset_check", input.supported_scope_values.includes(input.request.scope), input.request.scope, true),
     claim("request_is_read_only", true, "access_request.mode", "permission_diff_check", input.request.mode === "read_only", input.request.mode, true),
     claim("forbidden_data_not_requested", input.policy.forbidden_data_classes, "access_request.data_classes", "forbidden_class_check", input.request.data_classes.every((item) => !input.policy.forbidden_data_classes.includes(item)), input.request.data_classes, true),
@@ -711,6 +728,46 @@ function verifyMachineClaims(input: {
     claim("revocation_defined", true, "access_request.revocable", "revocation_check", input.request.revocable === true, input.request.revocable, true),
     claim("diagnosis_request_has_no_write_access", true, "access_request.mode", "mutation_separation_check", input.request.mode !== "write", input.request.mode, true),
   ];
+}
+
+function buildEvidenceValueClaims(trace: TherapeuticTrace): TherapeuticMachineClaim[] {
+  const claims: TherapeuticMachineClaim[] = [];
+  for (const probe of trace.projection_probes.filter((item) => item.status === "completed")) {
+    for (const [key, value] of Object.entries(probe.result_summary)) {
+      if (!isClaimWorthyProbeValue(value)) continue;
+      claims.push(claim(
+        `${probe.name}_${key}_identified`,
+        value,
+        `trace.projection_probes.${probe.name}.output.${key}`,
+        "equality_check",
+        true,
+        value,
+        false
+      ));
+    }
+  }
+  return claims;
+}
+
+function isClaimWorthyProbeValue(value: unknown): boolean {
+  return (typeof value === "string" && value.trim().length > 0)
+    || (typeof value === "number" && Number.isFinite(value))
+    || typeof value === "boolean";
+}
+
+export function inferSupportedScopeValues(trace: TherapeuticTrace): string[] {
+  const scopes = new Set<string>();
+  for (const probe of trace.projection_probes) {
+    for (const [key, value] of Object.entries(probe.result_summary)) {
+      if (typeof value !== "string" || value.trim().length === 0) continue;
+      const normalized = value.trim();
+      if (key === "top_feature" || key === "feature_name") scopes.add(`feature:${normalized}`);
+      if (key === "affected_segment" || key === "segment") scopes.add(`segment:${normalized}`);
+      if (key === "service_name") scopes.add(`service:${normalized}`);
+      if (key === "route_name" || key === "model_route") scopes.add(`route:${normalized}`);
+    }
+  }
+  return [...scopes];
 }
 
 function claim(
