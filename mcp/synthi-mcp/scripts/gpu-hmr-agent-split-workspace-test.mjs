@@ -106,11 +106,52 @@ const EXPOSED_SPLIT_DIR = cleanVisibleWorkspaceDir(
 );
 
 const results = [];
+const REDACTED_SECRET = '[REDACTED_SECRET]';
+
+function sanitizeProofLogString(value) {
+  let text = String(value ?? '');
+  const replacements = [
+    [/\bapi_key:[A-Za-z0-9._~+/\-=:-]{8,}/gi, 'api_key:[REDACTED]'],
+    [/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_API_KEY]'],
+    [/\b(Bearer\s+)[A-Za-z0-9._~+/\-=]{12,}/gi, '$1[REDACTED]'],
+    [/\b(Authorization\s*:\s*)(?:Bearer\s+)?[A-Za-z0-9._~+/\-=]{12,}/gi, '$1[REDACTED]'],
+    [
+      /\b((?:GOOGLE|GEMINI|OPENAI|ANTHROPIC|SYNTHI)?_?(?:API_?KEY|TOKEN|SECRET|PASSWORD))\s*=\s*["']?[^"',\s\\]+/gi,
+      '$1=[REDACTED]',
+    ],
+    [
+      /(["'](?:apiKey|api_key|token|secret|password|authorization)["']\s*:\s*["'])[^"']+(["'])/gi,
+      `$1${REDACTED_SECRET}$2`,
+    ],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
+  }
+  return text;
+}
+
+function sanitizeProofLogValue(value, depth = 0) {
+  if (typeof value === 'string') return sanitizeProofLogString(value);
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (depth > 12) return '[REDACTED_DEEP_OBJECT]';
+  if (Array.isArray(value)) return value.map((entry) => sanitizeProofLogValue(entry, depth + 1));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => {
+      if (/api[_-]?key|token|secret|password|authorization/i.test(key)) {
+        return [key, REDACTED_SECRET];
+      }
+      return [key, sanitizeProofLogValue(entry, depth + 1)];
+    }),
+  );
+}
+
 function record(name, status, detail = '') {
-  const row = { name, status, detail, ts: new Date().toISOString() };
+  const sanitizedDetail = sanitizeProofLogValue(detail);
+  const row = { name, status, detail: sanitizedDetail, ts: new Date().toISOString() };
   results.push(row);
   const tag = status === 'pass' ? '[ok]' : status === 'fail' ? '[fail]' : '[warn]';
-  console.log(`${tag} ${name}${detail ? ` - ${detail}` : ''}`);
+  console.log(`${tag} ${name}${sanitizedDetail ? ` - ${sanitizedDetail}` : ''}`);
 }
 
 function cleanVisibleWorkspaceDir(value) {
@@ -3942,6 +3983,25 @@ function selfCheckAgentVisualProfile() {
       candidateCount: 3,
       controlComparisonCount: 1,
     });
+    const redactionFixtureKey = 'AIzaSyRedactionFixtureKey000000000000';
+    const redactedProviderError = sanitizeProofLogString(
+      `ai_provider_error: PermissionDenied: Consumer api_key:${redactionFixtureKey} has been suspended. `
+      + 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature '
+      + `GOOGLE_API_KEY=${redactionFixtureKey}`,
+    );
+    const redactedProviderObject = sanitizeProofLogValue({
+      apiKey: redactionFixtureKey,
+      nested: {
+        message: `containerInfo=api_key:${redactionFixtureKey}`,
+        bearer: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature',
+      },
+    });
+    const redactionAccepted = !redactedProviderError.includes(redactionFixtureKey)
+      && !redactedProviderError.includes('payload.signature')
+      && redactedProviderError.includes('api_key:[REDACTED]')
+      && redactedProviderObject.apiKey === REDACTED_SECRET
+      && !redactedProviderObject.nested.message.includes(redactionFixtureKey)
+      && !redactedProviderObject.nested.bearer.includes('payload.signature');
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -3997,6 +4057,7 @@ function selfCheckAgentVisualProfile() {
       || schedulingEvidence.gpuHmrSuccess !== false
       || schedulingEvidence.proofAuthority !== 'visual_worker_scheduling_support_only'
       || schedulingEvidence.strategy !== 'bounded_concurrent_worker_threads'
+      || !redactionAccepted
     ) {
       throw new Error('agent visual profile self-check failed');
     }
@@ -5875,12 +5936,15 @@ async function run() {
 async function writeResults() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
-  await writeFile(RESULTS_JSON, JSON.stringify(results, null, 2));
-  const resultText = results.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`).join('\n') + '\n';
+  const sanitizedResults = sanitizeProofLogValue(results);
+  await writeFile(RESULTS_JSON, JSON.stringify(sanitizedResults, null, 2));
+  const resultText = sanitizedResults.map((r) =>
+    `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`
+  ).join('\n') + '\n';
   await writeFile(RESULTS_TXT, resultText);
   const archivedJson = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`);
   const archivedTxt = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`);
-  await writeFile(archivedJson, JSON.stringify(results, null, 2));
+  await writeFile(archivedJson, JSON.stringify(sanitizedResults, null, 2));
   await writeFile(archivedTxt, resultText);
   console.log(`results: ${RESULTS_TXT}`);
   console.log(`archived results: ${archivedTxt}`);
