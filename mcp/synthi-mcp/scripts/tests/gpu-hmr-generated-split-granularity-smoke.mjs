@@ -127,6 +127,34 @@ assert.deepEqual(
 
 assert.equal(manifestDeviceRoles(singleRoleManifest)[0].path, '.synthi/generated/gpu/device.hip');
 
+const explicitModuleDeviceManifest = {
+  module_files: {
+    device: 'gpu/declared-device.hip',
+  },
+  gpu: {
+    vendor: 'rocm',
+  },
+};
+assert.equal(manifestDeviceRoles(explicitModuleDeviceManifest)[0].path, 'gpu/declared-device.hip');
+
+const missingDeviceTopologyManifest = {
+  module_files: {
+    shared: 'shared.h',
+  },
+  gpu: {
+    vendor: 'rocm',
+  },
+};
+const missingDeviceTopologyAssessment = assessGeneratedGpuSplitGranularity({
+  manifest: missingDeviceTopologyManifest,
+  files: {
+    'device.hip': 'extern "C" __global__ void should_not_be_inferred() {}\n',
+  },
+});
+assert.equal(manifestDeviceRoles(missingDeviceTopologyManifest).length, 0);
+assert.equal(missingDeviceTopologyAssessment.deviceRoleCount, 0);
+assert.ok(missingDeviceTopologyAssessment.reasonCodes.includes('generated_split.device_roles_missing'));
+
 const singleRoleAssessment = assessGeneratedGpuSplitGranularity({
   manifest: singleRoleManifest,
   files: {

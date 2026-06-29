@@ -37,11 +37,6 @@ const CONTENT_ADDRESSED_ID_RE =
   /^[a-z][a-z0-9._-]*(?::[a-z0-9._/-]+)*:sha256:[0-9a-f]{64}$/i;
 const SHA256_CONTENT_ADDRESS_RE = /^sha256:[0-9a-f]{64}$/i;
 
-const DEFAULT_DEVICE_BY_VENDOR = {
-  cuda: 'device.cu',
-  rocm: 'device.hip',
-};
-
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -411,7 +406,7 @@ export function manifestDeviceRoles(manifest, vendorHint = 'rocm') {
 
   const vendor = String(gpu.vendor ?? vendorHint ?? '').trim().toLowerCase();
   const moduleFiles = asObject(manifestObject.module_files ?? manifestObject.moduleFiles);
-  const fallbackPath = cleanRel(moduleFiles.device ?? DEFAULT_DEVICE_BY_VENDOR[vendor] ?? 'device.hip');
+  const fallbackPath = cleanRel(moduleFiles.device);
   return fallbackPath
     ? [{
         id: 'device.device',
@@ -476,6 +471,7 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
     multipleKernelsShareDeviceTranslationUnit,
     rejectedClaims,
     reasonCodes: compactStrings([
+      deviceRoles.length === 0 ? 'generated_split.device_roles_missing' : null,
       missingDeviceRolePaths.length ? 'generated_split.device_role_source_missing' : null,
       'generated_split.smallest_safe_fission_not_proven_without_verifier',
       'generated_split.per_kernel_hmr_not_proven_without_verifier',

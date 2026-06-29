@@ -2849,17 +2849,92 @@ function waitContractForCompile({ args, compile, timeoutMs, options = {} }) {
   return { waitArgs, role, isGpuDeviceEdit };
 }
 
-function manifestRolePaths(manifest, vendor) {
+function declaredManifestModuleFiles(manifest) {
   const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
     ? manifest.module_files
     : {};
+  return Object.fromEntries(
+    Object.entries(moduleFiles)
+      .map(([role, filePath]) => [String(role || '').trim(), cleanRel(filePath)])
+      .filter(([role, filePath]) => role && filePath),
+  );
+}
+
+function declaredManifestDeviceRoles(manifest) {
+  const roles = Array.isArray(manifest?.gpu?.device_roles)
+    ? manifest.gpu.device_roles
+    : [];
+  return roles
+    .filter((role) => role && typeof role === 'object')
+    .map((role, index) => ({
+      id: String(role.id ?? `device.role.${index}`).trim() || `device.role.${index}`,
+      path: cleanRel(role.path),
+      compiler: typeof role.compiler === 'string' ? role.compiler : null,
+      arch: Array.isArray(role.arch) ? role.arch : [],
+    }))
+    .filter((role) => role.path);
+}
+
+function manifestRolePaths(manifest, vendor) {
+  const moduleFiles = declaredManifestModuleFiles(manifest);
+  const moduleEntries = Object.entries(moduleFiles);
+  if (moduleEntries.length === 0) {
+    throw new Error('generated split compile_manifest.module_files missing explicit generated file roles');
+  }
+  const deviceRoles = declaredManifestDeviceRoles(manifest);
+  if (deviceRoles.length === 0) {
+    throw new Error('generated split compile_manifest.gpu.device_roles missing explicit device role paths');
+  }
+  const declaredPathSet = new Set(moduleEntries.map(([, filePath]) => filePath));
+  const undeclaredDevicePaths = deviceRoles
+    .map((role) => role.path)
+    .filter((filePath) => !declaredPathSet.has(filePath));
+  if (undeclaredDevicePaths.length > 0) {
+    throw new Error(`generated split device role paths are not declared module files: ${undeclaredDevicePaths.join(', ')}`);
+  }
+  const selectedDeviceRole = deviceRoles.find((role) => role.id === 'device' || role.id === 'device.device')
+    ?? deviceRoles[0];
+  const allPaths = [...new Set(moduleEntries.map(([, filePath]) => filePath))];
+  const deviceRolePaths = [...new Set(deviceRoles.map((role) => role.path))];
   return {
-    shared: cleanRel(moduleFiles.shared || 'shared.h'),
-    core: cleanRel(moduleFiles.core || 'core.cpp'),
-    gui: cleanRel(moduleFiles.gui || 'gui.cpp'),
-    host_runner: cleanRel(moduleFiles.host_runner || 'host_runner.cpp'),
-    device: cleanRel(moduleFiles.device || (vendor === 'rocm' ? 'device.hip' : 'device.cu')),
+    ...moduleFiles,
+    device: selectedDeviceRole.path,
+    allPaths,
+    all_paths: allPaths,
+    moduleFiles,
+    module_files: moduleFiles,
+    deviceRolePaths,
+    device_role_paths: deviceRolePaths,
+    deviceRoles,
+    device_roles: deviceRoles,
+    vendor: String(manifest?.gpu?.vendor ?? vendor ?? '').toLowerCase() || null,
   };
+}
+
+function splitRolePaths(split) {
+  if (Array.isArray(split?.roles?.allPaths)) return split.roles.allPaths.map(cleanRel).filter(Boolean);
+  if (Array.isArray(split?.roles?.all_paths)) return split.roles.all_paths.map(cleanRel).filter(Boolean);
+  if (split?.roles?.moduleFiles && typeof split.roles.moduleFiles === 'object') {
+    return Object.values(split.roles.moduleFiles).map(cleanRel).filter(Boolean);
+  }
+  if (split?.roles?.module_files && typeof split.roles.module_files === 'object') {
+    return Object.values(split.roles.module_files).map(cleanRel).filter(Boolean);
+  }
+  return Object.values(split?.roles || {})
+    .filter((value) => typeof value === 'string')
+    .map(cleanRel)
+    .filter(Boolean);
+}
+
+function splitDeviceRolePaths(split) {
+  if (Array.isArray(split?.roles?.deviceRolePaths)) return split.roles.deviceRolePaths.map(cleanRel).filter(Boolean);
+  if (Array.isArray(split?.roles?.device_role_paths)) return split.roles.device_role_paths.map(cleanRel).filter(Boolean);
+  return [split?.roles?.device].map(cleanRel).filter(Boolean);
+}
+
+function splitHostModulePaths(split) {
+  const devicePaths = new Set(splitDeviceRolePaths(split));
+  return splitRolePaths(split).filter((filePath) => !devicePaths.has(filePath));
 }
 
 async function readGeneratedSplit(vendor) {
@@ -2870,7 +2945,7 @@ async function readGeneratedSplit(vendor) {
   if (!manifest?.gpu) throw new Error('generated sidecar missing compile_manifest.gpu');
   const roles = manifestRolePaths(manifest, vendor);
   const files = {};
-  for (const rel of Object.values(roles)) {
+  for (const rel of splitRolePaths({ roles })) {
     files[rel] = await readWorkerFile(workspacePath, rel);
   }
   return { workspacePath, sidecarRaw, sidecar, manifest, roles, files };
@@ -2892,22 +2967,35 @@ async function refreshGeneratedSplitSidecar(split, filePath, source) {
 }
 
 function validateGeneratedSplit(split) {
-  const core = split.files[split.roles.core] || '';
-  const gui = split.files[split.roles.gui] || '';
-  const host = split.files[split.roles.host_runner] || '';
-  const device = split.files[split.roles.device] || '';
   const missing = [];
-  if (!core.includes('core_on_update')) missing.push('core_on_update');
-  if (!gui.includes('gui_on_render')) missing.push('gui_on_render');
-  if (!host.includes('main(')) missing.push('host_runner main');
-  if (!device.includes('__global__')) missing.push('__global__ device kernel');
-  if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
-  record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
+  const rolePaths = splitRolePaths(split);
+  const deviceRolePaths = splitDeviceRolePaths(split);
+  if (rolePaths.length === 0) missing.push('explicit generated module_files');
+  if (deviceRolePaths.length === 0) missing.push('explicit gpu.device_roles');
+  for (const filePath of rolePaths) {
+    if (!Object.prototype.hasOwnProperty.call(split.files || {}, filePath)) {
+      missing.push(`generated file ${filePath}`);
+    }
+  }
+  for (const filePath of deviceRolePaths) {
+    if (!rolePaths.includes(filePath)) missing.push(`device role declared module file ${filePath}`);
+  }
   const granularity = assessGeneratedGpuSplitGranularity({
     manifest: split.manifest,
     files: split.files,
     vendor: split.manifest?.gpu?.vendor,
   });
+  if (granularity.deviceRoleCount <= 0) missing.push('manifest device role topology');
+  for (const filePath of granularity.missingDeviceRolePaths ?? []) {
+    missing.push(`device role source ${filePath}`);
+  }
+  if (granularity.kernelCount <= 0) missing.push('device entrypoint symbol');
+  if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
+  record(
+    'generated split explicit GPU roles',
+    'pass',
+    `module_files=${rolePaths.join(', ')} device_roles=${deviceRolePaths.join(', ')}`,
+  );
   assertNoGeneratedSplitFissionOverclaim(granularity);
   record(
     'generated split HMR granularity',
@@ -3222,7 +3310,7 @@ function verifyGeneratedSplitFissionAfterRuntime({
     abiCompatibilityClass: 'compatible',
     unaffectedArtifactHashesBefore,
     unaffectedArtifactHashesAfter,
-    excludedHostSources: [split.roles.core, split.roles.gui, split.roles.host_runner].map(cleanRel),
+    excludedHostSources: splitHostModulePaths(split),
     includedDependencies,
     compilerArgsHash,
     compileTarget,
@@ -3238,7 +3326,7 @@ function verifyGeneratedSplitFissionAfterRuntime({
 function gpuSplitEndpointEvidenceFromSidecar(split) {
   const sidecar = split?.sidecar && typeof split.sidecar === 'object' ? split.sidecar : {};
   const manifest = split?.manifest && typeof split.manifest === 'object' ? split.manifest : {};
-  const rolePaths = Object.values(split?.roles || {}).map(cleanRel).filter(Boolean);
+  const rolePaths = splitRolePaths(split);
   const gpuManifestObserved = Boolean(manifest.gpu)
     && rolePaths.some((filePath) => /\.(hip|cu|cl|wgsl|glsl|spv|spirv)$/i.test(filePath));
   const sidecarReports = [
@@ -4362,6 +4450,43 @@ function selfCheckAgentVisualProfile() {
       sawGpuSplit: { matched: false },
       splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(forgedSourceFirstSplit),
     });
+    let implicitDefaultSplitRejected = false;
+    try {
+      const implicitDefaultManifest = { gpu: { vendor: 'rocm' } };
+      const implicitDefaultRoles = manifestRolePaths(implicitDefaultManifest, 'rocm');
+      validateGeneratedSplit({
+        files: {
+          'shared.h': '#pragma once\n',
+          'core.cpp': 'extern "C" void core_on_update() {}\n',
+          'gui.cpp': 'extern "C" void gui_on_render() {}\n',
+          'host_runner.cpp': 'int main() { return 0; }\n',
+          'device.hip': 'extern "C" __global__ void forged_default_kernel() {}\n',
+        },
+        roles: implicitDefaultRoles,
+        manifest: implicitDefaultManifest,
+      });
+    } catch (err) {
+      implicitDefaultSplitRejected = String(err.message).includes('compile_manifest.module_files')
+        || String(err.message).includes('compile_manifest.gpu.device_roles');
+    }
+    let undeclaredDeviceRoleRejected = false;
+    try {
+      manifestRolePaths({
+        module_files: {
+          device: sourceFirstGeneratedPath,
+        },
+        gpu: {
+          vendor: 'rocm',
+          device_roles: [{
+            id: 'device',
+            path: '.synthi/generated/gpu/not-declared.hip',
+            compiler: 'hipcc',
+          }],
+        },
+      }, 'rocm');
+    } catch (err) {
+      undeclaredDeviceRoleRejected = String(err.message).includes('not declared module files');
+    }
     const defaultVisualParallelism = visualWorkerParallelismForProof({}, 2);
     const declaredVisualParallelism = visualWorkerParallelismForProof({ workerParallelism: 9 }, 3);
     const schedulingEvidence = visualDeltaSchedulingEvidence({
@@ -4474,6 +4599,8 @@ function selfCheckAgentVisualProfile() {
       || rejectedForgedSourceFirst.accepted !== false
       || rejectedForgedSourceFirst.generatedArtifactPathsInGeneratedNamespace !== false
       || !rejectedForgedSourceFirst.failedGates.includes('source_first_generated_artifact_namespace_unproven')
+      || !implicitDefaultSplitRejected
+      || !undeclaredDeviceRoleRejected
       || defaultVisualParallelism !== 2
       || declaredVisualParallelism !== 3
       || schedulingEvidence.acceptedForGpuHmr !== false
