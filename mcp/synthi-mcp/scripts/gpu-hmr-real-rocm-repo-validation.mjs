@@ -670,10 +670,25 @@ esac
 if [ "$boundary_tmp_ready" = "1" ] && [ "$boundary_count" -gt 0 ] 2>/dev/null; then
   cat "$boundary_tmp"
 fi
+boundary_json="$(mktemp 2>/dev/null || true)"
+if [ -z "$boundary_json" ]; then
+  boundary_json="\${TMPDIR:-/tmp}/synthi-runtime-adapter-boundary-$$.json"
+fi
+boundary_json_ready=0
+if : > "$boundary_json" 2>/dev/null; then
+  boundary_json_ready=1
+fi
+if [ "$boundary_json_ready" = "1" ] && [ "$boundary_tmp_ready" = "1" ] && [ "$boundary_count" -gt 0 ] 2>/dev/null; then
+  awk 'BEGIN { print "[" } { gsub(/\\\\/, "\\\\\\\\"); gsub(/"/, "\\\\\\""); gsub(/\t/, "\\\\t"); gsub(/\r/, "\\\\r"); printf "%s  \\"%s\\"", (NR > 1 ? ",\\n" : ""), $0 } END { if (NR > 0) print ""; print "]" }' "$boundary_tmp" > "$boundary_json"
+elif [ "$boundary_json_ready" = "1" ]; then
+  printf '[]\\n' > "$boundary_json"
+fi
 if [ -n "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" ]; then
   mkdir -p "$(dirname "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH")"
   if [ "$boundary_tmp_ready" != "1" ]; then
     adapter_gap="runtime_adapter_template_tempfile_unavailable"
+  elif [ "$boundary_json_ready" != "1" ]; then
+    adapter_gap="runtime_adapter_template_boundary_json_unavailable"
   elif [ "$boundary_count" -gt 0 ] 2>/dev/null; then
     adapter_gap="runtime_profile_adapter_strict_runtime_proof_not_accepted"
   else
@@ -700,10 +715,17 @@ if [ -n "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" ]; then
   "proof_ledger_present": false,
   "runtimeBoundaryLineCount": \${boundary_count:-0},
   "runtime_boundary_line_count": \${boundary_count:-0},
+  "runtimeBoundaryLines": $(cat "$boundary_json" 2>/dev/null || printf '[]'),
+  "runtime_boundary_lines": $(cat "$boundary_json" 2>/dev/null || printf '[]'),
+  "adapterRuntimeBoundaryLines": $(cat "$boundary_json" 2>/dev/null || printf '[]'),
+  "adapter_runtime_boundary_lines": $(cat "$boundary_json" 2>/dev/null || printf '[]'),
   "blockingGaps": ["$adapter_gap"],
   "blocking_gaps": ["$adapter_gap"]
 }
 EOF
+fi
+if [ "$boundary_json_ready" = "1" ]; then
+  rm -f "$boundary_json"
 fi
 if [ "$boundary_tmp_ready" = "1" ]; then
   rm -f "$boundary_tmp"
@@ -16028,6 +16050,8 @@ async function selfCheckRuntimeDispatchEvidence() {
       || importedAdapterResult.acceptedForGpuHmr !== false
       || importedAdapterResult.canSatisfyRuntimeProof !== false
       || importedAdapterResult.adapterRuntimeBoundaryLineCount !== 1
+      || importedAdapterResult.adapterRuntimeBoundaryLines[0] !== adapterRuntimeBoundaryLine
+      || importedAdapterResult.adapter_runtime_boundary_lines[0] !== adapterRuntimeBoundaryLine
       || importedAdapterResult.adapterAppHookContract?.declared !== true
       || importedAdapterResult.blockingGaps.length !== 0
     ) {
@@ -16184,8 +16208,65 @@ async function selfCheckRuntimeDispatchEvidence() {
       || !templatedRuntimeAdapter.command.includes('SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH')
       || !templatedRuntimeAdapter.command.includes('${SYNTHI_REAL_ROCM_PROFILE_ID}')
       || !templatedRuntimeAdapter.command.includes('${boundary_count:-0}')
+      || !templatedRuntimeAdapter.command.includes('"runtimeBoundaryLines"')
+      || !templatedRuntimeAdapter.command.includes('"adapterRuntimeBoundaryLines"')
+      || !templatedRuntimeAdapter.command.includes('runtime_adapter_template_boundary_json_unavailable')
     ) {
       throw new Error('runtime adapter lifecycle scheduling self-check failed');
+    }
+    const templateExecutionDir = path.join(LOG_DIR, 'runtime-adapter-template-self-check');
+    await rm(templateExecutionDir, { recursive: true, force: true });
+    await mkdir(templateExecutionDir, { recursive: true });
+    const templateRunLogPath = path.join(templateExecutionDir, 'upstream-run.log');
+    const templateResultPath = path.join(templateExecutionDir, 'adapter-result.json');
+    await writeFile(templateRunLogPath, `${adapterRuntimeBoundaryLine}\n`);
+    try {
+      const templateOutput = await execText(
+        'sh',
+        ['-lc', templatedRuntimeAdapter.command],
+        30000,
+        true,
+        {
+          cwd: templateExecutionDir,
+          env: {
+            ...process.env,
+            SYNTHI_REAL_ROCM_PROFILE_ID: 'runtime-adapter-template-self-check',
+            SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH: templateRunLogPath,
+            SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH: templateResultPath,
+          },
+        },
+      );
+      const templateResult = JSON.parse(await readFile(templateResultPath, 'utf8'));
+      if (
+        !String(templateOutput ?? '').includes(adapterRuntimeBoundaryLine)
+        || templateResult.runtimeBoundaryLineCount !== 1
+        || templateResult.runtime_boundary_line_count !== 1
+        || templateResult.runtimeBoundaryLines?.[0] !== adapterRuntimeBoundaryLine
+        || templateResult.runtime_boundary_lines?.[0] !== adapterRuntimeBoundaryLine
+        || templateResult.adapterRuntimeBoundaryLines?.[0] !== adapterRuntimeBoundaryLine
+        || templateResult.adapter_runtime_boundary_lines?.[0] !== adapterRuntimeBoundaryLine
+        || templateResult.acceptedForGpuHmr !== false
+        || templateResult.gpuHmrSuccess !== false
+        || templateResult.canSatisfyRuntimeProof !== false
+        || templateResult.strictRuntimeProofAccepted !== false
+        || !templateResult.blockingGaps?.includes(
+          'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+        )
+      ) {
+        throw new Error('runtime adapter template execution did not preserve boundary lines');
+      }
+    } catch (err) {
+      if (['EACCES', 'ENOENT', 'EPERM'].includes(err?.code)) {
+        record(
+          'runtime adapter template execution self-check',
+          'warn',
+          `skipped because POSIX sh is unavailable or blocked on this host (${err.code})`,
+        );
+      } else {
+        throw err;
+      }
+    } finally {
+      await rm(templateExecutionDir, { recursive: true, force: true });
     }
     let rejectedUnknownTemplate = false;
     try {
