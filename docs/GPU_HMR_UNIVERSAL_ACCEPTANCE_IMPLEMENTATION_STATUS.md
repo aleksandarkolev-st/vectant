@@ -44,7 +44,7 @@ verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-visual-evidence-smoke.mj
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed, gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62
-verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, rows=678, historicalUnprovenRows=622
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, rows=678, historicalUnprovenRows=622
 ```
 
 Additional 2026-06-29 native/incremental visual proof binding:
@@ -67,7 +67,7 @@ verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-visual-evidence-smoke.mj
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:22ec7e85dfe3e29a3524935ed3fa2bccbd9a761583b8d64a9e62a4d09db0442e, rows=58
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; smoke proof gpu-validation-matrix-ledger:sha256:736a586ee31b899eb5a250ff01752c7d5eebec2d4c0c3a0dc31cfb5653cf77a6, matrix self-check proof gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed, gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62
-verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, rows=678, historicalUnprovenRows=622
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, rows=678, historicalUnprovenRows=622
 ```
 
 Additional 2026-06-29 large-ROCm prerequisite and transport progress:
@@ -118,18 +118,18 @@ visual proof: none for this compute/upstream-lifecycle profile; no post-epoch MI
 Fresh 2026-06-29 source-first/no-precompiled user-path check:
 
 ```text
-source-first seed-only command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:seed-only -> passed with SLUG=gpu-agent-realistic-raytrace-20260629-seed-only-user-path
-source-first seed-only workspace: gpu-agent-realistic-raytrace-20260629-seed-only-user-path
-source-first seed-only url: http://localhost:3000/workspace/gpu-agent-realistic-raytrace-20260629-seed-only-user-path
-source-first seed-only artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-realistic-raytrace-20260629-seed-only-user-path/agent-split-seed-results.txt
-source-first seed-only scope: seeded profile source files only; no GPU split, runtime epoch, visual proof, output oracle, or strict ledger acceptance
-source-first realistic command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace with SLUG=gpu-agent-profile-realistic-raytrace-20260629-source-first -> failed closed before AI split verification
-source-first realistic workspace: gpu-agent-profile-realistic-raytrace-20260629-source-first
-source-first realistic artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-profile-realistic-raytrace-20260629-source-first/agent-split-results.txt
-source-first realistic provider artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-profile-realistic-raytrace-20260629-source-first/source-first-provider-diagnostic.json
+source-first seed-only command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:seed-only -> passed
+source-first seed-only workspace: gpu-agent-split-1782703995585
+source-first seed-only url: http://localhost:3000/workspace/gpu-agent-split-1782703995585
+source-first seed-only artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782703995585/agent-split-seed-results.txt
+source-first seed-only scope: seeded default source fixture files only; no GPU split, runtime epoch, visual proof, output oracle, or strict ledger acceptance
+source-first realistic command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace -> failed closed before AI split verification
+source-first realistic workspace: gpu-agent-split-1782704006982
+source-first realistic artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782704006982/agent-split-results.txt
+source-first realistic provider artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782704006982/source-first-provider-diagnostic.json
 source-first provider diagnostic: source-first-provider-diagnostic:sha256:dec0f1aa6adfa3903bac78832b4ce974095b4b6bdce72f69df61e8bad54e002a
 source-first provider reason: ai_provider_account_suspended
-source-first realistic timing: cold total_validator_wall_time=454750400ns, device_compile_wall_time=5917100ns, runtime_probe_time=448598800ns
+source-first realistic timing: cold total_validator_wall_time=499577500ns, device_compile_wall_time=8144700ns, runtime_probe_time=491210600ns
 source-first realistic verdict: acceptedForGpuHmr=false, gpuHmrSuccess=false, canSatisfyRuntimeProof=false
 source-first visual proof: none for this rerun because the provider failed before AI split and no post-epoch HMR frame existed; previous accepted realistic-raytrace visual rows remain the current visual proof authority
 ```
@@ -214,7 +214,7 @@ large ROCm app-hook materialization: app_hook_materialization_incomplete, sideca
 latest validation matrix: gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62
 latest validation matrix json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260629T031244Z.json
 latest matrix summary: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 29 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row
-latest history audit: gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T031244Z.json, 678 rows with 622 historical unproven rows included
+latest history audit: gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T034700Z.json, 678 rows with 622 historical unproven rows included
 ```
 
 The first dev-loop split is now implemented at the MCP wait boundary: non-strict `synthi_wait_hmr` responses that reach `applied` can return `proof_pending=true` plus a typed `gpu_hmr_dev_loop` block. That block explicitly says the response is `hmr_fast_path_only_not_gpu_hmr_acceptance`, with `accepted_for_gpu_hmr=false` and `gpu_hmr_success=false`. Strict callers that pass `requiredGpuProofState` or `requireGpuFullRuntimeProof` still fail closed with `gpu_hmr_proof_insufficient` until the requested proof ladder validates.
@@ -291,8 +291,8 @@ source-first proof id: agent-split-source-first-ingestion:sha256:0ad50315f268dcc
 source-first matrix gate: accepted=true, proof_id_matches=true, initial_manifest_hash=sha256:4a2a92e6b71b2be9185ab441d2068706e0874bc6a7257afc467c5265283d9672, source_tree_manifest_hash=sha256:4a2a92e6b71b2be9185ab441d2068706e0874bc6a7257afc467c5265283d9672, source_tree_manifest_hash_matches=true, initial_source_hash_matches=true, generated_artifact_count=5, target_id=generated-gpu-split:027b3898466b27e6e28119e7, sidecar_hash=sha256:77765997d2fe1763bf12ebd195db8f8dea5220e6ab05f09918fa6e41f2975cc5, compile_manifest_hash=sha256:ab746efa71a702f5b7cc292a29bb5041d1478ecef6f3eb83dc77ba8b2d999c62, proofAuthority=source_first_ingestion_provenance_only_not_runtime_proof, acceptedForGpuHmr=false, gpuHmrSuccess=false
 source-first evidence: profile-declared `src/main.cpp` source had no Synthi ABI, MCP compiled with `use_ai_split=true`, the initial compile manifest carried the declared source hash, the worker produced structured GPU split/sidecar evidence, no pre-existing `.synthi` generated artifact path was present in the initial manifest, no initial file content hash overlapped the later generated artifact/sidecar/compile-manifest hashes, and generated split artifacts were content-addressed after the split/compiler path produced `.synthi/generated/gpu/device.hip`. The profile now carries `source.files`; every declared source-tree file must carry an explicit sha256 content hash and be present in the initial compile manifest, and forged rows where the profile source tree differs from the seeded compile files are refused with `source_first_source_tree_manifest_mismatch`.
 source-first async/CAS support: the `source_first_uncompiled_project_validation` coverage row is accepted only when strict full-runtime visual proof is present and the row also carries support-only `asyncVisualCasBundle.accepted=true`, `proofAuthority=async_visual_metrics_and_transport_only`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, `proofReady=true`, `offMainThread=true`, `transportAccepted=true`, matrix-validated before/after/diff CAS hashes, and tile evidence. Smoke fixtures prove that a strict-runtime source-first row with no CAS transport remains excluded, a CAS-only visual row can decode validated PNG bytes from CAS, and a forged CAS locator remains unproven.
-source-first multi-file follow-up: the packaged realistic raytrace profile now declares a two-file source tree, `src/main.cpp` (`sha256:057c83a0a2af53eea19ba3f189836978c804a0048dfd2436bb2cc41bc882662e`) and `src/scene_config.h` (`sha256:347d94f7f096ecbfaa1bc25817ebb09a7f1e1b50fd727d6e05d7a38eb2fb96f6`). `npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check` passed with this profile shape again. The current live two-file reruns seeded the same profile into workspaces `gpu-agent-split-1782646555737`, `gpu-agent-split-1782654734003`, `gpu-agent-split-1782662345521`, `gpu-agent-split-1782662711305`, and `gpu-agent-split-1782675331957`, attached MCP successfully, then failed the strict initial `synthi_wait_hmr` compile proof gate because the configured model provider returned `ai_provider_account_suspended` before AI split verification. After `fix(gpu-hmr): redact source-first proof logs`, the latest retained result artifacts redact provider key/token material to `api_key:[REDACTED]` before writing JSON/TXT archives. This is infrastructure refusal/blocker evidence only, not new accepted GPU HMR evidence, and it does not supersede the accepted single-file source-first matrix rows above.
-source-first provider preflight follow-up: commit `56c78ceeb fix(gpu-hmr): classify source-first provider preflights` adds provider preflight immediately before provider-backed source-first AI split calls, after deterministic/source-owned split bypasses. The latest realistic two-file rerun `gpu-agent-split-1782675331957` failed closed before AI split with diagnostic proof `source-first-provider-diagnostic:sha256:dec0f1aa6adfa3903bac78832b4ce974095b4b6bdce72f69df61e8bad54e002a`, reason `ai_provider_account_suspended`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. It seeded `src/main.cpp` plus `src/scene_config.h` from source, attached MCP, and measured the failed cold proof gate at `total_validator_wall_time=449938600ns`. No post-epoch visual artifact was produced, so this is a precise infrastructure refusal, not visual/runtime proof.
+source-first multi-file follow-up: the packaged realistic raytrace profile now declares a two-file source tree, `src/main.cpp` (`sha256:057c83a0a2af53eea19ba3f189836978c804a0048dfd2436bb2cc41bc882662e`) and `src/scene_config.h` (`sha256:347d94f7f096ecbfaa1bc25817ebb09a7f1e1b50fd727d6e05d7a38eb2fb96f6`). `npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check` passed with this profile shape again. The latest live two-file rerun seeded the same profile into workspace `gpu-agent-split-1782704006982`, attached MCP successfully, then failed the strict initial `synthi_wait_hmr` compile proof gate because the configured model provider returned `ai_provider_account_suspended` before AI split verification. The retained result artifacts redact provider key/token material to `api_key:[REDACTED]` before writing JSON/TXT archives. This is infrastructure refusal/blocker evidence only, not new accepted GPU HMR evidence, and it does not supersede the accepted single-file source-first matrix rows above.
+source-first provider preflight follow-up: commit `56c78ceeb fix(gpu-hmr): classify source-first provider preflights` adds provider preflight immediately before provider-backed source-first AI split calls, after deterministic/source-owned split bypasses. The latest realistic two-file rerun `gpu-agent-split-1782704006982` failed closed before AI split with diagnostic proof `source-first-provider-diagnostic:sha256:dec0f1aa6adfa3903bac78832b4ce974095b4b6bdce72f69df61e8bad54e002a`, reason `ai_provider_account_suspended`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. It seeded `src/main.cpp` plus `src/scene_config.h` from source, attached MCP, and measured the failed cold proof gate at `total_validator_wall_time=499577500ns`. No post-epoch visual artifact was produced, so this is a precise infrastructure refusal, not visual/runtime proof.
 visual inspection: before/after/diff PNGs were opened locally on 2026-06-28 and re-opened on 2026-06-29; the scene is nonblank and shows a faceted diamond, small stones, slab reflections, wall/awning geometry, cafe bulbs, and car geometry with visible post-epoch diffs
 current hot1 row: gpu-validation-matrix-row:sha256:fbfa0258093b5740575eaa620b252d4cefea5bfa01ca54c733c51d5cce83f52e
 hot1 proof ids: agent-split-run-mode-proof:sha256:ebfe36c2db513ce39fe9245e3833d9bbc4a23ec8da622e41a2d3928f16d0cc36, gpu-ledger-proof:sha256:50aa89a3e735724b79997432257fac2975cead376034e1e16443904e8f70733d, gpu-runtime-proof:sha256:c25d54d8cb88893280c3034fcc59981919f8012dad87a45747022da508aae778
@@ -307,7 +307,7 @@ negative edit refusal row: gpu-validation-matrix-row:sha256:25bf125fd939ff0b8205
 deterministic fission: accepted per_kernel_hmr for render_realistic_raytrace, row=gpu-validation-matrix-row:sha256:616292b39776bcce9f25116f84d3a811797c4d5d4cf5d524d7aad53c5519942c, selected verifier evidence `evidence:fission-verifier-report:generated-split:sha256:b1331225ad41489229c956991a412678e0e21a46a9ede8e2458ca731994bb150`
 latest matrix after source-first user-path reruns, generic real-ROCm app-hook materialization surfacing, portable CAS/shared-addressing hardening, async visual/CAS hardening, CAS-validated visual locator ingestion, deterministic worker lifecycle cleanup, source-first fixture/profile identity fix, source-first generated-artifact namespace/hash-overlap hardening, source-first source-tree manifest hardening, shared source-tree transport evidence, matrix visual-worker recompute, content-addressed external visual oracle artifacts, external-header prerequisite matrix ingestion, the current ThreeJS external visual-profile row, and the fresh MIOpen large-ML external-header/refusal evidence: gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260629T031244Z.json
 matrix summary remains scoped: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 3 visual-profile rows
-history audit: gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T031244Z.json, 678 rows with 622 historical unproven rows included
+history audit: gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T034700Z.json, 678 rows with 622 historical unproven rows included
 scope: source-first profile-backed generated ROCm/HIP preview visual evidence only; the latest default matrix binds `profileId=agent-realistic-raytrace-scene`, `validationProfileId=agent-realistic-raytrace-scene`, and `fixtureId=realistic-raytrace` for the accepted hot rows. This is not arbitrary project/library acceptance and not a claim that fixture/profile identity authorizes success.
 ```
 
@@ -327,13 +327,12 @@ Latest source-first seed-only user-path check:
 ```text
 command: npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:seed-only
 result: passed, workspace seeded from source without a precompiled project
-current workspace after source-first follow-up: gpu-agent-realistic-raytrace-20260629-seed-only-user-path
-current url: http://localhost:3000/workspace/gpu-agent-realistic-raytrace-20260629-seed-only-user-path
-previous workspaces: gpu-agent-split-1782675324866, gpu-agent-split-1782662705070, gpu-agent-split-1782662336315, gpu-agent-split-1782646543988, gpu-agent-split-1782641505949, gpu-agent-split-1782625580501
-fixture/profile: realistic-raytrace via agent-realistic-raytrace-scene profile source files
-source hash: sha256:057c83a0a2af53eea19ba3f189836978c804a0048dfd2436bb2cc41bc882662e
-source tree manifest: sha256:52c54da7c6757bf109bec206a56a847e991bf1e7f14ade2d5ac1acb0145bb952
-latest result artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-realistic-raytrace-20260629-seed-only-user-path/agent-split-seed-results.txt
+current workspace after source-first follow-up: gpu-agent-split-1782703995585
+current url: http://localhost:3000/workspace/gpu-agent-split-1782703995585
+previous workspaces: gpu-agent-realistic-raytrace-20260629-seed-only-user-path, gpu-agent-split-1782675324866, gpu-agent-split-1782662705070, gpu-agent-split-1782662336315, gpu-agent-split-1782646543988, gpu-agent-split-1782641505949, gpu-agent-split-1782625580501
+fixture/profile: flow default source fixture
+source hash: sha256:9363600ec85c4e9da9ad780cefbe83cb6117ab55976d4eb2ebdb0e3eb6cfde3a
+latest result artifact: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1782703995585/agent-split-seed-results.txt
 interpretation: this verifies the source-first user entry point and workspace seed path only. It is not GPU HMR acceptance and does not bypass AI split, runtime load, epoch publication, visual proof, output oracle, or strict ledger closure.
 ```
 
@@ -391,8 +390,8 @@ scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compu
 broad readiness: accepted=false, broadRuntimeRows=0, scopedRuntimeRows=14
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 external visual profile row: threejs-webgl-shader-lava -> visual_profile_accepted only, row gpu-validation-matrix-row:sha256:b06dfd58eff1928f1533d11a8bca2332bf8456491ef39e8486b7cb9bbdb5d151, acceptedForGpuHmr=false, gpuHmrSuccess=false, open gap=full_runtime_gpu_hmr_ledger_not_present
-history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, 678 rows with 622 historical unproven rows included
-history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T031244Z.json
+history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, 678 rows with 622 historical unproven rows included
+history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T034700Z.json
 history audit summary: 678 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 29 refusals under the stricter structural gate, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 622 historical unproven rows
 history audit scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 ```
@@ -470,8 +469,8 @@ broad readiness: accepted=false, authority=matrix_computed_not_row_declared, bro
 scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 per_target_run_modes status=accepted
-history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:cbc43683909bcb5135d2f7633b721ddc26db4e8e92ed1e5894dc83130c751316, 678 rows with 622 historical unproven rows included
-history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T031244Z.json
+history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, 678 rows with 622 historical unproven rows included
+history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T034700Z.json
 history scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=21, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json; timing metrics are telemetry only, evidenceAuthority=timing_telemetry_only, proofVerdict=not_evaluated_by_timing_summary
 ```
