@@ -4498,6 +4498,229 @@ function selfCheckAgentVisualProfile() {
   }
 }
 
+function selfCheckRunModeVisualLedgerClockDomain() {
+  const artifactBefore = `sha256:${'a'.repeat(64)}`;
+  const artifactAfter = `sha256:${'b'.repeat(64)}`;
+  const processId = 'pid:self-check-clock';
+  const epoch = 'epoch:self-check-clock';
+  const dispatchId = 'dispatch:self-check-clock';
+  const dispatchTimestampNs = 1_782_760_141_383_000;
+  const outputTimestampNs = dispatchTimestampNs + 1_000_000;
+  const selectedFrameTimestampMs = 1_782_760_145_309;
+  const timingFields = {
+    static_discovery_time: 1,
+    ai_contract_synthesis_time: 1,
+    model_availability_check_time: 1,
+    artifact_hash_time: 1,
+    adapter_generation_time: 1,
+    device_compile_wall_time: 41_000_000,
+    artifact_load_time: 1,
+    epoch_publish_time: 1,
+    dispatch_trace_time: 1,
+    runtime_probe_time: 9_950_000_000,
+    oracle_analysis_time: 1,
+    trigger_to_visible_time: 3_198_000_000,
+    screenshot_capture_time: 1,
+    dispatch_to_output_proof_time: 1,
+    total_validator_wall_time: 9_991_000_000,
+  };
+  const modelProvenance = (requestMode, requestedModel) => ({
+    provider: 'google_gemini',
+    requested_model: requestedModel,
+    provider_model_status: 'available',
+    provider_model_alias_resolved_to: requestedModel,
+    provider_shutdown_or_deprecation_detected: false,
+    model_availability_checked_at: '2026-06-29T00:00:00.000Z',
+    model_availability_source: 'provider_model_registry',
+    model_availability_basis: 'static_registry',
+    model_availability_check_time_ms: 1,
+    actual_model: requestedModel,
+    fallback_model: 'not_used',
+    fallback_used: false,
+    request_mode: requestMode,
+    hard_infra_failure: false,
+  });
+  const ledger = {
+    schemaVersion: 'synthi.gpu.hmr.proof_ledger.v1',
+    records: [{
+      project_id: 'agent-split-clock-domain-self-check',
+      edit_id: 'agent-split-clock-domain-hot1',
+      evidence_refs: ['evidence:self-check:clock-domain'],
+      metric_clock: 'monotonic_ns',
+      metric_scope: 'hot_delta_1',
+      cache_state: 'compiler_cache_warm',
+      timings: timingFields,
+      timing_metrics: timingFields,
+      model_provenance: {
+        split: modelProvenance('split', 'gemini-3.5-flash'),
+        gpu_delta: modelProvenance('gpu_delta', 'gemini-3.1-flash-lite'),
+      },
+      backend: 'hip',
+      classification: {
+        project_kind: 'gpu_project',
+        edit_kind: 'gpu_artifact_edit',
+        route: 'gpu_hmr',
+      },
+      contract_hash: `sha256:${'c'.repeat(64)}`,
+      artifact_before_hash: artifactBefore,
+      artifact_after_hash: artifactAfter,
+      loader_event: {
+        id: 'loader:self-check-clock',
+        artifact_hash: artifactAfter,
+        epoch,
+        timestamp_monotonic_ns: dispatchTimestampNs - 3_000_000,
+        process_id: processId,
+      },
+      epoch_publish_event: {
+        id: 'publish:self-check-clock',
+        artifact_hash: artifactAfter,
+        epoch,
+        timestamp_monotonic_ns: dispatchTimestampNs - 2_000_000,
+        process_id: processId,
+      },
+      dispatch_event: {
+        id: dispatchId,
+        artifact_hash: artifactAfter,
+        epoch,
+        timestamp_monotonic_ns: dispatchTimestampNs,
+        process_id: processId,
+      },
+      output_event: {
+        id: 'output:self-check-clock',
+        kind: 'visual_frame',
+        passed: true,
+        after_dispatch_id: dispatchId,
+        artifact_hash: artifactAfter,
+        epoch,
+        timestamp_monotonic_ns: outputTimestampNs,
+        process_id: processId,
+      },
+      retirement_event: {
+        id: 'retire:self-check-clock',
+        status: 'frame_boundary_proven',
+        timestamp_monotonic_ns: outputTimestampNs + 1_000_000,
+        process_id: processId,
+      },
+      process_identity: { process_id: processId },
+      device_identity: { adapter_info: { vendor: 'amd', backend: 'hip' } },
+      firewall_evidence: {
+        cpu_hmr_used: false,
+        full_rebuild_used: false,
+        process_restarted: false,
+        process_id_before: processId,
+        process_id_after: processId,
+      },
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      output_oracle_target: { kind: 'visual' },
+    }],
+  };
+  const visualDelta = {
+    baselineSeq: 1,
+    selectedSeq: 2,
+    selectedTs: selectedFrameTimestampMs,
+    changedRatio: 0.25,
+    meanAbs: 12.5,
+    controlChangedRatio: 0,
+    controlMeanAbs: 0.01,
+    selected_frame_capture_after_epoch_dispatch: true,
+    visual_artifacts: {
+      before_image: 'self-check-before.png',
+      before_image_hash: `sha256:${'1'.repeat(64)}`,
+      after_image: 'self-check-after.png',
+      after_image_hash: `sha256:${'2'.repeat(64)}`,
+      diff_image: 'self-check-diff.png',
+      diff_image_hash: `sha256:${'3'.repeat(64)}`,
+    },
+    visualArtifacts: {
+      beforeImage: 'self-check-before.png',
+      beforeImageHash: `sha256:${'1'.repeat(64)}`,
+      afterImage: 'self-check-after.png',
+      afterImageHash: `sha256:${'2'.repeat(64)}`,
+      diffImage: 'self-check-diff.png',
+      diffImageHash: `sha256:${'3'.repeat(64)}`,
+    },
+  };
+  const beforeShot = {
+    first: {
+      seq: 1,
+      ts: selectedFrameTimestampMs - 10_000,
+      width: 2,
+      height: 2,
+      visiblePixels: 4,
+    },
+  };
+  const afterShot = {
+    first: {
+      seq: 2,
+      ts: selectedFrameTimestampMs,
+      width: 2,
+      height: 2,
+      visiblePixels: 4,
+      meta: {
+        capture_manifest: {
+          frame_ts_ms: selectedFrameTimestampMs,
+          frame_gate: {
+            required_ts_ms: selectedFrameTimestampMs - 3_926,
+          },
+        },
+      },
+    },
+  };
+  const proof = withRunModeVisualLedgerProof({
+    proof: {
+      proofLedger: ledger,
+      proof_ledger: ledger,
+      runtimeProofArtifact: {
+        proofId: 'gpu-runtime-proof:sha256:self-check-clock-domain',
+        proofLedger: ledger,
+        proof_ledger: ledger,
+      },
+      gpuProofValidation: {
+        satisfied: true,
+        proofLedgerValidation: {
+          gpuHmrSuccess: true,
+          failedInvariants: [],
+        },
+      },
+    },
+    visualDelta,
+    beforeShot,
+    afterShot,
+    wait: {
+      frame_gate: {
+        status: 'satisfied',
+        ts_ms: selectedFrameTimestampMs - 3_926,
+      },
+    },
+  });
+  const recomputed = queryGpuHmrLedgerInvariants(embeddedLedgerFromProof(proof));
+  const record = firstLedgerRecord(embeddedLedgerFromProof(proof));
+  const artifacts =
+    record?.outputEvent?.visualOracleArtifacts
+    ?? record?.output_event?.visual_oracle_artifacts
+    ?? null;
+  if (
+    recomputed.gpuHmrSuccess !== true
+    || !Array.isArray(recomputed.failedInvariants)
+    || recomputed.failedInvariants.length !== 0
+    || artifacts?.timestamp_after_dispatch !== outputTimestampNs
+    || artifacts?.timestamp_after_dispatch_clock !== 'ledger_output_event_monotonic_ns'
+    || artifacts?.selected_frame_timestamp_ms !== selectedFrameTimestampMs
+  ) {
+    throw new Error(`run-mode visual ledger clock-domain self-check failed: ${JSON.stringify({
+      gpuHmrSuccess: recomputed.gpuHmrSuccess,
+      failedInvariants: recomputed.failedInvariants,
+      timestampAfterDispatch: artifacts?.timestamp_after_dispatch,
+      timestampAfterDispatchClock: artifacts?.timestamp_after_dispatch_clock,
+      selectedFrameTimestampMs: artifacts?.selected_frame_timestamp_ms,
+    })}`);
+  }
+  ledgerFirewallFieldsFromProof(proof);
+  console.log('run-mode visual ledger clock-domain self-check passed');
+}
+
 function literalOccurrenceCount(source, needle) {
   if (!needle) return 0;
   let count = 0;
@@ -4957,6 +5180,14 @@ function selectedVisualShot(capture, seq) {
     ?? null;
 }
 
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
 function visualLedgerArtifactsFromDelta({
   visualDelta,
   beforeShot,
@@ -4983,6 +5214,11 @@ function visualLedgerArtifactsFromDelta({
     : isRecord(ledgerRecord?.epochPublishEvent)
       ? ledgerRecord.epochPublishEvent
       : {};
+  const outputEvent = isRecord(ledgerRecord?.output_event)
+    ? ledgerRecord.output_event
+    : isRecord(ledgerRecord?.outputEvent)
+      ? ledgerRecord.outputEvent
+      : {};
   const artifactAfterHash = ledgerRecord?.artifact_after_hash ?? ledgerRecord?.artifactAfterHash;
   const dispatchEpoch = dispatchEvent.epoch ?? epochPublishEvent.epoch ?? null;
   const dispatchId = dispatchEvent.id ?? null;
@@ -4990,6 +5226,31 @@ function visualLedgerArtifactsFromDelta({
     ?? dispatchEvent.artifactHash
     ?? artifactAfterHash
     ?? null;
+  const frameTimestampMs = firstFiniteNumber(
+    visualDelta?.selectedTs,
+    visualDelta?.selected_ts,
+    selected?.ts,
+    selected?.meta?.ts,
+    selected?.meta?.capture_manifest?.frame_ts_ms,
+    selected?.meta?.captureManifest?.frameTsMs,
+  );
+  const frameGateRequiredTsMs = firstFiniteNumber(
+    selected?.meta?.capture_manifest?.frame_gate?.required_ts_ms,
+    selected?.meta?.capture_manifest?.required_ts_ms,
+    selected?.meta?.captureManifest?.frameGate?.requiredTsMs,
+    selected?.meta?.frame_gate?.required_ts_ms,
+    selected?.meta?.frameGate?.requiredTsMs,
+  );
+  const ledgerTimestampAfterDispatch = firstFiniteNumber(
+    outputEvent.timestamp_monotonic_ns,
+    outputEvent.timestampMonotonicNs,
+    outputEvent.timestamp_after_dispatch,
+    outputEvent.timestampAfterDispatch,
+    outputEvent.readback_timestamp,
+    outputEvent.readbackTimestamp,
+    outputEvent.output_timestamp,
+    outputEvent.outputTimestamp,
+  );
   const captureBackend = 'mcp_decoded_frame';
   const cameraStateHash = `sha256:${sha256Hex(stableJson({
     captureBackend,
@@ -5044,8 +5305,18 @@ function visualLedgerArtifactsFromDelta({
     captureBackend,
     frame_number: Number(visualDelta.selectedSeq ?? selected?.seq ?? 0),
     frameNumber: Number(visualDelta.selectedSeq ?? selected?.seq ?? 0),
-    timestamp_after_dispatch: Number(visualDelta.selectedTs ?? selected?.ts ?? 0),
-    timestampAfterDispatch: Number(visualDelta.selectedTs ?? selected?.ts ?? 0),
+    timestamp_after_dispatch: ledgerTimestampAfterDispatch ?? frameTimestampMs ?? 0,
+    timestampAfterDispatch: ledgerTimestampAfterDispatch ?? frameTimestampMs ?? 0,
+    timestamp_after_dispatch_clock: ledgerTimestampAfterDispatch !== null
+      ? 'ledger_output_event_monotonic_ns'
+      : 'frame_wall_clock_ms_fallback',
+    timestampAfterDispatchClock: ledgerTimestampAfterDispatch !== null
+      ? 'ledger_output_event_monotonic_ns'
+      : 'frame_wall_clock_ms_fallback',
+    selected_frame_timestamp_ms: frameTimestampMs,
+    selectedFrameTimestampMs: frameTimestampMs,
+    frame_gate_required_ts_ms: frameGateRequiredTsMs,
+    frameGateRequiredTsMs: frameGateRequiredTsMs,
     perceptual_diff: Number(visualDelta.meanAbs ?? 0),
     perceptualDiff: Number(visualDelta.meanAbs ?? 0),
     changed_pixel_ratio: Number(visualDelta.changedRatio ?? 0),
@@ -6474,6 +6745,7 @@ async function writeResults() {
 if (process.argv.includes('--self-check')) {
   try {
     selfCheckAgentVisualProfile();
+    selfCheckRunModeVisualLedgerClockDomain();
   } catch (err) {
     console.error(err.stack || err.message);
     process.exitCode = 1;
