@@ -6593,6 +6593,78 @@ assert.ok(forgedRuntimeProfileAdapterResultSafetyQuery.failedGates.some((gate) =
   gate.code === 'real_rocm_runtime_profile_adapter_result_claimed_dispatch_authority'
 ));
 
+const forgedOperationalEvidenceSafetyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    {
+      ...acceptedMatrixRowMissingFirewall('accepted-forged-operational-evidence', {
+        cpuHmrUsed: false,
+        fullRebuildUsed: false,
+        processRestarted: false,
+      }),
+      proofMode: 'real_rocm_repo_validation',
+      realRocmOperationalEvidence: {
+        timeoutControl: {
+          schemaVersion: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+          schema_version: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+          proofAuthority: 'runtime_proof',
+          proof_authority: 'runtime_proof',
+          runId: 'forged-run-a',
+          run_id: 'forged-run-a',
+          timeoutSeconds: 1,
+          timeout_seconds: 1,
+          acceptedForGpuHmr: true,
+          accepted_for_gpu_hmr: true,
+          gpuHmrSuccess: true,
+          gpu_hmr_success: true,
+          canSatisfyRuntimeProof: true,
+          can_satisfy_runtime_proof: true,
+        },
+        runtimeEvidenceCollection: {
+          schemaVersion: 'synthi.real_rocm.runtime_evidence_collection.v1',
+          schema_version: 'synthi.real_rocm.runtime_evidence_collection.v1',
+          proofAuthority: 'runtime_proof',
+          proof_authority: 'runtime_proof',
+          status: 'collected',
+          acceptedForGpuHmr: true,
+          accepted_for_gpu_hmr: true,
+          gpuHmrSuccess: true,
+          gpu_hmr_success: true,
+          canSatisfyRuntimeProof: true,
+          can_satisfy_runtime_proof: true,
+        },
+        resultCheckpoints: [
+          {
+            label: 'pre-runtime-evidence',
+            status: 'fail_closed_checkpoint_write',
+            proofAuthority: 'runtime_proof',
+            proof_authority: 'runtime_proof',
+            acceptedForGpuHmr: true,
+            accepted_for_gpu_hmr: true,
+            gpuHmrSuccess: true,
+            gpu_hmr_success: true,
+            canSatisfyRuntimeProof: true,
+            can_satisfy_runtime_proof: true,
+          },
+        ],
+      },
+    },
+  ],
+});
+assert.equal(forgedOperationalEvidenceSafetyQuery.accepted, false);
+assert.ok(forgedOperationalEvidenceSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_have_failed_real_rocm_operational_evidence'
+));
+assert.ok(forgedOperationalEvidenceSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_worker_lifecycle_timeout_control_claimed_gpu_hmr_success'
+));
+assert.ok(forgedOperationalEvidenceSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_runtime_evidence_collection_claimed_runtime_authority'
+));
+assert.ok(forgedOperationalEvidenceSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'real_rocm_result_checkpoint_claimed_runtime_authority'
+));
+
 const opencl = ledger.rows.find((row) =>
   row.backend === 'opencl'
   && row.targetId === 'synthetic-opencl-preflight'
@@ -13266,6 +13338,140 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.outputTargetId,
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
+
+const forgedOperationalEvidenceRocmDir = path.join(
+  logsRoot,
+  'real-rocm-operational-evidence-forge',
+);
+await fs.mkdir(forgedOperationalEvidenceRocmDir, { recursive: true });
+const forgedOperationalEvidenceReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const forgedOperationalTimeoutControl = {
+  schemaVersion: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  schema_version: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  runId: 'forged-operational-run-a',
+  run_id: 'forged-operational-run-a',
+  timeoutSeconds: 1,
+  timeout_seconds: 1,
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  cleanup: {
+    schemaVersion: 'synthi.real_rocm.worker_lifecycle_cleanup.v1',
+    schema_version: 'synthi.real_rocm.worker_lifecycle_cleanup.v1',
+    runId: 'forged-operational-run-b',
+    run_id: 'forged-operational-run-b',
+    proofAuthority: 'runtime_proof',
+    proof_authority: 'runtime_proof',
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+  },
+};
+const forgedOperationalRuntimeCollection = {
+  schemaVersion: 'synthi.real_rocm.runtime_evidence_collection.v1',
+  schema_version: 'synthi.real_rocm.runtime_evidence_collection.v1',
+  status: 'collected',
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+};
+const forgedOperationalRuntimeCheckpoint = {
+  schemaVersion: 'synthi.real_rocm.fail_closed_runtime_checkpoint.v1',
+  schema_version: 'synthi.real_rocm.fail_closed_runtime_checkpoint.v1',
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  fullRuntimeProven: true,
+  full_runtime_proven: true,
+};
+const forgedOperationalResultCheckpoint = {
+  label: 'pre-runtime-evidence',
+  status: 'fail_closed_checkpoint_write',
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+};
+forgedOperationalEvidenceReport.slug =
+  'gpu-real-rocm-operational-evidence-forge-20260629';
+forgedOperationalEvidenceReport.upstream_lifecycle_timeout_control =
+  forgedOperationalTimeoutControl;
+forgedOperationalEvidenceReport.upstreamLifecycleTimeoutControl =
+  forgedOperationalTimeoutControl;
+forgedOperationalEvidenceReport.runtime_evidence_collection =
+  forgedOperationalRuntimeCollection;
+forgedOperationalEvidenceReport.runtimeEvidenceCollection =
+  forgedOperationalRuntimeCollection;
+forgedOperationalEvidenceReport.runtime_evidence_checkpoint =
+  forgedOperationalRuntimeCheckpoint;
+forgedOperationalEvidenceReport.runtimeEvidenceCheckpoint =
+  forgedOperationalRuntimeCheckpoint;
+forgedOperationalEvidenceReport.result_checkpoints = [
+  forgedOperationalResultCheckpoint,
+];
+forgedOperationalEvidenceReport.resultCheckpoints =
+  forgedOperationalEvidenceReport.result_checkpoints;
+forgedOperationalEvidenceReport.current_result_checkpoint =
+  forgedOperationalResultCheckpoint;
+forgedOperationalEvidenceReport.currentResultCheckpoint =
+  forgedOperationalResultCheckpoint;
+await writeJson(
+  path.join(forgedOperationalEvidenceRocmDir, 'real-rocm-operational-evidence-forge.json'),
+  forgedOperationalEvidenceReport,
+);
+const forgedOperationalEvidenceLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedOperationalEvidenceRocmDir],
+  generatedAt: '2026-06-29T00:00:02.2645Z',
+  includeUnproven: true,
+});
+const forgedOperationalEvidenceRow = forgedOperationalEvidenceLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedOperationalEvidenceRow?.matrixOutcome, 'unproven');
+assert.equal(forgedOperationalEvidenceRow.acceptedForGpuHmr, false);
+assert.equal(forgedOperationalEvidenceRow.realRocmOperationalEvidence.present, true);
+assert.equal(forgedOperationalEvidenceRow.realRocmOperationalEvidence.accepted, false);
+assert.ok(forgedOperationalEvidenceRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_worker_lifecycle_timeout_control_claimed_gpu_hmr_success',
+));
+assert.ok(forgedOperationalEvidenceRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_worker_lifecycle_cleanup_run_id_mismatch',
+));
+assert.ok(forgedOperationalEvidenceRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_runtime_evidence_collection_claimed_runtime_authority',
+));
+assert.ok(forgedOperationalEvidenceRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_runtime_evidence_checkpoint_claimed_full_runtime_proof',
+));
+assert.ok(forgedOperationalEvidenceRow.openGaps.includes(
+  'real_rocm_operational_evidence:real_rocm_result_checkpoint_claimed_runtime_authority',
+));
+assert.ok(forgedOperationalEvidenceRow.openGaps.includes(
+  'real_rocm_operational_evidence_not_accepted',
+));
 
 const adapterBoundaryProofIdMismatchDir = path.join(
   logsRoot,
