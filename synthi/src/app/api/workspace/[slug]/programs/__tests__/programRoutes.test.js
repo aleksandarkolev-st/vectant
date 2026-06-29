@@ -23,6 +23,9 @@ const h = vi.hoisted(() => ({
   launchInstalledProgram: vi.fn(),
   scaffoldProgram: vi.fn(),
   fetchDetectedRepoProgram: vi.fn(),
+  submitForReview: vi.fn(),
+  listSubmissionsForWorkspace: vi.fn(),
+  canPublish: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -43,6 +46,7 @@ vi.mock('@/lib/programs/store', () => ({
   listPublishedPrograms: h.listPublishedPrograms,
   getPublishedProgramVersion: h.getPublishedProgramVersion,
   incrementInstallCount: h.incrementInstallCount,
+  listSubmissionsForWorkspace: h.listSubmissionsForWorkspace,
   // Real-ish projection so the install route can return a public install.
   toPublicInstall: (row) =>
     row
@@ -50,6 +54,8 @@ vi.mock('@/lib/programs/store', () => ({
       : row,
   // Pass-through projection for published programs in route tests.
   toPublicMarketplaceProgram: (row) => row,
+  // Allow-listed review-queue projection (versionId + state, no raw manifest).
+  toReviewQueueItem: (row) => (row ? { versionId: row.id, reviewState: row.reviewState, packageId: row.program?.packageId ?? null } : row),
 }));
 vi.mock('@/lib/programs/runtimeClient', () => ({
   discoverManifest: h.discoverManifest,
@@ -57,12 +63,15 @@ vi.mock('@/lib/programs/runtimeClient', () => ({
   scaffoldProgram: h.scaffoldProgram,
   fetchDetectedRepoProgram: h.fetchDetectedRepoProgram,
 }));
+vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview }));
+vi.mock('@/lib/programs/entitlements', () => ({ canPublish: h.canPublish, isPlatformAdmin: vi.fn() }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
 import { GET as GET_INSTALLED } from '../installed/route.js';
 import { POST as POST_INSTALL } from '../install/route.js';
 import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
 import { POST as POST_PUBLISH } from '../publish/route.js';
+import { GET as GET_SUBMISSIONS } from '../submissions/route.js';
 import { POST as POST_SCAFFOLD } from '../scaffold/route.js';
 import { GET as GET_DETECT, POST as POST_DETECT } from '../detect/route.js';
 
@@ -74,6 +83,7 @@ beforeEach(() => {
   h.actor.mockResolvedValue({ userId: 'u1', email: 'a@b.c', workspaceUserId: 'gh1' });
   h.canRead.mockResolvedValue(true);
   h.canWrite.mockResolvedValue(true);
+  h.canPublish.mockReturnValue(true);
   h.listPermissionGrants.mockResolvedValue([]);
   h.appendProgramRuntimeEvent.mockResolvedValue({ id: 'evt-1' });
 });
@@ -100,30 +110,65 @@ describe('GET /programs/marketplace', () => {
   });
 });
 
-describe('POST /programs/publish', () => {
-  it('publishes the workspace manifest for an owner/admin', async () => {
-    h.discoverManifest.mockResolvedValue({ config: { packageId: 'web', version: '1.0.0', displayName: 'Web', description: 'd', permissions: ['program.launch'] }, source: 'vectant.programs.json' });
-    h.publishProgram.mockResolvedValue({ program: { id: 'p1', packageId: '@team/web', publisher: 'team', verified: false, latestVersion: '1.0.0', displayName: 'Web', description: 'd', installCount: 0 } });
+describe('POST /programs/publish (submit to review)', () => {
+  it('submits the workspace manifest + image ref through the review gate', async () => {
+    h.discoverManifest.mockResolvedValue({ config: { packageId: 'tool', version: '1.0.0', runtimeType: 'container', launch: 'docker run reg.io/me/tool:1' }, source: 'vectant.programs.json' });
+    h.submitForReview.mockResolvedValue({ versionId: 'ver1', reviewState: 'pending_review' });
 
-    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', { sourceImageRef: 'reg.io/me/tool:1' }, 'POST'), ctx({ slug: 'team' }));
 
     expect(res.status).toBe(200);
-    expect(h.publishProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', publishedByUserId: 'u1' }));
+    expect(h.submitForReview).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' }));
     const body = await res.json();
-    expect(body.program).toMatchObject({ packageId: '@team/web', publisher: 'team' });
+    expect(body.submission).toMatchObject({ versionId: 'ver1', reviewState: 'pending_review' });
   });
 
-  it('rejects publish for a plain member (403)', async () => {
+  it('rejects publish when canPublish is false (entitlement, 403)', async () => {
+    h.canPublish.mockReturnValue(false);
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.submitForReview).not.toHaveBeenCalled();
+  });
+
+  it('rejects publish for a plain member (workspace write, 403)', async () => {
     h.canWrite.mockResolvedValue(false);
     const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
     expect(res.status).toBe(403);
-    expect(h.publishProgram).not.toHaveBeenCalled();
+    expect(h.submitForReview).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when there is no workspace manifest to publish', async () => {
+  it('returns 404 when there is no workspace manifest to submit', async () => {
     h.discoverManifest.mockResolvedValue(null);
     const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', {}, 'POST'), ctx({ slug: 'team' }));
     expect(res.status).toBe(404);
+  });
+
+  it('surfaces a rejected result (still 200, body carries the reasons)', async () => {
+    h.discoverManifest.mockResolvedValue({ config: { packageId: 'tool', version: '1.0.0', runtimeType: 'container', launch: 'docker run x' }, source: 'vectant.programs.json' });
+    h.submitForReview.mockResolvedValue({ versionId: 'ver1', reviewState: 'rejected', reasons: [{ code: 'host_escape' }] });
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', { sourceImageRef: 'x' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.submission.reviewState).toBe('rejected');
+    expect(body.submission.reasons[0].code).toBe('host_escape');
+  });
+});
+
+describe('GET /programs/submissions', () => {
+  it('lists the workspace submissions (redacted) for a member', async () => {
+    h.listSubmissionsForWorkspace.mockResolvedValue([{ id: 'ver1', reviewState: 'pending_review', manifestJson: '{"env":{"SECRET":"x"}}', program: { packageId: '@team/tool' } }]);
+    const res = await GET_SUBMISSIONS(req('http://x/api/workspace/team/programs/submissions'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.submissions[0]).toMatchObject({ versionId: 'ver1', reviewState: 'pending_review' });
+    expect(JSON.stringify(body)).not.toContain('SECRET');
+  });
+
+  it('rejects a non-member (403)', async () => {
+    h.canRead.mockResolvedValue(false);
+    const res = await GET_SUBMISSIONS(req('http://x/api/workspace/team/programs/submissions'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.listSubmissionsForWorkspace).not.toHaveBeenCalled();
   });
 });
 
