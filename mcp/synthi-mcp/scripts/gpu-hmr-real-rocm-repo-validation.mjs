@@ -10998,6 +10998,306 @@ async function runtimeOutputOracleFileBackedComputeArtifacts(oracle, options = {
   };
 }
 
+function normalizedSha256Token(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const text = value.trim();
+  const match = /^sha256:([0-9a-f]{64})$/i.exec(text) ?? /^([0-9a-f]{64})$/i.exec(text);
+  return match ? `sha256:${match[1].toLowerCase()}` : null;
+}
+
+async function sha256FileToken(filePath) {
+  return `sha256:${createHash('sha256').update(await readFile(filePath)).digest('hex')}`;
+}
+
+function parseSwapchainSizeValue(value) {
+  if (Array.isArray(value) && value.length >= 2) {
+    const width = Number(value[0]);
+    const height = Number(value[1]);
+    return Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0
+      ? [width, height]
+      : null;
+  }
+  if (typeof value === 'string') {
+    const match = /^\s*(\d+)\s*[x,]\s*(\d+)\s*$/i.exec(value);
+    if (match) return [Number(match[1]), Number(match[2])];
+  }
+  return null;
+}
+
+async function runtimeOutputOracleFileBackedVisualArtifacts(oracle, options = {}) {
+  const beforePath = stringField(oracle, [
+    'beforeImage',
+    'before_image',
+    'beforeImagePath',
+    'before_image_path',
+  ]);
+  const beforeCasManifest = stringField(oracle, [
+    'beforeImageCasManifest',
+    'before_image_cas_manifest',
+    'beforeImageLocator',
+    'before_image_locator',
+  ]);
+  const afterPath = stringField(oracle, [
+    'afterImage',
+    'after_image',
+    'afterImagePath',
+    'after_image_path',
+  ]);
+  const afterCasManifest = stringField(oracle, [
+    'afterImageCasManifest',
+    'after_image_cas_manifest',
+    'afterImageLocator',
+    'after_image_locator',
+  ]);
+  const diffPath = stringField(oracle, [
+    'diffImage',
+    'diff_image',
+    'diffImagePath',
+    'diff_image_path',
+  ]);
+  const diffCasManifest = stringField(oracle, [
+    'diffImageCasManifest',
+    'diff_image_cas_manifest',
+    'diffImageLocator',
+    'diff_image_locator',
+  ]);
+  if (
+    (!beforePath && !beforeCasManifest)
+    || (!afterPath && !afterCasManifest)
+    || (!diffPath && !diffCasManifest)
+  ) {
+    return null;
+  }
+
+  const allowedRoots = adapterArtifactRootCandidates(options);
+  const beforeResolution = await resolveAdapterDeclaredArtifact({
+    fieldName: 'before_image',
+    directPath: beforePath,
+    casManifest: beforeCasManifest,
+    allowedRoots,
+  });
+  const afterResolution = await resolveAdapterDeclaredArtifact({
+    fieldName: 'after_image',
+    directPath: afterPath,
+    casManifest: afterCasManifest,
+    allowedRoots,
+  });
+  const diffResolution = await resolveAdapterDeclaredArtifact({
+    fieldName: 'diff_image',
+    directPath: diffPath,
+    casManifest: diffCasManifest,
+    allowedRoots,
+  });
+  const resolutionsAccepted =
+    beforeResolution.accepted === true
+    && afterResolution.accepted === true
+    && diffResolution.accepted === true;
+  const blockingGaps = [];
+  if (!resolutionsAccepted) blockingGaps.push('adapter_visual_artifact_path_resolution_failed');
+
+  const declaredBeforeHash = normalizedSha256Token(
+    stringField(oracle, ['beforeImageHash', 'before_image_hash', 'beforeHash', 'before_hash']),
+  );
+  const declaredAfterHash = normalizedSha256Token(
+    stringField(oracle, ['afterImageHash', 'after_image_hash', 'afterHash', 'after_hash']),
+  );
+  const declaredDiffHash = normalizedSha256Token(
+    stringField(oracle, ['diffImageHash', 'diff_image_hash', 'diffHash', 'diff_hash']),
+  );
+  let beforeHash = null;
+  let afterHash = null;
+  let diffHash = null;
+  let beforeRaw = null;
+  let afterRaw = null;
+  let afterStats = null;
+  let diffStats = null;
+  let afterVisualRow = null;
+  let diffVisualRow = null;
+  let decodeError = null;
+  if (resolutionsAccepted) {
+    try {
+      beforeHash = await sha256FileToken(beforeResolution.path);
+      afterHash = await sha256FileToken(afterResolution.path);
+      diffHash = await sha256FileToken(diffResolution.path);
+      if (declaredBeforeHash && declaredBeforeHash !== beforeHash) {
+        blockingGaps.push('adapter_visual_before_hash_mismatch');
+      }
+      if (declaredAfterHash && declaredAfterHash !== afterHash) {
+        blockingGaps.push('adapter_visual_after_hash_mismatch');
+      }
+      if (declaredDiffHash && declaredDiffHash !== diffHash) {
+        blockingGaps.push('adapter_visual_diff_hash_mismatch');
+      }
+      beforeRaw = await sharp(beforeResolution.path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      afterRaw = await sharp(afterResolution.path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      afterStats = await analyzeGpuHmrImageEvidence(afterResolution.path);
+      diffStats = await analyzeGpuHmrImageEvidence(diffResolution.path);
+      afterVisualRow = visualEvidenceRow({
+        path: afterResolution.path,
+        source: 'runtime-adapter-visual-output-oracle-after',
+        visualEvidenceSupplementalOnly: false,
+        ...afterStats,
+      });
+      diffVisualRow = visualEvidenceRow({
+        path: diffResolution.path,
+        source: 'runtime-adapter-visual-output-oracle-diff',
+        visualEvidenceSupplementalOnly: false,
+        ...diffStats,
+      });
+    } catch (err) {
+      decodeError = err?.message ?? String(err);
+      blockingGaps.push('adapter_visual_artifact_decode_failed');
+    }
+  }
+
+  let changed = 0;
+  let visible = 0;
+  let totalAbs = 0;
+  let pixelCount = 0;
+  if (beforeRaw && afterRaw) {
+    const sameDimensions =
+      beforeRaw.info.width === afterRaw.info.width
+      && beforeRaw.info.height === afterRaw.info.height
+      && beforeRaw.info.channels === afterRaw.info.channels;
+    if (!sameDimensions) {
+      blockingGaps.push('adapter_visual_artifact_dimension_mismatch');
+    } else {
+      pixelCount = beforeRaw.info.width * beforeRaw.info.height;
+      for (let i = 0; i < beforeRaw.data.length; i += 4) {
+        const alpha = Math.max(beforeRaw.data[i + 3], afterRaw.data[i + 3]);
+        if (alpha > 0) visible += 1;
+        const dr = Math.abs(afterRaw.data[i] - beforeRaw.data[i]);
+        const dg = Math.abs(afterRaw.data[i + 1] - beforeRaw.data[i + 1]);
+        const db = Math.abs(afterRaw.data[i + 2] - beforeRaw.data[i + 2]);
+        const da = Math.abs(afterRaw.data[i + 3] - beforeRaw.data[i + 3]);
+        const delta = dr + dg + db + da;
+        if (delta > 12) changed += 1;
+        totalAbs += delta;
+      }
+      if (visible <= 0) blockingGaps.push('adapter_visual_after_frame_blank');
+      if (changed <= 0) blockingGaps.push('adapter_visual_same_frame');
+    }
+  }
+  if (afterVisualRow && afterVisualRow.accepted_as_visual_evidence !== true) {
+    blockingGaps.push('adapter_visual_after_not_accepted');
+  }
+  if (diffVisualRow && diffVisualRow.accepted_as_visual_evidence !== true) {
+    blockingGaps.push('adapter_visual_diff_not_accepted');
+  }
+
+  const declaredSwapchainSize = parseSwapchainSizeValue(oracle.swapchainSize ?? oracle.swapchain_size);
+  const measuredSwapchainSize = beforeRaw
+    ? [beforeRaw.info.width, beforeRaw.info.height]
+    : null;
+  if (
+    declaredSwapchainSize
+    && measuredSwapchainSize
+    && (
+      declaredSwapchainSize[0] !== measuredSwapchainSize[0]
+      || declaredSwapchainSize[1] !== measuredSwapchainSize[1]
+    )
+  ) {
+    blockingGaps.push('adapter_visual_swapchain_size_mismatch');
+  }
+
+  const accepted = blockingGaps.length === 0;
+  const evidenceRefs = compactStringList([
+    beforeHash,
+    afterHash,
+    diffHash,
+    oracle.visualEvidenceRef,
+    oracle.visual_evidence_ref,
+    oracle.outputTargetId,
+    oracle.output_target_id,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.runtime_adapter_visual_oracle_artifacts.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_adapter_visual_oracle_artifacts.v1',
+    proofAuthority: 'adapter_visual_artifact_file_integrity_only_not_gpu_hmr_acceptance',
+    proof_authority: 'adapter_visual_artifact_file_integrity_only_not_gpu_hmr_acceptance',
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    before_image: accepted ? beforeResolution.path : null,
+    after_image: accepted ? afterResolution.path : null,
+    diff_image: accepted ? diffResolution.path : null,
+    before_image_hash: beforeHash,
+    after_image_hash: afterHash,
+    diff_image_hash: diffHash,
+    declared_before_image_hash: declaredBeforeHash,
+    declared_after_image_hash: declaredAfterHash,
+    declared_diff_image_hash: declaredDiffHash,
+    blank_frame_rejection: visible > 0,
+    same_frame_rejection: changed > 0,
+    new_epoch_watermark_or_trace: oracle.artifactId ?? oracle.artifact_id ?? oracle.visualEvidenceRef ?? null,
+    camera_state_hash: stringField(oracle, ['cameraStateHash', 'camera_state_hash']),
+    swapchain_size: measuredSwapchainSize ?? declaredSwapchainSize,
+    capture_backend: stringField(oracle, ['captureBackend', 'capture_backend']) || 'runtime_adapter_visual_oracle',
+    frame_number: nonNegativeIntegerField(oracle, ['frameNumber', 'frame_number']),
+    timestamp_after_dispatch: oracle.readbackTimestamp ?? oracle.readback_timestamp ?? null,
+    perceptual_diff: pixelCount > 0 ? totalAbs / (pixelCount * 4 * 255) : 0,
+    changed_pixel_ratio: pixelCount > 0 ? changed / pixelCount : 0,
+    visible_pixel_count: visible,
+    after_visual_quality: afterVisualRow?.visual_quality ?? afterStats?.visual_quality ?? null,
+    diff_visual_quality: diffVisualRow?.visual_quality ?? diffStats?.visual_quality ?? null,
+    after_accepted_as_visual_evidence: afterVisualRow?.accepted_as_visual_evidence === true,
+    diff_accepted_as_visual_evidence: diffVisualRow?.accepted_as_visual_evidence === true,
+    adapter_artifact_path_resolution: {
+      schemaVersion: 'synthi.real_rocm.runtime_adapter_visual_artifact_path_resolution.v1',
+      schema_version: 'synthi.real_rocm.runtime_adapter_visual_artifact_path_resolution.v1',
+      proofAuthority: 'artifact_transport_resolution_only',
+      proof_authority: 'artifact_transport_resolution_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      allowedRootCount: allowedRoots.length,
+      allowed_root_count: allowedRoots.length,
+      before_image: beforeResolution,
+      after_image: afterResolution,
+      diff_image: diffResolution,
+      accepted: resolutionsAccepted,
+    },
+    decode_error: decodeError,
+    blocking_gaps: blockingGaps,
+    blockingGaps,
+    evidence_refs: evidenceRefs,
+    evidenceRefs,
+  };
+}
+
+async function writeRuntimeOutputOracleVisualArtifacts(runtimeOutputOracle, options = {}) {
+  const oracle = runtimeOutputOracle?.output_oracle
+    ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
+    : null;
+  if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) return null;
+  const artifacts = await runtimeOutputOracleFileBackedVisualArtifacts(oracle, options);
+  if (!artifacts) return null;
+  report.runtime_output_oracle_visual_artifacts = artifacts;
+  if (!artifacts.accepted) return artifacts;
+  const row = visualEvidenceRow({
+    label: 'runtime-adapter-visual-output-oracle',
+    path: artifacts.after_image,
+    source: 'runtime-adapter-visual-output-oracle',
+    evidence_refs: artifacts.evidence_refs,
+    oracle_id: oracle.oracleId,
+    output_target_id: oracle.outputTargetId,
+    runtime_session: oracle.runtimeSession,
+    artifact_id: oracle.artifactId,
+    visualEvidenceSupplementalOnly: false,
+    ...(await analyzeGpuHmrImageEvidence(artifacts.after_image)),
+  });
+  report.screenshots.push(row);
+  record(
+    'runtime adapter visual output oracle artifacts',
+    row.accepted_as_visual_evidence ? 'pass' : 'warn',
+    `accepted=${artifacts.accepted} path=${artifacts.after_image}`,
+  );
+  return artifacts;
+}
+
 async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, options = {}) {
   const oracle = runtimeOutputOracle?.output_oracle
     ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
@@ -18520,6 +18820,259 @@ int main()
     throw new Error('runtime adapter CAS-backed output oracle artifact self-check failed');
   }
   const forgedHash = `sha256:${'f'.repeat(64)}`;
+  const visualWidth = 320;
+  const visualHeight = 240;
+  const makeVisualBuffer = (variant) => {
+    const bytes = Buffer.alloc(visualWidth * visualHeight * 4);
+    for (let y = 0; y < visualHeight; y += 1) {
+      for (let x = 0; x < visualWidth; x += 1) {
+        const i = (y * visualWidth + x) * 4;
+        const base = (x * 7 + y * 13) % 256;
+        const r0 = base;
+        const g0 = (x * 3 + y * 5) % 256;
+        const b0 = (x * 11 + y * 2) % 256;
+        const r1 = (base + 70 + Math.floor(x / 8)) % 256;
+        const g1 = (g0 + 35 + Math.floor(y / 6)) % 256;
+        const b1 = (b0 + 110 + Math.floor((x + y) / 10)) % 256;
+        bytes[i] = variant === 'after' ? r1 : variant === 'diff' ? Math.abs(r1 - r0) : r0;
+        bytes[i + 1] = variant === 'after' ? g1 : variant === 'diff' ? Math.abs(g1 - g0) : g0;
+        bytes[i + 2] = variant === 'after' ? b1 : variant === 'diff' ? Math.abs(b1 - b0) : b0;
+        bytes[i + 3] = 255;
+      }
+    }
+    return bytes;
+  };
+  const visualBeforePath = path.join(computeOracleTempDir, 'visual-before.png');
+  const visualAfterPath = path.join(computeOracleTempDir, 'visual-after.png');
+  const visualDiffPath = path.join(computeOracleTempDir, 'visual-diff.png');
+  await sharp(makeVisualBuffer('before'), {
+    raw: { width: visualWidth, height: visualHeight, channels: 4 },
+  }).png().toFile(visualBeforePath);
+  await sharp(makeVisualBuffer('after'), {
+    raw: { width: visualWidth, height: visualHeight, channels: 4 },
+  }).png().toFile(visualAfterPath);
+  await sharp(makeVisualBuffer('diff'), {
+    raw: { width: visualWidth, height: visualHeight, channels: 4 },
+  }).png().toFile(visualDiffPath);
+  const visualBeforeHash = await sha256FileToken(visualBeforePath);
+  const visualAfterHash = await sha256FileToken(visualAfterPath);
+  const visualDiffHash = await sha256FileToken(visualDiffPath);
+  const visualBeforeCasManifest = await buildArtifactCasManifest({
+    localPath: visualBeforePath,
+    artifactKind: 'runtime_adapter_visual_frame',
+    mediaType: 'image/png',
+    role: 'before_image',
+    producer: { name: 'real_rocm_repo_validation_self_check', kind: 'proof_runner' },
+    producerSubsystem: 'runtime_adapter_visual_output_oracle',
+    sessionNamespace: 'real-rocm-self-check',
+    transportKind: 'cas_shared_volume',
+  });
+  const visualAfterCasManifest = await buildArtifactCasManifest({
+    localPath: visualAfterPath,
+    artifactKind: 'runtime_adapter_visual_frame',
+    mediaType: 'image/png',
+    role: 'after_image',
+    producer: { name: 'real_rocm_repo_validation_self_check', kind: 'proof_runner' },
+    producerSubsystem: 'runtime_adapter_visual_output_oracle',
+    sessionNamespace: 'real-rocm-self-check',
+    transportKind: 'cas_shared_volume',
+  });
+  const visualDiffCasManifest = await buildArtifactCasManifest({
+    localPath: visualDiffPath,
+    artifactKind: 'runtime_adapter_visual_diff',
+    mediaType: 'image/png',
+    role: 'diff_image',
+    producer: { name: 'real_rocm_repo_validation_self_check', kind: 'proof_runner' },
+    producerSubsystem: 'runtime_adapter_visual_output_oracle',
+    sessionNamespace: 'real-rocm-self-check',
+    transportKind: 'cas_shared_volume',
+  });
+  const visualBeforeCasManifestPath = path.join(computeOracleTempDir, 'visual-before-cas-manifest.json');
+  const visualAfterCasManifestPath = path.join(computeOracleTempDir, 'visual-after-cas-manifest.json');
+  const visualDiffCasManifestPath = path.join(computeOracleTempDir, 'visual-diff-cas-manifest.json');
+  await writeFile(visualBeforeCasManifestPath, `${JSON.stringify(visualBeforeCasManifest, null, 2)}\n`);
+  await writeFile(visualAfterCasManifestPath, `${JSON.stringify(visualAfterCasManifest, null, 2)}\n`);
+  await writeFile(visualDiffCasManifestPath, `${JSON.stringify(visualDiffCasManifest, null, 2)}\n`);
+  const adapterVisualOutputEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.visual-file-backed',
+      'required_oracle_id=probe.visual-file-backed',
+      'kind=render_target_hash',
+      `expected=${visualAfterHash}`,
+      `actual=${visualAfterHash}`,
+      'passed=true',
+      'generation=2',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:visual-file-backed',
+      'readback_timestamp=350',
+      `artifact_id=${activeEpochArtifactId}`,
+      'after_dispatch_id=dispatch:visual-file-backed',
+      `before_image_cas_manifest=${runtimePathToken(visualBeforeCasManifestPath)}`,
+      `after_image_cas_manifest=${runtimePathToken(visualAfterCasManifestPath)}`,
+      `diff_image_cas_manifest=${runtimePathToken(visualDiffCasManifestPath)}`,
+      `before_image_hash=${visualBeforeHash}`,
+      `after_image_hash=${visualAfterHash}`,
+      `diff_image_hash=${visualDiffHash}`,
+      `camera_state_hash=sha256:${'a'.repeat(64)}`,
+      `${`swapchain_size=${visualWidth}x${visualHeight}`}`,
+      'capture_backend=runtime_adapter_visual_oracle',
+      'frame_number=7',
+      'visual_evidence_ref=visual:adapter-self-check',
+      'probe_mode=post_hmr_active_render_target_hash',
+      `probe_config_hash=sha256:${'b'.repeat(64)}`,
+      'probe_evidence_ref=probe-ref',
+    ].join(' '),
+  ]);
+  const adapterVisualArtifacts = await writeRuntimeOutputOracleVisualArtifacts(
+    adapterVisualOutputEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const adapterVisualOutputProof = classifyGpuHmrOutputProof({
+    dispatchProof: {
+      resultState: 'gpu-hmr-dispatch-safe-proven',
+      runtimeSessionIds: ['pid-file-backed-3'],
+      runtimeArtifactIds: [activeEpochArtifactId],
+      selectedArtifactIds: [activeEpochArtifactId],
+      dispatchTimestamps: [320],
+      dispatchId: 'dispatch:visual-file-backed',
+    },
+    epochProof: {
+      epochGenerationGraph: {
+        latestPublication: {
+          newArtifactId: activeEpochArtifactId,
+          publishTimestampMs: 300,
+        },
+      },
+    },
+    deterministicOutputObserved: adapterVisualOutputEvidence.deterministic_output_observed,
+    deterministicOracleProvided: adapterVisualOutputEvidence.deterministic_oracle_provided,
+    deterministicOraclePassed: adapterVisualOutputEvidence.deterministic_oracle_passed,
+    outputOracle: adapterVisualOutputEvidence.output_oracle,
+    oracleArtifacts: {
+      visual_oracle_artifacts: adapterVisualArtifacts,
+    },
+    visualEvidenceRequired: true,
+    visualFrameObserved: adapterVisualArtifacts?.accepted === true,
+    visualEvidenceRefs: [
+      adapterVisualArtifacts?.before_image,
+      adapterVisualArtifacts?.after_image,
+      adapterVisualArtifacts?.diff_image,
+    ].filter(Boolean),
+    evidenceRefs: adapterVisualOutputEvidence.evidence_refs,
+  });
+  if (
+    adapterVisualOutputEvidence.deterministic_oracle_passed !== true
+    || adapterVisualOutputEvidence.output_oracle?.afterImageCasManifest !== visualAfterCasManifestPath.replace(/\\/g, '/')
+    || adapterVisualArtifacts?.accepted !== true
+    || adapterVisualArtifacts?.adapter_artifact_path_resolution?.after_image?.mode !== 'cas_manifest'
+    || adapterVisualArtifacts?.adapter_artifact_path_resolution?.after_image?.accepted !== true
+    || adapterVisualArtifacts?.after_accepted_as_visual_evidence !== true
+    || adapterVisualArtifacts?.diff_accepted_as_visual_evidence !== true
+    || adapterVisualArtifacts?.changed_pixel_ratio <= 0
+    || adapterVisualOutputProof.resultState !== 'gpu-hmr-output-oracle-proven'
+    || adapterVisualOutputProof.visualEvidenceComplete !== true
+  ) {
+    throw new Error('runtime adapter file-backed visual output oracle artifact self-check failed');
+  }
+  const forgedAdapterVisualEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.visual-forged',
+      'required_oracle_id=probe.visual-forged',
+      'kind=render_target_hash',
+      `expected=${visualAfterHash}`,
+      `actual=${visualAfterHash}`,
+      'passed=true',
+      'generation=2',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:visual-file-backed',
+      'readback_timestamp=350',
+      `artifact_id=${activeEpochArtifactId}`,
+      'after_dispatch_id=dispatch:visual-file-backed',
+      `before_image=${runtimePathToken(visualBeforePath)}`,
+      `after_image=${runtimePathToken(visualAfterPath)}`,
+      `diff_image=${runtimePathToken(visualDiffPath)}`,
+      `before_image_hash=${visualBeforeHash}`,
+      `after_image_hash=${forgedHash}`,
+      `diff_image_hash=${visualDiffHash}`,
+      `camera_state_hash=sha256:${'a'.repeat(64)}`,
+      `${`swapchain_size=${visualWidth}x${visualHeight}`}`,
+      'capture_backend=runtime_adapter_visual_oracle',
+      'frame_number=8',
+      'visual_evidence_ref=visual:adapter-forged',
+      'probe_mode=post_hmr_active_render_target_hash',
+      `probe_config_hash=sha256:${'b'.repeat(64)}`,
+      'probe_evidence_ref=probe-ref',
+    ].join(' '),
+  ]);
+  const forgedAdapterVisualArtifacts = await writeRuntimeOutputOracleVisualArtifacts(
+    forgedAdapterVisualEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  if (
+    forgedAdapterVisualEvidence.deterministic_oracle_passed !== true
+    || forgedAdapterVisualArtifacts?.accepted === true
+    || !forgedAdapterVisualArtifacts?.blocking_gaps?.includes('adapter_visual_after_hash_mismatch')
+  ) {
+    throw new Error('runtime adapter file-backed visual forged hash self-check failed');
+  }
+  const escapedVisualPath = path.join(
+    path.dirname(computeOracleTempDir),
+    `synthi-rocm-visual-escape-${process.pid}.png`,
+  );
+  await sharp(makeVisualBuffer('after'), {
+    raw: { width: visualWidth, height: visualHeight, channels: 4 },
+  }).png().toFile(escapedVisualPath);
+  const escapedAdapterVisualEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.visual-escape',
+      'required_oracle_id=probe.visual-escape',
+      'kind=render_target_hash',
+      `expected=${visualAfterHash}`,
+      `actual=${visualAfterHash}`,
+      'passed=true',
+      'generation=2',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:visual-file-backed',
+      'readback_timestamp=350',
+      `artifact_id=${activeEpochArtifactId}`,
+      'after_dispatch_id=dispatch:visual-file-backed',
+      `before_image=${runtimePathToken(visualBeforePath)}`,
+      `after_image=${runtimePathToken(escapedVisualPath)}`,
+      `diff_image=${runtimePathToken(visualDiffPath)}`,
+      `before_image_hash=${visualBeforeHash}`,
+      `after_image_hash=${visualAfterHash}`,
+      `diff_image_hash=${visualDiffHash}`,
+      `camera_state_hash=sha256:${'a'.repeat(64)}`,
+      `${`swapchain_size=${visualWidth}x${visualHeight}`}`,
+      'capture_backend=runtime_adapter_visual_oracle',
+      'frame_number=9',
+      'visual_evidence_ref=visual:adapter-escape',
+      'probe_mode=post_hmr_active_render_target_hash',
+      `probe_config_hash=sha256:${'b'.repeat(64)}`,
+      'probe_evidence_ref=probe-ref',
+    ].join(' '),
+  ]);
+  const escapedAdapterVisualArtifacts = await writeRuntimeOutputOracleVisualArtifacts(
+    escapedAdapterVisualEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const escapedAfterResolution =
+    escapedAdapterVisualArtifacts?.adapter_artifact_path_resolution?.after_image;
+  if (
+    escapedAdapterVisualEvidence.deterministic_oracle_passed !== true
+    || escapedAdapterVisualArtifacts?.accepted === true
+    || escapedAfterResolution?.accepted === true
+    || !escapedAfterResolution?.reasons?.includes('adapter_artifact_path_outside_allowed_roots')
+  ) {
+    throw new Error('runtime adapter file-backed visual path escape self-check failed');
+  }
+  await rm(escapedVisualPath, { force: true });
   const forgedAdapterFileBackedOutputEvidence = runtimeOutputOracleEvidence([
     [
       '[gpu-runtime-boundary] output_oracle',
@@ -20870,6 +21423,8 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   }
   let runtimeOutputOracleVisualRow = null;
   let runtimeOutputOracleArtifacts = null;
+  let runtimeOutputOracleVisualArtifacts = null;
+  let runtimeOutputOracleVisualRefs = [];
   if (runtimeOutputOracle.total_count > 0) {
     record(
       'runtime output oracle evidence',
@@ -20877,6 +21432,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       `records=${runtimeOutputOracle.total_count} matched=${runtimeOutputOracle.matched_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
     );
     runtimeOutputOracleVisualRow = await writeRuntimeOutputOracleVisualProof(runtimeOutputOracle);
+    runtimeOutputOracleVisualArtifacts = await writeRuntimeOutputOracleVisualArtifacts(runtimeOutputOracle);
     const computeOracleArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
       runtimeOutputOracle,
       { proofCardPath: runtimeOutputOracleVisualRow?.path },
@@ -20884,8 +21440,20 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     const verifiedComputeOracleArtifacts = computeOracleArtifacts
       ? await computeOracleArtifactsFromFiles(computeOracleArtifacts)
       : null;
-    runtimeOutputOracleArtifacts = verifiedComputeOracleArtifacts
-      ? { compute_oracle_artifacts: verifiedComputeOracleArtifacts }
+    const oracleArtifactBundle = {};
+    if (verifiedComputeOracleArtifacts) {
+      oracleArtifactBundle.compute_oracle_artifacts = verifiedComputeOracleArtifacts;
+    }
+    if (runtimeOutputOracleVisualArtifacts?.accepted === true) {
+      oracleArtifactBundle.visual_oracle_artifacts = runtimeOutputOracleVisualArtifacts;
+      runtimeOutputOracleVisualRefs = compactStringList([
+        runtimeOutputOracleVisualArtifacts.before_image,
+        runtimeOutputOracleVisualArtifacts.after_image,
+        runtimeOutputOracleVisualArtifacts.diff_image,
+      ]);
+    }
+    runtimeOutputOracleArtifacts = Object.keys(oracleArtifactBundle).length > 0
+      ? oracleArtifactBundle
       : null;
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
@@ -21005,8 +21573,11 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     oracleArtifacts: runtimeOutputOracleArtifacts ?? undefined,
     evidenceRefs: runtimeOutputOracle.evidence_refs,
     visualEvidenceRequired: renderingVisualEvidenceExpected(),
-    visualFrameObserved: freshVisualFrames.length > 0,
-    visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
+    visualFrameObserved: freshVisualFrames.length > 0 || runtimeOutputOracleVisualRefs.length > 0,
+    visualEvidenceRefs: [
+      ...freshVisualFrames.map((shot) => shot.path),
+      ...runtimeOutputOracleVisualRefs,
+    ],
   });
   const hiprtNativeOutputProof = buildHiprtNativeOutputProof({
     dispatchProof: report.dispatch_proof,

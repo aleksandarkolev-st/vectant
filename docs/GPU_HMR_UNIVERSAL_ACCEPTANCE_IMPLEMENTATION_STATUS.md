@@ -4,6 +4,24 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Adapter Visual Oracle Bridge
+
+The real ROCm runtime-adapter bridge now accepts generic visual output-oracle artifacts from adapter-emitted `[gpu-runtime-boundary] output_oracle` lines. An adapter can declare before/after/diff PNG paths or role-bound CAS manifests, SHA-256 hashes, camera-state hash, swapchain size, capture backend, frame number, output target, dispatch ID, artifact ID, and deterministic probe metadata.
+
+The runner resolves visual artifacts only under approved artifact/CAS roots, validates readable bytes and declared hashes, decodes the images through the same visual evidence thresholds used by the rest of the proof system, rejects blank/same-frame/low-quality diffs, and feeds accepted `visual_oracle_artifacts` plus visual evidence refs into the normal output-proof classifier. A positive visual artifact is still not runtime authority: dispatch, epoch publication, deterministic probe-contract closure, post-dispatch output oracle, host identity, firewall, strict runtime proof, and ledger closure remain required before any GPU HMR row can be accepted.
+
+New self-check coverage includes a CAS-backed positive adapter visual oracle that closes only with matching dispatch/epoch/probe/output proof, a forged after-image hash refusal, and a path escape refusal. This is generic arbitrary-project adapter plumbing; it is not keyed to MIOpen, HIPRT, raytrace, or any profile name, and it does not change broad readiness.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-runtime-evidence.mjs -> passed
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed with runtime adapter visual output oracle artifacts accepted in the positive self-check and forged/path-escape negatives refused
+node mcp/synthi-mcp/node_modules/vitest/vitest.mjs run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts -> passed, 282 tests
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, current matrix still reports 56 rows, 14 accepted scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows
+```
+
 ## 2026-06-30 Source-First Role Hardening
 
 The source-first generated split validator now fails closed unless the generated sidecar declares explicit module files and explicit GPU device roles. It no longer invents default generated split paths such as `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`, or vendor-default `device.hip` / `device.cu`. Device role paths must be present in `compile_manifest.module_files`, generated files are read from the declared manifest path set, and host-source exclusions for deterministic fission are derived from declared non-device module files instead of fixed role names.

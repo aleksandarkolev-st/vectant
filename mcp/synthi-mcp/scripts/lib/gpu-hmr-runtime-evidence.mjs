@@ -930,6 +930,73 @@ function outputOracleRecord(line) {
       ?? null,
     dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
+    beforeImage:
+      fields.before_image
+      ?? fields.beforeImage
+      ?? fields.before_image_path
+      ?? fields.beforeImagePath
+      ?? null,
+    beforeImageCasManifest:
+      fields.before_image_cas_manifest
+      ?? fields.beforeImageCasManifest
+      ?? fields.before_image_locator
+      ?? fields.beforeImageLocator
+      ?? null,
+    afterImage:
+      fields.after_image
+      ?? fields.afterImage
+      ?? fields.after_image_path
+      ?? fields.afterImagePath
+      ?? null,
+    afterImageCasManifest:
+      fields.after_image_cas_manifest
+      ?? fields.afterImageCasManifest
+      ?? fields.after_image_locator
+      ?? fields.afterImageLocator
+      ?? null,
+    diffImage:
+      fields.diff_image
+      ?? fields.diffImage
+      ?? fields.diff_image_path
+      ?? fields.diffImagePath
+      ?? null,
+    diffImageCasManifest:
+      fields.diff_image_cas_manifest
+      ?? fields.diffImageCasManifest
+      ?? fields.diff_image_locator
+      ?? fields.diffImageLocator
+      ?? null,
+    beforeImageHash:
+      fields.before_image_hash
+      ?? fields.beforeImageHash
+      ?? fields.before_hash
+      ?? fields.beforeHash
+      ?? null,
+    afterImageHash:
+      fields.after_image_hash
+      ?? fields.afterImageHash
+      ?? fields.after_hash
+      ?? fields.afterHash
+      ?? null,
+    diffImageHash:
+      fields.diff_image_hash
+      ?? fields.diffImageHash
+      ?? fields.diff_hash
+      ?? fields.diffHash
+      ?? null,
+    cameraStateHash:
+      fields.camera_state_hash
+      ?? fields.cameraStateHash
+      ?? null,
+    swapchainSize:
+      fields.swapchain_size
+      ?? fields.swapchainSize
+      ?? null,
+    captureBackend:
+      fields.capture_backend
+      ?? fields.captureBackend
+      ?? null,
+    frameNumber: integerValue(fields.frame_number ?? fields.frameNumber),
     probeMode: fields.probe_mode ?? fields.deterministic_probe_mode ?? null,
     probeConfigHash:
       fields.probe_config_hash
@@ -2196,6 +2263,32 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           dispatch_id: latestDispatchId,
           visualEvidenceRef: latest.visualEvidenceRef,
           visual_evidence_ref: latest.visualEvidenceRef,
+          beforeImage: latest.beforeImage,
+          before_image: latest.beforeImage,
+          beforeImageCasManifest: latest.beforeImageCasManifest,
+          before_image_cas_manifest: latest.beforeImageCasManifest,
+          afterImage: latest.afterImage,
+          after_image: latest.afterImage,
+          afterImageCasManifest: latest.afterImageCasManifest,
+          after_image_cas_manifest: latest.afterImageCasManifest,
+          diffImage: latest.diffImage,
+          diff_image: latest.diffImage,
+          diffImageCasManifest: latest.diffImageCasManifest,
+          diff_image_cas_manifest: latest.diffImageCasManifest,
+          beforeImageHash: latest.beforeImageHash,
+          before_image_hash: latest.beforeImageHash,
+          afterImageHash: latest.afterImageHash,
+          after_image_hash: latest.afterImageHash,
+          diffImageHash: latest.diffImageHash,
+          diff_image_hash: latest.diffImageHash,
+          cameraStateHash: latest.cameraStateHash,
+          camera_state_hash: latest.cameraStateHash,
+          swapchainSize: latest.swapchainSize,
+          swapchain_size: latest.swapchainSize,
+          captureBackend: latest.captureBackend,
+          capture_backend: latest.captureBackend,
+          frameNumber: latest.frameNumber,
+          frame_number: latest.frameNumber,
           probeMode: latest.probeMode,
           probe_mode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,
