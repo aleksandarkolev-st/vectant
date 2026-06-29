@@ -3748,6 +3748,7 @@ function runtimeAdapterBoundaryBridgeFixture(scope, materials, overrides = {}) {
 function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
   const boundaryBridge = runtimeAdapterBoundaryBridgeFixture(scope, materials);
   const boundaryLines = boundaryBridge.adapterRuntimeBoundaryLines;
+  const adapterCommandHash = hashValue(`runtime-adapter-command:${scope}`);
   return {
     schemaVersion: 'synthi.real_rocm.runtime_adapter_execution.v1',
     schema_version: 'synthi.real_rocm.runtime_adapter_execution.v1',
@@ -3756,6 +3757,10 @@ function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
     declared: true,
     enabled: true,
     status: 'runtime_adapter_executed',
+    adapterTemplate: 'runtime_boundary_log_harvest_v1',
+    adapter_template: 'runtime_boundary_log_harvest_v1',
+    adapterCommandHash,
+    adapter_command_hash: adapterCommandHash,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -3770,10 +3775,14 @@ function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
     runtime_boundary_line_count: boundaryLines.length,
     evidenceRefs: [
       `runtime-adapter-execution:${scope}`,
+      `runtime-adapter-template:runtime_boundary_log_harvest_v1`,
+      `runtime-adapter-command:${adapterCommandHash}`,
       ...boundaryLines.map((line) => `runtime-adapter-boundary:${hashValue(line)}`),
     ],
     evidence_refs: [
       `runtime-adapter-execution:${scope}`,
+      `runtime-adapter-template:runtime_boundary_log_harvest_v1`,
+      `runtime-adapter-command:${adapterCommandHash}`,
       ...boundaryLines.map((line) => `runtime-adapter-boundary:${hashValue(line)}`),
     ],
     blockingGaps: [],
@@ -4532,6 +4541,7 @@ function realRocmProofSchedulingFixture(overrides = {}) {
 
 function runtimeAdapterResultTransportFixture(scope, overrides = {}) {
   const rawSha256 = hashValue(`runtime-adapter-transport:${scope}`);
+  const adapterCommandHash = hashValue(`runtime-adapter-command:${scope}`);
   return {
     schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
     schema_version: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
@@ -4539,6 +4549,10 @@ function runtimeAdapterResultTransportFixture(scope, overrides = {}) {
     proof_authority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
     declared: true,
     status: 'runtime_adapter_result_transport_copied',
+    adapterTemplate: 'runtime_boundary_log_harvest_v1',
+    adapter_template: 'runtime_boundary_log_harvest_v1',
+    adapterCommandHash,
+    adapter_command_hash: adapterCommandHash,
     declaredPath: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
     declared_path: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
     hostPath: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
@@ -4558,8 +4572,18 @@ function runtimeAdapterResultTransportFixture(scope, overrides = {}) {
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
-    evidenceRefs: [rawSha256, `runtime-adapter-result-transport:${scope}`],
-    evidence_refs: [rawSha256, `runtime-adapter-result-transport:${scope}`],
+    evidenceRefs: [
+      rawSha256,
+      `runtime-adapter-result-transport:${scope}`,
+      'runtime-adapter-template:runtime_boundary_log_harvest_v1',
+      `runtime-adapter-command:${adapterCommandHash}`,
+    ],
+    evidence_refs: [
+      rawSha256,
+      `runtime-adapter-result-transport:${scope}`,
+      'runtime-adapter-template:runtime_boundary_log_harvest_v1',
+      `runtime-adapter-command:${adapterCommandHash}`,
+    ],
     blockingGaps: [],
     blocking_gaps: [],
     failedGates: [],
@@ -12786,159 +12810,160 @@ const completeAdapterBoundaryRuntimeAdapterExecution =
   );
 const completeAdapterBoundaryRuntimeAdapterResultTransport =
   runtimeAdapterResultTransportFixture(completeAdapterBoundaryBridgeScope);
-await writeJson(
-  path.join(completeAdapterBoundaryBridgeRocmDir, 'real-rocm-adapter-boundary-bridge-complete.json'),
-  {
-    slug: 'gpu-real-rocm-adapter-boundary-bridge-complete-20260629',
-    real_rocm_profile: largeRocmMlProfile('real-rocm-adapter-boundary-bridge-complete'),
-    source_url: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git',
-    repo_commit: 'abababababababababababababababababababab',
-    entry_file: 'src/kernels/generic_adapter_entry.hip',
-    delta_file: 'src/kernels/generic_adapter_delta.h',
-    target_name: 'CompleteAdapterBoundaryBridgeDriver',
-    gpu_vendor: 'rocm',
-    full_runtime_proof_required: true,
-    full_runtime_proven: true,
-    gpu_hmr_success: true,
-    output_oracle_resolution: {
-      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
-      requestedProfile: 'profile.tensor.checksum.v1',
-      mode: 'profile.tensor.checksum.v1',
-      sourceDerivedCandidateCount: 0,
-      selectedSource: 'profile_runtime_profile',
-      disabledReason: null,
-      failedReason: null,
-      contractPresent: true,
-      runtimeProfilePresent: true,
-      runtimeProfileSynced: true,
-    },
-    target_progression: {
-      schemaVersion: 'synthi.real_rocm.target_progression.v1',
-      required: true,
-      phaseRaw: 'final-acceptance',
-      phase: 'final-acceptance',
-      recognized: true,
-      reason: null,
-      targetName: 'CompleteAdapterBoundaryBridgeDriver',
-      finalAcceptanceTarget: 'CompleteAdapterBoundaryBridgeDriver',
-      finalAcceptanceTargetDeclared: true,
-      targetMatchesFinalAcceptance: true,
-    },
-    target_progression_ledger: {
-      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
-      provided: true,
-      entries: [
-        {
-          phase: 'small-oracle',
-          status: 'pass',
-          resultState: 'gpu-hmr-output-oracle-proven',
-          outputOracleProven: true,
-          proofId: 'adapter-boundary-complete-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
-          compute_oracle_artifacts: completeAdapterBoundaryMaterials.computeOracleArtifacts,
-        },
-        {
-          phase: 'partial-reload',
-          status: 'pass',
-          proofId: 'adapter-boundary-complete-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-          schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
-          partialReloadProven: true,
-          fissionProven: true,
-        },
-        {
-          phase: 'original-host-path',
-          status: 'pass',
-          proofId: 'adapter-boundary-complete-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-          schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
-          originalHostPathProven: true,
-          attachmentProven: true,
-          hostPreservationProven: true,
-          dispatchSafeProven: true,
-        },
-      ],
-    },
-    target_progression_gates: [
-      { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
-    ],
-    output_proof: {
-      accepted: true,
-      result_state: 'gpu-hmr-output-oracle-proven',
-    },
-    strict_proof_gates: {
-      accepted: true,
-      failures: [],
-    },
-    real_rocm_profile_proof_obligations:
-      acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
-    real_rocm_source_delta_execution:
-      acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
-    real_rocm_external_header_prerequisites:
-      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
-    realRocmExternalHeaderPrerequisites:
-      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
-    real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
-    real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
-    real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
-    real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
-    real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
-    real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
-    real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
-    real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
-    real_rocm_runtime_adapter_result_transport:
-      completeAdapterBoundaryRuntimeAdapterResultTransport,
-    ...completeAdapterBoundaryMaterials,
-    runtime_proof_artifact: {
-      ...completeAdapterBoundaryMaterials.runtime_proof_artifact,
-      realRocmProfileProofObligations:
-        acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
-      real_rocm_profile_proof_obligations:
-        acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
-      realRocmSourceDeltaExecution:
-        acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
-      real_rocm_source_delta_execution:
-        acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
-      realRocmExternalHeaderPrerequisites:
-        realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
-      real_rocm_external_header_prerequisites:
-        realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
-      realRocmAppHookContract: completeAdapterBoundaryAppHook,
-      real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
-      realRocmAppHookMaterialization: completeAdapterBoundaryAppHookMaterialization,
-      real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
-      realRocmSameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
-      real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
-      sameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
-      same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
-      realRocmRuntimeStageObligations: completeAdapterBoundaryStageObligations,
-      real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
-      realRocmDeviceSidecarContract: completeAdapterBoundarySidecar,
-      real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
-      realRocmSidecarRuntimeConsistency: completeAdapterBoundarySidecarConsistency,
-      real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
-      realRocmRuntimeProfileAdapterResult: completeAdapterBoundaryRuntimeAdapterResult,
-      real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
-      realRocmRuntimeAdapterExecution: completeAdapterBoundaryRuntimeAdapterExecution,
-      real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
-      realRocmRuntimeAdapterResultTransport:
-        completeAdapterBoundaryRuntimeAdapterResultTransport,
-      real_rocm_runtime_adapter_result_transport:
-        completeAdapterBoundaryRuntimeAdapterResultTransport,
-    },
-    timingMetrics: {
-      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
-      source: 'real_rocm_validation',
-      metricClock: 'monotonic_ns',
-      metricScope: 'hot_delta_1',
-      cacheState: 'compiler_cache_warm',
-      editId: 'real-rocm-adapter-boundary-bridge-complete-delta',
-      editHash: hashValue('real-rocm-adapter-boundary-bridge-complete-delta'),
-    },
-    checks: [
-      { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git @ abababab files=32000' },
-      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
-      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+const completeAdapterBoundaryReport = {
+  slug: 'gpu-real-rocm-adapter-boundary-bridge-complete-20260629',
+  real_rocm_profile: largeRocmMlProfile('real-rocm-adapter-boundary-bridge-complete'),
+  source_url: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git',
+  repo_commit: 'abababababababababababababababababababab',
+  entry_file: 'src/kernels/generic_adapter_entry.hip',
+  delta_file: 'src/kernels/generic_adapter_delta.h',
+  target_name: 'CompleteAdapterBoundaryBridgeDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: true,
+    phaseRaw: 'final-acceptance',
+    phase: 'final-acceptance',
+    recognized: true,
+    reason: null,
+    targetName: 'CompleteAdapterBoundaryBridgeDriver',
+    finalAcceptanceTarget: 'CompleteAdapterBoundaryBridgeDriver',
+    finalAcceptanceTargetDeclared: true,
+    targetMatchesFinalAcceptance: true,
+  },
+  target_progression_ledger: {
+    schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+    provided: true,
+    entries: [
+      {
+        phase: 'small-oracle',
+        status: 'pass',
+        resultState: 'gpu-hmr-output-oracle-proven',
+        outputOracleProven: true,
+        proofId: 'adapter-boundary-complete-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+        compute_oracle_artifacts: completeAdapterBoundaryMaterials.computeOracleArtifacts,
+      },
+      {
+        phase: 'partial-reload',
+        status: 'pass',
+        proofId: 'adapter-boundary-complete-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+        partialReloadProven: true,
+        fissionProven: true,
+      },
+      {
+        phase: 'original-host-path',
+        status: 'pass',
+        proofId: 'adapter-boundary-complete-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+        originalHostPathProven: true,
+        attachmentProven: true,
+        hostPreservationProven: true,
+        dispatchSafeProven: true,
+      },
     ],
   },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  real_rocm_profile_proof_obligations:
+    acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+  real_rocm_source_delta_execution:
+    acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+  real_rocm_external_header_prerequisites:
+    realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+  realRocmExternalHeaderPrerequisites:
+    realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+  real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
+  real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
+  real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+  real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
+  real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
+  real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
+  real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
+  real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+  real_rocm_runtime_adapter_result_transport:
+    completeAdapterBoundaryRuntimeAdapterResultTransport,
+  ...completeAdapterBoundaryMaterials,
+  runtime_proof_artifact: {
+    ...completeAdapterBoundaryMaterials.runtime_proof_artifact,
+    realRocmProfileProofObligations:
+      acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+    real_rocm_profile_proof_obligations:
+      acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+    realRocmSourceDeltaExecution:
+      acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+    real_rocm_source_delta_execution:
+      acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+    realRocmExternalHeaderPrerequisites:
+      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+    real_rocm_external_header_prerequisites:
+      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+    realRocmAppHookContract: completeAdapterBoundaryAppHook,
+    real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
+    realRocmAppHookMaterialization: completeAdapterBoundaryAppHookMaterialization,
+    real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
+    realRocmSameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
+    real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+    sameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
+    same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+    realRocmRuntimeStageObligations: completeAdapterBoundaryStageObligations,
+    real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
+    realRocmDeviceSidecarContract: completeAdapterBoundarySidecar,
+    real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
+    realRocmSidecarRuntimeConsistency: completeAdapterBoundarySidecarConsistency,
+    real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
+    realRocmRuntimeProfileAdapterResult: completeAdapterBoundaryRuntimeAdapterResult,
+    real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
+    realRocmRuntimeAdapterExecution: completeAdapterBoundaryRuntimeAdapterExecution,
+    real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+    realRocmRuntimeAdapterResultTransport:
+      completeAdapterBoundaryRuntimeAdapterResultTransport,
+    real_rocm_runtime_adapter_result_transport:
+      completeAdapterBoundaryRuntimeAdapterResultTransport,
+  },
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-adapter-boundary-bridge-complete-delta',
+    editHash: hashValue('real-rocm-adapter-boundary-bridge-complete-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git @ abababab files=32000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+};
+await writeJson(
+  path.join(completeAdapterBoundaryBridgeRocmDir, 'real-rocm-adapter-boundary-bridge-complete.json'),
+  completeAdapterBoundaryReport,
 );
 const completeAdapterBoundaryBridgeLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
@@ -12961,6 +12986,14 @@ assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResul
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.adapterTemplate,
+  'runtime_boundary_log_harvest_v1',
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.adapterCommandHash,
+  hashValue(`runtime-adapter-command:${completeAdapterBoundaryBridgeScope}`),
+);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.accepted, true);
 assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.acceptedForGpuHmr,
@@ -12973,6 +13006,14 @@ assert.equal(
 assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.canSatisfyRuntimeProof,
   false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.adapterTemplate,
+  'runtime_boundary_log_harvest_v1',
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.adapterCommandHash,
+  hashValue(`runtime-adapter-command:${completeAdapterBoundaryBridgeScope}`),
 );
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
@@ -13001,6 +13042,72 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.outputTargetId,
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
+
+const adapterBoundaryProofIdMismatchDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-bridge-proof-id-mismatch',
+);
+await fs.mkdir(adapterBoundaryProofIdMismatchDir, { recursive: true });
+const adapterBoundaryProofIdMismatchReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterBoundaryMismatchedResult = {
+  ...adapterBoundaryProofIdMismatchReport.real_rocm_runtime_profile_adapter_result,
+  strictRuntimeProofId: `gpu-runtime-proof:sha256:${'d'.repeat(64)}`,
+  strict_runtime_proof_id: `gpu-runtime-proof:sha256:${'d'.repeat(64)}`,
+  proofLedgerId: `gpu-ledger-proof:sha256:${'e'.repeat(64)}`,
+  proof_ledger_id: `gpu-ledger-proof:sha256:${'e'.repeat(64)}`,
+};
+adapterBoundaryProofIdMismatchReport.slug =
+  'gpu-real-rocm-adapter-boundary-bridge-proof-id-mismatch-20260629';
+adapterBoundaryProofIdMismatchReport.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryMismatchedResult;
+adapterBoundaryProofIdMismatchReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryMismatchedResult;
+adapterBoundaryProofIdMismatchReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryMismatchedResult;
+await writeJson(
+  path.join(
+    adapterBoundaryProofIdMismatchDir,
+    'real-rocm-adapter-boundary-bridge-proof-id-mismatch.json',
+  ),
+  adapterBoundaryProofIdMismatchReport,
+);
+const adapterBoundaryProofIdMismatchLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryProofIdMismatchDir],
+  generatedAt: '2026-06-29T00:00:02.265Z',
+  includeUnproven: true,
+});
+const adapterBoundaryProofIdMismatchRow = adapterBoundaryProofIdMismatchLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryProofIdMismatchRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryProofIdMismatchRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterBoundaryProofIdMismatchRow.realRocmRuntimeProfileAdapterResult.accepted,
+  true,
+);
+assert.equal(
+  adapterBoundaryProofIdMismatchRow.realRocmRuntimeProfileAdapterResult.strictRuntimeProofIdMatches,
+  false,
+);
+assert.equal(
+  adapterBoundaryProofIdMismatchRow.realRocmRuntimeProfileAdapterResult.proofLedgerIdMatches,
+  false,
+);
+assert.ok(adapterBoundaryProofIdMismatchRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_runtime_proof_id_mismatch',
+));
+assert.ok(adapterBoundaryProofIdMismatchRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch',
+));
+assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_runtime_proof_id_mismatch',
+));
+assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch',
+));
 
 const adapterBoundaryBridgeRocmDir = path.join(
   logsRoot,

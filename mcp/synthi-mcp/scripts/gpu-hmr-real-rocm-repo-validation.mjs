@@ -3765,6 +3765,8 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     declared,
     enabled,
     source: CFG.runtimeAdapterSource,
+    adapterTemplate: adapter.template ?? null,
+    adapter_template: adapter.template ?? null,
     adapterCommandHash: adapter.commandHash ?? null,
     adapter_command_hash: adapter.commandHash ?? null,
     runWhen: adapter.runWhen ?? 'after_upstream_run',
@@ -3833,6 +3835,7 @@ async function transportRuntimeAdapterResultFromWorker(access) {
   if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
     report.evidence = {};
   }
+  const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
   const declaredPath = runtimeAdapterDeclaredResultPath();
   const hostPath = resolveRepoBoundEvidencePath(declaredPath);
   const workerPath = runtimeAdapterWorkerResultPath(declaredPath);
@@ -3842,6 +3845,10 @@ async function transportRuntimeAdapterResultFromWorker(access) {
     proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
     proof_authority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
     declared: Boolean(declaredPath),
+    adapterTemplate: adapter.template ?? null,
+    adapter_template: adapter.template ?? null,
+    adapterCommandHash: adapter.commandHash ?? null,
+    adapter_command_hash: adapter.commandHash ?? null,
     declaredPath: declaredPath || null,
     declared_path: declaredPath || null,
     hostPath: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
@@ -3898,6 +3905,14 @@ async function transportRuntimeAdapterResultFromWorker(access) {
       facet.raw_sha256 = rawSha256;
       facet.evidenceRefs.push(rawSha256);
       facet.evidence_refs.push(rawSha256);
+      if (adapter.template) {
+        facet.evidenceRefs.push(`runtime-adapter-template:${adapter.template}`);
+        facet.evidence_refs.push(`runtime-adapter-template:${adapter.template}`);
+      }
+      if (adapter.commandHash) {
+        facet.evidenceRefs.push(`runtime-adapter-command:${adapter.commandHash}`);
+        facet.evidence_refs.push(`runtime-adapter-command:${adapter.commandHash}`);
+      }
     }
   }
   facet.accepted = facet.declared !== true || (facet.copied === true && facet.blockingGaps.length === 0);
@@ -16045,7 +16060,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     }
     CFG.runtimeAdapter = normalizeRealRocmRuntimeAdapter({
       enabled: true,
-      command: 'printf adapter-self-check',
+      template: 'runtime_boundary_log_harvest_v1',
       workingDirectory: '.',
       evidenceRefs: ['adapter:self-check'],
     });
@@ -16089,6 +16104,8 @@ async function selfCheckRuntimeDispatchEvidence() {
       || !Array.isArray(adapterBoundaryFacet.runtime_boundary_lines)
       || adapterBoundaryFacet.runtime_boundary_lines[0] !== adapterRuntimeBoundaryLine
       || adapterBoundaryFacet.runWhen !== 'after_upstream_run'
+      || adapterBoundaryFacet.adapterTemplate !== 'runtime_boundary_log_harvest_v1'
+      || adapterBoundaryFacet.adapterCommandHash !== CFG.runtimeAdapter.commandHash
       || adapterBoundaryFacet.acceptedForGpuHmr !== false
       || adapterBoundaryFacet.canSatisfyRuntimeProof !== false
       || adapterBoundaryFacet.blockingGaps.length !== 0

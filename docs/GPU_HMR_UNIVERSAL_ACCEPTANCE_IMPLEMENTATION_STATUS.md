@@ -65,6 +65,8 @@ Runtime-adapter scheduling is now profile-driven across generic lifecycle points
 
 The packaged large ROCm ML profiles now declare the shared `runtime_boundary_log_harvest_v1` runtime-adapter template. MIOpen, Composable Kernel, and hipBLASLt use the same template, lifecycle point, and result-path pattern; the packaged profiles do not carry inline adapter shell commands or success-authority flags. The template harvests real `[gpu-runtime-boundary]` lines from the worker run log when available, writes a refusal-only adapter result manifest, and remains non-authoritative unless the normal artifact transport, epoch, dispatch, host identity, output oracle, firewall, and strict runtime proof gates close. This is generic large-project evidence plumbing, not project acceptance.
 
+Runtime-adapter execution and result-transport evidence now preserve adapter identity through `adapterTemplate` and `adapterCommandHash`. Imported runtime-profile adapter results are also row-bound to the strict runtime proof artifact ID and recomputed proof-ledger ID; mismatched adapter result proof IDs produce explicit matrix gaps and keep the row unproven. The validation matrix keeps those fields on `realRocmRuntimeAdapterExecution`, `realRocmRuntimeAdapterResultTransport`, and `realRocmRuntimeProfileAdapterResult`, and the adapter-boundary smoke fixture asserts the `runtime_boundary_log_harvest_v1` template/command hash remains non-success while a proof-ID replay is refused. This improves auditability for arbitrary-project adapters without broadening acceptance.
+
 This remains support/refusal evidence only. It does not replace observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall proof, or accepted strict runtime proof closure, and it does not change broad readiness: current broad library-agnostic full-runtime GPU HMR remains unproven.
 
 ```text
@@ -99,6 +101,11 @@ verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-packag
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-package-scripts-smoke.mjs -> passed after verifying the three large ROCm profiles declare the shared template, safe result paths, refusal-only obligations, and no adapter success-authority fields
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed after packaged runtime-adapter template checks
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed after profile-id safety, runtime-adapter template, unknown-template, and missing-command/template self-checks
+verification: node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed after adapter template/hash row binding
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed after adapter execution/result-transport template and command-hash assertions plus adapter-result strict-runtime-proof/proof-ledger row binding, gpu-validation-matrix-ledger:sha256:9f69d59739f6b5e8fd42fb962e10fc84437edd131d068d433307b087cfb8b2bc, rows=63
+verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed after runtime-adapter execution template/hash preservation
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after adapter-result row-bound proof-ID gates, smoke proof gpu-validation-matrix-ledger:sha256:34eddc1bae21621039172e51e05288b9c0a1d4951f89b47d5e0730619fbd6452, self-check matrix gpu-validation-matrix-ledger:sha256:40a57b1c03eba71b5540f3e80725f38b0b82f3ff4da0c9500bcb0484674fbf85, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
+verification: npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed after status freshness audit, live matrix gpu-validation-matrix-ledger:sha256:c5b74ecb25b0eca0e39b6ff4540ae24282191685589c1cf3866622a6aad08127, rowCount=56, acceptedFullRuntimeRows=14, broadFullRuntimeRows=0, history gpu-validation-matrix-ledger:sha256:aa905942109909b5181c6236cb348a68710ebc667ac8f8dde7d572385c7e349c
 ```
 
 Additional 2026-06-29 visual CAS replay hardening:

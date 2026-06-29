@@ -6308,6 +6308,17 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
   const status = firstText(facet.status, facet.reason);
   const declared = firstBool(facet.declared) === true;
   const enabled = firstBool(facet.enabled) === true;
+  const adapterTemplate = firstText(
+    facet.adapterTemplate,
+    facet.adapter_template,
+    facet.template,
+  );
+  const adapterCommandHash = normalizeSha256(firstText(
+    facet.adapterCommandHash,
+    facet.adapter_command_hash,
+    facet.commandHash,
+    facet.command_hash,
+  ));
   const acceptedForGpuHmr = firstBool(
     facet.acceptedForGpuHmr,
     facet.accepted_for_gpu_hmr,
@@ -6381,6 +6392,10 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
     declared,
     enabled,
     status,
+    adapterTemplate: adapterTemplate ?? null,
+    adapter_template: adapterTemplate ?? null,
+    adapterCommandHash: adapterCommandHash ?? null,
+    adapter_command_hash: adapterCommandHash ?? null,
     schemaVersion,
     schema_version: schemaVersion,
     proofAuthority,
@@ -6436,6 +6451,17 @@ function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
   const status = firstText(facet.status, facet.reason);
   const declared = firstBool(facet.declared) === true;
   const copied = firstBool(facet.copied, facet.resultCopied, facet.result_copied) === true;
+  const adapterTemplate = firstText(
+    facet.adapterTemplate,
+    facet.adapter_template,
+    facet.template,
+  );
+  const adapterCommandHash = normalizeSha256(firstText(
+    facet.adapterCommandHash,
+    facet.adapter_command_hash,
+    facet.commandHash,
+    facet.command_hash,
+  ));
   const acceptedForGpuHmr = firstBool(
     facet.acceptedForGpuHmr,
     facet.accepted_for_gpu_hmr,
@@ -6529,6 +6555,10 @@ function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
     declared,
     copied,
     status,
+    adapterTemplate: adapterTemplate ?? null,
+    adapter_template: adapterTemplate ?? null,
+    adapterCommandHash: adapterCommandHash ?? null,
+    adapter_command_hash: adapterCommandHash ?? null,
     schemaVersion,
     schema_version: schemaVersion,
     proofAuthority,
@@ -13193,6 +13223,40 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ? realRocmAppHookMaterialization.blocking_gaps
       : []),
   ]);
+  const runtimeProfileAdapterResultStrictProofIdMatches =
+    realRocmRuntimeProfileAdapterResult.present === true
+    && realRocmRuntimeProfileAdapterResult.strictRuntimeProofId
+    && runtimeProofArtifactGate.proofId
+      ? realRocmRuntimeProfileAdapterResult.strictRuntimeProofId === runtimeProofArtifactGate.proofId
+      : null;
+  const runtimeProfileAdapterResultProofLedgerIdMatches =
+    realRocmRuntimeProfileAdapterResult.present === true
+    && realRocmRuntimeProfileAdapterResult.proofLedgerId
+    && ledger.proofId
+      ? realRocmRuntimeProfileAdapterResult.proofLedgerId === ledger.proofId
+      : null;
+  const runtimeProfileAdapterResultBindingGates = compactStringList([
+    runtimeProfileAdapterResultStrictProofIdMatches === false
+      ? 'real_rocm_runtime_profile_adapter_result_runtime_proof_id_mismatch'
+      : null,
+    runtimeProfileAdapterResultProofLedgerIdMatches === false
+      ? 'real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch'
+      : null,
+  ]);
+  if (realRocmRuntimeProfileAdapterResult.present === true) {
+    realRocmRuntimeProfileAdapterResult.rowStrictRuntimeProofId = runtimeProofArtifactGate.proofId ?? null;
+    realRocmRuntimeProfileAdapterResult.row_strict_runtime_proof_id = runtimeProofArtifactGate.proofId ?? null;
+    realRocmRuntimeProfileAdapterResult.rowProofLedgerId = ledger.proofId ?? null;
+    realRocmRuntimeProfileAdapterResult.row_proof_ledger_id = ledger.proofId ?? null;
+    realRocmRuntimeProfileAdapterResult.strictRuntimeProofIdMatches =
+      runtimeProfileAdapterResultStrictProofIdMatches;
+    realRocmRuntimeProfileAdapterResult.strict_runtime_proof_id_matches =
+      runtimeProfileAdapterResultStrictProofIdMatches;
+    realRocmRuntimeProfileAdapterResult.proofLedgerIdMatches =
+      runtimeProfileAdapterResultProofLedgerIdMatches;
+    realRocmRuntimeProfileAdapterResult.proof_ledger_id_matches =
+      runtimeProfileAdapterResultProofLedgerIdMatches;
+  }
   const realRocmRuntimeProfileAdapterResultGaps =
     realRocmRuntimeProfileAdapterResult.present === true
       ? compactStringList([
@@ -13208,6 +13272,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         ...(Array.isArray(realRocmRuntimeProfileAdapterResult.failed_gates)
           ? realRocmRuntimeProfileAdapterResult.failed_gates
           : []),
+        ...runtimeProfileAdapterResultBindingGates,
       ])
       : [];
   const realRocmRuntimeAdapterExecutionGaps =
@@ -13461,7 +13526,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     || appHookMaterializationGate.accepted === true;
   const runtimeProfileAdapterResultAccepted =
     realRocmRuntimeProfileAdapterResult.present !== true
-    || realRocmRuntimeProfileAdapterResult.accepted === true;
+    || (
+      realRocmRuntimeProfileAdapterResult.accepted === true
+      && runtimeProfileAdapterResultBindingGates.length === 0
+    );
   const runtimeAdapterExecutionAccepted =
     realRocmRuntimeAdapterExecution.present !== true
     || realRocmRuntimeAdapterExecution.accepted === true;
