@@ -12,6 +12,7 @@ import {
   createInspectionRun,
   createPolicyDelta,
   createProject,
+  exportArtifacts,
   getAgentInbox,
   getAgentManifest,
   getControlState,
@@ -28,6 +29,7 @@ import {
   recordTransactionRead,
   recordTransactionWrite,
   requestMutationLease,
+  previewArtifacts,
   revokeMutationLease,
   shadowMergeSimulate,
   updateControlPlan,
@@ -91,6 +93,10 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'schemas') {
       return okJson(await getSchemas());
+    }
+
+    if (route[0] === 'projects' && route[2] === 'artifacts' && route[3] === 'preview') {
+      return okJson(await previewArtifacts(slug, route[1]));
     }
 
     if (route[0] === 'transactions' && route.length === 2) {
@@ -246,6 +252,10 @@ export async function POST(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'inspection-runs') {
       return okJson({ inspectionRun: await createInspectionRun(slug, route[1], body) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'artifacts' && route[3] === 'export') {
+      return okJson(await exportArtifacts(slug, route[1]));
     }
 
     if (route[0] === 'inspection-runs' && route[2] === 'complete') {

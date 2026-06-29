@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma';
+import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import {
   classifyPath,
@@ -1093,37 +1094,40 @@ export async function getAgentManifest(workspaceSlug, projectId) {
 }
 
 export async function getSchemas() {
+  return codesiteSchemas();
+}
+
+export async function previewArtifacts(workspaceSlug, projectId) {
+  const project = await getProject(workspaceSlug, projectId);
+  if (!project) throw notFound('project_not_found');
+  const controlState = await getControlState(workspaceSlug, projectId);
+  const files = buildArtifactProjection(project, controlState);
   return {
-    executionPlan: {
-      type: 'object',
-      required: ['agentSessionId', 'mission', 'route'],
-      properties: {
-        agentSessionId: { type: 'string' },
-        mission: { type: 'string' },
-        route: { type: 'array', items: { type: 'string' } },
-        blockedZones: { type: 'array', items: { type: 'string' } },
-        requestedTools: { type: 'array', items: { type: 'string' } },
-      },
-    },
-    mutationLease: {
-      type: 'object',
-      properties: {
-        allowedPaths: { type: 'array', items: { type: 'string' } },
-        blockedPaths: { type: 'array', items: { type: 'string' } },
-        allowedTools: { type: 'array', items: { type: 'string' } },
-        requiredRadar: { type: 'array', items: { type: 'string' } },
-      },
-    },
-    event: {
-      type: 'object',
-      required: ['eventType', 'details'],
-      properties: {
-        eventType: { type: 'string' },
-        displayCallsign: { type: 'string' },
-        details: { type: 'object' },
-      },
-    },
+    projectId,
+    files: files.map((file) => ({
+      path: file.relativePath,
+      bytes: Buffer.byteLength(file.content, 'utf8'),
+    })),
   };
+}
+
+export async function exportArtifacts(workspaceSlug, projectId) {
+  const project = await getProject(workspaceSlug, projectId);
+  if (!project) throw notFound('project_not_found');
+  const controlState = await getControlState(workspaceSlug, projectId);
+  const result = await writeArtifactProjection(project, controlState);
+  await recordEvent(projectId, {
+    eventType: 'black_box_closed',
+    actorType: 'artifact_projection',
+    actorId: projectId,
+    details: {
+      written: result.written,
+      root: result.root || null,
+      reason: result.reason || null,
+      files: result.files,
+    },
+  });
+  return result;
 }
 
 export async function collisionPredict(workspaceSlug, projectId) {
