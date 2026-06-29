@@ -175,6 +175,12 @@ model MarketplaceProgram {
   description       String?
   publishedByUserId String?
   installCount      Int      @default(0)
+  // The currently-live (last-approved) version + its AR digest. Null until a
+  // version reaches `published`. The marketplace lists only programs where this
+  // is set; an update in review does NOT change these until it is approved
+  // (the previously-approved digest stays live).
+  publishedVersion  String?
+  publishedDigest   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -189,12 +195,30 @@ model ProgramVersion {
   manifestJson  String
   requiredTools String[] @default([])
   ports         String[] @default([])
+
+  // ── Community-app review gate (Phase 1) ──
+  // State machine: submitted|scanning|ai_review|pending_review|approved|rehosting|published|rejected.
+  // Built-in/legacy direct-published versions default to 'published'.
+  reviewState       String   @default("published")
+  sourceImageRef    String?  // publisher's pullable ref (their registry), container/gui only
+  sourceImageDigest String?  // resolved digest of the source ref at scan time
+  hostedImageDigest String?  // our AR digest after re-host (what installers pull)
+  scanReportJson    String?  // redacted trivy summary (severity counts + decisive CVEs)
+  aiRiskJson        String?  // Phase 2 placeholder (nullable)
+  submittedByUserId String?
+  reviewedByUserId  String?
+  reviewNotes       String?
+  submittedAt       DateTime @default(now())
+  reviewedAt        DateTime?
+
   createdAt     DateTime @default(now())
 
   program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  events  ProgramReviewEvent[]
 
   @@unique([programId, version])
   @@index([programId])
+  @@index([reviewState])
 }
 
 model ProgramInstall {
@@ -266,5 +290,20 @@ model ProgramRuntimeEvent {
   session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
+  @@index([createdAt])
+}
+
+model ProgramReviewEvent {
+  id          String   @id @default(cuid())
+  versionId   String
+  fromState   String?
+  toState     String
+  actorUserId String?
+  reasonJson  String?
+  createdAt   DateTime @default(now())
+
+  version ProgramVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
   @@index([createdAt])
 }
