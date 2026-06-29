@@ -370,6 +370,32 @@ assert.equal(
   'transport_integrity_only_not_visual_or_ledger_proof',
 );
 
+const rawReadbackLocator = await writeArtifactToCas(Buffer.from([1, 2, 3, 4]), {
+  artifactRoot: casRoot,
+  mediaType: 'application/octet-stream',
+  artifactKind: 'raw_readback',
+  producer: { name: 'visual_smoke', kind: 'self_check' },
+  producerSubsystem: 'compute_oracle',
+  sessionNamespace: 'visual-smoke-session',
+  role: 'raw_readback',
+});
+assert.equal(
+  collectVisualArtifactCasLocators({ artifactCasLocators: [rawReadbackLocator] }).length,
+  0,
+);
+const rawReadbackTransport = await visualArtifactTransportEvidence({
+  artifactCasLocators: [rawReadbackLocator],
+}, {
+  artifactRoot: casRoot,
+  allowedRoots: [casRoot],
+  requireReadableBytes: true,
+});
+assert.equal(rawReadbackTransport.accepted, false);
+assert.equal(rawReadbackTransport.acceptedAsTransportEvidence, false);
+assert.equal(rawReadbackTransport.rejectedNonVisualLocatorCount, 1);
+assert.ok(rawReadbackTransport.reasons.includes('non_visual_artifact_transport_locator_rejected'));
+assert.ok(rawReadbackTransport.gaps.includes('visual_artifact_transport_requires_image_locator'));
+
 const rowWithTransport = visualEvidenceRow({
   width: 640,
   height: 480,
@@ -515,6 +541,7 @@ console.log(JSON.stringify({
     'mcp_failed_gpu_proof_validation_rejection',
     'mcp_stale_screenshot_rejection',
     'visual_artifact_transport_evidence_not_gpu_hmr_proof',
+    'visual_artifact_transport_rejects_non_visual_cas_locator',
     'async_visual_proof_bundle_cas_worker_transport',
     'async_visual_proof_pending_job_manifest',
   ],

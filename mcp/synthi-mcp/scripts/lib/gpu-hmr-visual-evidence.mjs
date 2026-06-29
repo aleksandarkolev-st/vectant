@@ -909,7 +909,12 @@ export function visualEvidenceRow(extra = {}) {
 }
 
 export function collectVisualArtifactCasLocators(input = {}) {
-  const source = isObject(input)
+  const source = visualArtifactCasLocatorSource(input);
+  return collectArtifactLocators(source).filter(visualCasLocatorLooksLikeImageEvidence);
+}
+
+function visualArtifactCasLocatorSource(input = {}) {
+  return isObject(input)
     ? (
       input.artifact_cas_locators
       ?? input.artifactCasLocators
@@ -920,14 +925,48 @@ export function collectVisualArtifactCasLocators(input = {}) {
       ?? input
     )
     : input;
-  return collectArtifactLocators(source);
+}
+
+function collectNonVisualArtifactCasLocators(input = {}) {
+  return collectArtifactLocators(visualArtifactCasLocatorSource(input))
+    .filter((locator) => !visualCasLocatorLooksLikeImageEvidence(locator));
+}
+
+function visualCasLocatorLooksLikeImageEvidence(locator = {}) {
+  const role = (textOrNull(locator.role ?? locator.artifactRole ?? locator.artifact_role) ?? '')
+    .toLowerCase();
+  const kind = (textOrNull(locator.artifactKind ?? locator.artifact_kind) ?? '').toLowerCase();
+  const mediaType = (textOrNull(locator.mediaType ?? locator.media_type) ?? '').toLowerCase();
+  const imageRoles = new Set([
+    'before',
+    'after',
+    'diff',
+    'before_frame',
+    'after_frame',
+    'diff_frame',
+    'baseline_frame',
+    'changed_frame',
+    'difference_frame',
+  ]);
+  return mediaType.startsWith('image/')
+    || imageRoles.has(role)
+    || kind.includes('visual')
+    || kind.includes('frame')
+    || kind.includes('screenshot')
+    || kind.includes('render');
 }
 
 export async function visualArtifactTransportEvidence(input = {}, options = {}) {
   const locators = collectVisualArtifactCasLocators(input);
+  const nonVisualLocators = collectNonVisualArtifactCasLocators(input);
   const entries = [];
   const reasons = [];
   const gaps = [];
+
+  if (nonVisualLocators.length > 0) {
+    reasons.push('non_visual_artifact_transport_locator_rejected');
+    gaps.push('visual_artifact_transport_requires_image_locator');
+  }
 
   for (const locator of locators) {
     const validation = await validateArtifactLocator(locator, {
@@ -955,6 +994,8 @@ export async function visualArtifactTransportEvidence(input = {}, options = {}) 
     gpuHmrSuccess: false,
     proofAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
     locatorCount: locators.length,
+    rejectedNonVisualLocatorCount: nonVisualLocators.length,
+    rejected_non_visual_locator_count: nonVisualLocators.length,
     entries,
     reasons: [...new Set(reasons)],
     gaps: [...new Set(gaps)],
