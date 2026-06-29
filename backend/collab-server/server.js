@@ -33,6 +33,12 @@ const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const {
+  assertCodeSiteWriteAllowed,
+  assertCodeSiteWritesAllowed,
+  codeSiteContextFromRequest,
+  isCodeSiteDeniedError,
+} = require('./codesiteFs');
 
 function queueHeadlessCommandStart(ptyProcess, command) {
   const isWin = require('os').platform() === 'win32';
@@ -736,6 +742,11 @@ async function flushDocToDisk(docName, options = {}) {
       logger.warn('version_baseline_read_failed', { slug, filePath }, err);
     }
   }
+  assertCodeSiteWriteAllowed(options.codesiteContext, {
+    path: filePath,
+    kind: 'yjs_flush',
+    tool: 'file_write',
+  });
   await gitService.safeWriteFile(fullPath, content);
 
   // Update hash cache
@@ -844,6 +855,15 @@ function validateFilePath(filePath) {
   return normalized;
 }
 
+function writeCodeSiteDenied(res, err) {
+  res.writeHead(err.status || 403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_write_denied',
+    message: err.message,
+    event: err.event,
+  }));
+}
+
 /**
  * Force-flush any in-memory Yjs document content for a specific file to disk.
  * Called before selective staging (git apply) so the patch always matches the
@@ -875,6 +895,11 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   if (!fs.existsSync(repoPath)) return;
 
   const fullPath = path.join(repoPath, filePath);
+  assertCodeSiteWriteAllowed(scope.codesiteContext, {
+    path: filePath,
+    kind: 'yjs_flush',
+    tool: 'file_write',
+  });
   await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
   await fsPromises.writeFile(fullPath, content, 'utf-8');
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -2143,10 +2168,24 @@ const server = http.createServer(async (req, res) => {
       const { resolveWorkspaceCwd } = require('./terminalService');
       const { applyScaffoldFiles } = require('./scaffold');
       const cwd = await resolveWorkspaceCwd(slug, parsed.userId || undefined);
+      const codeSiteContext = codeSiteContextFromRequest(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId: parsed.userId || null,
+        effectiveUserId: parsed.userId || null,
+      });
+      assertCodeSiteWritesAllowed(codeSiteContext, (parsed.files || []).map((file) => ({
+        path: file?.path,
+        kind: 'program-scaffold',
+        tool: 'file_write',
+      })));
       const result = applyScaffoldFiles(cwd, parsed.files || []);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
       const code = err?.message === 'path_escape' ? 400 : 500;
       res.writeHead(code, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
@@ -2945,6 +2984,16 @@ const server = http.createServer(async (req, res) => {
         }
 
         // 1) Disk is authoritative — rewrite it first.
+        const codeSiteContext = codeSiteContextFromRequest(req, payload, {
+          workspaceSlug: slug,
+          actorUserId: userId,
+          effectiveUserId: targetUserId,
+        });
+        assertCodeSiteWriteAllowed(codeSiteContext, {
+          path: normalizedPath,
+          kind: 'file-version-restore',
+          tool: 'file_write',
+        });
         await gitService.safeWriteFile(fullPath, content);
 
         // 2) Pull the CRDT doc onto the restored content so live editors
@@ -3020,6 +3069,10 @@ const server = http.createServer(async (req, res) => {
           crdtReset,
         }));
       } catch (e) {
+        if (isCodeSiteDeniedError(e)) {
+          writeCodeSiteDenied(res, e);
+          return;
+        }
         logger.error('file_version_restore_failed', {}, e);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -3802,6 +3855,12 @@ const server = http.createServer(async (req, res) => {
 
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
             const bootstrapUserId = effectiveUserId || userId || null;
+            const codeSiteContext = codeSiteContextFromRequest(req, data, {
+              workspaceSlug: slug,
+              actorUserId: userId || null,
+              effectiveUserId: effectiveUserId || null,
+            });
+            const codeSiteNotifyScope = { ...notifyScope, codesiteContext: codeSiteContext };
 
             // ── Per-requester token isolation ──────────────────────────
             // Repo path / working tree → effectiveUserId (guest writes
@@ -4084,7 +4143,7 @@ const server = http.createServer(async (req, res) => {
                     // Acquire staging lock to suppress FS watcher events during staging
                     acquireStagingLock(slug, data.filePath);
                     // Force-flush Yjs content to disk before staging
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
+                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
                     result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
                     releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
@@ -4098,21 +4157,21 @@ const server = http.createServer(async (req, res) => {
                     acquireStagingLock(slug, data.filePath);
                     // Force-flush Yjs content to disk before patching so the
                     // working tree matches the editor state exactly.
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
+                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
                     releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-lines':
                     acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
+                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
                     result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
                     releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-lines':
                     acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
+                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
                     result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
                     releaseStagingLock(slug, data.filePath);
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
@@ -4155,6 +4214,11 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'discard':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.filePath,
+                      kind: 'discard',
+                      tool: 'git_worktree',
+                    });
                     result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
@@ -4166,6 +4230,11 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: '**',
+                      kind: 'discard-all',
+                      tool: 'git_worktree',
+                    });
                     pauseWatcher(slug);
                     try {
                       result = await gitService.discardAll(slug, effectiveUserId);
@@ -4181,6 +4250,11 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.filePath,
+                      kind: 'resolve-ours',
+                      tool: 'git_worktree',
+                    });
                     result = await gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId);
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
@@ -4188,6 +4262,11 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'resolve-theirs':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.filePath,
+                      kind: 'resolve-theirs',
+                      tool: 'git_worktree',
+                    });
                     result = await gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId);
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
@@ -4195,9 +4274,19 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'mark-resolved':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.filePath,
+                      kind: 'mark-resolved',
+                      tool: 'git_worktree',
+                    });
                     result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
                     break;
                 case 'abort-merge':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: '**',
+                      kind: 'abort-merge',
+                      tool: 'git_worktree',
+                    });
                     result = await gitService.abortMerge(slug, effectiveUserId);
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
@@ -4367,7 +4456,7 @@ const server = http.createServer(async (req, res) => {
                       // so calling syncFile() here was redundant AND prevented
                       // the very first version from being restorable.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
-                      await flushDocToDisk(docKey, { contentOverride: data.content });
+                      await flushDocToDisk(docKey, { contentOverride: data.content, codesiteContext: codeSiteContext });
                     }
                     result = { success: true };
                     break;
@@ -4439,6 +4528,11 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.path,
+                      kind: 'write-file',
+                      tool: 'file_write',
+                    });
                     await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4457,15 +4551,20 @@ const server = http.createServer(async (req, res) => {
                         continue;
                       }
                       try {
+                        assertCodeSiteWriteAllowed(codeSiteContext, {
+                          path: f.path,
+                          kind: 'apply-shadow-patch',
+                          tool: 'shadow_patch',
+                        });
                         const docName = buildDocName(slug, f.path, notifyScope);
                         const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
                         if (op?.ok) {
                           // Persist to disk so git sees the same content.
-                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
                           result.applied.push({ path: f.path, strategy: op.strategy });
                         } else {
                           // CRDT path failed — fall back to direct write.
-                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
                           await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
                           result.applied.push({ path: f.path, strategy: 'direct-fallback' });
                         }
@@ -4479,12 +4578,22 @@ const server = http.createServer(async (req, res) => {
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
+                  assertCodeSiteWritesAllowed(codeSiteContext, (data.files || []).map((file) => ({
+                    path: file?.path,
+                    kind: 'write-files-batch',
+                    tool: 'file_write',
+                  })));
                   result = await gitService.writeFilesBatch(slug, data.files, {
                     syncToGcs: data.syncToGcs !== false,
                     userId: effectiveUserId,
                   });
                   break;
                 case 'create-directory':
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.path,
+                      kind: 'create-directory',
+                      tool: 'file_write',
+                    });
                     await gitService.createDirectory(slug, data.path, effectiveUserId);
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4492,6 +4601,11 @@ const server = http.createServer(async (req, res) => {
                 case 'delete-item':
                     // Delete a file or folder from the workspace
                     console.log('[Collab] delete-item called for:', slug, data.path);
+                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                      path: data.path,
+                      kind: 'delete-item',
+                      tool: 'file_delete',
+                    });
                     result = await gitService.deleteItem(slug, data.path, effectiveUserId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
@@ -4501,6 +4615,10 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'rename-item':
                     // Rename / move a file or directory
+                    assertCodeSiteWritesAllowed(codeSiteContext, [
+                      { path: data.oldPath, kind: 'rename-item:old', tool: 'file_rename' },
+                      { path: data.newPath, kind: 'rename-item:new', tool: 'file_rename' },
+                    ]);
                     result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
@@ -4572,6 +4690,10 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
         } catch (e) {
+            if (isCodeSiteDeniedError(e)) {
+                writeCodeSiteDenied(res, e);
+                return;
+            }
             // Handle structured GitError responses
             if (e.code && e.toJSON) {
                 const statusCode = e.code === 'REPO_NOT_FOUND' || e.code === 'REPO_NOT_INITIALIZED' ? 404 : 
@@ -4586,6 +4708,11 @@ const server = http.createServer(async (req, res) => {
             
             // Legacy error handling for unstructured errors
             const msg = e?.message || '';
+            if (['path_required', 'path_null_byte', 'path_escape'].includes(msg)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid_path', message: msg }));
+                return;
+            }
             if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination') || msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog') || msg.includes('repository not found') || msg.includes('remote: repository not found')) {
                 console.debug('[Collab] Client error in /git/:', msg);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
