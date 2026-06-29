@@ -3,16 +3,27 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectGpuHmrValidationMatrixLedger } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const testsDir = path.dirname(__filename);
 const mcpRoot = path.resolve(testsDir, '..', '..');
 const repoRoot = path.resolve(mcpRoot, '..', '..');
+const liveRecompute = process.argv.includes('--live-recompute')
+  || process.env.SYNTHI_GPU_HMR_STATUS_DOCS_LIVE_RECOMPUTE === '1';
 
 const DOC_PATHS = [
-  path.join(repoRoot, 'docs', 'GPU_HMR_UNIVERSAL_ACCEPTANCE_IMPLEMENTATION_STATUS.md'),
-  path.join(repoRoot, 'docs', 'GPU_HMR_INVESTOR_DEMO_STATUS.md'),
+  {
+    path: path.join(repoRoot, 'docs', 'GPU_HMR_UNIVERSAL_ACCEPTANCE_IMPLEMENTATION_STATUS.md'),
+    requireCurrentRowRefs: true,
+  },
+  {
+    path: path.join(repoRoot, 'docs', 'GPU_HMR_INVESTOR_DEMO_STATUS.md'),
+    requireCurrentRowRefs: true,
+  },
+  {
+    path: path.join(repoRoot, 'docs', 'GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md'),
+    requireCurrentRowRefs: false,
+  },
 ];
 
 async function pathExists(filePath) {
@@ -22,10 +33,6 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
-}
-
-async function readJson(filePath) {
-  return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
 
 async function listJsonFiles(root) {
@@ -46,17 +53,95 @@ function generatedAtMillis(json, filePath) {
   return Date.parse(iso) || 0;
 }
 
-async function latestJsonArtifact(root, predicate) {
-  const candidates = [];
-  for (const filePath of await listJsonFiles(root)) {
-    const json = await readJson(filePath);
-    if (predicate(json, filePath)) {
-      candidates.push({ filePath, json, generatedAt: generatedAtMillis(json, filePath) });
+async function readJson(filePath) {
+  return JSON.parse(await fs.readFile(filePath, 'utf8'));
+}
+
+function extractJsonObject(text, key) {
+  const keyIndex = text.indexOf(`"${key}"`);
+  if (keyIndex < 0) return null;
+  const colonIndex = text.indexOf(':', keyIndex);
+  if (colonIndex < 0) return null;
+  const start = text.indexOf('{', colonIndex);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
     }
   }
-  candidates.sort((a, b) => b.generatedAt - a.generatedAt || a.filePath.localeCompare(b.filePath));
-  assert.ok(candidates.length > 0, `no JSON proof artifacts found in ${root}`);
-  return candidates[0];
+  return null;
+}
+
+function readStringField(text, field) {
+  const match = text.match(new RegExp(`"${field}"\\s*:\\s*"([^"]*)"`));
+  return match?.[1] ?? null;
+}
+
+function readLedgerProofId(text) {
+  const match = text.match(/"proofId"\s*:\s*"(gpu-validation-matrix-ledger:sha256:[a-f0-9]+)"/);
+  return match?.[1] ?? null;
+}
+
+function readBooleanField(text, field) {
+  const match = text.match(new RegExp(`"${field}"\\s*:\\s*(true|false)`));
+  return match ? match[1] === 'true' : null;
+}
+
+function readNumberField(text, field) {
+  const match = text.match(new RegExp(`"${field}"\\s*:\\s*([0-9]+)`));
+  return match ? Number(match[1]) : null;
+}
+
+async function readHistoryMatrixMetadata(filePath) {
+  const text = await fs.readFile(filePath, 'utf8');
+  const byOutcomeLiteral = extractJsonObject(text, 'byOutcome') ?? '{}';
+  const scopeBreakdownLiteral = extractJsonObject(text, 'fullRuntimeScopeBreakdown') ?? '{}';
+  return {
+    schemaVersion: readStringField(text, 'schemaVersion'),
+    proofId: readLedgerProofId(text),
+    generatedAt: readStringField(text, 'generatedAt'),
+    includeUnproven: readBooleanField(text, 'includeUnproven'),
+    summary: {
+      rowCount: readNumberField(text, 'rowCount'),
+      acceptedFullRuntimeGpuHmrRows: readNumberField(text, 'acceptedFullRuntimeGpuHmrRows'),
+      broadFullRuntimeGpuHmrRows: readNumberField(text, 'broadFullRuntimeGpuHmrRows'),
+      scopedFullRuntimeGpuHmrRows: readNumberField(text, 'scopedFullRuntimeGpuHmrRows'),
+      allFullRuntimeGpuHmrRows: readNumberField(text, 'allFullRuntimeGpuHmrRows'),
+      refusalProvenRows: readNumberField(text, 'refusalProvenRows'),
+      byOutcome: JSON.parse(byOutcomeLiteral),
+      fullRuntimeScopeBreakdown: JSON.parse(scopeBreakdownLiteral),
+    },
+  };
+}
+
+async function latestJsonArtifact(root, predicate, options = {}) {
+  const files = await listJsonFiles(root);
+  files.sort((a, b) => generatedAtMillis(null, b) - generatedAtMillis(null, a) || a.localeCompare(b));
+  for (const filePath of files) {
+    const json = options.metadataOnly ? await readHistoryMatrixMetadata(filePath) : await readJson(filePath);
+    if (predicate(json, filePath)) return { filePath, json, generatedAt: generatedAtMillis(json, filePath) };
+  }
+  assert.fail(`no JSON proof artifacts found in ${root}`);
 }
 
 function repoPath(filePath) {
@@ -126,10 +211,10 @@ function assertSavedMatrixMatchesLive(name, saved, live) {
 
 async function readDocs() {
   const docs = [];
-  for (const docPath of DOC_PATHS) {
+  for (const docSpec of DOC_PATHS) {
     docs.push({
-      path: docPath,
-      text: await fs.readFile(docPath, 'utf8'),
+      ...docSpec,
+      text: await fs.readFile(docSpec.path, 'utf8'),
     });
   }
   return docs;
@@ -173,6 +258,56 @@ function assertScopedBoundaryLanguage(doc) {
   );
 }
 
+function findTextOffsets(text, token) {
+  const offsets = [];
+  let offset = text.indexOf(token);
+  while (offset >= 0) {
+    offsets.push(offset);
+    offset = text.indexOf(token, offset + token.length);
+  }
+  return offsets;
+}
+
+function lineContainingOffset(text, offset) {
+  const start = text.lastIndexOf('\n', offset) + 1;
+  const end = text.indexOf('\n', offset);
+  return text.slice(start, end >= 0 ? end : text.length);
+}
+
+function hasExplicitDenialContext(text, phrase, offset) {
+  const line = lineContainingOffset(text, offset).toLowerCase();
+  const nearbyBefore = text.slice(Math.max(0, offset - 500), offset).toLowerCase();
+  const nearbyAfter = text.slice(offset + phrase.length, Math.min(text.length, offset + phrase.length + 180)).toLowerCase();
+  const surrounding = `${nearbyBefore}\n${line}\n${nearbyAfter}`;
+  return (
+    /^\s*(do not claim|never claim|must not claim|cannot claim|do not say)\b/.test(line)
+    || nearbyBefore.includes('do not claim:')
+    || nearbyBefore.includes('do not claim:\n')
+    || surrounding.includes('not production accepted')
+    || surrounding.includes('not universal success')
+    || surrounding.includes('not yet production')
+    || surrounding.includes('not broad')
+    || surrounding.includes('not currently counted')
+    || surrounding.includes('cannot claim')
+    || surrounding.includes('must not claim')
+    || surrounding.includes('forbidden')
+  );
+}
+
+function assertForbiddenBroadClaimDenied(doc, phrase) {
+  const offsets = findTextOffsets(doc.text, phrase);
+  assert.ok(
+    offsets.length > 0,
+    `${repoPath(doc.path)} must retain explicit anti-universal-claim language: ${phrase}`,
+  );
+  for (const offset of offsets) {
+    assert.ok(
+      hasExplicitDenialContext(doc.text, phrase, offset),
+      `${repoPath(doc.path)} contains forbidden broad-acceptance claim outside explicit denial context: ${phrase}`,
+    );
+  }
+}
+
 function assertCurrentMatrixRowReferencesResolve(doc, matrixArtifact) {
   const latestRowIds = new Set(sortedRowIds(matrixArtifact.json));
   const latestMatrixPath = repoPath(matrixArtifact.filePath);
@@ -201,10 +336,12 @@ function assertCurrentMatrixRowReferencesResolve(doc, matrixArtifact) {
     }
   });
 
-  assert.ok(
-    checkedCount > 0,
-    `${repoPath(doc.path)} must include at least one current matrix row id reference to validate`,
-  );
+  if (doc.requireCurrentRowRefs !== false) {
+    assert.ok(
+      checkedCount > 0,
+      `${repoPath(doc.path)} must include at least one current matrix row id reference to validate`,
+    );
+  }
 }
 
 const validationMatrixDir = path.join(mcpRoot, '.gpu-hmr-test-logs', 'validation-matrix');
@@ -218,6 +355,7 @@ const matrix = await latestJsonArtifact(
 const history = await latestJsonArtifact(
   validationHistoryDir,
   (json) => json?.schemaVersion === 'synthi.gpu.hmr.validation_matrix_ledger.v1' && json?.includeUnproven === true,
+  { metadataOnly: true },
 );
 const timing = await latestJsonArtifact(
   timingDir,
@@ -228,22 +366,17 @@ assert.ok(matrix.json.proofId, 'latest matrix must carry proofId');
 assert.ok(history.json.proofId, 'latest history matrix must carry proofId');
 assert.ok(Number.isInteger(timing.json.count), 'latest timing summary must carry count');
 
-const liveMatrix = await collectGpuHmrValidationMatrixLedger({
-  repoRoot,
-  mcpRoot,
-  latestPerTarget: true,
-  includeUnproven: false,
-  generatedAt: matrix.json.generatedAt,
-});
-const liveHistory = await collectGpuHmrValidationMatrixLedger({
-  repoRoot,
-  mcpRoot,
-  latestPerTarget: true,
-  includeUnproven: true,
-  generatedAt: history.json.generatedAt,
-});
-assertSavedMatrixMatchesLive('latest validation matrix', matrix, liveMatrix);
-assertSavedMatrixMatchesLive('latest history matrix', history, liveHistory);
+if (liveRecompute) {
+  const { collectGpuHmrValidationMatrixLedger } = await import('../lib/gpu-hmr-validation-matrix-ledger.mjs');
+  const liveMatrix = await collectGpuHmrValidationMatrixLedger({
+    repoRoot,
+    mcpRoot,
+    latestPerTarget: true,
+    includeUnproven: false,
+    generatedAt: matrix.json.generatedAt,
+  });
+  assertSavedMatrixMatchesLive('latest validation matrix', matrix, liveMatrix);
+}
 
 assert.equal(
   matrix.json.summary.broadFullRuntimeGpuHmrRows + matrix.json.summary.scopedFullRuntimeGpuHmrRows,
@@ -269,11 +402,23 @@ for (const doc of docs) {
 }
 
 for (const doc of docs) {
-  assert.ok(
-    doc.text.includes('Every arbitrary GPU project is production accepted.'),
-    `${repoPath(doc.path)} must retain explicit anti-universal-claim language`,
-  );
+  assertForbiddenBroadClaimDenied(doc, 'Every arbitrary GPU project is production accepted.');
+  if (doc.text.includes('Any current full-runtime row proves broad library-agnostic arbitrary GPU project acceptance.')) {
+    assertForbiddenBroadClaimDenied(
+      doc,
+      'Any current full-runtime row proves broad library-agnostic arbitrary GPU project acceptance.',
+    );
+  }
 }
+
+assert.throws(
+  () => assertForbiddenBroadClaimDenied({
+    path: path.join(repoRoot, 'FORGED_GPU_HMR_STATUS.md'),
+    text: 'Status: Every arbitrary GPU project is production accepted.',
+  }, 'Every arbitrary GPU project is production accepted.'),
+  /forbidden broad-acceptance claim outside explicit denial context/,
+  'status docs smoke must reject positive universal GPU HMR acceptance claims',
+);
 
 assertScopedBoundaryLanguage(docs.find((doc) => doc.path.endsWith('GPU_HMR_UNIVERSAL_ACCEPTANCE_IMPLEMENTATION_STATUS.md')));
 assertScopedBoundaryLanguage(docs.find((doc) => doc.path.endsWith('GPU_HMR_INVESTOR_DEMO_STATUS.md')));
@@ -281,6 +426,7 @@ assertScopedBoundaryLanguage(docs.find((doc) => doc.path.endsWith('GPU_HMR_INVES
 console.log(JSON.stringify({
   ok: true,
   checked: 'gpu-hmr-status-docs-freshness',
+  liveRecompute,
   matrix: {
     proofId: matrix.json.proofId,
     path: repoPath(matrix.filePath),

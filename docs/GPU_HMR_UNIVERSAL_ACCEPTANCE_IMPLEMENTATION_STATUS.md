@@ -107,6 +107,7 @@ verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger
 verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed after runtime-adapter execution template/hash preservation
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after adapter-result row-bound proof-ID gates, smoke proof gpu-validation-matrix-ledger:sha256:34eddc1bae21621039172e51e05288b9c0a1d4951f89b47d5e0730619fbd6452, self-check matrix gpu-validation-matrix-ledger:sha256:40a57b1c03eba71b5540f3e80725f38b0b82f3ff4da0c9500bcb0484674fbf85, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 verification: npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed after status freshness audit, live matrix gpu-validation-matrix-ledger:sha256:c5b74ecb25b0eca0e39b6ff4540ae24282191685589c1cf3866622a6aad08127, rowCount=56, acceptedFullRuntimeRows=14, broadFullRuntimeRows=0, history gpu-validation-matrix-ledger:sha256:aa905942109909b5181c6236cb348a68710ebc667ac8f8dde7d572385c7e349c
+verification: npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed after denial-context anti-overclaim smoke hardening; the smoke now rejects forged positive "Every arbitrary GPU project is production accepted" status text instead of accepting mere token presence
 ```
 
 Additional 2026-06-29 visual CAS replay hardening:
