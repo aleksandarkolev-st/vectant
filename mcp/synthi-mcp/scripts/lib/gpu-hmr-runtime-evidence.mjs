@@ -36,6 +36,38 @@ function integerValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function firstRuntimeField(fields, ...keys) {
+  if (!fields || typeof fields !== 'object') return null;
+  for (const key of keys) {
+    const value = fields[key];
+    if (value !== undefined && value !== null && String(value).trim()) return value;
+  }
+  return null;
+}
+
+function dim3Text(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const match = String(value).trim().match(/^\(?\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)?$/);
+  return match ? `${Number(match[1])}x${Number(match[2])}x${Number(match[3])}` : null;
+}
+
+function dim3LogField(line, key) {
+  const match = String(line ?? '').match(
+    new RegExp(String.raw`\b${key}=\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)`, 'i'),
+  );
+  return match ? `${Number(match[1])}x${Number(match[2])}x${Number(match[3])}` : null;
+}
+
+function runtimeDim3Field(line, fields, ...keys) {
+  const direct = dim3Text(firstRuntimeField(fields, ...keys));
+  if (direct) return direct;
+  for (const key of keys) {
+    const parsed = dim3LogField(line, key);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 function compactStringList(values) {
   return Array.isArray(values)
     ? [...new Set(values.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))]
@@ -106,6 +138,15 @@ function evidenceRefToken(value) {
     .replace(/[^A-Za-z0-9_.:-]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return token || 'unknown';
+}
+
+function nativeLaunchEvidenceRef(kind, record) {
+  return [
+    `worker-log:${kind}`,
+    evidenceRefToken(record?.runtimeSession),
+    evidenceRefToken(record?.kernelSymbol ?? record?.api),
+    Number.isFinite(record?.sequence) ? record.sequence : 'unknown',
+  ].join(':');
 }
 
 function processIdFromRuntimeSession(value) {
@@ -1406,6 +1447,28 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
           ?? fields.kernel
           ?? fields.symbol
           ?? null,
+        generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+        epoch: firstRuntimeField(fields, 'epoch', 'active_epoch', 'activeEpoch'),
+        dispatchTimestamp: integerValue(
+          fields.dispatch_timestamp
+          ?? fields.dispatch_timestamp_ms
+          ?? fields.dispatchTimestamp
+          ?? fields.dispatchTimestampMs,
+        ),
+        gridDimensions: runtimeDim3Field(line, fields, 'grid', 'grid_dimensions', 'gridDimensions'),
+        blockDimensions: runtimeDim3Field(line, fields, 'block', 'block_dimensions', 'blockDimensions'),
+        argsPtr: firstRuntimeField(fields, 'args_ptr', 'argsPtr', 'arguments_ptr', 'argumentsPtr'),
+        argsCount: integerValue(firstRuntimeField(fields, 'args', 'arg_count', 'argCount', 'args_count', 'argsCount')),
+        streamId: firstRuntimeField(fields, 'stream', 'stream_id', 'streamId'),
+        sharedMemoryBytes: integerValue(
+          firstRuntimeField(fields, 'shared_bytes', 'shared_memory_bytes', 'sharedMemoryBytes', 'shared_mem_bytes'),
+        ),
+        dispatcherRegistrationId:
+          firstRuntimeField(fields, 'dispatcher_registration_id', 'dispatcherRegistrationId'),
+        dispatchTableHash: firstRuntimeField(fields, 'dispatch_table_hash', 'dispatchTableHash'),
+        dispatchTableEntryId:
+          firstRuntimeField(fields, 'dispatch_table_entry_id', 'dispatchTableEntryId'),
+        dispatch: fields.dispatch ?? null,
         realLaunchResolved: boolValue(fields.real_launch_resolved ?? fields.realLaunchResolved),
       };
     })
@@ -1430,6 +1493,29 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
           ?? fields.kernel
           ?? fields.symbol
           ?? null,
+        generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+        epoch: firstRuntimeField(fields, 'epoch', 'active_epoch', 'activeEpoch'),
+        dispatchTimestamp: integerValue(
+          fields.dispatch_timestamp
+          ?? fields.dispatch_timestamp_ms
+          ?? fields.dispatchTimestamp
+          ?? fields.dispatchTimestampMs,
+        ),
+        gridDimensions: runtimeDim3Field(line, fields, 'grid', 'grid_dimensions', 'gridDimensions'),
+        blockDimensions: runtimeDim3Field(line, fields, 'block', 'block_dimensions', 'blockDimensions'),
+        argsPtr: firstRuntimeField(fields, 'args_ptr', 'argsPtr', 'arguments_ptr', 'argumentsPtr'),
+        argsCount: integerValue(firstRuntimeField(fields, 'args', 'arg_count', 'argCount', 'args_count', 'argsCount')),
+        streamId: firstRuntimeField(fields, 'stream', 'stream_id', 'streamId'),
+        sharedMemoryBytes: integerValue(
+          firstRuntimeField(fields, 'shared_bytes', 'shared_memory_bytes', 'sharedMemoryBytes', 'shared_mem_bytes'),
+        ),
+        dispatcherRegistrationId:
+          firstRuntimeField(fields, 'dispatcher_registration_id', 'dispatcherRegistrationId'),
+        dispatchTableHash: firstRuntimeField(fields, 'dispatch_table_hash', 'dispatchTableHash'),
+        dispatchTableEntryId:
+          firstRuntimeField(fields, 'dispatch_table_entry_id', 'dispatchTableEntryId'),
+        result: integerValue(fields.result),
+        dispatch: fields.dispatch ?? null,
       };
     })
     .filter((record) =>
@@ -1558,6 +1644,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     evidenceRefToken(record.api),
     Number.isFinite(record.sequence) ? record.sequence : 'unknown',
   ].join(':'));
+  const nativeLaunchAttemptEvidenceRefs = nativeLaunchAttemptRecords.slice(-20).map((record) =>
+    nativeLaunchEvidenceRef('native_launch_attempt', record)
+  );
+  const nativeLaunchEvidenceRefs = nativeLaunchRecords.slice(-20).map((record) =>
+    nativeLaunchEvidenceRef('native_launch_observed', record)
+  );
   const runtimeErrorEvidenceRefs = compactStringList(
     runtimeErrorRecords.map((record) => record.evidence_ref),
   );
@@ -1731,13 +1823,29 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     native_launch_function_ptrs: compactStringList(
       [...nativeLaunchAttemptRecords, ...nativeLaunchRecords].map((record) => record.functionPtr),
     ),
+    native_launch_attempt_evidence_refs: nativeLaunchAttemptEvidenceRefs,
+    native_launch_evidence_refs: nativeLaunchEvidenceRefs,
     native_launch_attempt_records: nativeLaunchAttemptRecords.slice(-20).map((record) => ({
       runtime_session: record.runtimeSession,
       sequence: record.sequence,
       api: record.api,
       function_ptr: record.functionPtr,
       kernel_symbol: record.kernelSymbol,
+      generation: record.generation,
+      epoch: record.epoch,
+      dispatch_timestamp: record.dispatchTimestamp,
+      grid_dimensions: record.gridDimensions,
+      block_dimensions: record.blockDimensions,
+      args_ptr: record.argsPtr,
+      args_count: record.argsCount,
+      stream_id: record.streamId,
+      shared_memory_bytes: record.sharedMemoryBytes,
+      dispatcher_registration_id: record.dispatcherRegistrationId,
+      dispatch_table_hash: record.dispatchTableHash,
+      dispatch_table_entry_id: record.dispatchTableEntryId,
+      dispatch: record.dispatch,
       real_launch_resolved: record.realLaunchResolved,
+      evidence_ref: nativeLaunchEvidenceRef('native_launch_attempt', record),
     })),
     native_launch_records: nativeLaunchRecords.slice(-20).map((record) => ({
       runtime_session: record.runtimeSession,
@@ -1745,6 +1853,21 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       api: record.api,
       function_ptr: record.functionPtr,
       kernel_symbol: record.kernelSymbol,
+      generation: record.generation,
+      epoch: record.epoch,
+      dispatch_timestamp: record.dispatchTimestamp,
+      grid_dimensions: record.gridDimensions,
+      block_dimensions: record.blockDimensions,
+      args_ptr: record.argsPtr,
+      args_count: record.argsCount,
+      stream_id: record.streamId,
+      shared_memory_bytes: record.sharedMemoryBytes,
+      dispatcher_registration_id: record.dispatcherRegistrationId,
+      dispatch_table_hash: record.dispatchTableHash,
+      dispatch_table_entry_id: record.dispatchTableEntryId,
+      result: record.result,
+      dispatch: record.dispatch,
+      evidence_ref: nativeLaunchEvidenceRef('native_launch_observed', record),
     })),
     native_launch_observer_enabled: nativeLaunchObserverEnabled,
     native_launch_observer_saw_no_launch: nativeLaunchObserverSawNoLaunch,
@@ -1824,6 +1947,10 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeArrayAllocationFailureBeforeLaunch: evidence.native_array_allocation_failure_before_launch,
     nativeLaunchObserverReadyEvidenceRefs: evidence.native_launch_observer_ready_evidence_refs,
     nativeFunctionResolutionEvidenceRefs: evidence.native_function_resolution_evidence_refs,
+    nativeLaunchAttemptEvidenceRefs: evidence.native_launch_attempt_evidence_refs,
+    nativeLaunchEvidenceRefs: evidence.native_launch_evidence_refs,
+    nativeLaunchAttemptRecords: evidence.native_launch_attempt_records,
+    nativeLaunchRecords: evidence.native_launch_records,
     nativeTextureObjectEvidenceRefs: evidence.native_texture_object_evidence_refs,
     nativeArrayAllocationEvidenceRefs: evidence.native_array_allocation_evidence_refs,
     nativeArrayAllocationRecords: evidence.native_array_allocation_records,

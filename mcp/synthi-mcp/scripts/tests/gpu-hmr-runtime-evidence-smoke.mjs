@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import {
+  originalHostPathProofFromRuntimeEvidence,
   runtimeArtifactTransportEvidence,
+  runtimeEpochSwapEvidence,
   runtimeHostIdentityEvidence,
   runtimeOriginalHostPathEvidence,
   runtimeOutputOracleEvidence,
@@ -190,6 +192,112 @@ assert.equal(bridgeHostEvidence.runtime_evidence_observed, true);
 assert.equal(bridgeHostEvidence.dispatch_entry_runtime_verified, true);
 assert.equal(bridgeHostEvidence.matching_dispatch_boundary_observed, true);
 
+const nativeOnlyLines = [
+  [
+    '[gpu-runtime-boundary] native_launch_observer_ready',
+    'runtime_session=native-session',
+    'pid=4242',
+    'apis=genericLaunch',
+    'function_resolution_apis=hipModuleGetFunction',
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] native_launch_attempt',
+    'api=genericLaunch',
+    'runtime_session=native-session',
+    'sequence=7',
+    'function_ptr=0x1',
+    'kernel_symbol=NativeKernel',
+    'grid=(2,3,4)',
+    'block=(8,4,1)',
+    'args_ptr=0x2',
+    'stream=0x3',
+    'shared_bytes=64',
+    'real_launch_resolved=true',
+    'dispatch=attempted-native',
+    'attachment_provenance=native_runtime_intercept',
+  ].join(' '),
+  [
+    '[gpu-runtime-boundary] native_launch_observed',
+    'api=genericLaunch',
+    'runtime_session=native-session',
+    'sequence=7',
+    'function_ptr=0x1',
+    'kernel_symbol=NativeKernel',
+    'grid=(2,3,4)',
+    'block=(8,4,1)',
+    'args_ptr=0x2',
+    'stream=0x3',
+    'shared_bytes=64',
+    'result=0',
+    'dispatch=observed-native',
+    'attachment_provenance=native_runtime_intercept',
+  ].join(' '),
+];
+const nativeOnlyEvidence = runtimeOriginalHostPathEvidence(nativeOnlyLines);
+assert.equal(nativeOnlyEvidence.native_launch_attempt_count, 1);
+assert.equal(nativeOnlyEvidence.native_launch_count, 1);
+assert.equal(nativeOnlyEvidence.native_launch_observed, true);
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].grid_dimensions, '2x3x4');
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].block_dimensions, '8x4x1');
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].stream_id, '0x3');
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].shared_memory_bytes, 64);
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].args_ptr, '0x2');
+assert.equal(nativeOnlyEvidence.native_launch_attempt_records[0].dispatch, 'attempted-native');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].grid_dimensions, '2x3x4');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].block_dimensions, '8x4x1');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].stream_id, '0x3');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].shared_memory_bytes, 64);
+assert.equal(nativeOnlyEvidence.native_launch_records[0].args_ptr, '0x2');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].dispatch, 'observed-native');
+assert.equal(nativeOnlyEvidence.native_launch_records[0].result, 0);
+assert.deepEqual(nativeOnlyEvidence.native_launch_attempt_evidence_refs, [
+  'worker-log:native_launch_attempt:native-session:NativeKernel:7',
+]);
+assert.deepEqual(nativeOnlyEvidence.native_launch_evidence_refs, [
+  'worker-log:native_launch_observed:native-session:NativeKernel:7',
+]);
+assert.deepEqual(nativeOnlyEvidence.evidence_refs, []);
+assert.equal(nativeOnlyEvidence.attached_to_original_host_path, false);
+assert.equal(nativeOnlyEvidence.runtime_evidence_observed, false);
+assert.equal(nativeOnlyEvidence.matching_dispatch_boundary_observed, false);
+assert.equal(nativeOnlyEvidence.dispatch_boundary_count, 0);
+assert.equal(nativeOnlyEvidence.launch_boundary_count, 0);
+assert.equal(runtimeArtifactTransportEvidence(nativeOnlyLines).matched_count, 0);
+assert.equal(runtimeEpochSwapEvidence(nativeOnlyLines).published_count, 0);
+assert.equal(runtimeOutputOracleEvidence(nativeOnlyLines).matched_count, 0);
+
+const nativeOnlyProof = originalHostPathProofFromRuntimeEvidence(nativeOnlyLines, { required: true });
+assert.equal(nativeOnlyProof.proof.attachmentProven, false);
+assert.equal(nativeOnlyProof.proof.runtimeEvidenceObserved, false);
+assert.deepEqual(nativeOnlyProof.proof.runtimeEvidenceRefs, []);
+assert.equal(nativeOnlyProof.proof.dispatchBoundaryObserved, false);
+assert.equal(nativeOnlyProof.proof.nativeLaunchObserved, true);
+assert.equal(nativeOnlyProof.proof.diagnosticEvidenceRefs.includes(
+  'worker-log:native_launch_observed:native-session:NativeKernel:7',
+), true);
+
+const nativeAttemptOnlyEvidence = runtimeOriginalHostPathEvidence([
+  [
+    '[gpu-runtime-boundary] native_launch_attempt',
+    'api=genericLaunch',
+    'runtime_session=native-session',
+    'sequence=8',
+    'function_ptr=0x1',
+    'kernel_symbol=NativeKernel',
+    'grid=(1,1,1)',
+    'block=(1,1,1)',
+    'args_ptr=0x2',
+    'stream=0x3',
+    'shared_bytes=0',
+    'result=0',
+    'dispatch=ok',
+    'attachment_provenance=native_runtime_intercept',
+  ].join(' '),
+]);
+assert.equal(nativeAttemptOnlyEvidence.native_launch_attempt_observed, true);
+assert.equal(nativeAttemptOnlyEvidence.native_launch_observed, false);
+assert.equal(nativeAttemptOnlyEvidence.native_launch_attempt_without_result, true);
+
 const hostEvidence = runtimeHostIdentityEvidence(bridgeLines, {
   expectedGenerationLineage: {
     previousGeneration: 1,
@@ -208,6 +316,13 @@ const forgedBridgeEvidence = runtimeOriginalHostPathEvidence(bridgeLines.map((ca
 ));
 assert.equal(forgedBridgeEvidence.runtime_evidence_observed, false);
 assert.equal(forgedBridgeEvidence.matching_dispatch_boundary_observed, false);
+const forgedBridgeWithNativeEvidence = runtimeOriginalHostPathEvidence([
+  ...bridgeLines.map((candidate) => candidate.replace('proof_bridge=complete', 'proof_bridge=missing')),
+  ...nativeOnlyLines,
+]);
+assert.equal(forgedBridgeWithNativeEvidence.runtime_evidence_observed, false);
+assert.equal(forgedBridgeWithNativeEvidence.matching_dispatch_boundary_observed, false);
+assert.equal(forgedBridgeWithNativeEvidence.native_launch_observed, true);
 
 const missingRamIdentityEvidence = runtimeArtifactTransportEvidence([
   [

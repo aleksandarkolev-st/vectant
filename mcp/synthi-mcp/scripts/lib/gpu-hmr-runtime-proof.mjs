@@ -3494,6 +3494,28 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     observation.nativeFunctionResolutionEvidenceRefs
     ?? observation.native_function_resolution_evidence_refs,
   );
+  const nativeLaunchAttemptEvidenceRefs = compactStringList(
+    observation.nativeLaunchAttemptEvidenceRefs
+    ?? observation.native_launch_attempt_evidence_refs,
+  );
+  const nativeLaunchEvidenceRefs = compactStringList(
+    observation.nativeLaunchEvidenceRefs
+    ?? observation.native_launch_evidence_refs,
+  );
+  const nativeLaunchAttemptRecords = Array.isArray(
+    observation.nativeLaunchAttemptRecords ?? observation.native_launch_attempt_records,
+  )
+    ? (observation.nativeLaunchAttemptRecords ?? observation.native_launch_attempt_records)
+      .filter((record) => record && typeof record === 'object')
+      .slice(-20)
+    : [];
+  const nativeLaunchRecords = Array.isArray(
+    observation.nativeLaunchRecords ?? observation.native_launch_records,
+  )
+    ? (observation.nativeLaunchRecords ?? observation.native_launch_records)
+      .filter((record) => record && typeof record === 'object')
+      .slice(-20)
+    : [];
   const nativeTextureObjectEvidenceRefs = compactStringList(
     observation.nativeTextureObjectEvidenceRefs
     ?? observation.native_texture_object_evidence_refs,
@@ -3552,6 +3574,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     ...runtimeCapabilityEvidenceRefs,
     ...nativeLaunchObserverReadyEvidenceRefs,
     ...nativeFunctionResolutionEvidenceRefs,
+    ...nativeLaunchAttemptEvidenceRefs,
+    ...nativeLaunchEvidenceRefs,
     ...nativeTextureObjectEvidenceRefs,
     ...nativeArrayAllocationEvidenceRefs,
     ...runtimeErrorEvidenceRefs,
@@ -3627,6 +3651,10 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     nativeArrayAllocationFailureBeforeLaunch,
     nativeLaunchObserverReadyEvidenceRefs,
     nativeFunctionResolutionEvidenceRefs,
+    nativeLaunchAttemptEvidenceRefs,
+    nativeLaunchEvidenceRefs,
+    nativeLaunchAttemptRecords,
+    nativeLaunchRecords,
     nativeTextureObjectEvidenceRefs,
     nativeArrayAllocationEvidenceRefs,
     nativeArrayAllocationRecords,
