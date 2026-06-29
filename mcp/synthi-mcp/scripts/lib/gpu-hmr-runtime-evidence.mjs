@@ -900,6 +900,92 @@ function outputOracleRecord(line) {
     readbackSampleStride: integerValue(fields.readback_sample_stride),
     readbackSampleSha256: fields.readback_sample_sha256 ?? null,
     readbackSampleHex: fields.readback_sample_hex ?? null,
+    rawReadbackBin:
+      fields.raw_readback_bin
+      ?? fields.rawReadbackBin
+      ?? fields.raw_readback_path
+      ?? fields.rawReadbackPath
+      ?? null,
+    rawReadbackCasManifest:
+      fields.raw_readback_cas_manifest
+      ?? fields.rawReadbackCasManifest
+      ?? fields.raw_readback_locator
+      ?? fields.rawReadbackLocator
+      ?? null,
+    readbackSchemaJson:
+      fields.readback_schema_json
+      ?? fields.readbackSchemaJson
+      ?? fields.readback_schema_path
+      ?? fields.readbackSchemaPath
+      ?? null,
+    readbackSchemaCasManifest:
+      fields.readback_schema_cas_manifest
+      ?? fields.readbackSchemaCasManifest
+      ?? fields.schema_cas_manifest
+      ?? fields.schemaCasManifest
+      ?? fields.readback_schema_locator
+      ?? fields.readbackSchemaLocator
+      ?? null,
+    renderedCardPng:
+      fields.rendered_card_png
+      ?? fields.renderedCardPng
+      ?? fields.proof_card_png
+      ?? fields.proofCardPng
+      ?? null,
+    renderedCardCasManifest:
+      fields.rendered_card_cas_manifest
+      ?? fields.renderedCardCasManifest
+      ?? fields.proof_card_cas_manifest
+      ?? fields.proofCardCasManifest
+      ?? fields.rendered_card_locator
+      ?? fields.renderedCardLocator
+      ?? null,
+    rawReadbackHash:
+      fields.raw_readback_hash
+      ?? fields.rawReadbackHash
+      ?? fields.readback_hash
+      ?? fields.readbackHash
+      ?? null,
+    rawReadbackSource:
+      fields.raw_readback_source
+      ?? fields.rawReadbackSource
+      ?? null,
+    expectedOutputVerified: boolValue(
+      fields.expected_output_verified
+      ?? fields.expectedOutputVerified
+      ?? fields.expected_output_verified_by_runtime
+      ?? fields.expectedOutputVerifiedByRuntime,
+    ),
+    checksumBefore:
+      fields.checksum_before
+      ?? fields.checksumBefore
+      ?? fields.baseline
+      ?? fields.baseline_hash
+      ?? null,
+    checksumAfter:
+      fields.checksum_after
+      ?? fields.checksumAfter
+      ?? fields.actual_checksum
+      ?? fields.actualChecksum
+      ?? null,
+    deterministicSliceOffset: integerValue(
+      fields.deterministic_slice_offset
+      ?? fields.deterministicSliceOffset
+      ?? fields.slice_offset
+      ?? fields.sliceOffset,
+    ),
+    deterministicSliceLength: integerValue(
+      fields.deterministic_slice_length
+      ?? fields.deterministicSliceLength
+      ?? fields.slice_length
+      ?? fields.sliceLength,
+    ),
+    deterministicSliceHash:
+      fields.deterministic_slice_hash
+      ?? fields.deterministicSliceHash
+      ?? fields.slice_hash
+      ?? fields.sliceHash
+      ?? null,
   };
 }
 
@@ -1995,6 +2081,34 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           readback_sample_sha256: latest.readbackSampleSha256,
           readbackSampleHex: latest.readbackSampleHex,
           readback_sample_hex: latest.readbackSampleHex,
+          rawReadbackBin: latest.rawReadbackBin,
+          raw_readback_bin: latest.rawReadbackBin,
+          rawReadbackCasManifest: latest.rawReadbackCasManifest,
+          raw_readback_cas_manifest: latest.rawReadbackCasManifest,
+          readbackSchemaJson: latest.readbackSchemaJson,
+          readback_schema_json: latest.readbackSchemaJson,
+          readbackSchemaCasManifest: latest.readbackSchemaCasManifest,
+          readback_schema_cas_manifest: latest.readbackSchemaCasManifest,
+          renderedCardPng: latest.renderedCardPng,
+          rendered_card_png: latest.renderedCardPng,
+          renderedCardCasManifest: latest.renderedCardCasManifest,
+          rendered_card_cas_manifest: latest.renderedCardCasManifest,
+          rawReadbackHash: latest.rawReadbackHash,
+          raw_readback_hash: latest.rawReadbackHash,
+          rawReadbackSource: latest.rawReadbackSource,
+          raw_readback_source: latest.rawReadbackSource,
+          expectedOutputVerified: latest.expectedOutputVerified,
+          expected_output_verified: latest.expectedOutputVerified,
+          checksumBefore: latest.checksumBefore,
+          checksum_before: latest.checksumBefore,
+          checksumAfter: latest.checksumAfter,
+          checksum_after: latest.checksumAfter,
+          deterministicSliceOffset: latest.deterministicSliceOffset,
+          deterministic_slice_offset: latest.deterministicSliceOffset,
+          deterministicSliceLength: latest.deterministicSliceLength,
+          deterministic_slice_length: latest.deterministicSliceLength,
+          deterministicSliceHash: latest.deterministicSliceHash,
+          deterministic_slice_hash: latest.deterministicSliceHash,
           probeEvidenceRefs: compactStringList([
             latest.probeEvidenceRef,
             ...evidenceRefs,

@@ -497,6 +497,50 @@ function computeOracleArtifacts(recordOracleArtifacts, outputEvent) {
   ], COMPUTE_ORACLE_ARTIFACT_FIELDS);
 }
 
+function computeOracleArtifactOverlay(options, recordIndex = 0) {
+  const overlays = asObject(options.computeOracleArtifactOverlays ?? options.compute_oracle_artifact_overlays);
+  const list = Array.isArray(options.computeOracleArtifactOverlays)
+    ? options.computeOracleArtifactOverlays
+    : Array.isArray(options.compute_oracle_artifact_overlays)
+      ? options.compute_oracle_artifact_overlays
+      : null;
+  const direct = asObject(options.computeOracleArtifactOverlay ?? options.compute_oracle_artifact_overlay);
+  const indexed = list
+    ? asObject(list[recordIndex])
+    : asObject(overlays[recordIndex] ?? overlays[String(recordIndex)]);
+  if (Object.keys(indexed).length > 0) return indexed;
+  if (recordIndex === 0 && Object.keys(direct).length > 0) return direct;
+  return null;
+}
+
+function mergeComputeOracleArtifactOverlay(artifacts, overlay) {
+  const base = asObject(artifacts);
+  const resolved = asObject(overlay);
+  if (Object.keys(resolved).length === 0) return artifacts;
+  return {
+    ...base,
+    ...resolved,
+    proofAuthority: firstText(
+      resolved.proofAuthority,
+      resolved.proof_authority,
+      base.proofAuthority,
+      base.proof_authority,
+      'resolved_compute_artifact_overlay_transport_integrity_only',
+    ),
+    proof_authority: firstText(
+      resolved.proof_authority,
+      resolved.proofAuthority,
+      base.proof_authority,
+      base.proofAuthority,
+      'resolved_compute_artifact_overlay_transport_integrity_only',
+    ),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+}
+
 const ACCEPTED_COMPUTE_RAW_READBACK_SOURCES = new Set([
   'runtime_readback',
   'runtime_readback_sample',
@@ -1401,7 +1445,10 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       }
     }
   } else {
-    const artifacts = computeOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+    const artifacts = mergeComputeOracleArtifactOverlay(
+      computeOracleArtifacts(record.oracleArtifacts, record.outputEvent),
+      computeOracleArtifactOverlay(options),
+    );
     if (!artifacts) {
       addFailure(failures, 'compute_oracle_artifacts_missing');
     } else {
@@ -1691,15 +1738,20 @@ export function buildGpuHmrProofLedger(input = {}) {
   };
 }
 
-export function queryGpuHmrLedgerInvariants(input = {}) {
+export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
   const ledger = asObject(input);
   const ledgerModelPolicy = resolveGpuHmrModelPolicy(ledger.modelPolicy, ledger.model_policy);
+  const ignoreSuppliedLedgerQueryAndSuccess = options.ignoreSuppliedLedgerQueryAndSuccess === true
+    || options.ignore_supplied_ledger_query_and_success === true;
   const records = Array.isArray(ledger.records) ? ledger.records : null;
   const evaluations = records && records.length > 0
     ? records.map((record, index) => ({
       index,
       result: record && typeof record === 'object' && !Array.isArray(record)
-        ? evaluateGpuHmrProofLedger(record, { modelPolicy: ledgerModelPolicy })
+        ? evaluateGpuHmrProofLedger(record, {
+          modelPolicy: ledgerModelPolicy,
+          computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, index),
+        })
         : {
           schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
           proofId: null,
@@ -1710,7 +1762,13 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
           invariantSummary: {},
         },
     }))
-    : [{ index: 0, result: evaluateGpuHmrProofLedger(input, { modelPolicy: ledgerModelPolicy }) }];
+    : [{
+      index: 0,
+      result: evaluateGpuHmrProofLedger(input, {
+        modelPolicy: ledgerModelPolicy,
+        computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, 0),
+      }),
+    }];
   const recomputed = evaluations[evaluations.length - 1].result;
   const proofId = records && records.length > 0
     ? canonicalLedgerRootProofId(evaluations.map(({ result }) => result.proofId))
@@ -1738,8 +1796,11 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
     [ledger, 'gpu_hmr_success'],
   );
   if (
+    !ignoreSuppliedLedgerQueryAndSuccess
+    && (
     topLevelSuccess.present
     && topLevelSuccess.value !== recordSuccess
+    )
   ) {
     failures.push({
       code: 'ledger_success_flag_mismatch',
@@ -1748,7 +1809,10 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
     });
   }
   const suppliedQuery = asObject(ledger.query);
-  if (firstText(suppliedQuery.schemaVersion, suppliedQuery.schema_version) === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION) {
+  if (
+    !ignoreSuppliedLedgerQueryAndSuccess
+    && firstText(suppliedQuery.schemaVersion, suppliedQuery.schema_version) === GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION
+  ) {
     const suppliedFailures = compactStringList(
       Array.isArray(suppliedQuery.failedInvariants)
         ? suppliedQuery.failedInvariants.map((failure) => asObject(failure).code)
@@ -1774,7 +1838,7 @@ export function queryGpuHmrLedgerInvariants(input = {}) {
         ],
       };
     }
-  } else if (Object.keys(suppliedQuery).length > 0) {
+  } else if (!ignoreSuppliedLedgerQueryAndSuccess && Object.keys(suppliedQuery).length > 0) {
     failures.push({
       code: 'supplied_ledger_query_schema_mismatch',
       suppliedSchemaVersion: suppliedQuery.schemaVersion ?? suppliedQuery.schema_version ?? null,

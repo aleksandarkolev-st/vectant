@@ -5,10 +5,16 @@ import {
   artifactCasManifestEvidence,
   collectArtifactLocators,
   defaultCasRootFromEnv,
+  sha256Text,
+  stableJson,
   validateArtifactLocator,
   writeArtifactToCas,
 } from './gpu-hmr-artifact-cas.mjs';
-import { computeAsyncVisualProof } from './gpu-hmr-visual-proof-worker.mjs';
+import {
+  GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+  GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  computeAsyncVisualProof,
+} from './gpu-hmr-visual-proof-worker.mjs';
 
 const MIN_VISUAL_WIDTH = 320;
 const MIN_VISUAL_HEIGHT = 240;
@@ -27,6 +33,10 @@ export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
 export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_artifact_transport_evidence.v1';
+export const GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION =
+  'synthi.gpu_hmr.async_visual_proof_job.v1';
+export const GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY =
+  'async_visual_job_manifest_only_not_gpu_hmr_acceptance';
 export const DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS = 20 * 60 * 1000;
 
 function numeric(value) {
@@ -83,6 +93,92 @@ function bufferFromInput(value) {
 
 function uniquePaths(...paths) {
   return [...new Set(paths.map(pathTextOrNull).filter(Boolean).map((entry) => path.resolve(entry)))];
+}
+
+function pathInsideOrSame(child, root) {
+  const resolvedChild = path.resolve(child);
+  const resolvedRoot = path.resolve(root);
+  const relative = path.relative(resolvedRoot, resolvedChild);
+  return relative === '' || Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function asyncVisualProofJobManifestForHash(job = {}) {
+  const workerOptions = firstObject(job.workerOptions, job.worker_options) ?? {};
+  const artifactCasLocators = Array.isArray(job.artifactCasLocators)
+    ? job.artifactCasLocators
+    : Array.isArray(job.artifact_cas_locators)
+      ? job.artifact_cas_locators
+      : [];
+  const visualArtifactTransportEvidence = firstObject(
+    job.visualArtifactTransportEvidence,
+    job.visual_artifact_transport_evidence,
+  ) ?? null;
+  return {
+    schemaVersion: job.schemaVersion ?? job.schema_version,
+    schema_version: job.schema_version ?? job.schemaVersion,
+    eventType: job.eventType ?? job.event_type,
+    event_type: job.event_type ?? job.eventType,
+    proofPending: job.proofPending ?? job.proof_pending,
+    proof_pending: job.proof_pending ?? job.proofPending,
+    proofReady: job.proofReady ?? job.proof_ready,
+    proof_ready: job.proof_ready ?? job.proofReady,
+    accepted: job.accepted,
+    acceptedAsAsyncVisualProofJob: job.acceptedAsAsyncVisualProofJob ?? job.accepted_as_async_visual_proof_job,
+    accepted_as_async_visual_proof_job: job.accepted_as_async_visual_proof_job ?? job.acceptedAsAsyncVisualProofJob,
+    acceptedForGpuHmr: job.acceptedForGpuHmr ?? job.accepted_for_gpu_hmr,
+    accepted_for_gpu_hmr: job.accepted_for_gpu_hmr ?? job.acceptedForGpuHmr,
+    gpuHmrSuccess: job.gpuHmrSuccess ?? job.gpu_hmr_success,
+    gpu_hmr_success: job.gpu_hmr_success ?? job.gpuHmrSuccess,
+    proofAuthority: job.proofAuthority ?? job.proof_authority,
+    proof_authority: job.proof_authority ?? job.proofAuthority,
+    createdAtMs: job.createdAtMs ?? job.created_at_ms,
+    created_at_ms: job.created_at_ms ?? job.createdAtMs,
+    sessionNamespace: job.sessionNamespace ?? job.session_namespace,
+    session_namespace: job.session_namespace ?? job.sessionNamespace,
+    producer: firstObject(job.producer) ?? null,
+    producerSubsystem: job.producerSubsystem ?? job.producer_subsystem,
+    producer_subsystem: job.producer_subsystem ?? job.producerSubsystem,
+    artifactDir: job.artifactDir ?? job.artifact_dir,
+    artifact_dir: job.artifact_dir ?? job.artifactDir,
+    casRoot: job.casRoot ?? job.cas_root,
+    cas_root: job.cas_root ?? job.casRoot,
+    request: firstObject(job.request) ?? null,
+    workerOptions,
+    worker_options: workerOptions,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
+    visualArtifactTransportEvidence,
+    visual_artifact_transport_evidence: visualArtifactTransportEvidence,
+  };
+}
+
+function assertAsyncVisualProofJobIntegrity(job = {}) {
+  const declaredHash = textOrNull(job.jobHash ?? job.job_hash);
+  const declaredManifestHash = textOrNull(job.jobManifestHash ?? job.job_manifest_hash);
+  if (!declaredHash || !declaredManifestHash) {
+    throw new Error('async_visual_proof_job_hash_missing');
+  }
+  const recomputed = sha256Text(stableJson(asyncVisualProofJobManifestForHash(job)));
+  if (declaredHash !== recomputed || declaredManifestHash !== recomputed) {
+    throw new Error('async_visual_proof_job_hash_mismatch');
+  }
+  const locator = firstObject(job.jobManifestLocator, job.job_manifest_locator);
+  const locatorHash = textOrNull(locator?.contentHash ?? locator?.content_hash);
+  if (locatorHash && locatorHash !== recomputed) {
+    throw new Error('async_visual_proof_job_manifest_locator_hash_mismatch');
+  }
+  return recomputed;
+}
+
+function trustedCasRootFromCompletionOptions(options = {}, allowedRoots = []) {
+  const candidate = path.resolve(
+    pathTextOrNull(options.casRoot ?? options.cas_root ?? options.artifactRoot ?? options.artifact_root)
+    ?? allowedRoots[0],
+  );
+  if (!allowedRoots.some((root) => pathInsideOrSame(candidate, root))) {
+    throw new Error('async_visual_proof_job_completion_cas_root_untrusted');
+  }
+  return candidate;
 }
 
 function visualWorkerMetric(metrics, ...keys) {
@@ -865,7 +961,29 @@ export async function visualArtifactTransportEvidence(input = {}, options = {}) 
   };
 }
 
-export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
+function pendingAsyncVisualProof(jobHash) {
+  return {
+    schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+    schema_version: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+    eventType: 'proof_pending',
+    event_type: 'proof_pending',
+    accepted: false,
+    acceptedAsAsyncVisualMetrics: false,
+    accepted_as_async_visual_metrics: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+    proof_authority: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
+    proofJobHash: jobHash,
+    proof_job_hash: jobHash,
+    reasons: ['async_visual_proof_job_pending'],
+    gaps: ['async_visual_proof_ready_event_missing'],
+  };
+}
+
+export async function createAsyncVisualProofJob(input = {}, options = {}) {
   const beforePath = pathTextOrNull(
     input.beforePath
     ?? input.before_path
@@ -965,7 +1083,7 @@ export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
     diffPath ? path.dirname(diffPath) : null,
     ...(Array.isArray(options.allowedOutputRoots) ? options.allowedOutputRoots : []),
   );
-  const asyncVisualProof = await computeAsyncVisualProof({
+  const request = {
     before: { casManifest: beforeLocator },
     after: { casManifest: afterLocator },
     ...(diffPath ? { diffPath } : {}),
@@ -976,7 +1094,8 @@ export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
       || visualProof.allow_roi_early_exit === true,
     tileSize: input.tileSize ?? input.tile_size ?? visualProof.tileSize ?? visualProof.tile_size ?? 128,
     tileHashing: input.tileHashing ?? input.tile_hashing ?? visualProof.tileHashing ?? visualProof.tile_hashing,
-  }, {
+  };
+  const workerOptions = {
     allowedRoots: workerAllowedRoots,
     allowedOutputRoots: workerAllowedOutputRoots,
     timeoutMs: finiteNumberOrNull(
@@ -985,15 +1104,146 @@ export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
       ?? input.timeout_ms
       ?? process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS,
     ) ?? 30000,
+  };
+  const artifactCasLocators = [beforeLocator, afterLocator];
+  const transportEvidence = await visualArtifactTransportEvidence({
+    artifactCasLocators,
+  }, {
+    artifactRoot: casRoot,
+    allowedRoots: [casRoot],
+    requireReadableBytes: true,
+  });
+  const createdAtMs = Date.now();
+  const jobManifest = {
+    schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION,
+    schema_version: GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION,
+    eventType: 'proof_pending',
+    event_type: 'proof_pending',
+    proofPending: true,
+    proof_pending: true,
+    proofReady: false,
+    proof_ready: false,
+    accepted: false,
+    acceptedAsAsyncVisualProofJob: true,
+    accepted_as_async_visual_proof_job: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY,
+    proof_authority: GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY,
+    createdAtMs,
+    created_at_ms: createdAtMs,
+    sessionNamespace,
+    session_namespace: sessionNamespace,
+    producer,
+    producerSubsystem,
+    producer_subsystem: producerSubsystem,
+    artifactDir,
+    artifact_dir: artifactDir,
+    casRoot,
+    cas_root: casRoot,
+    request,
+    workerOptions,
+    worker_options: workerOptions,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
+    visualArtifactTransportEvidence: transportEvidence,
+    visual_artifact_transport_evidence: transportEvidence,
+  };
+  const jobBytes = Buffer.from(stableJson(jobManifest), 'utf8');
+  const jobHash = sha256Text(stableJson(jobManifest));
+  const jobManifestLocator = await writeArtifactToCas(jobBytes, {
+    artifactRoot: casRoot,
+    mediaType: 'application/json',
+    artifactKind: 'async_visual_proof_job',
+    role: 'async_visual_proof_job',
+    sessionNamespace,
+    producer,
+    producerSubsystem,
+  });
+  const asyncVisualProof = pendingAsyncVisualProof(jobHash);
+  return {
+    ...jobManifest,
+    jobId: `async-visual-proof-job:${jobHash}`,
+    job_id: `async-visual-proof-job:${jobHash}`,
+    jobHash,
+    job_hash: jobHash,
+    jobManifestHash: jobHash,
+    job_manifest_hash: jobHash,
+    jobManifestLocator,
+    job_manifest_locator: jobManifestLocator,
+    asyncVisualProof,
+    async_visual_proof: asyncVisualProof,
+  };
+}
+
+export async function completeAsyncVisualProofJob(jobInput = {}, options = {}) {
+  const job = firstObject(
+    jobInput.asyncVisualProofJob,
+    jobInput.async_visual_proof_job,
+    jobInput,
+  ) ?? {};
+  assertAsyncVisualProofJobIntegrity(job);
+  const request = firstObject(job.request);
+  if (!request) {
+    throw new Error('async_visual_proof_job_request_missing');
+  }
+  const diffPath = pathTextOrNull(request.diffPath ?? request.diff_path);
+  const allowedRoots = Array.isArray(options.allowedRoots)
+    ? uniquePaths(...options.allowedRoots)
+    : [];
+  if (allowedRoots.length === 0) {
+    throw new Error('async_visual_proof_job_completion_requires_trusted_allowed_roots');
+  }
+  const allowedOutputRoots = Array.isArray(options.allowedOutputRoots)
+    ? uniquePaths(...options.allowedOutputRoots)
+    : [];
+  if (diffPath && allowedOutputRoots.length === 0) {
+    throw new Error('async_visual_proof_job_completion_requires_trusted_output_roots');
+  }
+  const asyncVisualProof = await computeAsyncVisualProof(request, {
+    allowedRoots,
+    allowedOutputRoots,
+    timeoutMs: finiteNumberOrNull(
+      options.timeoutMs
+      ?? options.timeout_ms
+    ) ?? 30000,
   });
 
-  const artifactCasLocators = [beforeLocator, afterLocator];
+  const casRoot = trustedCasRootFromCompletionOptions(options, allowedRoots);
+  const artifactDir = path.resolve(
+    pathTextOrNull(options.artifactDir ?? options.artifact_dir)
+    ?? (diffPath ? path.dirname(diffPath) : null)
+    ?? allowedOutputRoots[0]
+    ?? process.cwd(),
+  );
+  const producer = isObject(job.producer)
+    ? job.producer
+    : {
+        name: textOrNull(job.producer) ?? 'gpu_hmr_visual_proof_bundle',
+        kind: 'visual_proof_worker',
+      };
+  const producerSubsystem = textOrNull(job.producerSubsystem ?? job.producer_subsystem) ?? 'visual_proof';
+  const sessionNamespace = textOrNull(job.sessionNamespace ?? job.session_namespace) ?? 'visual-proof';
+  const artifactCasLocators = Array.isArray(job.artifactCasLocators)
+    ? [...job.artifactCasLocators]
+    : Array.isArray(job.artifact_cas_locators)
+      ? [...job.artifact_cas_locators]
+      : [];
+  const beforeLocator = artifactCasLocators.find((locator) =>
+    String(locator?.role ?? '').includes('before')
+  ) ?? request.before?.casManifest ?? request.before?.cas_manifest ?? null;
+  const afterLocator = artifactCasLocators.find((locator) =>
+    String(locator?.role ?? '').includes('after')
+  ) ?? request.after?.casManifest ?? request.after?.cas_manifest ?? null;
+
   let diffLocator = null;
   if (diffPath && asyncVisualProof.accepted === true) {
     diffLocator = await writeArtifactToCas(await readFile(diffPath), {
       artifactRoot: casRoot,
       mediaType: 'image/png',
-      artifactKind: input.artifactKind ?? input.artifact_kind ?? 'visual_frame',
+      artifactKind: 'visual_frame',
       role: 'diff_frame',
       sessionNamespace,
       producer,
@@ -1040,16 +1290,16 @@ export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
     ) ?? 0,
   };
   const artifacts = {
-    beforeImage: beforePath ?? beforeLocator.storage?.localPath ?? null,
-    before_image: beforePath ?? beforeLocator.storage?.localPath ?? null,
-    afterImage: afterPath ?? afterLocator.storage?.localPath ?? null,
-    after_image: afterPath ?? afterLocator.storage?.localPath ?? null,
+    beforeImage: beforeLocator?.storage?.localPath ?? null,
+    before_image: beforeLocator?.storage?.localPath ?? null,
+    afterImage: afterLocator?.storage?.localPath ?? null,
+    after_image: afterLocator?.storage?.localPath ?? null,
     diffImage: diffPath ?? diffLocator?.storage?.localPath ?? null,
     diff_image: diffPath ?? diffLocator?.storage?.localPath ?? null,
-    beforeImageHash: beforeLocator.contentHash,
-    before_image_hash: beforeLocator.contentHash,
-    afterImageHash: afterLocator.contentHash,
-    after_image_hash: afterLocator.contentHash,
+    beforeImageHash: beforeLocator?.contentHash ?? null,
+    before_image_hash: beforeLocator?.contentHash ?? null,
+    afterImageHash: afterLocator?.contentHash ?? null,
+    after_image_hash: afterLocator?.contentHash ?? null,
     diffImageHash: diffLocator?.contentHash
       ?? asyncVisualProof.diffArtifact?.hash
       ?? asyncVisualProof.diff_artifact?.hash
@@ -1089,7 +1339,33 @@ export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
     artifact_cas_locators: artifactCasLocators,
     visualArtifactTransportEvidence: transportEvidence,
     visual_artifact_transport_evidence: transportEvidence,
+    asyncVisualProofJob: job,
+    async_visual_proof_job: job,
+    proofReady: asyncVisualProof.eventType === 'proof_ready',
+    proof_ready: asyncVisualProof.eventType === 'proof_ready',
+    proofPending: false,
+    proof_pending: false,
     asyncVisualProof,
     async_visual_proof: asyncVisualProof,
   };
+}
+
+export async function buildAsyncVisualProofBundle(input = {}, options = {}) {
+  const job = await createAsyncVisualProofJob(input, options);
+  const diffPath = pathTextOrNull(job.request?.diffPath ?? job.request?.diff_path);
+  const casRoot = pathTextOrNull(job.casRoot ?? job.cas_root);
+  const artifactDir = pathTextOrNull(job.artifactDir ?? job.artifact_dir);
+  return completeAsyncVisualProofJob(job, {
+    ...options,
+    casRoot: options.casRoot ?? options.cas_root ?? casRoot,
+    allowedRoots: uniquePaths(
+      casRoot,
+      ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+    ),
+    allowedOutputRoots: uniquePaths(
+      artifactDir,
+      diffPath ? path.dirname(diffPath) : null,
+      ...(Array.isArray(options.allowedOutputRoots) ? options.allowedOutputRoots : []),
+    ),
+  });
 }

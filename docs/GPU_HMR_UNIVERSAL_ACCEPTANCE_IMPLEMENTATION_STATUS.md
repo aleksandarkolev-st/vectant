@@ -126,6 +126,16 @@ verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed, gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:84a53b01ac48ac2f6d17cc953122e5f8f4515789cc513f0578da7e283468609b, rows=678, historicalUnprovenRows=622
+trust-boundary follow-up: compute CAS roots are now authorized only by trusted runner/options/env/repo roots; source-declared CAS roots are metadata unless they are inside a trusted root, and role-specific compute CAS locators reject role smuggling before path materialization
+trust-boundary follow-up: async visual proof completion now recomputes and enforces the pending job hash, requires caller-supplied trusted read/output roots, and treats job-owned roots as evidence-only rather than filesystem authority
+subagent used: async visual proof/CAS transport trust-boundary audit
+new smoke coverage: self-declared outside compute CAS roots cannot materialize raw readback paths, role-mismatched raw readback CAS manifests fail closed, async visual proof jobs without trusted roots reject, and tampered pending jobs reject with `async_visual_proof_job_hash_mismatch`
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-artifact-cas-smoke.mjs -> passed
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-visual-proof-worker-smoke.mjs -> passed
+verification: npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check -> passed with async visual pending-job manifest and trusted-completion checks
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed after trusted compute CAS root and role-mismatch hardening, gpu-validation-matrix-ledger:sha256:16beb644ee9952146a8d593a779cae2dfff4a06545f6638dc26db3ffa97ed3e4, rows=63
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after trusted compute CAS root and async visual job completion hardening; smoke proof gpu-validation-matrix-ledger:sha256:518490eb634145e313702f2bbd1ccc89502fcbc1ebbcac1aff351fbaf450f2be, matrix self-check proof gpu-validation-matrix-ledger:sha256:40a57b1c03eba71b5540f3e80725f38b0b82f3ff4da0c9500bcb0484674fbf85, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
+verification: npm --prefix mcp/synthi-mcp run build -> passed
 ```
 
 Additional 2026-06-29 native/incremental visual proof binding:

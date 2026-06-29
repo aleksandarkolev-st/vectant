@@ -20,14 +20,19 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
-  buildAsyncVisualProofBundle,
+  completeAsyncVisualProofJob,
+  createAsyncVisualProofJob,
   deterministicVisualModeFromMcpEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
   mcpScreenshotMetadataFromToolResult,
+  visualArtifactTransportEvidence,
 } from './lib/gpu-hmr-visual-evidence.mjs';
+import {
+  writeArtifactToCas,
+} from './lib/gpu-hmr-artifact-cas.mjs';
 import {
   assessGeneratedGpuSplitGranularity,
   assertNoGeneratedSplitFissionOverclaim,
@@ -50,6 +55,7 @@ const CFG = {
   hostId: process.env.HOST_ID ?? 'gpu-hmr-agent-split-test',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
+  gpuArchSource: process.env.SYNTHI_GPU_ARCH ? 'env:SYNTHI_GPU_ARCH' : null,
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 180000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 15000),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
@@ -500,6 +506,12 @@ function agentProfileHash(profile) {
   }))}`;
 }
 
+function explicitGpuArch(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.toLowerCase() === 'auto') return null;
+  return text;
+}
+
 function refreshAgentProfileHash(profile) {
   const profileHash = agentProfileHash(profile);
   profile.profileHash = profileHash;
@@ -619,6 +631,18 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
     compile: {
       width: profilePositiveInt(compile.width, 'compile.width', 800),
       height: profilePositiveInt(compile.height, 'compile.height', 600),
+      gpuArch: explicitGpuArch(
+        compile.gpuArch
+          ?? compile.gpu_arch
+          ?? compile.targetArch
+          ?? compile.target_arch,
+      ),
+      gpu_arch: explicitGpuArch(
+        compile.gpuArch
+          ?? compile.gpu_arch
+          ?? compile.targetArch
+          ?? compile.target_arch,
+      ),
     },
     requireDeclaredEdits: profileBoolean(
       raw.requireDeclaredEdits ?? raw.require_declared_edits,
@@ -757,6 +781,21 @@ function validationProfileHeight() {
   return ACTIVE_AGENT_PROFILE?.compile?.height ?? 600;
 }
 
+function validationProfileGpuArch() {
+  return explicitGpuArch(ACTIVE_AGENT_PROFILE?.compile?.gpuArch)
+    ?? explicitGpuArch(ACTIVE_AGENT_PROFILE?.compile?.gpu_arch);
+}
+
+function setDetectedGpuArch(arch, source) {
+  const normalized = explicitGpuArch(arch);
+  if (!normalized) return null;
+  CFG.gpuArch = normalized;
+  CFG.gpuArchSource = source || CFG.gpuArchSource || 'detected';
+  process.env.SYNTHI_GPU_ARCH = normalized;
+  process.env.SYNTHI_GPU_ARCH_SOURCE = CFG.gpuArchSource;
+  return normalized;
+}
+
 async function httpJson(method, url, body, headers = {}) {
   const res = await fetch(url, {
     method,
@@ -814,9 +853,9 @@ async function resolveDockerContainer(configured, service) {
 }
 
 async function resolveDockerContainers() {
+  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
   if (CFG.mcpTransport !== 'docker') return;
   CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
-  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
   if (!CFG.mcpContainer) {
     throw new Error('MCP_TRANSPORT=docker requires an MCP container from MCP_CONTAINER, SYNTHI_MCP_CONTAINER, or docker compose service discovery');
   }
@@ -833,15 +872,21 @@ async function resolveDockerContainers() {
 
 async function detectVendor() {
   if (CFG.vendor === 'cuda' || CFG.vendor === 'rocm') return CFG.vendor;
-  const workerProbe = await execText('docker', [
-    'exec',
-    CFG.workerContainer,
-    'sh',
-    '-lc',
-    'if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then echo cuda; elif [ -e /dev/dxg ] || command -v hipcc >/dev/null 2>&1; then echo rocm; else echo ""; fi',
-  ]);
-  const detected = String(workerProbe || '').trim().split(/\s+/).find((v) => v === 'cuda' || v === 'rocm');
-  if (detected) return detected;
+  if (CFG.workerContainer) {
+    const workerProbe = await execText('docker', [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      'if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then echo cuda; elif [ -e /dev/dxg ] || command -v hipcc >/dev/null 2>&1; then echo rocm; else echo ""; fi',
+    ]);
+    const detected = String(workerProbe || '').trim().split(/\s+/).find((v) => v === 'cuda' || v === 'rocm');
+    if (detected) return detected;
+  }
+  const nvidiaProbe = await execText('nvidia-smi', ['--query-gpu=compute_cap', '--format=csv,noheader,nounits'], 5000);
+  if (typeof nvidiaProbe === 'string' && nvidiaProbe.trim()) return 'cuda';
+  const rocmProbe = await execText('rocminfo', [], 5000);
+  if (typeof rocmProbe === 'string' && /gfx[0-9][0-9a-z]*/i.test(rocmProbe)) return 'rocm';
   throw new Error('could not auto-detect GPU vendor; set SYNTHI_GPU_VENDOR=cuda or rocm');
 }
 
@@ -853,19 +898,36 @@ function archProbeCommand(vendor) {
 }
 
 async function detectArch(vendor) {
-  if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
-  if (CFG.mcpTransport !== 'docker') return undefined;
-  const out = await execText('docker', [
-    'exec',
-    CFG.workerContainer,
-    'sh',
-    '-lc',
-    archProbeCommand(vendor),
-  ]);
-  const detected = String(out || '').trim().split(/\s+/).find((v) => (
-    vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
-  ));
-  return detected;
+  const configured = explicitGpuArch(CFG.gpuArch);
+  if (configured) return setDetectedGpuArch(configured, CFG.gpuArchSource || 'env:SYNTHI_GPU_ARCH');
+  if (CFG.workerContainer) {
+    const out = await execText('docker', [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      archProbeCommand(vendor),
+    ]);
+    const detected = String(out || '').trim().split(/\s+/).find((v) => (
+      vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
+    ));
+    if (detected) return setDetectedGpuArch(detected, `worker_container:${CFG.workerContainer}`);
+  }
+  if (vendor === 'cuda') {
+    const out = await execText('nvidia-smi', ['--query-gpu=compute_cap', '--format=csv,noheader,nounits'], 5000);
+    const detected = String(out || '').trim().split(/\s+/).find((v) => /^\d+(?:\.\d+)?$/.test(v));
+    if (detected) return setDetectedGpuArch(`sm_${detected.replace('.', '')}`, 'host:nvidia-smi');
+  } else if (vendor === 'rocm') {
+    const out = await execText('rocminfo', [], 5000);
+    const detected = String(out || '').match(/gfx[0-9][0-9a-z]*/i)?.[0];
+    if (detected) return setDetectedGpuArch(detected, 'host:rocminfo');
+    const enumerator = await execText('rocm_agent_enumerator', [], 5000);
+    const enumerated = String(enumerator || '').match(/gfx[0-9][0-9a-z]*/i)?.[0];
+    if (enumerated) return setDetectedGpuArch(enumerated, 'host:rocm_agent_enumerator');
+  }
+  const profileArch = validationProfileGpuArch();
+  if (profileArch) return setDetectedGpuArch(profileArch, 'agent_visual_profile:compile.gpuArch');
+  return undefined;
 }
 
 async function createWorkspace({ name, slug }) {
@@ -3356,6 +3418,8 @@ function sourceFirstIngestionEvidence({
     && preexistingGeneratedArtifactHashOverlaps.length === 0
     && generatedArtifactPathsInGeneratedNamespace
     && generatedArtifacts.length > 0;
+  const gpuArch = explicitGpuArch(initialCompileArgs?.gpu_arch);
+  const gpuArchSource = initialCompileArgs?.gpu_arch_source ?? null;
   const seed = {
     sourceContentHash,
     entryPath: normalizedEntryPath,
@@ -3363,6 +3427,8 @@ function sourceFirstIngestionEvidence({
     initialManifestHash,
     sourcePurityManifestHash,
     sourcePurityInitialManifestHash,
+    gpuArch,
+    gpuArchSource,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -3395,6 +3461,7 @@ function sourceFirstIngestionEvidence({
     && useAiSplit
     && userRequestedAi
     && preferGpuPipeline
+    && Boolean(gpuArch)
     && initialFiles.length > 0
     && sourceTreeManifestHashMatches
     && initialSourceFilePresent
@@ -3444,6 +3511,10 @@ function sourceFirstIngestionEvidence({
     source_purity_covers_initial_manifest: sourcePurityCoversInitialManifest,
     sourcePurityScannedFiles: normalizedSourcePurityFiles,
     source_purity_scanned_files: normalizedSourcePurityFiles,
+    gpuArch,
+    gpu_arch: gpuArch,
+    gpuArchSource,
+    gpu_arch_source: gpuArchSource,
     initialCompileContract: {
       language: initialCompileArgs?.language ?? null,
       filename: cleanRel(initialCompileArgs?.filename),
@@ -3469,8 +3540,10 @@ function sourceFirstIngestionEvidence({
       prefer_gpu_pipeline: preferGpuPipeline,
       gpuMode: initialCompileArgs?.gpu_mode ?? null,
       gpu_mode: initialCompileArgs?.gpu_mode ?? null,
-      gpuArch: initialCompileArgs?.gpu_arch ?? null,
-      gpu_arch: initialCompileArgs?.gpu_arch ?? null,
+      gpuArch,
+      gpu_arch: gpuArch,
+      gpuArchSource,
+      gpu_arch_source: gpuArchSource,
     },
     initial_compile_contract: {
       language: initialCompileArgs?.language ?? null,
@@ -3486,7 +3559,8 @@ function sourceFirstIngestionEvidence({
       user_requested_ai: userRequestedAi,
       prefer_gpu_pipeline: preferGpuPipeline,
       gpu_mode: initialCompileArgs?.gpu_mode ?? null,
-      gpu_arch: initialCompileArgs?.gpu_arch ?? null,
+      gpu_arch: gpuArch,
+      gpu_arch_source: gpuArchSource,
     },
     preexistingGeneratedArtifactsPresent: preexistingGeneratedArtifactPaths.length > 0,
     preexisting_generated_artifacts_present: preexistingGeneratedArtifactPaths.length > 0,
@@ -3542,6 +3616,7 @@ function sourceFirstIngestionEvidence({
       useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+      gpuArch ? null : 'source_first_gpu_arch_missing',
       initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
       sourceTreeManifestHashMatches ? null : 'source_first_source_tree_manifest_mismatch',
       initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
@@ -3565,6 +3640,7 @@ function sourceFirstIngestionEvidence({
       useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+      gpuArch ? null : 'source_first_gpu_arch_missing',
       initialFiles.length > 0 ? null : 'source_first_initial_file_manifest_missing',
       sourceTreeManifestHashMatches ? null : 'source_first_source_tree_manifest_mismatch',
       initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
@@ -3588,13 +3664,25 @@ function collectAiProviderReasonCodes(value, seen = new Set()) {
   if (typeof value === 'string') {
     const codes = value.match(/\bai_provider_[a-z0-9_]+\b/g) ?? [];
     const lowered = value.toLowerCase();
+    const providerContext = (
+      codes.length > 0
+      || lowered.includes('ai provider')
+      || lowered.includes('ai_provider')
+      || lowered.includes('provider.ask')
+      || lowered.includes('ask_llm')
+      || lowered.includes('gemini')
+      || lowered.includes('openai')
+      || lowered.includes('anthropic')
+      || lowered.includes('vertex')
+      || lowered.includes('model')
+    );
     if (
       lowered.includes('consumer_suspended')
       || lowered.includes('account suspended')
       || lowered.includes('has been suspended')
     ) {
       codes.push('ai_provider_account_suspended');
-    } else if (
+    } else if (providerContext && (
       lowered.includes('permissiondenied')
       || lowered.includes('permission denied')
       || lowered.includes('unauthenticated')
@@ -3603,13 +3691,13 @@ function collectAiProviderReasonCodes(value, seen = new Set()) {
       || lowered.includes('invalid api key')
       || lowered.includes('api key not valid')
       || lowered.includes('403')
-    ) {
+    )) {
       codes.push('ai_provider_auth_denied');
-    } else if (lowered.includes('timeout')) {
+    } else if (providerContext && lowered.includes('timeout')) {
       codes.push('ai_provider_timeout');
-    } else if (lowered.includes('rate limit') || lowered.includes('429')) {
+    } else if (providerContext && (lowered.includes('rate limit') || lowered.includes('429'))) {
       codes.push('ai_provider_rate_limited');
-    } else if (lowered.includes('unavailable') || lowered.includes('overload') || lowered.includes('503')) {
+    } else if (providerContext && (lowered.includes('unavailable') || lowered.includes('overload') || lowered.includes('503'))) {
       codes.push('ai_provider_unavailable');
     }
     return [...new Set(codes)];
@@ -3644,11 +3732,15 @@ function sourceFirstProviderDiagnosticEvidence({
   const normalizedEntryPath = cleanRel(entryPath);
   const sourceContentHash = `sha256:${sha256Hex(source)}`;
   const providerFailureDetected = reasonCodes.length > 0;
+  const gpuArch = explicitGpuArch(initialCompileArgs?.gpu_arch);
+  const gpuArchSource = initialCompileArgs?.gpu_arch_source ?? null;
   const proofSeed = {
     sourceContentHash,
     entryPath: normalizedEntryPath,
     reasonCodes,
     useAiSplit: initialCompileArgs?.use_ai_split === true,
+    gpuArch,
+    gpuArchSource,
   };
   const proofId = `source-first-provider-diagnostic:sha256:${sha256Hex(stableJson(proofSeed))}`;
   return {
@@ -3689,6 +3781,10 @@ function sourceFirstProviderDiagnosticEvidence({
     user_requested_ai: initialCompileArgs?.user_requested_ai === true,
     preferGpuPipeline: initialCompileArgs?.prefer_gpu_pipeline === true,
     prefer_gpu_pipeline: initialCompileArgs?.prefer_gpu_pipeline === true,
+    gpuArch,
+    gpu_arch: gpuArch,
+    gpuArchSource,
+    gpu_arch_source: gpuArchSource,
     sanitizedErrorMessage: sanitizedMessage.slice(0, 4000),
     sanitized_error_message: sanitizedMessage.slice(0, 4000),
     sanitizedCompileResult,
@@ -4531,6 +4627,7 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     prefer_gpu_pipeline: true,
     gpu_mode: split.manifest.gpu.vendor,
     gpu_arch: CFG.gpuArch,
+    gpu_arch_source: CFG.gpuArchSource,
     compile_manifest: split.manifest,
     slug: CFG.slug,
     width: validationProfileWidth(),
@@ -4585,10 +4682,6 @@ function withoutImageData(shot) {
   if (!shot || typeof shot !== 'object') return shot;
   const { imageData, ...rest } = shot;
   return rest;
-}
-
-function artifactRel(name) {
-  return path.relative(process.cwd(), path.join(ARTIFACT_DIR, name));
 }
 
 function waitProofFields(result) {
@@ -5369,7 +5462,7 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
     throw new Error('visual delta requires saved before/after screenshot data');
   }
   const visualProof = ACTIVE_AGENT_PROFILE?.visualProof ?? ACTIVE_AGENT_PROFILE?.visual_proof ?? {};
-  const bundle = await buildAsyncVisualProofBundle({
+  const visualProofJob = await createAsyncVisualProofJob({
     beforeBytes: Buffer.from(beforeShot.imageData, 'base64'),
     afterBytes: Buffer.from(afterShot.imageData, 'base64'),
     diffPath,
@@ -5385,6 +5478,12 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
     allowedOutputRoots: [ARTIFACT_DIR],
     timeoutMs: Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000),
   });
+  const bundle = await completeAsyncVisualProofJob(visualProofJob, {
+    casRoot: visualProofJob.casRoot ?? visualProofJob.cas_root,
+    allowedRoots: [visualProofJob.casRoot ?? visualProofJob.cas_root],
+    allowedOutputRoots: [ARTIFACT_DIR],
+    timeoutMs: Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000),
+  });
   const asyncVisualProof = bundle.asyncVisualProof ?? bundle.async_visual_proof ?? {};
   if (asyncVisualProof.accepted !== true) {
     const reasons = Array.isArray(asyncVisualProof.reasons) ? asyncVisualProof.reasons.join(',') : 'unknown';
@@ -5393,6 +5492,8 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
   return {
     changedRatio: bundle.metrics?.changedPixelRatio ?? asyncVisualProof.changedRatio ?? asyncVisualProof.metrics?.changedRatio ?? 0,
     meanAbs: bundle.metrics?.meanAbsDelta8bit ?? asyncVisualProof.meanAbs ?? asyncVisualProof.metrics?.meanAbs ?? 0,
+    asyncVisualProofJob: visualProofJob,
+    async_visual_proof_job: visualProofJob,
     visualProofBundle: bundle,
     visual_proof_bundle: bundle,
     artifactCasLocators: bundle.artifactCasLocators ?? [],
@@ -5401,6 +5502,66 @@ async function screenshotDelta(beforeShot, afterShot, diffPath = null) {
     visual_artifact_transport_evidence: bundle.visualArtifactTransportEvidence ?? null,
     asyncVisualProof,
     async_visual_proof: asyncVisualProof,
+  };
+}
+
+async function singleFrameVisualArtifactsFromShot(shot, artifactName = 'single-frame-visual') {
+  const sample = shot?.second?.imageData
+    ? shot.second
+    : shot?.first?.imageData
+      ? shot.first
+      : Array.isArray(shot?.samples)
+        ? shot.samples.find((entry) => entry?.imageData)
+        : null;
+  if (!sample?.imageData) {
+    throw new Error('single-frame visual proof requires saved screenshot data');
+  }
+  const image = await writeImageArtifact(artifactName, sample.imageData);
+  const bytes = Buffer.from(sample.imageData, 'base64');
+  const casRoot = path.join(ARTIFACT_DIR, 'cas');
+  const locator = await writeArtifactToCas(bytes, {
+    artifactRoot: casRoot,
+    mediaType: 'image/png',
+    artifactKind: 'visual_frame',
+    role: 'after_frame',
+    sessionNamespace: CFG.slug,
+    producer: {
+      name: 'agent_split_visual_runner',
+      kind: 'visual_proof_worker',
+    },
+    producerSubsystem: 'agent_split_visual_proof',
+  });
+  const transportEvidence = await visualArtifactTransportEvidence({
+    artifactCasLocators: [locator],
+  }, {
+    artifactRoot: casRoot,
+    allowedRoots: [casRoot],
+    requireReadableBytes: true,
+  });
+  const visualArtifacts = {
+    afterImage: image.path,
+    afterImageHash: image.hash,
+    artifactCasLocators: [locator],
+    visualArtifactTransportEvidence: transportEvidence,
+  };
+  const visualArtifactsSnake = {
+    after_image: image.path,
+    after_image_hash: image.hash,
+    artifact_cas_locators: [locator],
+    visual_artifact_transport_evidence: transportEvidence,
+  };
+  const visualMetrics = {
+    visiblePixelCount: sample.visiblePixels ?? null,
+    visible_pixel_count: sample.visiblePixels ?? null,
+    meanLuma8bit: sample.meanLuma ?? null,
+    mean_luma_8bit: sample.meanLuma ?? null,
+  };
+  return {
+    sample: withoutImageData(sample),
+    visualArtifacts,
+    visual_artifacts: visualArtifactsSnake,
+    visualMetrics,
+    visual_metrics: visualMetrics,
   };
 }
 
@@ -5533,6 +5694,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
   if (best && selectedDiffStats?.asyncVisualProof) {
     best.asyncVisualProof = selectedDiffStats.asyncVisualProof;
     best.async_visual_proof = selectedDiffStats.asyncVisualProof;
+    best.asyncVisualProofJob = selectedDiffStats.asyncVisualProofJob;
+    best.async_visual_proof_job = selectedDiffStats.asyncVisualProofJob;
     best.visualProofBundle = selectedDiffStats.visualProofBundle;
     best.visual_proof_bundle = selectedDiffStats.visualProofBundle;
     best.artifactCasLocators = selectedDiffStats.artifactCasLocators ?? [];
@@ -5608,6 +5771,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     visual_artifact_transport_evidence: best.visualArtifactTransportEvidence ?? null,
     visualProofBundle: best.visualProofBundle ?? null,
     visual_proof_bundle: best.visualProofBundle ?? null,
+    asyncVisualProofJob: best.asyncVisualProofJob ?? null,
+    async_visual_proof_job: best.asyncVisualProofJob ?? null,
     asyncVisualProof: best.asyncVisualProof ?? null,
     async_visual_proof: best.asyncVisualProof ?? null,
     controlAsyncVisualProof: control.asyncVisualProof ?? null,
@@ -5767,7 +5932,7 @@ async function run() {
     CFG.gpuArch = arch;
     process.env.SYNTHI_GPU_ARCH = arch;
   }
-  record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'}`);
+  record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'} arch_source=${CFG.gpuArchSource ?? 'missing'}`);
   record('fixture', 'pass', validationFixtureId());
   const source = monolithicSource(vendor);
   if (ACTIVE_AGENT_PROFILE) {
@@ -5822,6 +5987,7 @@ async function run() {
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,
     gpu_arch: CFG.gpuArch,
+    gpu_arch_source: CFG.gpuArchSource,
     slug: CFG.slug,
     width: renderWidth,
     height: renderHeight,
@@ -5919,6 +6085,7 @@ async function run() {
   let coldSplitProofSeed = null;
   let hotDelta1RunModeCoverageSupport = null;
   if (CFG.captureArtifacts && baselineShot) {
+    const coldVisual = await singleFrameVisualArtifactsFromShot(baselineShot, 'cold-split-frame');
     coldSplitProofSeed = {
       ...runModeProofIdentity(split),
       coldSplitProven: true,
@@ -5939,18 +6106,12 @@ async function run() {
       timing_metrics: initialCompileResult.timingMetrics,
       sourceFirstIngestion,
       source_first_ingestion: sourceFirstIngestion,
-      visualArtifacts: {
-        beforeImage: artifactRel('before-hmr-first.png'),
-        afterImage: artifactRel('before-hmr-second.png'),
-      },
-      visual_artifacts: {
-        before_image: artifactRel('before-hmr-first.png'),
-        after_image: artifactRel('before-hmr-second.png'),
-      },
-      visualMetrics: {
-        visiblePixelCount: baselineShot.second?.visiblePixels ?? baselineShot.first?.visiblePixels ?? null,
-        meanAbsDelta8bit: baselineShot.second?.meanLuma ?? baselineShot.first?.meanLuma ?? null,
-      },
+      coldSingleFrameVisual: coldVisual.sample,
+      cold_single_frame_visual: coldVisual.sample,
+      visualArtifacts: coldVisual.visualArtifacts,
+      visual_artifacts: coldVisual.visual_artifacts,
+      visualMetrics: coldVisual.visualMetrics,
+      visual_metrics: coldVisual.visual_metrics,
     };
   }
 

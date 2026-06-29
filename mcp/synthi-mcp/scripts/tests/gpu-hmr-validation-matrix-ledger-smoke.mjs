@@ -10691,6 +10691,35 @@ assert.equal(
 assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.raw_readback_bin);
 assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.readback_schema_json);
 assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.rendered_card_png);
+const selfDeclaredComputeCasRoot = path.join(tmpRoot, 'self-declared-untrusted-compute-cas');
+const selfDeclaredRawLocator = await writeArtifactToCas(acceptedComputeBytes, {
+  artifactRoot: selfDeclaredComputeCasRoot,
+  artifactKind: 'runtime_compute_raw_readback',
+  mediaType: 'application/octet-stream',
+  role: 'raw_readback',
+  producer: { name: 'validation_matrix_smoke', kind: 'proof_runner' },
+  producerSubsystem: 'compute_oracle_artifact_transport',
+  sessionNamespace: 'self-declared-compute-cas-root',
+  transportKind: 'cas_shared_volume',
+});
+const selfDeclaredComputeCasArtifacts = computeOracleArtifactsWithoutDirectPaths(acceptedComputeCasArtifacts);
+selfDeclaredComputeCasArtifacts.raw_readback_cas_manifest = selfDeclaredRawLocator;
+selfDeclaredComputeCasArtifacts.rawReadbackCasManifest = selfDeclaredRawLocator;
+selfDeclaredComputeCasArtifacts.artifactCasRoot = selfDeclaredComputeCasRoot;
+selfDeclaredComputeCasArtifacts.artifact_cas_root = selfDeclaredComputeCasRoot;
+selfDeclaredComputeCasArtifacts.allowedCasRoots = [selfDeclaredComputeCasRoot];
+selfDeclaredComputeCasArtifacts.allowed_cas_roots = [selfDeclaredComputeCasRoot];
+const selfDeclaredComputeCasResolved = await computeOracleArtifactsFromFiles(
+  selfDeclaredComputeCasArtifacts,
+  { artifactRoot: acceptedComputeCasRoot, casRoot: acceptedComputeCasRoot },
+);
+const selfDeclaredRawEntry = selfDeclaredComputeCasResolved.computeArtifactCasResolution.entries.find(
+  (entry) => entry.role === 'raw_readback',
+);
+assert.equal(selfDeclaredComputeCasResolved.computeArtifactCasResolution.accepted, false);
+assert.equal(selfDeclaredRawEntry.accepted, false);
+assert.ok(selfDeclaredRawEntry.reasons.includes('artifact_cas_local_path_outside_allowed_roots'));
+assert.equal(selfDeclaredComputeCasResolved.raw_readback_bin, undefined);
 const acceptedComputeCasOnlyProofMaterials = withComputeOracleArtifacts(
   acceptedComputeCasBaseMaterials,
   acceptedComputeCasOnlyMaterializedArtifacts,
@@ -10852,6 +10881,87 @@ assert.ok(forgedComputeCasRocm.ledger.failedInvariants.some(
 assert.ok(forgedComputeCasRocm.reasons.includes('compute_oracle_artifact_cas_locator_validation_failed'));
 assert.ok(forgedComputeCasRocm.reasons.includes('proof_ledger_success_required'));
 assert.ok(forgedComputeCasRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
+
+const forgedComputeCasRoleRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-cas-role');
+await fs.mkdir(forgedComputeCasRoleRocmDir, { recursive: true });
+const forgedComputeCasRoleArtifacts = JSON.parse(JSON.stringify(acceptedComputeCasArtifacts));
+const rawComputeLocator = forgedComputeCasRoleArtifacts.artifact_cas_locators.find(
+  (locator) => locator.role === 'raw_readback',
+) ?? forgedComputeCasRoleArtifacts.artifact_cas_locators[0];
+const roleMismatchedRawLocator = {
+  ...rawComputeLocator,
+  role: 'rendered_card',
+  artifactRole: 'rendered_card',
+  artifact_role: 'rendered_card',
+};
+forgedComputeCasRoleArtifacts.raw_readback_cas_manifest = roleMismatchedRawLocator;
+forgedComputeCasRoleArtifacts.rawReadbackCasManifest = roleMismatchedRawLocator;
+const forgedComputeCasRoleBaseMaterials = realRocmComputeProofLedgerMaterials('forged-compute-cas-role', {
+  projectId: 'real-rocm-forged-compute-cas-role',
+  rawReadbackPath: acceptedComputeCasSourceRaw,
+  rawReadbackBytes: acceptedComputeBytes,
+});
+const forgedComputeCasRoleProofMaterials = withComputeOracleArtifacts(
+  forgedComputeCasRoleBaseMaterials,
+  forgedComputeCasRoleArtifacts,
+);
+await writeJson(path.join(forgedComputeCasRoleRocmDir, 'real-rocm-forged-compute-cas-role.json'), {
+  slug: 'gpu-real-rocm-forged-compute-cas-role-20260629',
+  real_rocm_profile: { id: 'real-rocm-forged-compute-cas-role' },
+  source_url: 'https://example.invalid/rocm/forged-compute-cas-role.git',
+  repo_commit: 'cccccccccccccccccccccccccccccccccccccccc',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'ForgedComputeCasRoleDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedComputeCasRoleProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-compute-cas-role-delta',
+    editHash: hashValue('real-rocm-forged-compute-cas-role-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-compute-cas-role.git @ cccccccc files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedComputeCasRoleRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedComputeCasRoleRocmDir],
+  generatedAt: '2026-06-09T00:00:02.272Z',
+  includeUnproven: true,
+});
+const forgedComputeCasRoleRocm = forgedComputeCasRoleRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedComputeCasRoleRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedComputeCasRoleRocm.acceptedForGpuHmr, false);
+assert.equal(forgedComputeCasRoleRocm.outputOracleFacet.kind, 'ledger_rejected');
+assert.equal(forgedComputeCasRoleRocm.outputOracleFacet.accepted, false);
+assert.equal(forgedComputeCasRoleRocm.outputOracleFacet.compute, null);
+assert.ok(forgedComputeCasRoleRocm.ledger.failedInvariants.some(
+  (failure) => failure.code === 'compute_oracle_artifact_cas_locator_validation_failed',
+));
+assert.ok(forgedComputeCasRoleRocm.reasons.includes('compute_oracle_artifact_cas_locator_validation_failed'));
+assert.ok(forgedComputeCasRoleRocm.reasons.includes('proof_ledger_success_required'));
+assert.ok(forgedComputeCasRoleRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 
 const acceptedRuntimeArtifactInput = {
   createdAt: '2026-06-09T00:00:02.200Z',

@@ -962,9 +962,13 @@ function computeArtifactCasExpectedHash(artifacts, role) {
 
 function computeArtifactCasAllowedRoots(repoRoot, baseDir, artifacts = {}) {
   const envRoot = defaultCasRootFromEnv();
-  return [...new Set(compactStringList([
+  const trustedRoots = compactStringList([
     repoRoot,
     baseDir,
+    envRoot,
+  ]).map((root) => path.resolve(root));
+  const allowed = new Set(trustedRoots);
+  const declaredRoots = compactStringList([
     ...(Array.isArray(artifacts.artifactCasRoots) ? artifacts.artifactCasRoots : []),
     ...(Array.isArray(artifacts.artifact_cas_roots) ? artifacts.artifact_cas_roots : []),
     ...(Array.isArray(artifacts.allowedCasRoots) ? artifacts.allowedCasRoots : []),
@@ -975,8 +979,28 @@ function computeArtifactCasAllowedRoots(repoRoot, baseDir, artifacts = {}) {
     artifacts.cas_root,
     artifacts.artifactRoot,
     artifacts.artifact_root,
-    envRoot,
-  ]).map((root) => path.resolve(root)))];
+  ]).map((root) => path.resolve(root));
+  for (const declaredRoot of declaredRoots) {
+    if (trustedRoots.some((trustedRoot) => pathInsideOrSame(declaredRoot, trustedRoot))) {
+      allowed.add(declaredRoot);
+    }
+  }
+  return [...allowed];
+}
+
+function pathInsideOrSame(child, root) {
+  const resolvedChild = path.resolve(child);
+  const resolvedRoot = path.resolve(root);
+  const relative = path.relative(resolvedRoot, resolvedChild);
+  return relative === '' || Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function trustedComputeArtifactCasRoot(repoRoot, baseDir) {
+  return compactStringList([
+    defaultCasRootFromEnv(),
+    baseDir,
+    repoRoot,
+  ]).map((root) => path.resolve(root))[0] ?? null;
 }
 
 async function validateComputeArtifactCasLocator(locator, repoRoot, baseDir, artifacts = {}) {
@@ -984,12 +1008,7 @@ async function validateComputeArtifactCasLocator(locator, repoRoot, baseDir, art
   try {
     return await validateArtifactCasManifest(locator, {
       allowedRoots: computeArtifactCasAllowedRoots(repoRoot, baseDir, artifacts),
-      artifactRoot: firstText(
-        artifacts.artifactCasRoot,
-        artifacts.artifact_cas_root,
-        artifacts.artifactRoot,
-        artifacts.artifact_root,
-      ),
+      artifactRoot: trustedComputeArtifactCasRoot(repoRoot, baseDir),
       requireReadableBytes: true,
     });
   } catch (error) {
@@ -11998,7 +12017,10 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     };
   }
   const resolvedArtifacts = await resolveComputeOracleArtifactPaths(computeArtifacts, repoRoot, baseDir);
-  const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts);
+  const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts, {
+    allowedRoots: computeArtifactCasAllowedRoots(repoRoot, baseDir, resolvedArtifacts),
+    artifactRoot: trustedComputeArtifactCasRoot(repoRoot, baseDir),
+  });
   const verification = compactObject(
     enriched?.raw_readback_verification
     ?? enriched?.rawReadbackVerification,

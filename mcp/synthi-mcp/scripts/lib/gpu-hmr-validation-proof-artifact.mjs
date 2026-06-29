@@ -23,6 +23,12 @@ import {
 import {
   adversarialPreflightStrictGate,
 } from './gpu-hmr-proof-strict-gates.mjs';
+import {
+  CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
+  collectArtifactLocators,
+  defaultCasRootFromEnv,
+  validateArtifactCasManifest,
+} from './gpu-hmr-artifact-cas.mjs';
 
 export const GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
@@ -1324,8 +1330,32 @@ const VISUAL_ORACLE_ARTIFACT_HINT_FIELDS = [
 const COMPUTE_ORACLE_ARTIFACT_HINT_FIELDS = [
   'raw_readback_bin',
   'rawReadbackBin',
+  'raw_readback_cas_manifest',
+  'rawReadbackCasManifest',
+  'raw_readback_locator',
+  'rawReadbackLocator',
   'readback_schema_json',
   'readbackSchemaJson',
+  'readback_schema_cas_manifest',
+  'readbackSchemaCasManifest',
+  'readback_schema_locator',
+  'readbackSchemaLocator',
+  'schema_cas_manifest',
+  'schemaCasManifest',
+  'rendered_card_png',
+  'renderedCardPng',
+  'rendered_card_cas_manifest',
+  'renderedCardCasManifest',
+  'rendered_card_locator',
+  'renderedCardLocator',
+  'proof_card_png',
+  'proofCardPng',
+  'proof_card_cas_manifest',
+  'proofCardCasManifest',
+  'artifact_cas_locators',
+  'artifactCasLocators',
+  'artifact_cas_locator',
+  'artifactCasLocator',
   'checksum_before',
   'checksumBefore',
   'checksum_after',
@@ -3169,17 +3199,402 @@ function finiteOffset(value) {
   return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
 }
 
-export async function computeOracleArtifactsFromFiles(computeArtifacts = null) {
+function normalizeOptionalSha256(value) {
+  const ref = firstString(value);
+  if (!ref) return null;
+  const artifactMatch = ref.match(/^artifact:sha256:([0-9a-f]{64})$/i);
+  if (artifactMatch) return `sha256:${artifactMatch[1].toLowerCase()}`;
+  const hashMatch = ref.match(/^sha256:([0-9a-f]{64})$/i) ?? ref.match(/^([0-9a-f]{64})$/i);
+  return hashMatch ? `sha256:${hashMatch[1].toLowerCase()}` : null;
+}
+
+function normalizedComputeArtifactRole(value) {
+  const role = firstString(value)?.toLowerCase().replace(/[\s-]+/g, '_');
+  if (!role) return null;
+  if ([
+    'raw',
+    'raw_readback',
+    'raw_readback_bin',
+    'readback',
+    'readback_bin',
+    'compute_readback',
+    'compute_raw_readback',
+    'runtime_compute_raw_readback',
+  ].includes(role)) {
+    return 'raw_readback';
+  }
+  if ([
+    'schema',
+    'readback_schema',
+    'readback_schema_json',
+    'compute_schema',
+    'compute_readback_schema',
+    'runtime_compute_readback_schema',
+  ].includes(role)) {
+    return 'readback_schema';
+  }
+  if ([
+    'card',
+    'proof_card',
+    'proof_card_png',
+    'rendered_card',
+    'rendered_card_png',
+    'compute_card',
+    'compute_proof_card',
+    'runtime_compute_proof_card',
+  ].includes(role)) {
+    return 'rendered_card';
+  }
+  return null;
+}
+
+function computeArtifactLocatorRole(locator) {
+  return normalizedComputeArtifactRole(
+    locator?.role
+    ?? locator?.artifactRole
+    ?? locator?.artifact_role
+    ?? locator?.artifactKind
+    ?? locator?.artifact_kind,
+  );
+}
+
+function computeArtifactLocatorHash(locator) {
+  return normalizeOptionalSha256(
+    locator?.contentHash
+    ?? locator?.content_hash
+    ?? locator?.artifactHash
+    ?? locator?.artifact_hash
+    ?? locator?.artifactId
+    ?? locator?.artifact_id,
+  );
+}
+
+function computeArtifactCasLocators(source) {
+  const locators = collectArtifactLocators(source).filter((locator) => {
+    if ((locator.schemaVersion ?? locator.schema_version) !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION) return false;
+    return computeArtifactLocatorRole(locator) !== null;
+  });
+  const seen = new Set();
+  return locators.filter((locator) => {
+    const role = computeArtifactLocatorRole(locator) ?? 'artifact';
+    const hash = computeArtifactLocatorHash(locator) ?? 'unknown';
+    const manifestHash = firstString(locator.manifestHash, locator.manifest_hash) ?? 'no-manifest';
+    const key = `${role}:${hash}:${manifestHash}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function computeArtifactCasExpectedHash(source, role) {
+  if (role === 'raw_readback') {
+    return normalizeOptionalSha256(
+      firstString(
+        source.raw_readback_hash,
+        source.rawReadbackHash,
+        source.readback_hash,
+        source.readbackHash,
+      ),
+    );
+  }
+  if (role === 'readback_schema') {
+    return normalizeOptionalSha256(
+      firstString(
+        source.readback_schema_hash,
+        source.readbackSchemaHash,
+        source.schema_hash,
+        source.schemaHash,
+      ),
+    );
+  }
+  if (role === 'rendered_card') {
+    return normalizeOptionalSha256(
+      firstString(
+        source.rendered_card_hash,
+        source.renderedCardHash,
+        source.rendered_card_png_hash,
+        source.renderedCardPngHash,
+        source.proof_card_hash,
+        source.proofCardHash,
+        source.card_hash,
+        source.cardHash,
+      ),
+    );
+  }
+  return null;
+}
+
+function computeArtifactCasAllowedRoots(source = {}, options = {}) {
+  const envRoot = defaultCasRootFromEnv();
+  const trustedRoots = compactStringList([
+    ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+    ...(Array.isArray(options.allowedArtifactRoots) ? options.allowedArtifactRoots : []),
+    ...(Array.isArray(options.allowedCasRoots) ? options.allowedCasRoots : []),
+    options.artifactRoot,
+    options.artifactCasRoot,
+    options.casRoot,
+    envRoot,
+  ]).map((root) => path.resolve(root));
+  if (trustedRoots.length === 0) return [];
+
+  const sourceRoots = compactStringList([
+    ...(Array.isArray(source.artifactCasRoots) ? source.artifactCasRoots : []),
+    ...(Array.isArray(source.artifact_cas_roots) ? source.artifact_cas_roots : []),
+    ...(Array.isArray(source.allowedCasRoots) ? source.allowedCasRoots : []),
+    ...(Array.isArray(source.allowed_cas_roots) ? source.allowed_cas_roots : []),
+    source.artifactCasRoot,
+    source.artifact_cas_root,
+    source.casRoot,
+    source.cas_root,
+    source.artifactRoot,
+    source.artifact_root,
+  ]).map((root) => path.resolve(root));
+  const trusted = new Set(trustedRoots);
+  for (const sourceRoot of sourceRoots) {
+    if (trustedRoots.some((trustedRoot) => isPathInsideOrSame(sourceRoot, trustedRoot))) {
+      trusted.add(sourceRoot);
+    }
+  }
+  return [...trusted];
+}
+
+function computeArtifactTrustedCasRoot(options = {}) {
+  return compactStringList([
+    options.artifactRoot,
+    options.artifactCasRoot,
+    options.casRoot,
+    ...(Array.isArray(options.allowedArtifactRoots) ? options.allowedArtifactRoots : []),
+    ...(Array.isArray(options.allowedCasRoots) ? options.allowedCasRoots : []),
+    defaultCasRootFromEnv(),
+  ]).map((root) => path.resolve(root))[0] ?? null;
+}
+
+function isPathInsideOrSame(child, root) {
+  const resolvedChild = path.resolve(child);
+  const resolvedRoot = path.resolve(root);
+  const relative = path.relative(resolvedRoot, resolvedChild);
+  return relative === '' || Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function readComputeArtifactCasManifest(value, role) {
+  const direct = objectOrNull(value);
+  if (direct) {
+    return {
+      manifest: { role, ...direct, role: direct.role ?? direct.artifactRole ?? direct.artifact_role ?? role },
+      readError: null,
+    };
+  }
+  const manifestPath = fileArtifactPath(value);
+  if (!manifestPath) return { manifest: null, readError: null };
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, 'utf8'));
+    return {
+      manifest: { role, ...parsed, role: parsed.role ?? parsed.artifactRole ?? parsed.artifact_role ?? role },
+      readError: null,
+      manifestPath,
+    };
+  } catch (error) {
+    return {
+      manifest: null,
+      readError: error?.message ? String(error.message) : String(error),
+      manifestPath,
+    };
+  }
+}
+
+function computeArtifactCasLocatorForRole(locators, role, expectedHash) {
+  const normalizedRole = normalizedComputeArtifactRole(role);
+  const normalizedHash = normalizeOptionalSha256(expectedHash);
+  const roleMatches = locators.filter((locator) => {
+    const locatorRole = computeArtifactLocatorRole(locator);
+    return !normalizedRole || !locatorRole || locatorRole === normalizedRole;
+  });
+  return roleMatches.find((locator) => {
+    const locatorHash = computeArtifactLocatorHash(locator);
+    return !normalizedHash || !locatorHash || locatorHash === normalizedHash;
+  }) ?? roleMatches[0] ?? null;
+}
+
+async function validateComputeArtifactCasLocator(locator, source, options) {
+  try {
+    return await validateArtifactCasManifest(locator, {
+      allowedRoots: computeArtifactCasAllowedRoots(source, options),
+      artifactRoot: computeArtifactTrustedCasRoot(options),
+      requireReadableBytes: true,
+    });
+  } catch (error) {
+    return {
+      accepted: false,
+      acceptedAsTransportEvidence: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: 'transport_integrity_only',
+      localPath: null,
+      local_path: null,
+      contentHash: computeArtifactLocatorHash(locator),
+      manifestHash: firstString(locator?.manifestHash, locator?.manifest_hash),
+      reasons: ['artifact_cas_validation_exception'],
+      gaps: [],
+      details: {
+        message: error?.message ? String(error.message) : String(error),
+      },
+    };
+  }
+}
+
+async function resolveComputeArtifactCasPaths(source, options = {}) {
+  const out = { ...source };
+  const embeddedLocators = computeArtifactCasLocators(source);
+  const entries = [];
+  const roleFields = [
+    {
+      role: 'raw_readback',
+      snakeName: 'raw_readback_bin',
+      camelName: 'rawReadbackBin',
+      manifestFields: ['raw_readback_cas_manifest', 'rawReadbackCasManifest', 'raw_readback_locator', 'rawReadbackLocator'],
+    },
+    {
+      role: 'readback_schema',
+      snakeName: 'readback_schema_json',
+      camelName: 'readbackSchemaJson',
+      manifestFields: [
+        'readback_schema_cas_manifest',
+        'readbackSchemaCasManifest',
+        'schema_cas_manifest',
+        'schemaCasManifest',
+        'readback_schema_locator',
+        'readbackSchemaLocator',
+      ],
+    },
+    {
+      role: 'rendered_card',
+      snakeName: 'rendered_card_png',
+      camelName: 'renderedCardPng',
+      manifestFields: [
+        'rendered_card_cas_manifest',
+        'renderedCardCasManifest',
+        'proof_card_cas_manifest',
+        'proofCardCasManifest',
+        'rendered_card_locator',
+        'renderedCardLocator',
+      ],
+    },
+  ];
+  for (const { role, snakeName, camelName, manifestFields } of roleFields) {
+    let locator = null;
+    const manifestValue = manifestFields.map((field) => out[field]).find((value) => value !== null && value !== undefined);
+    if (manifestValue !== undefined) {
+      const loaded = await readComputeArtifactCasManifest(manifestValue, role);
+      if (loaded.readError) {
+        entries.push({
+          role,
+          accepted: false,
+          path: null,
+          contentHash: null,
+          content_hash: null,
+          manifestHash: null,
+          manifest_hash: null,
+          manifestPath: loaded.manifestPath ?? null,
+          manifest_path: loaded.manifestPath ?? null,
+          reasons: ['compute_oracle_artifact_cas_manifest_unreadable'],
+          gaps: [],
+        });
+        delete out[snakeName];
+        delete out[camelName];
+        continue;
+      }
+      locator = loaded.manifest;
+    }
+    if (!locator) {
+      locator = computeArtifactCasLocatorForRole(
+        embeddedLocators,
+        role,
+        computeArtifactCasExpectedHash(source, role),
+      );
+    }
+    if (!locator) continue;
+    const locatorRole = computeArtifactLocatorRole(locator);
+    if (locatorRole !== role) {
+      entries.push({
+        role,
+        accepted: false,
+        path: null,
+        contentHash: computeArtifactLocatorHash(locator),
+        content_hash: computeArtifactLocatorHash(locator),
+        manifestHash: firstString(locator?.manifestHash, locator?.manifest_hash),
+        manifest_hash: firstString(locator?.manifestHash, locator?.manifest_hash),
+        reasons: ['compute_oracle_artifact_cas_role_mismatch'],
+        gaps: [],
+      });
+      delete out[snakeName];
+      delete out[camelName];
+      continue;
+    }
+    const validation = await validateComputeArtifactCasLocator(locator, source, options);
+    const pathValue = validation?.accepted === true
+      ? firstString(validation.localPath, validation.local_path)
+      : null;
+    entries.push({
+      role,
+      accepted: Boolean(pathValue),
+      path: pathValue,
+      contentHash: validation?.contentHash ?? null,
+      content_hash: validation?.contentHash ?? null,
+      manifestHash: validation?.manifestHash ?? null,
+      manifest_hash: validation?.manifestHash ?? null,
+      reasons: validation?.reasons ?? [],
+      gaps: validation?.gaps ?? [],
+    });
+    if (pathValue) {
+      out[snakeName] = pathValue;
+      out[camelName] = pathValue;
+    } else {
+      delete out[snakeName];
+      delete out[camelName];
+    }
+  }
+  const locatorCount = entries.length;
+  const acceptedCount = entries.filter((entry) => entry.accepted === true).length;
+  if (locatorCount > 0) {
+    out.compute_artifact_cas_resolution = {
+      schemaVersion: 'synthi.gpu_hmr.compute_artifact_cas_resolution.v1',
+      schema_version: 'synthi.gpu_hmr.compute_artifact_cas_resolution.v1',
+      proofAuthority: 'compute_artifact_transport_integrity_only',
+      proof_authority: 'compute_artifact_transport_integrity_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      locatorCount,
+      locator_count: locatorCount,
+      acceptedCount,
+      accepted_count: acceptedCount,
+      accepted: acceptedCount === locatorCount,
+      entries,
+      failedGates: acceptedCount === locatorCount
+        ? []
+        : ['compute_oracle_artifact_cas_locator_validation_failed'],
+      failed_gates: acceptedCount === locatorCount
+        ? []
+        : ['compute_oracle_artifact_cas_locator_validation_failed'],
+    };
+    out.computeArtifactCasResolution = out.compute_artifact_cas_resolution;
+  }
+  return out;
+}
+
+export async function computeOracleArtifactsFromFiles(computeArtifacts = null, options = {}) {
   const source = objectOrNull(computeArtifacts);
   if (!source) return null;
-  const rawPath = fileArtifactPath(firstString(source.raw_readback_bin, source.rawReadbackBin));
-  const schemaPath = fileArtifactPath(firstString(source.readback_schema_json, source.readbackSchemaJson));
-  const enriched = { ...source };
+  const resolvedSource = await resolveComputeArtifactCasPaths(source, options);
+  const rawPath = fileArtifactPath(firstString(resolvedSource.raw_readback_bin, resolvedSource.rawReadbackBin));
+  const schemaPath = fileArtifactPath(firstString(resolvedSource.readback_schema_json, resolvedSource.readbackSchemaJson));
+  const enriched = { ...resolvedSource };
   const verification = {
-    ...objectOrNull(source.raw_readback_verification),
-    ...objectOrNull(source.rawReadbackVerification),
-    ...objectOrNull(source.byte_verification),
-    ...objectOrNull(source.byteVerification),
+    ...objectOrNull(resolvedSource.raw_readback_verification),
+    ...objectOrNull(resolvedSource.rawReadbackVerification),
+    ...objectOrNull(resolvedSource.byte_verification),
+    ...objectOrNull(resolvedSource.byteVerification),
   };
 
   if (schemaPath) {

@@ -8,6 +8,8 @@ import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
   buildAsyncVisualProofBundle,
   collectVisualArtifactCasLocators,
+  completeAsyncVisualProofJob,
+  createAsyncVisualProofJob,
   deterministicVisualModeFromMcpEvidence,
   deterministicVisualModeAccepted,
   evaluateGpuHmrDeterministicVisualMode,
@@ -411,6 +413,8 @@ const bundle = await buildAsyncVisualProofBundle({
   producer: { name: 'visual_evidence_smoke', kind: 'self_check' },
   visualProof: { tileSize: 8 },
 });
+assert.equal(bundle.proofReady, true);
+assert.equal(bundle.proofPending, false);
 assert.equal(bundle.accepted, true);
 assert.equal(bundle.acceptedForGpuHmr, false);
 assert.equal(bundle.gpuHmrSuccess, false);
@@ -424,6 +428,74 @@ assert.equal(bundle.artifactCasLocators.every((locator) => locator.artifactKind 
 assert.equal(bundle.visualArtifactTransportEvidence.acceptedAsTransportEvidence, true);
 assert.equal(bundle.visualArtifactTransportEvidence.acceptedForGpuHmr, false);
 assert.equal(bundle.asyncVisualProof.acceptedAsAsyncVisualMetrics, true);
+
+const pendingJob = await createAsyncVisualProofJob({
+  beforePath: beforeBundlePng,
+  afterPath: afterBundlePng,
+  diffPath: path.join(bundleDir, 'pending-diff.png'),
+  artifactDir: bundleDir,
+  sessionNamespace: 'visual-proof-pending-smoke',
+  producer: { name: 'visual_evidence_smoke', kind: 'self_check' },
+  visualProof: { tileSize: 8 },
+});
+assert.equal(pendingJob.schemaVersion, 'synthi.gpu_hmr.async_visual_proof_job.v1');
+assert.equal(pendingJob.eventType, 'proof_pending');
+assert.equal(pendingJob.proofPending, true);
+assert.equal(pendingJob.proofReady, false);
+assert.equal(pendingJob.accepted, false);
+assert.equal(pendingJob.acceptedAsAsyncVisualProofJob, true);
+assert.equal(pendingJob.acceptedForGpuHmr, false);
+assert.equal(pendingJob.gpuHmrSuccess, false);
+assert.equal(
+  pendingJob.proofAuthority,
+  'async_visual_job_manifest_only_not_gpu_hmr_acceptance',
+);
+assert.match(pendingJob.jobHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(pendingJob.jobHash, pendingJob.jobManifestHash);
+assert.equal(pendingJob.jobManifestLocator.contentHash, pendingJob.jobHash);
+assert.equal(pendingJob.asyncVisualProof.eventType, 'proof_pending');
+assert.equal(pendingJob.asyncVisualProof.acceptedAsAsyncVisualMetrics, false);
+assert.equal(pendingJob.asyncVisualProof.acceptedForGpuHmr, false);
+assert.equal(pendingJob.asyncVisualProof.gpuHmrSuccess, false);
+assert.ok(pendingJob.asyncVisualProof.gaps.includes('async_visual_proof_ready_event_missing'));
+assert.equal(pendingJob.visualArtifactTransportEvidence.acceptedAsTransportEvidence, true);
+assert.equal(pendingJob.artifactCasLocators.length, 2);
+
+await assert.rejects(
+  () => completeAsyncVisualProofJob(pendingJob),
+  /async_visual_proof_job_completion_requires_trusted_allowed_roots/,
+);
+const tamperedPendingJob = {
+  ...pendingJob,
+  request: {
+    ...pendingJob.request,
+    tileSize: 16,
+  },
+};
+await assert.rejects(
+  () => completeAsyncVisualProofJob(tamperedPendingJob, {
+    casRoot: pendingJob.casRoot,
+    allowedRoots: [pendingJob.casRoot],
+    allowedOutputRoots: [bundleDir],
+  }),
+  /async_visual_proof_job_hash_mismatch/,
+);
+
+const completedJob = await completeAsyncVisualProofJob(pendingJob, {
+  casRoot: pendingJob.casRoot,
+  allowedRoots: [pendingJob.casRoot],
+  allowedOutputRoots: [bundleDir],
+});
+assert.equal(completedJob.proofReady, true);
+assert.equal(completedJob.proofPending, false);
+assert.equal(completedJob.accepted, true);
+assert.equal(completedJob.acceptedForGpuHmr, false);
+assert.equal(completedJob.gpuHmrSuccess, false);
+assert.equal(completedJob.asyncVisualProof.eventType, 'proof_ready');
+assert.equal(completedJob.asyncVisualProof.acceptedAsAsyncVisualMetrics, true);
+assert.equal(completedJob.asyncVisualProofJob.jobHash, pendingJob.jobHash);
+assert.equal(completedJob.artifactCasLocators.length, 3);
+assert.equal(completedJob.visualArtifactTransportEvidence.acceptedAsTransportEvidence, true);
 
 const missingTransport = await visualArtifactTransportEvidence({});
 assert.equal(missingTransport.accepted, false);
@@ -444,5 +516,6 @@ console.log(JSON.stringify({
     'mcp_stale_screenshot_rejection',
     'visual_artifact_transport_evidence_not_gpu_hmr_proof',
     'async_visual_proof_bundle_cas_worker_transport',
+    'async_visual_proof_pending_job_manifest',
   ],
 }, null, 2));
