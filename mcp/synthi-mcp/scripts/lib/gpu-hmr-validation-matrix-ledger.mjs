@@ -4125,6 +4125,127 @@ function runtimeProbeInstrumentationDisclosureFacet(...sources) {
   };
 }
 
+const HIPRT_CONTRACT_FIELD_ALIASES = [
+  ['kernel_entry', 'kernelEntry'],
+  ['scene_or_bvh_handles', 'sceneOrBvhHandles'],
+  ['framebuffer_handle', 'framebufferHandle'],
+  ['material_or_geometry_buffers', 'materialOrGeometryBuffers'],
+  ['camera_state_hash', 'cameraStateHash'],
+  ['same_process_reload_hook', 'sameProcessReloadHook'],
+  ['visual_oracle', 'visualOracle'],
+];
+
+function hiprtContractCandidateFromSource(source = {}) {
+  const direct = compactObject(source);
+  if (Object.keys(direct).length === 0) return {};
+  const candidates = [
+    direct.hiprt_contract,
+    direct.hiprtContract,
+    direct.acceptanceContract?.hiprt_contract,
+    direct.acceptanceContract?.hiprtContract,
+    direct.acceptance_contract?.hiprt_contract,
+    direct.acceptance_contract?.hiprtContract,
+    direct.runtimeProofArtifact?.acceptanceContract?.hiprt_contract,
+    direct.runtimeProofArtifact?.acceptanceContract?.hiprtContract,
+    direct.runtimeProofArtifact?.acceptance_contract?.hiprt_contract,
+    direct.runtimeProofArtifact?.acceptance_contract?.hiprtContract,
+    direct.runtime_proof_artifact?.acceptanceContract?.hiprt_contract,
+    direct.runtime_proof_artifact?.acceptanceContract?.hiprtContract,
+    direct.runtime_proof_artifact?.acceptance_contract?.hiprt_contract,
+    direct.runtime_proof_artifact?.acceptance_contract?.hiprtContract,
+  ];
+  return compactObject(candidates.find((candidate) => Object.keys(compactObject(candidate)).length > 0));
+}
+
+function firstContractField(contract = {}, aliases = []) {
+  for (const alias of aliases) {
+    const value = contract[alias];
+    if (Array.isArray(value)) {
+      const strings = compactStringList(value);
+      if (strings.length > 0) return strings;
+      const objects = value.map(compactObject).filter((item) => Object.keys(item).length > 0);
+      if (objects.length > 0) return objects;
+    }
+    if (isObject(value)) {
+      const object = compactObject(value);
+      if (Object.keys(object).length > 0) return object;
+    }
+    const text = firstText(value);
+    if (text) return text;
+  }
+  return null;
+}
+
+function hiprtContractEvidenceRefs(contract = {}, field, aliases = []) {
+  const refs = compactObject(contract.fieldEvidenceRefs ?? contract.field_evidence_refs);
+  return compactStringList([
+    ...(Array.isArray(refs[field]) ? refs[field] : [refs[field]]),
+    ...aliases.flatMap((alias) => (Array.isArray(refs[alias]) ? refs[alias] : [refs[alias]])),
+  ]);
+}
+
+function hiprtContractEvidenceFacet(...sources) {
+  const sourceAdaptedProfile = sources.some((source) => firstBool(
+    compactObject(source).sourceAdaptedProfile,
+    compactObject(source).source_adapted_profile,
+  ) === true);
+  const contract = compactObject(
+    sources.map(hiprtContractCandidateFromSource)
+      .find((candidate) => Object.keys(candidate).length > 0),
+  );
+  const present = Object.keys(contract).length > 0;
+  const normalizedFields = {};
+  const fieldEvidenceRefs = {};
+  const missingFields = [];
+  const missingEvidenceFields = [];
+  for (const [field, ...aliases] of HIPRT_CONTRACT_FIELD_ALIASES) {
+    const value = firstContractField(contract, [field, ...aliases]);
+    if (value === null) {
+      missingFields.push(field);
+    } else {
+      normalizedFields[field] = value;
+    }
+    const refs = hiprtContractEvidenceRefs(contract, field, aliases);
+    if (refs.length === 0) {
+      missingEvidenceFields.push(field);
+    } else {
+      fieldEvidenceRefs[field] = refs;
+    }
+  }
+  const accepted = present && missingFields.length === 0 && missingEvidenceFields.length === 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.hiprt_contract_evidence.v1',
+    schema_version: 'synthi.gpu_hmr.hiprt_contract_evidence.v1',
+    present,
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    noShimEligible: accepted && sourceAdaptedProfile === false,
+    no_shim_eligible: accepted && sourceAdaptedProfile === false,
+    sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptedProfile,
+    fields: normalizedFields,
+    fieldEvidenceRefs,
+    field_evidence_refs: fieldEvidenceRefs,
+    missingFields,
+    missing_fields: missingFields,
+    missingEvidenceFields,
+    missing_evidence_fields: missingEvidenceFields,
+    failedGates: compactStringList([
+      present ? null : 'hiprt_contract_missing',
+      ...missingFields.map((field) => `hiprt_contract_${field}_missing`),
+      ...missingEvidenceFields.map((field) => `hiprt_contract_${field}_evidence_missing`),
+    ]),
+    failed_gates: compactStringList([
+      present ? null : 'hiprt_contract_missing',
+      ...missingFields.map((field) => `hiprt_contract_${field}_missing`),
+      ...missingEvidenceFields.map((field) => `hiprt_contract_${field}_evidence_missing`),
+    ]),
+  };
+}
+
 function objectsForSourceAdaptationFacet(...sources) {
   const direct = sources.flatMap((source) => {
     if (Array.isArray(source)) return source.map(compactObject);
@@ -8653,6 +8774,18 @@ async function hiprtWarmRow(json, filePath, context) {
     ).length > 0
     || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
     || runtimeProbeInstrumentation.adapted_or_already_present === true;
+  const acceptanceContract = compactObject(
+    json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract,
+  );
+  const hiprtContract = hiprtContractEvidenceFacet(
+    { acceptanceContract },
+    runtimeProofArtifact,
+    json,
+    { sourceAdaptedProfile },
+  );
   const strictVisualProfileAccepted =
     json.accepted === true
     && ledger.present === true
@@ -8667,6 +8800,7 @@ async function hiprtWarmRow(json, filePath, context) {
     && changed.sameProcess === true
     && visual.accepted === true
     && runtimeProbeInstrumentation.accepted === true
+    && hiprtContract.accepted === true
     && cpuHmrUsed === false
     && fullRebuildUsed === false
     && processRestarted === false;
@@ -8734,6 +8868,10 @@ async function hiprtWarmRow(json, filePath, context) {
     runtimeProofArtifact: runtimeProofArtifactProof,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    hiprtContract,
+    hiprt_contract: hiprtContract,
     sourceAdaptedProfile,
     source_adapted_profile: sourceAdaptedProfile,
     oracleRegion: oracleRegionRecomputed,
@@ -8759,6 +8897,7 @@ async function hiprtWarmRow(json, filePath, context) {
       runtimeProofArtifactProof.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       oracleRegionAccepted === true ? null : 'hiprt_oracle_region_nonblank_not_proven',
       oracleRegionRecomputed.accepted === true ? null : 'hiprt_oracle_region_pixel_recompute_not_accepted',
+      hiprtContract.accepted === true ? null : 'hiprt_contract_not_proven',
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
@@ -8767,6 +8906,7 @@ async function hiprtWarmRow(json, filePath, context) {
         : 'hiprt_profile_instrumentation_disclosure_not_proven',
       ...visual.failedGates,
       ...runtimeProbeInstrumentation.failedGates,
+      ...hiprtContract.failedGates,
       ...oracleRegionRecomputed.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted
@@ -8777,7 +8917,9 @@ async function hiprtWarmRow(json, filePath, context) {
           ? ['full_runtime_gpu_hmr_not_proven_blank_oracle_region']
           : compactStringList([
               'hiprt_same_process_visual_proof_not_accepted',
+              hiprtContract.accepted === true ? null : 'hiprt_contract_required',
               ...visual.failedGates,
+              ...hiprtContract.failedGates,
             ]),
   });
 }
@@ -14208,6 +14350,20 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const noFullRebuild = fullRebuildUsed === false;
   const noRestart = processRestarted === false;
   const sourceAdaptedProfile = sourceAdaptation.sourceAdaptedProfile === true;
+  const acceptanceContract = compactObject(
+    json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract,
+  );
+  const hiprtContract = backend === 'hiprt'
+    ? hiprtContractEvidenceFacet(
+      { acceptanceContract },
+      runtimeProofArtifact,
+      json,
+      { sourceAdaptedProfile },
+    )
+    : {};
   const strictRuntimeVisualProfileProof =
     !isCold
     && ledger.present === true
@@ -14221,7 +14377,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noFullRebuild
     && noRestart
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
-    && (backend !== 'hiprt' || runtimeProbeInstrumentation.accepted === true);
+    && (backend !== 'hiprt' || (
+      runtimeProbeInstrumentation.accepted === true
+      && hiprtContract.accepted === true
+    ));
   const strictRuntimeVisualProof =
     strictRuntimeVisualProfileProof === true
     && runtimeProofArtifactGate.accepted === true
@@ -14336,6 +14495,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     runtime_proof_artifact: runtimeProofArtifactGate,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    hiprtContract,
+    hiprt_contract: hiprtContract,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceFirstIngestion,
@@ -14365,11 +14528,15 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
+      backend === 'hiprt' && !isCold && hiprtContract.accepted !== true
+        ? 'hiprt_contract_not_proven'
+        : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
       ...visual.failedGates,
       ...ledger.failedInvariants.map((failure) => failure.code),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
+      ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
       ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
     ]) : [],
@@ -14381,10 +14548,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
             ? 'hiprt_profile_instrumentation_disclosure_required'
             : null,
+          backend === 'hiprt' && !isCold && hiprtContract.accepted !== true
+            ? 'hiprt_contract_required'
+            : null,
           requiresSourceFirstIngestion && sourceFirstIngestion.accepted !== true
             ? 'source_first_ingestion_required'
             : null,
           ...visual.failedGates,
+          ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
           ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
         ])

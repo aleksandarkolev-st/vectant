@@ -515,6 +515,53 @@ function acceptanceContract(scope, options = {}) {
   };
 }
 
+function hiprtAcceptanceContract(scope, {
+  projectId,
+  profileId,
+  baselinePath,
+  changedPath,
+  diffPath,
+}) {
+  const contract = acceptanceContract(scope, { projectId });
+  const evidenceRef = `evidence:synthetic-hiprt:${scope}`;
+  const visualRef = `visual:hiprt:diff:${fileHashForPath(diffPath)}`;
+  const fieldEvidence = Object.fromEntries([
+    'kernel_entry',
+    'scene_or_bvh_handles',
+    'framebuffer_handle',
+    'material_or_geometry_buffers',
+    'camera_state_hash',
+    'same_process_reload_hook',
+    'visual_oracle',
+  ].map((field) => [field, [evidenceRef, visualRef]]));
+  contract.backend = 'hiprt';
+  contract.project_id = projectId ?? profileId;
+  contract.artifact_identity.artifact_kind = 'hiprt_runtime_shader_cache';
+  contract.artifact_identity.entry_points = ['RenderKernel'];
+  contract.output_oracle_target = {
+    kind: 'visual',
+    target_id: changedPath,
+    evidence_refs: [visualRef],
+  };
+  delete contract.hip_contract;
+  contract.hiprt_contract = {
+    kernel_entry: 'RenderKernel',
+    scene_or_bvh_handles: [`app-declared-scene-or-asset:${profileId}`],
+    framebuffer_handle: changedPath,
+    material_or_geometry_buffers: ['runtime-observed:hiprtBuildGeometry'],
+    camera_state_hash: hashValue(`hiprt-camera:${scope}`),
+    same_process_reload_hook: 'SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TRIGGER_PATH',
+    visual_oracle: {
+      kind: 'deterministic_framebuffer_diff',
+      before_image_hash: fileHashForPath(baselinePath),
+      after_image_hash: fileHashForPath(changedPath),
+      diff_image_hash: fileHashForPath(diffPath),
+    },
+    field_evidence_refs: fieldEvidence,
+  };
+  return contract;
+}
+
 function runtimeProofMaterials(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
   const visualRoot = options.visualRoot ?? visualDir;
@@ -879,6 +926,13 @@ function hiprtWarmProofArtifact({
     sourceAdaptedVisualProfile: true,
   });
   const runtimeProbeInstrumentation = hiprtRuntimeProbeInstrumentation(profileId);
+  const acceptanceContract = hiprtAcceptanceContract(`hiprt:${slug}`, {
+    projectId: profileId,
+    profileId,
+    baselinePath,
+    changedPath,
+    diffPath,
+  });
   return {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug,
@@ -940,6 +994,8 @@ function hiprtWarmProofArtifact({
       fullRuntimeProven: true,
       strictFullRuntimePassed: true,
     },
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     timings: {
@@ -5468,6 +5524,13 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  acceptanceContract: hiprtAcceptanceContract('accepted-hiprt-cold', {
+    projectId: 'accepted-hiprt-recomputed-oracle',
+    profileId: 'accepted-hiprt-recomputed-oracle',
+    baselinePath: hiprtAcceptedBefore,
+    changedPath: hiprtAcceptedAfter,
+    diffPath: hiprtAcceptedDiff,
+  }),
   runtimeProbeInstrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   runtime_probe_instrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   coverageObligations: { perTargetRunModes: false },
@@ -5501,6 +5564,13 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
   backend: 'hiprt',
   targetId: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
+  acceptanceContract: hiprtAcceptanceContract('accepted-hiprt-hot2', {
+    projectId: 'accepted-hiprt-recomputed-oracle',
+    profileId: 'accepted-hiprt-recomputed-oracle',
+    baselinePath: hiprtAcceptedBefore,
+    changedPath: hiprtAcceptedAfter,
+    diffPath: hiprtAcceptedDiff,
+  }),
   runtimeProbeInstrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   runtime_probe_instrumentation: hiprtRuntimeProbeInstrumentation('accepted-hiprt-recomputed-oracle'),
   coverageObligations: { perTargetRunModes: false },
@@ -8082,6 +8152,13 @@ assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.accepted, true);
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.scope, 'hiprt_declared_visual_profile');
 assert.equal(acceptedHiprt.runtimeProbeInstrumentation.arbitraryLibraryAccepted, false);
+assert.equal(acceptedHiprt.hiprtContract.present, true);
+assert.equal(acceptedHiprt.hiprtContract.accepted, true);
+assert.equal(acceptedHiprt.hiprtContract.acceptedForGpuHmr, false);
+assert.equal(acceptedHiprt.hiprtContract.noShimEligible, false);
+assert.equal(acceptedHiprt.hiprtContract.sourceAdaptedProfile, true);
+assert.deepEqual(acceptedHiprt.hiprtContract.missingFields, []);
+assert.deepEqual(acceptedHiprt.hiprtContract.missingEvidenceFields, []);
 assert.equal(acceptedHiprt.visual.visualThresholdValidation.accepted, true);
 assert.equal(acceptedHiprt.visual.visualThresholdValidation.source, 'matrix_recomputed_png_pixels_declared_thresholds');
 assert.ok(acceptedHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
@@ -8120,12 +8197,15 @@ assert.equal(forgedHiprtMissingInstrumentation.runtimeProofArtifact.accepted, tr
 assert.equal(forgedHiprtMissingInstrumentation.ledger.gpuHmrSuccess, true);
 assert.equal(forgedHiprtMissingInstrumentation.visual.accepted, true);
 assert.equal(forgedHiprtMissingInstrumentation.runtimeProbeInstrumentation.accepted, false);
+assert.equal(forgedHiprtMissingInstrumentation.hiprtContract.accepted, false);
 assert.ok(forgedHiprtMissingInstrumentation.reasons.includes(
   'hiprt_profile_instrumentation_disclosure_not_proven',
 ));
+assert.ok(forgedHiprtMissingInstrumentation.reasons.includes('hiprt_contract_not_proven'));
 assert.ok(forgedHiprtMissingInstrumentation.openGaps.includes(
   'hiprt_profile_instrumentation_disclosure_required',
 ));
+assert.ok(forgedHiprtMissingInstrumentation.openGaps.includes('hiprt_contract_required'));
 
 const forgedHiprt = ledger.rows.find((row) => row.targetId === 'forged-hiprt-oracle-region-json');
 assert.equal(forgedHiprt?.matrixOutcome, 'unproven');
