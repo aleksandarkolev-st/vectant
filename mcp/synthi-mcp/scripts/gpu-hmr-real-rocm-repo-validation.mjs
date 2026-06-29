@@ -3568,6 +3568,112 @@ function runtimeProfileAdapterBoundaryLines(result = {}) {
   })).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
 }
 
+const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_boundary_coverage.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY =
+  'adapter_boundary_coverage_diagnostic_only_not_runtime_authority';
+const REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS = Object.freeze([
+  {
+    kind: 'artifact_transport',
+    camel: 'artifactTransportObserved',
+    snake: 'artifact_transport_observed',
+    aliases: ['loaderEventObserved', 'loader_event_observed'],
+    pattern: /\bartifact_transport\b/i,
+  },
+  {
+    kind: 'epoch_publication',
+    camel: 'epochPublishEventObserved',
+    snake: 'epoch_publish_event_observed',
+    aliases: ['dispatcherEpochObserved', 'dispatcher_epoch_observed'],
+    pattern: /\bdispatcher_epoch\b/i,
+  },
+  {
+    kind: 'dispatch_trace',
+    camel: 'dispatchEventObserved',
+    snake: 'dispatch_event_observed',
+    aliases: ['runtimeDispatchObserved', 'runtime_dispatch_observed'],
+    pattern: /\b(?:native_runtime_dispatch|synthi_gpu_launch)\b/i,
+  },
+  {
+    kind: 'host_identity',
+    camel: 'processIdentityObserved',
+    snake: 'process_identity_observed',
+    aliases: ['hostIdentityObserved', 'host_identity_observed'],
+    pattern: /\bhost_identity\b/i,
+  },
+  {
+    kind: 'output_oracle',
+    camel: 'outputEventObserved',
+    snake: 'output_event_observed',
+    aliases: ['outputOracleObserved', 'output_oracle_observed'],
+    pattern: /\boutput_oracle\b/i,
+  },
+]);
+
+function runtimeBoundaryLineHashes(lines = []) {
+  return compactStringList(
+    (Array.isArray(lines) ? lines : [])
+      .filter((line) => /\[gpu-runtime-boundary\]/i.test(String(line ?? '')))
+      .map((line) => sha256Text(line)),
+  );
+}
+
+function runtimeBoundaryLineEvidenceRefs(lines = [], prefix = 'runtime-boundary-line') {
+  return runtimeBoundaryLineHashes(lines).map((hash) => `${prefix}:${hash}`);
+}
+
+function runtimeAdapterBoundaryCoverage(lines = []) {
+  const boundaryLines = compactStringList(Array.isArray(lines) ? lines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const boundaryLineHashes = runtimeBoundaryLineHashes(boundaryLines);
+  const observedEventKinds = [];
+  const missingEventKinds = [];
+  const observedFlags = {};
+  for (const event of REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS) {
+    const observed = boundaryLines.some((line) => event.pattern.test(line));
+    observedFlags[event.camel] = observed;
+    observedFlags[event.snake] = observed;
+    for (const alias of event.aliases) observedFlags[alias] = observed;
+    if (observed) {
+      observedEventKinds.push(event.kind);
+    } else {
+      missingEventKinds.push(event.kind);
+    }
+  }
+  const coverageSeed = {
+    boundaryLineHashes,
+    missingEventKinds,
+    observedEventKinds,
+  };
+  return {
+    schemaVersion: REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION,
+    proofAuthority: REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY,
+    proof_authority: REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY,
+    acceptedAsDiagnosticEvidence: boundaryLines.length > 0,
+    accepted_as_diagnostic_evidence: boundaryLines.length > 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    boundaryLineCount: boundaryLines.length,
+    boundary_line_count: boundaryLines.length,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    observedEventKinds,
+    observed_event_kinds: observedEventKinds,
+    missingEventKinds,
+    missing_event_kinds: missingEventKinds,
+    ...observedFlags,
+    coverageHash: sha256Text(stableJson(coverageSeed)),
+    coverage_hash: sha256Text(stableJson(coverageSeed)),
+  };
+}
+
 function runtimeProfileAdapterAppHookContract(result = {}) {
   const candidate = result.appHookContract
     ?? result.app_hook_contract
@@ -3651,6 +3757,11 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   }
   const strictSummary = runtimeProfileAdapterStrictSummary(parsed ?? {});
   const adapterRuntimeBoundaryLines = runtimeProfileAdapterBoundaryLines(parsed ?? {});
+  const adapterBoundaryCoverage = runtimeAdapterBoundaryCoverage(adapterRuntimeBoundaryLines);
+  const adapterRuntimeBoundaryEvidenceRefs = runtimeBoundaryLineEvidenceRefs(
+    adapterRuntimeBoundaryLines,
+    'runtime-profile-adapter-boundary',
+  );
   const adapterAppHookContract = runtimeProfileAdapterAppHookContract(parsed ?? {});
   if (parsed && strictSummary.strictRuntimeProofAccepted !== true) {
     blockingGaps.push('runtime_profile_adapter_strict_runtime_proof_not_accepted');
@@ -3671,6 +3782,8 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     strictSummary.strictRuntimeProofId,
     strictSummary.proofLedgerId,
     adapterRuntimeBoundaryLines.length > 0 ? 'runtime-profile-adapter-boundary-lines' : null,
+    adapterBoundaryCoverage.coverageHash,
+    ...adapterRuntimeBoundaryEvidenceRefs,
     adapterAppHookContract?.contractHash ?? adapterAppHookContract?.contract_hash ?? null,
   ]);
   const facet = {
@@ -3692,6 +3805,12 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLines.length,
     adapterRuntimeBoundaryLines,
     adapter_runtime_boundary_lines: adapterRuntimeBoundaryLines,
+    adapterRuntimeBoundaryLineHashes: adapterBoundaryCoverage.boundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: adapterBoundaryCoverage.boundary_line_hashes,
+    adapterRuntimeBoundaryEvidenceRefs,
+    adapter_runtime_boundary_evidence_refs: adapterRuntimeBoundaryEvidenceRefs,
+    adapterBoundaryCoverage,
+    adapter_boundary_coverage: adapterBoundaryCoverage,
     adapterAppHookContract: adapterAppHookContract,
     adapter_app_hook_contract: adapterAppHookContract,
     acceptedAsRefusalEvidence: blockingGaps.length > 0,
@@ -3759,6 +3878,11 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     /\[gpu-runtime-boundary\]/i.test(line)
   );
   const runtimeBoundaryLineCount = runtimeBoundaryLines.length;
+  const runtimeBoundaryCoverage = runtimeAdapterBoundaryCoverage(runtimeBoundaryLines);
+  const runtimeBoundaryEvidenceRefs = runtimeBoundaryLineEvidenceRefs(
+    runtimeBoundaryLines,
+    'runtime-adapter-boundary',
+  );
   const blockingGaps = [];
   let status = 'runtime_adapter_not_declared';
   if (declared && !enabled) {
@@ -3816,6 +3940,12 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     runtime_boundary_line_count: runtimeBoundaryLineCount,
     runtimeBoundaryLines,
     runtime_boundary_lines: runtimeBoundaryLines,
+    runtimeBoundaryLineHashes: runtimeBoundaryCoverage.boundaryLineHashes,
+    runtime_boundary_line_hashes: runtimeBoundaryCoverage.boundary_line_hashes,
+    runtimeBoundaryEvidenceRefs,
+    runtime_boundary_evidence_refs: runtimeBoundaryEvidenceRefs,
+    adapterBoundaryCoverage: runtimeBoundaryCoverage,
+    adapter_boundary_coverage: runtimeBoundaryCoverage,
     adapterLogLineCount: adapterLines.length,
     adapter_log_line_count: adapterLines.length,
     acceptedForGpuHmr: false,
@@ -3830,11 +3960,15 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
       ...(adapter.evidenceRefs ?? []),
       adapter.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
       adapterLines.length > 0 ? `runtime-adapter-log:${CFG.slug}` : null,
+      runtimeBoundaryCoverage.coverageHash,
+      ...runtimeBoundaryEvidenceRefs,
     ]),
     evidence_refs: compactStringList([
       ...(adapter.evidenceRefs ?? []),
       adapter.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
       adapterLines.length > 0 ? `runtime-adapter-log:${CFG.slug}` : null,
+      runtimeBoundaryCoverage.coverageHash,
+      ...runtimeBoundaryEvidenceRefs,
     ]),
     logLines: adapterLines.slice(-20),
     log_lines: adapterLines.slice(-20),
@@ -16180,6 +16314,17 @@ async function selfCheckRuntimeDispatchEvidence() {
       || importedAdapterResult.adapterRuntimeBoundaryLineCount !== 1
       || importedAdapterResult.adapterRuntimeBoundaryLines[0] !== adapterRuntimeBoundaryLine
       || importedAdapterResult.adapter_runtime_boundary_lines[0] !== adapterRuntimeBoundaryLine
+      || importedAdapterResult.adapterRuntimeBoundaryLineHashes[0] !== sha256Text(adapterRuntimeBoundaryLine)
+      || !importedAdapterResult.adapterRuntimeBoundaryEvidenceRefs.includes(
+        `runtime-profile-adapter-boundary:${sha256Text(adapterRuntimeBoundaryLine)}`,
+      )
+      || importedAdapterResult.adapterBoundaryCoverage?.artifactTransportObserved !== true
+      || importedAdapterResult.adapterBoundaryCoverage?.epochPublishEventObserved !== false
+      || !importedAdapterResult.adapterBoundaryCoverage?.missingEventKinds?.includes(
+        'output_oracle',
+      )
+      || importedAdapterResult.adapterBoundaryCoverage?.acceptedAsDiagnosticEvidence !== true
+      || importedAdapterResult.adapterBoundaryCoverage?.acceptedForGpuHmr !== false
       || importedAdapterResult.adapterAppHookContract?.declared !== true
       || importedAdapterResult.blockingGaps.length !== 0
     ) {
@@ -16255,6 +16400,13 @@ async function selfCheckRuntimeDispatchEvidence() {
       || adapterBoundaryFacet.runtimeBoundaryLines[0] !== adapterRuntimeBoundaryLine
       || !Array.isArray(adapterBoundaryFacet.runtime_boundary_lines)
       || adapterBoundaryFacet.runtime_boundary_lines[0] !== adapterRuntimeBoundaryLine
+      || adapterBoundaryFacet.runtimeBoundaryLineHashes[0] !== sha256Text(adapterRuntimeBoundaryLine)
+      || !adapterBoundaryFacet.runtimeBoundaryEvidenceRefs.includes(
+        `runtime-adapter-boundary:${sha256Text(adapterRuntimeBoundaryLine)}`,
+      )
+      || adapterBoundaryFacet.adapterBoundaryCoverage?.artifactTransportObserved !== true
+      || adapterBoundaryFacet.adapterBoundaryCoverage?.dispatchEventObserved !== false
+      || adapterBoundaryFacet.adapterBoundaryCoverage?.canSatisfyRuntimeProof !== false
       || adapterBoundaryFacet.runWhen !== 'after_upstream_run'
       || adapterBoundaryFacet.adapterTemplate !== 'runtime_boundary_log_harvest_v1'
       || adapterBoundaryFacet.adapterCommandHash !== CFG.runtimeAdapter.commandHash

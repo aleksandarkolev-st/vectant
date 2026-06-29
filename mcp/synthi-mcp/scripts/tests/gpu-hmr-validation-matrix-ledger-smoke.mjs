@@ -13173,9 +13173,43 @@ assert.equal(
   false,
 );
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.gpuHmrSuccess, false);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.acceptedAsDiagnosticEvidence,
+  true,
+);
+assert.deepEqual(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.missingEventKinds,
+  [],
+);
+assert.ok(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult
+    .adapterRuntimeBoundaryLineHashes.includes(
+      hashValue(completeAdapterBoundaryRuntimeAdapterResult.adapterRuntimeBoundaryLines[0]),
+    ),
+);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.acceptedAsDiagnosticEvidence,
+  true,
+);
+assert.deepEqual(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.missingEventKinds,
+  [],
+);
+assert.ok(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution
+    .runtimeBoundaryEvidenceRefs.includes(
+      `runtime-adapter-boundary:${hashValue(
+        completeAdapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines[0],
+      )}`,
+    ),
+);
 assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.adapterTemplate,
   'runtime_boundary_log_harvest_v1',
@@ -13297,6 +13331,64 @@ assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
 ));
 assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
   'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch',
+));
+
+const adapterBoundaryCoverageForgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-coverage-forge',
+);
+await fs.mkdir(adapterBoundaryCoverageForgeDir, { recursive: true });
+const adapterBoundaryCoverageForgeReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const forgedAdapterBoundaryCoverage = {
+  schemaVersion: 'synthi.real_rocm.runtime_adapter_boundary_coverage.v1',
+  schema_version: 'synthi.real_rocm.runtime_adapter_boundary_coverage.v1',
+  proofAuthority: 'adapter_boundary_coverage_diagnostic_only_not_runtime_authority',
+  proof_authority: 'adapter_boundary_coverage_diagnostic_only_not_runtime_authority',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  boundaryLineHashes:
+    completeAdapterBoundaryRuntimeAdapterResult.adapterRuntimeBoundaryLines.map(hashValue),
+  boundary_line_hashes:
+    completeAdapterBoundaryRuntimeAdapterResult.adapterRuntimeBoundaryLines.map(hashValue),
+};
+adapterBoundaryCoverageForgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-coverage-forge-20260629';
+adapterBoundaryCoverageForgeReport.real_rocm_runtime_profile_adapter_result = {
+  ...adapterBoundaryCoverageForgeReport.real_rocm_runtime_profile_adapter_result,
+  adapterBoundaryCoverage: forgedAdapterBoundaryCoverage,
+  adapter_boundary_coverage: forgedAdapterBoundaryCoverage,
+};
+adapterBoundaryCoverageForgeReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryCoverageForgeReport.real_rocm_runtime_profile_adapter_result;
+adapterBoundaryCoverageForgeReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryCoverageForgeReport.real_rocm_runtime_profile_adapter_result;
+await writeJson(
+  path.join(adapterBoundaryCoverageForgeDir, 'real-rocm-adapter-boundary-coverage-forge.json'),
+  adapterBoundaryCoverageForgeReport,
+);
+const adapterBoundaryCoverageForgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryCoverageForgeDir],
+  generatedAt: '2026-06-29T00:00:02.266Z',
+  includeUnproven: true,
+});
+const adapterBoundaryCoverageForgeRow = adapterBoundaryCoverageForgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryCoverageForgeRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryCoverageForgeRow.acceptedForGpuHmr, false);
+assert.equal(adapterBoundaryCoverageForgeRow.realRocmRuntimeProfileAdapterResult.accepted, false);
+assert.ok(adapterBoundaryCoverageForgeRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_adapter_boundary_coverage_claimed_gpu_hmr_acceptance',
+));
+assert.ok(adapterBoundaryCoverageForgeRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_adapter_boundary_coverage_claimed_runtime_authority',
 ));
 
 const adapterBoundaryBridgeRocmDir = path.join(

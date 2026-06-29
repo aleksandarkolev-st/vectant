@@ -131,6 +131,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_result_transport.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY =
   'runtime_adapter_result_transport_only_not_gpu_hmr_success';
+const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_boundary_coverage.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY =
+  'adapter_boundary_coverage_diagnostic_only_not_runtime_authority';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
@@ -180,6 +184,43 @@ const REAL_ROCM_APP_HOOK_REQUIRED_STAGES = Object.freeze([
   'dispatch_trace',
   'host_identity',
   'output_oracle',
+]);
+const REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS = Object.freeze([
+  {
+    kind: 'artifact_transport',
+    camel: 'artifactTransportObserved',
+    snake: 'artifact_transport_observed',
+    aliases: ['loaderEventObserved', 'loader_event_observed'],
+    pattern: /\bartifact_transport\b/i,
+  },
+  {
+    kind: 'epoch_publication',
+    camel: 'epochPublishEventObserved',
+    snake: 'epoch_publish_event_observed',
+    aliases: ['dispatcherEpochObserved', 'dispatcher_epoch_observed'],
+    pattern: /\bdispatcher_epoch\b/i,
+  },
+  {
+    kind: 'dispatch_trace',
+    camel: 'dispatchEventObserved',
+    snake: 'dispatch_event_observed',
+    aliases: ['runtimeDispatchObserved', 'runtime_dispatch_observed'],
+    pattern: /\b(?:native_runtime_dispatch|synthi_gpu_launch)\b/i,
+  },
+  {
+    kind: 'host_identity',
+    camel: 'processIdentityObserved',
+    snake: 'process_identity_observed',
+    aliases: ['hostIdentityObserved', 'host_identity_observed'],
+    pattern: /\bhost_identity\b/i,
+  },
+  {
+    kind: 'output_oracle',
+    camel: 'outputEventObserved',
+    snake: 'output_event_observed',
+    aliases: ['outputOracleObserved', 'output_oracle_observed'],
+    pattern: /\boutput_oracle\b/i,
+  },
 ]);
 const RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS = Object.freeze({
   required: true,
@@ -540,6 +581,142 @@ function normalizeSha256(value) {
   if (/^sha256:[a-f0-9]{64}$/i.test(raw)) return raw.toLowerCase();
   if (/^[a-f0-9]{64}$/i.test(raw)) return `sha256:${raw.toLowerCase()}`;
   return raw;
+}
+
+function runtimeBoundaryLineHashes(lines = []) {
+  return compactStringList(
+    (Array.isArray(lines) ? lines : [])
+      .filter((line) => /\[gpu-runtime-boundary\]/i.test(String(line ?? '')))
+      .map((line) => normalizeSha256(`sha256:${sha256Hex(line)}`)),
+  );
+}
+
+function runtimeBoundaryLineEvidenceRefs(lines = [], prefix = 'runtime-boundary-line') {
+  return runtimeBoundaryLineHashes(lines).map((hash) => `${prefix}:${hash}`);
+}
+
+function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) {
+  const boundaryLines = compactStringList(Array.isArray(lines) ? lines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const supplied = compactObject(coverageInput);
+  const suppliedPresent = Object.keys(supplied).length > 0;
+  const schemaVersion = firstText(supplied.schemaVersion, supplied.schema_version);
+  const proofAuthority = firstText(supplied.proofAuthority, supplied.proof_authority);
+  const acceptedForGpuHmr = firstBool(
+    supplied.acceptedForGpuHmr,
+    supplied.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(supplied.gpuHmrSuccess, supplied.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    supplied.canSatisfyRuntimeProof,
+    supplied.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    supplied.canSatisfyDispatchProof,
+    supplied.can_satisfy_dispatch_proof,
+  );
+  const suppliedLineHashes = compactStringList([
+    ...(Array.isArray(supplied.boundaryLineHashes) ? supplied.boundaryLineHashes : []),
+    ...(Array.isArray(supplied.boundary_line_hashes) ? supplied.boundary_line_hashes : []),
+  ]).map(normalizeSha256).filter(Boolean);
+  const boundaryLineHashes = runtimeBoundaryLineHashes(boundaryLines);
+  const expectedHashSet = new Set(boundaryLineHashes);
+  const suppliedHashSet = new Set(suppliedLineHashes);
+  const suppliedHashMismatch = suppliedLineHashes.length > 0 && (
+    suppliedHashSet.size !== expectedHashSet.size
+    || suppliedLineHashes.some((hash) => !expectedHashSet.has(hash))
+  );
+  const observedEventKinds = [];
+  const missingEventKinds = [];
+  const observedFlags = {};
+  for (const event of REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS) {
+    const observed = boundaryLines.some((line) => event.pattern.test(line));
+    observedFlags[event.camel] = observed;
+    observedFlags[event.snake] = observed;
+    for (const alias of event.aliases) observedFlags[alias] = observed;
+    if (observed) {
+      observedEventKinds.push(event.kind);
+    } else {
+      missingEventKinds.push(event.kind);
+    }
+  }
+  const coverageSeed = {
+    boundaryLineHashes,
+    missingEventKinds,
+    observedEventKinds,
+  };
+  const recomputedCoverageHash = normalizeSha256(
+    `sha256:${sha256Hex(stableJson(coverageSeed))}`,
+  );
+  const suppliedCoverageHash = normalizeSha256(firstText(
+    supplied.coverageHash,
+    supplied.coverage_hash,
+  ));
+  const failedGates = compactStringList([
+    suppliedPresent && !schemaVersion
+      ? 'real_rocm_runtime_adapter_boundary_coverage_schema_missing'
+      : null,
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION
+      ? 'real_rocm_runtime_adapter_boundary_coverage_schema_unknown'
+      : null,
+    suppliedPresent
+      && proofAuthority !== REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY
+      ? 'real_rocm_runtime_adapter_boundary_coverage_authority_unknown'
+      : null,
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_adapter_boundary_coverage_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_adapter_boundary_coverage_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_adapter_boundary_coverage_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_adapter_boundary_coverage_claimed_dispatch_authority'
+      : null,
+    suppliedHashMismatch
+      ? 'real_rocm_runtime_adapter_boundary_coverage_line_hash_mismatch'
+      : null,
+    suppliedCoverageHash && suppliedCoverageHash !== recomputedCoverageHash
+      ? 'real_rocm_runtime_adapter_boundary_coverage_hash_mismatch'
+      : null,
+  ]);
+  return {
+    present: suppliedPresent || boundaryLines.length > 0,
+    validated: failedGates.length === 0,
+    accepted: false,
+    acceptedAsDiagnosticEvidence: boundaryLines.length > 0 && failedGates.length === 0,
+    accepted_as_diagnostic_evidence: boundaryLines.length > 0 && failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion: schemaVersion ?? REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION,
+    schema_version: schemaVersion ?? REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION,
+    proofAuthority: proofAuthority ?? REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY,
+    proof_authority: proofAuthority ?? REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY,
+    boundaryLineCount: boundaryLines.length,
+    boundary_line_count: boundaryLines.length,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    observedEventKinds,
+    observed_event_kinds: observedEventKinds,
+    missingEventKinds,
+    missing_event_kinds: missingEventKinds,
+    ...observedFlags,
+    failedGates,
+    failed_gates: failedGates,
+    suppliedCoverageHash: suppliedCoverageHash ?? null,
+    supplied_coverage_hash: suppliedCoverageHash ?? null,
+    coverageHash: recomputedCoverageHash,
+    coverage_hash: recomputedCoverageHash,
+  };
 }
 
 function inferredVisualArtifactRole(value, index, count) {
@@ -6296,7 +6473,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     facet.resultHash,
     facet.result_hash,
   );
-  const evidenceRefs = compactStringList([
+  const serializedEvidenceRefs = compactStringList([
     ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
     ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
   ]);
@@ -6312,6 +6489,36 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     ...(Array.isArray(facet.boundaryLines) ? facet.boundaryLines : []),
     ...(Array.isArray(facet.boundary_lines) ? facet.boundary_lines : []),
   ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const adapterBoundaryCoverage = realRocmRuntimeAdapterBoundaryCoverage(
+    adapterRuntimeBoundaryLines,
+    facet.adapterBoundaryCoverage ?? facet.adapter_boundary_coverage,
+  );
+  const adapterRuntimeBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLineHashes)
+      ? facet.adapterRuntimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_line_hashes)
+      ? facet.adapter_runtime_boundary_line_hashes
+      : []),
+    ...adapterBoundaryCoverage.boundaryLineHashes,
+  ]).map(normalizeSha256).filter(Boolean);
+  const adapterRuntimeBoundaryEvidenceRefs = compactStringList([
+    ...(Array.isArray(facet.adapterRuntimeBoundaryEvidenceRefs)
+      ? facet.adapterRuntimeBoundaryEvidenceRefs
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_evidence_refs)
+      ? facet.adapter_runtime_boundary_evidence_refs
+      : []),
+    ...runtimeBoundaryLineEvidenceRefs(
+      adapterRuntimeBoundaryLines,
+      'runtime-profile-adapter-boundary',
+    ),
+  ]);
+  const evidenceRefs = compactStringList([
+    ...serializedEvidenceRefs,
+    adapterBoundaryCoverage.coverageHash,
+    ...adapterRuntimeBoundaryEvidenceRefs,
+  ]);
   const serializedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
     ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
@@ -6372,6 +6579,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     imported && evidenceRefs.length === 0
       ? 'real_rocm_runtime_profile_adapter_result_evidence_refs_missing'
       : null,
+    ...adapterBoundaryCoverage.failedGates,
     ...serializedFailedGates,
   ]);
   return {
@@ -6413,6 +6621,12 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     failed_gates: failedGates,
     adapterRuntimeBoundaryLines,
     adapter_runtime_boundary_lines: adapterRuntimeBoundaryLines,
+    adapterRuntimeBoundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: adapterRuntimeBoundaryLineHashes,
+    adapterRuntimeBoundaryEvidenceRefs,
+    adapter_runtime_boundary_evidence_refs: adapterRuntimeBoundaryEvidenceRefs,
+    adapterBoundaryCoverage,
+    adapter_boundary_coverage: adapterBoundaryCoverage,
     evidenceRefs,
     evidence_refs: evidenceRefs,
   };
@@ -6484,9 +6698,33 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
     ...(Array.isArray(facet.boundaryLines) ? facet.boundaryLines : []),
     ...(Array.isArray(facet.boundary_lines) ? facet.boundary_lines : []),
   ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const adapterBoundaryCoverage = realRocmRuntimeAdapterBoundaryCoverage(
+    runtimeBoundaryLines,
+    facet.adapterBoundaryCoverage ?? facet.adapter_boundary_coverage,
+  );
+  const runtimeBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.runtimeBoundaryLineHashes)
+      ? facet.runtimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(facet.runtime_boundary_line_hashes)
+      ? facet.runtime_boundary_line_hashes
+      : []),
+    ...adapterBoundaryCoverage.boundaryLineHashes,
+  ]).map(normalizeSha256).filter(Boolean);
+  const runtimeBoundaryEvidenceRefs = compactStringList([
+    ...(Array.isArray(facet.runtimeBoundaryEvidenceRefs)
+      ? facet.runtimeBoundaryEvidenceRefs
+      : []),
+    ...(Array.isArray(facet.runtime_boundary_evidence_refs)
+      ? facet.runtime_boundary_evidence_refs
+      : []),
+    ...runtimeBoundaryLineEvidenceRefs(runtimeBoundaryLines, 'runtime-adapter-boundary'),
+  ]);
   const evidenceRefs = compactStringList([
     ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
     ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    adapterBoundaryCoverage.coverageHash,
+    ...runtimeBoundaryEvidenceRefs,
   ]);
   const serializedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
@@ -6524,6 +6762,7 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
     executed && runtimeBoundaryLines.length === 0
       ? 'real_rocm_runtime_adapter_execution_boundary_lines_missing'
       : null,
+    ...adapterBoundaryCoverage.failedGates,
     ...serializedFailedGates,
   ]);
   return {
@@ -6552,8 +6791,14 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
     runtime_boundary_line_count: runtimeBoundaryLines.length,
     runtimeBoundaryLines,
     runtime_boundary_lines: runtimeBoundaryLines,
+    runtimeBoundaryLineHashes,
+    runtime_boundary_line_hashes: runtimeBoundaryLineHashes,
+    runtimeBoundaryEvidenceRefs,
+    runtime_boundary_evidence_refs: runtimeBoundaryEvidenceRefs,
     adapterRuntimeBoundaryLines: runtimeBoundaryLines,
     adapter_runtime_boundary_lines: runtimeBoundaryLines,
+    adapterBoundaryCoverage,
+    adapter_boundary_coverage: adapterBoundaryCoverage,
     blockingGaps,
     blocking_gaps: blockingGaps,
     failedGates,
