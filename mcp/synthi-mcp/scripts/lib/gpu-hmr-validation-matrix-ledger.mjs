@@ -6811,6 +6811,9 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     imported && evidenceRefs.length === 0
       ? 'real_rocm_runtime_profile_adapter_result_evidence_refs_missing'
       : null,
+    imported && adapterBoundaryCoverage.missingEventKinds.length > 0
+      ? 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete'
+      : null,
     ...adapterBoundaryCoverage.failedGates,
     ...serializedFailedGates,
   ]);
@@ -6993,6 +6996,9 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
       : null,
     executed && runtimeBoundaryLines.length === 0
       ? 'real_rocm_runtime_adapter_execution_boundary_lines_missing'
+      : null,
+    executed && adapterBoundaryCoverage.missingEventKinds.length > 0
+      ? 'real_rocm_runtime_adapter_execution_boundary_coverage_incomplete'
       : null,
     ...adapterBoundaryCoverage.failedGates,
     ...serializedFailedGates,

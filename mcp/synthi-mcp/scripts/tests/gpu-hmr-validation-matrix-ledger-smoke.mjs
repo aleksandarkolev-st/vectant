@@ -7728,6 +7728,10 @@ assert.ok(forgedAppHookMaterializationRocm.openGaps.includes(
   'real_rocm_app_hook_materialization_required',
 ));
 
+const importedRuntimeProfileAdapterBoundary = runtimeAdapterBoundaryBridgeFixture(
+  'runtime-profile-adapter-result',
+  {},
+);
 const importedRuntimeProfileAdapterResult = {
   schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
   schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
@@ -7756,17 +7760,27 @@ const importedRuntimeProfileAdapterResult = {
   proof_ledger_id: `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
   adapterResultHash: `sha256:${'c'.repeat(64)}`,
   adapter_result_hash: `sha256:${'c'.repeat(64)}`,
+  adapterRuntimeBoundaryLines:
+    importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  adapter_runtime_boundary_lines:
+    importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
   blockingGaps: [],
   blocking_gaps: [],
   evidenceRefs: [
     `sha256:${'c'.repeat(64)}`,
     `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
     `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+    ...importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines.map((line) =>
+      `runtime-profile-adapter-boundary:${hashValue(line)}`
+    ),
   ],
   evidence_refs: [
     `sha256:${'c'.repeat(64)}`,
     `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
     `gpu-ledger-proof:sha256:${'b'.repeat(64)}`,
+    ...importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines.map((line) =>
+      `runtime-profile-adapter-boundary:${hashValue(line)}`
+    ),
   ],
 };
 const runtimeProfileAdapterResultDir = path.join(logsRoot, 'real-rocm-runtime-profile-adapter-result');
@@ -13756,6 +13770,130 @@ assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
 ));
 assert.ok(adapterBoundaryProofIdMismatchRow.reasons.includes(
   'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch',
+));
+
+const adapterBoundaryResultIncompleteDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-result-incomplete',
+);
+await fs.mkdir(adapterBoundaryResultIncompleteDir, { recursive: true });
+const adapterBoundaryResultIncompleteReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterBoundaryIncompleteResult = {
+  ...adapterBoundaryResultIncompleteReport.real_rocm_runtime_profile_adapter_result,
+};
+const adapterBoundaryIncompleteResultLines =
+  adapterBoundaryIncompleteResult.adapterRuntimeBoundaryLines.filter((line) =>
+    !/\boutput_oracle\b/i.test(line)
+  );
+adapterBoundaryIncompleteResult.adapterRuntimeBoundaryLines =
+  adapterBoundaryIncompleteResultLines;
+adapterBoundaryIncompleteResult.adapter_runtime_boundary_lines =
+  adapterBoundaryIncompleteResultLines;
+adapterBoundaryResultIncompleteReport.slug =
+  'gpu-real-rocm-adapter-boundary-result-incomplete-20260629';
+adapterBoundaryResultIncompleteReport.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryIncompleteResult;
+adapterBoundaryResultIncompleteReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryIncompleteResult;
+adapterBoundaryResultIncompleteReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryIncompleteResult;
+await writeJson(
+  path.join(
+    adapterBoundaryResultIncompleteDir,
+    'real-rocm-adapter-boundary-result-incomplete.json',
+  ),
+  adapterBoundaryResultIncompleteReport,
+);
+const adapterBoundaryResultIncompleteLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryResultIncompleteDir],
+  generatedAt: '2026-06-29T00:00:02.2655Z',
+  includeUnproven: true,
+});
+const adapterBoundaryResultIncompleteRow = adapterBoundaryResultIncompleteLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryResultIncompleteRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryResultIncompleteRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterBoundaryResultIncompleteRow.realRocmRuntimeProfileAdapterResult.accepted,
+  false,
+);
+assert.ok(
+  adapterBoundaryResultIncompleteRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.missingEventKinds.includes('output_oracle'),
+);
+assert.ok(adapterBoundaryResultIncompleteRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
+));
+assert.ok(adapterBoundaryResultIncompleteRow.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
+));
+
+const adapterBoundaryExecutionIncompleteDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-execution-incomplete',
+);
+await fs.mkdir(adapterBoundaryExecutionIncompleteDir, { recursive: true });
+const adapterBoundaryExecutionIncompleteReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterBoundaryIncompleteExecution = {
+  ...adapterBoundaryExecutionIncompleteReport.real_rocm_runtime_adapter_execution,
+};
+const adapterBoundaryIncompleteExecutionLines =
+  adapterBoundaryIncompleteExecution.runtimeBoundaryLines.filter((line) =>
+    !/\bhost_identity\b/i.test(line)
+  );
+adapterBoundaryIncompleteExecution.runtimeBoundaryLines =
+  adapterBoundaryIncompleteExecutionLines;
+adapterBoundaryIncompleteExecution.runtime_boundary_lines =
+  adapterBoundaryIncompleteExecutionLines;
+adapterBoundaryIncompleteExecution.runtimeBoundaryLineCount =
+  adapterBoundaryIncompleteExecutionLines.length;
+adapterBoundaryIncompleteExecution.runtime_boundary_line_count =
+  adapterBoundaryIncompleteExecutionLines.length;
+adapterBoundaryExecutionIncompleteReport.slug =
+  'gpu-real-rocm-adapter-boundary-execution-incomplete-20260629';
+adapterBoundaryExecutionIncompleteReport.real_rocm_runtime_adapter_execution =
+  adapterBoundaryIncompleteExecution;
+adapterBoundaryExecutionIncompleteReport.runtime_proof_artifact.realRocmRuntimeAdapterExecution =
+  adapterBoundaryIncompleteExecution;
+adapterBoundaryExecutionIncompleteReport.runtime_proof_artifact.real_rocm_runtime_adapter_execution =
+  adapterBoundaryIncompleteExecution;
+await writeJson(
+  path.join(
+    adapterBoundaryExecutionIncompleteDir,
+    'real-rocm-adapter-boundary-execution-incomplete.json',
+  ),
+  adapterBoundaryExecutionIncompleteReport,
+);
+const adapterBoundaryExecutionIncompleteLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryExecutionIncompleteDir],
+  generatedAt: '2026-06-29T00:00:02.2656Z',
+  includeUnproven: true,
+});
+const adapterBoundaryExecutionIncompleteRow = adapterBoundaryExecutionIncompleteLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryExecutionIncompleteRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryExecutionIncompleteRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterBoundaryExecutionIncompleteRow.realRocmRuntimeAdapterExecution.accepted,
+  false,
+);
+assert.ok(
+  adapterBoundaryExecutionIncompleteRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.missingEventKinds.includes('host_identity'),
+);
+assert.ok(adapterBoundaryExecutionIncompleteRow.openGaps.includes(
+  'real_rocm_runtime_adapter_execution:real_rocm_runtime_adapter_execution_boundary_coverage_incomplete',
+));
+assert.ok(adapterBoundaryExecutionIncompleteRow.reasons.includes(
+  'real_rocm_runtime_adapter_execution:real_rocm_runtime_adapter_execution_boundary_coverage_incomplete',
 ));
 
 const adapterBoundaryCoverageForgeDir = path.join(
