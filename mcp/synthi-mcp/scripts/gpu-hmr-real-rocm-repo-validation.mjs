@@ -2904,6 +2904,11 @@ const CFG = {
   dockerPreflightTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_DOCKER_PREFLIGHT_TIMEOUT_MS', 8000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
+  checkpointBeforeRuntimeEvidence: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_CHECKPOINT_BEFORE_RUNTIME_EVIDENCE',
+    true,
+  ),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -3036,6 +3041,20 @@ const report = {
   evidence: {},
   validation_blockers: [],
   validationBlockers: [],
+  result_checkpoints: [],
+  resultCheckpoints: [],
+  result_write_phase: 'not_started',
+  resultWritePhase: 'not_started',
+  runtime_evidence_collection: {
+    status: 'not_started',
+    proofAuthority: 'collection_state_only_not_gpu_hmr_success',
+    proof_authority: 'collection_state_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  },
+  runtimeEvidenceCollection: null,
   real_rocm_proof_scheduling: null,
   realRocmProofScheduling: null,
   proof_scheduling: null,
@@ -3213,6 +3232,17 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
       resolve(err ? undefined : text);
     });
   });
+}
+
+async function writeTextAtomic(filePath, text) {
+  const dir = path.dirname(filePath);
+  await mkdir(dir, { recursive: true });
+  const tempPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  await writeFile(tempPath, text);
+  await rename(tempPath, filePath);
 }
 
 async function dockerDaemonPreflight(execTextImpl = execText) {
@@ -7363,8 +7393,10 @@ async function prepareUpstreamBuild() {
   const hiprtPostConfigureAdaptationCommand = CFG.hiprtRuntimeProbe
     ? hiprtRuntimeProbeAdaptationCommand(CFG.workerRepoPath)
     : ':';
+  const lifecycleRunId = realRocmLifecycleRunId();
   const command = `
 set -e
+export SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID=${shQuote(lifecycleRunId)}
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
 ${cleanBuildCommand}
 mkdir -p build/.cmake/api/v1/query
@@ -7410,18 +7442,49 @@ if [ "$build_status" != "0" ] && [ "$build_status" != "skipped" ]; then exit "$b
 if [ "$run_status" != "0" ] && [ "$run_status" != "skipped" ] && [ "$run_status" != "not-run" ]; then exit "$run_status"; fi
 exit 0
   `;
+  const lifecycleTimeout = workerLifecycleTimeoutCommand(command, CFG.upstreamBuildTimeoutMs);
+  report.upstream_lifecycle_timeout_control = {
+    schemaVersion: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+    schema_version: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+    runId: lifecycleRunId,
+    run_id: lifecycleRunId,
+    timeoutMs: CFG.upstreamBuildTimeoutMs,
+    timeout_ms: CFG.upstreamBuildTimeoutMs,
+    timeoutSeconds: lifecycleTimeout.timeoutSeconds,
+    timeout_seconds: lifecycleTimeout.timeout_seconds,
+    killAfterSeconds: lifecycleTimeout.killAfterSeconds,
+    kill_after_seconds: lifecycleTimeout.kill_after_seconds,
+    workerTimeoutCommandAvailable: true,
+    worker_timeout_command_available: true,
+    cleanupByRunMarker: true,
+    cleanup_by_run_marker: true,
+    proofAuthority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+    proof_authority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+  report.upstreamLifecycleTimeoutControl = report.upstream_lifecycle_timeout_control;
+  report.evidence.upstream_lifecycle_timeout_control = report.upstream_lifecycle_timeout_control;
   let timings;
   let lifecycleError = null;
   let lifecycleCanContinueWithCachedMetadata = false;
   try {
     timings = await execText(
       'docker',
-      ['exec', CFG.workerContainer, 'sh', '-lc', command],
-      CFG.upstreamBuildTimeoutMs,
+      ['exec', CFG.workerContainer, 'sh', '-lc', lifecycleTimeout.command],
+      CFG.upstreamBuildTimeoutMs + ((lifecycleTimeout.killAfterSeconds + 30) * 1000),
       true,
     );
   } catch (err) {
     lifecycleError = err;
+    await cleanupWorkerLifecycleRun({
+      runId: lifecycleRunId,
+      reason: 'upstream_lifecycle_exec_failed_or_timed_out',
+    }).catch((cleanupErr) => {
+      record('upstream lifecycle cleanup', 'warn', cleanupErr.stack || cleanupErr.message);
+    });
     lifecycleCanContinueWithCachedMetadata = canContinueWithCachedMetadataAfterLifecycleFailure({
       usesCachedMetadata: lifecyclePlan.usesCachedMetadata,
       cachedMetadataAvailable: Boolean(cachedMetadata),
@@ -7865,6 +7928,131 @@ function normalizeCompileCommands(raw) {
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function realRocmLifecycleRunId() {
+  const digest = createHash('sha256')
+    .update(stableJson({
+      slug: CFG.slug,
+      workerRepoPath: CFG.workerRepoPath,
+      targetName: CFG.targetName,
+      startedMonotonicNs: String(RUN_STARTED_MONOTONIC_NS),
+    }))
+    .digest('hex')
+    .slice(0, 24);
+  return `real-rocm-lifecycle-${digest}`;
+}
+
+function workerLifecycleTimeoutCommand(command, timeoutMs) {
+  const timeoutSeconds = Math.max(1, Math.ceil(Number(timeoutMs ?? 300000) / 1000));
+  const killAfterSeconds = Math.max(5, Math.min(30, Math.ceil(timeoutSeconds / 20)));
+  return {
+    timeoutSeconds,
+    timeout_seconds: timeoutSeconds,
+    killAfterSeconds,
+    kill_after_seconds: killAfterSeconds,
+    command: [
+      'if command -v timeout >/dev/null 2>&1; then',
+      `  timeout --kill-after=${killAfterSeconds}s ${timeoutSeconds}s sh -lc ${shQuote(command)}`,
+      'else',
+      `  sh -lc ${shQuote(command)}`,
+      'fi',
+    ].join('\n'),
+  };
+}
+
+function workerLifecycleMarkerCleanupCommand(runId) {
+  return `
+marker=${shQuote(runId)}
+needle="SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID=$marker"
+pids=""
+for envfile in /proc/[0-9]*/environ; do
+  [ -r "$envfile" ] || continue
+  pid="\${envfile#/proc/}"
+  pid="\${pid%/environ}"
+  [ "$pid" = "$$" ] && continue
+  if tr '\\000' '\\n' < "$envfile" 2>/dev/null | grep -Fxq "$needle"; then
+    pids="$pids $pid"
+  fi
+done
+if [ -n "$pids" ]; then
+  kill -TERM $pids 2>/dev/null || true
+  sleep 2
+  kill -KILL $pids 2>/dev/null || true
+fi
+printf 'lifecycle_cleanup_run_id=%s\\nterminated_pids=%s\\n' "$marker" "$pids"
+`;
+}
+
+function parseWorkerLifecycleCleanupOutput(output) {
+  const terminatedPidsLine = String(output ?? '')
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('terminated_pids='));
+  const terminatedPids = String(terminatedPidsLine ?? 'terminated_pids=')
+    .replace(/^terminated_pids=/, '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((pid) => Number(pid))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+  return {
+    rawOutput: String(output ?? ''),
+    raw_output: String(output ?? ''),
+    terminatedPids,
+    terminated_pids: terminatedPids,
+    terminatedProcessCount: terminatedPids.length,
+    terminated_process_count: terminatedPids.length,
+  };
+}
+
+async function cleanupWorkerLifecycleRun({ runId, reason }) {
+  const startedAt = Date.now();
+  const output = await execText(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', workerLifecycleMarkerCleanupCommand(runId)],
+    30000,
+    false,
+  );
+  const parsed = parseWorkerLifecycleCleanupOutput(output);
+  const cleanup = {
+    schemaVersion: 'synthi.real_rocm.worker_lifecycle_cleanup.v1',
+    schema_version: 'synthi.real_rocm.worker_lifecycle_cleanup.v1',
+    runId,
+    run_id: runId,
+    reason,
+    elapsedMs: Date.now() - startedAt,
+    elapsed_ms: Date.now() - startedAt,
+    proofAuthority: 'orchestration_cleanup_not_gpu_hmr_proof',
+    proof_authority: 'orchestration_cleanup_not_gpu_hmr_proof',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    ...parsed,
+  };
+  report.upstream_lifecycle_timeout_control = {
+    ...(report.upstream_lifecycle_timeout_control ?? {}),
+    cleanup,
+    cleanupAttempts: [
+      ...(
+        Array.isArray(report.upstream_lifecycle_timeout_control?.cleanupAttempts)
+          ? report.upstream_lifecycle_timeout_control.cleanupAttempts
+          : []
+      ),
+      cleanup,
+    ],
+    cleanup_attempts: [
+      ...(
+        Array.isArray(report.upstream_lifecycle_timeout_control?.cleanup_attempts)
+          ? report.upstream_lifecycle_timeout_control.cleanup_attempts
+          : []
+      ),
+      cleanup,
+    ],
+  };
+  report.upstreamLifecycleTimeoutControl = report.upstream_lifecycle_timeout_control;
+  report.evidence.upstream_lifecycle_timeout_control = report.upstream_lifecycle_timeout_control;
+  return cleanup;
 }
 
 async function collectRepoFiles(buildMetadata) {
@@ -16070,6 +16258,65 @@ function summarizeGpuProof(proof) {
 
 async function selfCheckRuntimeDispatchEvidence() {
   await selfCheckRealRocmProfiles();
+  const checkpointSelfCheckDir = await mkdtemp(path.join(LOG_DIR, 'real-rocm-checkpoint-self-check-'));
+  const savedCheckpointFullRuntimeProof = report.full_runtime_proof;
+  const savedCheckpointEvidence = report.evidence;
+  const savedRuntimeEvidenceCheckpoint = report.runtime_evidence_checkpoint;
+  const savedRuntimeEvidenceCheckpointCamel = report.runtimeEvidenceCheckpoint;
+  try {
+    const atomicPath = path.join(checkpointSelfCheckDir, 'atomic-result.txt');
+    await writeTextAtomic(atomicPath, 'first\n');
+    await writeTextAtomic(atomicPath, 'second\n');
+    const atomicText = await readFile(atomicPath, 'utf8');
+    if (atomicText !== 'second\n') {
+      throw new Error('atomic result write self-check failed');
+    }
+    report.evidence = { ...report.evidence };
+    report.full_runtime_proof = null;
+    ensureFailClosedRuntimeProofMaterial({
+      reason: 'self_check_checkpoint_before_runtime_evidence',
+      checkpointLabel: 'self-check',
+    });
+    if (
+      report.full_runtime_proof?.fullRuntimeProven !== false
+      || report.runtime_evidence_checkpoint?.accepted_for_gpu_hmr !== false
+      || report.runtime_evidence_checkpoint?.gpu_hmr_success !== false
+      || report.runtime_evidence_checkpoint?.proof_authority !== 'fail_closed_checkpoint_not_gpu_hmr_success'
+    ) {
+      throw new Error('fail-closed checkpoint proof material self-check failed');
+    }
+    const lifecycleTimeout = workerLifecycleTimeoutCommand('printf ok\\n', 12_345);
+    if (
+      lifecycleTimeout.timeoutSeconds !== 13
+      || lifecycleTimeout.killAfterSeconds !== 5
+      || !lifecycleTimeout.command.includes('timeout --kill-after=5s 13s sh -lc')
+    ) {
+      throw new Error('worker lifecycle timeout wrapper self-check failed');
+    }
+    const cleanupCommand = workerLifecycleMarkerCleanupCommand('marker-self-check');
+    if (
+      !cleanupCommand.includes('SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID=$marker')
+      || !cleanupCommand.includes('/proc/[0-9]*/environ')
+    ) {
+      throw new Error('worker lifecycle cleanup command self-check failed');
+    }
+    const cleanupParse = parseWorkerLifecycleCleanupOutput(
+      'lifecycle_cleanup_run_id=marker-self-check\nterminated_pids=12 34\n',
+    );
+    if (
+      cleanupParse.terminated_process_count !== 2
+      || cleanupParse.terminated_pids[0] !== 12
+      || cleanupParse.terminated_pids[1] !== 34
+    ) {
+      throw new Error('worker lifecycle cleanup parser self-check failed');
+    }
+  } finally {
+    report.full_runtime_proof = savedCheckpointFullRuntimeProof;
+    report.evidence = savedCheckpointEvidence;
+    report.runtime_evidence_checkpoint = savedRuntimeEvidenceCheckpoint;
+    report.runtimeEvidenceCheckpoint = savedRuntimeEvidenceCheckpointCamel;
+    await rm(checkpointSelfCheckDir, { recursive: true, force: true });
+  }
   const visualRows = [
     { path: 'blank.png', width: 800, height: 600, visible_pixels: 0 },
     { path: 'tiny.png', width: 120, height: 90, visible_pixels: 10800 },
@@ -21360,7 +21607,103 @@ function renderingVisualEvidenceExpected() {
     .test(oracleDescriptor);
 }
 
-async function writeResults() {
+function updateRuntimeEvidenceCollectionStatus({
+  status,
+  reason = null,
+  checkpointLabel = null,
+  error = null,
+} = {}) {
+  const previous = report.runtime_evidence_collection
+    && typeof report.runtime_evidence_collection === 'object'
+    ? report.runtime_evidence_collection
+    : {};
+  const updated = {
+    ...previous,
+    schemaVersion: 'synthi.real_rocm.runtime_evidence_collection.v1',
+    schema_version: 'synthi.real_rocm.runtime_evidence_collection.v1',
+    status: status ?? previous.status ?? 'unknown',
+    reason: reason ?? previous.reason ?? null,
+    checkpointLabel: checkpointLabel ?? previous.checkpointLabel ?? null,
+    checkpoint_label: checkpointLabel ?? previous.checkpoint_label ?? null,
+    error: error ? String(error?.stack || error?.message || error) : previous.error ?? null,
+    proofAuthority: 'collection_state_only_not_gpu_hmr_success',
+    proof_authority: 'collection_state_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    updatedAt: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  report.runtime_evidence_collection = updated;
+  report.runtimeEvidenceCollection = updated;
+  report.evidence.runtime_evidence_collection = updated;
+  return updated;
+}
+
+function ensureFailClosedRuntimeProofMaterial({
+  reason = 'runtime_evidence_collection_not_completed',
+  checkpointLabel = null,
+} = {}) {
+  if (report.full_runtime_proof && typeof report.full_runtime_proof === 'object') {
+    return report.full_runtime_proof;
+  }
+  report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
+    sourceProofs: report.source_proofs,
+    sourceProof: report.source_proof,
+    fissionProof: report.fission_proof,
+    abiProof: report.abi_proof,
+    artifactTransportProof: report.artifact_transport_proof,
+    epochProof: report.epoch_swap_proof,
+    dispatchProof: report.dispatch_proof,
+    outputProof: report.output_proof,
+    hostPreservationProof: report.host_preservation_proof,
+    originalHostPathProof: report.original_host_path_proof,
+    originalHostPathRequired: CFG.requireOriginalHostPathProof,
+  });
+  report.runtime_evidence_checkpoint = {
+    schemaVersion: 'synthi.real_rocm.fail_closed_runtime_checkpoint.v1',
+    schema_version: 'synthi.real_rocm.fail_closed_runtime_checkpoint.v1',
+    checkpointLabel: checkpointLabel ?? 'runtime-proof-checkpoint',
+    checkpoint_label: checkpointLabel ?? 'runtime-proof-checkpoint',
+    reason,
+    proofAuthority: 'fail_closed_checkpoint_not_gpu_hmr_success',
+    proof_authority: 'fail_closed_checkpoint_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    fullRuntimeProven: report.full_runtime_proof.fullRuntimeProven === true,
+    full_runtime_proven: report.full_runtime_proof.fullRuntimeProven === true,
+    degradedState: report.full_runtime_proof.degradedState ?? null,
+    degraded_state: report.full_runtime_proof.degradedState ?? null,
+    degradedReason: report.full_runtime_proof.degradedReason ?? reason,
+    degraded_reason: report.full_runtime_proof.degradedReason ?? reason,
+  };
+  report.runtimeEvidenceCheckpoint = report.runtime_evidence_checkpoint;
+  report.evidence.runtime_evidence_checkpoint = report.runtime_evidence_checkpoint;
+  return report.full_runtime_proof;
+}
+
+async function writeResults({ checkpointLabel = 'final' } = {}) {
+  report.result_write_phase = checkpointLabel;
+  report.resultWritePhase = checkpointLabel;
+  if (checkpointLabel !== 'final') {
+    ensureFailClosedRuntimeProofMaterial({
+      reason: 'checkpoint_written_before_runtime_evidence_collection',
+      checkpointLabel,
+    });
+    updateRuntimeEvidenceCollectionStatus({
+      status: 'checkpoint_written_before_collection',
+      reason: 'retained fail-closed checkpoint before runtime evidence collection',
+      checkpointLabel,
+    });
+  } else if (!report.full_runtime_proof) {
+    ensureFailClosedRuntimeProofMaterial({
+      reason: 'final_write_without_runtime_evidence_collection',
+      checkpointLabel,
+    });
+  }
   report.finished_at = new Date().toISOString();
   const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
   report.finished_monotonic_ns = timingFields.finished_monotonic_ns;
@@ -21368,6 +21711,31 @@ async function writeResults() {
   report.duration_ms = timingFields.duration_ms;
   report.timingMetrics = realRocmTimingMetrics(report);
   refreshRealRocmRuntimeProofObligationFacets();
+  if (!Array.isArray(report.strict_proof_gates) || report.strict_proof_gates.length === 0) {
+    report.strict_proof_gates = strictProofGateRows({
+      requireOriginalHostPathProof: CFG.requireOriginalHostPathProof,
+      requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+      originalHostPathProof: report.original_host_path_proof,
+      fullRuntimeProof: report.full_runtime_proof,
+      realRocmRuntimeStageObligations: report.real_rocm_runtime_stage_obligations,
+      real_rocm_runtime_stage_obligations: report.real_rocm_runtime_stage_obligations,
+    });
+  }
+  if (!Array.isArray(report.target_progression_gates) || report.target_progression_gates.length === 0) {
+    report.target_progression_gates = targetProgressionGateRows({
+      targetProgression: report.target_progression,
+      targetProgressionLedger: report.target_progression_ledger,
+      sourceProofs: report.source_proofs,
+      fissionProof: report.fission_proof,
+      dispatchProof: report.dispatch_proof,
+      outputProof: report.output_proof,
+      hostPreservationProof: report.host_preservation_proof,
+      originalHostPathProof: report.original_host_path_proof,
+      fullRuntimeProof: report.full_runtime_proof,
+      visualEvidenceExpected: renderingVisualEvidenceExpected(),
+      visualEvidenceFrames: visualEvidenceFrames(),
+    });
+  }
   const runtimeBackend = runtimeProofBackend();
   const runtimeSourceEditId = runtimeProofSourceEditId();
   const runtimeCompiler = runtimeProofCompiler();
@@ -21808,6 +22176,35 @@ async function writeResults() {
   const retainedBaseName = cleanIdentifier(report.slug ?? CFG.slug ?? 'real-rocm-result');
   const retainedResultsJson = path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.json`);
   const retainedResultsTxt = path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.txt`);
+  const resultCheckpoint = {
+    label: checkpointLabel,
+    status: checkpointLabel === 'final' ? 'final_result_write' : 'fail_closed_checkpoint_write',
+    writtenAt: report.finished_at,
+    written_at: report.finished_at,
+    runtimeEvidenceCollectionStatus: report.runtime_evidence_collection?.status ?? null,
+    runtime_evidence_collection_status: report.runtime_evidence_collection?.status ?? null,
+    proofAuthority: checkpointLabel === 'final'
+      ? 'final_result_artifact'
+      : 'fail_closed_checkpoint_not_gpu_hmr_success',
+    proof_authority: checkpointLabel === 'final'
+      ? 'final_result_artifact'
+      : 'fail_closed_checkpoint_not_gpu_hmr_success',
+    acceptedForGpuHmr: checkpointLabel === 'final'
+      ? report.accepted_for_gpu_hmr === true
+      : false,
+    accepted_for_gpu_hmr: checkpointLabel === 'final'
+      ? report.accepted_for_gpu_hmr === true
+      : false,
+    gpuHmrSuccess: checkpointLabel === 'final' ? report.gpu_hmr_success === true : false,
+    gpu_hmr_success: checkpointLabel === 'final' ? report.gpu_hmr_success === true : false,
+  };
+  report.result_checkpoints = [
+    ...(Array.isArray(report.result_checkpoints) ? report.result_checkpoints : []),
+    resultCheckpoint,
+  ];
+  report.resultCheckpoints = report.result_checkpoints;
+  report.current_result_checkpoint = resultCheckpoint;
+  report.currentResultCheckpoint = resultCheckpoint;
   report.result_artifacts = {
     schemaVersion: 'synthi.gpu.hmr.real_rocm_result_artifacts.v1',
     retainedJson: retainedResultsJson,
@@ -21820,9 +22217,13 @@ async function writeResults() {
     latest_txt: RESULTS_TXT,
     latestAliasOnly: false,
     latest_alias_only: false,
+    checkpointLabel,
+    checkpoint_label: checkpointLabel,
+    checkpointStatus: resultCheckpoint.status,
+    checkpoint_status: resultCheckpoint.status,
   };
-  await writeFile(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
-  await writeFile(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
+  await writeTextAtomic(retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
+  await writeTextAtomic(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
   const lines = [
     `slug: ${report.slug}`,
     `retained_results_json: ${retainedResultsJson}`,
@@ -21896,8 +22297,8 @@ async function writeResults() {
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];
-  await writeFile(retainedResultsTxt, lines.join('\n') + '\n');
-  await writeFile(RESULTS_TXT, lines.join('\n') + '\n');
+  await writeTextAtomic(retainedResultsTxt, lines.join('\n') + '\n');
+  await writeTextAtomic(RESULTS_TXT, lines.join('\n') + '\n');
   console.log(`retained results: ${retainedResultsTxt}`);
   console.log(`results: ${RESULTS_TXT}`);
 }
@@ -22198,9 +22599,20 @@ if (process.argv.includes('--self-check')) {
       if (mcpState?.proc) {
         try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
       }
-      await collectRuntimeEvidence(runtimeEvidenceContext).catch((err) => {
-        record('runtime evidence collected', 'warn', err.stack || err.message);
-      });
-      await writeResults().catch((err) => console.error(err));
+      if (CFG.checkpointBeforeRuntimeEvidence) {
+        await writeResults({ checkpointLabel: 'pre-runtime-evidence' }).catch((err) => {
+          console.error(err);
+        });
+      }
+      updateRuntimeEvidenceCollectionStatus({ status: 'collecting' });
+      await collectRuntimeEvidence(runtimeEvidenceContext)
+        .then(() => {
+          updateRuntimeEvidenceCollectionStatus({ status: 'collected' });
+        })
+        .catch((err) => {
+          updateRuntimeEvidenceCollectionStatus({ status: 'collection_failed', error: err });
+          record('runtime evidence collected', 'warn', err.stack || err.message);
+        });
+      await writeResults({ checkpointLabel: 'final' }).catch((err) => console.error(err));
     });
 }
