@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+
+const require = createRequire(import.meta.url);
 
 export const GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.async_visual_proof_worker.v1';
@@ -11,6 +14,8 @@ export const GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY =
 
 export const GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_worker_executable_manifest.v1';
+export const GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_worker_native_dependency_manifest.v1';
 
 export async function computeAsyncVisualProof(input = {}, options = {}) {
   const timeoutMs = finitePositiveInteger(options.timeoutMs, 30000);
@@ -146,12 +151,17 @@ export async function computeVisualWorkerExecutableIdentity() {
       content_hash: contentHash,
     });
   }
+  const nativeDependencyIdentity = await computeVisualWorkerNativeDependencyIdentity();
   const manifest = {
     schemaVersion: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
     schema_version: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
-    hashMode: 'ordered_local_module_graph',
-    hash_mode: 'ordered_local_module_graph',
+    hashMode: 'ordered_local_module_graph_plus_native_image_dependencies',
+    hash_mode: 'ordered_local_module_graph_plus_native_image_dependencies',
     modules,
+    nativeDependencies: nativeDependencyIdentity.nativeDependencies,
+    native_dependencies: nativeDependencyIdentity.nativeDependencies,
+    nativeDependencyManifestHash: nativeDependencyIdentity.nativeDependencyManifestHash,
+    native_dependency_manifest_hash: nativeDependencyIdentity.nativeDependencyManifestHash,
   };
   const executableHash = hashText(stableJson(manifest));
   return {
@@ -163,8 +173,95 @@ export async function computeVisualWorkerExecutableIdentity() {
     executable_manifest_schema_version: GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION,
     executableModuleCount: modules.length,
     executable_module_count: modules.length,
+    nativeDependencyManifestHash: nativeDependencyIdentity.nativeDependencyManifestHash,
+    native_dependency_manifest_hash: nativeDependencyIdentity.nativeDependencyManifestHash,
+    nativeDependencyManifestSchemaVersion:
+      GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
+    native_dependency_manifest_schema_version:
+      GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
+    nativeDependencyCount: nativeDependencyIdentity.nativeDependencyCount,
+    native_dependency_count: nativeDependencyIdentity.nativeDependencyCount,
+    nativeDependencyManifest: nativeDependencyIdentity.nativeDependencyManifest,
+    native_dependency_manifest: nativeDependencyIdentity.nativeDependencyManifest,
     executableManifest: manifest,
     executable_manifest: manifest,
+  };
+}
+
+async function computeVisualWorkerNativeDependencyIdentity() {
+  const nativeDependencies = [
+    await sharpNativeDependencyRecord(),
+  ];
+  const nativeDependencyManifest = {
+    schemaVersion: GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
+    schema_version: GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
+    hashMode: 'native_image_decode_diff_runtime_versions',
+    hash_mode: 'native_image_decode_diff_runtime_versions',
+    dependencies: nativeDependencies,
+  };
+  const nativeDependencyManifestHash = hashText(stableJson(nativeDependencyManifest));
+  return {
+    nativeDependencies,
+    nativeDependencyCount: nativeDependencies.length,
+    nativeDependencyManifest,
+    nativeDependencyManifestHash,
+  };
+}
+
+async function sharpNativeDependencyRecord() {
+  let packageVersion = null;
+  let packageJsonHash = null;
+  try {
+    const packagePath = require.resolve('sharp/package.json');
+    const packageBytes = await readFile(packagePath);
+    const packageJson = JSON.parse(packageBytes.toString('utf8'));
+    packageVersion = typeof packageJson.version === 'string' ? packageJson.version : null;
+    packageJsonHash = hashBytes(packageBytes);
+  } catch {
+    packageVersion = null;
+    packageJsonHash = null;
+  }
+
+  let runtimeVersions = {};
+  let runtimeVersionsHash = null;
+  let runtimeLoadError = null;
+  try {
+    const sharpModule = await import('sharp');
+    const sharpRuntime = sharpModule.default ?? sharpModule;
+    runtimeVersions = sortedPlainObject(sharpRuntime.versions ?? {});
+    runtimeVersionsHash = hashText(stableJson(runtimeVersions));
+  } catch (error) {
+    runtimeLoadError = error?.message ?? String(error);
+  }
+
+  return {
+    role: 'native_image_decode_diff_backend',
+    packageName: 'sharp',
+    package_name: 'sharp',
+    packageVersion,
+    package_version: packageVersion,
+    packageJsonHash,
+    package_json_hash: packageJsonHash,
+    runtimeVersions,
+    runtime_versions: runtimeVersions,
+    runtimeVersionsHash,
+    runtime_versions_hash: runtimeVersionsHash,
+    runtimeLoadError,
+    runtime_load_error: runtimeLoadError,
+    platform: process.platform,
+    arch: process.arch,
+    nodeModuleVersion: process.versions.modules ?? null,
+    node_module_version: process.versions.modules ?? null,
+    operations: [
+      'png_decode',
+      'ensure_alpha',
+      'resize_to_before_dimensions',
+      'raw_frame_hash',
+      'tile_hash',
+      'roi_hash',
+      'rgba_diff',
+      'png_diff_encode',
+    ],
   };
 }
 
@@ -227,6 +324,21 @@ function workerIdentityRejectionReasons(result, context = {}) {
   ) {
     reasons.push('visual_worker_executable_hash_mismatch');
   }
+  const nativeDependencyManifestHash = normalizeSha256Hash(
+    worker.nativeDependencyManifestHash
+    ?? worker.native_dependency_manifest_hash,
+  );
+  if (!nativeDependencyManifestHash) {
+    reasons.push('visual_worker_native_dependency_manifest_hash_missing');
+  }
+  const nativeDependencyCount = Number(
+    worker.nativeDependencyCount
+    ?? worker.native_dependency_count
+    ?? 0,
+  );
+  if (!Number.isSafeInteger(nativeDependencyCount) || nativeDependencyCount <= 0) {
+    reasons.push('visual_worker_native_dependency_manifest_empty');
+  }
   return reasons;
 }
 
@@ -252,6 +364,15 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+function sortedPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, value[key]]),
+  );
 }
 
 function normalizeSha256Hash(value) {

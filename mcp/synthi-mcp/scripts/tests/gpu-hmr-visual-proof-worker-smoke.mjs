@@ -85,6 +85,17 @@ assert.match(proof.worker.executableHash, /^sha256:[a-f0-9]{64}$/);
 assert.equal(proof.worker.executableHash, proof.worker.executable_hash);
 assert.equal(proof.worker.executableHash, proof.worker.executableManifestHash);
 assert.equal(proof.worker.executableModuleCount, 3);
+assert.match(proof.worker.nativeDependencyManifestHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(proof.worker.nativeDependencyManifestHash, proof.worker.native_dependency_manifest_hash);
+assert.equal(
+  proof.worker.nativeDependencyManifestSchemaVersion,
+  'synthi.gpu_hmr.visual_worker_native_dependency_manifest.v1',
+);
+assert.equal(proof.worker.nativeDependencyCount, 1);
+assert.equal(proof.worker.nativeDependencyManifest.dependencies[0].packageName, 'sharp');
+assert.equal(proof.worker.nativeDependencyManifest.dependencies[0].role, 'native_image_decode_diff_backend');
+assert.ok(proof.worker.nativeDependencyManifest.dependencies[0].runtimeVersionsHash);
+assert.ok(proof.worker.nativeDependencyManifest.dependencies[0].runtimeVersions.sharp);
 assert.deepEqual(
   proof.worker.executableManifest.modules.map((moduleEntry) => moduleEntry.role),
   ['visual_worker_entry', 'visual_worker_client', 'artifact_cas_helper'],

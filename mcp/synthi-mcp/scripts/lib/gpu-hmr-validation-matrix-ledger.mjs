@@ -19,6 +19,7 @@ import {
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
   computeAsyncVisualProof,
 } from './gpu-hmr-visual-proof-worker.mjs';
 
@@ -1107,6 +1108,28 @@ function summarizeAsyncVisualProof(proof) {
       executable_module_count:
         Number.isSafeInteger(Number(worker.executableModuleCount ?? worker.executable_module_count))
           ? Number(worker.executableModuleCount ?? worker.executable_module_count)
+          : null,
+      nativeDependencyManifestHash:
+        text(worker.nativeDependencyManifestHash ?? worker.native_dependency_manifest_hash) || null,
+      native_dependency_manifest_hash:
+        text(worker.nativeDependencyManifestHash ?? worker.native_dependency_manifest_hash) || null,
+      nativeDependencyManifestSchemaVersion:
+        text(
+          worker.nativeDependencyManifestSchemaVersion
+          ?? worker.native_dependency_manifest_schema_version,
+        ) || null,
+      native_dependency_manifest_schema_version:
+        text(
+          worker.nativeDependencyManifestSchemaVersion
+          ?? worker.native_dependency_manifest_schema_version,
+        ) || null,
+      nativeDependencyCount:
+        Number.isSafeInteger(Number(worker.nativeDependencyCount ?? worker.native_dependency_count))
+          ? Number(worker.nativeDependencyCount ?? worker.native_dependency_count)
+          : null,
+      native_dependency_count:
+        Number.isSafeInteger(Number(worker.nativeDependencyCount ?? worker.native_dependency_count))
+          ? Number(worker.nativeDependencyCount ?? worker.native_dependency_count)
           : null,
       offMainThread: worker.offMainThread === true,
       off_main_thread: worker.offMainThread === true,
@@ -2208,6 +2231,25 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && visual.allCasLocatorsAccepted !== true
     && visual.all_cas_locators_accepted !== true;
   const workerExecutableHash = firstText(worker.executableHash, worker.executable_hash);
+  const workerNativeDependencyManifestHash = firstText(
+    worker.nativeDependencyManifestHash,
+    worker.native_dependency_manifest_hash,
+  );
+  const workerNativeDependencyManifestSchemaVersion = firstText(
+    worker.nativeDependencyManifestSchemaVersion,
+    worker.native_dependency_manifest_schema_version,
+  );
+  const workerNativeDependencyCount = Number(
+    worker.nativeDependencyCount
+    ?? worker.native_dependency_count
+    ?? 0,
+  );
+  const nativeImageDependencyBound =
+    contentAddressedSha256(workerNativeDependencyManifestHash)
+    && workerNativeDependencyManifestSchemaVersion
+      === GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION
+    && Number.isSafeInteger(workerNativeDependencyCount)
+    && workerNativeDependencyCount > 0;
   const asyncMetricsAccepted =
     firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
       === GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION
@@ -2219,7 +2261,8 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && firstBool(asyncMetrics.acceptedForGpuHmr, asyncMetrics.accepted_for_gpu_hmr) === false
     && firstBool(asyncMetrics.gpuHmrSuccess, asyncMetrics.gpu_hmr_success) === false
     && firstBool(worker.offMainThread, worker.off_main_thread) === true
-    && contentAddressedSha256(workerExecutableHash);
+    && contentAddressedSha256(workerExecutableHash)
+    && nativeImageDependencyBound;
   const tileEvidenceAccepted =
     tileEvidence.accepted === true
     && Number(tileEvidence.tileCount ?? tileEvidence.tile_count ?? 0) > 0;
@@ -2243,6 +2286,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     contentAddressedSha256(workerExecutableHash)
       ? null
       : 'async_visual_worker_executable_hash_missing',
+    nativeImageDependencyBound ? null : 'async_visual_native_dependency_identity_missing',
     transportAccepted ? null : 'visual_artifact_transport_not_accepted',
     casLocatorValidationFailed ? 'visual_artifact_cas_locator_validation_failed' : null,
     locatorsAccepted ? null : 'visual_artifact_cas_locators_not_accepted',
@@ -2276,6 +2320,14 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     off_main_thread: firstBool(worker.offMainThread, worker.off_main_thread),
     workerExecutableHash,
     worker_executable_hash: workerExecutableHash,
+    workerNativeDependencyManifestHash,
+    worker_native_dependency_manifest_hash: workerNativeDependencyManifestHash,
+    workerNativeDependencyManifestSchemaVersion,
+    worker_native_dependency_manifest_schema_version: workerNativeDependencyManifestSchemaVersion,
+    workerNativeDependencyCount,
+    worker_native_dependency_count: workerNativeDependencyCount,
+    nativeImageDependencyBound,
+    native_image_dependency_bound: nativeImageDependencyBound,
     transportAccepted,
     transport_accepted: transportAccepted,
     locatorCount: locators.length,

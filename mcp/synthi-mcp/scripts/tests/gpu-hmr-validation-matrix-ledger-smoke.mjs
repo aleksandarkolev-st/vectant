@@ -7772,6 +7772,16 @@ assert.equal(
 );
 assert.equal(hot1RunMode.asyncVisualCasBundle.tileEvidenceAccepted, true);
 assert.match(hot1RunMode.asyncVisualCasBundle.workerExecutableHash, /^sha256:[a-f0-9]{64}$/);
+assert.match(
+  hot1RunMode.asyncVisualCasBundle.workerNativeDependencyManifestHash,
+  /^sha256:[a-f0-9]{64}$/,
+);
+assert.equal(
+  hot1RunMode.asyncVisualCasBundle.workerNativeDependencyManifestSchemaVersion,
+  'synthi.gpu_hmr.visual_worker_native_dependency_manifest.v1',
+);
+assert.equal(hot1RunMode.asyncVisualCasBundle.workerNativeDependencyCount, 1);
+assert.equal(hot1RunMode.asyncVisualCasBundle.nativeImageDependencyBound, true);
 assert.equal(hot1RunMode.visual.artifactCasLocatorCount, 3);
 assert.equal(hot1RunMode.visual.allCasLocatorsAccepted, true);
 assert.equal(hot1RunMode.visual.allCasLocatorHashesMatch, true);
@@ -7807,6 +7817,7 @@ assert.equal(sourceFirstCasOnlyRunMode.visual.allCasLocatorHashesMatch, true);
 assert.ok(sourceFirstCasOnlyRunMode.visual.images.every((image) => image.resolvedFromCas === true));
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.accepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.workerCasInputAccepted, true);
+assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.nativeImageDependencyBound, true);
 
 const forgedSourceFirstCasRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-forged-cas'
