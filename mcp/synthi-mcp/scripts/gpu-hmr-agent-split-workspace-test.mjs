@@ -2362,25 +2362,78 @@ int main(int, char**) {
 `;
 }
 
-function assertNoSynthiAbi(source) {
-  const forbidden = ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'];
-  const found = forbidden.filter((needle) => source.includes(needle));
+const SOURCE_FIRST_FORBIDDEN_ABI_MARKERS = [
+  'core_on_update',
+  'gui_on_render',
+  'device_on_load',
+  'device_descriptor',
+  'synthi_gpu_launch',
+];
+
+function sourceFirstSeedSourcePurityEvidence({ source, entryPath = '', files = [] } = {}) {
+  const normalizedEntryPath = cleanRel(entryPath);
+  const sourceText = typeof source === 'string' ? source : '';
+  const seedFiles = Array.isArray(files) && files.length > 0
+    ? files
+    : [{ path: normalizedEntryPath || 'src/main.cpp', content: sourceText }];
+  const scannedFiles = seedFiles
+    .map((entry) => {
+      const filePath = cleanRel(entry?.path ?? entry?.name ?? entry?.filename ?? '');
+      const content = typeof entry?.content === 'string' ? entry.content : '';
+      const found = SOURCE_FIRST_FORBIDDEN_ABI_MARKERS.filter((needle) => content.includes(needle));
+      return {
+        path: filePath,
+        contentHash: filePath ? `sha256:${sha256Hex(content)}` : null,
+        content_hash: filePath ? `sha256:${sha256Hex(content)}` : null,
+        byteLength: Buffer.byteLength(content, 'utf8'),
+        byte_length: Buffer.byteLength(content, 'utf8'),
+        accepted: filePath.length > 0 && found.length === 0,
+        forbiddenMarkersFound: found,
+        forbidden_markers_found: found,
+      };
+    })
+    .filter((entry) => entry.path);
+  const sourceContentHash = `sha256:${sha256Hex(sourceText)}`;
+  const entryFileCovered = scannedFiles.some((entry) =>
+    entry.path === normalizedEntryPath && entry.contentHash === sourceContentHash && entry.accepted === true
+  );
+  const forbiddenMarkersFound = [...new Set(scannedFiles.flatMap((entry) => entry.forbiddenMarkersFound))];
+  const purityManifestHash = `sha256:${sha256Hex(stableJson(scannedFiles))}`;
   const evidence = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
-    accepted: found.length === 0,
-    noSynthiAbiInSeedSource: found.length === 0,
-    no_synthi_abi_in_seed_source: found.length === 0,
-    forbiddenMarkersChecked: forbidden,
-    forbidden_markers_checked: forbidden,
-    forbiddenMarkersFound: found,
-    forbidden_markers_found: found,
-    sourceContentHash: `sha256:${sha256Hex(source)}`,
-    source_content_hash: `sha256:${sha256Hex(source)}`,
-    sourceByteLength: Buffer.byteLength(source, 'utf8'),
-    source_byte_length: Buffer.byteLength(source, 'utf8'),
+    accepted: scannedFiles.length > 0 && entryFileCovered && forbiddenMarkersFound.length === 0,
+    noSynthiAbiInSeedSource: scannedFiles.length > 0 && entryFileCovered && forbiddenMarkersFound.length === 0,
+    no_synthi_abi_in_seed_source: scannedFiles.length > 0 && entryFileCovered && forbiddenMarkersFound.length === 0,
+    forbiddenMarkersChecked: SOURCE_FIRST_FORBIDDEN_ABI_MARKERS,
+    forbidden_markers_checked: SOURCE_FIRST_FORBIDDEN_ABI_MARKERS,
+    forbiddenMarkersFound,
+    forbidden_markers_found: forbiddenMarkersFound,
+    scannedFiles,
+    scanned_files: scannedFiles,
+    scannedFilePaths: scannedFiles.map((entry) => entry.path),
+    scanned_file_paths: scannedFiles.map((entry) => entry.path),
+    scannedFileCount: scannedFiles.length,
+    scanned_file_count: scannedFiles.length,
+    purityManifestHash,
+    purity_manifest_hash: purityManifestHash,
+    entryPath: normalizedEntryPath,
+    entry_path: normalizedEntryPath,
+    entryFileCovered,
+    entry_file_covered: entryFileCovered,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    sourceByteLength: Buffer.byteLength(sourceText, 'utf8'),
+    source_byte_length: Buffer.byteLength(sourceText, 'utf8'),
   };
-  if (found.length) fail(`monolithic source unexpectedly contains Synthi ABI markers: ${found.join(', ')}`);
-  record('monolithic source has no Synthi ABI', 'pass', evidence.sourceContentHash);
+  return evidence;
+}
+
+function assertNoSynthiAbi(source, options = {}) {
+  const evidence = sourceFirstSeedSourcePurityEvidence({ source, ...options });
+  if (!evidence.accepted) {
+    fail(`seed source files unexpectedly contain Synthi ABI markers: ${evidence.forbiddenMarkersFound.join(', ') || 'coverage_missing'}`);
+  }
+  record('seed source files have no Synthi ABI', 'pass', `${evidence.sourceContentHash} files=${evidence.scannedFileCount}`);
   return evidence;
 }
 
@@ -3231,6 +3284,62 @@ function sourceFirstIngestionEvidence({
     })
     .filter(Boolean);
   const initialManifestHash = `sha256:${sha256Hex(stableJson(initialFiles))}`;
+  const sourcePurityFiles = Array.isArray(sourcePurityEvidence?.scannedFiles)
+    ? sourcePurityEvidence.scannedFiles
+    : Array.isArray(sourcePurityEvidence?.scanned_files)
+      ? sourcePurityEvidence.scanned_files
+      : [];
+  const normalizedSourcePurityFiles = sourcePurityFiles
+    .map((entry) => ({
+      path: cleanRel(entry?.path ?? ''),
+      contentHash: entry?.contentHash ?? entry?.content_hash ?? null,
+      content_hash: entry?.contentHash ?? entry?.content_hash ?? null,
+      byteLength: Number.isFinite(Number(entry?.byteLength ?? entry?.byte_length))
+        ? Number(entry.byteLength ?? entry.byte_length)
+        : null,
+      byte_length: Number.isFinite(Number(entry?.byteLength ?? entry?.byte_length))
+        ? Number(entry.byteLength ?? entry.byte_length)
+        : null,
+      accepted: entry?.accepted === true,
+      forbiddenMarkersFound: Array.isArray(entry?.forbiddenMarkersFound)
+        ? entry.forbiddenMarkersFound
+        : Array.isArray(entry?.forbidden_markers_found)
+          ? entry.forbidden_markers_found
+          : [],
+      forbidden_markers_found: Array.isArray(entry?.forbiddenMarkersFound)
+        ? entry.forbiddenMarkersFound
+        : Array.isArray(entry?.forbidden_markers_found)
+          ? entry.forbidden_markers_found
+          : [],
+    }))
+    .filter((entry) => entry.path);
+  const sourcePurityManifestHash = sourcePurityEvidence?.purityManifestHash
+    ?? sourcePurityEvidence?.purity_manifest_hash
+    ?? null;
+  const sourcePurityInitialManifestEntries = normalizedSourcePurityFiles
+    .map((entry) => ({
+      path: entry.path,
+      contentHash: entry.contentHash,
+      content_hash: entry.content_hash,
+      byteLength: entry.byteLength,
+      byte_length: entry.byte_length,
+    }));
+  const sourcePurityInitialManifestHash = sourcePurityInitialManifestEntries.length > 0
+    ? `sha256:${sha256Hex(stableJson(sourcePurityInitialManifestEntries))}`
+    : null;
+  const sourcePurityFileSetMatchesInitialManifest =
+    Boolean(sourcePurityInitialManifestHash)
+    && sourcePurityInitialManifestHash === initialManifestHash;
+  const recomputedSourcePurityManifestHash = normalizedSourcePurityFiles.length > 0
+    ? `sha256:${sha256Hex(stableJson(normalizedSourcePurityFiles))}`
+    : null;
+  const sourcePurityManifestHashMatches =
+    Boolean(sourcePurityManifestHash)
+    && Boolean(recomputedSourcePurityManifestHash)
+    && sourcePurityManifestHash === recomputedSourcePurityManifestHash;
+  const sourcePurityCoversInitialManifest =
+    sourcePurityFileSetMatchesInitialManifest
+    && normalizedSourcePurityFiles.every((purityEntry) => purityEntry.accepted === true);
   const sourceTreeManifestHash =
     ACTIVE_AGENT_PROFILE?.source?.manifestHash
     ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
@@ -3252,6 +3361,8 @@ function sourceFirstIngestionEvidence({
     entryPath: normalizedEntryPath,
     targetId: splitIdentity.targetId,
     initialManifestHash,
+    sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -3266,6 +3377,8 @@ function sourceFirstIngestionEvidence({
     ACTIVE_AGENT_PROFILE?.source?.contentHash,
     ACTIVE_AGENT_PROFILE?.source?.content_hash,
     initialManifestHash,
+    sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
     sidecarHash,
     compileManifestHash,
     ...generatedArtifactHashes,
@@ -3276,6 +3389,9 @@ function sourceFirstIngestionEvidence({
   const preferGpuPipeline = initialCompileArgs?.prefer_gpu_pipeline === true;
   const accepted =
     sourcePurityEvidence?.accepted === true
+    && sourcePurityCoversInitialManifest
+    && sourcePurityManifestHashMatches
+    && sourcePurityFileSetMatchesInitialManifest
     && useAiSplit
     && userRequestedAi
     && preferGpuPipeline
@@ -3314,6 +3430,20 @@ function sourceFirstIngestionEvidence({
     source_purity_evidence: sourcePurityEvidence,
     noSynthiAbiInSeedSource: sourcePurityEvidence?.accepted === true,
     no_synthi_abi_in_seed_source: sourcePurityEvidence?.accepted === true,
+    sourcePurityManifestHash,
+    source_purity_manifest_hash: sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
+    source_purity_initial_manifest_hash: sourcePurityInitialManifestHash,
+    sourcePurityFileSetMatchesInitialManifest,
+    source_purity_file_set_matches_initial_manifest: sourcePurityFileSetMatchesInitialManifest,
+    recomputedSourcePurityManifestHash,
+    recomputed_source_purity_manifest_hash: recomputedSourcePurityManifestHash,
+    sourcePurityManifestHashMatches,
+    source_purity_manifest_hash_matches: sourcePurityManifestHashMatches,
+    sourcePurityCoversInitialManifest,
+    source_purity_covers_initial_manifest: sourcePurityCoversInitialManifest,
+    sourcePurityScannedFiles: normalizedSourcePurityFiles,
+    source_purity_scanned_files: normalizedSourcePurityFiles,
     initialCompileContract: {
       language: initialCompileArgs?.language ?? null,
       filename: cleanRel(initialCompileArgs?.filename),
@@ -3325,6 +3455,10 @@ function sourceFirstIngestionEvidence({
       source_tree_manifest_hash: sourceTreeManifestHash,
       initialFiles,
       initial_files: initialFiles,
+      sourcePurityManifestHash,
+      source_purity_manifest_hash: sourcePurityManifestHash,
+      sourcePurityInitialManifestHash,
+      source_purity_initial_manifest_hash: sourcePurityInitialManifestHash,
       initialFilePaths,
       initial_file_paths: initialFilePaths,
       useAiSplit,
@@ -3345,6 +3479,8 @@ function sourceFirstIngestionEvidence({
       initial_manifest_hash: initialManifestHash,
       source_tree_manifest_hash: sourceTreeManifestHash,
       initial_files: initialFiles,
+      source_purity_manifest_hash: sourcePurityManifestHash,
+      source_purity_initial_manifest_hash: sourcePurityInitialManifestHash,
       initial_file_paths: initialFilePaths,
       use_ai_split: useAiSplit,
       user_requested_ai: userRequestedAi,
@@ -3400,6 +3536,9 @@ function sourceFirstIngestionEvidence({
     evidence_refs: [...new Set(evidenceRefs)],
     failedGates: accepted ? [] : [
       sourcePurityEvidence?.accepted === true ? null : 'source_first_seed_source_contains_synthi_abi',
+      sourcePurityCoversInitialManifest ? null : 'source_first_seed_purity_manifest_incomplete',
+      sourcePurityManifestHashMatches ? null : 'source_first_seed_purity_manifest_hash_mismatch',
+      sourcePurityFileSetMatchesInitialManifest ? null : 'source_first_seed_purity_file_set_mismatch',
       useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
@@ -3420,6 +3559,9 @@ function sourceFirstIngestionEvidence({
     ].filter(Boolean),
     failed_gates: accepted ? [] : [
       sourcePurityEvidence?.accepted === true ? null : 'source_first_seed_source_contains_synthi_abi',
+      sourcePurityCoversInitialManifest ? null : 'source_first_seed_purity_manifest_incomplete',
+      sourcePurityManifestHashMatches ? null : 'source_first_seed_purity_manifest_hash_mismatch',
+      sourcePurityFileSetMatchesInitialManifest ? null : 'source_first_seed_purity_file_set_mismatch',
       useAiSplit ? null : 'source_first_compile_use_ai_split_missing',
       userRequestedAi ? null : 'source_first_compile_user_requested_ai_missing',
       preferGpuPipeline ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
@@ -4052,8 +4194,36 @@ function selfCheckAgentVisualProfile() {
     const acceptedSourceFirst = sourceFirstIngestionEvidence({
       source: multiFileResolvedSource,
       entryPath: multiFileProfile.source.entryPath,
-      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource),
+      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource, {
+        entryPath: multiFileProfile.source.entryPath,
+        files: multiFileInitialFiles,
+      }),
       initialCompileArgs: sourceFirstInitialCompileArgs,
+      initialCompileResult: { waitSummary: { status: 'applied' } },
+      split: sourceFirstSplit,
+      sawGpuSplit: { matched: false },
+      splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
+    });
+    const dirtySecondaryInitialFiles = multiFileInitialFiles.map((entry) =>
+      entry.path === 'include/params.hpp'
+        ? {
+            ...entry,
+            content: `${entry.content}\nextern void synthi_gpu_launch();\n`,
+          }
+        : entry
+    );
+    const rejectedDirtySecondarySourceFirst = sourceFirstIngestionEvidence({
+      source: multiFileResolvedSource,
+      entryPath: multiFileProfile.source.entryPath,
+      sourcePurityEvidence: sourceFirstSeedSourcePurityEvidence({
+        source: multiFileResolvedSource,
+        entryPath: multiFileProfile.source.entryPath,
+        files: dirtySecondaryInitialFiles,
+      }),
+      initialCompileArgs: {
+        ...sourceFirstInitialCompileArgs,
+        files: dirtySecondaryInitialFiles,
+      },
       initialCompileResult: { waitSummary: { status: 'applied' } },
       split: sourceFirstSplit,
       sawGpuSplit: { matched: false },
@@ -4086,7 +4256,10 @@ function selfCheckAgentVisualProfile() {
     const rejectedForgedSourceFirst = sourceFirstIngestionEvidence({
       source: multiFileResolvedSource,
       entryPath: multiFileProfile.source.entryPath,
-      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource),
+      sourcePurityEvidence: assertNoSynthiAbi(multiFileResolvedSource, {
+        entryPath: multiFileProfile.source.entryPath,
+        files: multiFileInitialFiles,
+      }),
       initialCompileArgs: sourceFirstInitialCompileArgs,
       initialCompileResult: { waitSummary: { status: 'applied' } },
       split: forgedSourceFirstSplit,
@@ -4196,6 +4369,12 @@ function selfCheckAgentVisualProfile() {
       || acceptedSourceFirst.acceptedForGpuHmr !== false
       || acceptedSourceFirst.gpuHmrSuccess !== false
       || acceptedSourceFirst.canSatisfyRuntimeProof !== false
+      || acceptedSourceFirst.sourcePurityCoversInitialManifest !== true
+      || acceptedSourceFirst.sourcePurityManifestHashMatches !== true
+      || acceptedSourceFirst.sourcePurityFileSetMatchesInitialManifest !== true
+      || rejectedDirtySecondarySourceFirst.accepted !== false
+      || !rejectedDirtySecondarySourceFirst.failedGates.includes('source_first_seed_source_contains_synthi_abi')
+      || !rejectedDirtySecondarySourceFirst.failedGates.includes('source_first_seed_purity_manifest_incomplete')
       || rejectedForgedSourceFirst.accepted !== false
       || rejectedForgedSourceFirst.generatedArtifactPathsInGeneratedNamespace !== false
       || !rejectedForgedSourceFirst.failedGates.includes('source_first_generated_artifact_namespace_unproven')
@@ -5599,9 +5778,12 @@ async function run() {
     );
   }
 
-  const sourcePurityEvidence = assertNoSynthiAbi(source);
   const entryPath = validationProfileEntryPath();
   const initialSourceFiles = sourceFilesForInitialCompile(entryPath, source);
+  const sourcePurityEvidence = assertNoSynthiAbi(source, {
+    entryPath,
+    files: initialSourceFiles,
+  });
   const renderWidth = validationProfileWidth();
   const renderHeight = validationProfileHeight();
 

@@ -1233,6 +1233,7 @@ function sourceFirstIngestionEvidenceFor({
   sidecarHash = hashValue(`${targetId}:sidecar`),
   compileManifestHash = hashValue(`${targetId}:manifest`),
   initialFiles,
+  sourcePurityEvidence = null,
   accepted = true,
 } = {}) {
   const normalizedInitialFiles = initialFiles ?? [{
@@ -1242,7 +1243,48 @@ function sourceFirstIngestionEvidenceFor({
     byteLength: 4096,
     byte_length: 4096,
   }];
+  const normalizedSourcePurityEvidence = sourcePurityEvidence ?? {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
+    accepted: true,
+    noSynthiAbiInSeedSource: true,
+    no_synthi_abi_in_seed_source: true,
+    forbiddenMarkersChecked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+    forbidden_markers_checked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+    forbiddenMarkersFound: [],
+    forbidden_markers_found: [],
+    scannedFiles: normalizedInitialFiles.map((entry) => ({
+      path: entry.path,
+      contentHash: entry.contentHash ?? entry.content_hash,
+      content_hash: entry.contentHash ?? entry.content_hash,
+      byteLength: entry.byteLength ?? entry.byte_length,
+      byte_length: entry.byteLength ?? entry.byte_length,
+      accepted: true,
+      forbiddenMarkersFound: [],
+      forbidden_markers_found: [],
+    })),
+  };
+  normalizedSourcePurityEvidence.purityManifestHash ??=
+    contentHashFor(normalizedSourcePurityEvidence.scannedFiles ?? normalizedSourcePurityEvidence.scanned_files ?? []);
+  normalizedSourcePurityEvidence.purity_manifest_hash ??= normalizedSourcePurityEvidence.purityManifestHash;
+  normalizedSourcePurityEvidence.sourceContentHash ??= sourceHash;
+  normalizedSourcePurityEvidence.source_content_hash ??= sourceHash;
+  const noSynthiAbiInSeedSource =
+    normalizedSourcePurityEvidence.accepted === true
+    && (
+      normalizedSourcePurityEvidence.noSynthiAbiInSeedSource === true
+      || normalizedSourcePurityEvidence.no_synthi_abi_in_seed_source === true
+    );
   const initialManifestHash = contentHashFor(normalizedInitialFiles);
+  const sourcePurityInitialManifestEntries =
+    (normalizedSourcePurityEvidence.scannedFiles ?? normalizedSourcePurityEvidence.scanned_files ?? [])
+      .map((entry) => ({
+        path: entry.path,
+        contentHash: entry.contentHash ?? entry.content_hash,
+        content_hash: entry.contentHash ?? entry.content_hash,
+        byteLength: entry.byteLength ?? entry.byte_length,
+        byte_length: entry.byteLength ?? entry.byte_length,
+      }));
+  const sourcePurityInitialManifestHash = contentHashFor(sourcePurityInitialManifestEntries);
   const effectiveSourceTreeManifestHash = sourceTreeManifestHash
     ?? (sourceAuthority === 'profile_source_files' ? initialManifestHash : null);
   const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson({
@@ -1250,6 +1292,8 @@ function sourceFirstIngestionEvidenceFor({
     entryPath,
     targetId,
     initialManifestHash,
+    sourcePurityManifestHash: normalizedSourcePurityEvidence.purityManifestHash,
+    sourcePurityInitialManifestHash,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -1265,7 +1309,14 @@ function sourceFirstIngestionEvidenceFor({
     sourceAuthority,
     source_authority: sourceAuthority,
     sourceContentHash: sourceHash,
-    noSynthiAbiInSeedSource: true,
+    noSynthiAbiInSeedSource,
+    no_synthi_abi_in_seed_source: noSynthiAbiInSeedSource,
+    sourcePurityEvidence: normalizedSourcePurityEvidence,
+    source_purity_evidence: normalizedSourcePurityEvidence,
+    sourcePurityManifestHash: normalizedSourcePurityEvidence.purityManifestHash,
+    source_purity_manifest_hash: normalizedSourcePurityEvidence.purityManifestHash,
+    sourcePurityInitialManifestHash,
+    source_purity_initial_manifest_hash: sourcePurityInitialManifestHash,
     entryPath,
     seededWorkspacePath: entryPath,
     initialCompileContract: {
@@ -1274,6 +1325,8 @@ function sourceFirstIngestionEvidenceFor({
       initialFiles: normalizedInitialFiles,
       initialManifestHash,
       sourceTreeManifestHash: effectiveSourceTreeManifestHash,
+      sourcePurityManifestHash: normalizedSourcePurityEvidence.purityManifestHash,
+      sourcePurityInitialManifestHash,
       useAiSplit,
       userRequestedAi,
       preferGpuPipeline,
@@ -1299,6 +1352,8 @@ function sourceFirstIngestionEvidenceFor({
       proofId,
       sourceHash,
       initialManifestHash,
+      sourcePurityInitialManifestHash,
+      normalizedSourcePurityEvidence.purityManifestHash,
       effectiveSourceTreeManifestHash,
       sidecarHash,
       compileManifestHash,
@@ -1603,6 +1658,223 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-precompiled-hash-overlap.jso
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1-precompiled-hash-overlap',
     editHash: hashValue('source-edit:hot1-precompiled-hash-overlap'),
+  },
+});
+
+const incompletePurityMainHash = hashValue('flow-incomplete-source-purity:seed-source');
+const incompletePurityHeaderHash = hashValue('flow-incomplete-source-purity:header');
+const incompletePurityInitialFiles = [
+  {
+    path: 'src/main.cpp',
+    contentHash: incompletePurityMainHash,
+    content_hash: incompletePurityMainHash,
+    byteLength: 4096,
+    byte_length: 4096,
+  },
+  {
+    path: 'include/params.hpp',
+    contentHash: incompletePurityHeaderHash,
+    content_hash: incompletePurityHeaderHash,
+    byteLength: 256,
+    byte_length: 256,
+  },
+];
+await writeJson(path.join(visualDir, 'run-mode-hot1-incomplete-source-purity.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-incomplete-source-purity',
+    'gpu-runtime-proof:sha256:synthetic-hot1-incomplete-source-purity',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-incomplete-source-purity',
+  }),
+  targetId: 'flow-incomplete-source-purity',
+  profileId: 'flow-incomplete-source-purity',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-incomplete-source-purity',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-incomplete-source-purity',
+    sourceHash: incompletePurityMainHash,
+    initialFiles: incompletePurityInitialFiles,
+    sourcePurityEvidence: {
+      schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
+      accepted: true,
+      noSynthiAbiInSeedSource: true,
+      no_synthi_abi_in_seed_source: true,
+      forbiddenMarkersChecked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+      forbidden_markers_checked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+      forbiddenMarkersFound: [],
+      forbidden_markers_found: [],
+      scannedFiles: [{
+        path: 'src/main.cpp',
+        contentHash: incompletePurityMainHash,
+        content_hash: incompletePurityMainHash,
+        byteLength: 4096,
+        byte_length: 4096,
+        accepted: true,
+        forbiddenMarkersFound: [],
+        forbidden_markers_found: [],
+      }],
+    },
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-incomplete-source-purity',
+    editHash: hashValue('source-edit:hot1-incomplete-source-purity'),
+  },
+});
+
+const forgedPurityInitialHashMainHash = hashValue('flow-forged-source-purity-initial-hash:seed-source');
+const forgedPurityInitialHashHeaderHash = hashValue('flow-forged-source-purity-initial-hash:header');
+const forgedPurityInitialHashFiles = [
+  {
+    path: 'src/main.cpp',
+    contentHash: forgedPurityInitialHashMainHash,
+    content_hash: forgedPurityInitialHashMainHash,
+    byteLength: 4096,
+    byte_length: 4096,
+  },
+  {
+    path: 'include/params.hpp',
+    contentHash: forgedPurityInitialHashHeaderHash,
+    content_hash: forgedPurityInitialHashHeaderHash,
+    byteLength: 256,
+    byte_length: 256,
+  },
+];
+const forgedPurityInitialHash = contentHashFor(forgedPurityInitialHashFiles);
+const forgedPurityInitialHashEvidence = sourceFirstIngestionEvidenceFor({
+  targetId: 'flow-forged-source-purity-initial-hash',
+  sourceHash: forgedPurityInitialHashMainHash,
+  initialFiles: forgedPurityInitialHashFiles,
+  sourcePurityEvidence: {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
+    accepted: true,
+    noSynthiAbiInSeedSource: true,
+    no_synthi_abi_in_seed_source: true,
+    forbiddenMarkersChecked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+    forbidden_markers_checked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+    forbiddenMarkersFound: [],
+    forbidden_markers_found: [],
+    scannedFiles: [{
+      path: 'src/main.cpp',
+      contentHash: forgedPurityInitialHashMainHash,
+      content_hash: forgedPurityInitialHashMainHash,
+      byteLength: 4096,
+      byte_length: 4096,
+      accepted: true,
+      forbiddenMarkersFound: [],
+      forbidden_markers_found: [],
+    }],
+  },
+  accepted: true,
+});
+forgedPurityInitialHashEvidence.sourcePurityInitialManifestHash = forgedPurityInitialHash;
+forgedPurityInitialHashEvidence.source_purity_initial_manifest_hash = forgedPurityInitialHash;
+forgedPurityInitialHashEvidence.initialCompileContract.sourcePurityInitialManifestHash = forgedPurityInitialHash;
+forgedPurityInitialHashEvidence.initialCompileContract.source_purity_initial_manifest_hash = forgedPurityInitialHash;
+forgedPurityInitialHashEvidence.initial_compile_contract ??= {
+  ...forgedPurityInitialHashEvidence.initialCompileContract,
+};
+forgedPurityInitialHashEvidence.initial_compile_contract.sourcePurityInitialManifestHash = forgedPurityInitialHash;
+forgedPurityInitialHashEvidence.initial_compile_contract.source_purity_initial_manifest_hash = forgedPurityInitialHash;
+await writeJson(path.join(visualDir, 'run-mode-hot1-forged-source-purity-initial-hash.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-forged-source-purity-initial-hash',
+    'gpu-runtime-proof:sha256:synthetic-hot1-forged-source-purity-initial-hash',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-forged-source-purity-initial-hash',
+  }),
+  targetId: 'flow-forged-source-purity-initial-hash',
+  profileId: 'flow-forged-source-purity-initial-hash',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-forged-source-purity-initial-hash',
+  sourceFirstIngestion: forgedPurityInitialHashEvidence,
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-forged-source-purity-initial-hash',
+    editHash: hashValue('source-edit:hot1-forged-source-purity-initial-hash'),
+  },
+});
+
+const extraPurityMainHash = hashValue('flow-extra-source-purity:seed-source');
+const extraPurityInitialFiles = [{
+  path: 'src/main.cpp',
+  contentHash: extraPurityMainHash,
+  content_hash: extraPurityMainHash,
+  byteLength: 4096,
+  byte_length: 4096,
+}];
+await writeJson(path.join(visualDir, 'run-mode-hot1-extra-source-purity.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-extra-source-purity',
+    'gpu-runtime-proof:sha256:synthetic-hot1-extra-source-purity',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-extra-source-purity',
+  }),
+  targetId: 'flow-extra-source-purity',
+  profileId: 'flow-extra-source-purity',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-extra-source-purity',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-extra-source-purity',
+    sourceHash: extraPurityMainHash,
+    initialFiles: extraPurityInitialFiles,
+    sourcePurityEvidence: {
+      schemaVersion: 'synthi.gpu.hmr.agent_split_source_purity.v1',
+      accepted: true,
+      noSynthiAbiInSeedSource: true,
+      no_synthi_abi_in_seed_source: true,
+      forbiddenMarkersChecked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+      forbidden_markers_checked: ['core_on_update', 'gui_on_render', 'device_on_load', 'device_descriptor', 'synthi_gpu_launch'],
+      forbiddenMarkersFound: [],
+      forbidden_markers_found: [],
+      scannedFiles: [
+        {
+          path: 'src/main.cpp',
+          contentHash: extraPurityMainHash,
+          content_hash: extraPurityMainHash,
+          byteLength: 4096,
+          byte_length: 4096,
+          accepted: true,
+          forbiddenMarkersFound: [],
+          forbidden_markers_found: [],
+        },
+        {
+          path: 'tmp/generated-cache.hip',
+          contentHash: hashValue('flow-extra-source-purity:extra-cache'),
+          content_hash: hashValue('flow-extra-source-purity:extra-cache'),
+          byteLength: 1024,
+          byte_length: 1024,
+          accepted: true,
+          forbiddenMarkersFound: [],
+          forbidden_markers_found: [],
+        },
+      ],
+    },
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-extra-source-purity',
+    editHash: hashValue('source-edit:hot1-extra-source-purity'),
   },
 });
 
@@ -7886,6 +8158,52 @@ assert.ok(hashOverlapRunMode.sourceFirstIngestion.failedGates.includes(
 assert.ok(hashOverlapRunMode.reasons.includes('source_first_ingestion_not_accepted'));
 assert.ok(hashOverlapRunMode.reasons.includes(
   'source_first_precompiled_generated_artifact_hash_overlap',
+));
+
+const incompletePurityRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-incomplete-source-purity'
+);
+assert.equal(incompletePurityRunMode?.matrixOutcome, 'unproven');
+assert.equal(incompletePurityRunMode.acceptedForGpuHmr, false);
+assert.equal(incompletePurityRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(incompletePurityRunMode.sourceFirstIngestion.sourcePurityCoversInitialManifest, false);
+assert.ok(incompletePurityRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_seed_purity_manifest_incomplete',
+));
+assert.ok(incompletePurityRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(incompletePurityRunMode.reasons.includes(
+  'source_first_seed_purity_manifest_incomplete',
+));
+
+const forgedPurityInitialHashRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-forged-source-purity-initial-hash'
+);
+assert.equal(forgedPurityInitialHashRunMode?.matrixOutcome, 'unproven');
+assert.equal(forgedPurityInitialHashRunMode.acceptedForGpuHmr, false);
+assert.equal(forgedPurityInitialHashRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(forgedPurityInitialHashRunMode.sourceFirstIngestion.sourcePurityInitialManifestHashMatches, false);
+assert.equal(forgedPurityInitialHashRunMode.sourceFirstIngestion.sourcePurityFileSetMatchesInitialManifest, false);
+assert.ok(forgedPurityInitialHashRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_seed_purity_initial_manifest_hash_mismatch',
+));
+assert.ok(forgedPurityInitialHashRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(forgedPurityInitialHashRunMode.reasons.includes(
+  'source_first_seed_purity_initial_manifest_hash_mismatch',
+));
+
+const extraPurityRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-extra-source-purity'
+);
+assert.equal(extraPurityRunMode?.matrixOutcome, 'unproven');
+assert.equal(extraPurityRunMode.acceptedForGpuHmr, false);
+assert.equal(extraPurityRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(extraPurityRunMode.sourceFirstIngestion.sourcePurityFileSetMatchesInitialManifest, false);
+assert.ok(extraPurityRunMode.sourceFirstIngestion.failedGates.includes(
+  'source_first_seed_purity_file_set_mismatch',
+));
+assert.ok(extraPurityRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(extraPurityRunMode.reasons.includes(
+  'source_first_seed_purity_file_set_mismatch',
 ));
 
 const sourceTreeManifestMismatchRunMode = ledger.rows.find((row) =>

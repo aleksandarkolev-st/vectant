@@ -2732,6 +2732,79 @@ function sourceFirstIngestionFacet(row = {}) {
       ? Number(entry.byteLength ?? entry.byte_length)
       : null,
   })).filter((entry) => entry.path);
+  const sourcePurityScannedFiles = compactObjectList(
+    sourcePurity.scannedFiles
+      ?? sourcePurity.scanned_files
+      ?? supplied.sourcePurityScannedFiles
+      ?? supplied.source_purity_scanned_files,
+  ).map((entry) => ({
+    path: normalizedEvidenceRelPath(
+      entry.path
+        ?? entry.name
+        ?? entry.filename
+        ?? entry.filePath
+        ?? entry.file_path,
+    ),
+    contentHash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    content_hash: firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.hash,
+      entry.sha256,
+    ),
+    byteLength: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+    byte_length: Number.isFinite(Number(entry.byteLength ?? entry.byte_length))
+      ? Number(entry.byteLength ?? entry.byte_length)
+      : null,
+    accepted: firstBool(entry.accepted) === true,
+    forbiddenMarkersFound: compactStringList(entry.forbiddenMarkersFound ?? entry.forbidden_markers_found),
+    forbidden_markers_found: compactStringList(entry.forbiddenMarkersFound ?? entry.forbidden_markers_found),
+  })).filter((entry) => entry.path);
+  const sourcePurityManifestHash = firstText(
+    supplied.sourcePurityManifestHash,
+    supplied.source_purity_manifest_hash,
+    compileContract.sourcePurityManifestHash,
+    compileContract.source_purity_manifest_hash,
+    sourcePurity.purityManifestHash,
+    sourcePurity.purity_manifest_hash,
+  );
+  const sourcePurityInitialManifestEntries = sourcePurityScannedFiles
+    .map((entry) => ({
+      path: entry.path,
+      contentHash: entry.contentHash,
+      content_hash: entry.content_hash,
+      byteLength: entry.byteLength,
+      byte_length: entry.byte_length,
+    }));
+  const suppliedSourcePurityInitialManifestHash = firstText(
+    supplied.sourcePurityInitialManifestHash,
+    supplied.source_purity_initial_manifest_hash,
+    compileContract.sourcePurityInitialManifestHash,
+    compileContract.source_purity_initial_manifest_hash,
+  );
+  const recomputedSourcePurityInitialManifestHash = sourcePurityInitialManifestEntries.length > 0
+    ? `sha256:${sha256Hex(stableJson(sourcePurityInitialManifestEntries))}`
+    : null;
+  const sourcePurityInitialManifestHash =
+    suppliedSourcePurityInitialManifestHash ?? recomputedSourcePurityInitialManifestHash;
+  const sourcePurityInitialManifestHashMatches =
+    contentAddressedSha256(sourcePurityInitialManifestHash)
+    && Boolean(recomputedSourcePurityInitialManifestHash)
+    && sourcePurityInitialManifestHash === recomputedSourcePurityInitialManifestHash;
+  const recomputedSourcePurityManifestHash = sourcePurityScannedFiles.length > 0
+    ? `sha256:${sha256Hex(stableJson(sourcePurityScannedFiles))}`
+    : null;
+  const sourcePurityManifestHashMatches =
+    contentAddressedSha256(sourcePurityManifestHash)
+    && Boolean(recomputedSourcePurityManifestHash)
+    && sourcePurityManifestHash === recomputedSourcePurityManifestHash;
   const initialFilePaths = pathListFromValue(
     compileContract.initialFilePaths
       ?? compileContract.initial_file_paths
@@ -2759,6 +2832,13 @@ function sourceFirstIngestionFacet(row = {}) {
     contentAddressedSha256(initialManifestHash)
     && Boolean(recomputedInitialManifestHash)
     && initialManifestHash === recomputedInitialManifestHash;
+  const sourcePurityFileSetMatchesInitialManifest =
+    contentAddressedSha256(sourcePurityInitialManifestHash)
+    && sourcePurityInitialManifestHashMatches
+    && sourcePurityInitialManifestHash === initialManifestHash;
+  const sourcePurityCoversInitialManifest =
+    sourcePurityFileSetMatchesInitialManifest
+    && sourcePurityScannedFiles.every((purityEntry) => purityEntry.accepted === true);
   const sourceTreeManifestHash = firstText(
     supplied.sourceTreeManifestHash,
     supplied.source_tree_manifest_hash,
@@ -2859,6 +2939,8 @@ function sourceFirstIngestionFacet(row = {}) {
     entryPath,
     targetId,
     initialManifestHash,
+    sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -2885,6 +2967,11 @@ function sourceFirstIngestionFacet(row = {}) {
     userRequestedAi === true ? null : 'source_first_compile_user_requested_ai_missing',
     preferGpuPipeline === true ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
     initialFileEntries.length > 0 ? null : 'source_first_initial_file_manifest_missing',
+    sourcePurityScannedFiles.length > 0 ? null : 'source_first_seed_purity_manifest_missing',
+    sourcePurityCoversInitialManifest ? null : 'source_first_seed_purity_manifest_incomplete',
+    sourcePurityManifestHashMatches ? null : 'source_first_seed_purity_manifest_hash_mismatch',
+    sourcePurityInitialManifestHashMatches ? null : 'source_first_seed_purity_initial_manifest_hash_mismatch',
+    sourcePurityFileSetMatchesInitialManifest ? null : 'source_first_seed_purity_file_set_mismatch',
     initialSourceFilePresent ? null : 'source_first_initial_source_file_missing',
     initialSourceHashMatches ? null : 'source_first_initial_source_hash_mismatch',
     initialManifestHashMatches ? null : 'source_first_initial_manifest_hash_mismatch',
@@ -2934,6 +3021,24 @@ function sourceFirstIngestionFacet(row = {}) {
     entry_path: entryPath,
     noSynthiAbiInSeedSource,
     no_synthi_abi_in_seed_source: noSynthiAbiInSeedSource,
+    sourcePurityManifestHash,
+    source_purity_manifest_hash: sourcePurityManifestHash,
+    sourcePurityInitialManifestHash,
+    source_purity_initial_manifest_hash: sourcePurityInitialManifestHash,
+    recomputedSourcePurityInitialManifestHash,
+    recomputed_source_purity_initial_manifest_hash: recomputedSourcePurityInitialManifestHash,
+    sourcePurityInitialManifestHashMatches,
+    source_purity_initial_manifest_hash_matches: sourcePurityInitialManifestHashMatches,
+    sourcePurityFileSetMatchesInitialManifest,
+    source_purity_file_set_matches_initial_manifest: sourcePurityFileSetMatchesInitialManifest,
+    recomputedSourcePurityManifestHash,
+    recomputed_source_purity_manifest_hash: recomputedSourcePurityManifestHash,
+    sourcePurityManifestHashMatches,
+    source_purity_manifest_hash_matches: sourcePurityManifestHashMatches,
+    sourcePurityCoversInitialManifest,
+    source_purity_covers_initial_manifest: sourcePurityCoversInitialManifest,
+    sourcePurityScannedFiles,
+    source_purity_scanned_files: sourcePurityScannedFiles,
     useAiSplit,
     use_ai_split: useAiSplit,
     userRequestedAi,
