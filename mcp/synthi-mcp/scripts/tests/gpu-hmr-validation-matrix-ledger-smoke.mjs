@@ -290,6 +290,67 @@ function forgedVisualArtifactCasOnlySet(artifacts) {
   return copy;
 }
 
+function forgedAsyncVisualProofJobForVisualArtifacts(artifacts, targetId) {
+  const locators = artifacts.artifactCasLocators ?? artifacts.artifact_cas_locators ?? [];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.async_visual_proof_job.v1',
+    schema_version: 'synthi.gpu_hmr.async_visual_proof_job.v1',
+    eventType: 'proof_pending',
+    event_type: 'proof_pending',
+    proofPending: true,
+    proof_pending: true,
+    proofReady: false,
+    proof_ready: false,
+    accepted: false,
+    acceptedAsAsyncVisualProofJob: true,
+    accepted_as_async_visual_proof_job: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'async_visual_job_manifest_only_not_gpu_hmr_acceptance',
+    proof_authority: 'async_visual_job_manifest_only_not_gpu_hmr_acceptance',
+    createdAtMs: 1782380000000,
+    created_at_ms: 1782380000000,
+    sessionNamespace: targetId,
+    session_namespace: targetId,
+    producer: {
+      name: 'validation_matrix_smoke_fixture',
+      kind: 'visual_proof_worker',
+    },
+    producerSubsystem: 'agent_split_visual_proof',
+    producer_subsystem: 'agent_split_visual_proof',
+    artifactDir: visualDir,
+    artifact_dir: visualDir,
+    casRoot,
+    cas_root: casRoot,
+    request: {
+      before: { casManifest: locators.find((locator) => locator.role === 'before_frame') },
+      after: { casManifest: locators.find((locator) => locator.role === 'after_frame') },
+      tileHashing: true,
+      tileSize: 4,
+    },
+    workerOptions: {
+      allowedRoots: [casRoot],
+      allowedOutputRoots: [visualDir],
+      timeoutMs: 30000,
+    },
+    worker_options: {
+      allowedRoots: [casRoot],
+      allowedOutputRoots: [visualDir],
+      timeoutMs: 30000,
+    },
+    artifactCasLocators: locators,
+    artifact_cas_locators: locators,
+    visualArtifactTransportEvidence: artifacts.visualArtifactTransportEvidence,
+    visual_artifact_transport_evidence: artifacts.visualArtifactTransportEvidence,
+    jobHash: hashValue(`${targetId}:forged-job-hash`),
+    job_hash: hashValue(`${targetId}:forged-job-hash`),
+    jobManifestHash: hashValue(`${targetId}:forged-job-manifest-hash`),
+    job_manifest_hash: hashValue(`${targetId}:forged-job-manifest-hash`),
+  };
+}
+
 function modelProvenance(requestMode, requestedModel) {
   return {
     provider: 'google_gemini',
@@ -1593,6 +1654,42 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-forged-cas.json
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1-source-first-forged-cas',
     editHash: hashValue('source-edit:hot1-source-first-forged-cas'),
+  },
+});
+
+const forgedVisualJobArtifacts = visualArtifactSetWithoutLocalPaths(runModeProofBase.visualArtifacts);
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-forged-visual-job.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-first-forged-visual-job',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-first-forged-visual-job',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-first-forged-visual-job',
+  }),
+  targetId: 'flow-source-first-forged-visual-job',
+  profileId: 'flow-source-first-forged-visual-job',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-first-forged-visual-job',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-first-forged-visual-job',
+  }),
+  visualArtifacts: forgedVisualJobArtifacts,
+  asyncVisualProofJob: forgedAsyncVisualProofJobForVisualArtifacts(
+    forgedVisualJobArtifacts,
+    'flow-source-first-forged-visual-job',
+  ),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-first-forged-visual-job',
+    editHash: hashValue('source-edit:hot1-source-first-forged-visual-job'),
   },
 });
 
@@ -8705,6 +8802,34 @@ assert.ok(sourceFirstCasOnlyRunMode.visual.images.every((image) => image.resolve
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.accepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.workerCasInputAccepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.nativeImageDependencyBound, true);
+
+const forgedSourceFirstVisualJobRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-first-forged-visual-job'
+);
+assert.equal(forgedSourceFirstVisualJobRunMode?.matrixOutcome, 'unproven');
+assert.equal(forgedSourceFirstVisualJobRunMode.visual.accepted, true);
+assert.equal(forgedSourceFirstVisualJobRunMode.visual.allCasLocatorsAccepted, true);
+assert.equal(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.accepted, false);
+assert.equal(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.asyncVisualProofJobPresent, true);
+assert.equal(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.asyncVisualProofJobBinding.present, true);
+assert.equal(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.asyncVisualProofJobBinding.accepted, false);
+assert.equal(
+  forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.asyncVisualProofJobBinding.jobHashMatches,
+  false,
+);
+assert.equal(
+  forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.asyncVisualProofJobBinding.jobManifestHashMatches,
+  false,
+);
+assert.ok(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_proof_job_binding_not_accepted',
+));
+assert.ok(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_proof_job_hash_mismatch',
+));
+assert.ok(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_proof_job_manifest_hash_mismatch',
+));
 
 const forgedSourceFirstCasRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-forged-cas'

@@ -8,6 +8,8 @@ import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs
 import { computeOracleArtifactsFromFiles } from './gpu-hmr-validation-proof-artifact.mjs';
 import {
   evaluateGpuHmrDeterministicVisualMode,
+  GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY,
+  GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION,
   visualEvidenceIsSupplementalOnly,
 } from './gpu-hmr-visual-evidence.mjs';
 import {
@@ -2607,6 +2609,172 @@ function rawAsyncVisualProofJob(row = {}) {
   );
 }
 
+function firstObjectOrNull(...values) {
+  for (const value of values) {
+    if (isObject(value)) return value;
+  }
+  return null;
+}
+
+function asyncVisualProofJobManifestPayload(job = {}) {
+  const workerOptions = firstObjectOrNull(job.workerOptions, job.worker_options) ?? {};
+  const artifactCasLocators = Array.isArray(job.artifactCasLocators)
+    ? job.artifactCasLocators
+    : Array.isArray(job.artifact_cas_locators)
+      ? job.artifact_cas_locators
+      : [];
+  const visualArtifactTransportEvidence = firstObjectOrNull(
+    job.visualArtifactTransportEvidence,
+    job.visual_artifact_transport_evidence,
+  );
+  return {
+    schemaVersion: job.schemaVersion ?? job.schema_version,
+    schema_version: job.schema_version ?? job.schemaVersion,
+    eventType: job.eventType ?? job.event_type,
+    event_type: job.event_type ?? job.eventType,
+    proofPending: job.proofPending ?? job.proof_pending,
+    proof_pending: job.proof_pending ?? job.proofPending,
+    proofReady: job.proofReady ?? job.proof_ready,
+    proof_ready: job.proof_ready ?? job.proofReady,
+    accepted: job.accepted,
+    acceptedAsAsyncVisualProofJob: job.acceptedAsAsyncVisualProofJob ?? job.accepted_as_async_visual_proof_job,
+    accepted_as_async_visual_proof_job: job.accepted_as_async_visual_proof_job ?? job.acceptedAsAsyncVisualProofJob,
+    acceptedForGpuHmr: job.acceptedForGpuHmr ?? job.accepted_for_gpu_hmr,
+    accepted_for_gpu_hmr: job.accepted_for_gpu_hmr ?? job.acceptedForGpuHmr,
+    gpuHmrSuccess: job.gpuHmrSuccess ?? job.gpu_hmr_success,
+    gpu_hmr_success: job.gpu_hmr_success ?? job.gpuHmrSuccess,
+    proofAuthority: job.proofAuthority ?? job.proof_authority,
+    proof_authority: job.proof_authority ?? job.proofAuthority,
+    createdAtMs: job.createdAtMs ?? job.created_at_ms,
+    created_at_ms: job.created_at_ms ?? job.createdAtMs,
+    sessionNamespace: job.sessionNamespace ?? job.session_namespace,
+    session_namespace: job.session_namespace ?? job.sessionNamespace,
+    producer: firstObjectOrNull(job.producer),
+    producerSubsystem: job.producerSubsystem ?? job.producer_subsystem,
+    producer_subsystem: job.producer_subsystem ?? job.producerSubsystem,
+    artifactDir: job.artifactDir ?? job.artifact_dir,
+    artifact_dir: job.artifact_dir ?? job.artifactDir,
+    casRoot: job.casRoot ?? job.cas_root,
+    cas_root: job.cas_root ?? job.casRoot,
+    request: firstObjectOrNull(job.request),
+    workerOptions,
+    worker_options: workerOptions,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
+    visualArtifactTransportEvidence,
+    visual_artifact_transport_evidence: visualArtifactTransportEvidence,
+  };
+}
+
+function recomputedAsyncVisualProofJobHash(job = {}) {
+  return `sha256:${sha256Hex(stableJson(asyncVisualProofJobManifestPayload(job)))}`;
+}
+
+function asyncVisualProofJobBindingFacet(jobValue = {}) {
+  const job = compactObject(jobValue);
+  if (Object.keys(job).length === 0) {
+    return {
+      present: false,
+      accepted: null,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(job.schemaVersion, job.schema_version);
+  const eventType = firstText(job.eventType, job.event_type);
+  const proofAuthority = firstText(job.proofAuthority, job.proof_authority);
+  const jobHash = normalizedArtifactHash(job.jobHash ?? job.job_hash);
+  const jobManifestHash = normalizedArtifactHash(job.jobManifestHash ?? job.job_manifest_hash);
+  const recomputedJobHash = recomputedAsyncVisualProofJobHash(job);
+  const manifestLocator = compactObject(job.jobManifestLocator ?? job.job_manifest_locator);
+  const locatorContentHash = normalizedArtifactHash(manifestLocator.contentHash ?? manifestLocator.content_hash);
+  const artifactCasLocators = compactObjectList(job.artifactCasLocators ?? job.artifact_cas_locators);
+  const transportEvidence = compactObject(
+    job.visualArtifactTransportEvidence
+      ?? job.visual_artifact_transport_evidence,
+  );
+  const jobHashMatches = Boolean(jobHash) && jobHash === recomputedJobHash;
+  const jobManifestHashMatches = Boolean(jobManifestHash) && jobManifestHash === recomputedJobHash;
+  const locatorHashMatches = !locatorContentHash || locatorContentHash === recomputedJobHash;
+  const acceptedAsAsyncVisualProofJob = firstBool(
+    job.acceptedAsAsyncVisualProofJob,
+    job.accepted_as_async_visual_proof_job,
+  );
+  const acceptedForGpuHmr = firstBool(job.acceptedForGpuHmr, job.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(job.gpuHmrSuccess, job.gpu_hmr_success);
+  const proofReady = firstBool(job.proofReady, job.proof_ready);
+  const proofPending = firstBool(job.proofPending, job.proof_pending);
+  const transportAccepted =
+    transportEvidence.accepted === true
+    && transportEvidence.acceptedAsTransportEvidence === true
+    && firstText(transportEvidence.proofAuthority, transportEvidence.proof_authority)
+      === 'transport_integrity_only_not_visual_or_ledger_proof'
+    && firstBool(transportEvidence.acceptedForGpuHmr, transportEvidence.accepted_for_gpu_hmr) === false
+    && firstBool(transportEvidence.gpuHmrSuccess, transportEvidence.gpu_hmr_success) === false;
+  const failedGates = compactStringList([
+    schemaVersion === GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION
+      ? null
+      : 'async_visual_proof_job_schema_mismatch',
+    proofAuthority === GPU_HMR_ASYNC_VISUAL_PROOF_JOB_AUTHORITY
+      ? null
+      : 'async_visual_proof_job_authority_mismatch',
+    eventType === 'proof_pending' ? null : 'async_visual_proof_job_event_not_pending',
+    proofPending === true ? null : 'async_visual_proof_job_pending_flag_missing',
+    proofReady === false ? null : 'async_visual_proof_job_must_remain_manifest_only_pending',
+    job.accepted === false ? null : 'async_visual_proof_job_must_not_be_accepted_as_proof',
+    acceptedAsAsyncVisualProofJob === true ? null : 'async_visual_proof_job_not_accepted_as_job',
+    acceptedForGpuHmr === false ? null : 'async_visual_proof_job_must_not_authorize_gpu_hmr',
+    gpuHmrSuccess === false ? null : 'async_visual_proof_job_must_not_claim_gpu_hmr_success',
+    contentAddressedSha256(jobHash) ? null : 'async_visual_proof_job_hash_missing',
+    contentAddressedSha256(jobManifestHash) ? null : 'async_visual_proof_job_manifest_hash_missing',
+    jobHashMatches ? null : 'async_visual_proof_job_hash_mismatch',
+    jobManifestHashMatches ? null : 'async_visual_proof_job_manifest_hash_mismatch',
+    locatorHashMatches ? null : 'async_visual_proof_job_manifest_locator_hash_mismatch',
+    artifactCasLocators.length >= 2 ? null : 'async_visual_proof_job_artifact_locators_missing',
+    transportAccepted ? null : 'async_visual_proof_job_transport_evidence_not_accepted',
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    schemaVersion,
+    schema_version: schemaVersion,
+    eventType,
+    event_type: eventType,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    jobHash,
+    job_hash: jobHash,
+    jobManifestHash,
+    job_manifest_hash: jobManifestHash,
+    recomputedJobHash,
+    recomputed_job_hash: recomputedJobHash,
+    jobHashMatches,
+    job_hash_matches: jobHashMatches,
+    jobManifestHashMatches,
+    job_manifest_hash_matches: jobManifestHashMatches,
+    locatorContentHash,
+    locator_content_hash: locatorContentHash,
+    locatorHashMatches,
+    locator_hash_matches: locatorHashMatches,
+    acceptedAsAsyncVisualProofJob,
+    accepted_as_async_visual_proof_job: acceptedAsAsyncVisualProofJob,
+    acceptedForGpuHmr,
+    accepted_for_gpu_hmr: acceptedForGpuHmr,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    proofPending,
+    proof_pending: proofPending,
+    proofReady,
+    proof_ready: proofReady,
+    artifactCasLocatorCount: artifactCasLocators.length,
+    artifact_cas_locator_count: artifactCasLocators.length,
+    transportAccepted,
+    transport_accepted: transportAccepted,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function normalizedVisualArtifactRole(value) {
   const role = String(value ?? '').trim().toLowerCase();
   if (role === 'before' || role === 'before_frame' || role === 'baseline_frame') return 'before';
@@ -2836,6 +3004,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const { visualArtifacts, locators, transportEvidence } = rawVisualArtifactTransportEvidence(row);
   const asyncVisualProofJob = rawAsyncVisualProofJob(row);
   const asyncVisualProofJobPresent = Object.keys(asyncVisualProofJob).length > 0;
+  const asyncVisualProofJobBinding = asyncVisualProofJobBindingFacet(asyncVisualProofJob);
   const asyncVisualProofJobPending =
     asyncVisualProofJobPresent
     && firstText(asyncVisualProofJob.eventType, asyncVisualProofJob.event_type) === 'proof_pending';
@@ -2990,6 +3159,10 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     )
       ? 'async_visual_proof_pending_not_ready'
       : null,
+    asyncVisualProofJobPresent && asyncVisualProofJobBinding.accepted !== true
+      ? 'async_visual_proof_job_binding_not_accepted'
+      : null,
+    ...compactStringList(asyncVisualProofJobBinding.failedGates),
     asyncMetricsAccepted ? null : 'async_visual_worker_proof_not_accepted',
     firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
       ? null
@@ -3042,6 +3215,8 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     async_visual_proof_job_pending: asyncVisualProofJobPending,
     asyncVisualProofJobAuthority,
     async_visual_proof_job_authority: asyncVisualProofJobAuthority,
+    asyncVisualProofJobBinding,
+    async_visual_proof_job_binding: asyncVisualProofJobBinding,
     offMainThread: firstBool(worker.offMainThread, worker.off_main_thread),
     off_main_thread: firstBool(worker.offMainThread, worker.off_main_thread),
     workerExecutableHash,
@@ -15099,6 +15274,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     }),
   );
   const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
+  const asyncVisualProofJobBindingAccepted =
+    asyncVisualCasBundle.asyncVisualProofJobPresent !== true
+    || asyncVisualCasBundle.asyncVisualProofJobBinding?.accepted === true;
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';
   const cpuHmrUsed = boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used);
@@ -15135,6 +15313,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noFullRebuild
     && noRestart
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
+    && asyncVisualProofJobBindingAccepted
     && (backend !== 'hiprt' || (
       runtimeProbeInstrumentation.accepted === true
       && hiprtContract.accepted === true
@@ -15164,7 +15343,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noCpuFallback
     && noFullRebuild
     && noRestart
-    && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true);
+    && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
+    && asyncVisualProofJobBindingAccepted;
   const matrixOutcome = acceptedRuntime
     ? 'full_runtime_gpu_hmr'
     : sourceAdaptedVisualProfileAccepted
@@ -15283,6 +15463,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       !requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true
         ? null
         : 'source_first_ingestion_not_accepted',
+      asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_not_accepted',
       backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
@@ -15297,6 +15478,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
       ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
+      ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
     ]) : [],
     openGaps: sourceAdaptedVisualProfileAccepted
       ? ['source_adapted_profile_not_no_shim_gpu_hmr']
@@ -15312,10 +15494,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           requiresSourceFirstIngestion && sourceFirstIngestion.accepted !== true
             ? 'source_first_ingestion_required'
             : null,
+          asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_required',
           ...visual.failedGates,
           ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
           ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
+          ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
         ])
       : [],
   });
