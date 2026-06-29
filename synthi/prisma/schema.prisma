@@ -268,3 +268,411 @@ model ProgramRuntimeEvent {
   @@index([sessionId])
   @@index([createdAt])
 }
+
+model CodeSiteProject {
+  id              String   @id @default(cuid())
+  workspaceSlug   String
+  title           String
+  request         String
+  status          String
+  zonePolicyJson  String
+  controlPlanJson String
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  agentSessions      CodeSiteAgentSession[]
+  executionPlans     CodeSiteExecutionPlan[]
+  mutationLeases     CodeSiteMutationLease[]
+  mutationTxns       CodeSiteMutationTransaction[]
+  assumptions        CodeSiteAssumptionLease[]
+  policyDecisions    CodeSitePolicyDecision[]
+  events             CodeSiteEvent[]
+  incidents          CodeSiteIncident[]
+  inspectionRuns     CodeSiteInspectionRun[]
+  proofBundles       CodeSiteProofBundle[]
+  lineProvenance     CodeSiteLineProvenance[]
+  documents          CodeSiteDocument[]
+  counterfactualRuns CodeSiteCounterfactualRun[]
+  policyDeltas       CodeSitePolicyDelta[]
+  inboxItems         CodeSiteAgentInboxItem[]
+
+  @@index([workspaceSlug])
+  @@index([status])
+}
+
+model CodeSiteMutationZone {
+  id            String   @id @default(cuid())
+  workspaceSlug String
+  zoneKey       String
+  label         String
+  zoneClass     String   @map("class")
+  pathsJson     String
+  rulesJson     String
+  risk          String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([workspaceSlug, zoneKey])
+  @@index([workspaceSlug])
+  @@index([zoneClass])
+}
+
+model CodeSiteAgentSession {
+  id                  String   @id @default(cuid())
+  projectId           String
+  ownerUserId         String
+  agentProvider       String
+  agentRuntime        String?
+  providerSessionRef  String?
+  displayCallsign     String
+  status              String
+  permissionsJson     String
+  redactionPolicyJson String?
+  createdAt           DateTime @default(now())
+  endedAt             DateTime?
+
+  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlans CodeSiteExecutionPlan[]
+  mutationLeases CodeSiteMutationLease[]
+  mutationTxns   CodeSiteMutationTransaction[]
+  inboxItems     CodeSiteAgentInboxItem[]
+
+  @@index([projectId])
+  @@index([ownerUserId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteExecutionPlan {
+  id                  String   @id @default(cuid())
+  projectId           String
+  agentSessionId      String
+  displayCallsign     String
+  mission             String
+  domain              String
+  status              String
+  routeJson           String
+  blockedZonesJson    String
+  abortJson           String
+  requestedToolsJson  String
+  estimatedDurationMs Int?
+  filedAt             DateTime @default(now())
+  closedAt            DateTime?
+
+  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  mutationLeases CodeSiteMutationLease[]
+  inspectionRuns CodeSiteInspectionRun[]
+
+  @@index([projectId])
+  @@index([agentSessionId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteMutationLease {
+  id                       String   @id @default(cuid())
+  projectId                String
+  executionPlanId          String
+  agentSessionId           String
+  displayCallsign          String
+  status                   String
+  leaseJson                String
+  dojoProofRef             String?
+  dojoLicenseRef           String?
+  dojoEvidenceRefsJson     String?
+  dojoLedgerCheckpointHash String?
+  dojoDecisionDigest       String?
+  implementationStatusJson String?
+  issuedAt                 DateTime @default(now())
+  expiresAt                DateTime?
+  revokedAt                DateTime?
+
+  project         CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan   CodeSiteExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  agentSession    CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  events          CodeSiteEvent[]
+  policyDecisions CodeSitePolicyDecision[]
+  mutationTxns    CodeSiteMutationTransaction[]
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([agentSessionId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteMutationTransaction {
+  id                         String   @id @default(cuid())
+  projectId                  String
+  mutationLeaseId            String
+  agentSessionId             String
+  baseSnapshot               String
+  isolation                  String
+  status                     String
+  readSetJson                String
+  observedReadSetJson        String?
+  writeSetJson               String
+  observedWriteSetJson       String?
+  semanticDependencyRefsJson String?
+  invariantsJson             String
+  assumptionRefsJson         String
+  commitDecisionJson         String?
+  proofBundleDigest          String?
+  openedAt                   DateTime @default(now())
+  closedAt                   DateTime?
+
+  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease  CodeSiteMutationLease @relation(fields: [mutationLeaseId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  proofBundles   CodeSiteProofBundle[]
+  lineProvenance CodeSiteLineProvenance[]
+
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([agentSessionId])
+  @@index([status])
+  @@index([openedAt])
+}
+
+model CodeSiteAssumptionLease {
+  id              String   @id @default(cuid())
+  projectId       String
+  ownerSessionId  String
+  displayCallsign String
+  assumptionKey   String
+  dependsOnJson   String
+  usedByJson      String
+  status          String
+  invalidatedBy   String?
+  invalidatedAt   DateTime?
+  createdAt       DateTime @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([ownerSessionId])
+  @@index([assumptionKey])
+  @@index([status])
+}
+
+model CodeSitePolicyDecision {
+  id              String   @id @default(cuid())
+  projectId       String
+  mutationLeaseId String?
+  displayCallsign String?
+  decision        String
+  reasonCodesJson String
+  inputDigest     String
+  decisionJson    String
+  createdAt       DateTime @default(now())
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease CodeSiteMutationLease? @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([displayCallsign])
+  @@index([decision])
+  @@index([createdAt])
+}
+
+model CodeSiteProofBundle {
+  id                    String   @id @default(cuid())
+  projectId             String
+  transactionId         String
+  commitSha             String?
+  readSetDigest         String
+  writeSetDigest        String
+  invariantsJson        String
+  evidenceRefsJson      String
+  dojoEvidenceRefsJson  String?
+  incidentReplayDigest  String?
+  bundleDigest          String
+  createdAt             DateTime @default(now())
+
+  project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([transactionId])
+  @@index([commitSha])
+  @@index([bundleDigest])
+}
+
+model CodeSiteLineProvenance {
+  id                  String   @id @default(cuid())
+  projectId           String
+  transactionId       String
+  filePath            String
+  lineAnchor          String
+  displayCallsign     String
+  reasonRef           String?
+  evidenceRefsJson    String
+  dojoSourceRefsJson  String?
+  proofBundleId       String?
+  processAncestryJson String?
+  promptSummary       String?
+  createdAt           DateTime @default(now())
+
+  project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([transactionId])
+  @@index([filePath])
+  @@index([displayCallsign])
+}
+
+model CodeSiteInspectionRun {
+  id                    String   @id @default(cuid())
+  projectId             String
+  executionPlanId       String?
+  displayCallsign       String
+  status                String
+  changedPathsJson      String
+  inspectionSignalsJson String
+  evidenceRefsJson      String
+  requestedAt           DateTime @default(now())
+  completedAt           DateTime?
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan CodeSiteExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteIncident {
+  id                    String   @id @default(cuid())
+  projectId             String
+  severity              String
+  category              String
+  participantsJson      String
+  affectedZonesJson     String
+  incidentReplayJson    String
+  replayDigest          String?
+  timelineEventRefsJson String?
+  policyDeltaJson       String?
+  evidenceRefsJson      String
+  createdAt             DateTime @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([severity])
+  @@index([category])
+}
+
+model CodeSiteDocument {
+  id          String   @id @default(cuid())
+  projectId   String
+  kind        String
+  status      String
+  title       String
+  bodyJson    String
+  blocking    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  resolvedAt  DateTime?
+
+  project    CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  inboxItems CodeSiteAgentInboxItem[]
+
+  @@index([projectId])
+  @@index([kind])
+  @@index([status])
+}
+
+model CodeSiteEvent {
+  id                  String   @id @default(cuid())
+  projectId           String
+  mutationLeaseId     String?
+  eventType           String
+  displayCallsign     String?
+  actorType           String?
+  actorId             String?
+  detailsJson         String
+  evidenceRefsJson    String?
+  logicalTime         Int?
+  createdAt           DateTime @default(now())
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease CodeSiteMutationLease? @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
+  inboxItems    CodeSiteAgentInboxItem[]
+
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([displayCallsign])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+model CodeSiteAgentInboxItem {
+  id                 String    @id @default(cuid())
+  projectId          String
+  agentSessionId     String
+  recipientUserId    String
+  eventId            String?
+  documentId         String?
+  kind               String
+  requiresResponse   Boolean   @default(false)
+  status             String    @default("pending")
+  redactedPayloadJson String
+  createdAt          DateTime  @default(now())
+  acknowledgedAt     DateTime?
+
+  project      CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSession CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  event        CodeSiteEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  document     CodeSiteDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([agentSessionId])
+  @@index([recipientUserId])
+  @@index([eventId])
+  @@index([status])
+}
+
+model CodeSiteCounterfactualRun {
+  id                    String   @id @default(cuid())
+  projectId             String
+  shadowJobRef          String?
+  baseSnapshot          String
+  universesJson         String
+  arbiterVerdictJson    String?
+  userChoiceJson        String?
+  laterManualEditsJson  String?
+  validityStrength      String
+  evidenceRefsJson      String
+  createdAt             DateTime @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([shadowJobRef])
+  @@index([validityStrength])
+}
+
+model CodeSitePolicyDelta {
+  id                       String   @id @default(cuid())
+  projectId                String
+  learnedFromIncidentsJson String
+  affectedZoneKey          String?
+  ruleCandidateJson        String
+  triggerConditionsJson    String
+  expectedRiskReduction    Float?
+  confidence               Float
+  promotionState           String
+  replayRefsJson           String
+  createdAt                DateTime @default(now())
+  promotedAt               DateTime?
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([affectedZoneKey])
+  @@index([promotionState])
+}
