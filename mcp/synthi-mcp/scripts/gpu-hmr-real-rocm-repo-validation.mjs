@@ -637,6 +637,105 @@ function normalizeRealRocmProofObligations(rawObligations) {
   };
 }
 
+function normalizeRuntimeAdapterRelativePath(value, field) {
+  const raw = optionalProfileString(value, field).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!raw || raw === '.') return '';
+  const parts = raw.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) {
+    throw new Error(`invalid real ROCm profile ${field}: expected relative path without traversal`);
+  }
+  return raw;
+}
+
+function normalizeRealRocmRuntimeAdapter(rawAdapter) {
+  const declared = rawAdapter !== undefined && rawAdapter !== null;
+  const adapter = objectOrEmpty(rawAdapter, 'runtimeAdapter');
+  const enabled = declared
+    ? optionalProfileBoolean(adapter.enabled, 'runtimeAdapter.enabled') ?? true
+    : false;
+  const command = optionalProfileString(
+    adapter.command ?? adapter.shellCommand ?? adapter.shell_command,
+    'runtimeAdapter.command',
+  );
+  if (enabled && !command) {
+    throw new Error('real ROCm runtimeAdapter.enabled=true requires runtimeAdapter.command');
+  }
+  const workingDirectory = normalizeRuntimeAdapterRelativePath(
+    adapter.workingDirectory
+      ?? adapter.working_directory
+      ?? adapter.cwd,
+    'runtimeAdapter.workingDirectory',
+  );
+  const resultPath = normalizeRuntimeAdapterRelativePath(
+    adapter.resultPath
+      ?? adapter.result_path
+      ?? adapter.adapterResultPath
+      ?? adapter.adapter_result_path,
+    'runtimeAdapter.resultPath',
+  );
+  const timeoutMs = optionalProfileNumber(
+    adapter.timeoutMs ?? adapter.timeout_ms,
+    'runtimeAdapter.timeoutMs',
+  );
+  const runWhen = optionalProfileString(
+    adapter.runWhen ?? adapter.run_when,
+    'runtimeAdapter.runWhen',
+  ) || 'after_upstream_run';
+  const allowedRunWhen = new Set(['after_upstream_run']);
+  if (!allowedRunWhen.has(runWhen)) {
+    throw new Error(`unsupported real ROCm runtimeAdapter.runWhen: ${runWhen}`);
+  }
+  const requiresSuccessfulBuild =
+    optionalProfileBoolean(
+      adapter.requiresSuccessfulBuild ?? adapter.requires_successful_build,
+      'runtimeAdapter.requiresSuccessfulBuild',
+    ) ?? true;
+  const requiresSuccessfulRun =
+    optionalProfileBoolean(
+      adapter.requiresSuccessfulRun ?? adapter.requires_successful_run,
+      'runtimeAdapter.requiresSuccessfulRun',
+    ) ?? false;
+  const appendRunLog =
+    optionalProfileBoolean(
+      adapter.appendRunLog ?? adapter.append_run_log,
+      'runtimeAdapter.appendRunLog',
+    ) ?? true;
+  const evidenceRefs = optionalProfileStringList(
+    adapter.evidenceRefs ?? adapter.evidence_refs ?? adapter.evidenceRef ?? adapter.evidence_ref,
+    'runtimeAdapter.evidenceRefs',
+  );
+  const commandHash = command
+    ? `sha256:${createHash('sha256').update(command).digest('hex')}`
+    : null;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_adapter.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_runtime_adapter.v1',
+    declared,
+    enabled,
+    proofAuthority: 'profile_declared_adapter_not_gpu_hmr_success',
+    proof_authority: 'profile_declared_adapter_not_gpu_hmr_success',
+    command,
+    commandHash,
+    command_hash: commandHash,
+    workingDirectory,
+    working_directory: workingDirectory,
+    resultPath,
+    result_path: resultPath,
+    timeoutMs: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
+    timeout_ms: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
+    runWhen,
+    run_when: runWhen,
+    requiresSuccessfulBuild,
+    requires_successful_build: requiresSuccessfulBuild,
+    requiresSuccessfulRun,
+    requires_successful_run: requiresSuccessfulRun,
+    appendRunLog,
+    append_run_log: appendRunLog,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function normalizeRealRocmProfile(rawProfile, source) {
   const raw = objectOrEmpty(rawProfile, 'root');
   const schemaVersion = raw.schemaVersion ?? REAL_ROCM_PROFILE_SCHEMA_VERSION;
@@ -672,6 +771,9 @@ function normalizeRealRocmProfile(rawProfile, source) {
   );
   const externalHeaderPrerequisites = normalizeRealRocmExternalHeaderPrerequisites(
     raw.externalHeaderPrerequisites ?? raw.external_header_prerequisites,
+  );
+  const runtimeAdapter = normalizeRealRocmRuntimeAdapter(
+    raw.runtimeAdapter ?? raw.runtime_adapter,
   );
   return {
     schemaVersion,
@@ -731,6 +833,8 @@ function normalizeRealRocmProfile(rawProfile, source) {
     deviceSidecarContract,
     externalHeaderPrerequisites,
     external_header_prerequisites: externalHeaderPrerequisites,
+    runtimeAdapter,
+    runtime_adapter: runtimeAdapter,
     proofObligations,
     preview: {
       renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
@@ -2421,6 +2525,16 @@ const configuredRuntimeProfileAdapterResultPath =
     'result_path',
   ])
   ?? '';
+const configuredRuntimeAdapterInput = firstJsonObjectEnv([
+  'SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_JSON',
+  'SYNTHI_GPU_HMR_RUNTIME_ADAPTER_JSON',
+]);
+const configuredRuntimeAdapter = configuredRuntimeAdapterInput.value
+  ? normalizeRealRocmRuntimeAdapter(configuredRuntimeAdapterInput.value)
+  : REAL_ROCM_PROFILE.runtimeAdapter;
+const configuredRuntimeAdapterSource =
+  configuredRuntimeAdapterInput.source
+  ?? (REAL_ROCM_PROFILE.runtimeAdapter.declared ? 'profile:runtimeAdapter' : 'none');
 const configuredAppHookContractInput = firstJsonObjectEnv([
   'SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON',
   'SYNTHI_GPU_HMR_APP_HOOK_CONTRACT_JSON',
@@ -2648,6 +2762,8 @@ const CFG = {
   outputOracleRuntimeProfile: configuredOutputOracleRuntimeProfile,
   outputOracleRuntimeProfileSource: configuredOutputOracleRuntimeProfileSource,
   runtimeProfileAdapterResultPath: configuredRuntimeProfileAdapterResultPath,
+  runtimeAdapter: configuredRuntimeAdapter,
+  runtimeAdapterSource: configuredRuntimeAdapterSource,
   outputOracleProfile: configuredOutputOracleProfile,
   appHookContract: configuredAppHookContract,
   appHookContractSource: configuredAppHookContractSource,
@@ -2703,6 +2819,8 @@ const report = {
     app_hook_contract_declared: CFG.appHookContract.declared,
     deviceSidecarContractDeclared: CFG.deviceSidecarContract.declared,
     device_sidecar_contract_declared: CFG.deviceSidecarContract.declared,
+    runtimeAdapterDeclared: CFG.runtimeAdapter.declared,
+    runtime_adapter_declared: CFG.runtimeAdapter.declared,
     proofObligations: CFG.realRocmProfile.proofObligations,
     proof_obligations: CFG.realRocmProfile.proofObligations,
   },
@@ -2759,6 +2877,10 @@ const report = {
   realRocmRuntimeProfileAdapterResult: null,
   runtime_profile_adapter_result: null,
   runtimeProfileAdapterResult: null,
+  real_rocm_runtime_adapter_execution: null,
+  realRocmRuntimeAdapterExecution: null,
+  runtime_adapter_execution: null,
+  runtimeAdapterExecution: null,
   real_rocm_missing_dependency_probe: null,
   realRocmMissingDependencyProbe: null,
   missing_dependency_probe: null,
@@ -2801,6 +2923,8 @@ const report = {
   output_oracle_contract: CFG.outputOracleContract,
   output_oracle_profile: CFG.outputOracleProfile,
   output_oracle_runtime_profile_source: CFG.outputOracleRuntimeProfileSource,
+  runtime_adapter: CFG.runtimeAdapter,
+  runtime_adapter_source: CFG.runtimeAdapterSource,
   real_rocm_profile_proof_obligations: null,
   realRocmProfileProofObligations: null,
   app_hook_contract: CFG.appHookContract,
@@ -3256,11 +3380,44 @@ function runtimeProfileAdapterStrictSummary(result = {}) {
   };
 }
 
+function runtimeProfileAdapterBoundaryLines(result = {}) {
+  const rawLines = [
+    ...(Array.isArray(result.runtimeBoundaryLines) ? result.runtimeBoundaryLines : []),
+    ...(Array.isArray(result.runtime_boundary_lines) ? result.runtime_boundary_lines : []),
+    ...(Array.isArray(result.adapterRuntimeBoundaryLines) ? result.adapterRuntimeBoundaryLines : []),
+    ...(Array.isArray(result.adapter_runtime_boundary_lines) ? result.adapter_runtime_boundary_lines : []),
+    ...(Array.isArray(result.runtimeEvents) ? result.runtimeEvents : []),
+    ...(Array.isArray(result.runtime_events) ? result.runtime_events : []),
+  ];
+  return compactStringList(rawLines.map((entry) => {
+    if (typeof entry === 'string') return entry;
+    if (entry && typeof entry === 'object') {
+      return stringField(entry, ['line', 'runtimeBoundaryLine', 'runtime_boundary_line']);
+    }
+    return '';
+  })).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+}
+
+function runtimeProfileAdapterAppHookContract(result = {}) {
+  const candidate = result.appHookContract
+    ?? result.app_hook_contract
+    ?? result.runtimeAppHookContract
+    ?? result.runtime_app_hook_contract
+    ?? null;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+  try {
+    const normalized = normalizeRealRocmAppHookContract(candidate);
+    return normalized.declared ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
 async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
     report.evidence = {};
   }
-  const declaredPath = CFG.runtimeProfileAdapterResultPath;
+  const declaredPath = CFG.runtimeProfileAdapterResultPath || CFG.runtimeAdapter?.resultPath || '';
   const declared = Boolean(declaredPath);
   const runtimeProfileId = stringField(runtimeProfile, ['profileId', 'profile_id', 'id']);
   const base = {
@@ -3323,14 +3480,28 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     blockingGaps.push('runtime_profile_adapter_result_schema_mismatch');
   }
   const strictSummary = runtimeProfileAdapterStrictSummary(parsed ?? {});
+  const adapterRuntimeBoundaryLines = runtimeProfileAdapterBoundaryLines(parsed ?? {});
+  const adapterAppHookContract = runtimeProfileAdapterAppHookContract(parsed ?? {});
   if (parsed && strictSummary.strictRuntimeProofAccepted !== true) {
     blockingGaps.push('runtime_profile_adapter_strict_runtime_proof_not_accepted');
+  }
+  if (parsed && (
+    parsed.acceptedForGpuHmr === true
+    || parsed.accepted_for_gpu_hmr === true
+    || parsed.gpuHmrSuccess === true
+    || parsed.gpu_hmr_success === true
+    || parsed.canSatisfyRuntimeProof === true
+    || parsed.can_satisfy_runtime_proof === true
+  )) {
+    blockingGaps.push('runtime_profile_adapter_result_claimed_runtime_authority');
   }
   const evidenceRefs = compactStringList([
     rawSha256,
     strictSummary.adapterResultHash,
     strictSummary.strictRuntimeProofId,
     strictSummary.proofLedgerId,
+    adapterRuntimeBoundaryLines.length > 0 ? 'runtime-profile-adapter-boundary-lines' : null,
+    adapterAppHookContract?.contractHash ?? adapterAppHookContract?.contract_hash ?? null,
   ]);
   const facet = {
     ...base,
@@ -3347,6 +3518,12 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     readError,
     read_error: readError,
     ...strictSummary,
+    adapterRuntimeBoundaryLineCount: adapterRuntimeBoundaryLines.length,
+    adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLines.length,
+    adapterRuntimeBoundaryLines,
+    adapter_runtime_boundary_lines: adapterRuntimeBoundaryLines,
+    adapterAppHookContract: adapterAppHookContract,
+    adapter_app_hook_contract: adapterAppHookContract,
     acceptedAsRefusalEvidence: blockingGaps.length > 0,
     accepted_as_refusal_evidence: blockingGaps.length > 0,
     blockingGaps,
@@ -3368,6 +3545,291 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     'runtime profile adapter result bridge',
     blockingGaps.length === 0 ? 'pass' : 'warn',
     `status=${facet.status} strict=${facet.strict_runtime_proof_accepted} gaps=${blockingGaps.join(',') || 'none'}`,
+  );
+  return facet;
+}
+
+function runtimeAdapterWorkerDirectory(adapter = CFG.runtimeAdapter) {
+  const relative = adapter?.workingDirectory || CFG.buildSubdir || '';
+  return relative ? `${CFG.workerRepoPath}/${relative}` : CFG.workerRepoPath;
+}
+
+function runtimeAdapterMetric(timings, key) {
+  const escaped = String(key ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`\\b${escaped}=([^\\s]+)\\b`).exec(String(timings ?? ''));
+  return match?.[1] ?? null;
+}
+
+function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
+  const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
+  const declared = adapter.declared === true;
+  const enabled = adapter.enabled === true;
+  const rawStatus = runtimeAdapterMetric(timings, 'runtime_adapter_status');
+  const exitCodeText = runtimeAdapterMetric(timings, 'runtime_adapter_exit_code');
+  const skipReason = runtimeAdapterMetric(timings, 'runtime_adapter_skip_reason');
+  const elapsedMsText = runtimeAdapterMetric(timings, 'runtime_adapter_ms')
+    ?? runtimeAdapterMetric(timings, 'runtime_adapter_elapsed_ms');
+  const adapterLines = evidenceLines(
+    runLog,
+    /\[synthi-runtime-adapter\]|\[gpu-runtime-boundary\]/i,
+  );
+  const runtimeBoundaryLineCount = adapterLines.filter((line) =>
+    /\[gpu-runtime-boundary\]/i.test(line)
+  ).length;
+  const blockingGaps = [];
+  let status = 'runtime_adapter_not_declared';
+  if (declared && !enabled) {
+    status = 'runtime_adapter_disabled';
+  } else if (declared && rawStatus === 'pass') {
+    status = 'runtime_adapter_executed';
+  } else if (declared && rawStatus === 'failed') {
+    status = 'runtime_adapter_failed';
+    blockingGaps.push('runtime_adapter_command_failed');
+  } else if (declared && rawStatus === 'skipped') {
+    status = 'runtime_adapter_skipped';
+    blockingGaps.push(`runtime_adapter_skipped:${proofSchedulingGapToken(skipReason || 'unknown')}`);
+  } else if (declared && enabled) {
+    status = 'runtime_adapter_unobserved';
+    blockingGaps.push('runtime_adapter_execution_not_observed');
+  }
+  if (declared && enabled && runtimeBoundaryLineCount === 0) {
+    blockingGaps.push('runtime_adapter_runtime_boundary_evidence_missing');
+  }
+  const elapsedMs = Number(elapsedMsText);
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    proofAuthority: 'adapter_execution_evidence_only_not_runtime_authority',
+    proof_authority: 'adapter_execution_evidence_only_not_runtime_authority',
+    declared,
+    enabled,
+    source: CFG.runtimeAdapterSource,
+    adapterCommandHash: adapter.commandHash ?? null,
+    adapter_command_hash: adapter.commandHash ?? null,
+    workingDirectory: adapter.workingDirectory || CFG.buildSubdir || '',
+    working_directory: adapter.workingDirectory || CFG.buildSubdir || '',
+    resultPath: adapter.resultPath || null,
+    result_path: adapter.resultPath || null,
+    timeoutMs: adapter.timeoutMs ?? null,
+    timeout_ms: adapter.timeoutMs ?? null,
+    requiresSuccessfulBuild: adapter.requiresSuccessfulBuild !== false,
+    requires_successful_build: adapter.requiresSuccessfulBuild !== false,
+    requiresSuccessfulRun: adapter.requiresSuccessfulRun === true,
+    requires_successful_run: adapter.requiresSuccessfulRun === true,
+    status,
+    rawStatus,
+    raw_status: rawStatus,
+    exitCodeText,
+    exit_code_text: exitCodeText,
+    skipReason: skipReason || null,
+    skip_reason: skipReason || null,
+    elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    elapsed_ms: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    runtimeBoundaryLineCount,
+    runtime_boundary_line_count: runtimeBoundaryLineCount,
+    adapterLogLineCount: adapterLines.length,
+    adapter_log_line_count: adapterLines.length,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      ...(adapter.evidenceRefs ?? []),
+      adapter.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
+      adapterLines.length > 0 ? `runtime-adapter-log:${CFG.slug}` : null,
+    ]),
+    evidence_refs: compactStringList([
+      ...(adapter.evidenceRefs ?? []),
+      adapter.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
+      adapterLines.length > 0 ? `runtime-adapter-log:${CFG.slug}` : null,
+    ]),
+    logLines: adapterLines.slice(-20),
+    log_lines: adapterLines.slice(-20),
+  };
+  facet.executionHash = sha256Text(stableJson({
+    ...facet,
+    executionHash: undefined,
+    execution_hash: undefined,
+  }));
+  facet.execution_hash = facet.executionHash;
+  report.real_rocm_runtime_adapter_execution = facet;
+  report.realRocmRuntimeAdapterExecution = facet;
+  report.runtime_adapter_execution = facet;
+  report.runtimeAdapterExecution = facet;
+  report.evidence.real_rocm_runtime_adapter_execution = facet;
+  return facet;
+}
+
+function latestUpstreamGpuBuildRunPhase() {
+  return report.phases
+    .filter((phase) => phase?.name === 'upstream_gpu_build_run')
+    .at(-1) ?? null;
+}
+
+function runtimeAdapterSkipReasonForPhase(adapter = CFG.runtimeAdapter, phase = latestUpstreamGpuBuildRunPhase()) {
+  if (!adapter?.declared) return 'runtime_adapter_not_declared';
+  if (adapter.enabled !== true) return 'runtime_adapter_disabled';
+  if (!phase) return 'upstream_phase_missing';
+  const timings = String(phase.timings ?? '');
+  const configureStatus = parseLifecycleExitCodeText(timings, 'configure') ?? 'unknown';
+  const postConfigureStatus = parseLifecycleExitCodeText(timings, 'post_configure') ?? '0';
+  const buildStatus = parseLifecycleExitCodeText(timings, 'build') ?? 'unknown';
+  const runStatus = parseLifecycleExitCodeText(timings, 'run') ?? 'unknown';
+  if (lifecycleExitCodeFailed(configureStatus)) return 'configure_failed';
+  if (lifecycleExitCodeFailed(postConfigureStatus)) return 'post_configure_failed';
+  if (adapter.requiresSuccessfulBuild !== false && buildStatus !== '0') return 'build_not_successful';
+  if (adapter.requiresSuccessfulRun === true && runStatus !== '0') return 'run_not_successful';
+  return null;
+}
+
+async function executeRuntimeAdapter() {
+  const adapter = CFG.runtimeAdapter;
+  if (!adapter?.declared || adapter.enabled !== true) {
+    const facet = runtimeAdapterExecutionFacet({
+      timings: [
+        `runtime_adapter_status=${adapter?.declared ? 'disabled' : 'not-declared'}`,
+        'runtime_adapter_exit_code=not-run',
+        `runtime_adapter_skip_reason=${adapter?.declared ? 'runtime_adapter_disabled' : 'runtime_adapter_not_declared'}`,
+        'runtime_adapter_ms=0',
+      ].join('\n'),
+      runLog: report.logs.upstream_run ?? '',
+    });
+    record(
+      'real ROCm runtime adapter execution',
+      'skip',
+      `status=${facet.status}`,
+    );
+    return facet;
+  }
+  const skipReason = runtimeAdapterSkipReasonForPhase(adapter);
+  if (skipReason) {
+    const facet = runtimeAdapterExecutionFacet({
+      timings: [
+        'runtime_adapter_status=skipped',
+        'runtime_adapter_exit_code=skipped',
+        `runtime_adapter_skip_reason=${proofSchedulingGapToken(skipReason)}`,
+        'runtime_adapter_ms=0',
+      ].join('\n'),
+      runLog: report.logs.upstream_run ?? '',
+    });
+    record(
+      'real ROCm runtime adapter execution',
+      'warn',
+      `status=${facet.status} reason=${skipReason}`,
+    );
+    return facet;
+  }
+  const access = runtimeWorkerContainerAccess();
+  if (!access.available) {
+    const facet = runtimeAdapterExecutionFacet({
+      timings: [
+        'runtime_adapter_status=failed',
+        'runtime_adapter_exit_code=127',
+        `runtime_adapter_skip_reason=${proofSchedulingGapToken(access.reason || 'worker_unavailable')}`,
+        'runtime_adapter_ms=0',
+      ].join('\n'),
+      runLog: report.logs.upstream_run ?? '',
+    });
+    record(
+      'real ROCm runtime adapter execution',
+      'warn',
+      `status=${facet.status} reason=${access.reason}`,
+    );
+    return facet;
+  }
+  const runtimeAdapterId = cleanIdentifier(`${CFG.realRocmProfile.id}-runtime-adapter`);
+  const commandHash = adapter.commandHash || `sha256:${createHash('sha256').update(adapter.command).digest('hex')}`;
+  const workingDirectory = runtimeAdapterWorkerDirectory(adapter);
+  const timeoutSeconds = Math.max(1, Math.ceil(Number(adapter.timeoutMs ?? 300000) / 1000));
+  const runLogPath = `${CFG.workerTempDir}/run.log`;
+  const adapterLogPath = adapter.appendRunLog === false
+    ? `${CFG.workerTempDir}/runtime-adapter.log`
+    : runLogPath;
+  const script = `
+set +e
+runtime_session="pid$$-${CFG.slug}"
+adapter_started=$(date +%s%3N)
+adapter_status=started
+adapter_exit_code=0
+adapter_skip_reason=none
+mkdir -p ${shQuote(CFG.workerTempDir)}
+touch ${shQuote(runLogPath)}
+printf '\\n[synthi-runtime-adapter] id=%s status=started command_hash=%s cwd=%s runtime_session=%s result_path=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(commandHash)} ${shQuote(workingDirectory)} "$runtime_session" ${shQuote(adapter.resultPath || 'none')} >> ${shQuote(adapterLogPath)}
+if [ ! -d ${shQuote(workingDirectory)} ]; then
+  adapter_status=failed
+  adapter_exit_code=127
+  adapter_skip_reason=runtime_adapter_working_directory_missing
+  printf '[synthi-runtime-adapter] id=%s status=failed exit_code=127 reason=runtime_adapter_working_directory_missing cwd=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(workingDirectory)} >> ${shQuote(adapterLogPath)}
+else
+  (
+    cd ${shQuote(workingDirectory)}
+    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER=1
+    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_ID=${shQuote(runtimeAdapterId)}
+    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_COMMAND_HASH=${shQuote(commandHash)}
+    export SYNTHI_REAL_ROCM_RUNTIME_SESSION="$runtime_session"
+    export SYNTHI_REAL_ROCM_WORKER_REPO_PATH=${shQuote(CFG.workerRepoPath)}
+    export SYNTHI_REAL_ROCM_BUILD_DIR=${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}/build`)}
+    export SYNTHI_REAL_ROCM_TARGET=${shQuote(CFG.targetName)}
+    export SYNTHI_REAL_ROCM_SLUG=${shQuote(CFG.slug)}
+    export SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH=${shQuote(WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH)}
+    if command -v timeout >/dev/null 2>&1; then
+      timeout ${timeoutSeconds} sh -lc ${shQuote(adapter.command)}
+    else
+      sh -lc ${shQuote(adapter.command)}
+    fi
+  ) >> ${shQuote(adapterLogPath)} 2>&1
+  adapter_exit_code=$?
+  if [ "$adapter_exit_code" = "0" ]; then
+    adapter_status=pass
+  else
+    adapter_status=failed
+    adapter_skip_reason=runtime_adapter_command_failed
+  fi
+fi
+adapter_finished=$(date +%s%3N)
+adapter_elapsed_ms=$((adapter_finished-adapter_started))
+printf '[synthi-runtime-adapter] id=%s status=%s exit_code=%s skip_reason=%s elapsed_ms=%s command_hash=%s\\n' ${shQuote(runtimeAdapterId)} "$adapter_status" "$adapter_exit_code" "$adapter_skip_reason" "$adapter_elapsed_ms" ${shQuote(commandHash)} >> ${shQuote(adapterLogPath)}
+printf 'runtime_adapter_status=%s\\nruntime_adapter_exit_code=%s\\nruntime_adapter_skip_reason=%s\\nruntime_adapter_ms=%s\\n' "$adapter_status" "$adapter_exit_code" "$adapter_skip_reason" "$adapter_elapsed_ms"
+exit 0
+`;
+  const timings = await execText(
+    'docker',
+    ['exec', access.workerContainer, 'sh', '-lc', script],
+    Number(adapter.timeoutMs ?? 300000) + 30000,
+    false,
+  ) ?? [
+    'runtime_adapter_status=failed',
+    'runtime_adapter_exit_code=timeout',
+    'runtime_adapter_skip_reason=runtime_adapter_execution_unavailable',
+    'runtime_adapter_ms=0',
+  ].join('\n');
+  const runLog = await execText(
+    'docker',
+    ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(runLogPath)} 2>/dev/null || true`],
+    30000,
+    false,
+  ) ?? '';
+  const adapterOnlyLog = adapter.appendRunLog === false
+    ? await execText(
+      'docker',
+      ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(adapterLogPath)} 2>/dev/null || true`],
+      30000,
+      false,
+    ) ?? ''
+    : '';
+  report.logs.upstream_run = compactStringList([runLog, adapterOnlyLog]).join('\n');
+  const facet = runtimeAdapterExecutionFacet({
+    timings,
+    runLog: report.logs.upstream_run,
+  });
+  record(
+    'real ROCm runtime adapter execution',
+    facet.status === 'runtime_adapter_executed' ? 'pass' : 'warn',
+    `status=${facet.status} boundary_lines=${facet.runtime_boundary_line_count} gaps=${facet.blocking_gaps.join(',') || 'none'}`,
   );
   return facet;
 }
@@ -14834,6 +15296,8 @@ async function selfCheckRuntimeDispatchEvidence() {
   }
   const adapterResultSelfCheckDir = path.join(LOG_DIR, 'runtime-profile-adapter-result-self-check');
   const adapterResultSelfCheckPath = path.join(adapterResultSelfCheckDir, 'adapter-result.json');
+  const adapterRuntimeBoundaryLine =
+    `[gpu-runtime-boundary] artifact_transport runtime_session=pid123-self-check generation=2 artifact_hash=sha256:${'a'.repeat(64)} artifact_bytes=4 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:sha256:${'a'.repeat(64)} ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok`;
   const adapterResultSelfCheck = {
     schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
     profileId: 'self-check-runtime-profile',
@@ -14850,6 +15314,22 @@ async function selfCheckRuntimeDispatchEvidence() {
     proof_ledger_id: `gpu-ledger-proof:sha256:${'d'.repeat(64)}`,
     resultHash: `sha256:${'e'.repeat(64)}`,
     result_hash: `sha256:${'e'.repeat(64)}`,
+    runtimeBoundaryLines: [adapterRuntimeBoundaryLine],
+    runtime_boundary_lines: [adapterRuntimeBoundaryLine],
+    appHookContract: {
+      artifactTransport: { evidenceRefs: ['runtime_artifact_transport'] },
+      epochPublication: { evidenceRefs: ['runtime_epoch_swap'] },
+      dispatchTrace: { evidenceRefs: ['runtime_dispatch'] },
+      hostIdentity: { evidenceRefs: ['runtime_host_identity'] },
+      outputOracle: { evidenceRefs: ['runtime_output_oracle'] },
+    },
+    app_hook_contract: {
+      artifact_transport: { evidence_refs: ['runtime_artifact_transport'] },
+      epoch_publication: { evidence_refs: ['runtime_epoch_swap'] },
+      dispatch_trace: { evidence_refs: ['runtime_dispatch'] },
+      host_identity: { evidence_refs: ['runtime_host_identity'] },
+      output_oracle: { evidence_refs: ['runtime_output_oracle'] },
+    },
     blockingGaps: [],
     blocking_gaps: [],
   };
@@ -14857,6 +15337,11 @@ async function selfCheckRuntimeDispatchEvidence() {
   const savedRuntimeProfileAdapterResultFacet = report.real_rocm_runtime_profile_adapter_result;
   const savedRuntimeProfileAdapterResultEvidence =
     report.evidence?.real_rocm_runtime_profile_adapter_result;
+  const savedRuntimeAdapter = CFG.runtimeAdapter;
+  const savedRuntimeAdapterSource = CFG.runtimeAdapterSource;
+  const savedRuntimeAdapterExecution = report.real_rocm_runtime_adapter_execution;
+  const savedRuntimeAdapterExecutionEvidence =
+    report.evidence?.real_rocm_runtime_adapter_execution;
   try {
     await mkdir(adapterResultSelfCheckDir, { recursive: true });
     await writeFile(
@@ -14873,19 +15358,100 @@ async function selfCheckRuntimeDispatchEvidence() {
       || importedAdapterResult.strictRuntimeProofAccepted !== true
       || importedAdapterResult.acceptedForGpuHmr !== false
       || importedAdapterResult.canSatisfyRuntimeProof !== false
+      || importedAdapterResult.adapterRuntimeBoundaryLineCount !== 1
+      || importedAdapterResult.adapterAppHookContract?.declared !== true
       || importedAdapterResult.blockingGaps.length !== 0
     ) {
       throw new Error('runtime profile adapter result bridge self-check failed');
     }
+    await writeFile(
+      adapterResultSelfCheckPath,
+      `${JSON.stringify({
+        ...adapterResultSelfCheck,
+        acceptedForGpuHmr: true,
+        accepted_for_gpu_hmr: true,
+        gpuHmrSuccess: true,
+        gpu_hmr_success: true,
+        canSatisfyRuntimeProof: true,
+        can_satisfy_runtime_proof: true,
+      }, null, 2)}\n`,
+    );
+    const forgedAdapterResult = await collectRuntimeProfileAdapterResultBridge({
+      profileId: 'self-check-runtime-profile',
+    });
+    if (
+      forgedAdapterResult.status !== 'runtime_profile_adapter_result_refusal_evidence'
+      || !forgedAdapterResult.blockingGaps.includes(
+        'runtime_profile_adapter_result_claimed_runtime_authority',
+      )
+      || forgedAdapterResult.acceptedForGpuHmr !== false
+      || forgedAdapterResult.canSatisfyRuntimeProof !== false
+    ) {
+      throw new Error('runtime profile adapter result bridge accepted forged authority');
+    }
+    CFG.runtimeAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      command: 'printf adapter-self-check',
+      workingDirectory: '.',
+      evidenceRefs: ['adapter:self-check'],
+    });
+    CFG.runtimeAdapterSource = 'self-check';
+    const adapterNoBoundaryFacet = runtimeAdapterExecutionFacet({
+      timings: [
+        'runtime_adapter_status=pass',
+        'runtime_adapter_exit_code=0',
+        'runtime_adapter_skip_reason=none',
+        'runtime_adapter_ms=5',
+      ].join('\n'),
+      runLog: '[synthi-runtime-adapter] id=self-check status=pass',
+    });
+    if (
+      adapterNoBoundaryFacet.status !== 'runtime_adapter_executed'
+      || !adapterNoBoundaryFacet.blockingGaps.includes(
+        'runtime_adapter_runtime_boundary_evidence_missing',
+      )
+    ) {
+      throw new Error('runtime adapter execution facet failed to require runtime boundary evidence');
+    }
+    const adapterBoundaryFacet = runtimeAdapterExecutionFacet({
+      timings: [
+        'runtime_adapter_status=pass',
+        'runtime_adapter_exit_code=0',
+        'runtime_adapter_skip_reason=none',
+        'runtime_adapter_ms=5',
+      ].join('\n'),
+      runLog: [
+        '[synthi-runtime-adapter] id=self-check status=started',
+        adapterRuntimeBoundaryLine,
+        '[synthi-runtime-adapter] id=self-check status=pass',
+      ].join('\n'),
+    });
+    if (
+      adapterBoundaryFacet.status !== 'runtime_adapter_executed'
+      || adapterBoundaryFacet.runtimeBoundaryLineCount !== 1
+      || adapterBoundaryFacet.acceptedForGpuHmr !== false
+      || adapterBoundaryFacet.canSatisfyRuntimeProof !== false
+      || adapterBoundaryFacet.blockingGaps.length !== 0
+    ) {
+      throw new Error('runtime adapter execution facet rejected complete boundary evidence');
+    }
   } finally {
     CFG.runtimeProfileAdapterResultPath = savedRuntimeProfileAdapterResultPath;
+    CFG.runtimeAdapter = savedRuntimeAdapter;
+    CFG.runtimeAdapterSource = savedRuntimeAdapterSource;
     report.real_rocm_runtime_profile_adapter_result = savedRuntimeProfileAdapterResultFacet;
     report.realRocmRuntimeProfileAdapterResult = savedRuntimeProfileAdapterResultFacet;
     report.runtime_profile_adapter_result = savedRuntimeProfileAdapterResultFacet;
     report.runtimeProfileAdapterResult = savedRuntimeProfileAdapterResultFacet;
+    report.real_rocm_runtime_adapter_execution = savedRuntimeAdapterExecution;
+    report.realRocmRuntimeAdapterExecution = savedRuntimeAdapterExecution;
+    report.runtime_adapter_execution = savedRuntimeAdapterExecution;
+    report.runtimeAdapterExecution = savedRuntimeAdapterExecution;
     if (report.evidence) {
       report.evidence.real_rocm_runtime_profile_adapter_result =
         savedRuntimeProfileAdapterResultEvidence;
+      report.evidence.real_rocm_runtime_adapter_execution =
+        savedRuntimeAdapterExecutionEvidence;
     }
   }
   const parsedCmakeArgs = parseStringArrayEnv(
@@ -18265,13 +18831,36 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     scopedWorkerLogs,
     scopedWorkerEvidence,
     upstreamRunEvidence,
-    runtimeEvidence: workerEvidence,
+    runtimeEvidence: logRuntimeEvidence,
   } = runtimeEvidenceFromValidationLogs({
     workerLogs,
     upstreamRunLog: report.logs.upstream_run,
     slug: CFG.slug,
   });
-  const runtimeScope = runtimeEvidenceScope(scopedWorkerLogs, upstreamRunEvidence);
+  const adapterRuntimeBoundaryLines = [
+    ...(Array.isArray(report.real_rocm_runtime_profile_adapter_result?.adapter_runtime_boundary_lines)
+      ? report.real_rocm_runtime_profile_adapter_result.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(report.real_rocm_runtime_profile_adapter_result?.adapterRuntimeBoundaryLines)
+      ? report.real_rocm_runtime_profile_adapter_result.adapterRuntimeBoundaryLines
+      : []),
+  ];
+  const workerEvidence = compactStringList([
+    ...logRuntimeEvidence,
+    ...adapterRuntimeBoundaryLines,
+  ]);
+  const baseRuntimeScope = runtimeEvidenceScope(scopedWorkerLogs, upstreamRunEvidence);
+  const adapterRuntimeBoundaryObserved = adapterRuntimeBoundaryLines.length > 0;
+  const runtimeScope = {
+    ...baseRuntimeScope,
+    observed: baseRuntimeScope.observed || adapterRuntimeBoundaryObserved,
+    adapterRuntimeBoundaryObserved,
+    adapter_runtime_boundary_observed: adapterRuntimeBoundaryObserved,
+    scopeKinds: compactStringList([
+      ...baseRuntimeScope.scopeKinds,
+      adapterRuntimeBoundaryObserved ? 'runtime-profile-adapter-result' : null,
+    ]),
+  };
   const unscopedWorkerEvidence = evidenceLines(
     workerLogs,
     RUNTIME_EVIDENCE_PATTERN,
@@ -18353,6 +18942,8 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       runtime_evidence_scope_observed: runtimeScope.observed,
       runtime_evidence_scope_kinds: runtimeScope.scopeKinds,
       upstream_run_evidence_observed: runtimeScope.upstreamRunEvidenceObserved,
+      adapter_runtime_boundary_observed: runtimeScope.adapter_runtime_boundary_observed,
+      adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLines.length,
     },
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
@@ -18756,8 +19347,29 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeHostPreservation,
     proofArtifactRecords,
   });
+  const adapterAppHookContract =
+    report.real_rocm_runtime_profile_adapter_result?.adapter_app_hook_contract
+    ?? report.real_rocm_runtime_profile_adapter_result?.adapterAppHookContract
+    ?? null;
+  const effectiveAppHookContract =
+    CFG.appHookContract?.declared === true
+      ? CFG.appHookContract
+      : adapterAppHookContract ?? CFG.appHookContract;
+  report.evidence.real_rocm_effective_app_hook_contract_source = {
+    schemaVersion: 'synthi.real_rocm.effective_app_hook_contract_source.v1',
+    schema_version: 'synthi.real_rocm.effective_app_hook_contract_source.v1',
+    source: CFG.appHookContract?.declared === true
+      ? CFG.appHookContractSource
+      : adapterAppHookContract
+        ? 'runtime_profile_adapter_result'
+        : 'none',
+    adapterContractUsed: CFG.appHookContract?.declared !== true && Boolean(adapterAppHookContract),
+    adapter_contract_used: CFG.appHookContract?.declared !== true && Boolean(adapterAppHookContract),
+    proofAuthority: 'contract_source_selection_not_gpu_hmr_success',
+    proof_authority: 'contract_source_selection_not_gpu_hmr_success',
+  };
   refreshRealRocmRuntimeProofObligationFacets({
-    appHookContract: CFG.appHookContract,
+    appHookContract: effectiveAppHookContract,
     profileProofObligations: report.real_rocm_profile_proof_obligations,
     nativeBoundary: report.native_rocm_launch_boundary,
     nativeObservation: runtimeNativeLaunchObservation,
@@ -19867,6 +20479,7 @@ async function run() {
   };
   const outputOracleProfile = applyOutputOracleProfileAdaptation(files, updateFileContent);
   await syncWorkerRuntimeOutputOracleProfile(outputOracleProfile?.runtimeProfile ?? null);
+  await executeRuntimeAdapter();
   await collectRuntimeProfileAdapterResultBridge(outputOracleProfile?.runtimeProfile ?? null);
   report.real_rocm_device_sidecar_contract = realRocmDeviceSidecarContractFacet({
     files,
