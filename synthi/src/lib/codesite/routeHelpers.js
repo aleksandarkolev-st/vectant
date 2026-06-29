@@ -19,7 +19,25 @@ export function errorJson(status, error, detail) {
   return NextResponse.json({ error, ...(detail ? { detail } : {}) }, { status });
 }
 
+function workspaceAuthBypassEnabled() {
+  if (process.env.NODE_ENV === 'production') return false;
+  return process.env.SYNTHI_WORKSPACE_AUTH_BYPASS === '1'
+    || process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
+}
+
 export async function requireCodesiteAccess(slug, mode = 'read') {
+  if (workspaceAuthBypassEnabled()) {
+    return {
+      ok: true,
+      actor: {
+        userId: 'codesite-dev-bypass',
+        email: 'dev-bypass@synthi.local',
+        workspaceUserId: 'dev-bypass',
+        bypass: true,
+      },
+    };
+  }
+
   const actor = await resolveActor();
   if (!actor) return { ok: false, status: 401, error: 'Authentication required' };
   const target = { scope: 'workspace', workspaceSlug: slug };

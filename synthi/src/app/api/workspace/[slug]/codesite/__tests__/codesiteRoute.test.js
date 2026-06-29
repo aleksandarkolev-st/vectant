@@ -151,4 +151,26 @@ describe('CodeSite catch-all route', () => {
     expect(await json(response)).toEqual({ error: 'Authentication required' });
     expect(controlPlane.listProjects).not.toHaveBeenCalled();
   });
+
+  it('honors the non-production workspace auth bypass for disposable dev workspaces', async () => {
+    const previous = process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS;
+    process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS = '1';
+    resolveActor.mockResolvedValue(null);
+    controlPlane.listProjects.mockResolvedValue([{ id: 'proj-dev', title: 'Bypass proof' }]);
+
+    try {
+      const response = await GET(new Request('http://test/api/workspace/acme/codesite/projects'), params(['projects']));
+
+      expect(response.status).toBe(200);
+      expect(await json(response)).toEqual({ projects: [{ id: 'proj-dev', title: 'Bypass proof' }] });
+      expect(resolveActor).not.toHaveBeenCalled();
+      expect(canReadScope).not.toHaveBeenCalled();
+    } finally {
+      if (previous == null) {
+        delete process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS;
+      } else {
+        process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS = previous;
+      }
+    }
+  });
 });
