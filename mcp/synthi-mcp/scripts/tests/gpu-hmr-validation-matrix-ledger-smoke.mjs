@@ -7761,6 +7761,15 @@ assert.equal(hot1RunMode.asyncVisualCasBundle.offMainThread, true);
 assert.equal(hot1RunMode.asyncVisualCasBundle.transportAccepted, true);
 assert.equal(hot1RunMode.asyncVisualCasBundle.casHashesMatchDeclaredVisualHashes, true);
 assert.equal(hot1RunMode.asyncVisualCasBundle.casHashesMatchMatrixVisualHashes, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.workerCasInputAccepted, true);
+assert.equal(
+  hot1RunMode.asyncVisualCasBundle.workerInputTransports.before.transportKind,
+  'cas_shared_volume',
+);
+assert.equal(
+  hot1RunMode.asyncVisualCasBundle.workerInputTransports.after.transportKind,
+  'cas_shared_volume',
+);
 assert.equal(hot1RunMode.asyncVisualCasBundle.tileEvidenceAccepted, true);
 assert.match(hot1RunMode.asyncVisualCasBundle.workerExecutableHash, /^sha256:[a-f0-9]{64}$/);
 assert.equal(hot1RunMode.visual.artifactCasLocatorCount, 3);
@@ -7781,6 +7790,9 @@ assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
 assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
   'visual_artifact_cas_locators_not_accepted',
 ));
+assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_worker_cas_input_missing',
+));
 
 const sourceFirstCasOnlyRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-cas-only'
@@ -7794,6 +7806,7 @@ assert.equal(sourceFirstCasOnlyRunMode.visual.allCasLocatorsAccepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.visual.allCasLocatorHashesMatch, true);
 assert.ok(sourceFirstCasOnlyRunMode.visual.images.every((image) => image.resolvedFromCas === true));
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.accepted, true);
+assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.workerCasInputAccepted, true);
 
 const forgedSourceFirstCasRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-forged-cas'

@@ -11,6 +11,7 @@ import {
   visualEvidenceIsSupplementalOnly,
 } from './gpu-hmr-visual-evidence.mjs';
 import {
+  casRelativePathForHash,
   collectArtifactLocators,
   defaultCasRootFromEnv,
   validateArtifactCasManifest,
@@ -921,6 +922,73 @@ function visualWorkerAllowedRoots(images) {
     .map((filePath) => path.dirname(path.resolve(filePath))))];
 }
 
+function visualWorkerCasRootForImage(image = {}) {
+  const resolvedPath = firstText(
+    image.artifactCasResolvedPath,
+    image.artifact_cas_resolved_path,
+    image.artifactCasValidation?.localPath,
+    image.artifactCasValidation?.local_path,
+    image.artifact_cas_validation?.local_path,
+  );
+  if (!resolvedPath) return null;
+  const locator = compactObject(image.artifactCasLocator ?? image.artifact_cas_locator);
+  const storage = compactObject(locator.storage);
+  let relativePath = firstText(storage.relativePath, storage.relative_path);
+  if (!relativePath) {
+    const contentHash = firstText(
+      image.artifactCasContentHash,
+      image.artifact_cas_content_hash,
+      locator.contentHash,
+      locator.content_hash,
+      locator.artifactId,
+      locator.artifact_id,
+    );
+    try {
+      relativePath = contentHash ? casRelativePathForHash(contentHash) : null;
+    } catch {
+      relativePath = null;
+    }
+  }
+  if (!relativePath) return path.dirname(path.resolve(resolvedPath));
+  const resolved = path.resolve(resolvedPath);
+  const relativeSegments = String(relativePath).replace(/\\/g, '/').split('/').filter(Boolean);
+  let candidate = resolved;
+  for (let index = 0; index < relativeSegments.length; index += 1) {
+    candidate = path.dirname(candidate);
+  }
+  const expected = path.resolve(candidate, ...relativeSegments);
+  return path.resolve(expected) === resolved ? candidate : path.dirname(resolved);
+}
+
+function visualWorkerAllowedRootsForImages(images) {
+  const pathRoots = visualWorkerAllowedRoots(images);
+  const casRoots = (Array.isArray(images) ? images : [])
+    .map((image) => visualWorkerCasRootForImage(image))
+    .filter(Boolean)
+    .map((root) => path.resolve(root));
+  return [...new Set([...pathRoots, ...casRoots])];
+}
+
+function visualWorkerInputForImage(image = {}) {
+  const locator = compactObject(image.artifactCasLocator ?? image.artifact_cas_locator);
+  if (
+    Object.keys(locator).length > 0
+    && image.artifactCasLocatorAccepted === true
+    && image.artifactCasHashMatches === true
+  ) {
+    return {
+      input: { casManifest: locator },
+      transportMode: 'cas_manifest',
+    };
+  }
+  const localPath = firstText(image.absolutePath, image.absolute_path, image.path);
+  if (!localPath) return null;
+  return {
+    input: { path: localPath },
+    transportMode: 'direct_worker_path_fallback',
+  };
+}
+
 function visualWorkerTimeoutMs() {
   const value = Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000);
   return Number.isSafeInteger(value) && value > 0 ? value : 30000;
@@ -942,10 +1010,36 @@ function summarizeAsyncVisualProof(proof) {
   const inputHashes = isObject(proof.inputHashes ?? proof.input_hashes)
     ? proof.inputHashes ?? proof.input_hashes
     : {};
+  const inputArtifacts = isObject(proof.inputArtifacts ?? proof.input_artifacts)
+    ? proof.inputArtifacts ?? proof.input_artifacts
+    : {};
   const metrics = isObject(proof.metrics) ? proof.metrics : {};
   const dimensions = isObject(proof.dimensions) ? proof.dimensions : {};
   const incremental = isObject(proof.incremental) ? proof.incremental : {};
   const worker = isObject(proof.worker) ? proof.worker : {};
+  const summarizeInputArtifact = (role) => {
+    const artifact = compactObject(inputArtifacts[role]);
+    const validation = compactObject(artifact.casValidation ?? artifact.cas_validation);
+    return {
+      role,
+      transportKind: text(artifact.transportKind ?? artifact.transport_kind) || null,
+      transport_kind: text(artifact.transportKind ?? artifact.transport_kind) || null,
+      artifactId: text(artifact.artifactId ?? artifact.artifact_id) || null,
+      artifact_id: text(artifact.artifactId ?? artifact.artifact_id) || null,
+      contentHash: text(artifact.contentHash ?? artifact.content_hash) || null,
+      content_hash: text(artifact.contentHash ?? artifact.content_hash) || null,
+      manifestHash: text(artifact.manifestHash ?? artifact.manifest_hash) || null,
+      manifest_hash: text(artifact.manifestHash ?? artifact.manifest_hash) || null,
+      casValidationAccepted: validation.accepted === true,
+      cas_validation_accepted: validation.accepted === true,
+      resolvedFromRelativePath:
+        validation.resolvedFromRelativePath === true
+        || validation.resolved_from_relative_path === true,
+      resolved_from_relative_path:
+        validation.resolvedFromRelativePath === true
+        || validation.resolved_from_relative_path === true,
+    };
+  };
   const stableMetrics = {
     changedRatio: finiteNumber(metrics.changedRatio ?? metrics.changed_ratio),
     changed_ratio: finiteNumber(metrics.changedRatio ?? metrics.changed_ratio),
@@ -1052,6 +1146,14 @@ function summarizeAsyncVisualProof(proof) {
       before_raw_hash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
       after_raw_hash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
     },
+    inputArtifacts: {
+      before: summarizeInputArtifact('before'),
+      after: summarizeInputArtifact('after'),
+    },
+    input_artifacts: {
+      before: summarizeInputArtifact('before'),
+      after: summarizeInputArtifact('after'),
+    },
     metrics: stableMetrics,
     roiEvidence: roiEvidence
       ? {
@@ -1105,20 +1207,32 @@ function summarizeAsyncVisualProof(proof) {
 }
 
 async function asyncVisualMetricsForPair(before, after, request = {}) {
-  if (!before?.absolutePath || !after?.absolutePath) return null;
+  const beforeInput = visualWorkerInputForImage(before);
+  const afterInput = visualWorkerInputForImage(after);
+  if (!beforeInput || !afterInput) return null;
   try {
     const proof = await computeAsyncVisualProof({
-      before: { path: before.absolutePath },
-      after: { path: after.absolutePath },
+      before: beforeInput.input,
+      after: afterInput.input,
       includeAlpha: true,
       tileSize: 128,
       ...request,
     }, {
-      allowedRoots: visualWorkerAllowedRoots([before, after]),
+      allowedRoots: visualWorkerAllowedRootsForImages([before, after]),
       timeoutMs: visualWorkerTimeoutMs(),
       diagnosticDelayMs: visualWorkerDiagnosticDelayMs(),
     });
-    return summarizeAsyncVisualProof(proof);
+    return {
+      ...summarizeAsyncVisualProof(proof),
+      requestedInputTransport: {
+        before: beforeInput.transportMode,
+        after: afterInput.transportMode,
+      },
+      requested_input_transport: {
+        before: beforeInput.transportMode,
+        after: afterInput.transportMode,
+      },
+    };
   } catch (error) {
     return summarizeAsyncVisualProof({
       schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
@@ -1407,6 +1521,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       hash_matches: hashMatches,
       artifactCasLocatorPresent: isObject(entry.artifactCasLocator),
       artifact_cas_locator_present: isObject(entry.artifactCasLocator),
+      artifactCasLocator: entry.artifactCasLocator ?? null,
+      artifact_cas_locator: entry.artifactCasLocator ?? null,
       artifactCasLocatorAccepted: casValidation ? casValidation.accepted === true : null,
       artifact_cas_locator_accepted: casValidation ? casValidation.accepted === true : null,
       artifactCasContentHash: casContentHash,
@@ -2027,6 +2143,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const incremental = compactObject(asyncMetrics.incremental);
   const tileEvidence = compactObject(asyncMetrics.tileEvidence ?? asyncMetrics.tile_evidence);
   const inputHashes = compactObject(asyncMetrics.inputHashes ?? asyncMetrics.input_hashes);
+  const inputArtifacts = compactObject(asyncMetrics.inputArtifacts ?? asyncMetrics.input_artifacts);
   const declaredByRole = declaredVisualArtifactHashesByRole(visualArtifacts);
   const locatorByRole = locatorHashesByRole(locators);
   const validatedLocatorByRole = validatedVisualCasHashesByRole(visual);
@@ -2047,6 +2164,36 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const asyncInputHashesMatchCas =
     (!validatedLocatorByRole.has('before') || validatedLocatorByRole.get('before') === asyncBeforeHash)
     && (!validatedLocatorByRole.has('after') || validatedLocatorByRole.get('after') === asyncAfterHash);
+  const workerInputRoles = ['before', 'after'];
+  const workerInputTransportByRole = new Map(workerInputRoles.map((role) => {
+    const artifact = compactObject(inputArtifacts[role]);
+    return [role, {
+      transportKind: firstText(artifact.transportKind, artifact.transport_kind),
+      contentHash: normalizedArtifactHash(
+        artifact.contentHash
+        ?? artifact.content_hash
+        ?? artifact.artifactId
+        ?? artifact.artifact_id,
+      ),
+      casValidationAccepted: firstBool(
+        artifact.casValidationAccepted,
+        artifact.cas_validation_accepted,
+      ) === true,
+      resolvedFromRelativePath: firstBool(
+        artifact.resolvedFromRelativePath,
+        artifact.resolved_from_relative_path,
+      ) === true,
+    }];
+  }));
+  const casWorkerTransportKinds = new Set(['cas_shared_volume', 'cas_tmpfs']);
+  const workerCasInputAccepted = workerInputRoles.every((role) => {
+    const input = workerInputTransportByRole.get(role) ?? {};
+    const expectedHash = validatedLocatorByRole.get(role);
+    return casWorkerTransportKinds.has(input.transportKind)
+      && input.casValidationAccepted === true
+      && Boolean(input.contentHash)
+      && (!expectedHash || input.contentHash === expectedHash);
+  });
   const transportAccepted =
     transportEvidence.accepted === true
     && transportEvidence.acceptedAsTransportEvidence === true
@@ -2103,6 +2250,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     casHashesMatchDeclaredVisualHashes ? null : 'visual_artifact_cas_declared_hash_mismatch',
     casHashesMatchMatrixVisualHashes ? null : 'visual_artifact_cas_matrix_hash_mismatch',
     asyncInputHashesMatchCas ? null : 'async_visual_input_hash_cas_mismatch',
+    workerCasInputAccepted ? null : 'async_visual_worker_cas_input_missing',
     tileHashingEnabled ? null : 'async_visual_tile_hashing_missing',
     tileEvidenceAccepted ? null : 'async_visual_tile_evidence_missing',
     roiEarlyExitClaimed && !tileEvidenceAccepted
@@ -2142,6 +2290,10 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     cas_hashes_match_matrix_visual_hashes: casHashesMatchMatrixVisualHashes,
     asyncInputHashesMatchCas,
     async_input_hashes_match_cas: asyncInputHashesMatchCas,
+    workerCasInputAccepted,
+    worker_cas_input_accepted: workerCasInputAccepted,
+    workerInputTransports: Object.fromEntries(workerInputTransportByRole.entries()),
+    worker_input_transports: Object.fromEntries(workerInputTransportByRole.entries()),
     tileHashingEnabled,
     tile_hashing_enabled: tileHashingEnabled,
     tileEvidenceAccepted,
