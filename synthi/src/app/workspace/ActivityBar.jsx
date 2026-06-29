@@ -1,6 +1,6 @@
 "use client";
 
-import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, ShieldCheck, Box, Command } from "lucide-react";
+import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, ShieldCheck, Box, Command, Radar } from "lucide-react";
 
 /**
  * @param {Object} props
@@ -19,6 +19,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
     { id: "ai-healing", label: "AI Healing", Icon: ShieldCheck },
     { id: "extensions", label: "Extensions", Icon: Puzzle },
     { id: "programs", label: "Programs", Icon: Command },
+    { id: "codesite", label: "CodeSite", Icon: Radar },
   ];
 
   // Build extension-contributed items with fallback icons

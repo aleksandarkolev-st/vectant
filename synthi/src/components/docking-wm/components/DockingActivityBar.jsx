@@ -21,6 +21,7 @@ import {
   MessageSquare,
   Bot,
   Box,
+  Radar,
   Network,
   ChevronRight,
   ShieldCheck,
@@ -69,6 +70,7 @@ const TOP_ITEMS = [
   { id: 'programs',   panelType: IDE_PANEL.PROGRAMS,   label: 'Programs',        Icon: Command },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
   { id: 'workflows',  panelType: IDE_PANEL.AGENT_WORKFLOWS, label: 'Workflows',  Icon: Bot },
+  { id: 'codesite',   panelType: IDE_PANEL.CODESITE,   label: 'CodeSite',        Icon: Radar },
   { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: ShieldCheck },
   { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
   { id: 'ports',        panelType: IDE_PANEL.PORTS,        label: 'Ports',           Icon: Network },
@@ -136,7 +138,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
     // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'programs', 'extension-view', 'chat', 'agent-workflows', 'pullrequests', 'ai-healing', 'integrations', 'ports']);
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'programs', 'extension-view', 'chat', 'agent-workflows', 'codesite', 'pullrequests', 'ai-healing', 'integrations', 'ports']);
     let targetGroupId = null;
     for (const [groupId, group] of groups) {
       for (const tId of group.tabs || []) {

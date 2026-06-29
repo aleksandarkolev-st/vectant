@@ -151,6 +151,11 @@ const AgentWorkflowPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const CodeSitePanel = dynamic(
+  () => import('@/components/codesite/CodeSitePanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 const ProblemsPanel = dynamic(
   () => import('@/components/analysis').then(m => ({ default: m.ProblemsPanel })),
   { ssr: false, loading: Placeholder },
@@ -874,6 +879,24 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         workflowState={displayedWorkflowState}
         onWorkflowAction={handleWorkflowAction}
       />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  CodeSite Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const CodeSitePanelWrapper = memo(function CodeSitePanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="codesite"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <CodeSitePanel workspaceSlug={ctx?.workspaceSlug} />
     </div>
   );
 });
