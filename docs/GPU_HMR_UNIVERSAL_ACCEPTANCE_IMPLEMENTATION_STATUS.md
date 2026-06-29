@@ -10,21 +10,27 @@ The runtime-profile adapter-result bridge is now matrix-auditable rather than re
 
 Generic real ROCm runtime-adapter execution is now implemented separately from adapter-result import. Profiles or env may declare a `runtimeAdapter` command, the runner executes it inside the configured worker context, records `synthi.real_rocm.runtime_adapter_execution.v1`, and feeds observed runtime-boundary/app-hook material into the existing stage classifiers. This is still evidence-only: the facet records `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`, and forged adapter output cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, or strict runtime proof closure.
 
+Runtime-adapter scheduling is now profile-driven across generic lifecycle points instead of being locked to one post-run slot. `runtimeAdapter.runWhen` supports `after_upstream_run`, `after_configure_success`, `after_build_attempt`, and `after_lifecycle_attempt`; unknown/project-named values reject, and explicit `requiresSuccessfulBuild` / `requiresSuccessfulRun` still block execution. The execution facet records the selected lifecycle point. Profile proof obligations now recompute with profile-declared, env-declared, or adapter-imported app-hook contracts, which removes stale configuration-only app-hook gaps without satisfying runtime stage gates by declaration.
+
 This remains support/refusal evidence only. It does not replace observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall proof, or accepted strict runtime proof closure, and it does not change broad readiness: current broad library-agnostic full-runtime GPU HMR remains unproven.
 
 ```text
 implementation commit: e0a06ccd1 feat(gpu-hmr): add generic rocm runtime adapter evidence
+latest local patch: runtime-adapter lifecycle scheduling plus supplied/adapter app-hook contract threading
 subagent used: real-ROCm validation matrix adapter-result bridge audit
 subagent used: focused docs/overclaim audit for latest runtime-adapter, MIOpen, source-first, and visual-proof evidence
+subagent used: real-ROCm runtime-adapter/app-hook scheduling audit
+subagent used: source-first/visual proof path audit
 verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 verification: node --check mcp/synthi-mcp/scripts/lib/real-rocm-validation-command-env.mjs -> passed
 verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
 verification: node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:8cd389beb821ec01b95c7b9e9d7e3be9179e861c78de2a3e28af7e1f5c1265a6, rows=58
-verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; latest runtime-adapter smoke proof gpu-validation-matrix-ledger:sha256:0e027f82b76d5d1f3ef4a25938d5850f2cc88ed61a51332f3bd8686294e764da, matrix self-check proof gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
+verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after the runtime-adapter scheduling/app-hook threading patch; matrix self-check proof gpu-validation-matrix-ledger:sha256:425a5f02cc756ee518d41fdb8ce71398ed8660b34025eb65f41a92e9f7bd3b62, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
 new smoke coverage: imported adapter-result bridge remains evidence-only/non-success; forged bridge row refuses claimed GPU HMR/runtime/dispatch authority; accepted-row safety rejects a forged bridge facet even when attached to an otherwise accepted real-ROCm row
 new smoke coverage: runtime-adapter execution requires actual runtime-boundary evidence before it can even become support evidence, and complete boundary evidence still remains non-authoritative/non-success until strict runtime proof closes
+new smoke coverage: runtime-adapter scheduling can explicitly run after configure/build/lifecycle attempts without pretending upstream build/run succeeded; strict build/run requirements still reject, and supplied app-hook contracts satisfy only the profile-obligation declaration check, not runtime stage proof
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed; large ROCm ML package scripts preserve caller-provided SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS while keeping strict runtime proof and native observer gates enabled
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; proof scheduling now verifies a structurally blocked requested wait below the diagnostic budget remains bounded instead of being inflated
 ```
