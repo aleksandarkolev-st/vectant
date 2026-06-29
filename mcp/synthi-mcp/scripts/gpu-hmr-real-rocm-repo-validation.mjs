@@ -12468,6 +12468,86 @@ function runtimeNativeLaunchObservationEvidence(workerEvidence) {
   };
 }
 
+function nativeRocmBoundaryStageCandidateResults(nativeObservation = {}, evidenceRefs = []) {
+  const nativeLaunchObserved = Number(nativeObservation.total_count ?? 0) > 0;
+  const nativeLaunchAttemptObserved = Number(nativeObservation.attempt_count ?? 0) > 0;
+  const nativeFunctionResolutionObserved =
+    Number(nativeObservation.function_resolution_count ?? 0) > 0;
+  const nativeObserverReady = nativeObservation.ready === true;
+  const runtimeSessionIds = compactStringList(nativeObservation.runtime_session_ids);
+  const dispatchCandidateObserved =
+    nativeLaunchObserved || nativeLaunchAttemptObserved || nativeFunctionResolutionObserved;
+  const hostContextCandidateObserved = nativeObserverReady
+    || runtimeSessionIds.length > 0
+    || dispatchCandidateObserved;
+  const stageEvidenceRefs = compactStringList([
+    ...evidenceRefs,
+    ...((nativeObservation.ready_runtime_session_ids ?? []).map((session) =>
+      `worker-log:native_launch_observer_ready:${session}`)),
+    ...runtimeSessionIds.map((session) =>
+      `worker-log:native_rocm_launch_boundary:${session}`),
+    ...((nativeObservation.function_resolution_symbols ?? []).map((symbol) =>
+      `worker-log:native_function_resolution:${symbol}`)),
+    ...((nativeObservation.kernel_symbols ?? []).map((symbol) =>
+      `worker-log:native_launch_observed:${symbol}`)),
+  ]);
+  const stageResults = {};
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const candidateEvidencePresent = stage.key === 'dispatchTrace'
+      ? dispatchCandidateObserved
+      : stage.key === 'hostIdentity'
+        ? hostContextCandidateObserved
+        : false;
+    const requiredProofKinds = realRocmStageProofKinds(stage.key);
+    const candidateKinds = compactStringList([
+      stage.key === 'dispatchTrace' && nativeLaunchObserved
+        ? 'native_launch_boundary_observed'
+        : null,
+      stage.key === 'dispatchTrace' && nativeLaunchAttemptObserved
+        ? 'native_launch_attempt_observed'
+        : null,
+      stage.key === 'dispatchTrace' && nativeFunctionResolutionObserved
+        ? 'native_function_resolution_observed'
+        : null,
+      stage.key === 'hostIdentity' && nativeObserverReady
+        ? 'native_observer_process_session_seen'
+        : null,
+      stage.key === 'hostIdentity' && runtimeSessionIds.length > 0
+        ? 'native_runtime_session_seen'
+        : null,
+    ]);
+    const result = {
+      stage: stage.snake,
+      required: true,
+      observed: false,
+      runtimeObserved: false,
+      runtime_observed: false,
+      candidateEvidencePresent,
+      candidate_evidence_present: candidateEvidencePresent,
+      candidateKinds,
+      candidate_kinds: candidateKinds,
+      proofAuthority: 'candidate_native_boundary_evidence_only_not_runtime_proof',
+      proof_authority: 'candidate_native_boundary_evidence_only_not_runtime_proof',
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds: requiredProofKinds,
+      missing_proof_kinds: requiredProofKinds,
+      evidenceRefs: candidateEvidencePresent ? stageEvidenceRefs : [],
+      evidence_refs: candidateEvidencePresent ? stageEvidenceRefs : [],
+      status: candidateEvidencePresent
+        ? 'native_boundary_candidate_runtime_proof_missing'
+        : 'native_boundary_candidate_missing',
+    };
+    stageResults[stage.key] = result;
+    stageResults[stage.snake] = result;
+  }
+  return stageResults;
+}
+
 function nativeRocmLaunchBoundaryRefusalFacet({
   nativeObservation = {},
   runtimeDispatch = {},
@@ -12536,6 +12616,10 @@ function nativeRocmLaunchBoundaryRefusalFacet({
     ...((nativeObservation.texture_object_apis ?? []).map((api) =>
       `worker-log:native_texture_object_create:${api}`)),
   ]);
+  const stageResults = nativeRocmBoundaryStageCandidateResults(nativeObservation, evidenceRefs);
+  const candidateStages = REAL_ROCM_APP_HOOK_STAGES
+    .filter((stage) => stageResults[stage.key]?.candidateEvidencePresent === true)
+    .map((stage) => stage.snake);
   return {
     schemaVersion: 'synthi.gpu_hmr.native_rocm_launch_boundary.v1',
     observed,
@@ -12586,6 +12670,10 @@ function nativeRocmLaunchBoundaryRefusalFacet({
     output_oracle_profile_absent: oracleProfileAbsent,
     hostIdentityObserved,
     host_identity_observed: hostIdentityObserved,
+    stageResults,
+    stage_results: stageResults,
+    candidateStages,
+    candidate_stages: candidateStages,
     blockingGaps: compactStringList(blockingGaps),
     blocking_gaps: compactStringList(blockingGaps),
     evidenceRefs,
@@ -13429,6 +13517,7 @@ function realRocmRuntimeStageObligationsFacet({
   sourceDeltaExecution = {},
   deviceSidecarContract = {},
   compileBridge = {},
+  nativeLaunchBoundary = {},
   runtimeEligibility = {},
   appHookContract = {},
   sameProcessRuntimeOracle = {},
@@ -13447,6 +13536,9 @@ function realRocmRuntimeStageObligationsFacet({
     ? deviceSidecarContract
     : {};
   const compile = compileBridge && typeof compileBridge === 'object' ? compileBridge : {};
+  const nativeBoundary = nativeLaunchBoundary && typeof nativeLaunchBoundary === 'object'
+    ? nativeLaunchBoundary
+    : {};
   const eligibility = runtimeEligibility && typeof runtimeEligibility === 'object'
     ? runtimeEligibility
     : {};
@@ -13478,6 +13570,11 @@ function realRocmRuntimeStageObligationsFacet({
       ?? nativeBridge.stage_results?.[stage.key]
       ?? nativeBridge.stageResults?.[stage.key]
       ?? {};
+    const nativeBoundaryStage = nativeBoundary.stage_results?.[stage.snake]
+      ?? nativeBoundary.stageResults?.[stage.snake]
+      ?? nativeBoundary.stage_results?.[stage.key]
+      ?? nativeBoundary.stageResults?.[stage.key]
+      ?? {};
     const appHookStage = appHook.stage_results?.[stage.snake]
       ?? appHook.stageResults?.[stage.snake]
       ?? appHook.stage_results?.[stage.key]
@@ -13501,11 +13598,30 @@ function realRocmRuntimeStageObligationsFacet({
       || appHookStage.runtimeObserved === true
       || appHookStage.runtime_observed === true
       || sidecarRuntimeObserved;
+    const candidateEvidencePresent =
+      sameProcessStage.candidateEvidencePresent === true
+      || sameProcessStage.candidate_evidence_present === true
+      || nativeStage.candidateEvidencePresent === true
+      || nativeStage.candidate_evidence_present === true
+      || nativeBoundaryStage.candidateEvidencePresent === true
+      || nativeBoundaryStage.candidate_evidence_present === true
+      || appHookStage.candidateEvidencePresent === true
+      || appHookStage.candidate_evidence_present === true
+      || sidecar.runtime_candidate_by_stage?.[stage.key] === true
+      || sidecar.runtimeCandidateByStage?.[stage.key] === true
+      || sidecar.runtime_candidate_by_stage?.[stage.snake] === true
+      || sidecar.runtimeCandidateByStage?.[stage.snake] === true;
     const sourceMissingKinds = compactStringList([
       ...(Array.isArray(sameProcessStage.missingProofKinds) ? sameProcessStage.missingProofKinds : []),
       ...(Array.isArray(sameProcessStage.missing_proof_kinds) ? sameProcessStage.missing_proof_kinds : []),
       ...(Array.isArray(nativeStage.missingProofKinds) ? nativeStage.missingProofKinds : []),
       ...(Array.isArray(nativeStage.missing_proof_kinds) ? nativeStage.missing_proof_kinds : []),
+      ...(Array.isArray(nativeBoundaryStage.missingProofKinds)
+        ? nativeBoundaryStage.missingProofKinds
+        : []),
+      ...(Array.isArray(nativeBoundaryStage.missing_proof_kinds)
+        ? nativeBoundaryStage.missing_proof_kinds
+        : []),
       ...(Array.isArray(appHookStage.missingProofKinds) ? appHookStage.missingProofKinds : []),
       ...(Array.isArray(appHookStage.missing_proof_kinds) ? appHookStage.missing_proof_kinds : []),
     ]);
@@ -13518,6 +13634,8 @@ function realRocmRuntimeStageObligationsFacet({
       ...(Array.isArray(sameProcessStage.evidence_refs) ? sameProcessStage.evidence_refs : []),
       ...(Array.isArray(nativeStage.evidenceRefs) ? nativeStage.evidenceRefs : []),
       ...(Array.isArray(nativeStage.evidence_refs) ? nativeStage.evidence_refs : []),
+      ...(Array.isArray(nativeBoundaryStage.evidenceRefs) ? nativeBoundaryStage.evidenceRefs : []),
+      ...(Array.isArray(nativeBoundaryStage.evidence_refs) ? nativeBoundaryStage.evidence_refs : []),
       ...(Array.isArray(appHookStage.evidenceRefs) ? appHookStage.evidenceRefs : []),
       ...(Array.isArray(appHookStage.evidence_refs) ? appHookStage.evidence_refs : []),
     ]);
@@ -13527,6 +13645,8 @@ function realRocmRuntimeStageObligationsFacet({
       observed,
       runtimeObserved: observed,
       runtime_observed: observed,
+      candidateEvidencePresent,
+      candidate_evidence_present: candidateEvidencePresent,
       requiredProofKinds: stageProofKinds,
       required_proof_kinds: stageProofKinds,
       missingProofKinds,
@@ -13836,13 +13956,19 @@ function realRocmAppHookMaterializationFacet({
       || runtimeStage.runtime_observed === true
       || appHookStage.runtimeObserved === true
       || appHookStage.runtime_observed === true;
+    const runtimeCandidateEvidencePresent =
+      runtimeStage.candidateEvidencePresent === true
+      || runtimeStage.candidate_evidence_present === true
+      || appHookStage.candidateEvidencePresent === true
+      || appHookStage.candidate_evidence_present === true;
     const candidateEvidencePresent = stage.key === 'artifactTransport'
       ? sidecarCandidateMaterialized && compileBridgeCandidate
       : stage.key === 'dispatchTrace'
-        ? sidecarCandidateMaterialized && compileBridgeCandidate && sidecarEntryPoints.length > 0
+        ? (sidecarCandidateMaterialized && compileBridgeCandidate && sidecarEntryPoints.length > 0)
+          || runtimeCandidateEvidencePresent
         : stage.key === 'outputOracle'
           ? outputOracleMaterialized
-          : contractEvidencePresent;
+          : contractEvidencePresent || runtimeCandidateEvidencePresent;
     const planAvailable = templateAvailable && required;
     const stagePlan = {
       stage: stage.snake,
@@ -13853,6 +13979,8 @@ function realRocmAppHookMaterializationFacet({
       candidate_evidence_present: candidateEvidencePresent,
       contractEvidencePresent,
       contract_evidence_present: contractEvidencePresent,
+      runtimeCandidateEvidencePresent,
+      runtime_candidate_evidence_present: runtimeCandidateEvidencePresent,
       runtimeObserved,
       runtime_observed: runtimeObserved,
       proofKinds: realRocmStageProofKinds(stage.key),
@@ -16783,6 +16911,34 @@ async function selfCheckRuntimeDispatchEvidence() {
     runtimeHostPreservation: { evidence: { total_count: 0 } },
     fullRuntimeProof: { fullRuntimeProven: false },
   });
+  const nativeOnlyStageObligations = realRocmRuntimeStageObligationsFacet({
+    nativeLaunchBoundary: nativeOnlyBoundary,
+    runtimeEligibility: nativeOnlyEligibility,
+    appHookContract: nativeOnlyMissingHook,
+    runtimeCapabilityPreflight: { observed: true },
+    fullRuntimeProof: { fullRuntimeProven: false },
+    firewallEvidence: {},
+    profileProofObligations: {
+      requiresFullRuntimeProof: true,
+      requiresAppHookContract: true,
+    },
+  });
+  const nativeOnlyMaterialization = realRocmAppHookMaterializationFacet({
+    profileProofObligations: {
+      requiresFullRuntimeProof: true,
+      requiresAppHookContract: true,
+      requiresOutputOracle: true,
+    },
+    appHookContract: nativeOnlyMissingHook,
+    outputOracleResolution: {
+      mode: 'none',
+      requestedProfile: 'none',
+      runtimeProfilePresent: false,
+      contractPresent: false,
+    },
+    runtimeStageObligations: nativeOnlyStageObligations,
+    runtimeEligibility: nativeOnlyEligibility,
+  });
   const declaredHookContract = normalizeRealRocmAppHookContract({
     required: true,
     artifactTransport: { evidenceRefs: ['hook:artifact-transport'] },
@@ -17073,6 +17229,15 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyBoundary.status !== 'refusal_evidence'
     || nativeOnlyBoundary.can_satisfy_dispatch_proof
     || nativeOnlyBoundary.synthi_dispatch_observed
+    || nativeOnlyBoundary.stage_results?.dispatch_trace?.candidate_evidence_present !== true
+    || nativeOnlyBoundary.stage_results?.dispatch_trace?.runtime_observed !== false
+    || !nativeOnlyBoundary.stage_results?.dispatch_trace?.missing_proof_kinds?.includes('dispatch_id')
+    || nativeOnlyBoundary.stage_results?.host_identity?.candidate_evidence_present !== true
+    || nativeOnlyBoundary.stage_results?.host_identity?.runtime_observed !== false
+    || !nativeOnlyBoundary.stage_results?.host_identity?.missing_proof_kinds?.includes('process_id')
+    || nativeOnlyBoundary.stage_results?.artifact_transport?.candidate_evidence_present !== false
+    || !nativeOnlyBoundary.candidate_stages.includes('dispatch_trace')
+    || !nativeOnlyBoundary.candidate_stages.includes('host_identity')
     || !nativeOnlyBoundary.blocking_gaps.includes('native_launch_boundary_observed')
     || !nativeOnlyBoundary.blocking_gaps.includes('native_boundary_not_synthi_dispatch_proof')
     || !nativeOnlyBoundary.blocking_gaps.includes('synthi_dispatch_not_observed')
@@ -17093,6 +17258,20 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !nativeOnlyEligibility.blocking_gaps.includes('dispatch_epoch_missing')
     || !nativeOnlyEligibility.blocking_gaps.includes('output_oracle_profile_absent')
     || !nativeOnlyEligibility.blocking_gaps.includes('host_identity_not_observed')
+    || nativeOnlyStageObligations.status !== 'runtime_stage_obligations_unmet'
+    || nativeOnlyStageObligations.accepted !== false
+    || nativeOnlyStageObligations.stage_results?.dispatch_trace?.candidate_evidence_present !== true
+    || nativeOnlyStageObligations.stage_results?.dispatch_trace?.runtime_observed !== false
+    || !nativeOnlyStageObligations.stage_results?.dispatch_trace?.missing_proof_kinds?.includes('dispatch_id')
+    || nativeOnlyStageObligations.stage_results?.host_identity?.candidate_evidence_present !== true
+    || nativeOnlyStageObligations.stage_results?.host_identity?.runtime_observed !== false
+    || !nativeOnlyStageObligations.stage_results?.host_identity?.missing_proof_kinds?.includes('process_id')
+    || !nativeOnlyStageObligations.blocking_gaps.includes('dispatch_trace_runtime_observation_missing')
+    || !nativeOnlyStageObligations.blocking_gaps.includes('host_identity_runtime_observation_missing')
+    || nativeOnlyMaterialization.stage_plans?.dispatch_trace?.runtime_candidate_evidence_present !== true
+    || nativeOnlyMaterialization.stage_plans?.dispatch_trace?.runtime_observed !== false
+    || nativeOnlyMaterialization.materialization_complete !== false
+    || nativeOnlyMaterialization.can_satisfy_runtime_proof !== false
     || nativeOnlyOriginalHost.evidence.raw_count !== 1
     || nativeOnlyOriginalHost.proof.attachmentProven
     || !nativeOnlyOriginalHost.proof.runtimeCapabilityPreflightObserved
@@ -20608,6 +20787,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     sourceDeltaExecution: report.real_rocm_source_delta_execution,
     deviceSidecarContract: report.real_rocm_device_sidecar_contract,
     compileBridge: report.real_rocm_compile_bridge,
+    nativeLaunchBoundary: report.native_rocm_launch_boundary,
     runtimeEligibility: report.real_rocm_runtime_eligibility,
     appHookContract: report.real_rocm_app_hook_contract,
     sameProcessRuntimeOracle: report.real_rocm_same_process_runtime_oracle,
