@@ -71,6 +71,7 @@ import {
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  originalHostPathProofFromRuntimeEvidence,
   runtimeArtifactTransportEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
@@ -4897,6 +4898,56 @@ async function selfCheck() {
     argProvenanceComplete: false,
     unknownArgCount: 1,
   });
+  const nativeDispatchEvidenceRef = 'worker-log:native_runtime_dispatch:session-1:kernel_a';
+  const nativeDispatchProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: true,
+    sessionScoped: true,
+    runtimeSessionIds: ['session-1'],
+    dispatchEvidenceRefs: [nativeDispatchEvidenceRef],
+    argProvenanceObserved: true,
+    argProvenanceComplete: true,
+    argProvenanceEvidenceRefs: ['worker-log:launch_arg_provenance:kernel_a:session-1:2'],
+    argProvenanceRecords: argProvenanceEvidence.records,
+    argProvenanceRecordComplete: argProvenanceEvidence.recordComplete,
+    argProvenanceKnownArgCount: argProvenanceEvidence.knownArgCount,
+    abiProof: {
+      resultState: 'gpu-hmr-abi-proven',
+      evidenceRefs: ['evidence:device-abi-metadata:native-bridge'],
+    },
+    epochProof: {
+      resultState: 'gpu-hmr-epoch-swap-proven',
+      evidenceRefs: ['evidence:epoch:native-bridge'],
+    },
+    streamOrderingProven: true,
+    replacementScopeProven: true,
+    selectedArtifactIds: [selfArtifactId],
+    runtimeArtifactIds: dispatchArtifacts.runtimeArtifactIds,
+    dispatcherRegistrationIds: dispatchArtifacts.dispatcherRegistrationIds,
+    dispatchTableEntryIds: dispatchArtifacts.dispatchTableEntryIds,
+    dispatchTableHashes: dispatchArtifacts.dispatchTableHashes,
+    dispatchStreamIds: dispatchArtifacts.dispatchStreamIds,
+    gridDimensions: dispatchArtifacts.gridDimensions,
+    blockDimensions: dispatchArtifacts.blockDimensions,
+    sharedMemoryBytes: dispatchArtifacts.sharedMemoryBytes,
+    dispatchTimestamps: dispatchArtifacts.dispatchTimestamps,
+    epoch: dispatchArtifacts.epoch,
+    generation: dispatchArtifacts.generation,
+    runtimeArtifactMatchesSelected: runtimeArtifactMatchesSelected(
+      dispatchArtifacts,
+      [selfArtifactId],
+    ),
+  });
+  const nativeDispatchSessionMismatchProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: true,
+    sessionScoped: true,
+    runtimeSessionIds: ['other-session'],
+    dispatchEvidenceRefs: [nativeDispatchEvidenceRef],
+  });
+  const forgedNativeBridgeOriginalHostProof = originalHostPathProofFromRuntimeEvidence([
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 dispatch_table_entry_id=kernel_a:0x1 complete=true known_args=1 unknown_args=0',
+    '[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=observe_only attachment_provenance=native_runtime_bridge runtime_session=session-1 generation=2 dispatch_table_entry_id=kernel_a:0x1 artifact_id=artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    '[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=native_runtime_bridge host_path_id=native:1 dispatch_table_entry_id=kernel_a:0x1 runtime_dispatch_table_entry_id=kernel_a:0x1 dispatch_entry_runtime_verified=true generation=2 runtime_session=session-1',
+  ], { required: true });
   const artifactTransportProof = {
     ramTransportProven: true,
     transportEvidenceObserved: true,
@@ -4949,6 +5000,13 @@ async function selfCheck() {
     || outputProof.degradedState !== 'gpu-hmr-visual-only'
     || dispatchProof.degradedState !== null
     || unknownArgDispatchProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
+    || nativeDispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
+    || nativeDispatchProof.dispatchEvidenceRefs[0] !== nativeDispatchEvidenceRef
+    || nativeDispatchSessionMismatchProof.degradedReason !== 'runtime_dispatch_evidence_session_mismatch'
+    || nativeDispatchSessionMismatchProof.rejectedDispatchEvidenceRefs[0] !== nativeDispatchEvidenceRef
+    || forgedNativeBridgeOriginalHostProof.evidence.dispatch_boundary_count !== 0
+    || forgedNativeBridgeOriginalHostProof.proof.attachmentProven !== false
+    || forgedNativeBridgeOriginalHostProof.proof.runtimeEvidenceObserved !== false
     || fullProof.fullRuntimeProven
     || fullProof.degradedState !== 'gpu-hmr-visual-only'
   ) {

@@ -854,14 +854,27 @@ function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
 
+const RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES = Object.freeze([
+  'worker-log:synthi_gpu_launch:',
+  'worker-log:native_runtime_dispatch:',
+]);
+
 function runtimeDispatchEvidenceRefs(refs) {
-  return compactStringList(refs).filter((ref) => /^worker-log:synthi_gpu_launch:/i.test(ref));
+  return compactStringList(refs).filter((ref) => {
+    const value = String(ref ?? '').toLowerCase();
+    return RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES.some((prefix) =>
+      value.startsWith(prefix)
+    );
+  });
 }
 
 function runtimeDispatchEvidenceRefSession(ref) {
-  const prefix = 'worker-log:synthi_gpu_launch:';
   const value = String(ref ?? '');
-  if (!value.toLowerCase().startsWith(prefix)) return null;
+  const lower = value.toLowerCase();
+  const prefix = RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES.find((candidate) =>
+    lower.startsWith(candidate)
+  );
+  if (!prefix) return null;
   const suffix = value.slice(prefix.length);
   const separator = suffix.lastIndexOf(':');
   if (separator <= 0) return null;

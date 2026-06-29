@@ -469,13 +469,14 @@ function safeDispatchProof({
   dispatchId = "dispatch:test:1",
   processId = "pid1",
   epoch = "3",
+  dispatchRefs = dispatchEvidenceRefs(runtimeSession),
 } = {}) {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     dispatchId,
     processId,
     epoch,
-    dispatchEvidenceRefs: dispatchEvidenceRefs(runtimeSession),
+    dispatchEvidenceRefs: dispatchRefs,
     sessionScoped: true,
     runtimeSessionIds: [runtimeSession],
     argProvenanceObserved: true,
@@ -5653,6 +5654,19 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
   });
 
+  it("does not accept incomplete native runtime dispatch as original host path proof", () => {
+    const { evidence, proof } = originalHostPathProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] launch_arg_provenance kernel=render generation=4 runtime_session=current-session dispatch_table_entry_id=entry-2 dispatch_timestamp=456 complete=true known_args=1 unknown_args=0",
+      "[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=observe_only attachment_provenance=native_runtime_bridge runtime_session=current-session generation=4 dispatch_table_entry_id=entry-2",
+      "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed=true attachment_provenance=native_runtime_bridge host_path_id=current-host dispatch_table_entry_id=entry-2 runtime_dispatch_table_entry_id=entry-2 dispatch_entry_runtime_verified=true generation=4 runtime_session=current-session",
+    ], { required: true });
+
+    expect(evidence.dispatch_boundary_count).toBe(0);
+    expect(evidence.evidence_refs).toEqual([]);
+    expect(proof.attachmentProven).toBe(false);
+    expect(proof.runtimeEvidenceObserved).toBe(false);
+  });
+
   it("requires session dispatch before dispatch proof can be considered", () => {
     const proof = classifyGpuHmrDispatchProof({});
 
@@ -5725,6 +5739,47 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.dispatchEvidenceObserved).toBe(false);
     expect(proof.dispatchEvidenceRefs).toEqual([]);
     expect(proof.rejectedDispatchEvidenceRefs).toEqual(dispatchEvidenceRefs("old-session"));
+  });
+
+  it("accepts native runtime dispatch bridge evidence refs for the current session", () => {
+    const proof = safeDispatchProof({
+      runtimeSession: "native-session",
+      dispatchRefs: ["worker-log:native_runtime_dispatch:native-session:shade"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.dispatchEvidenceRefs).toEqual([
+      "worker-log:native_runtime_dispatch:native-session:shade",
+    ]);
+  });
+
+  it("does not prove native runtime dispatch bridge refs from another session", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["current-session"],
+      dispatchEvidenceRefs: ["worker-log:native_runtime_dispatch:old-session:shade"],
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      argProvenanceEvidenceRefs: [
+        "worker-log:launch_arg_provenance:current-session:3:entry-1",
+      ],
+      unknownArgCount: 0,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("runtime_dispatch_evidence_session_mismatch");
+    expect(proof.dispatchEvidenceObserved).toBe(false);
+    expect(proof.dispatchEvidenceRefs).toEqual([]);
+    expect(proof.rejectedDispatchEvidenceRefs).toEqual([
+      "worker-log:native_runtime_dispatch:old-session:shade",
+    ]);
   });
 
   it("downgrades observed dispatch without argument provenance", () => {
