@@ -6,8 +6,9 @@ const h = vi.hoisted(() => ({
     programSession: { create: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     programRuntimeEvent: { create: vi.fn(), findMany: vi.fn() },
     marketplaceProgram: { upsert: vi.fn(), findMany: vi.fn(), update: vi.fn(), findUnique: vi.fn() },
-    programVersion: { upsert: vi.fn(), findUnique: vi.fn() },
+    programVersion: { upsert: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), findMany: vi.fn() },
     programInstall: { create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
+    programReviewEvent: { create: vi.fn() },
   },
 }));
 
@@ -18,19 +19,25 @@ import {
   createInstall,
   createPermissionGrant,
   createProgramSession,
+  createSubmission,
   getInstall,
   getProgramVersion,
   getPublishedProgramVersion,
+  getReviewVersionById,
   incrementInstallCount,
   listInstalls,
   listLocalPrograms,
+  listPendingReview,
   listPermissionGrants,
   listProgramRuntimeEvents,
   listProgramSessions,
   listPublishedPrograms,
+  publishApprovedVersion,
   publishProgram,
   toPublicInstall,
   toPublicMarketplaceProgram,
+  toReviewQueueItem,
+  transitionReview,
   updateInstallStatus,
   updateProgramSession,
   upsertLocalProgram,
@@ -427,14 +434,14 @@ describe('listPublishedPrograms', () => {
     h.prisma.marketplaceProgram.findMany.mockResolvedValue([]);
     await listPublishedPrograms({});
     const arg = h.prisma.marketplaceProgram.findMany.mock.calls[0][0];
-    expect(arg.where).toEqual({ publisher: { not: 'local' } });
+    expect(arg.where).toEqual({ publisher: { not: 'local' }, publishedVersion: { not: null } });
   });
 });
 
 describe('getPublishedProgramVersion', () => {
   it('resolves a published program + version + parsed config', async () => {
     h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/web', publisher: 'team' });
-    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', manifestJson: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', permissions: ['program.launch'] }) });
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', reviewState: 'published', manifestJson: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', permissions: ['program.launch'] }) });
 
     const found = await getPublishedProgramVersion('@team/web', '1.0.0');
 
@@ -455,5 +462,140 @@ describe('incrementInstallCount', () => {
     h.prisma.marketplaceProgram.update.mockResolvedValue({ id: 'p1', installCount: 6 });
     await incrementInstallCount('p1');
     expect(h.prisma.marketplaceProgram.update).toHaveBeenCalledWith({ where: { id: 'p1' }, data: { installCount: { increment: 1 } } });
+  });
+});
+
+describe('createSubmission', () => {
+  it('creates a submitted version with the source ref and submitter, bumping latestVersion', async () => {
+    h.prisma.marketplaceProgram.upsert.mockResolvedValue({ id: 'prog1', packageId: '@team/tool', publisher: 'team' });
+    h.prisma.programVersion.create.mockResolvedValue({ id: 'ver1', reviewState: 'submitted' });
+    h.prisma.programReviewEvent.create.mockResolvedValue({ id: 'ev1' });
+    const config = { packageId: 'tool', version: '1.0.0', displayName: 'Tool', description: 'd', runtimeType: 'container', launch: 'docker run reg.io/me/tool:1', ports: [6901] };
+
+    const { program, version } = await createSubmission({
+      workspaceSlug: 'team', config, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1',
+    });
+
+    expect(program.id).toBe('prog1');
+    expect(version.id).toBe('ver1');
+    const verArg = h.prisma.programVersion.create.mock.calls[0][0];
+    expect(verArg.data).toMatchObject({ programId: 'prog1', version: '1.0.0', reviewState: 'submitted', sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' });
+    // audit: null -> submitted
+    expect(h.prisma.programReviewEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ versionId: 'ver1', fromState: null, toState: 'submitted', actorUserId: 'u1' }),
+    }));
+  });
+});
+
+describe('transitionReview', () => {
+  it('guards on fromState, patches the version, and writes an audit event', async () => {
+    h.prisma.programVersion.updateMany.mockResolvedValue({ count: 1 });
+    h.prisma.programReviewEvent.create.mockResolvedValue({ id: 'ev2' });
+
+    const ok = await transitionReview('ver1', { fromState: 'submitted', toState: 'scanning', actorUserId: 'u1' });
+
+    expect(ok).toBe(true);
+    expect(h.prisma.programVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'ver1', reviewState: 'submitted' },
+      data: expect.objectContaining({ reviewState: 'scanning' }),
+    }));
+    expect(h.prisma.programReviewEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ versionId: 'ver1', fromState: 'submitted', toState: 'scanning' }),
+    }));
+  });
+
+  it('is a no-op (returns false, no audit) when the guard does not match', async () => {
+    h.prisma.programVersion.updateMany.mockResolvedValue({ count: 0 });
+    const ok = await transitionReview('ver1', { fromState: 'submitted', toState: 'scanning' });
+    expect(ok).toBe(false);
+    expect(h.prisma.programReviewEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('stores a redacted scan summary + notes via the patch', async () => {
+    h.prisma.programVersion.updateMany.mockResolvedValue({ count: 1 });
+    h.prisma.programReviewEvent.create.mockResolvedValue({ id: 'ev3' });
+    await transitionReview('ver1', {
+      fromState: 'scanning', toState: 'rejected', actorUserId: null,
+      reason: [{ code: 'cve', message: 'CVE-9' }],
+      patch: { scanReportJson: JSON.stringify({ decisiveCves: ['CVE-9'] }) },
+    });
+    const arg = h.prisma.programVersion.updateMany.mock.calls[0][0];
+    expect(arg.data.scanReportJson).toContain('CVE-9');
+    expect(arg.data.reviewState).toBe('rejected');
+  });
+});
+
+describe('publishApprovedVersion', () => {
+  it('flips the version to published with the AR digest and points the program at it', async () => {
+    h.prisma.programVersion.updateMany.mockResolvedValue({ count: 1 });
+    h.prisma.programReviewEvent.create.mockResolvedValue({ id: 'ev4' });
+    h.prisma.marketplaceProgram.update.mockResolvedValue({ id: 'prog1', publishedVersion: '1.0.0' });
+
+    await publishApprovedVersion('ver1', {
+      programId: 'prog1', version: '1.0.0', actorUserId: 'admin1',
+      hostedImageDigest: 'sha256:dead', publishedManifestJson: '{"launch":"docker run ar.host/x@sha256:dead"}',
+    });
+
+    const verArg = h.prisma.programVersion.updateMany.mock.calls[0][0];
+    expect(verArg.where).toEqual({ id: 'ver1', reviewState: 'rehosting' });
+    expect(verArg.data).toMatchObject({ reviewState: 'published', hostedImageDigest: 'sha256:dead' });
+    expect(h.prisma.marketplaceProgram.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'prog1' },
+      data: expect.objectContaining({ publishedVersion: '1.0.0', publishedDigest: 'sha256:dead' }),
+    }));
+  });
+});
+
+describe('listPendingReview / toReviewQueueItem', () => {
+  it('lists pending_review versions joined with their program', async () => {
+    h.prisma.programVersion.findMany.mockResolvedValue([
+      { id: 'ver1', version: '1.0.0', reviewState: 'pending_review', submittedByUserId: 'u1', sourceImageRef: 'reg.io/me/tool:1', scanReportJson: '{"decisiveCves":[]}', program: { packageId: '@team/tool', publisher: 'team' } },
+    ]);
+    const rows = await listPendingReview();
+    expect(h.prisma.programVersion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { reviewState: 'pending_review' },
+      include: { program: true },
+    }));
+    expect(rows[0]).toMatchObject({ id: 'ver1', reviewState: 'pending_review' });
+  });
+
+  it('toReviewQueueItem allow-lists fields and never leaks raw manifest/secrets', () => {
+    const item = toReviewQueueItem({
+      id: 'ver1', version: '1.0.0', reviewState: 'pending_review', submittedByUserId: 'u1',
+      sourceImageRef: 'reg.io/me/tool:1', manifestJson: '{"env":{"SECRET":"x"}}',
+      scanReportJson: '{"decisiveCves":[],"severityCounts":{"HIGH":0}}',
+      program: { packageId: '@team/tool', publisher: 'team', displayName: 'Tool' },
+    });
+    expect(item).toMatchObject({ versionId: 'ver1', packageId: '@team/tool', reviewState: 'pending_review' });
+    expect(item.scanSummary).toMatchObject({ decisiveCves: [] });
+    expect(JSON.stringify(item)).not.toContain('SECRET');
+    expect(item).not.toHaveProperty('manifestJson');
+  });
+});
+
+describe('getReviewVersionById', () => {
+  it('fetches a version with its program joined', async () => {
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'ver1', reviewState: 'pending_review', program: { id: 'prog1' } });
+    const row = await getReviewVersionById('ver1');
+    expect(h.prisma.programVersion.findUnique).toHaveBeenCalledWith({ where: { id: 'ver1' }, include: { program: true } });
+    expect(row.id).toBe('ver1');
+  });
+});
+
+describe('listPublishedPrograms (gated on live version)', () => {
+  it('only lists programs that have a publishedVersion', async () => {
+    h.prisma.marketplaceProgram.findMany.mockResolvedValue([]);
+    await listPublishedPrograms({ q: 'web' });
+    const arg = h.prisma.marketplaceProgram.findMany.mock.calls[0][0];
+    expect(arg.where).toMatchObject({ publisher: { not: 'local' }, publishedVersion: { not: null } });
+  });
+});
+
+describe('getPublishedProgramVersion (only serves published)', () => {
+  it('returns null when the requested version is not in published state', async () => {
+    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/tool', publisher: 'team' });
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', reviewState: 'pending_review', manifestJson: '{"launch":"x"}' });
+    const found = await getPublishedProgramVersion('@team/tool', '1.0.0');
+    expect(found).toBeNull();
   });
 });
