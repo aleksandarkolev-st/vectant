@@ -123,6 +123,10 @@ const REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_BRIDGE_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1';
 const REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_BRIDGE_AUTHORITY =
   'declared_adapter_result_import_not_runtime_authority';
+const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_execution.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY =
+  'adapter_execution_evidence_only_not_runtime_authority';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
@@ -819,6 +823,192 @@ async function validateVisualArtifactCasLocator(locator, repoRoot, baseDir, opti
   }
 }
 
+function normalizedComputeArtifactRole(value) {
+  const role = text(value)?.toLowerCase().replace(/[\s-]+/g, '_');
+  if (!role) return null;
+  if ([
+    'raw',
+    'raw_readback',
+    'raw_readback_bin',
+    'readback',
+    'readback_bin',
+    'compute_readback',
+    'compute_raw_readback',
+    'runtime_compute_raw_readback',
+  ].includes(role)) {
+    return 'raw_readback';
+  }
+  if ([
+    'schema',
+    'readback_schema',
+    'readback_schema_json',
+    'compute_schema',
+    'compute_readback_schema',
+    'runtime_compute_readback_schema',
+  ].includes(role)) {
+    return 'readback_schema';
+  }
+  if ([
+    'card',
+    'proof_card',
+    'proof_card_png',
+    'rendered_card',
+    'rendered_card_png',
+    'compute_card',
+    'compute_proof_card',
+    'runtime_compute_proof_card',
+  ].includes(role)) {
+    return 'rendered_card';
+  }
+  return null;
+}
+
+function computeArtifactCasLocators(input) {
+  const locators = collectArtifactLocators(input).filter((locator) => {
+    if (firstText(locator.schemaVersion, locator.schema_version) !== 'synthi.cas.artifact_locator.v1') {
+      return false;
+    }
+    return normalizedComputeArtifactRole(
+      locator.role
+        ?? locator.artifactRole
+        ?? locator.artifact_role
+        ?? locator.artifactKind
+        ?? locator.artifact_kind,
+    ) !== null;
+  });
+  const seen = new Set();
+  return locators.filter((locator) => {
+    const role = normalizedComputeArtifactRole(
+      locator.role
+        ?? locator.artifactRole
+        ?? locator.artifact_role
+        ?? locator.artifactKind
+        ?? locator.artifact_kind,
+    ) ?? 'artifact';
+    const hash = normalizedArtifactHash(
+      locator.contentHash
+        ?? locator.content_hash
+        ?? locator.artifactId
+        ?? locator.artifact_id,
+    ) ?? 'unknown';
+    const manifestHash = firstText(locator.manifestHash, locator.manifest_hash) ?? 'no-manifest';
+    const key = `${role}:${hash}:${manifestHash}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function computeArtifactCasLocatorForRole(locators, role, expectedHash) {
+  const normalizedRole = normalizedComputeArtifactRole(role);
+  const normalizedHash = normalizedArtifactHash(expectedHash);
+  const roleMatches = compactObjectList(locators).filter((locator) => {
+    const locatorRole = normalizedComputeArtifactRole(
+      locator.role
+        ?? locator.artifactRole
+        ?? locator.artifact_role
+        ?? locator.artifactKind
+        ?? locator.artifact_kind,
+    );
+    return !normalizedRole || !locatorRole || normalizedRole === locatorRole;
+  });
+  return roleMatches.find((locator) => {
+    const locatorHash = normalizedArtifactHash(
+      locator.contentHash
+        ?? locator.content_hash
+        ?? locator.artifactId
+        ?? locator.artifact_id,
+    );
+    const hashMatches = !normalizedHash || !locatorHash || normalizedHash === locatorHash;
+    return hashMatches;
+  }) ?? roleMatches[0] ?? null;
+}
+
+function computeArtifactCasExpectedHash(artifacts, role) {
+  if (role === 'raw_readback') {
+    return normalizeSha256(firstText(
+      artifacts.raw_readback_hash,
+      artifacts.rawReadbackHash,
+      artifacts.readback_hash,
+      artifacts.readbackHash,
+    ));
+  }
+  if (role === 'readback_schema') {
+    return normalizeSha256(firstText(
+      artifacts.readback_schema_hash,
+      artifacts.readbackSchemaHash,
+      artifacts.schema_hash,
+      artifacts.schemaHash,
+    ));
+  }
+  if (role === 'rendered_card') {
+    return normalizeSha256(firstText(
+      artifacts.rendered_card_hash,
+      artifacts.renderedCardHash,
+      artifacts.rendered_card_png_hash,
+      artifacts.renderedCardPngHash,
+      artifacts.proof_card_hash,
+      artifacts.proofCardHash,
+      artifacts.card_hash,
+      artifacts.cardHash,
+    ));
+  }
+  return null;
+}
+
+function computeArtifactCasAllowedRoots(repoRoot, baseDir, artifacts = {}) {
+  const envRoot = defaultCasRootFromEnv();
+  return [...new Set(compactStringList([
+    repoRoot,
+    baseDir,
+    ...(Array.isArray(artifacts.artifactCasRoots) ? artifacts.artifactCasRoots : []),
+    ...(Array.isArray(artifacts.artifact_cas_roots) ? artifacts.artifact_cas_roots : []),
+    ...(Array.isArray(artifacts.allowedCasRoots) ? artifacts.allowedCasRoots : []),
+    ...(Array.isArray(artifacts.allowed_cas_roots) ? artifacts.allowed_cas_roots : []),
+    artifacts.artifactCasRoot,
+    artifacts.artifact_cas_root,
+    artifacts.casRoot,
+    artifacts.cas_root,
+    artifacts.artifactRoot,
+    artifacts.artifact_root,
+    envRoot,
+  ]).map((root) => path.resolve(root)))];
+}
+
+async function validateComputeArtifactCasLocator(locator, repoRoot, baseDir, artifacts = {}) {
+  if (!isObject(locator)) return null;
+  try {
+    return await validateArtifactCasManifest(locator, {
+      allowedRoots: computeArtifactCasAllowedRoots(repoRoot, baseDir, artifacts),
+      artifactRoot: firstText(
+        artifacts.artifactCasRoot,
+        artifacts.artifact_cas_root,
+        artifacts.artifactRoot,
+        artifacts.artifact_root,
+      ),
+      requireReadableBytes: true,
+    });
+  } catch (error) {
+    return {
+      accepted: false,
+      acceptedAsTransportEvidence: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: 'transport_integrity_only',
+      manifestHash: firstText(locator.manifestHash, locator.manifest_hash),
+      contentHash: normalizeSha256(firstText(locator.contentHash, locator.content_hash)),
+      artifactId: firstText(locator.artifactId, locator.artifact_id),
+      localPath: null,
+      local_path: null,
+      reasons: ['artifact_cas_validation_exception'],
+      gaps: [],
+      details: {
+        message: error?.message ? String(error.message) : String(error),
+      },
+    };
+  }
+}
+
 function runtimeVisualOracleEvidenceRequirements({ allowSingleFrameProof = false } = {}) {
   return {
     ...RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS,
@@ -1442,9 +1632,7 @@ async function recomputeVisualPairEvidence(images) {
     const visiblePixelCount = finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count);
     let diffVisiblePixelCount = null;
     if (diff?.decoded) {
-      const diffFrame = await recomputeSingleVisualFrameEvidence([diff], {
-        includeAsyncVisualMetrics: false,
-      });
+      const diffFrame = await recomputeSingleVisualFrameEvidence([diff]);
       diffVisiblePixelCount = finiteNumber(diffFrame.visiblePixelCount ?? diffFrame.visible_pixel_count);
     }
     const accepted =
@@ -1521,6 +1709,58 @@ async function recomputeSingleVisualFrameEvidence(images, options = {}) {
     const asyncVisualMetrics = includeAsyncVisualMetrics
       ? await asyncVisualMetricsForPair(image, image, { tileHashing: false })
       : null;
+    if (includeAsyncVisualMetrics) {
+      if (asyncVisualMetrics?.accepted !== true) {
+        return {
+          present: true,
+          accepted: false,
+          source: 'matrix_recomputed_single_png_pixels',
+          recomputeEngine: 'matrix_async_visual_worker_rgba',
+          recompute_engine: 'matrix_async_visual_worker_rgba',
+          asyncVisualMetrics,
+          async_visual_metrics: asyncVisualMetrics,
+          imageRole: image.role,
+          image_role: image.role,
+          failedGates: [{ code: 'visual_single_frame_async_worker_recompute_not_accepted' }],
+        };
+      }
+      const metrics = compactObject(asyncVisualMetrics.metrics);
+      const dimensions = compactObject(asyncVisualMetrics.dimensions);
+      const width = finiteNumber(dimensions.width) ?? finiteNumber(image.width);
+      const height = finiteNumber(dimensions.height) ?? finiteNumber(image.height);
+      const pixelCount = finiteNumber(metrics.pixelCount ?? metrics.pixel_count)
+        ?? (Number(width) > 0 && Number(height) > 0 ? Number(width) * Number(height) : null);
+      const visiblePixelCount = finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count);
+      const visiblePixelRatio = finiteNumber(metrics.visiblePixelRatio ?? metrics.visible_pixel_ratio)
+        ?? (Number(pixelCount) > 0 && Number(visiblePixelCount) >= 0
+          ? Number(visiblePixelCount) / Number(pixelCount)
+          : null);
+      const meanLuma8bit = finiteNumber(metrics.meanLuma8bit ?? metrics.mean_luma_8bit);
+      const accepted = Number(pixelCount) > 0 && Number(visiblePixelCount) > 0;
+      return {
+        present: true,
+        accepted,
+        source: 'matrix_recomputed_single_png_pixels',
+        recomputeEngine: 'matrix_async_visual_worker_rgba',
+        recompute_engine: 'matrix_async_visual_worker_rgba',
+        asyncVisualMetrics,
+        async_visual_metrics: asyncVisualMetrics,
+        imageRole: image.role,
+        image_role: image.role,
+        width,
+        height,
+        visiblePixelCount,
+        visible_pixel_count: visiblePixelCount,
+        visiblePixelRatio,
+        visible_pixel_ratio: visiblePixelRatio,
+        meanLuma8bit,
+        mean_luma_8bit: meanLuma8bit,
+        failedGates: compactStringList([
+          Number(pixelCount) > 0 ? null : 'visual_single_frame_empty',
+          Number(visiblePixelCount) > 0 ? null : 'visual_single_frame_blank',
+        ]).map((code) => ({ code })),
+      };
+    }
     const frame = await sharp(image.absolutePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const pixelCount = frame.info.width * frame.info.height;
     let visiblePixelCount = 0;
@@ -2136,6 +2376,17 @@ function rawVisualArtifactTransportEvidence(row = {}) {
   };
 }
 
+function rawAsyncVisualProofJob(row = {}) {
+  return compactObject(
+    row.asyncVisualProofJob
+      ?? row.async_visual_proof_job
+      ?? row.visualProofBundle?.asyncVisualProofJob
+      ?? row.visualProofBundle?.async_visual_proof_job
+      ?? row.visual_proof_bundle?.asyncVisualProofJob
+      ?? row.visual_proof_bundle?.async_visual_proof_job,
+  );
+}
+
 function normalizedVisualArtifactRole(value) {
   const role = String(value ?? '').trim().toLowerCase();
   if (role === 'before' || role === 'before_frame' || role === 'baseline_frame') return 'before';
@@ -2363,6 +2614,15 @@ function incrementalBindingAccepted(bindingValue = {}, options = {}) {
 
 function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const { visualArtifacts, locators, transportEvidence } = rawVisualArtifactTransportEvidence(row);
+  const asyncVisualProofJob = rawAsyncVisualProofJob(row);
+  const asyncVisualProofJobPresent = Object.keys(asyncVisualProofJob).length > 0;
+  const asyncVisualProofJobPending =
+    asyncVisualProofJobPresent
+    && firstText(asyncVisualProofJob.eventType, asyncVisualProofJob.event_type) === 'proof_pending';
+  const asyncVisualProofJobAuthority = firstText(
+    asyncVisualProofJob.proofAuthority,
+    asyncVisualProofJob.proof_authority,
+  );
   const asyncMetrics = asyncVisualMetricsFromVisualEvidence(visual);
   const worker = compactObject(asyncMetrics.worker);
   const incremental = compactObject(asyncMetrics.incremental);
@@ -2505,6 +2765,11 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     Object.keys(visualArtifacts).length > 0 ? null : 'async_visual_cas_artifacts_missing',
     visual.accepted === true ? null : 'visual_artifacts_not_accepted',
     Object.keys(asyncMetrics).length > 0 ? null : 'async_visual_metrics_missing',
+    asyncVisualProofJobPending && !(
+      firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
+    )
+      ? 'async_visual_proof_pending_not_ready'
+      : null,
     asyncMetricsAccepted ? null : 'async_visual_worker_proof_not_accepted',
     firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
       ? null
@@ -2535,7 +2800,9 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
       : null,
   ]);
   return {
-    present: Object.keys(visualArtifacts).length > 0 || Object.keys(asyncMetrics).length > 0,
+    present: Object.keys(visualArtifacts).length > 0
+      || Object.keys(asyncMetrics).length > 0
+      || asyncVisualProofJobPresent,
     accepted: failedGates.length === 0,
     acceptedAsSupportEvidence: failedGates.length === 0,
     accepted_as_support_evidence: failedGates.length === 0,
@@ -2549,6 +2816,12 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     async_visual_proof_accepted: asyncMetricsAccepted,
     proofReady: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
     proof_ready: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
+    asyncVisualProofJobPresent,
+    async_visual_proof_job_present: asyncVisualProofJobPresent,
+    asyncVisualProofJobPending,
+    async_visual_proof_job_pending: asyncVisualProofJobPending,
+    asyncVisualProofJobAuthority,
+    async_visual_proof_job_authority: asyncVisualProofJobAuthority,
     offMainThread: firstBool(worker.offMainThread, worker.off_main_thread),
     off_main_thread: firstBool(worker.offMainThread, worker.off_main_thread),
     workerExecutableHash,
@@ -2692,6 +2965,19 @@ function sourceFirstIngestionFacet(row = {}) {
     compileContract.preferGpuPipeline,
     compileContract.prefer_gpu_pipeline,
   );
+  const gpuArch = firstText(
+    supplied.gpuArch,
+    supplied.gpu_arch,
+    compileContract.gpuArch,
+    compileContract.gpu_arch,
+  );
+  const gpuArchSource = firstText(
+    supplied.gpuArchSource,
+    supplied.gpu_arch_source,
+    compileContract.gpuArchSource,
+    compileContract.gpu_arch_source,
+  );
+  const gpuArchExplicit = Boolean(gpuArch && gpuArch.toLowerCase() !== 'auto');
   const gpuSplitEndpointObserved = firstBool(
     supplied.gpuSplitEndpointObserved,
     supplied.gpu_split_endpoint_observed,
@@ -2941,6 +3227,8 @@ function sourceFirstIngestionFacet(row = {}) {
     initialManifestHash,
     sourcePurityManifestHash,
     sourcePurityInitialManifestHash,
+    gpuArch: gpuArchExplicit ? gpuArch : null,
+    gpuArchSource,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -2966,6 +3254,7 @@ function sourceFirstIngestionFacet(row = {}) {
     useAiSplit === true ? null : 'source_first_compile_use_ai_split_missing',
     userRequestedAi === true ? null : 'source_first_compile_user_requested_ai_missing',
     preferGpuPipeline === true ? null : 'source_first_compile_prefer_gpu_pipeline_missing',
+    gpuArchExplicit ? null : 'source_first_gpu_arch_missing',
     initialFileEntries.length > 0 ? null : 'source_first_initial_file_manifest_missing',
     sourcePurityScannedFiles.length > 0 ? null : 'source_first_seed_purity_manifest_missing',
     sourcePurityCoversInitialManifest ? null : 'source_first_seed_purity_manifest_incomplete',
@@ -3045,6 +3334,12 @@ function sourceFirstIngestionFacet(row = {}) {
     user_requested_ai: userRequestedAi,
     preferGpuPipeline,
     prefer_gpu_pipeline: preferGpuPipeline,
+    gpuArch,
+    gpu_arch: gpuArch,
+    gpuArchSource,
+    gpu_arch_source: gpuArchSource,
+    gpuArchExplicit,
+    gpu_arch_explicit: gpuArchExplicit,
     gpuSplitEndpointObserved,
     gpu_split_endpoint_observed: gpuSplitEndpointObserved,
     generatedArtifactCreatedAfterAiSplit,
@@ -5861,6 +6156,18 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
     ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
   ]);
+  const adapterRuntimeBoundaryLines = compactStringList([
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLines)
+      ? facet.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_lines)
+      ? facet.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(facet.runtimeBoundaryLines) ? facet.runtimeBoundaryLines : []),
+    ...(Array.isArray(facet.runtime_boundary_lines) ? facet.runtime_boundary_lines : []),
+    ...(Array.isArray(facet.boundaryLines) ? facet.boundaryLines : []),
+    ...(Array.isArray(facet.boundary_lines) ? facet.boundary_lines : []),
+  ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
   const serializedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
     ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
@@ -5956,6 +6263,138 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     schema_version: schemaVersion,
     proofAuthority,
     proof_authority: proofAuthority,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    adapterRuntimeBoundaryLines,
+    adapter_runtime_boundary_lines: adapterRuntimeBoundaryLines,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
+function realRocmRuntimeAdapterExecutionFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+      runtimeBoundaryLines: [],
+      runtime_boundary_lines: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const status = firstText(facet.status, facet.reason);
+  const declared = firstBool(facet.declared) === true;
+  const enabled = firstBool(facet.enabled) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const runtimeBoundaryLines = compactStringList([
+    ...(Array.isArray(facet.runtimeBoundaryLines) ? facet.runtimeBoundaryLines : []),
+    ...(Array.isArray(facet.runtime_boundary_lines) ? facet.runtime_boundary_lines : []),
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLines)
+      ? facet.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_lines)
+      ? facet.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(facet.boundaryLines) ? facet.boundaryLines : []),
+    ...(Array.isArray(facet.boundary_lines) ? facet.boundary_lines : []),
+  ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+  ]);
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const executed = status === 'runtime_adapter_executed';
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_runtime_adapter_execution_schema_missing',
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_SCHEMA_VERSION
+      ? 'real_rocm_runtime_adapter_execution_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_adapter_execution_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_adapter_execution_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_adapter_execution_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_adapter_execution_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_adapter_execution_claimed_dispatch_authority'
+      : null,
+    declared && enabled && !status
+      ? 'real_rocm_runtime_adapter_execution_status_missing'
+      : null,
+    executed && runtimeBoundaryLines.length === 0
+      ? 'real_rocm_runtime_adapter_execution_boundary_lines_missing'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0 && blockingGaps.length === 0,
+    declared,
+    enabled,
+    status,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    acceptedForGpuHmr: acceptedForGpuHmr === true,
+    accepted_for_gpu_hmr: acceptedForGpuHmr === true,
+    gpuHmrSuccess: gpuHmrSuccess === true,
+    gpu_hmr_success: gpuHmrSuccess === true,
+    canSatisfyRuntimeProof: canSatisfyRuntimeProof === true,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof === true,
+    canSatisfyDispatchProof: canSatisfyDispatchProof === true,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
+    runtimeBoundaryLineCount: runtimeBoundaryLines.length,
+    runtime_boundary_line_count: runtimeBoundaryLines.length,
+    runtimeBoundaryLines,
+    runtime_boundary_lines: runtimeBoundaryLines,
+    adapterRuntimeBoundaryLines: runtimeBoundaryLines,
+    adapter_runtime_boundary_lines: runtimeBoundaryLines,
     blockingGaps,
     blocking_gaps: blockingGaps,
     failedGates,
@@ -6769,6 +7208,25 @@ function rowSafetyFailures(row) {
         row.runtimeProofArtifact
         ?? row.runtime_proof_artifact,
       ),
+      ledger: compactObject(row.ledger ?? row.proofLedger ?? row.proof_ledger),
+      realRocmRuntimeChain: compactObject(
+        row.realRocmRuntimeChain
+        ?? row.real_rocm_runtime_chain
+        ?? row.runtimeChain
+        ?? row.runtime_chain,
+      ),
+      outputOracleFacet: compactObject(
+        row.outputOracleFacet
+        ?? row.output_oracle_facet
+        ?? row.outputOracle
+        ?? row.output_oracle,
+      ),
+      realRocmFirewall: compactObject(
+        row.realRocmFirewall
+        ?? row.real_rocm_firewall
+        ?? row.firewall
+        ?? row.firewallEvidence,
+      ),
     });
     if (sameProcessOracleGate.required && !sameProcessOracleGate.accepted) {
       failures.push({
@@ -6815,6 +7273,21 @@ function rowSafetyFailures(row) {
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_profile_adapter_result',
       });
       failures.push(...runtimeProfileAdapterResult.failedGates.map((code) => ({ code })));
+    }
+    const runtimeAdapterExecution = realRocmRuntimeAdapterExecutionFacet(compactObject(
+      row.realRocmRuntimeAdapterExecution
+      ?? row.real_rocm_runtime_adapter_execution
+      ?? row.runtimeAdapterExecution
+      ?? row.runtime_adapter_execution,
+    ));
+    if (
+      runtimeAdapterExecution.present === true
+      && runtimeAdapterExecution.accepted !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_execution',
+      });
+      failures.push(...runtimeAdapterExecution.failedGates.map((code) => ({ code })));
     }
   }
   if (row.matrixOutcome === 'refusal_proven' && row.acceptedForGpuHmr === true) {
@@ -6876,6 +7349,81 @@ function ledgerFacet(json) {
   };
 }
 
+async function computeOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir) {
+  const records = ledgerRecordsFromValue(ledger);
+  const overlays = [];
+  const resolutions = [];
+  for (const [index, record] of records.entries()) {
+    const artifacts = ledgerRecordComputeOracleArtifacts(record);
+    if (Object.keys(artifacts).length === 0) continue;
+    const resolvedArtifacts = await resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir);
+    const resolution = compactObject(
+      resolvedArtifacts.compute_artifact_cas_resolution
+      ?? resolvedArtifacts.computeArtifactCasResolution,
+    );
+    if (Object.keys(resolution).length === 0) continue;
+    overlays[index] = resolvedArtifacts;
+    resolutions.push({
+      recordIndex: index,
+      record_index: index,
+      ...resolution,
+    });
+  }
+  return { overlays, resolutions };
+}
+
+function ledgerFacetFromQuery(ledger, suppliedQuery, query, source, casResolutions = []) {
+  const invariantFailures = Array.isArray(query?.failedInvariants)
+    ? query.failedInvariants
+    : Array.isArray(query?.failed_invariants)
+      ? query.failed_invariants
+      : [];
+  const casFailures = compactObjectList(casResolutions).flatMap((resolution) =>
+    compactStringList(resolution.failedGates ?? resolution.failed_gates).map((code) => ({
+      code,
+      record_index: resolution.record_index ?? resolution.recordIndex ?? 0,
+    }))
+  );
+  const failures = [...invariantFailures, ...casFailures];
+  return {
+    present: Object.keys(ledger).length > 0,
+    source,
+    suppliedQueryPresent: Object.keys(suppliedQuery).length > 0,
+    proofId: firstText(ledger.proofId, ledger.proof_id),
+    gpuHmrSuccess: boolOrNull(query?.gpuHmrSuccess ?? query?.gpu_hmr_success),
+    failedInvariants: failures.map((failure) => (
+      isObject(failure) ? failure : { code: String(failure) }
+    )),
+    invariantSummary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
+    invariant_summary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
+    record: compactObject(query?.record),
+    computeArtifactCasResolutions: compactObjectList(casResolutions),
+    compute_artifact_cas_resolutions: compactObjectList(casResolutions),
+  };
+}
+
+async function ledgerFacetWithComputeArtifactOverlay(json, repoRoot, baseDir) {
+  const ledger = compactObject(json.proofLedger ?? json.proof_ledger);
+  const suppliedQuery = compactObject(json.proofLedgerQuery ?? json.proof_ledger_query ?? ledger.query);
+  let query = null;
+  let source = 'missing';
+  let resolutions = [];
+  if (Object.keys(ledger).length > 0) {
+    const overlay = await computeOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir);
+    resolutions = overlay.resolutions;
+    const casOverlayAccepted = resolutions.length > 0
+      && resolutions.every((resolution) => resolution.accepted === true);
+    query = queryGpuHmrLedgerInvariants(ledger, {
+      computeOracleArtifactOverlays: overlay.overlays,
+      ignoreSuppliedLedgerQueryAndSuccess: casOverlayAccepted,
+    });
+    source = 'recomputed_ledger';
+  } else if (suppliedQuery.schemaVersion || suppliedQuery.schema_version) {
+    source = 'supplied_query_ignored_no_ledger';
+  }
+  return ledgerFacetFromQuery(ledger, suppliedQuery, query, source, resolutions);
+}
+
 function runtimeProofArtifactFromValue(json) {
   return compactObject(
     json.runtimeProofArtifact
@@ -6902,6 +7450,21 @@ function runModeLedgerFacet(json, runtimeProofArtifact) {
       ?? runtimeProofArtifact.proofLedgerQuery
       ?? runtimeProofArtifact.proof_ledger_query,
   });
+}
+
+async function runModeLedgerFacetWithComputeArtifactOverlay(json, runtimeProofArtifact, repoRoot, baseDir) {
+  return ledgerFacetWithComputeArtifactOverlay({
+    proofLedger:
+      json.proofLedger
+      ?? json.proof_ledger
+      ?? runtimeProofArtifact.proofLedger
+      ?? runtimeProofArtifact.proof_ledger,
+    proofLedgerQuery:
+      json.proofLedgerQuery
+      ?? json.proof_ledger_query
+      ?? runtimeProofArtifact.proofLedgerQuery
+      ?? runtimeProofArtifact.proof_ledger_query,
+  }, repoRoot, baseDir);
 }
 
 function runtimeProofArtifactFacet(runtimeProofArtifact) {
@@ -6975,7 +7538,7 @@ async function runtimeProofRow(json, filePath, context) {
   const contract = compactObject(json.acceptanceContract ?? json.acceptance_contract);
   const classification = compactObject(contract.classification);
   const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
-  const ledger = ledgerFacet(json);
+  const ledger = await ledgerFacetWithComputeArtifactOverlay(json, context.repoRoot, path.dirname(filePath));
   const runtimeProofArtifactRaw = runtimeProofArtifactFromValue(json);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifactRaw);
   const proofLedger = compactObject(
@@ -10439,9 +11002,466 @@ function inMemoryArtifactTransportAccepted(event, record) {
     || selectedTransportNormalized.startsWith('in_memory');
 }
 
-function realRocmRuntimeChainFacet({ ledger = {}, proofLedger = {} } = {}) {
+function parseRuntimeBoundaryKeyValues(line) {
+  const out = {};
+  const re = /\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|[^\s]+)/g;
+  let match;
+  while ((match = re.exec(String(line ?? ''))) !== null) {
+    const raw = match[2];
+    out[match[1]] = raw.startsWith('"') && raw.endsWith('"')
+      ? raw.slice(1, -1)
+      : raw;
+  }
+  return out;
+}
+
+function runtimeBoundaryLineMatches(line, pattern) {
+  return /\[gpu-runtime-boundary\]/i.test(String(line ?? '')) && pattern.test(String(line ?? ''));
+}
+
+function runtimeBoundaryLatestFields(lines, pattern) {
+  const matched = (Array.isArray(lines) ? lines : [])
+    .filter((line) => runtimeBoundaryLineMatches(line, pattern))
+    .map(parseRuntimeBoundaryKeyValues)
+    .filter((fields) => Object.keys(fields).length > 0);
+  return compactObject(matched.at(-1));
+}
+
+function artifactHashFromRuntimeBoundaryFields(fields = {}) {
+  return firstText(
+    fields.artifact_hash,
+    fields.new_artifact_hash,
+    normalizedArtifactHash(fields.artifact_id),
+    normalizedArtifactHash(fields.new_artifact_id),
+    normalizedArtifactHash(fields.ram_blob_id),
+  );
+}
+
+function runtimeBoundaryTimestamp(fields = {}) {
+  return firstText(
+    fields.timestamp_monotonic_ns,
+    fields.timestamp_ns,
+    fields.dispatch_timestamp,
+    fields.readback_timestamp,
+    fields.timestamp,
+  );
+}
+
+function runtimeBoundaryArtifactTransport(fields = {}, artifactHash = null) {
+  return compactObject({
+    artifact_hash: artifactHash,
+    artifactHash,
+    blob_digest: artifactHash,
+    blobDigest: artifactHash,
+    selected_loader_transport: firstText(
+      fields.selected_loader_transport,
+      fields.selectedLoaderTransport,
+    ),
+    selectedLoaderTransport: firstText(
+      fields.selected_loader_transport,
+      fields.selectedLoaderTransport,
+    ),
+    transport_class: firstText(fields.transport_class, fields.transportClass),
+    transportClass: firstText(fields.transport_class, fields.transportClass),
+    memory_resident: firstBool(fields.memory_resident, fields.memoryResident) ?? undefined,
+    memoryResident: firstBool(fields.memory_resident, fields.memoryResident) ?? undefined,
+  });
+}
+
+function runtimeChainOverlayRecordFromAdapterResult(adapterResult = {}) {
+  const facet = compactObject(adapterResult);
+  if (facet.present !== true || facet.accepted !== true) return {};
+  if (
+    facet.acceptedForGpuHmr === true
+    || facet.gpuHmrSuccess === true
+    || facet.canSatisfyRuntimeProof === true
+    || facet.canSatisfyDispatchProof === true
+  ) {
+    return {};
+  }
+  const lines = compactStringList([
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLines)
+      ? facet.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_lines)
+      ? facet.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(facet.runtimeBoundaryLines) ? facet.runtimeBoundaryLines : []),
+    ...(Array.isArray(facet.runtime_boundary_lines) ? facet.runtime_boundary_lines : []),
+  ]);
+  if (lines.length === 0) return {};
+
+  const loaderFields = runtimeBoundaryLatestFields(lines, /\bartifact_transport\b/i);
+  const epochFields = runtimeBoundaryLatestFields(lines, /\bdispatcher_epoch\b/i);
+  const dispatchFields = runtimeBoundaryLatestFields(lines, /\bnative_runtime_dispatch\b/i);
+  const hostFields = runtimeBoundaryLatestFields(lines, /\bhost_identity\b/i);
+  const outputFields = runtimeBoundaryLatestFields(lines, /\boutput_oracle\b/i);
+  const artifactHash = firstText(
+    artifactHashFromRuntimeBoundaryFields(loaderFields),
+    artifactHashFromRuntimeBoundaryFields(epochFields),
+    artifactHashFromRuntimeBoundaryFields(dispatchFields),
+    artifactHashFromRuntimeBoundaryFields(outputFields),
+  );
+  const runtimeSession = firstText(
+    loaderFields.runtime_session,
+    epochFields.runtime_session,
+    dispatchFields.runtime_session,
+    hostFields.runtime_session,
+    outputFields.runtime_session,
+  );
+  const processId = firstText(
+    loaderFields.process_id,
+    epochFields.process_id,
+    dispatchFields.process_id,
+    hostFields.process_id,
+    outputFields.process_id,
+  );
+  const epoch = firstText(epochFields.epoch, dispatchFields.epoch, outputFields.epoch);
+  const generation = firstText(
+    epochFields.active_generation,
+    epochFields.generation,
+    dispatchFields.generation,
+    outputFields.generation,
+    hostFields.generation,
+  );
+  const dispatchTableEntryId = firstText(
+    epochFields.dispatch_table_entry_id,
+    dispatchFields.dispatch_table_entry_id,
+    outputFields.dispatch_table_entry_id,
+  );
+  const dispatchId = firstText(dispatchFields.dispatch_id, dispatchFields.dispatch);
+  const outputTargetId = firstText(dispatchFields.output_target_id, outputFields.output_target_id);
+  const loaderTransport = firstText(
+    loaderFields.selected_loader_transport,
+    loaderFields.selectedLoaderTransport,
+    loaderFields.loader_transport,
+    loaderFields.loaderTransport,
+  );
+  const record = compactObject({
+    artifactAfterHash: artifactHash,
+    artifact_after_hash: artifactHash,
+    loaderEvent: compactObject({
+      id: firstText(loaderFields.id),
+      artifact_hash: artifactHash,
+      artifactHash,
+      runtime_session: runtimeSession,
+      runtimeSession,
+      process_id: processId,
+      processId,
+      generation,
+      selected_loader_transport: loaderTransport,
+      selectedLoaderTransport: loaderTransport,
+      loader_api: firstText(loaderFields.loader_api, loaderFields.loaderApi),
+      loaderApi: firstText(loaderFields.loader_api, loaderFields.loaderApi),
+      timestamp_monotonic_ns: runtimeBoundaryTimestamp(loaderFields),
+      artifact_transport: runtimeBoundaryArtifactTransport(loaderFields, artifactHash),
+      artifactTransport: runtimeBoundaryArtifactTransport(loaderFields, artifactHash),
+      blob_digest: artifactHash,
+      blobDigest: artifactHash,
+    }),
+    epochPublishEvent: compactObject({
+      id: firstText(epochFields.id),
+      artifact_hash: artifactHash,
+      artifactHash,
+      runtime_session: runtimeSession,
+      runtimeSession,
+      process_id: processId,
+      processId,
+      epoch,
+      generation,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      dispatchTableEntryId: dispatchTableEntryId,
+      timestamp_monotonic_ns: runtimeBoundaryTimestamp(epochFields),
+    }),
+    dispatchEvent: compactObject({
+      id: dispatchId,
+      dispatch_id: dispatchId,
+      dispatchId,
+      artifact_hash: artifactHash,
+      artifactHash,
+      runtime_session: runtimeSession,
+      runtimeSession,
+      process_id: processId,
+      processId,
+      epoch,
+      generation,
+      output_target_id: outputTargetId,
+      outputTargetId,
+      dispatch_table_entry_id: dispatchTableEntryId,
+      dispatchTableEntryId: dispatchTableEntryId,
+      timestamp_monotonic_ns: runtimeBoundaryTimestamp(dispatchFields),
+    }),
+    outputEvent: compactObject({
+      id: firstText(outputFields.id),
+      artifact_hash: artifactHash,
+      artifactHash,
+      runtime_session: runtimeSession,
+      runtimeSession,
+      process_id: processId,
+      processId,
+      epoch,
+      generation,
+      output_target_id: outputTargetId,
+      outputTargetId,
+      after_dispatch_id: firstText(outputFields.after_dispatch_id, outputFields.afterDispatchId),
+      afterDispatchId: firstText(outputFields.after_dispatch_id, outputFields.afterDispatchId),
+      dispatch_table_entry_id: dispatchTableEntryId,
+      dispatchTableEntryId: dispatchTableEntryId,
+      timestamp_monotonic_ns: runtimeBoundaryTimestamp(outputFields),
+    }),
+    processIdentity: compactObject({
+      runtime_session: runtimeSession,
+      runtimeSession,
+      process_id: processId,
+      processId,
+      device_uuid: firstText(hostFields.device_uuid, hostFields.deviceUuid),
+      deviceUuid: firstText(hostFields.device_uuid, hostFields.deviceUuid),
+      context_id: firstText(hostFields.context_id, hostFields.contextId),
+      contextId: firstText(hostFields.context_id, hostFields.contextId),
+      queue_id: firstText(hostFields.queue_id, hostFields.queueId),
+      queueId: firstText(hostFields.queue_id, hostFields.queueId),
+      generation,
+      timestamp_monotonic_ns: runtimeBoundaryTimestamp(hostFields),
+    }),
+  });
+  return Object.keys(record).length > 0
+    ? {
+      record,
+      lineCount: lines.length,
+      line_count: lines.length,
+      evidenceRefs: compactStringList([
+        ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+        ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+      ]),
+      evidence_refs: compactStringList([
+        ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+        ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+      ]),
+    }
+    : {};
+}
+
+function mergeRuntimeChainEvent(baseEvent = {}, overlayEvent = {}) {
+  const base = compactObject(baseEvent);
+  const overlay = compactObject(overlayEvent);
+  const merged = { ...overlay, ...base };
+  const overlayTransport = compactObject(overlay.artifact_transport ?? overlay.artifactTransport);
+  const baseTransport = compactObject(base.artifact_transport ?? base.artifactTransport);
+  const transport = compactObject({ ...overlayTransport, ...baseTransport });
+  if (Object.keys(transport).length > 0) {
+    merged.artifact_transport = transport;
+    merged.artifactTransport = transport;
+  }
+  return compactObject(merged);
+}
+
+function mergeRuntimeChainRecordWithOverlay(record = {}, overlay = {}) {
+  const base = compactObject(record);
+  const overlayRecord = compactObject(overlay.record);
+  if (Object.keys(overlayRecord).length === 0) {
+    return { record: base, overlay: null };
+  }
+  const merged = compactObject({
+    ...overlayRecord,
+    ...base,
+    loaderEvent: mergeRuntimeChainEvent(base.loaderEvent ?? base.loader_event, overlayRecord.loaderEvent ?? overlayRecord.loader_event),
+    loader_event: mergeRuntimeChainEvent(base.loader_event ?? base.loaderEvent, overlayRecord.loader_event ?? overlayRecord.loaderEvent),
+    epochPublishEvent: mergeRuntimeChainEvent(
+      base.epochPublishEvent ?? base.epoch_publish_event,
+      overlayRecord.epochPublishEvent ?? overlayRecord.epoch_publish_event,
+    ),
+    epoch_publish_event: mergeRuntimeChainEvent(
+      base.epoch_publish_event ?? base.epochPublishEvent,
+      overlayRecord.epoch_publish_event ?? overlayRecord.epochPublishEvent,
+    ),
+    dispatchEvent: mergeRuntimeChainEvent(base.dispatchEvent ?? base.dispatch_event, overlayRecord.dispatchEvent ?? overlayRecord.dispatch_event),
+    dispatch_event: mergeRuntimeChainEvent(base.dispatch_event ?? base.dispatchEvent, overlayRecord.dispatch_event ?? overlayRecord.dispatchEvent),
+    outputEvent: mergeRuntimeChainEvent(base.outputEvent ?? base.output_event, overlayRecord.outputEvent ?? overlayRecord.output_event),
+    output_event: mergeRuntimeChainEvent(base.output_event ?? base.outputEvent, overlayRecord.output_event ?? overlayRecord.outputEvent),
+    processIdentity: mergeRuntimeChainEvent(
+      base.processIdentity ?? base.process_identity,
+      overlayRecord.processIdentity ?? overlayRecord.process_identity,
+    ),
+    process_identity: mergeRuntimeChainEvent(
+      base.process_identity ?? base.processIdentity,
+      overlayRecord.process_identity ?? overlayRecord.processIdentity,
+    ),
+  });
+  return {
+    record: merged,
+    overlay,
+  };
+}
+
+function runtimeChainComparableValues(record = {}) {
+  const normalized = compactObject(record);
+  const loaderEvent = compactObject(normalized.loaderEvent ?? normalized.loader_event);
+  const epochPublishEvent = compactObject(normalized.epochPublishEvent ?? normalized.epoch_publish_event);
+  const dispatchEvent = compactObject(normalized.dispatchEvent ?? normalized.dispatch_event);
+  const outputEvent = compactObject(normalized.outputEvent ?? normalized.output_event);
+  const processIdentity = compactObject(normalized.processIdentity ?? normalized.process_identity);
+  return {
+    artifactHash: firstText(normalized.artifactAfterHash, normalized.artifact_after_hash),
+    loaderArtifactHash: firstText(loaderEvent.artifact_hash, loaderEvent.artifactHash),
+    epochArtifactHash: firstText(epochPublishEvent.artifact_hash, epochPublishEvent.artifactHash),
+    dispatchArtifactHash: firstText(dispatchEvent.artifact_hash, dispatchEvent.artifactHash),
+    outputArtifactHash: firstText(outputEvent.artifact_hash, outputEvent.artifactHash),
+    runtimeSessionIds: compactStringList([
+      eventRuntimeSessionId(loaderEvent),
+      eventRuntimeSessionId(epochPublishEvent),
+      eventRuntimeSessionId(dispatchEvent),
+      eventRuntimeSessionId(outputEvent),
+      eventRuntimeSessionId(processIdentity),
+    ]),
+    processIds: compactStringList([
+      firstText(processIdentity.process_id, processIdentity.processId),
+      firstText(loaderEvent.process_id, loaderEvent.processId),
+      firstText(epochPublishEvent.process_id, epochPublishEvent.processId),
+      firstText(dispatchEvent.process_id, dispatchEvent.processId),
+      firstText(outputEvent.process_id, outputEvent.processId),
+    ]),
+    epochs: compactStringList([
+      firstEpochText(epochPublishEvent.epoch),
+      firstEpochText(dispatchEvent.epoch),
+      firstEpochText(outputEvent.epoch),
+    ]),
+    generations: compactStringList([
+      firstText(epochPublishEvent.generation),
+      firstText(dispatchEvent.generation),
+      firstText(outputEvent.generation),
+    ]),
+    dispatchId: firstText(dispatchEvent.id, dispatchEvent.dispatch_id, dispatchEvent.dispatchId),
+    outputAfterDispatchId: firstText(
+      outputEvent.after_dispatch_id,
+      outputEvent.afterDispatchId,
+      outputEvent.dispatch_id,
+      outputEvent.dispatchId,
+    ),
+    outputTargetIds: compactStringList([
+      eventOutputTargetId(dispatchEvent),
+      eventOutputTargetId(outputEvent),
+    ]),
+    dispatchTableEntryIds: compactStringList([
+      eventDispatchTableEntryId(epochPublishEvent),
+      eventDispatchTableEntryId(dispatchEvent),
+      eventDispatchTableEntryId(outputEvent),
+    ]),
+  };
+}
+
+function adapterBoundaryOverlayConflictCodes(baseRecord = {}, overlay = {}) {
+  const overlayRecord = compactObject(overlay.record);
+  if (Object.keys(overlayRecord).length === 0) return [];
+  const base = runtimeChainComparableValues(baseRecord);
+  const adapter = runtimeChainComparableValues(overlayRecord);
+  const valuesConflict = (left, right) => {
+    if (!left || !right) return false;
+    return left !== right;
+  };
+  const listConflict = (left, right) => {
+    const leftValues = compactStringList(left);
+    const rightValues = compactStringList(right);
+    if (leftValues.length === 0 || rightValues.length === 0) return false;
+    return compactStringList([...leftValues, ...rightValues]).length > 1;
+  };
+  return compactStringList([
+    valuesConflict(base.artifactHash, adapter.artifactHash)
+      ? 'real_rocm_runtime_chain_adapter_artifact_hash_mismatch'
+      : null,
+    listConflict(
+      [
+        base.loaderArtifactHash,
+        base.epochArtifactHash,
+        base.dispatchArtifactHash,
+        base.outputArtifactHash,
+      ],
+      [
+        adapter.loaderArtifactHash,
+        adapter.epochArtifactHash,
+        adapter.dispatchArtifactHash,
+        adapter.outputArtifactHash,
+      ],
+    )
+      ? 'real_rocm_runtime_chain_adapter_event_artifact_hash_mismatch'
+      : null,
+    listConflict(base.runtimeSessionIds, adapter.runtimeSessionIds)
+      ? 'real_rocm_runtime_chain_adapter_session_mismatch'
+      : null,
+    listConflict(base.processIds, adapter.processIds)
+      ? 'real_rocm_runtime_chain_adapter_process_identity_mismatch'
+      : null,
+    listConflict(base.epochs, adapter.epochs)
+      ? 'real_rocm_runtime_chain_adapter_epoch_mismatch'
+      : null,
+    listConflict(base.generations, adapter.generations)
+      ? 'real_rocm_runtime_chain_adapter_generation_mismatch'
+      : null,
+    valuesConflict(base.dispatchId, adapter.dispatchId)
+      ? 'real_rocm_runtime_chain_adapter_dispatch_id_mismatch'
+      : null,
+    valuesConflict(base.outputAfterDispatchId, adapter.outputAfterDispatchId)
+      ? 'real_rocm_runtime_chain_adapter_output_dispatch_mismatch'
+      : null,
+    listConflict(base.outputTargetIds, adapter.outputTargetIds)
+      ? 'real_rocm_runtime_chain_adapter_output_target_mismatch'
+      : null,
+    listConflict(base.dispatchTableEntryIds, adapter.dispatchTableEntryIds)
+      ? 'real_rocm_runtime_chain_adapter_dispatch_table_entry_mismatch'
+      : null,
+  ]);
+}
+
+function realRocmRuntimeChainFacet({
+  ledger = {},
+  proofLedger = {},
+  runtimeProfileAdapterResult = {},
+  runtimeAdapterExecution = {},
+} = {}) {
   const proofLedgerRecord = compactObject(proofLedger.records?.[0] ?? proofLedger.record);
-  const record = compactObject(ledger.record ?? proofLedgerRecord);
+  const baseRecord = compactObject(ledger.record ?? proofLedgerRecord);
+  const adapterResultOverlay = runtimeChainOverlayRecordFromAdapterResult(runtimeProfileAdapterResult);
+  const adapterResultConflictCodes =
+    adapterBoundaryOverlayConflictCodes(baseRecord, adapterResultOverlay);
+  const adapterResultMerged =
+    mergeRuntimeChainRecordWithOverlay(baseRecord, adapterResultOverlay);
+  const adapterExecutionOverlay =
+    runtimeChainOverlayRecordFromAdapterResult(runtimeAdapterExecution);
+  const adapterExecutionConflictCodes = adapterBoundaryOverlayConflictCodes(
+    adapterResultMerged.record,
+    adapterExecutionOverlay,
+  );
+  const { record, overlay: adapterExecutionMergedOverlay } =
+    mergeRuntimeChainRecordWithOverlay(adapterResultMerged.record, adapterExecutionOverlay);
+  const overlay = adapterExecutionMergedOverlay ?? adapterResultMerged.overlay;
+  const adapterBoundaryOverlayLineCount =
+    (adapterResultOverlay.lineCount ?? adapterResultOverlay.line_count ?? 0)
+    + (adapterExecutionOverlay.lineCount ?? adapterExecutionOverlay.line_count ?? 0);
+  const adapterBoundaryOverlayEvidenceRefs = compactStringList([
+    ...(Array.isArray(adapterResultOverlay.evidenceRefs)
+      ? adapterResultOverlay.evidenceRefs
+      : []),
+    ...(Array.isArray(adapterResultOverlay.evidence_refs)
+      ? adapterResultOverlay.evidence_refs
+      : []),
+    ...(Array.isArray(adapterExecutionOverlay.evidenceRefs)
+      ? adapterExecutionOverlay.evidenceRefs
+      : []),
+    ...(Array.isArray(adapterExecutionOverlay.evidence_refs)
+      ? adapterExecutionOverlay.evidence_refs
+      : []),
+  ]);
+  const adapterBoundaryOverlaySources = compactStringList([
+    Object.keys(compactObject(adapterResultOverlay.record)).length > 0
+      ? 'runtime_profile_adapter_result'
+      : null,
+    Object.keys(compactObject(adapterExecutionOverlay.record)).length > 0
+      ? 'runtime_adapter_execution'
+      : null,
+  ]);
+  const adapterOverlayConflictCodes = compactStringList([
+    ...adapterResultConflictCodes,
+    ...adapterExecutionConflictCodes,
+  ]);
   const loaderEvent = compactObject(record.loaderEvent ?? record.loader_event);
   const epochPublishEvent = compactObject(record.epochPublishEvent ?? record.epoch_publish_event);
   const dispatchEvent = compactObject(record.dispatchEvent ?? record.dispatch_event);
@@ -10590,6 +11610,7 @@ function realRocmRuntimeChainFacet({ ledger = {}, proofLedger = {} } = {}) {
     record.processRestarted === false || record.process_restarted === false
       ? null
       : 'real_rocm_runtime_chain_process_restart_not_false',
+    ...adapterOverlayConflictCodes,
   ]);
   const failedGates = failedGateCodes.map((code) => ({ code }));
   return {
@@ -10620,6 +11641,14 @@ function realRocmRuntimeChainFacet({ ledger = {}, proofLedger = {} } = {}) {
     deviceIdentity,
     device_identity: deviceIdentity,
     timestamps,
+    adapterBoundaryOverlayAccepted: Boolean(overlay),
+    adapter_boundary_overlay_accepted: Boolean(overlay),
+    adapterBoundaryOverlayLineCount,
+    adapter_boundary_overlay_line_count: adapterBoundaryOverlayLineCount,
+    adapterBoundaryOverlayEvidenceRefs: adapterBoundaryOverlayEvidenceRefs,
+    adapter_boundary_overlay_evidence_refs: adapterBoundaryOverlayEvidenceRefs,
+    adapterBoundaryOverlaySources: adapterBoundaryOverlaySources,
+    adapter_boundary_overlay_sources: adapterBoundaryOverlaySources,
     failedGates,
     failed_gates: failedGates,
   };
@@ -10678,19 +11707,79 @@ function ledgerRecordComputeOracleArtifacts(record) {
   );
 }
 
-function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
+async function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
   const out = { ...artifacts };
-  for (const [snakeName, camelName] of [
-    ['raw_readback_bin', 'rawReadbackBin'],
-    ['readback_schema_json', 'readbackSchemaJson'],
-    ['rendered_card_png', 'renderedCardPng'],
+  const locators = computeArtifactCasLocators(artifacts);
+  const casEntries = [];
+  for (const [snakeName, camelName, role] of [
+    ['raw_readback_bin', 'rawReadbackBin', 'raw_readback'],
+    ['readback_schema_json', 'readbackSchemaJson', 'readback_schema'],
+    ['rendered_card_png', 'renderedCardPng', 'rendered_card'],
   ]) {
     const value = firstText(out[snakeName], out[camelName]);
-    if (!value) continue;
-    const resolved = resolveEvidencePath(value, repoRoot, baseDir);
-    if (!resolved) continue;
-    out[snakeName] = resolved;
-    out[camelName] = resolved;
+    const expectedHash = computeArtifactCasExpectedHash(artifacts, role);
+    const locator = computeArtifactCasLocatorForRole(locators, role, expectedHash);
+    if (locator) {
+      const validation = await validateComputeArtifactCasLocator(locator, repoRoot, baseDir, artifacts);
+      const accepted = validation?.accepted === true && firstText(validation.localPath, validation.local_path);
+      const entry = {
+        role,
+        accepted: Boolean(accepted),
+        path: accepted ? firstText(validation.localPath, validation.local_path) : null,
+        contentHash: validation?.contentHash ?? null,
+        content_hash: validation?.contentHash ?? null,
+        manifestHash: validation?.manifestHash ?? null,
+        manifest_hash: validation?.manifestHash ?? null,
+        reasons: validation?.reasons ?? [],
+        gaps: validation?.gaps ?? [],
+      };
+      casEntries.push(entry);
+      if (accepted) {
+        out[snakeName] = entry.path;
+        out[camelName] = entry.path;
+      } else {
+        delete out[snakeName];
+        delete out[camelName];
+      }
+      continue;
+    }
+    if (value) {
+      const resolved = resolveEvidencePath(value, repoRoot, baseDir);
+      if (!resolved) continue;
+      out[snakeName] = resolved;
+      out[camelName] = resolved;
+    }
+  }
+  const locatorCount = locators.length;
+  const acceptedCount = casEntries.filter((entry) => entry.accepted === true).length;
+  if (locatorCount > 0 || casEntries.length > 0) {
+    out.compute_artifact_cas_resolution = {
+      schemaVersion: 'synthi.gpu_hmr.compute_artifact_cas_resolution.v1',
+      schema_version: 'synthi.gpu_hmr.compute_artifact_cas_resolution.v1',
+      proofAuthority: 'compute_artifact_transport_integrity_only',
+      proof_authority: 'compute_artifact_transport_integrity_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      locatorCount,
+      locator_count: locatorCount,
+      acceptedCount,
+      accepted_count: acceptedCount,
+      accepted: locatorCount > 0 && acceptedCount === locatorCount,
+      entries: casEntries,
+      failedGates: compactStringList([
+        locatorCount > 0 && acceptedCount !== locatorCount
+          ? 'compute_oracle_artifact_cas_locator_validation_failed'
+          : null,
+      ]),
+      failed_gates: compactStringList([
+        locatorCount > 0 && acceptedCount !== locatorCount
+          ? 'compute_oracle_artifact_cas_locator_validation_failed'
+          : null,
+      ]),
+    };
+    out.computeArtifactCasResolution = out.compute_artifact_cas_resolution;
   }
   return out;
 }
@@ -10707,7 +11796,7 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
       failedGates: [{ code: 'compute_oracle_artifacts_missing' }],
     };
   }
-  const resolvedArtifacts = resolveComputeOracleArtifactPaths(computeArtifacts, repoRoot, baseDir);
+  const resolvedArtifacts = await resolveComputeOracleArtifactPaths(computeArtifacts, repoRoot, baseDir);
   const enriched = await computeOracleArtifactsFromFiles(resolvedArtifacts);
   const verification = compactObject(
     enriched?.raw_readback_verification
@@ -10784,6 +11873,14 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
   const checksumAfter = firstText(enriched?.checksum_after, enriched?.checksumAfter);
   const outputChangeExpected =
     firstBool(enriched?.output_change_expected, enriched?.outputChangeExpected) !== false;
+  const computeArtifactCasResolution = compactObject(
+    resolvedArtifacts.compute_artifact_cas_resolution
+    ?? resolvedArtifacts.computeArtifactCasResolution,
+  );
+  const casFailedGates = compactStringList(
+    computeArtifactCasResolution.failedGates
+    ?? computeArtifactCasResolution.failed_gates,
+  ).map((code) => ({ code }));
   const expectedOutputVerified = firstBool(
     enriched?.expected_output_verified,
     enriched?.expectedOutputVerified,
@@ -10815,7 +11912,9 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     artifactEpoch ? null : 'compute_oracle_epoch_missing',
     epochMatches ? null : 'compute_oracle_epoch_mismatch',
   ]).map((code) => ({ code }));
-  const fileFailedGates = compactStringList([
+  const fileFailedGates = [
+    ...casFailedGates,
+    ...compactStringList([
     rawReadbackPath ? null : 'compute_oracle_raw_readback_path_missing',
     hashVerified ? null : 'compute_oracle_raw_readback_hash_unverified',
     rawReadbackByteLength && rawReadbackByteLength > 0 ? null : 'compute_oracle_raw_readback_bytes_missing',
@@ -10827,7 +11926,7 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     renderedCard.present ? null : 'compute_oracle_rendered_card_path_missing',
     renderedCard.decoded ? null : 'compute_oracle_rendered_card_decode_failed',
     renderedCard.decoded && renderedCard.format === 'png' ? null : 'compute_oracle_rendered_card_not_png',
-  ]).map((code) => ({ code }));
+  ]).map((code) => ({ code }))];
   const failedGates = [...fileFailedGates, ...semanticFailedGates];
   return {
     present: true,
@@ -10861,6 +11960,12 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
     readbackSchemaReadError: firstText(verification.readback_schema_read_error, verification.readbackSchemaReadError),
     renderedCard,
     rawReadbackReadError: firstText(verification.raw_readback_read_error, verification.rawReadbackReadError),
+    computeArtifactCasResolution: Object.keys(computeArtifactCasResolution).length > 0
+      ? computeArtifactCasResolution
+      : null,
+    compute_artifact_cas_resolution: Object.keys(computeArtifactCasResolution).length > 0
+      ? computeArtifactCasResolution
+      : null,
   };
 }
 
@@ -11446,7 +12551,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const checks = Array.isArray(json.checks) ? json.checks : [];
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
-  const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
+  const ledger = await runModeLedgerFacetWithComputeArtifactOverlay(
+    json,
+    runtimeProofArtifact,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
   const proofLedger = compactObject(
     json.proofLedger
     ?? json.proof_ledger
@@ -11536,6 +12646,38 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? evidence.external_header_prerequisites
     ?? evidence.externalHeaderPrerequisites,
   ));
+  const realRocmRuntimeProfileAdapterResult = realRocmRuntimeProfileAdapterResultFacet(compactObject(
+    json.real_rocm_runtime_profile_adapter_result
+    ?? json.realRocmRuntimeProfileAdapterResult
+    ?? json.runtime_profile_adapter_result
+    ?? json.runtimeProfileAdapterResult
+    ?? summary.real_rocm_runtime_profile_adapter_result
+    ?? summary.realRocmRuntimeProfileAdapterResult
+    ?? summary.runtime_profile_adapter_result
+    ?? summary.runtimeProfileAdapterResult
+    ?? runtimeProofArtifact.real_rocm_runtime_profile_adapter_result
+    ?? runtimeProofArtifact.realRocmRuntimeProfileAdapterResult
+    ?? runtimeProofArtifact.runtime_profile_adapter_result
+    ?? runtimeProofArtifact.runtimeProfileAdapterResult,
+  ));
+  const realRocmRuntimeAdapterExecution = realRocmRuntimeAdapterExecutionFacet(compactObject(
+    json.real_rocm_runtime_adapter_execution
+    ?? json.realRocmRuntimeAdapterExecution
+    ?? json.runtime_adapter_execution
+    ?? json.runtimeAdapterExecution
+    ?? summary.real_rocm_runtime_adapter_execution
+    ?? summary.realRocmRuntimeAdapterExecution
+    ?? summary.runtime_adapter_execution
+    ?? summary.runtimeAdapterExecution
+    ?? runtimeProofArtifact.real_rocm_runtime_adapter_execution
+    ?? runtimeProofArtifact.realRocmRuntimeAdapterExecution
+    ?? runtimeProofArtifact.runtime_adapter_execution
+    ?? runtimeProofArtifact.runtimeAdapterExecution
+    ?? evidence.real_rocm_runtime_adapter_execution
+    ?? evidence.realRocmRuntimeAdapterExecution
+    ?? evidence.runtime_adapter_execution
+    ?? evidence.runtimeAdapterExecution,
+  ));
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
     ?? json.outputOracleResolution
@@ -11573,7 +12715,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const outputOracleResolutionGate = realRocmOutputOracleResolutionGate(outputOracleResolution, {
     required: true,
   });
-  const realRocmRuntimeChain = realRocmRuntimeChainFacet({ ledger, proofLedger });
+  const realRocmRuntimeChain = realRocmRuntimeChainFacet({
+    ledger,
+    proofLedger,
+    runtimeProfileAdapterResult: realRocmRuntimeProfileAdapterResult,
+    runtimeAdapterExecution: realRocmRuntimeAdapterExecution,
+  });
   const reportedTargetProgressionGates = compactObjectList(
     json.target_progression_gates
     ?? json.targetProgressionGates
@@ -11733,20 +12880,6 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_materialization
     ?? runtimeProofArtifact.appHookMaterialization,
   );
-  const realRocmRuntimeProfileAdapterResult = realRocmRuntimeProfileAdapterResultFacet(compactObject(
-    json.real_rocm_runtime_profile_adapter_result
-    ?? json.realRocmRuntimeProfileAdapterResult
-    ?? json.runtime_profile_adapter_result
-    ?? json.runtimeProfileAdapterResult
-    ?? summary.real_rocm_runtime_profile_adapter_result
-    ?? summary.realRocmRuntimeProfileAdapterResult
-    ?? summary.runtime_profile_adapter_result
-    ?? summary.runtimeProfileAdapterResult
-    ?? runtimeProofArtifact.real_rocm_runtime_profile_adapter_result
-    ?? runtimeProofArtifact.realRocmRuntimeProfileAdapterResult
-    ?? runtimeProofArtifact.runtime_profile_adapter_result
-    ?? runtimeProofArtifact.runtimeProfileAdapterResult,
-  ));
   const topLevelValidationBlockers = compactObjectList([
     ...(Array.isArray(json.validation_blockers) ? json.validation_blockers : []),
     ...(Array.isArray(json.validationBlockers) ? json.validationBlockers : []),
@@ -11887,6 +13020,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           : []),
       ])
       : [];
+  const realRocmRuntimeAdapterExecutionGaps =
+    realRocmRuntimeAdapterExecution.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.blockingGaps)
+          ? realRocmRuntimeAdapterExecution.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.blocking_gaps)
+          ? realRocmRuntimeAdapterExecution.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.failedGates)
+          ? realRocmRuntimeAdapterExecution.failedGates
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.failed_gates)
+          ? realRocmRuntimeAdapterExecution.failed_gates
+          : []),
+      ])
+      : [];
   const realRocmSourceTreeTransportGaps = realRocmSourceTreeTransport.present === true
     ? compactStringList([
       ...(Array.isArray(realRocmSourceTreeTransport.blockingGaps)
@@ -11995,6 +13145,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmRuntimeProfileAdapterResult.present === true
       ? firstText(realRocmRuntimeProfileAdapterResult.status, realRocmRuntimeProfileAdapterResult.reason)
       : null;
+  const realRocmRuntimeAdapterExecutionReason =
+    realRocmRuntimeAdapterExecution.present === true
+      ? firstText(realRocmRuntimeAdapterExecution.status, realRocmRuntimeAdapterExecution.reason)
+      : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
   const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
@@ -12094,6 +13248,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeProfileAdapterResultAccepted =
     realRocmRuntimeProfileAdapterResult.present !== true
     || realRocmRuntimeProfileAdapterResult.accepted === true;
+  const runtimeAdapterExecutionAccepted =
+    realRocmRuntimeAdapterExecution.present !== true
+    || realRocmRuntimeAdapterExecution.accepted === true;
   const externalHeaderPrerequisitesAccepted =
     realRocmExternalHeaderPrerequisites.present !== true
     || realRocmExternalHeaderPrerequisites.accepted === true;
@@ -12181,6 +13338,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeStageObligationsAccepted === true
     && appHookMaterializationAccepted === true
     && runtimeProfileAdapterResultAccepted === true
+    && runtimeAdapterExecutionAccepted === true
     && externalHeaderPrerequisitesAccepted === true
     && missingDependencyBlockerPresent !== true
     && profileProofObligationsAccepted === true
@@ -12410,6 +13568,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
     runtimeProfileAdapterResult: realRocmRuntimeProfileAdapterResult,
     runtime_profile_adapter_result: realRocmRuntimeProfileAdapterResult,
+    realRocmRuntimeAdapterExecution,
+    real_rocm_runtime_adapter_execution: realRocmRuntimeAdapterExecution,
+    runtimeAdapterExecution: realRocmRuntimeAdapterExecution,
+    runtime_adapter_execution: realRocmRuntimeAdapterExecution,
     realRocmProofScheduling,
     real_rocm_proof_scheduling: realRocmProofScheduling,
     proofScheduling: realRocmProofScheduling,
@@ -12478,6 +13640,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeProfileAdapterResultAccepted
         ? null
         : 'real_rocm_runtime_profile_adapter_result_not_accepted',
+      realRocmRuntimeAdapterExecutionReason
+        ? `real_rocm_runtime_adapter_execution:${realRocmRuntimeAdapterExecutionReason}`
+        : null,
+      ...realRocmRuntimeAdapterExecutionGaps.map((gap) =>
+        `real_rocm_runtime_adapter_execution:${gap}`
+      ),
+      runtimeAdapterExecutionAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_execution_not_accepted',
       realRocmRuntimeCapabilityPreflightReason
         ? `real_rocm_runtime_capability_preflight:${realRocmRuntimeCapabilityPreflightReason}`
         : null,
@@ -12592,6 +13763,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeProfileAdapterResultAccepted
         ? null
         : 'real_rocm_runtime_profile_adapter_result_required',
+      ...realRocmRuntimeAdapterExecutionGaps.map((gap) =>
+        `real_rocm_runtime_adapter_execution:${gap}`
+      ),
+      runtimeAdapterExecutionAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_execution_required',
       ...realRocmProofSchedulingGaps.map((gap) =>
         `real_rocm_proof_scheduling:${gap}`
       ),

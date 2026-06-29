@@ -37,6 +37,7 @@ import {
 } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
   buildValidationRuntimeProofArtifact,
+  computeOracleArtifactsFromFiles,
 } from '../lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
   buildGpuHmrValidationProofSummary,
@@ -1226,6 +1227,8 @@ function sourceFirstIngestionEvidenceFor({
   useAiSplit = true,
   userRequestedAi = true,
   preferGpuPipeline = true,
+  gpuArch = 'gfx-self-check',
+  gpuArchSource = 'self_check_fixture',
   gpuSplitEndpointObserved = true,
   preexistingGeneratedArtifactPaths = [],
   generatedArtifactHashes = [hashValue(`${targetId}:generated-device`)],
@@ -1294,6 +1297,8 @@ function sourceFirstIngestionEvidenceFor({
     initialManifestHash,
     sourcePurityManifestHash: normalizedSourcePurityEvidence.purityManifestHash,
     sourcePurityInitialManifestHash,
+    gpuArch,
+    gpuArchSource,
     generatedArtifactHashes,
     sidecarHash,
     compileManifestHash,
@@ -1330,6 +1335,10 @@ function sourceFirstIngestionEvidenceFor({
       useAiSplit,
       userRequestedAi,
       preferGpuPipeline,
+      gpuArch,
+      gpu_arch: gpuArch,
+      gpuArchSource,
+      gpu_arch_source: gpuArchSource,
     },
     initialFilePaths: normalizedInitialFiles.map((entry) => entry.path),
     initialFiles: normalizedInitialFiles,
@@ -1531,6 +1540,52 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-forged-cas.json
   },
 });
 
+const pendingVisualJobHash = hashValue('flow-source-first-pending-visual-job-only');
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-pending-visual-job-only.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-first-pending-visual-job-only',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-first-pending-visual-job-only',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-first-pending-visual-job-only',
+  }),
+  targetId: 'flow-source-first-pending-visual-job-only',
+  profileId: 'flow-source-first-pending-visual-job-only',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-first-pending-visual-job-only',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-first-pending-visual-job-only',
+  }),
+  visualArtifacts: {},
+  asyncVisualProofJob: {
+    schemaVersion: 'synthi.gpu_hmr.async_visual_proof_job.v1',
+    eventType: 'proof_pending',
+    proofPending: true,
+    proofReady: false,
+    accepted: false,
+    acceptedAsAsyncVisualProofJob: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'async_visual_job_manifest_only_not_gpu_hmr_acceptance',
+    jobHash: pendingVisualJobHash,
+    jobManifestHash: pendingVisualJobHash,
+    artifactCasLocators: [],
+  },
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-first-pending-visual-job-only',
+    editHash: hashValue('source-edit:hot1-source-first-pending-visual-job-only'),
+  },
+});
+
 await writeJson(path.join(visualDir, 'run-mode-profile-priority-hot1.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
@@ -1583,6 +1638,36 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-smuggled-precompiled.json'),
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1-smuggled-precompiled',
     editHash: hashValue('source-edit:hot1-smuggled-precompiled'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-missing-arch.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-first-missing-arch',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-first-missing-arch',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-first-missing-arch',
+  }),
+  targetId: 'flow-source-first-missing-arch',
+  profileId: 'flow-source-first-missing-arch',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-first-missing-arch',
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-first-missing-arch',
+    gpuArch: null,
+    gpuArchSource: null,
+    accepted: true,
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-first-missing-arch',
+    editHash: hashValue('source-edit:hot1-source-first-missing-arch'),
   },
 });
 
@@ -3596,6 +3681,109 @@ function acceptedSameProcessRuntimeOracle(scope, overrides = {}) {
   };
 }
 
+function runtimeAdapterBoundaryBridgeFixture(scope, materials, overrides = {}) {
+  const artifactHash = hashValue(`compute-artifact-after:${scope}`);
+  const adapterResultHash = hashValue(`runtime-adapter-result:${scope}`);
+  const proofLedgerId = materials.proofLedger?.proof_id
+    ?? materials.proofLedger?.proofId
+    ?? `gpu-ledger-proof:sha256:${sha256Hex(`ledger:${scope}`)}`;
+  const strictRuntimeProofId = materials.runtimeProofArtifact?.proofId
+    ?? materials.runtime_proof_artifact?.proofId
+    ?? `gpu-runtime-proof:sha256:${sha256Hex(`runtime:${scope}`)}`;
+  const boundaryLines = [
+    `[gpu-runtime-boundary] artifact_transport event=loaded id=loader:${scope} runtime_session=runtime-session:${scope} process_id=pid:4242 generation=generation:${scope} artifact_hash=${artifactHash} artifact_bytes=8 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:${artifactHash} ram_transport_proven=true load_result=ok timestamp_monotonic_ns=1000`,
+    `[gpu-runtime-boundary] dispatcher_epoch event=published id=epoch:${scope} process_id=pid:4242 epoch=epoch:${scope} active_generation=generation:${scope} previous_generation=generation:previous new_artifact_id=artifact:${artifactHash} new_artifact_hash=${artifactHash} dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash_before=${hashValue(`dispatch-table-before:${scope}`)} dispatch_table_hash_after=${hashValue(`dispatch-table-after:${scope}`)} changed_entries=1 stream_ordering_proven=true retirement_tracked=true old_generation_retired=true timestamp_monotonic_ns=2000`,
+    `[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=complete attachment_provenance=native_runtime_bridge runtime_session=runtime-session:${scope} process_id=pid:4242 artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} dispatch_id=dispatch:${scope} output_target_id=output-target:${scope} dispatch_timestamp=3000 dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash=${hashValue(`dispatch-table-after:${scope}`)}`,
+    `[gpu-runtime-boundary] host_identity event=stable runtime_session=runtime-session:${scope} process_id=pid:4242 device_uuid=gpu:synthetic-rocm context_id=context:0 queue_id=stream:0 generation=generation:${scope} timestamp_monotonic_ns=3500`,
+    `[gpu-runtime-boundary] output_oracle id=oracle:${scope} kind=buffer_checksum expected=${hashValue(`compute-checksum-after:${scope}`)} actual=${hashValue(`compute-checksum-after:${scope}`)} passed=true runtime_session=runtime-session:${scope} process_id=pid:4242 artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} output_target_id=output-target:${scope} after_dispatch_id=dispatch:${scope} dispatch_table_entry_id=dispatch-table-entry:${scope} readback_timestamp=4000 timestamp_monotonic_ns=4000 readback_bytes=8 readback_sample_sha256=${hashValue(`readback-slice:${scope}`)}`,
+  ];
+  return {
+    schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+    schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
+    proofAuthority: 'declared_adapter_result_import_not_runtime_authority',
+    proof_authority: 'declared_adapter_result_import_not_runtime_authority',
+    status: 'runtime_profile_adapter_result_imported',
+    declared: true,
+    present: true,
+    resultPresent: true,
+    result_present: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    strictRuntimeProofAccepted: true,
+    strict_runtime_proof_accepted: true,
+    strictRuntimeProofArtifactPresent: true,
+    strict_runtime_proof_artifact_present: true,
+    proofLedgerPresent: true,
+    proof_ledger_present: true,
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
+    proofLedgerId,
+    proof_ledger_id: proofLedgerId,
+    adapterResultHash,
+    adapter_result_hash: adapterResultHash,
+    adapterRuntimeBoundaryLines: boundaryLines,
+    adapter_runtime_boundary_lines: boundaryLines,
+    evidenceRefs: [
+      adapterResultHash,
+      ...boundaryLines.map((line) => `adapter-boundary:${hashValue(line)}`),
+    ],
+    evidence_refs: [
+      adapterResultHash,
+      ...boundaryLines.map((line) => `adapter-boundary:${hashValue(line)}`),
+    ],
+    blockingGaps: [],
+    blocking_gaps: [],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+}
+
+function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
+  const boundaryBridge = runtimeAdapterBoundaryBridgeFixture(scope, materials);
+  const boundaryLines = boundaryBridge.adapterRuntimeBoundaryLines;
+  return {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    proofAuthority: 'adapter_execution_evidence_only_not_runtime_authority',
+    proof_authority: 'adapter_execution_evidence_only_not_runtime_authority',
+    declared: true,
+    enabled: true,
+    status: 'runtime_adapter_executed',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeBoundaryLines: boundaryLines,
+    runtime_boundary_lines: boundaryLines,
+    runtimeBoundaryLineCount: boundaryLines.length,
+    runtime_boundary_line_count: boundaryLines.length,
+    evidenceRefs: [
+      `runtime-adapter-execution:${scope}`,
+      ...boundaryLines.map((line) => `runtime-adapter-boundary:${hashValue(line)}`),
+    ],
+    evidence_refs: [
+      `runtime-adapter-execution:${scope}`,
+      ...boundaryLines.map((line) => `runtime-adapter-boundary:${hashValue(line)}`),
+    ],
+    blockingGaps: [],
+    blocking_gaps: [],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+}
+
 function acceptedLargeRocmSourceDeltaExecution(scope) {
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution.v1',
@@ -3828,6 +4016,111 @@ function realRocmComputeProofLedgerMaterials(scope, options = {}) {
   return withAcceptedRuntimeCapabilityPreflight(computeProofLedgerMaterials(scope, options));
 }
 
+function computeOracleArtifactsWithoutDirectPaths(computeOracleArtifacts) {
+  const copy = JSON.parse(JSON.stringify(computeOracleArtifacts));
+  for (const key of [
+    'raw_readback_bin',
+    'rawReadbackBin',
+    'readback_schema_json',
+    'readbackSchemaJson',
+    'rendered_card_png',
+    'renderedCardPng',
+  ]) {
+    delete copy[key];
+  }
+  return copy;
+}
+
+function proofLedgerForComputeOracleArtifacts(materials, computeOracleArtifacts) {
+  const record = JSON.parse(JSON.stringify(materials.proofLedger.records[0]));
+  const outputEvent = record.output_event ?? record.outputEvent ?? {};
+  outputEvent.compute_oracle_artifacts = computeOracleArtifacts;
+  outputEvent.computeOracleArtifacts = computeOracleArtifacts;
+  record.output_event = outputEvent;
+  record.outputEvent = outputEvent;
+  const oracleArtifacts = record.oracle_artifacts ?? record.oracleArtifacts ?? {};
+  oracleArtifacts.compute_oracle_artifacts = computeOracleArtifacts;
+  oracleArtifacts.computeOracleArtifacts = computeOracleArtifacts;
+  record.oracle_artifacts = oracleArtifacts;
+  record.oracleArtifacts = oracleArtifacts;
+  const proofLedger = buildGpuHmrProofLedger(record);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  return { proofLedger, proofLedgerQuery };
+}
+
+function withComputeOracleArtifacts(materials, computeOracleArtifacts) {
+  const copy = JSON.parse(JSON.stringify(materials));
+  const { proofLedger, proofLedgerQuery } = proofLedgerForComputeOracleArtifacts(
+    copy,
+    computeOracleArtifacts,
+  );
+  assert.deepEqual(proofLedgerQuery.failedInvariants, []);
+  assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
+  copy.proofLedger = proofLedger;
+  copy.proof_ledger = proofLedger;
+  copy.proofLedgerQuery = proofLedgerQuery;
+  copy.proof_ledger_query = proofLedgerQuery;
+  copy.computeOracleArtifacts = computeOracleArtifacts;
+  copy.compute_oracle_artifacts = computeOracleArtifacts;
+  for (const key of ['runtimeProofArtifact', 'runtime_proof_artifact']) {
+    if (!copy[key]) continue;
+    copy[key].proofLedger = proofLedger;
+    copy[key].proof_ledger = proofLedger;
+    copy[key].proofLedgerQuery = proofLedgerQuery;
+    copy[key].proof_ledger_query = proofLedgerQuery;
+  }
+  return copy;
+}
+
+async function computeOracleCasBackedArtifacts({
+  baseArtifacts,
+  casRoot,
+  rawReadbackPath,
+  schemaPath,
+  cardPath,
+  scope,
+}) {
+  const producer = { name: 'validation_matrix_smoke', kind: 'proof_runner' };
+  const rawLocator = await writeArtifactToCas(await fs.readFile(rawReadbackPath), {
+    artifactRoot: casRoot,
+    artifactKind: 'runtime_compute_raw_readback',
+    mediaType: 'application/octet-stream',
+    role: 'raw_readback',
+    producer,
+    producerSubsystem: 'compute_oracle_artifact_transport',
+    sessionNamespace: scope,
+    transportKind: 'cas_shared_volume',
+  });
+  const schemaLocator = await writeArtifactToCas(await fs.readFile(schemaPath), {
+    artifactRoot: casRoot,
+    artifactKind: 'runtime_compute_readback_schema',
+    mediaType: 'application/json',
+    role: 'readback_schema',
+    producer,
+    producerSubsystem: 'compute_oracle_artifact_transport',
+    sessionNamespace: scope,
+    transportKind: 'cas_shared_volume',
+  });
+  const cardLocator = await writeArtifactToCas(await fs.readFile(cardPath), {
+    artifactRoot: casRoot,
+    artifactKind: 'runtime_compute_proof_card',
+    mediaType: 'image/png',
+    role: 'rendered_card',
+    producer,
+    producerSubsystem: 'compute_oracle_artifact_transport',
+    sessionNamespace: scope,
+    transportKind: 'cas_shared_volume',
+  });
+  const artifacts = {
+    ...baseArtifacts,
+    artifactCasRoot: casRoot,
+    artifact_cas_root: casRoot,
+    artifactCasLocators: [rawLocator, schemaLocator, cardLocator],
+    artifact_cas_locators: [rawLocator, schemaLocator, cardLocator],
+  };
+  return artifacts;
+}
+
 function withNumericComputeEpoch(materials, epoch) {
   const numericEpoch = Number(epoch);
   assert.equal(Number.isInteger(numericEpoch) && numericEpoch >= 0, true);
@@ -3958,6 +4251,74 @@ function realRocmRuntimeStageObligationsFixture(overrides = {}) {
     evidence_refs: ['real-rocm-source-delta-execution:sha256:fixture'],
     contractHash: hashValue('real-rocm-runtime-stage-obligations-fixture'),
     contract_hash: hashValue('real-rocm-runtime-stage-obligations-fixture'),
+    ...overrides,
+  };
+}
+
+function acceptedRealRocmRuntimeStageObligations(scope, overrides = {}) {
+  const stageProofKinds = {
+    artifact_transport: ['changed_artifact_hash', 'same_process_transport_event', 'loaded_artifact_hash'],
+    epoch_publication: ['published_epoch', 'published_artifact_hash', 'same_process_epoch_event'],
+    dispatch_trace: ['dispatch_id', 'dispatch_epoch', 'dispatch_artifact_hash'],
+    host_identity: ['process_id', 'device_identity', 'context_or_queue_identity'],
+    output_oracle: ['after_dispatch_id', 'output_target_id', 'readback_or_visual_artifact'],
+  };
+  const stageResults = Object.fromEntries(Object.entries(stageProofKinds).map(([stage, proofKinds]) => [
+    stage,
+    {
+      stage,
+      required: true,
+      observed: true,
+      runtimeObserved: true,
+      runtime_observed: true,
+      requiredProofKinds: proofKinds,
+      required_proof_kinds: proofKinds,
+      missingProofKinds: [],
+      missing_proof_kinds: [],
+      evidenceRefs: proofKinds.map((kind) => `evidence:runtime-stage:${scope}:${stage}:${kind}`),
+      evidence_refs: proofKinds.map((kind) => `evidence:runtime-stage:${scope}:${stage}:${kind}`),
+    },
+  ]));
+  const evidenceRefs = Object.values(stageResults).flatMap((stage) => stage.evidenceRefs);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_runtime_stage_obligations.v1',
+    required: true,
+    complete: true,
+    accepted: true,
+    readyForAcceptance: true,
+    ready_for_acceptance: true,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    proofAuthority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    proof_authority: 'derived_runtime_stage_obligation_ledger_not_runtime_proof',
+    status: 'runtime_stage_obligations_observed',
+    sourceDeltaExecutionPresent: true,
+    source_delta_execution_present: true,
+    sourceDeltaExecutionAccepted: true,
+    source_delta_execution_accepted: true,
+    fullRuntimeProofAccepted: true,
+    full_runtime_proof_accepted: true,
+    firewallAccepted: true,
+    firewall_accepted: true,
+    appHookContractAccepted: true,
+    app_hook_contract_accepted: true,
+    sameProcessRuntimeOracleAccepted: true,
+    same_process_runtime_oracle_accepted: true,
+    sidecarRuntimeConsistencyAccepted: true,
+    sidecar_runtime_consistency_accepted: true,
+    stageResults,
+    stage_results: stageResults,
+    missingStages: [],
+    missing_stages: [],
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash: hashValue(`real-rocm-runtime-stage-obligations:${scope}`),
+    contract_hash: hashValue(`real-rocm-runtime-stage-obligations:${scope}`),
     ...overrides,
   };
 }
@@ -7996,6 +8357,15 @@ assert.equal(webgpuSingleFrameCold?.matrixOutcome, 'cold_split_proven');
 assert.equal(webgpuSingleFrameCold.visual.accepted, true);
 assert.equal(webgpuSingleFrameCold.visual.allowSingleFrameProof, true);
 assert.equal(webgpuSingleFrameCold.visual.recomputedSingleFrame.accepted, true);
+assert.equal(
+  webgpuSingleFrameCold.visual.recomputedSingleFrame.recomputeEngine,
+  'matrix_async_visual_worker_rgba',
+);
+assert.equal(webgpuSingleFrameCold.visual.recomputedSingleFrame.asyncVisualMetrics.accepted, true);
+assert.equal(
+  webgpuSingleFrameCold.visual.recomputedSingleFrame.asyncVisualMetrics.worker.offMainThread,
+  true,
+);
 assert.ok(!webgpuSingleFrameCold.visual.failedGates.includes('visual_after_artifact_missing'));
 assert.ok(!webgpuSingleFrameCold.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
 const webgpuSingleFrameHotForged = ledger.rows.find((row) =>
@@ -8007,6 +8377,11 @@ assert.equal(webgpuSingleFrameHotForged?.matrixOutcome, 'unproven');
 assert.equal(webgpuSingleFrameHotForged.visual.accepted, false);
 assert.equal(webgpuSingleFrameHotForged.visual.allowSingleFrameProof, false);
 assert.equal(webgpuSingleFrameHotForged.visual.recomputedSingleFrame.accepted, true);
+assert.equal(
+  webgpuSingleFrameHotForged.visual.recomputedSingleFrame.recomputeEngine,
+  'matrix_async_visual_worker_rgba',
+);
+assert.equal(webgpuSingleFrameHotForged.visual.recomputedSingleFrame.asyncVisualMetrics.accepted, true);
 assert.ok(webgpuSingleFrameHotForged.visual.failedGates.includes('visual_after_artifact_missing'));
 assert.ok(webgpuSingleFrameHotForged.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
 
@@ -8079,6 +8454,29 @@ assert.ok(sourceFirstNoCasRunMode.asyncVisualCasBundle.failedGates.includes(
   'async_visual_worker_cas_input_missing',
 ));
 
+const sourceFirstPendingVisualJobOnly = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-first-pending-visual-job-only'
+);
+assert.equal(sourceFirstPendingVisualJobOnly?.matrixOutcome, 'unproven');
+assert.equal(sourceFirstPendingVisualJobOnly.acceptedForGpuHmr, false);
+assert.equal(sourceFirstPendingVisualJobOnly.gpuHmrSuccess, false);
+assert.equal(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.present, true);
+assert.equal(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.accepted, false);
+assert.equal(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.proofReady, false);
+assert.equal(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.asyncVisualProofJobPresent, true);
+assert.equal(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.asyncVisualProofJobPending, true);
+assert.equal(
+  sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.asyncVisualProofJobAuthority,
+  'async_visual_job_manifest_only_not_gpu_hmr_acceptance',
+);
+assert.ok(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_proof_pending_not_ready',
+));
+assert.ok(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.failedGates.includes(
+  'async_visual_metrics_missing',
+));
+assert.ok(sourceFirstPendingVisualJobOnly.reasons.includes('visual_artifacts_not_readable'));
+
 const sourceFirstCasOnlyRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-cas-only'
 );
@@ -8125,6 +8523,16 @@ assert.equal(smuggledPrecompiledRunMode.sourceFirstIngestion.accepted, false);
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_ingestion_not_accepted'));
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_compile_use_ai_split_missing'));
 assert.ok(smuggledPrecompiledRunMode.reasons.includes('source_first_precompiled_generated_artifacts_present'));
+
+const missingArchSourceFirstRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-first-missing-arch'
+);
+assert.equal(missingArchSourceFirstRunMode?.matrixOutcome, 'unproven');
+assert.equal(missingArchSourceFirstRunMode.acceptedForGpuHmr, false);
+assert.equal(missingArchSourceFirstRunMode.sourceFirstIngestion.accepted, false);
+assert.equal(missingArchSourceFirstRunMode.sourceFirstIngestion.gpuArchExplicit, false);
+assert.ok(missingArchSourceFirstRunMode.reasons.includes('source_first_ingestion_not_accepted'));
+assert.ok(missingArchSourceFirstRunMode.reasons.includes('source_first_gpu_arch_missing'));
 
 const forgedGeneratedSourcePathRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-forged-generated-source-path'
@@ -10102,6 +10510,287 @@ assert.equal(acceptedComputeRocm.realRocmRuntimeChain.outputTargetId, 'output-ta
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.present, true);
 assert.equal(acceptedComputeRocm.realRocmRuntimeCapabilityPreflight.accepted, true);
 
+const acceptedComputeCasRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-cas-lib');
+const acceptedComputeCasSourceRaw = path.join(acceptedComputeCasRocmDir, 'readback-source.bin');
+const acceptedComputeCasRoot = path.join(acceptedComputeCasRocmDir, 'artifact-cas');
+await fs.mkdir(acceptedComputeCasRocmDir, { recursive: true });
+await fs.writeFile(acceptedComputeCasSourceRaw, acceptedComputeBytes);
+await writeJson(`${acceptedComputeCasSourceRaw}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: acceptedComputeBytes.length,
+  shape: [acceptedComputeBytes.length],
+});
+await writeRgbaPng(`${acceptedComputeCasSourceRaw}.card.png`, 8, 8, (x, y) => [
+  acceptedComputeBytes[(x * 3 + y) % acceptedComputeBytes.length],
+  48 + y,
+  144 + x,
+  255,
+]);
+const acceptedComputeCasBaseMaterials = realRocmComputeProofLedgerMaterials('accepted-compute-cas', {
+  projectId: 'real-rocm-accepted-compute-cas-lib',
+  rawReadbackPath: acceptedComputeCasSourceRaw,
+  rawReadbackBytes: acceptedComputeBytes,
+});
+const acceptedComputeCasArtifacts = await computeOracleCasBackedArtifacts({
+  baseArtifacts: acceptedComputeCasBaseMaterials.computeOracleArtifacts,
+  casRoot: acceptedComputeCasRoot,
+  rawReadbackPath: acceptedComputeCasSourceRaw,
+  schemaPath: `${acceptedComputeCasSourceRaw}.schema.json`,
+  cardPath: `${acceptedComputeCasSourceRaw}.card.png`,
+  scope: 'accepted-compute-cas',
+});
+const acceptedComputeCasProofMaterials = withComputeOracleArtifacts(
+  acceptedComputeCasBaseMaterials,
+  acceptedComputeCasArtifacts,
+);
+await writeJson(path.join(acceptedComputeCasRocmDir, 'real-rocm-accepted-compute-cas.json'), {
+  slug: 'gpu-real-rocm-accepted-compute-cas-lib-20260629',
+  real_rocm_profile: { id: 'real-rocm-accepted-compute-cas-lib' },
+  source_url: 'https://example.invalid/rocm/accepted-compute-cas.git',
+  repo_commit: 'cccccccccccccccccccccccccccccccccccccccc',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'AcceptedComputeCasDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...acceptedComputeCasProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-compute-cas-lib-delta',
+    editHash: hashValue('real-rocm-accepted-compute-cas-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-compute-cas.git @ cccccccc files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedComputeCasRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedComputeCasRocmDir],
+  generatedAt: '2026-06-09T00:00:02.260Z',
+  includeUnproven: true,
+});
+const acceptedComputeCasRocm = acceptedComputeCasRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedComputeCasRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.fileIntegrityAccepted, true);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.rawReadbackHashVerified, true);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.renderedCard.decoded, true);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.computeArtifactCasResolution.accepted, true);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.computeArtifactCasResolution.acceptedForGpuHmr, false);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.computeArtifactCasResolution.gpuHmrSuccess, false);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.computeArtifactCasResolution.locatorCount, 3);
+assert.equal(acceptedComputeCasRocm.outputOracleFacet.compute.computeArtifactCasResolution.acceptedCount, 3);
+
+const acceptedComputeCasOnlyRocmDir = path.join(logsRoot, 'real-rocm-accepted-compute-cas-only-lib');
+await fs.mkdir(acceptedComputeCasOnlyRocmDir, { recursive: true });
+const acceptedComputeCasOnlyArtifacts = computeOracleArtifactsWithoutDirectPaths(
+  acceptedComputeCasArtifacts,
+);
+const acceptedComputeCasOnlyMaterializedArtifacts = await computeOracleArtifactsFromFiles(
+  acceptedComputeCasOnlyArtifacts,
+  { artifactRoot: acceptedComputeCasRoot, casRoot: acceptedComputeCasRoot },
+);
+assert.equal(
+  acceptedComputeCasOnlyMaterializedArtifacts.computeArtifactCasResolution.accepted,
+  true,
+);
+assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.raw_readback_bin);
+assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.readback_schema_json);
+assert.ok(acceptedComputeCasOnlyMaterializedArtifacts.rendered_card_png);
+const acceptedComputeCasOnlyProofMaterials = withComputeOracleArtifacts(
+  acceptedComputeCasBaseMaterials,
+  acceptedComputeCasOnlyMaterializedArtifacts,
+);
+const {
+  proofLedger: acceptedComputeCasOnlyTopLedger,
+  proofLedgerQuery: acceptedComputeCasOnlyTopLedgerQuery,
+} = proofLedgerForComputeOracleArtifacts(
+  acceptedComputeCasBaseMaterials,
+  acceptedComputeCasOnlyArtifacts,
+);
+assert.equal(acceptedComputeCasOnlyTopLedgerQuery.gpuHmrSuccess, false);
+assert.ok(acceptedComputeCasOnlyTopLedgerQuery.failedInvariants.some(
+  (failure) => failure.code === 'compute_oracle_artifacts_incomplete',
+));
+await writeJson(path.join(acceptedComputeCasOnlyRocmDir, 'real-rocm-accepted-compute-cas-only.json'), {
+  slug: 'gpu-real-rocm-accepted-compute-cas-only-lib-20260629',
+  real_rocm_profile: { id: 'real-rocm-accepted-compute-cas-only-lib' },
+  source_url: 'https://example.invalid/rocm/accepted-compute-cas-only.git',
+  repo_commit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'AcceptedComputeCasOnlyDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...acceptedComputeCasOnlyProofMaterials,
+  proofLedger: acceptedComputeCasOnlyTopLedger,
+  proof_ledger: acceptedComputeCasOnlyTopLedger,
+  proofLedgerQuery: acceptedComputeCasOnlyTopLedgerQuery,
+  proof_ledger_query: acceptedComputeCasOnlyTopLedgerQuery,
+  computeOracleArtifacts: acceptedComputeCasOnlyArtifacts,
+  compute_oracle_artifacts: acceptedComputeCasOnlyArtifacts,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-compute-cas-only-lib-delta',
+    editHash: hashValue('real-rocm-accepted-compute-cas-only-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-compute-cas-only.git @ eeeeeeee files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedComputeCasOnlyRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedComputeCasOnlyRocmDir],
+  generatedAt: '2026-06-09T00:00:02.265Z',
+  includeUnproven: true,
+});
+const acceptedComputeCasOnlyRocm = acceptedComputeCasOnlyRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedComputeCasOnlyRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedComputeCasOnlyRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedComputeCasOnlyRocm.ledger.gpuHmrSuccess, true);
+assert.equal(acceptedComputeCasOnlyRocm.ledger.failedInvariants.length, 0);
+assert.equal(acceptedComputeCasOnlyRocm.ledger.computeArtifactCasResolutions[0].accepted, true);
+assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.accepted, true);
+assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.acceptedForGpuHmr, false);
+assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.gpuHmrSuccess, false);
+
+const forgedComputeCasRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-cas');
+await fs.mkdir(forgedComputeCasRocmDir, { recursive: true });
+const forgedComputeCasArtifacts = JSON.parse(JSON.stringify(acceptedComputeCasArtifacts));
+forgedComputeCasArtifacts.artifact_cas_locators[0].contentHash = hashValue('forged-compute-cas-wrong-hash');
+forgedComputeCasArtifacts.artifactCasLocators = forgedComputeCasArtifacts.artifact_cas_locators;
+const forgedComputeCasBaseMaterials = realRocmComputeProofLedgerMaterials('forged-compute-cas', {
+  projectId: 'real-rocm-forged-compute-cas',
+  rawReadbackPath: acceptedComputeCasSourceRaw,
+  rawReadbackBytes: acceptedComputeBytes,
+});
+const forgedComputeCasProofMaterials = withComputeOracleArtifacts(
+  forgedComputeCasBaseMaterials,
+  forgedComputeCasArtifacts,
+);
+await writeJson(path.join(forgedComputeCasRocmDir, 'real-rocm-forged-compute-cas.json'), {
+  slug: 'gpu-real-rocm-forged-compute-cas-20260629',
+  real_rocm_profile: { id: 'real-rocm-forged-compute-cas' },
+  source_url: 'https://example.invalid/rocm/forged-compute-cas.git',
+  repo_commit: 'dddddddddddddddddddddddddddddddddddddddd',
+  entry_file: 'src/kernels/compute_entry.hip',
+  delta_file: 'src/kernels/compute_delta.h',
+  target_name: 'ForgedComputeCasDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedComputeCasProofMaterials,
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-compute-cas-delta',
+    editHash: hashValue('real-rocm-forged-compute-cas-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-compute-cas.git @ dddddddd files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedComputeCasRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedComputeCasRocmDir],
+  generatedAt: '2026-06-09T00:00:02.270Z',
+  includeUnproven: true,
+});
+const forgedComputeCasRocm = forgedComputeCasRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedComputeCasRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedComputeCasRocm.acceptedForGpuHmr, false);
+assert.equal(forgedComputeCasRocm.outputOracleFacet.kind, 'ledger_rejected');
+assert.equal(forgedComputeCasRocm.outputOracleFacet.accepted, false);
+assert.equal(forgedComputeCasRocm.outputOracleFacet.compute, null);
+assert.ok(forgedComputeCasRocm.ledger.failedInvariants.some(
+  (failure) => failure.code === 'compute_oracle_artifact_cas_locator_validation_failed',
+));
+assert.ok(forgedComputeCasRocm.reasons.includes('compute_oracle_artifact_cas_locator_validation_failed'));
+assert.ok(forgedComputeCasRocm.reasons.includes('proof_ledger_success_required'));
+assert.ok(forgedComputeCasRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
+
 const acceptedRuntimeArtifactInput = {
   createdAt: '2026-06-09T00:00:02.200Z',
   workspaceSlug: 'real-rocm-missing-dependency-runtime-artifact-smoke',
@@ -12000,6 +12689,500 @@ await writeForgedRuntimeChainCase({
     if (record.output_event) delete record.output_event.output_target_id;
   },
 });
+
+const completeAdapterBoundaryBridgeRocmDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-bridge-complete',
+);
+const completeAdapterBoundaryBridgeScope = 'adapter-boundary-bridge-complete';
+const completeAdapterBoundaryRawReadback = path.join(
+  completeAdapterBoundaryBridgeRocmDir,
+  'readback.bin',
+);
+const completeAdapterBoundaryReadbackBytes = Buffer.from([4, 8, 12, 16, 20, 24, 28, 32]);
+await fs.mkdir(completeAdapterBoundaryBridgeRocmDir, { recursive: true });
+await fs.writeFile(completeAdapterBoundaryRawReadback, completeAdapterBoundaryReadbackBytes);
+await writeJson(`${completeAdapterBoundaryRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: completeAdapterBoundaryReadbackBytes.length,
+  shape: [completeAdapterBoundaryReadbackBytes.length],
+});
+await writeRgbaPng(`${completeAdapterBoundaryRawReadback}.card.png`, 8, 8, (x, y) => [
+  completeAdapterBoundaryReadbackBytes[
+    (x + y) % completeAdapterBoundaryReadbackBytes.length
+  ],
+  80 + x,
+  140 + y,
+  255,
+]);
+const completeAdapterBoundaryMaterials = realRocmComputeProofLedgerMaterials(
+  completeAdapterBoundaryBridgeScope,
+  {
+    projectId: 'real-rocm-adapter-boundary-bridge-complete',
+    rawReadbackPath: completeAdapterBoundaryRawReadback,
+    rawReadbackBytes: completeAdapterBoundaryReadbackBytes,
+  },
+);
+const completeAdapterBoundaryAppHook =
+  acceptedRealRocmAppHookContract(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundaryAppHookMaterialization =
+  acceptedRealRocmAppHookMaterialization(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundarySameProcessOracle =
+  acceptedSameProcessRuntimeOracle(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundaryStageObligations =
+  acceptedRealRocmRuntimeStageObligations(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundarySidecar =
+  acceptedRealRocmDeviceSidecarContract(completeAdapterBoundaryBridgeScope, { required: true });
+const completeAdapterBoundarySidecarConsistency =
+  acceptedRealRocmSidecarRuntimeConsistency(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundaryRuntimeAdapterResult =
+  runtimeAdapterBoundaryBridgeFixture(
+    completeAdapterBoundaryBridgeScope,
+    completeAdapterBoundaryMaterials,
+  );
+const completeAdapterBoundaryRuntimeAdapterExecution =
+  runtimeAdapterExecutionFixture(
+    completeAdapterBoundaryBridgeScope,
+    completeAdapterBoundaryMaterials,
+  );
+await writeJson(
+  path.join(completeAdapterBoundaryBridgeRocmDir, 'real-rocm-adapter-boundary-bridge-complete.json'),
+  {
+    slug: 'gpu-real-rocm-adapter-boundary-bridge-complete-20260629',
+    real_rocm_profile: largeRocmMlProfile('real-rocm-adapter-boundary-bridge-complete'),
+    source_url: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git',
+    repo_commit: 'abababababababababababababababababababab',
+    entry_file: 'src/kernels/generic_adapter_entry.hip',
+    delta_file: 'src/kernels/generic_adapter_delta.h',
+    target_name: 'CompleteAdapterBoundaryBridgeDriver',
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      sourceDerivedCandidateCount: 0,
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: true,
+      phaseRaw: 'final-acceptance',
+      phase: 'final-acceptance',
+      recognized: true,
+      reason: null,
+      targetName: 'CompleteAdapterBoundaryBridgeDriver',
+      finalAcceptanceTarget: 'CompleteAdapterBoundaryBridgeDriver',
+      finalAcceptanceTargetDeclared: true,
+      targetMatchesFinalAcceptance: true,
+    },
+    target_progression_ledger: {
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: true,
+      entries: [
+        {
+          phase: 'small-oracle',
+          status: 'pass',
+          resultState: 'gpu-hmr-output-oracle-proven',
+          outputOracleProven: true,
+          proofId: 'adapter-boundary-complete-small:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+          compute_oracle_artifacts: completeAdapterBoundaryMaterials.computeOracleArtifacts,
+        },
+        {
+          phase: 'partial-reload',
+          status: 'pass',
+          proofId: 'adapter-boundary-complete-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+          partialReloadProven: true,
+          fissionProven: true,
+        },
+        {
+          phase: 'original-host-path',
+          status: 'pass',
+          proofId: 'adapter-boundary-complete-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+          originalHostPathProven: true,
+          attachmentProven: true,
+          hostPreservationProven: true,
+          dispatchSafeProven: true,
+        },
+      ],
+    },
+    target_progression_gates: [
+      { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+    ],
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    real_rocm_profile_proof_obligations:
+      acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+    real_rocm_source_delta_execution:
+      acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+    real_rocm_external_header_prerequisites:
+      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+    realRocmExternalHeaderPrerequisites:
+      realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+    real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
+    real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
+    real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+    real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
+    real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
+    real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
+    real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
+    real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+    ...completeAdapterBoundaryMaterials,
+    runtime_proof_artifact: {
+      ...completeAdapterBoundaryMaterials.runtime_proof_artifact,
+      realRocmProfileProofObligations:
+        acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+      real_rocm_profile_proof_obligations:
+        acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-complete'),
+      realRocmSourceDeltaExecution:
+        acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+      real_rocm_source_delta_execution:
+        acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-complete'),
+      realRocmExternalHeaderPrerequisites:
+        realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+      real_rocm_external_header_prerequisites:
+        realRocmExternalHeaderPrerequisitesFixture(completeAdapterBoundaryBridgeScope),
+      realRocmAppHookContract: completeAdapterBoundaryAppHook,
+      real_rocm_app_hook_contract: completeAdapterBoundaryAppHook,
+      realRocmAppHookMaterialization: completeAdapterBoundaryAppHookMaterialization,
+      real_rocm_app_hook_materialization: completeAdapterBoundaryAppHookMaterialization,
+      realRocmSameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
+      real_rocm_same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+      sameProcessRuntimeOracle: completeAdapterBoundarySameProcessOracle,
+      same_process_runtime_oracle: completeAdapterBoundarySameProcessOracle,
+      realRocmRuntimeStageObligations: completeAdapterBoundaryStageObligations,
+      real_rocm_runtime_stage_obligations: completeAdapterBoundaryStageObligations,
+      realRocmDeviceSidecarContract: completeAdapterBoundarySidecar,
+      real_rocm_device_sidecar_contract: completeAdapterBoundarySidecar,
+      realRocmSidecarRuntimeConsistency: completeAdapterBoundarySidecarConsistency,
+      real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
+      realRocmRuntimeProfileAdapterResult: completeAdapterBoundaryRuntimeAdapterResult,
+      real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
+      realRocmRuntimeAdapterExecution: completeAdapterBoundaryRuntimeAdapterExecution,
+      real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+    },
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: 'real-rocm-adapter-boundary-bridge-complete-delta',
+      editHash: hashValue('real-rocm-adapter-boundary-bridge-complete-delta'),
+    },
+    checks: [
+      { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/adapter-boundary-bridge-complete.git @ abababab files=32000' },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  },
+);
+const completeAdapterBoundaryBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [completeAdapterBoundaryBridgeRocmDir],
+  generatedAt: '2026-06-29T00:00:02.264Z',
+  includeUnproven: true,
+});
+const completeAdapterBoundaryBridgeRow = completeAdapterBoundaryBridgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(completeAdapterBoundaryBridgeRow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(completeAdapterBoundaryBridgeRow.acceptedForGpuHmr, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.accepted, true);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.acceptedForGpuHmr,
+  false,
+);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.gpuHmrSuccess, false);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeStageObligations.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted, true);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 10);
+assert.deepEqual(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlaySources,
+  ['runtime_profile_adapter_result', 'runtime_adapter_execution'],
+);
+assert.equal(completeAdapterBoundaryBridgeRow.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(completeAdapterBoundaryBridgeRow.outputOracleFacet.accepted, true);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmDeviceSidecarContract.canSatisfyRuntimeProof,
+  true,
+);
+assert.deepEqual(completeAdapterBoundaryBridgeRow.realRocmDeviceSidecarContract.blockingGaps, []);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmSidecarRuntimeConsistency.accepted, true);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.dispatchId,
+  `dispatch:${completeAdapterBoundaryBridgeScope}`,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.outputTargetId,
+  `output-target:${completeAdapterBoundaryBridgeScope}`,
+);
+
+const adapterBoundaryBridgeRocmDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-bridge-missing-after-dispatch',
+);
+const adapterBoundaryBridgeScope = 'adapter-boundary-bridge-missing-after-dispatch';
+const adapterBoundaryRawReadback = path.join(adapterBoundaryBridgeRocmDir, 'readback.bin');
+const adapterBoundaryReadbackBytes = Buffer.from([2, 4, 6, 8, 10, 12, 14, 16]);
+await fs.mkdir(adapterBoundaryBridgeRocmDir, { recursive: true });
+await fs.writeFile(adapterBoundaryRawReadback, adapterBoundaryReadbackBytes);
+await writeJson(`${adapterBoundaryRawReadback}.schema.json`, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: adapterBoundaryReadbackBytes.length,
+  shape: [adapterBoundaryReadbackBytes.length],
+});
+await writeRgbaPng(`${adapterBoundaryRawReadback}.card.png`, 8, 8, (x, y) => [
+  adapterBoundaryReadbackBytes[(x + y) % adapterBoundaryReadbackBytes.length],
+  60 + x,
+  120 + y,
+  255,
+]);
+const adapterBoundaryMaterials = realRocmComputeProofLedgerMaterials(adapterBoundaryBridgeScope, {
+  projectId: 'real-rocm-adapter-boundary-bridge-missing-after-dispatch',
+  rawReadbackPath: adapterBoundaryRawReadback,
+  rawReadbackBytes: adapterBoundaryReadbackBytes,
+});
+const adapterBoundaryAppHook = acceptedRealRocmAppHookContract(adapterBoundaryBridgeScope);
+const adapterBoundaryAppHookMaterialization =
+  acceptedRealRocmAppHookMaterialization(adapterBoundaryBridgeScope);
+const adapterBoundarySameProcessOracle =
+  acceptedSameProcessRuntimeOracle(adapterBoundaryBridgeScope);
+const adapterBoundaryStageObligations =
+  acceptedRealRocmRuntimeStageObligations(adapterBoundaryBridgeScope);
+const adapterBoundarySidecar =
+  acceptedRealRocmDeviceSidecarContract(adapterBoundaryBridgeScope, { required: true });
+const adapterBoundarySidecarConsistency =
+  acceptedRealRocmSidecarRuntimeConsistency(adapterBoundaryBridgeScope);
+const adapterBoundaryRuntimeAdapterExecution =
+  runtimeAdapterExecutionFixture(adapterBoundaryBridgeScope, adapterBoundaryMaterials);
+const adapterBoundaryMismatchedLines =
+  adapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines.map((line) =>
+    line.replace(
+      `after_dispatch_id=dispatch:${adapterBoundaryBridgeScope}`,
+      'after_dispatch_id=dispatch:mismatched-adapter-output',
+    )
+  );
+adapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines = adapterBoundaryMismatchedLines;
+adapterBoundaryRuntimeAdapterExecution.runtime_boundary_lines = adapterBoundaryMismatchedLines;
+adapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLineCount = adapterBoundaryMismatchedLines.length;
+adapterBoundaryRuntimeAdapterExecution.runtime_boundary_line_count =
+  adapterBoundaryMismatchedLines.length;
+adapterBoundaryRuntimeAdapterExecution.evidenceRefs = [
+  `runtime-adapter-execution:${adapterBoundaryBridgeScope}`,
+  ...adapterBoundaryMismatchedLines.map((line) => `runtime-adapter-boundary:${hashValue(line)}`),
+];
+adapterBoundaryRuntimeAdapterExecution.evidence_refs =
+  adapterBoundaryRuntimeAdapterExecution.evidenceRefs;
+await writeJson(
+  path.join(adapterBoundaryBridgeRocmDir, 'real-rocm-adapter-boundary-bridge-missing-after-dispatch.json'),
+  {
+    slug: 'gpu-real-rocm-adapter-boundary-bridge-missing-after-dispatch-20260629',
+    real_rocm_profile: largeRocmMlProfile('real-rocm-adapter-boundary-bridge-missing-after-dispatch'),
+    source_url: 'https://example.invalid/rocm/adapter-boundary-bridge.git',
+    repo_commit: 'adadadadadadadadadadadadadadadadadadadad',
+    entry_file: 'src/kernels/generic_adapter_entry.hip',
+    delta_file: 'src/kernels/generic_adapter_delta.h',
+    target_name: 'GenericAdapterBoundaryBridgeDriver',
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      sourceDerivedCandidateCount: 0,
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: true,
+      phaseRaw: 'final-acceptance',
+      phase: 'final-acceptance',
+      recognized: true,
+      reason: null,
+      targetName: 'GenericAdapterBoundaryBridgeDriver',
+      finalAcceptanceTarget: 'GenericAdapterBoundaryBridgeDriver',
+      finalAcceptanceTargetDeclared: true,
+      targetMatchesFinalAcceptance: true,
+    },
+    target_progression_ledger: {
+      schemaVersion: 'synthi.real_rocm.target_progression_ledger.v1',
+      provided: true,
+      entries: [
+        {
+          phase: 'small-oracle',
+          status: 'pass',
+          resultState: 'gpu-hmr-output-oracle-proven',
+          outputOracleProven: true,
+          proofId: 'adapter-boundary-small-oracle:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          schemaVersion: 'synthi.gpu_hmr.compute_prior_oracle.v1',
+          compute_oracle_artifacts: adapterBoundaryMaterials.computeOracleArtifacts,
+        },
+        {
+          phase: 'partial-reload',
+          status: 'pass',
+          proofId: 'adapter-boundary-partial:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          schemaVersion: 'synthi.gpu_hmr.partial_reload_prior.v1',
+          partialReloadProven: true,
+          fissionProven: true,
+        },
+        {
+          phase: 'original-host-path',
+          status: 'pass',
+          proofId: 'adapter-boundary-host:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          schemaVersion: 'synthi.gpu_hmr.original_host_prior.v1',
+          originalHostPathProven: true,
+          attachmentProven: true,
+          hostPreservationProven: true,
+          dispatchSafeProven: true,
+        },
+      ],
+    },
+    target_progression_gates: [
+      { name: 'target progression phase', status: 'pass', detail: 'phase=final-acceptance' },
+    ],
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    real_rocm_profile_proof_obligations:
+      acceptedLargeRocmProfileObligations('real-rocm-adapter-boundary-bridge-missing-after-dispatch'),
+    real_rocm_source_delta_execution:
+      acceptedLargeRocmSourceDeltaExecution('real-rocm-adapter-boundary-bridge-missing-after-dispatch'),
+    real_rocm_app_hook_contract: adapterBoundaryAppHook,
+    real_rocm_app_hook_materialization: adapterBoundaryAppHookMaterialization,
+    real_rocm_same_process_runtime_oracle: adapterBoundarySameProcessOracle,
+    real_rocm_runtime_stage_obligations: adapterBoundaryStageObligations,
+    real_rocm_device_sidecar_contract: adapterBoundarySidecar,
+    real_rocm_sidecar_runtime_consistency: adapterBoundarySidecarConsistency,
+    real_rocm_runtime_adapter_execution: adapterBoundaryRuntimeAdapterExecution,
+    ...adapterBoundaryMaterials,
+    runtime_proof_artifact: {
+      ...adapterBoundaryMaterials.runtime_proof_artifact,
+      realRocmAppHookContract: adapterBoundaryAppHook,
+      real_rocm_app_hook_contract: adapterBoundaryAppHook,
+      realRocmAppHookMaterialization: adapterBoundaryAppHookMaterialization,
+      real_rocm_app_hook_materialization: adapterBoundaryAppHookMaterialization,
+      realRocmSameProcessRuntimeOracle: adapterBoundarySameProcessOracle,
+      real_rocm_same_process_runtime_oracle: adapterBoundarySameProcessOracle,
+      realRocmRuntimeStageObligations: adapterBoundaryStageObligations,
+      real_rocm_runtime_stage_obligations: adapterBoundaryStageObligations,
+      realRocmDeviceSidecarContract: adapterBoundarySidecar,
+      real_rocm_device_sidecar_contract: adapterBoundarySidecar,
+      realRocmSidecarRuntimeConsistency: adapterBoundarySidecarConsistency,
+      real_rocm_sidecar_runtime_consistency: adapterBoundarySidecarConsistency,
+      realRocmRuntimeAdapterExecution: adapterBoundaryRuntimeAdapterExecution,
+      real_rocm_runtime_adapter_execution: adapterBoundaryRuntimeAdapterExecution,
+    },
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: 'real-rocm-adapter-boundary-bridge-missing-after-dispatch-delta',
+      editHash: hashValue('real-rocm-adapter-boundary-bridge-missing-after-dispatch-delta'),
+    },
+    checks: [
+      { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/adapter-boundary-bridge.git @ adadadad files=32000' },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  },
+);
+const adapterBoundaryBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryBridgeRocmDir],
+  generatedAt: '2026-06-29T00:00:02.265Z',
+  includeUnproven: true,
+});
+const adapterBoundaryBridgeRow = adapterBoundaryBridgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryBridgeRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryBridgeRow.acceptedForGpuHmr, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.present, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeStageObligations.accepted, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmDeviceSidecarContract.canSatisfyRuntimeProof, true);
+assert.deepEqual(adapterBoundaryBridgeRow.realRocmDeviceSidecarContract.blockingGaps, []);
+assert.equal(adapterBoundaryBridgeRow.realRocmSidecarRuntimeConsistency.accepted, true);
+assert.equal(adapterBoundaryBridgeRow.ledger.gpuHmrSuccess, true);
+assert.deepEqual(adapterBoundaryBridgeRow.ledger.failedInvariants, []);
+for (const clearedGap of [
+  'app_hook_artifact_transport_runtime_not_observed',
+  'app_hook_epoch_publication_runtime_not_observed',
+  'app_hook_dispatch_trace_runtime_not_observed',
+  'app_hook_host_identity_runtime_not_observed',
+  'app_hook_output_oracle_runtime_not_observed',
+  'device_sidecar_artifact_transport_runtime_not_observed',
+  'device_sidecar_epoch_publication_runtime_not_observed',
+  'device_sidecar_dispatch_trace_runtime_not_observed',
+  'device_sidecar_host_identity_runtime_not_observed',
+  'device_sidecar_output_oracle_runtime_not_observed',
+  'runtime_stage_obligation_output_oracle_after_dispatch_id_missing',
+]) {
+  assert.ok(
+    !adapterBoundaryBridgeRow.openGaps.includes(clearedGap)
+      && !adapterBoundaryBridgeRow.reasons.includes(clearedGap),
+    `adapter boundary bridge fixture should clear ${clearedGap}`,
+  );
+}
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 5);
+assert.deepEqual(
+  adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlaySources,
+  ['runtime_adapter_execution'],
+);
+assert.ok(adapterBoundaryBridgeRow.openGaps.includes('real_rocm_runtime_chain_required'));
+assert.ok(adapterBoundaryBridgeRow.openGaps.includes('real_rocm_same_process_runtime_oracle_required'));
+assert.ok(adapterBoundaryBridgeRow.reasons.includes(
+  'real_rocm_runtime_chain_adapter_output_dispatch_mismatch',
+));
 
 const forgedMissingUnflaggedResolutionRocmDir = path.join(
   logsRoot,

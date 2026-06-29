@@ -10,7 +10,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -3591,6 +3591,18 @@ function runtimeAdapterWorkerDirectory(adapter = CFG.runtimeAdapter) {
   return relative ? `${CFG.workerRepoPath}/${relative}` : CFG.workerRepoPath;
 }
 
+function runtimeAdapterDeclaredResultPath(adapter = CFG.runtimeAdapter) {
+  return CFG.runtimeProfileAdapterResultPath || adapter?.resultPath || '';
+}
+
+function runtimeAdapterWorkerResultPath(rawPath = runtimeAdapterDeclaredResultPath()) {
+  const normalized = String(rawPath ?? '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!normalized || normalized === '.') return '';
+  const parts = normalized.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) return '';
+  return `${CFG.workerRepoPath}/${normalized}`;
+}
+
 function runtimeAdapterMetric(timings, key) {
   const escaped = String(key ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`\\b${escaped}=([^\\s]+)\\b`).exec(String(timings ?? ''));
@@ -3610,9 +3622,10 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     runLog,
     /\[synthi-runtime-adapter\]|\[gpu-runtime-boundary\]/i,
   );
-  const runtimeBoundaryLineCount = adapterLines.filter((line) =>
+  const runtimeBoundaryLines = adapterLines.filter((line) =>
     /\[gpu-runtime-boundary\]/i.test(line)
-  ).length;
+  );
+  const runtimeBoundaryLineCount = runtimeBoundaryLines.length;
   const blockingGaps = [];
   let status = 'runtime_adapter_not_declared';
   if (declared && !enabled) {
@@ -3666,6 +3679,8 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     elapsed_ms: Number.isFinite(elapsedMs) ? elapsedMs : null,
     runtimeBoundaryLineCount,
     runtime_boundary_line_count: runtimeBoundaryLineCount,
+    runtimeBoundaryLines,
+    runtime_boundary_lines: runtimeBoundaryLines,
     adapterLogLineCount: adapterLines.length,
     adapter_log_line_count: adapterLines.length,
     acceptedForGpuHmr: false,
@@ -3700,6 +3715,93 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
   report.runtime_adapter_execution = facet;
   report.runtimeAdapterExecution = facet;
   report.evidence.real_rocm_runtime_adapter_execution = facet;
+  return facet;
+}
+
+async function transportRuntimeAdapterResultFromWorker(access) {
+  if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
+    report.evidence = {};
+  }
+  const declaredPath = runtimeAdapterDeclaredResultPath();
+  const hostPath = resolveRepoBoundEvidencePath(declaredPath);
+  const workerPath = runtimeAdapterWorkerResultPath(declaredPath);
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+    proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+    declared: Boolean(declaredPath),
+    declaredPath: declaredPath || null,
+    declared_path: declaredPath || null,
+    hostPath: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
+    host_path: hostPath ? path.relative(REPO_ROOT, hostPath).replace(/\\/g, '/') : null,
+    workerPath: workerPath || null,
+    worker_path: workerPath || null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    copied: false,
+    byteLength: 0,
+    byte_length: 0,
+    rawSha256: null,
+    raw_sha256: null,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: [],
+    evidence_refs: [],
+  };
+  if (!declaredPath) {
+    facet.status = 'runtime_adapter_result_transport_not_declared';
+  } else if (!hostPath) {
+    facet.status = 'runtime_adapter_result_transport_refused';
+    facet.blockingGaps.push('runtime_adapter_result_transport_path_outside_repo');
+  } else if (!workerPath) {
+    facet.status = 'runtime_adapter_result_transport_refused';
+    facet.blockingGaps.push('runtime_adapter_result_transport_worker_path_invalid');
+  } else if (!access?.available || !access.workerContainer) {
+    facet.status = 'runtime_adapter_result_transport_refused';
+    facet.blockingGaps.push('runtime_adapter_result_transport_worker_unavailable');
+  } else {
+    const exists = (await execText(
+      'docker',
+      ['exec', access.workerContainer, 'sh', '-lc', `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`],
+      30000,
+      false,
+    ) ?? '').trim() === '1';
+    if (!exists) {
+      facet.status = 'runtime_adapter_result_transport_refused';
+      facet.blockingGaps.push('runtime_adapter_result_transport_worker_file_missing');
+    } else {
+      await mkdir(path.dirname(hostPath), { recursive: true });
+      await execText('docker', ['cp', `${access.workerContainer}:${workerPath}`, hostPath], 120000, true);
+      const bytes = await readFile(hostPath);
+      const rawSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      facet.status = 'runtime_adapter_result_transport_copied';
+      facet.copied = true;
+      facet.byteLength = bytes.length;
+      facet.byte_length = bytes.length;
+      facet.rawSha256 = rawSha256;
+      facet.raw_sha256 = rawSha256;
+      facet.evidenceRefs.push(rawSha256);
+      facet.evidence_refs.push(rawSha256);
+    }
+  }
+  facet.accepted = facet.declared !== true || (facet.copied === true && facet.blockingGaps.length === 0);
+  facet.blocking_gaps = facet.blockingGaps;
+  facet.evidence_refs = facet.evidenceRefs;
+  report.real_rocm_runtime_adapter_result_transport = facet;
+  report.realRocmRuntimeAdapterResultTransport = facet;
+  report.runtime_adapter_result_transport = facet;
+  report.runtimeAdapterResultTransport = facet;
+  report.evidence.real_rocm_runtime_adapter_result_transport = facet;
+  record(
+    'real ROCm runtime adapter result transport',
+    facet.accepted ? 'pass' : 'warn',
+    `status=${facet.status} copied=${facet.copied} gaps=${facet.blocking_gaps.join(',') || 'none'}`,
+  );
   return facet;
 }
 
@@ -3799,6 +3901,8 @@ async function executeRuntimeAdapter() {
   const runtimeAdapterId = cleanIdentifier(`${CFG.realRocmProfile.id}-runtime-adapter`);
   const commandHash = adapter.commandHash || `sha256:${createHash('sha256').update(adapter.command).digest('hex')}`;
   const workingDirectory = runtimeAdapterWorkerDirectory(adapter);
+  const adapterResultPath = runtimeAdapterDeclaredResultPath(adapter);
+  const adapterWorkerResultPath = runtimeAdapterWorkerResultPath(adapterResultPath);
   const timeoutSeconds = Math.max(1, Math.ceil(Number(adapter.timeoutMs ?? 300000) / 1000));
   const runLogPath = `${CFG.workerTempDir}/run.log`;
   const adapterLogPath = adapter.appendRunLog === false
@@ -3813,7 +3917,7 @@ adapter_exit_code=0
 adapter_skip_reason=none
 mkdir -p ${shQuote(CFG.workerTempDir)}
 touch ${shQuote(runLogPath)}
-printf '\\n[synthi-runtime-adapter] id=%s status=started command_hash=%s cwd=%s runtime_session=%s result_path=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(commandHash)} ${shQuote(workingDirectory)} "$runtime_session" ${shQuote(adapter.resultPath || 'none')} >> ${shQuote(adapterLogPath)}
+printf '\\n[synthi-runtime-adapter] id=%s status=started command_hash=%s cwd=%s runtime_session=%s result_path=%s\\n' ${shQuote(runtimeAdapterId)} ${shQuote(commandHash)} ${shQuote(workingDirectory)} "$runtime_session" ${shQuote(adapterResultPath || 'none')} >> ${shQuote(adapterLogPath)}
 if [ ! -d ${shQuote(workingDirectory)} ]; then
   adapter_status=failed
   adapter_exit_code=127
@@ -3831,6 +3935,11 @@ else
     export SYNTHI_REAL_ROCM_TARGET=${shQuote(CFG.targetName)}
     export SYNTHI_REAL_ROCM_SLUG=${shQuote(CFG.slug)}
     export SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH=${shQuote(WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH)}
+    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
+    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
+    if [ -n ${shQuote(adapterWorkerResultPath)} ]; then
+      mkdir -p "$(dirname ${shQuote(adapterWorkerResultPath)})"
+    fi
     if command -v timeout >/dev/null 2>&1; then
       timeout ${timeoutSeconds} sh -lc ${shQuote(adapter.command)}
     else
@@ -3881,6 +3990,7 @@ exit 0
     timings,
     runLog: report.logs.upstream_run,
   });
+  await transportRuntimeAdapterResultFromWorker(access);
   record(
     'real ROCm runtime adapter execution',
     facet.status === 'runtime_adapter_executed' ? 'pass' : 'warn',
@@ -10044,11 +10154,383 @@ function outputOracleBaselineChecksum() {
     || null;
 }
 
+function nonNegativeIntegerField(entry, names) {
+  if (!entry || typeof entry !== 'object') return null;
+  for (const name of names) {
+    const value = entry[name];
+    if (Number.isInteger(value) && value >= 0) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+      const parsed = Number.parseInt(value, 10);
+      if (parsed >= 0) return parsed;
+    }
+  }
+  return null;
+}
+
+function adapterArtifactRootCandidates(options = {}) {
+  const roots = [];
+  const add = (value) => {
+    if (typeof value !== 'string' || !value.trim()) return;
+    roots.push(path.resolve(value.trim()));
+  };
+  const addList = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) add(item);
+    } else {
+      add(value);
+    }
+  };
+  addList(options.allowedArtifactRoots);
+  addList(options.allowed_artifact_roots);
+  addList(options.allowedRoots);
+  addList(options.allowed_roots);
+  add(ARTIFACT_DIR);
+  add(LOG_DIR);
+  const adapterResultPath = resolveRepoBoundEvidencePath(
+    CFG.runtimeProfileAdapterResultPath || CFG.runtimeAdapter?.resultPath || '',
+  );
+  if (adapterResultPath) add(path.dirname(adapterResultPath));
+  add(CFG.sourceTreeCasRoot);
+  add(CFG.sourceTreeHostRoot);
+  add(process.env.SYNTHI_GPU_HMR_SHARED_ARTIFACT_ROOT);
+  add(process.env.SYNTHI_ARTIFACT_CAS_ROOT);
+  add(defaultCasRootFromEnv(process.env));
+  const sharedCas = sourceTreeSharedCasMounts();
+  for (const mount of sharedCas.mounts ?? []) {
+    if (['host', 'runner', 'workspace'].includes(mount?.role)) add(mount.root);
+  }
+  return [...new Set(roots)];
+}
+
+function normalizeArtifactPathForProof(value) {
+  return typeof value === 'string' ? value.replace(/\\/g, '/') : value;
+}
+
+function parseJsonObjectText(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAdapterArtifactDirectPath(rawPath, allowedRoots, fieldName) {
+  const raw = typeof rawPath === 'string' && rawPath.trim() ? rawPath.trim() : '';
+  const result = {
+    fieldName,
+    field_name: fieldName,
+    mode: 'direct_path',
+    declaredPath: raw || null,
+    declared_path: raw || null,
+    accepted: false,
+    path: null,
+    reasons: [],
+  };
+  if (!raw) {
+    result.reasons.push('adapter_artifact_path_missing');
+    return result;
+  }
+  let candidate = raw;
+  if (/^file:\/\//i.test(candidate)) {
+    try {
+      candidate = fileURLToPath(candidate);
+    } catch {
+      result.reasons.push('adapter_artifact_file_uri_invalid');
+      return result;
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    result.reasons.push('adapter_artifact_uri_not_resolved_to_local_path');
+    return result;
+  }
+  const candidatePaths = path.isAbsolute(candidate)
+    ? [path.resolve(candidate)]
+    : [
+        path.resolve(REPO_ROOT, candidate),
+        ...allowedRoots.map((root) => path.resolve(root, candidate)),
+      ];
+  const uniqueCandidatePaths = [...new Set(candidatePaths)];
+  const unreadable = [];
+  for (const resolved of uniqueCandidatePaths) {
+    let fileStat = null;
+    let fileRealPath = '';
+    try {
+      fileStat = await stat(resolved);
+      if (!fileStat.isFile()) {
+        unreadable.push('adapter_artifact_path_not_file');
+        continue;
+      }
+      fileRealPath = await realpath(resolved);
+    } catch {
+      unreadable.push('adapter_artifact_path_unreadable');
+      continue;
+    }
+    for (const root of allowedRoots) {
+      let rootRealPath = '';
+      try {
+        rootRealPath = await realpath(root);
+      } catch {
+        continue;
+      }
+      if (pathIsInside(rootRealPath, fileRealPath)) {
+        result.accepted = true;
+        result.path = normalizeArtifactPathForProof(fileRealPath);
+        result.resolvedPath = result.path;
+        result.resolved_path = result.path;
+        return result;
+      }
+    }
+  }
+  result.reasons.push(
+    unreadable.length === uniqueCandidatePaths.length
+      ? 'adapter_artifact_path_unreadable'
+      : 'adapter_artifact_path_outside_allowed_roots',
+  );
+  return result;
+}
+
+async function resolveAdapterArtifactCasManifest(manifestRef, allowedRoots, fieldName) {
+  const raw = typeof manifestRef === 'string' && manifestRef.trim() ? manifestRef.trim() : '';
+  const result = {
+    fieldName,
+    field_name: fieldName,
+    mode: 'cas_manifest',
+    declaredPath: raw || null,
+    declared_path: raw || null,
+    accepted: false,
+    path: null,
+    reasons: [],
+    validation: null,
+  };
+  if (!raw) {
+    result.reasons.push('adapter_artifact_cas_manifest_missing');
+    return result;
+  }
+  let manifest = parseJsonObjectText(raw);
+  if (!manifest) {
+    const manifestPath = await resolveAdapterArtifactDirectPath(raw, allowedRoots, `${fieldName}_cas_manifest`);
+    result.manifestPathResolution = manifestPath;
+    result.manifest_path_resolution = manifestPath;
+    if (manifestPath.accepted !== true || !manifestPath.path) {
+      result.reasons.push('adapter_artifact_cas_manifest_path_not_accepted');
+      return result;
+    }
+    try {
+      manifest = JSON.parse(await readFile(manifestPath.path, 'utf8'));
+    } catch {
+      result.reasons.push('adapter_artifact_cas_manifest_unreadable');
+      return result;
+    }
+  }
+  const validation = await validateArtifactCasManifest(manifest, {
+    allowedRoots,
+    requireReadableBytes: true,
+  });
+  result.validation = validation;
+  result.manifestHash = validation.manifestHash ?? null;
+  result.manifest_hash = validation.manifestHash ?? null;
+  if (validation.accepted === true && validation.localPath) {
+    result.accepted = true;
+    result.path = normalizeArtifactPathForProof(validation.localPath);
+    result.resolvedPath = result.path;
+    result.resolved_path = result.path;
+    return result;
+  }
+  result.reasons.push('adapter_artifact_cas_manifest_not_accepted');
+  result.reasons.push(...(validation.reasons ?? []));
+  result.gaps = validation.gaps ?? [];
+  return result;
+}
+
+async function resolveAdapterDeclaredArtifact({ fieldName, directPath, casManifest, allowedRoots }) {
+  if (casManifest) {
+    return resolveAdapterArtifactCasManifest(casManifest, allowedRoots, fieldName);
+  }
+  if (directPath) {
+    return resolveAdapterArtifactDirectPath(directPath, allowedRoots, fieldName);
+  }
+  return {
+    fieldName,
+    field_name: fieldName,
+    mode: 'missing',
+    accepted: false,
+    path: null,
+    reasons: ['adapter_artifact_path_missing'],
+  };
+}
+
+async function runtimeOutputOracleFileBackedComputeArtifacts(oracle, options = {}) {
+  const rawPath = stringField(oracle, [
+    'rawReadbackBin',
+    'raw_readback_bin',
+    'rawReadbackPath',
+    'raw_readback_path',
+  ]);
+  const rawCasManifest = stringField(oracle, [
+    'rawReadbackCasManifest',
+    'raw_readback_cas_manifest',
+    'rawReadbackLocator',
+    'raw_readback_locator',
+  ]);
+  const schemaPath = stringField(oracle, [
+    'readbackSchemaJson',
+    'readback_schema_json',
+    'readbackSchemaPath',
+    'readback_schema_path',
+  ]);
+  const schemaCasManifest = stringField(oracle, [
+    'readbackSchemaCasManifest',
+    'readback_schema_cas_manifest',
+    'schemaCasManifest',
+    'schema_cas_manifest',
+    'readbackSchemaLocator',
+    'readback_schema_locator',
+  ]);
+  if ((!rawPath && !rawCasManifest) || (!schemaPath && !schemaCasManifest)) return null;
+
+  const renderedCardPath =
+    stringField(oracle, ['renderedCardPng', 'rendered_card_png', 'proofCardPng', 'proof_card_png'])
+    || options.proofCardPath
+    || null;
+  const renderedCardCasManifest = stringField(oracle, [
+    'renderedCardCasManifest',
+    'rendered_card_cas_manifest',
+    'proofCardCasManifest',
+    'proof_card_cas_manifest',
+    'renderedCardLocator',
+    'rendered_card_locator',
+  ]);
+  const allowedRoots = adapterArtifactRootCandidates(options);
+  const rawResolution = await resolveAdapterDeclaredArtifact({
+    fieldName: 'raw_readback_bin',
+    directPath: rawPath,
+    casManifest: rawCasManifest,
+    allowedRoots,
+  });
+  const schemaResolution = await resolveAdapterDeclaredArtifact({
+    fieldName: 'readback_schema_json',
+    directPath: schemaPath,
+    casManifest: schemaCasManifest,
+    allowedRoots,
+  });
+  const renderedCardResolution = renderedCardPath || renderedCardCasManifest
+    ? await resolveAdapterDeclaredArtifact({
+        fieldName: 'rendered_card_png',
+        directPath: renderedCardPath,
+        casManifest: renderedCardCasManifest,
+        allowedRoots,
+      })
+    : {
+        fieldName: 'rendered_card_png',
+        field_name: 'rendered_card_png',
+        mode: 'not_declared',
+        accepted: false,
+        path: null,
+        reasons: ['adapter_artifact_path_missing'],
+      };
+  const baselineChecksum =
+    stringField(oracle, ['checksumBefore', 'checksum_before', 'baselineChecksum', 'baseline_checksum'])
+    || outputOracleBaselineChecksum();
+  const actualChecksum =
+    stringField(oracle, ['checksumAfter', 'checksum_after', 'actualChecksum', 'actual_checksum'])
+    || String(oracle.actual ?? '').trim()
+    || null;
+  const sliceOffset = nonNegativeIntegerField(oracle, [
+    'deterministicSliceOffset',
+    'deterministic_slice_offset',
+    'sliceOffset',
+    'slice_offset',
+  ]) ?? 0;
+  const sliceLength = nonNegativeIntegerField(oracle, [
+    'deterministicSliceLength',
+    'deterministic_slice_length',
+    'sliceLength',
+    'slice_length',
+  ]);
+  const readbackBytes = nonNegativeIntegerField(oracle, ['readbackBytes', 'readback_bytes']);
+  const rawReadbackHash = stringField(oracle, [
+    'rawReadbackHash',
+    'raw_readback_hash',
+    'readbackHash',
+    'readback_hash',
+  ]) || null;
+  const deterministicSliceHash = stringField(oracle, [
+    'deterministicSliceHash',
+    'deterministic_slice_hash',
+    'sliceHash',
+    'slice_hash',
+  ]) || rawReadbackHash;
+  const artifactIdentity = {
+    rawPath,
+    rawCasManifest,
+    schemaPath,
+    schemaCasManifest,
+    renderedCardPath,
+    renderedCardCasManifest,
+    oracleId: oracle.oracleId ?? oracle.oracle_id ?? null,
+    outputTargetId: oracle.outputTargetId ?? oracle.output_target_id ?? null,
+  };
+
+  return {
+    raw_readback_bin: rawResolution.accepted ? rawResolution.path : null,
+    readback_schema_json: schemaResolution.accepted ? schemaResolution.path : null,
+    checksum_before: baselineChecksum,
+    checksum_after: actualChecksum,
+    expected_output_change:
+      report.output_oracle_contract?.expectedOutputChange === true
+      || (baselineChecksum !== null && actualChecksum !== null && baselineChecksum !== actualChecksum),
+    deterministic_slice: {
+      offset: sliceOffset,
+      length: sliceLength ?? readbackBytes,
+      hash: deterministicSliceHash,
+      source: 'adapter_runtime_output_oracle',
+    },
+    expected_output_verified:
+      oracle.expectedOutputVerified === true
+      || oracle.expected_output_verified === true
+      || null,
+    raw_readback_hash: rawReadbackHash,
+    raw_readback_source:
+      stringField(oracle, ['rawReadbackSource', 'raw_readback_source'])
+      || 'adapter_runtime_output_oracle',
+    oracle_code_hash:
+      oracle.probeConfigHash
+      ?? oracle.probe_config_hash
+      ?? `sha256:${createHash('sha256').update(stableJson(artifactIdentity)).digest('hex')}`,
+    rendered_card_png: renderedCardResolution.accepted ? renderedCardResolution.path : null,
+    producer: oracle.producer ?? 'runtime_adapter',
+    timestamp_after_dispatch: oracle.readbackTimestamp ?? oracle.readback_timestamp ?? null,
+    epoch: oracle.generation ? `generation:${oracle.generation}` : oracle.artifactId ?? oracle.artifact_id ?? null,
+    adapter_artifact_path_resolution: {
+      schemaVersion: 'synthi.real_rocm.runtime_adapter_artifact_path_resolution.v1',
+      schema_version: 'synthi.real_rocm.runtime_adapter_artifact_path_resolution.v1',
+      proofAuthority: 'artifact_transport_resolution_only',
+      proof_authority: 'artifact_transport_resolution_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      allowedRootCount: allowedRoots.length,
+      allowed_root_count: allowedRoots.length,
+      raw_readback_bin: rawResolution,
+      readback_schema_json: schemaResolution,
+      rendered_card_png: renderedCardResolution,
+      accepted:
+        rawResolution.accepted === true
+        && schemaResolution.accepted === true
+        && (!renderedCardPath && !renderedCardCasManifest || renderedCardResolution.accepted === true),
+    },
+  };
+}
+
 async function writeRuntimeOutputOracleComputeArtifacts(runtimeOutputOracle, options = {}) {
   const oracle = runtimeOutputOracle?.output_oracle
     ? { ...runtimeOutputOracle.latest, ...runtimeOutputOracle.output_oracle }
     : null;
   if (!oracle || runtimeOutputOracle.deterministic_oracle_passed !== true) return null;
+  const fileBackedArtifacts = await runtimeOutputOracleFileBackedComputeArtifacts(oracle, options);
+  if (fileBackedArtifacts) return fileBackedArtifacts;
   const baselineChecksum = outputOracleBaselineChecksum();
   const actualChecksum = String(oracle.actual ?? '').trim();
   if (!baselineChecksum || !actualChecksum) return null;
@@ -15486,12 +15968,27 @@ async function selfCheckRuntimeDispatchEvidence() {
     if (
       adapterBoundaryFacet.status !== 'runtime_adapter_executed'
       || adapterBoundaryFacet.runtimeBoundaryLineCount !== 1
+      || !Array.isArray(adapterBoundaryFacet.runtimeBoundaryLines)
+      || adapterBoundaryFacet.runtimeBoundaryLines.length !== 1
+      || adapterBoundaryFacet.runtimeBoundaryLines[0] !== adapterRuntimeBoundaryLine
+      || !Array.isArray(adapterBoundaryFacet.runtime_boundary_lines)
+      || adapterBoundaryFacet.runtime_boundary_lines[0] !== adapterRuntimeBoundaryLine
       || adapterBoundaryFacet.runWhen !== 'after_upstream_run'
       || adapterBoundaryFacet.acceptedForGpuHmr !== false
       || adapterBoundaryFacet.canSatisfyRuntimeProof !== false
       || adapterBoundaryFacet.blockingGaps.length !== 0
     ) {
       throw new Error('runtime adapter execution facet rejected complete boundary evidence');
+    }
+    const adapterExecutionTransportEvidence = runtimeArtifactTransportEvidence(
+      adapterBoundaryFacet.runtimeBoundaryLines,
+    );
+    if (
+      adapterExecutionTransportEvidence.matched_count !== 1
+      || adapterExecutionTransportEvidence.ram_transport_proven !== true
+      || adapterExecutionTransportEvidence.artifact_hash !== `sha256:${'a'.repeat(64)}`
+    ) {
+      throw new Error('runtime adapter execution boundary lines did not feed artifact transport evidence');
     }
     const failedBuildPhase = {
       name: 'upstream_gpu_build_run',
@@ -17067,6 +17564,238 @@ int main()
     raw_readback_source: 'runtime_readback_sample',
     rendered_card_png: computeCardPath,
   });
+  const runtimePathToken = (value) => `"${String(value).replace(/\\/g, '/').replace(/"/g, '')}"`;
+  const adapterFileBackedOutputEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.file-backed',
+      'required_oracle_id=probe.file-backed',
+      'kind=buffer_checksum',
+      `expected=${computeRawHash}`,
+      `actual=${computeRawHash}`,
+      'passed=true',
+      'generation=3',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:file-backed',
+      'readback_timestamp=300',
+      'artifact_id=artifact:file-backed',
+      `raw_readback_bin=${runtimePathToken(computeRawPath)}`,
+      `readback_schema_json=${runtimePathToken(computeSchemaPath)}`,
+      `rendered_card_png=${runtimePathToken(computeCardPath)}`,
+      `raw_readback_hash=${computeRawHash}`,
+      'raw_readback_source=adapter_shared_artifact_root',
+      'expected_output_verified=true',
+      `checksum_before=sha256:${'1'.repeat(64)}`,
+      `checksum_after=sha256:${'2'.repeat(64)}`,
+      'deterministic_slice_offset=0',
+      `deterministic_slice_length=${computeRawBytes.length}`,
+      `deterministic_slice_hash=${computeRawHash}`,
+    ].join(' '),
+  ]);
+  const adapterFileBackedArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+    adapterFileBackedOutputEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const verifiedAdapterFileBackedArtifacts = adapterFileBackedArtifacts
+    ? await computeOracleArtifactsFromFiles(adapterFileBackedArtifacts)
+    : null;
+  const adapterFileBackedProof = computeOracleArtifactProof({
+    oracleArtifacts: {
+      compute_oracle_artifacts: verifiedAdapterFileBackedArtifacts,
+    },
+  });
+  if (
+    adapterFileBackedOutputEvidence.deterministic_oracle_passed !== true
+    || adapterFileBackedArtifacts?.raw_readback_bin !== computeRawPath.replace(/\\/g, '/')
+    || adapterFileBackedArtifacts?.adapter_artifact_path_resolution?.raw_readback_bin?.accepted !== true
+    || adapterFileBackedArtifacts?.expected_output_verified !== true
+    || verifiedAdapterFileBackedArtifacts?.raw_readback_hash_verified !== true
+    || verifiedAdapterFileBackedArtifacts?.deterministic_slice_hash_verified !== true
+    || adapterFileBackedProof.accepted !== true
+  ) {
+    throw new Error('runtime adapter file-backed output oracle artifact self-check failed');
+  }
+  const rawReadbackCasManifest = await buildArtifactCasManifest({
+    localPath: computeRawPath,
+    artifactKind: 'runtime_adapter_compute_readback',
+    mediaType: 'application/octet-stream',
+    role: 'raw_readback',
+    producer: { name: 'real_rocm_repo_validation_self_check', kind: 'proof_runner' },
+    producerSubsystem: 'runtime_adapter_output_oracle',
+    sessionNamespace: 'real-rocm-self-check',
+    transportKind: 'cas_shared_volume',
+  });
+  const schemaCasManifest = await buildArtifactCasManifest({
+    localPath: computeSchemaPath,
+    artifactKind: 'runtime_adapter_compute_schema',
+    mediaType: 'application/json',
+    role: 'readback_schema',
+    producer: { name: 'real_rocm_repo_validation_self_check', kind: 'proof_runner' },
+    producerSubsystem: 'runtime_adapter_output_oracle',
+    sessionNamespace: 'real-rocm-self-check',
+    transportKind: 'cas_shared_volume',
+  });
+  const rawReadbackCasManifestPath = path.join(computeOracleTempDir, 'raw-readback-cas-manifest.json');
+  const schemaCasManifestPath = path.join(computeOracleTempDir, 'schema-cas-manifest.json');
+  await writeFile(rawReadbackCasManifestPath, `${JSON.stringify(rawReadbackCasManifest, null, 2)}\n`);
+  await writeFile(schemaCasManifestPath, `${JSON.stringify(schemaCasManifest, null, 2)}\n`);
+  const adapterCasBackedOutputEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.file-backed-cas',
+      'required_oracle_id=probe.file-backed-cas',
+      'kind=buffer_checksum',
+      `expected=${computeRawHash}`,
+      `actual=${computeRawHash}`,
+      'passed=true',
+      'generation=3',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:file-backed',
+      'readback_timestamp=300',
+      'artifact_id=artifact:file-backed',
+      `raw_readback_cas_manifest=${runtimePathToken(rawReadbackCasManifestPath)}`,
+      `readback_schema_cas_manifest=${runtimePathToken(schemaCasManifestPath)}`,
+      `rendered_card_png=${runtimePathToken(computeCardPath)}`,
+      `raw_readback_hash=${computeRawHash}`,
+      'raw_readback_source=adapter_shared_cas_manifest',
+      'expected_output_verified=true',
+      `checksum_before=sha256:${'1'.repeat(64)}`,
+      `checksum_after=sha256:${'2'.repeat(64)}`,
+      'deterministic_slice_offset=0',
+      `deterministic_slice_length=${computeRawBytes.length}`,
+      `deterministic_slice_hash=${computeRawHash}`,
+    ].join(' '),
+  ]);
+  const adapterCasBackedArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+    adapterCasBackedOutputEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const verifiedAdapterCasBackedArtifacts = adapterCasBackedArtifacts
+    ? await computeOracleArtifactsFromFiles(adapterCasBackedArtifacts)
+    : null;
+  const adapterCasBackedProof = computeOracleArtifactProof({
+    oracleArtifacts: {
+      compute_oracle_artifacts: verifiedAdapterCasBackedArtifacts,
+    },
+  });
+  if (
+    adapterCasBackedOutputEvidence.output_oracle?.rawReadbackCasManifest !== rawReadbackCasManifestPath.replace(/\\/g, '/')
+    || adapterCasBackedArtifacts?.adapter_artifact_path_resolution?.raw_readback_bin?.mode !== 'cas_manifest'
+    || adapterCasBackedArtifacts?.adapter_artifact_path_resolution?.raw_readback_bin?.accepted !== true
+    || adapterCasBackedArtifacts?.adapter_artifact_path_resolution?.readback_schema_json?.accepted !== true
+    || verifiedAdapterCasBackedArtifacts?.raw_readback_hash_verified !== true
+    || verifiedAdapterCasBackedArtifacts?.deterministic_slice_hash_verified !== true
+    || adapterCasBackedProof.accepted !== true
+  ) {
+    throw new Error('runtime adapter CAS-backed output oracle artifact self-check failed');
+  }
+  const forgedHash = `sha256:${'f'.repeat(64)}`;
+  const forgedAdapterFileBackedOutputEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.file-backed-forged',
+      'required_oracle_id=probe.file-backed-forged',
+      'kind=buffer_checksum',
+      `expected=${computeRawHash}`,
+      `actual=${computeRawHash}`,
+      'passed=true',
+      'generation=3',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:file-backed',
+      'readback_timestamp=300',
+      'artifact_id=artifact:file-backed',
+      `raw_readback_bin=${runtimePathToken(computeRawPath)}`,
+      `readback_schema_json=${runtimePathToken(computeSchemaPath)}`,
+      `rendered_card_png=${runtimePathToken(computeCardPath)}`,
+      `raw_readback_hash=${forgedHash}`,
+      'raw_readback_source=adapter_shared_artifact_root',
+      'expected_output_verified=true',
+      `checksum_before=sha256:${'1'.repeat(64)}`,
+      `checksum_after=sha256:${'2'.repeat(64)}`,
+      'deterministic_slice_offset=0',
+      `deterministic_slice_length=${computeRawBytes.length}`,
+      `deterministic_slice_hash=${computeRawHash}`,
+    ].join(' '),
+  ]);
+  const forgedAdapterArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+    forgedAdapterFileBackedOutputEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const verifiedForgedAdapterArtifacts = forgedAdapterArtifacts
+    ? await computeOracleArtifactsFromFiles(forgedAdapterArtifacts)
+    : null;
+  const forgedAdapterProof = computeOracleArtifactProof({
+    oracleArtifacts: {
+      compute_oracle_artifacts: verifiedForgedAdapterArtifacts,
+    },
+  });
+  if (
+    forgedAdapterFileBackedOutputEvidence.deterministic_oracle_passed !== true
+    || verifiedForgedAdapterArtifacts?.raw_readback_hash_verified === true
+    || forgedAdapterProof.accepted === true
+  ) {
+    throw new Error('runtime adapter file-backed forged hash self-check failed');
+  }
+  const escapedReadbackPath = path.join(
+    path.dirname(computeOracleTempDir),
+    `synthi-rocm-oracle-escape-${process.pid}.bin`,
+  );
+  await writeFile(escapedReadbackPath, computeRawBytes);
+  const escapedAdapterOutputEvidence = runtimeOutputOracleEvidence([
+    [
+      '[gpu-runtime-boundary] output_oracle',
+      'id=probe.file-backed-escape',
+      'required_oracle_id=probe.file-backed-escape',
+      'kind=buffer_checksum',
+      `expected=${computeRawHash}`,
+      `actual=${computeRawHash}`,
+      'passed=true',
+      'generation=3',
+      'runtime_session=pid-file-backed-3',
+      'producer=runtime_adapter',
+      'output_target_id=target:file-backed',
+      'readback_timestamp=300',
+      'artifact_id=artifact:file-backed',
+      `raw_readback_bin=${runtimePathToken(escapedReadbackPath)}`,
+      `readback_schema_json=${runtimePathToken(computeSchemaPath)}`,
+      `raw_readback_hash=${computeRawHash}`,
+      'raw_readback_source=adapter_shared_artifact_root',
+      'expected_output_verified=true',
+      `checksum_before=sha256:${'1'.repeat(64)}`,
+      `checksum_after=sha256:${'2'.repeat(64)}`,
+      'deterministic_slice_offset=0',
+      `deterministic_slice_length=${computeRawBytes.length}`,
+      `deterministic_slice_hash=${computeRawHash}`,
+    ].join(' '),
+  ]);
+  const escapedAdapterArtifacts = await writeRuntimeOutputOracleComputeArtifacts(
+    escapedAdapterOutputEvidence,
+    { allowedArtifactRoots: [computeOracleTempDir] },
+  );
+  const verifiedEscapedAdapterArtifacts = escapedAdapterArtifacts
+    ? await computeOracleArtifactsFromFiles(escapedAdapterArtifacts)
+    : null;
+  const escapedAdapterProof = computeOracleArtifactProof({
+    oracleArtifacts: {
+      compute_oracle_artifacts: verifiedEscapedAdapterArtifacts,
+    },
+  });
+  const escapedReadbackResolution =
+    escapedAdapterArtifacts?.adapter_artifact_path_resolution?.raw_readback_bin;
+  if (
+    escapedAdapterOutputEvidence.deterministic_oracle_passed !== true
+    || escapedAdapterArtifacts?.raw_readback_bin
+    || escapedReadbackResolution?.accepted === true
+    || !escapedReadbackResolution?.reasons?.includes('adapter_artifact_path_outside_allowed_roots')
+    || verifiedEscapedAdapterArtifacts?.raw_readback_hash_verified === true
+    || escapedAdapterProof.accepted === true
+  ) {
+    throw new Error('runtime adapter file-backed path escape self-check failed');
+  }
+  await rm(escapedReadbackPath, { force: true });
   const computeOnlyOutputProof = {
     resultState: 'gpu-hmr-output-oracle-proven',
     outputOracle: {
@@ -18992,6 +19721,12 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       : []),
     ...(Array.isArray(report.real_rocm_runtime_profile_adapter_result?.adapterRuntimeBoundaryLines)
       ? report.real_rocm_runtime_profile_adapter_result.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(report.real_rocm_runtime_adapter_execution?.runtime_boundary_lines)
+      ? report.real_rocm_runtime_adapter_execution.runtime_boundary_lines
+      : []),
+    ...(Array.isArray(report.real_rocm_runtime_adapter_execution?.runtimeBoundaryLines)
+      ? report.real_rocm_runtime_adapter_execution.runtimeBoundaryLines
       : []),
   ];
   const workerEvidence = compactStringList([
