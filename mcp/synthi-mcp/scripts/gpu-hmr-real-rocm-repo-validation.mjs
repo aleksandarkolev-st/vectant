@@ -647,18 +647,97 @@ function normalizeRuntimeAdapterRelativePath(value, field) {
   return raw;
 }
 
+const REAL_ROCM_RUNTIME_ADAPTER_TEMPLATE_COMMANDS = new Map([
+  ['runtime_boundary_log_harvest_v1', `
+boundary_tmp="$(mktemp 2>/dev/null || true)"
+if [ -z "$boundary_tmp" ]; then
+  boundary_tmp="\${TMPDIR:-/tmp}/synthi-runtime-adapter-boundary-$$.log"
+fi
+boundary_tmp_ready=0
+if : > "$boundary_tmp" 2>/dev/null; then
+  boundary_tmp_ready=1
+fi
+if [ "$boundary_tmp_ready" = "1" ] && [ -n "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH" ] && [ -r "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH" ]; then
+  grep -F "[gpu-runtime-boundary]" "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH" > "$boundary_tmp" || true
+fi
+boundary_count=0
+if [ "$boundary_tmp_ready" = "1" ]; then
+  boundary_count="$(wc -l < "$boundary_tmp" | tr -d '[:space:]')"
+fi
+case "$boundary_count" in
+  ''|*[!0-9]*) boundary_count=0 ;;
+esac
+if [ "$boundary_tmp_ready" = "1" ] && [ "$boundary_count" -gt 0 ] 2>/dev/null; then
+  cat "$boundary_tmp"
+fi
+if [ -n "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" ]; then
+  mkdir -p "$(dirname "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH")"
+  if [ "$boundary_tmp_ready" != "1" ]; then
+    adapter_gap="runtime_adapter_template_tempfile_unavailable"
+  elif [ "$boundary_count" -gt 0 ] 2>/dev/null; then
+    adapter_gap="runtime_profile_adapter_strict_runtime_proof_not_accepted"
+  else
+    adapter_gap="runtime_adapter_template_boundary_lines_missing"
+  fi
+  cat > "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" <<EOF
+{
+  "schemaVersion": "synthi.gpu_hmr.runtime_profile_adapter_result.v1",
+  "profileId": "\${SYNTHI_REAL_ROCM_PROFILE_ID}",
+  "profile_id": "\${SYNTHI_REAL_ROCM_PROFILE_ID}",
+  "adapterTemplate": "runtime_boundary_log_harvest_v1",
+  "adapter_template": "runtime_boundary_log_harvest_v1",
+  "acceptedForGpuHmr": false,
+  "accepted_for_gpu_hmr": false,
+  "gpuHmrSuccess": false,
+  "gpu_hmr_success": false,
+  "canSatisfyRuntimeProof": false,
+  "can_satisfy_runtime_proof": false,
+  "strictRuntimeProofAccepted": false,
+  "strict_runtime_proof_accepted": false,
+  "strictRuntimeProofArtifactPresent": false,
+  "strict_runtime_proof_artifact_present": false,
+  "proofLedgerPresent": false,
+  "proof_ledger_present": false,
+  "runtimeBoundaryLineCount": \${boundary_count:-0},
+  "runtime_boundary_line_count": \${boundary_count:-0},
+  "blockingGaps": ["$adapter_gap"],
+  "blocking_gaps": ["$adapter_gap"]
+}
+EOF
+fi
+if [ "$boundary_tmp_ready" = "1" ]; then
+  rm -f "$boundary_tmp"
+fi
+exit 0
+`],
+]);
+
+function runtimeAdapterTemplateCommand(template) {
+  const normalized = optionalProfileString(template, 'runtimeAdapter.template');
+  if (!normalized) return '';
+  const command = REAL_ROCM_RUNTIME_ADAPTER_TEMPLATE_COMMANDS.get(normalized);
+  if (!command) {
+    throw new Error(`unsupported real ROCm runtimeAdapter.template: ${normalized}`);
+  }
+  return command.trim();
+}
+
 function normalizeRealRocmRuntimeAdapter(rawAdapter) {
   const declared = rawAdapter !== undefined && rawAdapter !== null;
   const adapter = objectOrEmpty(rawAdapter, 'runtimeAdapter');
   const enabled = declared
     ? optionalProfileBoolean(adapter.enabled, 'runtimeAdapter.enabled') ?? true
     : false;
+  const template = optionalProfileString(
+    adapter.template ?? adapter.adapterTemplate ?? adapter.adapter_template,
+    'runtimeAdapter.template',
+  );
   const command = optionalProfileString(
     adapter.command ?? adapter.shellCommand ?? adapter.shell_command,
     'runtimeAdapter.command',
-  );
+  ) || runtimeAdapterTemplateCommand(template);
   if (enabled && !command) {
-    throw new Error('real ROCm runtimeAdapter.enabled=true requires runtimeAdapter.command');
+    throw new Error('real ROCm runtimeAdapter.enabled=true requires runtimeAdapter.command or runtimeAdapter.template');
   }
   const workingDirectory = normalizeRuntimeAdapterRelativePath(
     adapter.workingDirectory
@@ -722,6 +801,9 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
     command,
     commandHash,
     command_hash: commandHash,
+    template: template || null,
+    adapterTemplate: template || null,
+    adapter_template: template || null,
     workingDirectory,
     working_directory: workingDirectory,
     resultPath,
@@ -780,9 +862,14 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const runtimeAdapter = normalizeRealRocmRuntimeAdapter(
     raw.runtimeAdapter ?? raw.runtime_adapter,
   );
+  const id = requiredProfileString(raw.id, 'id');
+  const safeId = cleanIdentifier(id);
+  if (safeId !== id) {
+    throw new Error('invalid real ROCm profile id: expected stable safe identifier');
+  }
   return {
     schemaVersion,
-    id: requiredProfileString(raw.id, 'id'),
+    id,
     source,
     repo: {
       url: optionalProfileString(repo.url, 'repo.url') || DEFAULT_REAL_REPO_URL,
@@ -1028,6 +1115,30 @@ async function selfCheckRealRocmProfiles() {
     || realRocmSourceDeltaFixtures(snakeCaseDeltaProfile).negativeEditDeclared !== true
   ) {
     throw new Error('real ROCm profile snake-case source_delta normalization self-check failed');
+  }
+  let rejectedUnsafeProfileId = false;
+  try {
+    normalizeRealRocmProfile({
+      schemaVersion: REAL_ROCM_PROFILE_SCHEMA_VERSION,
+      id: 'unsafe profile/id',
+      repo: { url: DEFAULT_REAL_REPO_URL },
+      target: {
+        entryFile: 'HIP-Basic/saxpy/main.hip',
+        deltaFile: 'HIP-Basic/saxpy/main.hip',
+        targetName: 'hip_saxpy',
+        buildSubdir: 'HIP-Basic/saxpy',
+      },
+      sourceDelta: {
+        before: 'before',
+        after: 'after',
+      },
+      outputOracle: { profile: 'none' },
+    }, 'self-check:unsafe-profile-id');
+  } catch {
+    rejectedUnsafeProfileId = true;
+  }
+  if (!rejectedUnsafeProfileId) {
+    throw new Error('real ROCm profile accepted unsafe id');
   }
   console.log(`real ROCm profile self-check passed profiles=${profiles.map((profile) => profile.id).join(',')}`);
 }
@@ -3930,10 +4041,14 @@ else
     export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_ID=${shQuote(runtimeAdapterId)}
     export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_COMMAND_HASH=${shQuote(commandHash)}
     export SYNTHI_REAL_ROCM_RUNTIME_SESSION="$runtime_session"
+    export SYNTHI_REAL_ROCM_PROFILE_ID=${shQuote(CFG.realRocmProfile.id)}
     export SYNTHI_REAL_ROCM_WORKER_REPO_PATH=${shQuote(CFG.workerRepoPath)}
     export SYNTHI_REAL_ROCM_BUILD_DIR=${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}/build`)}
     export SYNTHI_REAL_ROCM_TARGET=${shQuote(CFG.targetName)}
     export SYNTHI_REAL_ROCM_SLUG=${shQuote(CFG.slug)}
+    export SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND=${shQuote(CFG.upstreamRunCommand)}
+    export SYNTHI_REAL_ROCM_NATIVE_LAUNCH_OBSERVER_PATH=${shQuote(CFG.nativeLaunchObserverPath)}
+    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH=${shQuote(runLogPath)}
     export SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH=${shQuote(WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH)}
     export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
     export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
@@ -16033,14 +16148,51 @@ async function selfCheckRuntimeDispatchEvidence() {
       workingDirectory: '.',
       runWhen: 'after_lifecycle_attempt',
     });
+    const templatedRuntimeAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      template: 'runtime_boundary_log_harvest_v1',
+      workingDirectory: '.',
+      resultPath: '.gpu-hmr-test-logs/runtime-adapter-results/self-check.json',
+      runWhen: 'after_lifecycle_attempt',
+    });
     if (
       afterBuildAttemptAdapter.requiresSuccessfulBuild !== false
       || runtimeAdapterSkipReasonForPhase(afterBuildAttemptAdapter, failedBuildPhase) !== null
       || runtimeAdapterSkipReasonForPhase(strictAfterBuildAttemptAdapter, failedBuildPhase) !== 'build_not_successful'
       || runtimeAdapterSkipReasonForPhase(afterConfigureAdapter, failedConfigurePhase) !== 'configure_failed'
       || runtimeAdapterSkipReasonForPhase(afterLifecycleAttemptAdapter, failedConfigurePhase) !== null
+      || templatedRuntimeAdapter.template !== 'runtime_boundary_log_harvest_v1'
+      || templatedRuntimeAdapter.runWhen !== 'after_lifecycle_attempt'
+      || !templatedRuntimeAdapter.command.includes('SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RUN_LOG_PATH')
+      || !templatedRuntimeAdapter.command.includes('SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH')
+      || !templatedRuntimeAdapter.command.includes('${SYNTHI_REAL_ROCM_PROFILE_ID}')
+      || !templatedRuntimeAdapter.command.includes('${boundary_count:-0}')
     ) {
       throw new Error('runtime adapter lifecycle scheduling self-check failed');
+    }
+    let rejectedUnknownTemplate = false;
+    try {
+      normalizeRealRocmRuntimeAdapter({
+        enabled: true,
+        template: 'runtime_project_specific_shortcut_v1',
+      });
+    } catch {
+      rejectedUnknownTemplate = true;
+    }
+    if (!rejectedUnknownTemplate) {
+      throw new Error('runtime adapter accepted unknown template');
+    }
+    let rejectedMissingCommandAndTemplate = false;
+    try {
+      normalizeRealRocmRuntimeAdapter({
+        enabled: true,
+        workingDirectory: '.',
+      });
+    } catch {
+      rejectedMissingCommandAndTemplate = true;
+    }
+    if (!rejectedMissingCommandAndTemplate) {
+      throw new Error('runtime adapter accepted missing command and template');
     }
     let rejectedUnknownRunWhen = false;
     try {

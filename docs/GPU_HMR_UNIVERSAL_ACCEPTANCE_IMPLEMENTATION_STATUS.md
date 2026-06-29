@@ -63,6 +63,8 @@ Generic real ROCm runtime-adapter execution is now implemented separately from a
 
 Runtime-adapter scheduling is now profile-driven across generic lifecycle points instead of being locked to one post-run slot. `runtimeAdapter.runWhen` supports `after_upstream_run`, `after_configure_success`, `after_build_attempt`, and `after_lifecycle_attempt`; unknown/project-named values reject, and explicit `requiresSuccessfulBuild` / `requiresSuccessfulRun` still block execution. The execution facet records the selected lifecycle point. Profile proof obligations now recompute with profile-declared, env-declared, or adapter-imported app-hook contracts, which removes stale configuration-only app-hook gaps without satisfying runtime stage gates by declaration.
 
+The packaged large ROCm ML profiles now declare the shared `runtime_boundary_log_harvest_v1` runtime-adapter template. MIOpen, Composable Kernel, and hipBLASLt use the same template, lifecycle point, and result-path pattern; the packaged profiles do not carry inline adapter shell commands or success-authority flags. The template harvests real `[gpu-runtime-boundary]` lines from the worker run log when available, writes a refusal-only adapter result manifest, and remains non-authoritative unless the normal artifact transport, epoch, dispatch, host identity, output oracle, firewall, and strict runtime proof gates close. This is generic large-project evidence plumbing, not project acceptance.
+
 This remains support/refusal evidence only. It does not replace observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall proof, or accepted strict runtime proof closure, and it does not change broad readiness: current broad library-agnostic full-runtime GPU HMR remains unproven.
 
 ```text
@@ -93,6 +95,10 @@ runner bridge update: configured `runtimeAdapter.resultPath` / runtime-profile a
 matrix bridge update: validation-matrix ingestion now normalizes `real_rocm_runtime_adapter_result_transport` / `runtimeAdapterResultTransport` from reports, summaries, runtime proof artifacts, and evidence blocks. Accepted transport requires schema `synthi.real_rocm.runtime_adapter_result_transport.v1`, the transport-only authority, copied result evidence with byte length, SHA-256, evidence refs, and no blocking gaps. Forged transport records that claim GPU HMR acceptance, GPU HMR success, runtime authority, or dispatch authority are surfaced in row reasons/open gaps and rejected by accepted-row safety. This is still transport evidence only, not runtime proof.
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed; large ROCm ML package scripts preserve caller-provided SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS while keeping strict runtime proof and native observer gates enabled
 verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; proof scheduling now verifies a structurally blocked requested wait below the diagnostic budget remains bounded instead of being inflated
+verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-package-scripts-smoke.mjs -> passed after packaged runtime-adapter template checks
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-package-scripts-smoke.mjs -> passed after verifying the three large ROCm profiles declare the shared template, safe result paths, refusal-only obligations, and no adapter success-authority fields
+verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed after packaged runtime-adapter template checks
+verification: npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed after profile-id safety, runtime-adapter template, unknown-template, and missing-command/template self-checks
 ```
 
 Additional 2026-06-29 visual CAS replay hardening:

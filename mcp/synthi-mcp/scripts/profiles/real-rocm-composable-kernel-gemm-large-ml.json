@@ -54,6 +54,20 @@
   "outputOracle": {
     "profile": "none"
   },
+  "runtimeAdapter": {
+    "enabled": true,
+    "template": "runtime_boundary_log_harvest_v1",
+    "workingDirectory": ".",
+    "resultPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-results/real-rocm-composable-kernel-gemm-large-ml-runtime-adapter.json",
+    "runWhen": "after_lifecycle_attempt",
+    "requiresSuccessfulBuild": false,
+    "requiresSuccessfulRun": false,
+    "timeoutMs": 120000,
+    "evidenceRefs": [
+      "real-rocm-runtime-adapter-template:runtime_boundary_log_harvest_v1",
+      "real-rocm-composable-kernel-gemm-large-ml:runtime-boundary-log-harvest"
+    ]
+  },
   "proofObligations": {
     "acceptanceMode": "refusal_only",
     "targetClass": "large_rocm_ml_infrastructure",
