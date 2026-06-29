@@ -75,6 +75,7 @@ class _SourceShape:
     buffers: List[_Buffer]
     textures: List[_Texture]
     constants: str
+    constant_source_paths: List[str]
     launch_dim_decls: List[str]
     device_prelude: str
     render_block: str
@@ -141,8 +142,16 @@ def try_build_deterministic_gpu_split(
         _unsupported(report, "deterministic_split_arch_missing", "deterministic split requires an explicit GPU arch")
     _check_context_supported(source_context_report, report)
 
-    path, source = _select_single_source(source_files, focus=focus, report=report)
-    shape = _analyze_source_shape(path=path, source=source, vendor=vendor, arch=arch, report=report)
+    normalized_sources = _normalize_source_files(source_files)
+    path, source = _select_single_source(normalized_sources, focus=focus, report=report)
+    shape = _analyze_source_shape(
+        path=path,
+        source=source,
+        source_files=normalized_sources,
+        vendor=vendor,
+        arch=arch,
+        report=report,
+    )
     files = _render_split_files(shape)
     manifest = _render_manifest(shape, files)
     launch_graph = launch_graph_as_dicts({shape.path: shape.source})
@@ -154,6 +163,7 @@ def try_build_deterministic_gpu_split(
         {"host": buffer.host_name, "device": buffer.device_name, "type": buffer.ctype, "count": buffer.count_expr}
         for buffer in shape.buffers
     ]
+    report["constantSourcePaths"] = list(shape.constant_source_paths)
     if shape.seed_plan:
         report["seedPlan"] = {
             "function": shape.seed_plan.function_name,
@@ -179,6 +189,10 @@ def _normalize_vendor(raw: Optional[str]) -> Optional[str]:
     if value in {"hip", "amd", "amdhip"}:
         return "rocm"
     return value or None
+
+
+def _normalize_source_files(source_files: Mapping[str, str]) -> Dict[str, str]:
+    return {str(path).replace("\\", "/"): str(source) for path, source in source_files.items()}
 
 
 def _check_context_supported(source_context_report: Mapping[str, Any], report: dict) -> None:
@@ -223,7 +237,7 @@ def _select_single_source(
     focus: Optional[str],
     report: dict,
 ) -> Tuple[str, str]:
-    normalized = {str(path).replace("\\", "/"): str(source) for path, source in source_files.items()}
+    normalized = _normalize_source_files(source_files)
     focus_norm = str(focus or "").replace("\\", "/")
     candidates: List[Tuple[int, str, str]] = []
     for path, source in normalized.items():
@@ -255,6 +269,7 @@ def _analyze_source_shape(
     *,
     path: str,
     source: str,
+    source_files: Mapping[str, str],
     vendor: str,
     arch: str,
     report: dict,
@@ -288,7 +303,7 @@ def _analyze_source_shape(
     _validate_launch_shapes(launches, launch_dim_decls, report)
     render_block = _extract_sdl_render_block(source, report)
     textures = _extract_sdl_textures(source, render_block, report)
-    constants = _extract_constants(source)
+    constants, constant_source_paths = _extract_constant_closure(source_files, path)
     device_prelude = _extract_device_prelude(source, report)
     helper_functions = _extract_render_helpers(source, render_block)
     seed_plan = _extract_seed_plan(source, buffers, report)
@@ -307,6 +322,7 @@ def _analyze_source_shape(
         buffers=buffers,
         textures=textures,
         constants=constants,
+        constant_source_paths=constant_source_paths,
         launch_dim_decls=launch_dim_decls,
         device_prelude=device_prelude,
         render_block=render_block,
@@ -316,12 +332,83 @@ def _analyze_source_shape(
 
 
 def _extract_constants(source: str) -> str:
+    return "\n".join(_extract_constant_blocks(source))
+
+
+def _extract_constant_blocks(source: str) -> List[str]:
     seen: List[str] = []
     for match in _CONSTANT_BLOCK_RE.finditer(source):
         block = match.group(0).strip()
         if block and block not in seen:
             seen.append(block)
-    return "\n".join(seen)
+    return seen
+
+
+def _extract_constant_closure(source_files: Mapping[str, str], primary_path: str) -> Tuple[str, List[str]]:
+    normalized = _normalize_source_files(source_files)
+    ordered_paths = _ordered_local_include_closure(normalized, primary_path)
+    seen_blocks: List[str] = []
+    source_paths: List[str] = []
+    for path in ordered_paths:
+        source = normalized.get(path, "")
+        blocks = _extract_constant_blocks(source)
+        if not blocks:
+            continue
+        source_paths.append(path)
+        for block in blocks:
+            if block not in seen_blocks:
+                seen_blocks.append(block)
+    return "\n".join(seen_blocks), source_paths
+
+
+def _ordered_local_include_closure(source_files: Mapping[str, str], primary_path: str) -> List[str]:
+    normalized = _normalize_source_files(source_files)
+    primary = str(primary_path or "").replace("\\", "/")
+    ordered: List[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(path: str) -> None:
+        current = str(path or "").replace("\\", "/")
+        if current in visited or current in visiting:
+            return
+        source = normalized.get(current)
+        if source is None:
+            return
+        visiting.add(current)
+        for include in _local_quoted_includes(source):
+            resolved = _resolve_local_include(include, current, normalized)
+            if resolved:
+                visit(resolved)
+        visiting.remove(current)
+        visited.add(current)
+        ordered.append(current)
+
+    visit(primary)
+    if primary not in visited and primary in normalized:
+        ordered.append(primary)
+    return ordered
+
+
+def _local_quoted_includes(source: str) -> List[str]:
+    return [
+        match.group("path").replace("\\", "/")
+        for match in re.finditer(r'^\s*#\s*include\s+"(?P<path>[^"]+)"', source, re.MULTILINE)
+    ]
+
+
+def _resolve_local_include(include_path: str, including_path: str, source_files: Mapping[str, str]) -> Optional[str]:
+    include_norm = str(include_path or "").replace("\\", "/").lstrip("./")
+    if include_norm in source_files:
+        return include_norm
+    base_dir = str(including_path or "").replace("\\", "/").rsplit("/", 1)[0] if "/" in str(including_path or "") else ""
+    if base_dir:
+        relative = f"{base_dir}/{include_norm}".replace("//", "/")
+        if relative in source_files:
+            return relative
+    basename = include_norm.rsplit("/", 1)[-1]
+    matches = [path for path in source_files if path.rsplit("/", 1)[-1] == basename]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _extract_buffers(source: str, report: dict) -> List[_Buffer]:

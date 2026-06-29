@@ -30,6 +30,7 @@ Verification for this checkpoint:
 
 ```text
 python -m py_compile ai-backend/ai-engine/agents/gpu_deterministic_split.py ai-backend/ai-engine/tests/test_kernel_splitter.py -> passed
+direct deterministic splitter smoke for `src/main.cpp` plus quoted `src/scene_config.h` -> passed; `constantSourcePaths=["src/scene_config.h"]`, header constants emitted into `shared.h`, provider path not required
 python -m pytest ai-backend/ai-engine/tests/test_kernel_splitter.py -k deterministic_rocm -q -> not run, pytest is not installed in this environment
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed after compute artifact CAS resolver
