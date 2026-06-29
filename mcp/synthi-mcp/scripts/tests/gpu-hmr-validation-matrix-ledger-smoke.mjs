@@ -4310,6 +4310,48 @@ function withComputeOracleArtifacts(materials, computeOracleArtifacts) {
   return copy;
 }
 
+function proofLedgerForVisualOracleArtifacts(materials, visualOracleArtifacts) {
+  const record = JSON.parse(JSON.stringify(materials.proofLedger.records[0]));
+  const outputEvent = record.output_event ?? record.outputEvent ?? {};
+  outputEvent.kind = 'visual_frame';
+  outputEvent.visual_oracle_artifacts = visualOracleArtifacts;
+  outputEvent.visualOracleArtifacts = visualOracleArtifacts;
+  record.output_event = outputEvent;
+  record.outputEvent = outputEvent;
+  const oracleArtifacts = record.oracle_artifacts ?? record.oracleArtifacts ?? {};
+  oracleArtifacts.visual_oracle_artifacts = visualOracleArtifacts;
+  oracleArtifacts.visualOracleArtifacts = visualOracleArtifacts;
+  record.oracle_artifacts = oracleArtifacts;
+  record.oracleArtifacts = oracleArtifacts;
+  const proofLedger = buildGpuHmrProofLedger(record);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  return { proofLedger, proofLedgerQuery };
+}
+
+function withVisualOracleArtifacts(materials, visualOracleArtifacts) {
+  const copy = JSON.parse(JSON.stringify(materials));
+  const { proofLedger, proofLedgerQuery } = proofLedgerForVisualOracleArtifacts(
+    copy,
+    visualOracleArtifacts,
+  );
+  assert.deepEqual(proofLedgerQuery.failedInvariants, []);
+  assert.equal(proofLedgerQuery.gpuHmrSuccess, true);
+  copy.proofLedger = proofLedger;
+  copy.proof_ledger = proofLedger;
+  copy.proofLedgerQuery = proofLedgerQuery;
+  copy.proof_ledger_query = proofLedgerQuery;
+  copy.visualOracleArtifacts = visualOracleArtifacts;
+  copy.visual_oracle_artifacts = visualOracleArtifacts;
+  for (const key of ['runtimeProofArtifact', 'runtime_proof_artifact']) {
+    if (!copy[key]) continue;
+    copy[key].proofLedger = proofLedger;
+    copy[key].proof_ledger = proofLedger;
+    copy[key].proofLedgerQuery = proofLedgerQuery;
+    copy[key].proof_ledger_query = proofLedgerQuery;
+  }
+  return copy;
+}
+
 async function computeOracleCasBackedArtifacts({
   baseArtifacts,
   casRoot,
@@ -11194,6 +11236,209 @@ assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.accepted, true);
 assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.accepted, true);
 assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.acceptedForGpuHmr, false);
 assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifactCasResolution.gpuHmrSuccess, false);
+
+const acceptedVisualCasRocmDir = path.join(logsRoot, 'real-rocm-accepted-visual-cas-lib');
+await fs.mkdir(acceptedVisualCasRocmDir, { recursive: true });
+const acceptedVisualCasArtifacts = await visualArtifactSetWithCas({
+  before: path.join(visualDir, 'before-hmr-first.png'),
+  after: path.join(visualDir, 'after-hmr-first.png'),
+  diff: path.join(visualDir, 'before-after-diff.png'),
+}, {
+  cameraStateHash: hashValue('real-rocm-accepted-visual-cas-camera'),
+  camera_state_hash: hashValue('real-rocm-accepted-visual-cas-camera'),
+  captureBackend: 'runtime_adapter_visual_oracle',
+  capture_backend: 'runtime_adapter_visual_oracle',
+  swapchainSize: [8, 8],
+  swapchain_size: [8, 8],
+  frameNumber: 11,
+  frame_number: 11,
+});
+const acceptedVisualCasBaseMaterials = realRocmRuntimeProofMaterials(
+  'hot_delta_1',
+  { projectId: 'real-rocm-accepted-visual-cas-lib' },
+);
+const acceptedVisualCasTrace =
+  acceptedVisualCasBaseMaterials.proofLedger.records[0].artifact_after_hash
+  ?? acceptedVisualCasBaseMaterials.proofLedger.records[0].artifactAfterHash;
+Object.assign(acceptedVisualCasArtifacts, {
+  blankFrameRejection: true,
+  blank_frame_rejection: true,
+  sameFrameRejection: true,
+  same_frame_rejection: true,
+  newEpochWatermarkOrTrace: acceptedVisualCasTrace,
+  new_epoch_watermark_or_trace: acceptedVisualCasTrace,
+  timestampAfterDispatch: 4000,
+  timestamp_after_dispatch: 4000,
+  perceptualDiff: 0.125,
+  perceptual_diff: 0.125,
+  changedPixelRatio: 0.25,
+  changed_pixel_ratio: 0.25,
+  visiblePixelCount: 64,
+  visible_pixel_count: 64,
+  pixelMetricsVerified: true,
+  pixel_metrics_verified: true,
+  beforeImageHashVerified: true,
+  before_image_hash_verified: true,
+  afterImageHashVerified: true,
+  after_image_hash_verified: true,
+  diffImageHashVerified: true,
+  diff_image_hash_verified: true,
+});
+const acceptedVisualCasProofMaterials = withVisualOracleArtifacts(
+  acceptedVisualCasBaseMaterials,
+  acceptedVisualCasArtifacts,
+);
+await writeJson(path.join(acceptedVisualCasRocmDir, 'real-rocm-accepted-visual-cas.json'), {
+  slug: 'gpu-real-rocm-accepted-visual-cas-lib-20260630',
+  real_rocm_profile: { id: 'real-rocm-accepted-visual-cas-lib' },
+  source_url: 'https://example.invalid/rocm/accepted-visual-cas.git',
+  repo_commit: 'fefefefefefefefefefefefefefefefefefefefe',
+  entry_file: 'src/kernels/visual_entry.hip',
+  delta_file: 'src/kernels/visual_delta.h',
+  target_name: 'AcceptedVisualCasDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.visual.render-target-hash.v1',
+    mode: 'profile.visual.render-target-hash.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...acceptedVisualCasProofMaterials,
+  visualOracleArtifacts: acceptedVisualCasArtifacts,
+  visual_oracle_artifacts: acceptedVisualCasArtifacts,
+  visualEvidenceArtifacts: [acceptedVisualCasArtifacts],
+  visual_evidence_artifacts: [acceptedVisualCasArtifacts],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-accepted-visual-cas-lib-delta',
+    editHash: hashValue('real-rocm-accepted-visual-cas-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/accepted-visual-cas.git @ fefefefe files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const acceptedVisualCasRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [acceptedVisualCasRocmDir],
+  generatedAt: '2026-06-09T00:00:02.270Z',
+  includeUnproven: true,
+});
+const acceptedVisualCasRocm = acceptedVisualCasRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(acceptedVisualCasRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedVisualCasRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedVisualCasRocm.outputOracleFacet.kind, 'visual_oracle');
+assert.equal(acceptedVisualCasRocm.outputOracleFacet.accepted, true);
+assert.equal(acceptedVisualCasRocm.visual.accepted, true);
+assert.equal(acceptedVisualCasRocm.visual.artifactCasLocatorCount, 3);
+assert.equal(acceptedVisualCasRocm.visual.artifactCasLocatorAcceptedCount, 3);
+assert.equal(acceptedVisualCasRocm.visual.artifactCasHashMatchedCount, 3);
+
+const forgedVisualCasRocmDir = path.join(logsRoot, 'real-rocm-forged-visual-cas-lib');
+await fs.mkdir(forgedVisualCasRocmDir, { recursive: true });
+const forgedVisualCasArtifacts = JSON.parse(JSON.stringify(acceptedVisualCasArtifacts));
+forgedVisualCasArtifacts.afterImageHash = hashValue('real-rocm-forged-visual-cas-after');
+forgedVisualCasArtifacts.after_image_hash = forgedVisualCasArtifacts.afterImageHash;
+const forgedVisualCasProofMaterials = withVisualOracleArtifacts(
+  acceptedVisualCasBaseMaterials,
+  forgedVisualCasArtifacts,
+);
+await writeJson(path.join(forgedVisualCasRocmDir, 'real-rocm-forged-visual-cas.json'), {
+  slug: 'gpu-real-rocm-forged-visual-cas-lib-20260630',
+  real_rocm_profile: { id: 'real-rocm-forged-visual-cas-lib' },
+  source_url: 'https://example.invalid/rocm/forged-visual-cas.git',
+  repo_commit: 'efefefefefefefefefefefefefefefefefefefef',
+  entry_file: 'src/kernels/visual_entry.hip',
+  delta_file: 'src/kernels/visual_delta.h',
+  target_name: 'ForgedVisualCasDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.visual.render-target-hash.v1',
+    mode: 'profile.visual.render-target-hash.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedVisualCasProofMaterials,
+  visualOracleArtifacts: forgedVisualCasArtifacts,
+  visual_oracle_artifacts: forgedVisualCasArtifacts,
+  visualEvidenceArtifacts: [forgedVisualCasArtifacts],
+  visual_evidence_artifacts: [forgedVisualCasArtifacts],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-visual-cas-lib-delta',
+    editHash: hashValue('real-rocm-forged-visual-cas-lib-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-visual-cas.git @ efefefef files=18000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+  ],
+});
+const forgedVisualCasRocmLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedVisualCasRocmDir],
+  generatedAt: '2026-06-09T00:00:02.275Z',
+  includeUnproven: true,
+});
+const forgedVisualCasRocm = forgedVisualCasRocmLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedVisualCasRocm?.matrixOutcome, 'unproven');
+assert.equal(forgedVisualCasRocm.acceptedForGpuHmr, false);
+assert.equal(forgedVisualCasRocm.outputOracleFacet.kind, 'visual_oracle');
+assert.equal(forgedVisualCasRocm.outputOracleFacet.accepted, false);
+assert.ok(forgedVisualCasRocm.visual.failedGates.some(
+  (gate) => gate === 'visual_artifact_hash_mismatch'
+    || gate.code === 'visual_artifact_hash_mismatch',
+));
+assert.ok(forgedVisualCasRocm.reasons.includes('visual_oracle_artifacts_not_accepted'));
+assert.ok(forgedVisualCasRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 
 const forgedComputeCasRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-cas');
 await fs.mkdir(forgedComputeCasRocmDir, { recursive: true });

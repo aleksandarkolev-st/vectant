@@ -10,7 +10,7 @@ The real ROCm runtime-adapter bridge now accepts generic visual output-oracle ar
 
 The runner resolves visual artifacts only under approved artifact/CAS roots, validates readable bytes and declared hashes, decodes the images through the same visual evidence thresholds used by the rest of the proof system, rejects blank/same-frame/low-quality diffs, and feeds accepted `visual_oracle_artifacts` plus visual evidence refs into the normal output-proof classifier. A positive visual artifact is still not runtime authority: dispatch, epoch publication, deterministic probe-contract closure, post-dispatch output oracle, host identity, firewall, strict runtime proof, and ledger closure remain required before any GPU HMR row can be accepted.
 
-New self-check coverage includes a CAS-backed positive adapter visual oracle that closes only with matching dispatch/epoch/probe/output proof, a forged after-image hash refusal, and a path escape refusal. This is generic arbitrary-project adapter plumbing; it is not keyed to MIOpen, HIPRT, raytrace, or any profile name, and it does not change broad readiness.
+New self-check coverage includes a CAS-backed positive adapter visual oracle that closes only with matching dispatch/epoch/probe/output proof, a forged after-image hash refusal, and a path escape refusal. Validation-matrix smoke coverage now also proves the row-level path: a real-ROCm visual-oracle row can accept only with strict ledger closure and three validated visual CAS locators, while a forged role-bound after-image hash remains `unproven` with the normal output-or-visual-proof gap. This is generic arbitrary-project adapter plumbing; it is not keyed to MIOpen, HIPRT, raytrace, or any profile name, and it does not change broad readiness.
 
 Verification for this patch:
 
@@ -18,6 +18,7 @@ Verification for this patch:
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-runtime-evidence.mjs -> passed
 node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed with runtime adapter visual output oracle artifacts accepted in the positive self-check and forged/path-escape negatives refused
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, 65-row smoke ledger with real-ROCm visual CAS positive and forged visual-hash refusal
 node mcp/synthi-mcp/node_modules/vitest/vitest.mjs run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts -> passed, 282 tests
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, current matrix still reports 56 rows, 14 accepted scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows
 ```
