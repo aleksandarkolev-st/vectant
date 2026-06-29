@@ -681,7 +681,12 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
     adapter.runWhen ?? adapter.run_when,
     'runtimeAdapter.runWhen',
   ) || 'after_upstream_run';
-  const allowedRunWhen = new Set(['after_upstream_run']);
+  const allowedRunWhen = new Set([
+    'after_upstream_run',
+    'after_configure_success',
+    'after_build_attempt',
+    'after_lifecycle_attempt',
+  ]);
   if (!allowedRunWhen.has(runWhen)) {
     throw new Error(`unsupported real ROCm runtimeAdapter.runWhen: ${runWhen}`);
   }
@@ -689,7 +694,7 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
     optionalProfileBoolean(
       adapter.requiresSuccessfulBuild ?? adapter.requires_successful_build,
       'runtimeAdapter.requiresSuccessfulBuild',
-    ) ?? true;
+    ) ?? (runWhen === 'after_upstream_run');
   const requiresSuccessfulRun =
     optionalProfileBoolean(
       adapter.requiresSuccessfulRun ?? adapter.requires_successful_run,
@@ -1393,6 +1398,8 @@ function realRocmProfileProofObligationsFacet({
   outputOracleProfile = '',
   outputOracleContract = null,
   outputOracleRuntimeProfile = null,
+  appHookContract = null,
+  appHookContractSource = null,
   requireFullRuntimeProof = false,
 } = {}) {
   const declared = profile.proofObligations && typeof profile.proofObligations === 'object'
@@ -1430,7 +1437,17 @@ function realRocmProfileProofObligationsFacet({
     !outputOracleProfileModeDisabled(outputOracleProfile)
     || Boolean(outputOracleContract)
     || Boolean(outputOracleRuntimeProfile);
-  const appHookContractDeclared = profile.appHookContract?.declared === true;
+  const profileAppHookContractDeclared = profile.appHookContract?.declared === true;
+  const suppliedAppHookContractDeclared = appHookContract?.declared === true;
+  const appHookContractDeclared =
+    profileAppHookContractDeclared || suppliedAppHookContractDeclared;
+  const appHookContractHash = appHookContractDeclared
+    ? (profile.appHookContract?.contractHash
+      ?? profile.appHookContract?.contract_hash
+      ?? appHookContract?.contractHash
+      ?? appHookContract?.contract_hash
+      ?? null)
+    : null;
   const sourceDeltaFixtures = realRocmSourceDeltaFixtures(profile);
   const refusalOnly = declared.refusalOnly === true || declared.refusal_only === true;
   const blockingGaps = [];
@@ -1471,6 +1488,8 @@ function realRocmProfileProofObligationsFacet({
     profile.id ? `profile:${profile.id}` : null,
     targetProgression.phase ? `target_progression:${targetProgression.phase}` : null,
     outputOracleProfile ? `output_oracle_profile:${outputOracleProfile}` : null,
+    appHookContractHash ? `app_hook_contract:${appHookContractHash}` : null,
+    appHookContractDeclared && appHookContractSource ? `app_hook_contract_source:${appHookContractSource}` : null,
     declared.targetClass ? `target_class:${declared.targetClass}` : null,
   ]);
   return {
@@ -1503,6 +1522,14 @@ function realRocmProfileProofObligationsFacet({
     requires_app_hook_contract: requiresAppHookContract,
     appHookContractDeclared,
     app_hook_contract_declared: appHookContractDeclared,
+    profileAppHookContractDeclared,
+    profile_app_hook_contract_declared: profileAppHookContractDeclared,
+    suppliedAppHookContractDeclared,
+    supplied_app_hook_contract_declared: suppliedAppHookContractDeclared,
+    appHookContractHash,
+    app_hook_contract_hash: appHookContractHash,
+    appHookContractSource: appHookContractDeclared ? appHookContractSource : null,
+    app_hook_contract_source: appHookContractDeclared ? appHookContractSource : null,
     requiresRunModes,
     requires_run_modes: requiresRunModes,
     requiresRunModesDeclared: explicitRequiresRunModes,
@@ -1525,6 +1552,10 @@ function realRocmProfileProofObligationsFacet({
       outputOracleProfile,
       outputOraclePresent,
       appHookContractDeclared,
+      profileAppHookContractDeclared,
+      suppliedAppHookContractDeclared,
+      appHookContractHash,
+      appHookContractSource,
       requireFullRuntimeProof,
       requiresAppHookContract,
       explicitRequiresAppHookContract,
@@ -1540,6 +1571,10 @@ function realRocmProfileProofObligationsFacet({
       outputOracleProfile,
       outputOraclePresent,
       appHookContractDeclared,
+      profileAppHookContractDeclared,
+      suppliedAppHookContractDeclared,
+      appHookContractHash,
+      appHookContractSource,
       requireFullRuntimeProof,
       requiresAppHookContract,
       explicitRequiresAppHookContract,
@@ -2988,6 +3023,8 @@ report.real_rocm_profile_proof_obligations = realRocmProfileProofObligationsFace
   outputOracleProfile: CFG.outputOracleProfile,
   outputOracleContract: CFG.outputOracleContract,
   outputOracleRuntimeProfile: CFG.outputOracleRuntimeProfile,
+  appHookContract: CFG.appHookContract,
+  appHookContractSource: CFG.appHookContractSource,
   requireFullRuntimeProof: CFG.requireFullRuntimeProof,
 });
 report.realRocmProfileProofObligations = report.real_rocm_profile_proof_obligations;
@@ -3606,6 +3643,8 @@ function runtimeAdapterExecutionFacet({ timings = '', runLog = '' } = {}) {
     source: CFG.runtimeAdapterSource,
     adapterCommandHash: adapter.commandHash ?? null,
     adapter_command_hash: adapter.commandHash ?? null,
+    runWhen: adapter.runWhen ?? 'after_upstream_run',
+    run_when: adapter.runWhen ?? 'after_upstream_run',
     workingDirectory: adapter.workingDirectory || CFG.buildSubdir || '',
     working_directory: adapter.workingDirectory || CFG.buildSubdir || '',
     resultPath: adapter.resultPath || null,
@@ -3679,8 +3718,24 @@ function runtimeAdapterSkipReasonForPhase(adapter = CFG.runtimeAdapter, phase = 
   const postConfigureStatus = parseLifecycleExitCodeText(timings, 'post_configure') ?? '0';
   const buildStatus = parseLifecycleExitCodeText(timings, 'build') ?? 'unknown';
   const runStatus = parseLifecycleExitCodeText(timings, 'run') ?? 'unknown';
+  const runWhen = adapter.runWhen ?? adapter.run_when ?? 'after_upstream_run';
+  if (runWhen === 'after_lifecycle_attempt') {
+    if (adapter.requiresSuccessfulBuild === true && buildStatus !== '0') return 'build_not_successful';
+    if (adapter.requiresSuccessfulRun === true && runStatus !== '0') return 'run_not_successful';
+    return null;
+  }
   if (lifecycleExitCodeFailed(configureStatus)) return 'configure_failed';
   if (lifecycleExitCodeFailed(postConfigureStatus)) return 'post_configure_failed';
+  if (runWhen === 'after_configure_success') {
+    if (adapter.requiresSuccessfulBuild === true && buildStatus !== '0') return 'build_not_successful';
+    if (adapter.requiresSuccessfulRun === true && runStatus !== '0') return 'run_not_successful';
+    return null;
+  }
+  if (runWhen === 'after_build_attempt') {
+    if (adapter.requiresSuccessfulBuild === true && buildStatus !== '0') return 'build_not_successful';
+    if (adapter.requiresSuccessfulRun === true && runStatus !== '0') return 'run_not_successful';
+    return null;
+  }
   if (adapter.requiresSuccessfulBuild !== false && buildStatus !== '0') return 'build_not_successful';
   if (adapter.requiresSuccessfulRun === true && runStatus !== '0') return 'run_not_successful';
   return null;
@@ -10920,6 +10975,8 @@ function applyConfiguredSourceDeltaPlan(extraDeltas = []) {
     outputOracleProfile: CFG.outputOracleProfile,
     outputOracleContract: CFG.outputOracleContract,
     outputOracleRuntimeProfile: CFG.outputOracleRuntimeProfile,
+    appHookContract: CFG.appHookContract,
+    appHookContractSource: CFG.appHookContractSource,
     requireFullRuntimeProof: CFG.requireFullRuntimeProof,
   });
   report.realRocmProfileProofObligations = report.real_rocm_profile_proof_obligations;
@@ -15429,11 +15486,77 @@ async function selfCheckRuntimeDispatchEvidence() {
     if (
       adapterBoundaryFacet.status !== 'runtime_adapter_executed'
       || adapterBoundaryFacet.runtimeBoundaryLineCount !== 1
+      || adapterBoundaryFacet.runWhen !== 'after_upstream_run'
       || adapterBoundaryFacet.acceptedForGpuHmr !== false
       || adapterBoundaryFacet.canSatisfyRuntimeProof !== false
       || adapterBoundaryFacet.blockingGaps.length !== 0
     ) {
       throw new Error('runtime adapter execution facet rejected complete boundary evidence');
+    }
+    const failedBuildPhase = {
+      name: 'upstream_gpu_build_run',
+      timings: [
+        'configure_exit_code=0',
+        'post_configure_exit_code=0',
+        'build_exit_code=2',
+        'run_exit_code=not-run',
+      ].join('\n'),
+    };
+    const failedConfigurePhase = {
+      name: 'upstream_gpu_build_run',
+      timings: [
+        'configure_exit_code=1',
+        'post_configure_exit_code=skipped',
+        'build_exit_code=skipped',
+        'run_exit_code=not-run',
+      ].join('\n'),
+    };
+    const afterBuildAttemptAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      command: 'printf adapter-self-check',
+      workingDirectory: '.',
+      runWhen: 'after_build_attempt',
+    });
+    const strictAfterBuildAttemptAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      command: 'printf adapter-self-check',
+      workingDirectory: '.',
+      runWhen: 'after_build_attempt',
+      requiresSuccessfulBuild: true,
+    });
+    const afterConfigureAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      command: 'printf adapter-self-check',
+      workingDirectory: '.',
+      runWhen: 'after_configure_success',
+    });
+    const afterLifecycleAttemptAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      command: 'printf adapter-self-check',
+      workingDirectory: '.',
+      runWhen: 'after_lifecycle_attempt',
+    });
+    if (
+      afterBuildAttemptAdapter.requiresSuccessfulBuild !== false
+      || runtimeAdapterSkipReasonForPhase(afterBuildAttemptAdapter, failedBuildPhase) !== null
+      || runtimeAdapterSkipReasonForPhase(strictAfterBuildAttemptAdapter, failedBuildPhase) !== 'build_not_successful'
+      || runtimeAdapterSkipReasonForPhase(afterConfigureAdapter, failedConfigurePhase) !== 'configure_failed'
+      || runtimeAdapterSkipReasonForPhase(afterLifecycleAttemptAdapter, failedConfigurePhase) !== null
+    ) {
+      throw new Error('runtime adapter lifecycle scheduling self-check failed');
+    }
+    let rejectedUnknownRunWhen = false;
+    try {
+      normalizeRealRocmRuntimeAdapter({
+        enabled: true,
+        command: 'printf adapter-self-check',
+        runWhen: 'after_project_named_shortcut',
+      });
+    } catch {
+      rejectedUnknownRunWhen = true;
+    }
+    if (!rejectedUnknownRunWhen) {
+      throw new Error('runtime adapter scheduling accepted unknown runWhen');
     }
   } finally {
     CFG.runtimeProfileAdapterResultPath = savedRuntimeProfileAdapterResultPath;
@@ -17320,36 +17443,37 @@ int main()
     outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
     requireFullRuntimeProof: true,
   });
+  const selfCheckDeclaredAppHookContract = normalizeRealRocmAppHookContract({
+    declared: true,
+    required: true,
+    artifactTransport: {
+      declared: true,
+      evidenceRefs: ['artifact_transport:profile-required-app-hook-declared'],
+    },
+    epochPublication: {
+      declared: true,
+      evidenceRefs: ['epoch_publication:profile-required-app-hook-declared'],
+    },
+    dispatchTrace: {
+      declared: true,
+      evidenceRefs: ['dispatch_trace:profile-required-app-hook-declared'],
+    },
+    hostIdentity: {
+      declared: true,
+      evidenceRefs: ['host_identity:profile-required-app-hook-declared'],
+    },
+    outputOracle: {
+      declared: true,
+      evidenceRefs: ['output_oracle:profile-required-app-hook-declared'],
+    },
+  });
   const requiredAppHookDeclaredObligations = realRocmProfileProofObligationsFacet({
     profile: {
       id: 'profile-required-app-hook-declared',
       proofObligations: normalizeRealRocmProofObligations({
         requires_app_hook_contract: true,
       }),
-      appHookContract: normalizeRealRocmAppHookContract({
-        declared: true,
-        required: true,
-        artifactTransport: {
-          declared: true,
-          evidenceRefs: ['artifact_transport:profile-required-app-hook-declared'],
-        },
-        epochPublication: {
-          declared: true,
-          evidenceRefs: ['epoch_publication:profile-required-app-hook-declared'],
-        },
-        dispatchTrace: {
-          declared: true,
-          evidenceRefs: ['dispatch_trace:profile-required-app-hook-declared'],
-        },
-        hostIdentity: {
-          declared: true,
-          evidenceRefs: ['host_identity:profile-required-app-hook-declared'],
-        },
-        outputOracle: {
-          declared: true,
-          evidenceRefs: ['output_oracle:profile-required-app-hook-declared'],
-        },
-      }),
+      appHookContract: selfCheckDeclaredAppHookContract,
     },
     targetProgression: buildTargetProgressionMetadata({
       targetName: 'large_target',
@@ -17358,6 +17482,25 @@ int main()
       required: true,
     }),
     outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
+    requireFullRuntimeProof: true,
+  });
+  const requiredAppHookSuppliedObligations = realRocmProfileProofObligationsFacet({
+    profile: {
+      id: 'profile-required-app-hook-supplied',
+      proofObligations: normalizeRealRocmProofObligations({
+        requires_app_hook_contract: true,
+      }),
+      appHookContract: normalizeRealRocmAppHookContract(null),
+    },
+    targetProgression: buildTargetProgressionMetadata({
+      targetName: 'large_target',
+      rawPhase: 'small-oracle',
+      finalAcceptanceTarget: 'large_target',
+      required: true,
+    }),
+    outputOracleProfile: 'hip.matrix-multiplication.readback-c.v1',
+    appHookContract: selfCheckDeclaredAppHookContract,
+    appHookContractSource: 'self-check-env',
     requireFullRuntimeProof: true,
   });
   if (
@@ -17421,6 +17564,12 @@ int main()
     || !requiredAppHookMissingObligations.blocking_gaps.includes('proof_obligation_app_hook_contract_missing')
     || requiredAppHookDeclaredObligations.blocking_gaps.length !== 0
     || requiredAppHookDeclaredObligations.appHookContractDeclared !== true
+    || requiredAppHookDeclaredObligations.profileAppHookContractDeclared !== true
+    || requiredAppHookSuppliedObligations.blocking_gaps.length !== 0
+    || requiredAppHookSuppliedObligations.appHookContractDeclared !== true
+    || requiredAppHookSuppliedObligations.profileAppHookContractDeclared !== false
+    || requiredAppHookSuppliedObligations.suppliedAppHookContractDeclared !== true
+    || requiredAppHookSuppliedObligations.appHookContractSource !== 'self-check-env'
   ) {
     throw new Error('target progression gate self-check failed');
   }
@@ -19368,6 +19517,21 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     proofAuthority: 'contract_source_selection_not_gpu_hmr_success',
     proof_authority: 'contract_source_selection_not_gpu_hmr_success',
   };
+  report.real_rocm_profile_proof_obligations = realRocmProfileProofObligationsFacet({
+    profile: report.real_rocm_profile ?? CFG.realRocmProfile,
+    targetProgression: report.target_progression,
+    outputOracleProfile: CFG.outputOracleProfile,
+    outputOracleContract: CFG.outputOracleContract,
+    outputOracleRuntimeProfile: CFG.outputOracleRuntimeProfile,
+    appHookContract: effectiveAppHookContract,
+    appHookContractSource: report.evidence.real_rocm_effective_app_hook_contract_source.source,
+    requireFullRuntimeProof: CFG.requireFullRuntimeProof,
+  });
+  report.realRocmProfileProofObligations = report.real_rocm_profile_proof_obligations;
+  report.profile_proof_obligations = report.real_rocm_profile_proof_obligations;
+  report.profileProofObligations = report.real_rocm_profile_proof_obligations;
+  report.evidence.real_rocm_profile_proof_obligations =
+    report.real_rocm_profile_proof_obligations;
   refreshRealRocmRuntimeProofObligationFacets({
     appHookContract: effectiveAppHookContract,
     profileProofObligations: report.real_rocm_profile_proof_obligations,
