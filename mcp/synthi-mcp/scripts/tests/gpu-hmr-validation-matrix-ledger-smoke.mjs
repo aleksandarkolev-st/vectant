@@ -7771,6 +7771,9 @@ assert.equal(
   'cas_shared_volume',
 );
 assert.equal(hot1RunMode.asyncVisualCasBundle.tileEvidenceAccepted, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.tileBindingAccepted, true);
+assert.equal(hot1RunMode.asyncVisualCasBundle.incrementalEvidenceBindingAccepted, true);
+assert.match(hot1RunMode.asyncVisualCasBundle.tileBindingHash, /^sha256:[a-f0-9]{64}$/);
 assert.match(hot1RunMode.asyncVisualCasBundle.workerExecutableHash, /^sha256:[a-f0-9]{64}$/);
 assert.match(
   hot1RunMode.asyncVisualCasBundle.workerNativeDependencyManifestHash,

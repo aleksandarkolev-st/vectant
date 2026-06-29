@@ -12,6 +12,7 @@ import {
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
   computeVisualWorkerExecutableIdentity,
 } from './gpu-hmr-visual-proof-worker.mjs';
 
@@ -110,6 +111,8 @@ async function runWorker(request, options) {
     height: decodedBefore.info.height,
     channels: decodedBefore.info.channels,
   };
+  const beforeRawHash = hashRawFrame(decodedBefore.data, dimensions);
+  const afterRawHash = hashRawFrame(decodedAfter.data, dimensions);
   const roi = normalizeRoi(firstObject(
     request.roi,
     request.oracleRegion,
@@ -132,6 +135,44 @@ async function runWorker(request, options) {
   const tileEvidence = request.tileHashing === false || request.tile_hashing === false
     ? null
     : computeTileHashes(decodedBefore, decodedAfter, tileSize);
+  const deterministicVisualModeHash = contentAddressedSha256Text(
+    request.deterministicVisualModeHash
+    ?? request.deterministic_visual_mode_hash
+    ?? request.deterministicModeHash
+    ?? request.deterministic_mode_hash,
+  );
+  const tileListHash = tileEvidence ? hashTileList(tileEvidence.tiles) : null;
+  const bindingBase = {
+    beforeEncodedHash: before.encodedHash,
+    before_encoded_hash: before.encodedHash,
+    afterEncodedHash: after.encodedHash,
+    after_encoded_hash: after.encodedHash,
+    beforeRawFrameHash: beforeRawHash,
+    before_raw_frame_hash: beforeRawHash,
+    afterRawFrameHash: afterRawHash,
+    after_raw_frame_hash: afterRawHash,
+    dimensions,
+    tileSize,
+    tile_size: tileSize,
+    tileListHash,
+    tile_list_hash: tileListHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+  };
+  const tileBinding = tileEvidence
+    ? visualIncrementalEvidenceBinding({
+        ...bindingBase,
+        evidenceKind: 'tile_hash_grid',
+        evidence_kind: 'tile_hash_grid',
+      })
+    : null;
+  if (tileEvidence) {
+    tileEvidence.binding = tileBinding;
+    tileEvidence.bindingHash = tileBinding.bindingHash;
+    tileEvidence.binding_hash = tileBinding.bindingHash;
+    tileEvidence.tileListHash = tileListHash;
+    tileEvidence.tile_list_hash = tileListHash;
+  }
 
   let roiEvidence = null;
   let roiTileConsistency = null;
@@ -152,6 +193,21 @@ async function runWorker(request, options) {
       tileConsistency: roiTileConsistency,
       tile_consistency: roiTileConsistency,
     };
+    const roiBinding = visualIncrementalEvidenceBinding({
+      ...bindingBase,
+      evidenceKind: 'roi_hash',
+      evidence_kind: 'roi_hash',
+      roi,
+      roiBeforeHash: beforeHash,
+      roi_before_hash: beforeHash,
+      roiAfterHash: afterHash,
+      roi_after_hash: afterHash,
+      tileBindingHash: tileBinding?.bindingHash ?? null,
+      tile_binding_hash: tileBinding?.bindingHash ?? null,
+    });
+    roiEvidence.binding = roiBinding;
+    roiEvidence.bindingHash = roiBinding.bindingHash;
+    roiEvidence.binding_hash = roiBinding.bindingHash;
     if (request.allowRoiEarlyExit === true && beforeHash === afterHash) {
       if (!tileEvidence) {
         skipReason = 'roi_hash_unchanged_but_tile_evidence_missing';
@@ -269,10 +325,16 @@ async function runWorker(request, options) {
       before_encoded_hash: before.encodedHash,
       afterEncodedHash: after.encodedHash,
       after_encoded_hash: after.encodedHash,
-      beforeRawHash: hashRawFrame(decodedBefore.data, dimensions),
-      before_raw_hash: hashRawFrame(decodedBefore.data, dimensions),
-      afterRawHash: hashRawFrame(decodedAfter.data, dimensions),
-      after_raw_hash: hashRawFrame(decodedAfter.data, dimensions),
+      beforeRawHash,
+      before_raw_hash: beforeRawHash,
+      afterRawHash,
+      after_raw_hash: afterRawHash,
+      beforeRawFrameHash: beforeRawHash,
+      before_raw_frame_hash: beforeRawHash,
+      afterRawFrameHash: afterRawHash,
+      after_raw_frame_hash: afterRawHash,
+      deterministicVisualModeHash,
+      deterministic_visual_mode_hash: deterministicVisualModeHash,
     },
     roiEvidence,
     roi_evidence: roiEvidence,
@@ -525,6 +587,59 @@ function computeTileHashes(before, after, tileSize) {
   };
 }
 
+function hashTileList(tiles = []) {
+  return sha256Text(stableJson((Array.isArray(tiles) ? tiles : []).map((tile) => ({
+    x: tile.x,
+    y: tile.y,
+    width: tile.width,
+    height: tile.height,
+    beforeHash: tile.beforeHash ?? tile.before_hash,
+    afterHash: tile.afterHash ?? tile.after_hash,
+    changed: tile.changed === true,
+  }))));
+}
+
+function visualIncrementalEvidenceBinding(input = {}) {
+  const evidenceKind = text(input.evidenceKind ?? input.evidence_kind)
+    || 'visual_incremental_evidence';
+  const binding = {
+    schemaVersion: GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
+    schema_version: GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
+    evidenceKind,
+    evidence_kind: evidenceKind,
+    beforeEncodedHash: input.beforeEncodedHash ?? input.before_encoded_hash ?? null,
+    before_encoded_hash: input.beforeEncodedHash ?? input.before_encoded_hash ?? null,
+    afterEncodedHash: input.afterEncodedHash ?? input.after_encoded_hash ?? null,
+    after_encoded_hash: input.afterEncodedHash ?? input.after_encoded_hash ?? null,
+    beforeRawFrameHash: input.beforeRawFrameHash ?? input.before_raw_frame_hash ?? null,
+    before_raw_frame_hash: input.beforeRawFrameHash ?? input.before_raw_frame_hash ?? null,
+    afterRawFrameHash: input.afterRawFrameHash ?? input.after_raw_frame_hash ?? null,
+    after_raw_frame_hash: input.afterRawFrameHash ?? input.after_raw_frame_hash ?? null,
+    dimensions: input.dimensions ?? null,
+    roi: input.roi ?? null,
+    roiBeforeHash: input.roiBeforeHash ?? input.roi_before_hash ?? null,
+    roi_before_hash: input.roiBeforeHash ?? input.roi_before_hash ?? null,
+    roiAfterHash: input.roiAfterHash ?? input.roi_after_hash ?? null,
+    roi_after_hash: input.roiAfterHash ?? input.roi_after_hash ?? null,
+    tileSize: input.tileSize ?? input.tile_size ?? null,
+    tile_size: input.tileSize ?? input.tile_size ?? null,
+    tileListHash: input.tileListHash ?? input.tile_list_hash ?? null,
+    tile_list_hash: input.tileListHash ?? input.tile_list_hash ?? null,
+    tileBindingHash: input.tileBindingHash ?? input.tile_binding_hash ?? null,
+    tile_binding_hash: input.tileBindingHash ?? input.tile_binding_hash ?? null,
+    deterministicVisualModeHash:
+      input.deterministicVisualModeHash ?? input.deterministic_visual_mode_hash ?? null,
+    deterministic_visual_mode_hash:
+      input.deterministicVisualModeHash ?? input.deterministic_visual_mode_hash ?? null,
+  };
+  const bindingHash = sha256Text(stableJson(binding));
+  return {
+    ...binding,
+    bindingHash,
+    binding_hash: bindingHash,
+  };
+}
+
 function summarizeRoiTileConsistency(tileEvidence, roi) {
   const tiles = Array.isArray(tileEvidence?.tiles) ? tileEvidence.tiles : [];
   let changedTileCount = 0;
@@ -758,6 +873,14 @@ function firstObject(...values) {
 
 function text(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function contentAddressedSha256Text(value) {
+  const candidate = text(value);
+  if (!candidate) return null;
+  const normalized = candidate.toLowerCase();
+  const digest = normalized.startsWith('sha256:') ? normalized.slice('sha256:'.length) : normalized;
+  return /^[a-f0-9]{64}$/.test(digest) ? `sha256:${digest}` : null;
 }
 
 function caseNormalizedPath(value) {

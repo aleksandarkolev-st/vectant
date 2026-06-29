@@ -19,6 +19,7 @@ import {
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
   GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION,
   computeAsyncVisualProof,
 } from './gpu-hmr-visual-proof-worker.mjs';
@@ -1018,6 +1019,69 @@ function summarizeAsyncVisualProof(proof) {
   const dimensions = isObject(proof.dimensions) ? proof.dimensions : {};
   const incremental = isObject(proof.incremental) ? proof.incremental : {};
   const worker = isObject(proof.worker) ? proof.worker : {};
+  const summarizeIncrementalBinding = (bindingValue) => {
+    const binding = compactObject(bindingValue);
+    if (Object.keys(binding).length === 0) return null;
+    const bindingDimensions = compactObject(binding.dimensions);
+    const bindingRoi = compactObject(binding.roi);
+    return {
+      schemaVersion:
+        text(binding.schemaVersion ?? binding.schema_version) || null,
+      schema_version:
+        text(binding.schemaVersion ?? binding.schema_version) || null,
+      evidenceKind: text(binding.evidenceKind ?? binding.evidence_kind) || null,
+      evidence_kind: text(binding.evidenceKind ?? binding.evidence_kind) || null,
+      beforeEncodedHash:
+        text(binding.beforeEncodedHash ?? binding.before_encoded_hash) || null,
+      before_encoded_hash:
+        text(binding.beforeEncodedHash ?? binding.before_encoded_hash) || null,
+      afterEncodedHash:
+        text(binding.afterEncodedHash ?? binding.after_encoded_hash) || null,
+      after_encoded_hash:
+        text(binding.afterEncodedHash ?? binding.after_encoded_hash) || null,
+      beforeRawFrameHash:
+        text(binding.beforeRawFrameHash ?? binding.before_raw_frame_hash) || null,
+      before_raw_frame_hash:
+        text(binding.beforeRawFrameHash ?? binding.before_raw_frame_hash) || null,
+      afterRawFrameHash:
+        text(binding.afterRawFrameHash ?? binding.after_raw_frame_hash) || null,
+      after_raw_frame_hash:
+        text(binding.afterRawFrameHash ?? binding.after_raw_frame_hash) || null,
+      dimensions: Object.keys(bindingDimensions).length > 0
+        ? {
+            width: finiteNumber(bindingDimensions.width),
+            height: finiteNumber(bindingDimensions.height),
+            channels: finiteNumber(bindingDimensions.channels),
+          }
+        : null,
+      roi: Object.keys(bindingRoi).length > 0
+        ? {
+            x: finiteNumber(bindingRoi.x),
+            y: finiteNumber(bindingRoi.y),
+            width: finiteNumber(bindingRoi.width),
+            height: finiteNumber(bindingRoi.height),
+          }
+        : null,
+      roiBeforeHash: text(binding.roiBeforeHash ?? binding.roi_before_hash) || null,
+      roi_before_hash: text(binding.roiBeforeHash ?? binding.roi_before_hash) || null,
+      roiAfterHash: text(binding.roiAfterHash ?? binding.roi_after_hash) || null,
+      roi_after_hash: text(binding.roiAfterHash ?? binding.roi_after_hash) || null,
+      tileSize: finiteNumber(binding.tileSize ?? binding.tile_size),
+      tile_size: finiteNumber(binding.tileSize ?? binding.tile_size),
+      tileListHash: text(binding.tileListHash ?? binding.tile_list_hash) || null,
+      tile_list_hash: text(binding.tileListHash ?? binding.tile_list_hash) || null,
+      tileBindingHash:
+        text(binding.tileBindingHash ?? binding.tile_binding_hash) || null,
+      tile_binding_hash:
+        text(binding.tileBindingHash ?? binding.tile_binding_hash) || null,
+      deterministicVisualModeHash:
+        text(binding.deterministicVisualModeHash ?? binding.deterministic_visual_mode_hash) || null,
+      deterministic_visual_mode_hash:
+        text(binding.deterministicVisualModeHash ?? binding.deterministic_visual_mode_hash) || null,
+      bindingHash: text(binding.bindingHash ?? binding.binding_hash) || null,
+      binding_hash: text(binding.bindingHash ?? binding.binding_hash) || null,
+    };
+  };
   const summarizeInputArtifact = (role) => {
     const artifact = compactObject(inputArtifacts[role]);
     const validation = compactObject(artifact.casValidation ?? artifact.cas_validation);
@@ -1162,12 +1226,30 @@ function summarizeAsyncVisualProof(proof) {
       before_raw_hash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
       afterRawHash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
       after_raw_hash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
+      beforeRawFrameHash:
+        text(inputHashes.beforeRawFrameHash ?? inputHashes.before_raw_frame_hash) || null,
+      before_raw_frame_hash:
+        text(inputHashes.beforeRawFrameHash ?? inputHashes.before_raw_frame_hash) || null,
+      afterRawFrameHash:
+        text(inputHashes.afterRawFrameHash ?? inputHashes.after_raw_frame_hash) || null,
+      after_raw_frame_hash:
+        text(inputHashes.afterRawFrameHash ?? inputHashes.after_raw_frame_hash) || null,
+      deterministicVisualModeHash:
+        text(inputHashes.deterministicVisualModeHash ?? inputHashes.deterministic_visual_mode_hash) || null,
+      deterministic_visual_mode_hash:
+        text(inputHashes.deterministicVisualModeHash ?? inputHashes.deterministic_visual_mode_hash) || null,
     },
     input_hashes: {
       before_encoded_hash: text(inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash) || null,
       after_encoded_hash: text(inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash) || null,
       before_raw_hash: text(inputHashes.beforeRawHash ?? inputHashes.before_raw_hash) || null,
       after_raw_hash: text(inputHashes.afterRawHash ?? inputHashes.after_raw_hash) || null,
+      before_raw_frame_hash:
+        text(inputHashes.beforeRawFrameHash ?? inputHashes.before_raw_frame_hash) || null,
+      after_raw_frame_hash:
+        text(inputHashes.afterRawFrameHash ?? inputHashes.after_raw_frame_hash) || null,
+      deterministic_visual_mode_hash:
+        text(inputHashes.deterministicVisualModeHash ?? inputHashes.deterministic_visual_mode_hash) || null,
     },
     inputArtifacts: {
       before: summarizeInputArtifact('before'),
@@ -1186,6 +1268,9 @@ function summarizeAsyncVisualProof(proof) {
           before_hash: text(roiEvidence.beforeHash ?? roiEvidence.before_hash) || null,
           afterHash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
           after_hash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
+          bindingHash: text(roiEvidence.bindingHash ?? roiEvidence.binding_hash) || null,
+          binding_hash: text(roiEvidence.bindingHash ?? roiEvidence.binding_hash) || null,
+          binding: summarizeIncrementalBinding(roiEvidence.binding),
         }
       : null,
     roi_evidence: roiEvidence
@@ -1194,6 +1279,8 @@ function summarizeAsyncVisualProof(proof) {
           changed: roiEvidence.changed === true,
           before_hash: text(roiEvidence.beforeHash ?? roiEvidence.before_hash) || null,
           after_hash: text(roiEvidence.afterHash ?? roiEvidence.after_hash) || null,
+          binding_hash: text(roiEvidence.bindingHash ?? roiEvidence.binding_hash) || null,
+          binding: summarizeIncrementalBinding(roiEvidence.binding),
         }
       : null,
     tileEvidence: tileEvidence
@@ -1207,6 +1294,11 @@ function summarizeAsyncVisualProof(proof) {
           changed_tile_count: tileEvidence.changedTileCount ?? tileEvidence.changed_tile_count ?? null,
           changedTileRatio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
           changed_tile_ratio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
+          tileListHash: text(tileEvidence.tileListHash ?? tileEvidence.tile_list_hash) || null,
+          tile_list_hash: text(tileEvidence.tileListHash ?? tileEvidence.tile_list_hash) || null,
+          bindingHash: text(tileEvidence.bindingHash ?? tileEvidence.binding_hash) || null,
+          binding_hash: text(tileEvidence.bindingHash ?? tileEvidence.binding_hash) || null,
+          binding: summarizeIncrementalBinding(tileEvidence.binding),
         }
       : null,
     tile_evidence: tileEvidence
@@ -1216,6 +1308,9 @@ function summarizeAsyncVisualProof(proof) {
           tile_count: tileEvidence.tileCount ?? tileEvidence.tile_count ?? null,
           changed_tile_count: tileEvidence.changedTileCount ?? tileEvidence.changed_tile_count ?? null,
           changed_tile_ratio: tileEvidence.changedTileRatio ?? tileEvidence.changed_tile_ratio ?? null,
+          tile_list_hash: text(tileEvidence.tileListHash ?? tileEvidence.tile_list_hash) || null,
+          binding_hash: text(tileEvidence.bindingHash ?? tileEvidence.binding_hash) || null,
+          binding: summarizeIncrementalBinding(tileEvidence.binding),
         }
       : null,
     reasons: Array.isArray(proof.reasons) ? proof.reasons : [],
@@ -2159,14 +2254,123 @@ function asyncVisualMetricsFromVisualEvidence(visual = {}) {
   );
 }
 
+function incrementalBindingHashPayload(binding = {}) {
+  const payload = { ...binding };
+  delete payload.bindingHash;
+  delete payload.binding_hash;
+  return payload;
+}
+
+function recomputedIncrementalBindingHash(binding = {}) {
+  return `sha256:${sha256Hex(stableJson(incrementalBindingHashPayload(binding)))}`;
+}
+
+function normalizedBindingHash(value) {
+  const normalized = normalizedArtifactHash(value);
+  return normalized && contentAddressedSha256(normalized) ? normalized : null;
+}
+
+function sameFiniteNumber(left, right) {
+  const leftNumber = finiteNumber(left);
+  const rightNumber = finiteNumber(right);
+  return leftNumber !== null && rightNumber !== null && leftNumber === rightNumber;
+}
+
+function incrementalBindingAccepted(bindingValue = {}, options = {}) {
+  const binding = compactObject(bindingValue);
+  if (Object.keys(binding).length === 0) return false;
+  const inputHashes = compactObject(options.inputHashes);
+  const dimensions = compactObject(options.dimensions);
+  const tileEvidence = compactObject(options.tileEvidence);
+  const roiEvidence = compactObject(options.roiEvidence);
+  const bindingDimensions = compactObject(binding.dimensions);
+  const bindingHash = normalizedBindingHash(binding.bindingHash ?? binding.binding_hash);
+  const recomputedHash = recomputedIncrementalBindingHash(binding);
+  const expectedKind = firstText(options.expectedEvidenceKind);
+  const expectedDeterministicVisualModeHash = normalizedArtifactHash(
+    options.expectedDeterministicVisualModeHash,
+  );
+  const bindingDeterministicVisualModeHash = normalizedArtifactHash(
+    binding.deterministicVisualModeHash ?? binding.deterministic_visual_mode_hash,
+  );
+  const inputBeforeEncodedHash = normalizedArtifactHash(
+    inputHashes.beforeEncodedHash ?? inputHashes.before_encoded_hash,
+  );
+  const inputAfterEncodedHash = normalizedArtifactHash(
+    inputHashes.afterEncodedHash ?? inputHashes.after_encoded_hash,
+  );
+  const inputBeforeRawFrameHash = normalizedArtifactHash(
+    inputHashes.beforeRawFrameHash
+    ?? inputHashes.before_raw_frame_hash
+    ?? inputHashes.beforeRawHash
+    ?? inputHashes.before_raw_hash,
+  );
+  const inputAfterRawFrameHash = normalizedArtifactHash(
+    inputHashes.afterRawFrameHash
+    ?? inputHashes.after_raw_frame_hash
+    ?? inputHashes.afterRawHash
+    ?? inputHashes.after_raw_hash,
+  );
+  const bindingBeforeEncodedHash = normalizedArtifactHash(
+    binding.beforeEncodedHash ?? binding.before_encoded_hash,
+  );
+  const bindingAfterEncodedHash = normalizedArtifactHash(
+    binding.afterEncodedHash ?? binding.after_encoded_hash,
+  );
+  const bindingBeforeRawFrameHash = normalizedArtifactHash(
+    binding.beforeRawFrameHash ?? binding.before_raw_frame_hash,
+  );
+  const bindingAfterRawFrameHash = normalizedArtifactHash(
+    binding.afterRawFrameHash ?? binding.after_raw_frame_hash,
+  );
+  const tileListHash = normalizedArtifactHash(tileEvidence.tileListHash ?? tileEvidence.tile_list_hash);
+  const bindingTileListHash = normalizedArtifactHash(binding.tileListHash ?? binding.tile_list_hash);
+  const roiBeforeHash = normalizedArtifactHash(roiEvidence.beforeHash ?? roiEvidence.before_hash);
+  const roiAfterHash = normalizedArtifactHash(roiEvidence.afterHash ?? roiEvidence.after_hash);
+  const bindingRoiBeforeHash = normalizedArtifactHash(binding.roiBeforeHash ?? binding.roi_before_hash);
+  const bindingRoiAfterHash = normalizedArtifactHash(binding.roiAfterHash ?? binding.roi_after_hash);
+  const expectedTileBindingHash = normalizedArtifactHash(options.expectedTileBindingHash);
+  const bindingTileBindingHash = normalizedArtifactHash(
+    binding.tileBindingHash ?? binding.tile_binding_hash,
+  );
+
+  if (firstText(binding.schemaVersion, binding.schema_version)
+    !== GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION) return false;
+  if (!bindingHash || bindingHash !== recomputedHash) return false;
+  if (expectedKind && firstText(binding.evidenceKind, binding.evidence_kind) !== expectedKind) return false;
+  if (!bindingBeforeEncodedHash || bindingBeforeEncodedHash !== inputBeforeEncodedHash) return false;
+  if (!bindingAfterEncodedHash || bindingAfterEncodedHash !== inputAfterEncodedHash) return false;
+  if (!bindingBeforeRawFrameHash || bindingBeforeRawFrameHash !== inputBeforeRawFrameHash) return false;
+  if (!bindingAfterRawFrameHash || bindingAfterRawFrameHash !== inputAfterRawFrameHash) return false;
+  if (!sameFiniteNumber(bindingDimensions.width, dimensions.width)) return false;
+  if (!sameFiniteNumber(bindingDimensions.height, dimensions.height)) return false;
+  if (!sameFiniteNumber(bindingDimensions.channels, dimensions.channels)) return false;
+  if (expectedDeterministicVisualModeHash
+    && bindingDeterministicVisualModeHash !== expectedDeterministicVisualModeHash) return false;
+  if (expectedKind === 'tile_hash_grid') {
+    if (!bindingTileListHash || bindingTileListHash !== tileListHash) return false;
+    if (!sameFiniteNumber(binding.tileSize ?? binding.tile_size, tileEvidence.tileSize ?? tileEvidence.tile_size)) {
+      return false;
+    }
+  }
+  if (expectedKind === 'roi_hash') {
+    if (!bindingRoiBeforeHash || bindingRoiBeforeHash !== roiBeforeHash) return false;
+    if (!bindingRoiAfterHash || bindingRoiAfterHash !== roiAfterHash) return false;
+    if (expectedTileBindingHash && bindingTileBindingHash !== expectedTileBindingHash) return false;
+  }
+  return true;
+}
+
 function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const { visualArtifacts, locators, transportEvidence } = rawVisualArtifactTransportEvidence(row);
   const asyncMetrics = asyncVisualMetricsFromVisualEvidence(visual);
   const worker = compactObject(asyncMetrics.worker);
   const incremental = compactObject(asyncMetrics.incremental);
   const tileEvidence = compactObject(asyncMetrics.tileEvidence ?? asyncMetrics.tile_evidence);
+  const roiEvidence = compactObject(asyncMetrics.roiEvidence ?? asyncMetrics.roi_evidence);
   const inputHashes = compactObject(asyncMetrics.inputHashes ?? asyncMetrics.input_hashes);
   const inputArtifacts = compactObject(asyncMetrics.inputArtifacts ?? asyncMetrics.input_artifacts);
+  const dimensions = compactObject(asyncMetrics.dimensions);
   const declaredByRole = declaredVisualArtifactHashesByRole(visualArtifacts);
   const locatorByRole = locatorHashesByRole(locators);
   const validatedLocatorByRole = validatedVisualCasHashesByRole(visual);
@@ -2263,9 +2467,34 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && firstBool(worker.offMainThread, worker.off_main_thread) === true
     && contentAddressedSha256(workerExecutableHash)
     && nativeImageDependencyBound;
+  const expectedDeterministicVisualModeHash = normalizedArtifactHash(
+    inputHashes.deterministicVisualModeHash
+    ?? inputHashes.deterministic_visual_mode_hash,
+  );
+  const tileBindingHash = firstText(tileEvidence.bindingHash, tileEvidence.binding_hash);
+  const roiBindingHash = firstText(roiEvidence.bindingHash, roiEvidence.binding_hash);
+  const tileBindingAccepted = incrementalBindingAccepted(tileEvidence.binding, {
+    expectedEvidenceKind: 'tile_hash_grid',
+    inputHashes,
+    dimensions,
+    tileEvidence,
+    expectedDeterministicVisualModeHash,
+  });
+  const roiBindingAccepted = Object.keys(roiEvidence).length > 0
+    ? incrementalBindingAccepted(roiEvidence.binding, {
+        expectedEvidenceKind: 'roi_hash',
+        inputHashes,
+        dimensions,
+        tileEvidence,
+        roiEvidence,
+        expectedTileBindingHash: tileBindingHash,
+        expectedDeterministicVisualModeHash,
+      })
+    : false;
   const tileEvidenceAccepted =
     tileEvidence.accepted === true
-    && Number(tileEvidence.tileCount ?? tileEvidence.tile_count ?? 0) > 0;
+    && Number(tileEvidence.tileCount ?? tileEvidence.tile_count ?? 0) > 0
+    && tileBindingAccepted;
   const tileHashingEnabled = firstBool(incremental.tileHashing, incremental.tile_hashing) === true;
   const roiEarlyExitClaimed =
     firstBool(asyncMetrics.roiEarlyExitUsed, asyncMetrics.roi_early_exit_used) === true
@@ -2297,6 +2526,10 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     workerCasInputAccepted ? null : 'async_visual_worker_cas_input_missing',
     tileHashingEnabled ? null : 'async_visual_tile_hashing_missing',
     tileEvidenceAccepted ? null : 'async_visual_tile_evidence_missing',
+    tileBindingAccepted ? null : 'async_visual_tile_binding_missing_or_mismatched',
+    Object.keys(roiEvidence).length > 0 && !roiBindingAccepted
+      ? 'async_visual_roi_binding_missing_or_mismatched'
+      : null,
     roiEarlyExitClaimed && !tileEvidenceAccepted
       ? 'async_visual_roi_early_exit_tile_evidence_missing'
       : null,
@@ -2350,6 +2583,20 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     tile_hashing_enabled: tileHashingEnabled,
     tileEvidenceAccepted,
     tile_evidence_accepted: tileEvidenceAccepted,
+    tileBindingAccepted,
+    tile_binding_accepted: tileBindingAccepted,
+    tileBindingHash,
+    tile_binding_hash: tileBindingHash,
+    roiBindingAccepted,
+    roi_binding_accepted: roiBindingAccepted,
+    roiBindingHash,
+    roi_binding_hash: roiBindingHash,
+    incrementalEvidenceBindingAccepted:
+      tileBindingAccepted && (Object.keys(roiEvidence).length === 0 || roiBindingAccepted),
+    incremental_evidence_binding_accepted:
+      tileBindingAccepted && (Object.keys(roiEvidence).length === 0 || roiBindingAccepted),
+    deterministicVisualModeHash: expectedDeterministicVisualModeHash,
+    deterministic_visual_mode_hash: expectedDeterministicVisualModeHash,
     roiEarlyExitClaimed,
     roi_early_exit_claimed: roiEarlyExitClaimed,
     failedGates,

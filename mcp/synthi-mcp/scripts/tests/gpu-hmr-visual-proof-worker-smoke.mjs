@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { writeArtifactToCas } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
+  GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
   computeAsyncVisualProof,
 } from '../lib/gpu-hmr-visual-proof-worker.mjs';
 
@@ -110,7 +111,55 @@ assert.ok(proof.metrics.meanAbsDelta8bit > 0);
 assert.ok(proof.metrics.visiblePixelCount > 0);
 assert.ok(proof.metrics.meanLuma8bit > 0);
 assert.ok(proof.tileEvidence.changedTileCount > 0);
+assert.match(proof.inputHashes.beforeRawFrameHash, /^sha256:[a-f0-9]{64}$/);
+assert.match(proof.inputHashes.afterRawFrameHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(proof.inputHashes.beforeRawFrameHash, proof.inputHashes.beforeRawHash);
+assert.equal(proof.inputHashes.afterRawFrameHash, proof.inputHashes.afterRawHash);
+assert.match(proof.tileEvidence.tileListHash, /^sha256:[a-f0-9]{64}$/);
+assert.match(proof.tileEvidence.bindingHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(proof.tileEvidence.binding.schemaVersion, GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION);
+assert.equal(proof.tileEvidence.binding.evidenceKind, 'tile_hash_grid');
+assert.equal(proof.tileEvidence.binding.bindingHash, proof.tileEvidence.bindingHash);
+assert.equal(proof.tileEvidence.binding.beforeEncodedHash, proof.inputHashes.beforeEncodedHash);
+assert.equal(proof.tileEvidence.binding.afterEncodedHash, proof.inputHashes.afterEncodedHash);
+assert.equal(proof.tileEvidence.binding.beforeRawFrameHash, proof.inputHashes.beforeRawFrameHash);
+assert.equal(proof.tileEvidence.binding.afterRawFrameHash, proof.inputHashes.afterRawFrameHash);
+assert.equal(proof.tileEvidence.binding.tileListHash, proof.tileEvidence.tileListHash);
 assert.equal((await stat(diffPath)).isFile(), true);
+
+const deterministicModeHash = `sha256:${'1'.repeat(64)}`;
+const deterministicBoundProof = await computeAsyncVisualProof({
+  before: { casManifest: beforeManifest },
+  after: { casManifest: afterManifest },
+  roi: { x: 8, y: 8, width: 8, height: 8 },
+  deterministicVisualModeHash: deterministicModeHash,
+  tileSize: 8,
+}, {
+  allowedRoots: [casRoot],
+  timeoutMs: 30000,
+});
+assert.equal(deterministicBoundProof.accepted, true);
+assert.equal(deterministicBoundProof.inputHashes.deterministicVisualModeHash, deterministicModeHash);
+assert.equal(
+  deterministicBoundProof.tileEvidence.binding.deterministicVisualModeHash,
+  deterministicModeHash,
+);
+assert.equal(
+  deterministicBoundProof.roiEvidence.binding.deterministicVisualModeHash,
+  deterministicModeHash,
+);
+assert.equal(
+  deterministicBoundProof.roiEvidence.binding.tileBindingHash,
+  deterministicBoundProof.tileEvidence.bindingHash,
+);
+assert.equal(
+  deterministicBoundProof.roiEvidence.binding.roiBeforeHash,
+  deterministicBoundProof.roiEvidence.beforeHash,
+);
+assert.equal(
+  deterministicBoundProof.roiEvidence.binding.roiAfterHash,
+  deterministicBoundProof.roiEvidence.afterHash,
+);
 
 const portableBeforeManifest = {
   ...beforeManifest,
@@ -162,6 +211,11 @@ assert.equal(
 assert.equal(roiOutsideChangeFallback.incremental.roiEarlyExitBlocked, true);
 assert.equal(roiOutsideChangeFallback.roiEvidence.changed, false);
 assert.equal(roiOutsideChangeFallback.roiEvidence.earlyExitAccepted, false);
+assert.match(roiOutsideChangeFallback.roiEvidence.bindingHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(
+  roiOutsideChangeFallback.roiEvidence.binding.tileBindingHash,
+  roiOutsideChangeFallback.tileEvidence.bindingHash,
+);
 assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTileCount > 0);
 assert.ok(roiOutsideChangeFallback.roiTileConsistency.changedTilesOutsideRoiCount > 0);
 
@@ -207,6 +261,10 @@ assert.equal(trueRoiSkip.incremental.roiEarlyExitSafe, true);
 assert.equal(trueRoiSkip.incremental.roiEarlyExitBlocked, false);
 assert.equal(trueRoiSkip.roiEvidence.changed, false);
 assert.equal(trueRoiSkip.roiEvidence.earlyExitAccepted, true);
+assert.match(trueRoiSkip.roiEvidence.bindingHash, /^sha256:[a-f0-9]{64}$/);
+assert.equal(trueRoiSkip.roiEvidence.binding.evidenceKind, 'roi_hash');
+assert.equal(trueRoiSkip.roiEvidence.binding.beforeRawFrameHash, trueRoiSkip.inputHashes.beforeRawFrameHash);
+assert.equal(trueRoiSkip.roiEvidence.binding.afterRawFrameHash, trueRoiSkip.inputHashes.afterRawFrameHash);
 assert.equal(trueRoiSkip.roiTileConsistency.changedTileCount, 0);
 
 const roiFallback = await computeAsyncVisualProof({

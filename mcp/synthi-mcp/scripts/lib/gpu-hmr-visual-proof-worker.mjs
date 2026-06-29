@@ -16,6 +16,8 @@ export const GPU_HMR_VISUAL_WORKER_EXECUTABLE_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_worker_executable_manifest.v1';
 export const GPU_HMR_VISUAL_WORKER_NATIVE_DEPENDENCY_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_worker_native_dependency_manifest.v1';
+export const GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_incremental_evidence_binding.v1';
 
 export async function computeAsyncVisualProof(input = {}, options = {}) {
   const timeoutMs = finitePositiveInteger(options.timeoutMs, 30000);
