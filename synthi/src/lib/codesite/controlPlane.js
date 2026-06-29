@@ -656,6 +656,7 @@ async function findStaleReadEvents(transaction, readSet) {
   });
   return events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
+    .filter(({ event, details }) => !eventBelongsToTransaction(event, details, transaction))
     .filter(({ details }) => {
       const paths = normalizePathList([details.path, ...asArray(details.writeSet || details.changedPaths || [])]);
       return readSet.some((readPath) => paths.includes(readPath));
@@ -667,6 +668,10 @@ async function findStaleReadEvents(transaction, readSet) {
       displayCallsign: event.displayCallsign,
       createdAt: event.createdAt,
     }));
+}
+
+function eventBelongsToTransaction(event, details, transaction) {
+  return details.transactionId === transaction.id || event.actorId === transaction.id;
 }
 
 export async function commitTransaction(workspaceSlug, transactionId, body = {}) {
