@@ -4530,6 +4530,44 @@ function realRocmProofSchedulingFixture(overrides = {}) {
   };
 }
 
+function runtimeAdapterResultTransportFixture(scope, overrides = {}) {
+  const rawSha256 = hashValue(`runtime-adapter-transport:${scope}`);
+  return {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+    proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+    declared: true,
+    status: 'runtime_adapter_result_transport_copied',
+    declaredPath: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    declared_path: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    hostPath: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    host_path: `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    workerPath: `/var/lib/synthi/runtime-adapter-results/${scope}.json`,
+    worker_path: `/var/lib/synthi/runtime-adapter-results/${scope}.json`,
+    copied: true,
+    byteLength: 256,
+    byte_length: 256,
+    rawSha256,
+    raw_sha256: rawSha256,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    evidenceRefs: [rawSha256, `runtime-adapter-result-transport:${scope}`],
+    evidence_refs: [rawSha256, `runtime-adapter-result-transport:${scope}`],
+    blockingGaps: [],
+    blocking_gaps: [],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+}
+
 function realRocmSourceTreeTransportFixture(scope, overrides = {}) {
   const sourceTreeManifest = {
     schemaVersion: 'synthi.real_rocm.source_tree_manifest.v1',
@@ -12746,6 +12784,8 @@ const completeAdapterBoundaryRuntimeAdapterExecution =
     completeAdapterBoundaryBridgeScope,
     completeAdapterBoundaryMaterials,
   );
+const completeAdapterBoundaryRuntimeAdapterResultTransport =
+  runtimeAdapterResultTransportFixture(completeAdapterBoundaryBridgeScope);
 await writeJson(
   path.join(completeAdapterBoundaryBridgeRocmDir, 'real-rocm-adapter-boundary-bridge-complete.json'),
   {
@@ -12844,6 +12884,8 @@ await writeJson(
     real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
     real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
     real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+    real_rocm_runtime_adapter_result_transport:
+      completeAdapterBoundaryRuntimeAdapterResultTransport,
     ...completeAdapterBoundaryMaterials,
     runtime_proof_artifact: {
       ...completeAdapterBoundaryMaterials.runtime_proof_artifact,
@@ -12877,6 +12919,10 @@ await writeJson(
       real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
       realRocmRuntimeAdapterExecution: completeAdapterBoundaryRuntimeAdapterExecution,
       real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+      realRocmRuntimeAdapterResultTransport:
+        completeAdapterBoundaryRuntimeAdapterResultTransport,
+      real_rocm_runtime_adapter_result_transport:
+        completeAdapterBoundaryRuntimeAdapterResultTransport,
     },
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
@@ -12915,6 +12961,19 @@ assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResul
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.accepted, true);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.canSatisfyRuntimeProof,
+  false,
+);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
@@ -12982,6 +13041,17 @@ const adapterBoundarySidecarConsistency =
   acceptedRealRocmSidecarRuntimeConsistency(adapterBoundaryBridgeScope);
 const adapterBoundaryRuntimeAdapterExecution =
   runtimeAdapterExecutionFixture(adapterBoundaryBridgeScope, adapterBoundaryMaterials);
+const adapterBoundaryForgedRuntimeAdapterResultTransport =
+  runtimeAdapterResultTransportFixture(adapterBoundaryBridgeScope, {
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+  });
 const adapterBoundaryMismatchedLines =
   adapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines.map((line) =>
     line.replace(
@@ -13093,6 +13163,8 @@ await writeJson(
     real_rocm_device_sidecar_contract: adapterBoundarySidecar,
     real_rocm_sidecar_runtime_consistency: adapterBoundarySidecarConsistency,
     real_rocm_runtime_adapter_execution: adapterBoundaryRuntimeAdapterExecution,
+    real_rocm_runtime_adapter_result_transport:
+      adapterBoundaryForgedRuntimeAdapterResultTransport,
     ...adapterBoundaryMaterials,
     runtime_proof_artifact: {
       ...adapterBoundaryMaterials.runtime_proof_artifact,
@@ -13110,6 +13182,10 @@ await writeJson(
       real_rocm_sidecar_runtime_consistency: adapterBoundarySidecarConsistency,
       realRocmRuntimeAdapterExecution: adapterBoundaryRuntimeAdapterExecution,
       real_rocm_runtime_adapter_execution: adapterBoundaryRuntimeAdapterExecution,
+      realRocmRuntimeAdapterResultTransport:
+        adapterBoundaryForgedRuntimeAdapterResultTransport,
+      real_rocm_runtime_adapter_result_transport:
+        adapterBoundaryForgedRuntimeAdapterResultTransport,
     },
     timingMetrics: {
       schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
@@ -13143,6 +13219,24 @@ assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult.presen
 assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.accepted, true);
 assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr, false);
 assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gpuHmrSuccess, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.accepted, false);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.acceptedForGpuHmr, true);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.gpuHmrSuccess, true);
+assert.ok(adapterBoundaryBridgeRow.reasons.includes(
+  'real_rocm_runtime_adapter_result_transport:real_rocm_runtime_adapter_result_transport_claimed_gpu_hmr_acceptance',
+));
+assert.ok(adapterBoundaryBridgeRow.reasons.includes(
+  'real_rocm_runtime_adapter_result_transport:real_rocm_runtime_adapter_result_transport_claimed_gpu_hmr_success',
+));
+assert.ok(adapterBoundaryBridgeRow.reasons.includes(
+  'real_rocm_runtime_adapter_result_transport:real_rocm_runtime_adapter_result_transport_claimed_runtime_authority',
+));
+assert.ok(adapterBoundaryBridgeRow.reasons.includes(
+  'real_rocm_runtime_adapter_result_transport:real_rocm_runtime_adapter_result_transport_claimed_dispatch_authority',
+));
+assert.ok(adapterBoundaryBridgeRow.openGaps.includes(
+  'real_rocm_runtime_adapter_result_transport_required',
+));
 assert.equal(adapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
 assert.equal(adapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
 assert.equal(adapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, false);

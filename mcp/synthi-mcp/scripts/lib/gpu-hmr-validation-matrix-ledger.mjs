@@ -127,6 +127,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_execution.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY =
   'adapter_execution_evidence_only_not_runtime_authority';
+const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_result_transport.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY =
+  'runtime_adapter_result_transport_only_not_gpu_hmr_success';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
@@ -6404,6 +6408,158 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
   };
 }
 
+function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const status = firstText(facet.status, facet.reason);
+  const declared = firstBool(facet.declared) === true;
+  const copied = firstBool(facet.copied, facet.resultCopied, facet.result_copied) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const byteLength = finiteNumber(facet.byteLength ?? facet.byte_length);
+  const rawSha256 = firstText(
+    facet.rawSha256,
+    facet.raw_sha256,
+    facet.resultSha256,
+    facet.result_sha256,
+    facet.resultHash,
+    facet.result_hash,
+  );
+  const declaredPath = firstText(facet.declaredPath, facet.declared_path);
+  const hostPath = firstText(facet.hostPath, facet.host_path);
+  const workerPath = firstText(facet.workerPath, facet.worker_path);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+  ]);
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const copiedStatus = status === 'runtime_adapter_result_transport_copied';
+  const notDeclaredStatus = status === 'runtime_adapter_result_transport_not_declared';
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_runtime_adapter_result_transport_schema_missing',
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION
+      ? 'real_rocm_runtime_adapter_result_transport_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_adapter_result_transport_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_adapter_result_transport_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_adapter_result_transport_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_adapter_result_transport_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_adapter_result_transport_claimed_dispatch_authority'
+      : null,
+    !status ? 'real_rocm_runtime_adapter_result_transport_status_missing' : null,
+    declared && copiedStatus && copied !== true
+      ? 'real_rocm_runtime_adapter_result_transport_copied_flag_missing'
+      : null,
+    declared && copied && copiedStatus !== true
+      ? 'real_rocm_runtime_adapter_result_transport_copied_status_missing'
+      : null,
+    declared && copied && !rawSha256
+      ? 'real_rocm_runtime_adapter_result_transport_hash_missing'
+      : null,
+    declared && copied && !(byteLength > 0)
+      ? 'real_rocm_runtime_adapter_result_transport_byte_length_missing'
+      : null,
+    declared && copied && evidenceRefs.length === 0
+      ? 'real_rocm_runtime_adapter_result_transport_evidence_refs_missing'
+      : null,
+    declared && !copied && blockingGaps.length === 0
+      ? 'real_rocm_runtime_adapter_result_transport_missing_without_gap'
+      : null,
+    copied && declared !== true
+      ? 'real_rocm_runtime_adapter_result_transport_copied_without_declaration'
+      : null,
+    !declared && !notDeclaredStatus && copied !== true
+      ? 'real_rocm_runtime_adapter_result_transport_unexpected_status_without_declaration'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0 && blockingGaps.length === 0,
+    declared,
+    copied,
+    status,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    declaredPath: declaredPath ?? null,
+    declared_path: declaredPath ?? null,
+    hostPath: hostPath ?? null,
+    host_path: hostPath ?? null,
+    workerPath: workerPath ?? null,
+    worker_path: workerPath ?? null,
+    byteLength: byteLength ?? 0,
+    byte_length: byteLength ?? 0,
+    rawSha256: rawSha256 ?? null,
+    raw_sha256: rawSha256 ?? null,
+    acceptedForGpuHmr: acceptedForGpuHmr === true,
+    accepted_for_gpu_hmr: acceptedForGpuHmr === true,
+    gpuHmrSuccess: gpuHmrSuccess === true,
+    gpu_hmr_success: gpuHmrSuccess === true,
+    canSatisfyRuntimeProof: canSatisfyRuntimeProof === true,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof === true,
+    canSatisfyDispatchProof: canSatisfyDispatchProof === true,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function realRocmSourceTreeTransportFacet(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -7288,6 +7444,21 @@ function rowSafetyFailures(row) {
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_execution',
       });
       failures.push(...runtimeAdapterExecution.failedGates.map((code) => ({ code })));
+    }
+    const runtimeAdapterResultTransport = realRocmRuntimeAdapterResultTransportFacet(compactObject(
+      row.realRocmRuntimeAdapterResultTransport
+      ?? row.real_rocm_runtime_adapter_result_transport
+      ?? row.runtimeAdapterResultTransport
+      ?? row.runtime_adapter_result_transport,
+    ));
+    if (
+      runtimeAdapterResultTransport.present === true
+      && runtimeAdapterResultTransport.accepted !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_result_transport',
+      });
+      failures.push(...runtimeAdapterResultTransport.failedGates.map((code) => ({ code })));
     }
   }
   if (row.matrixOutcome === 'refusal_proven' && row.acceptedForGpuHmr === true) {
@@ -12678,6 +12849,25 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? evidence.runtime_adapter_execution
     ?? evidence.runtimeAdapterExecution,
   ));
+  const realRocmRuntimeAdapterResultTransport =
+    realRocmRuntimeAdapterResultTransportFacet(compactObject(
+      json.real_rocm_runtime_adapter_result_transport
+      ?? json.realRocmRuntimeAdapterResultTransport
+      ?? json.runtime_adapter_result_transport
+      ?? json.runtimeAdapterResultTransport
+      ?? summary.real_rocm_runtime_adapter_result_transport
+      ?? summary.realRocmRuntimeAdapterResultTransport
+      ?? summary.runtime_adapter_result_transport
+      ?? summary.runtimeAdapterResultTransport
+      ?? runtimeProofArtifact.real_rocm_runtime_adapter_result_transport
+      ?? runtimeProofArtifact.realRocmRuntimeAdapterResultTransport
+      ?? runtimeProofArtifact.runtime_adapter_result_transport
+      ?? runtimeProofArtifact.runtimeAdapterResultTransport
+      ?? evidence.real_rocm_runtime_adapter_result_transport
+      ?? evidence.realRocmRuntimeAdapterResultTransport
+      ?? evidence.runtime_adapter_result_transport
+      ?? evidence.runtimeAdapterResultTransport,
+    ));
   const outputOracleResolution = compactObject(
     json.output_oracle_resolution
     ?? json.outputOracleResolution
@@ -13037,6 +13227,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           : []),
       ])
       : [];
+  const realRocmRuntimeAdapterResultTransportGaps =
+    realRocmRuntimeAdapterResultTransport.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmRuntimeAdapterResultTransport.blockingGaps)
+          ? realRocmRuntimeAdapterResultTransport.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterResultTransport.blocking_gaps)
+          ? realRocmRuntimeAdapterResultTransport.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterResultTransport.failedGates)
+          ? realRocmRuntimeAdapterResultTransport.failedGates
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterResultTransport.failed_gates)
+          ? realRocmRuntimeAdapterResultTransport.failed_gates
+          : []),
+      ])
+      : [];
   const realRocmSourceTreeTransportGaps = realRocmSourceTreeTransport.present === true
     ? compactStringList([
       ...(Array.isArray(realRocmSourceTreeTransport.blockingGaps)
@@ -13149,6 +13356,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmRuntimeAdapterExecution.present === true
       ? firstText(realRocmRuntimeAdapterExecution.status, realRocmRuntimeAdapterExecution.reason)
       : null;
+  const realRocmRuntimeAdapterResultTransportReason =
+    realRocmRuntimeAdapterResultTransport.present === true
+      ? firstText(
+        realRocmRuntimeAdapterResultTransport.status,
+        realRocmRuntimeAdapterResultTransport.reason,
+      )
+      : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
   const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
@@ -13251,6 +13465,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeAdapterExecutionAccepted =
     realRocmRuntimeAdapterExecution.present !== true
     || realRocmRuntimeAdapterExecution.accepted === true;
+  const runtimeAdapterResultTransportAccepted =
+    realRocmRuntimeAdapterResultTransport.present !== true
+    || realRocmRuntimeAdapterResultTransport.accepted === true;
   const externalHeaderPrerequisitesAccepted =
     realRocmExternalHeaderPrerequisites.present !== true
     || realRocmExternalHeaderPrerequisites.accepted === true;
@@ -13339,6 +13556,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && appHookMaterializationAccepted === true
     && runtimeProfileAdapterResultAccepted === true
     && runtimeAdapterExecutionAccepted === true
+    && runtimeAdapterResultTransportAccepted === true
     && externalHeaderPrerequisitesAccepted === true
     && missingDependencyBlockerPresent !== true
     && profileProofObligationsAccepted === true
@@ -13572,6 +13790,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_adapter_execution: realRocmRuntimeAdapterExecution,
     runtimeAdapterExecution: realRocmRuntimeAdapterExecution,
     runtime_adapter_execution: realRocmRuntimeAdapterExecution,
+    realRocmRuntimeAdapterResultTransport,
+    real_rocm_runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
+    runtimeAdapterResultTransport: realRocmRuntimeAdapterResultTransport,
+    runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
     realRocmProofScheduling,
     real_rocm_proof_scheduling: realRocmProofScheduling,
     proofScheduling: realRocmProofScheduling,
@@ -13649,6 +13871,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterExecutionAccepted
         ? null
         : 'real_rocm_runtime_adapter_execution_not_accepted',
+      realRocmRuntimeAdapterResultTransportReason
+        ? `real_rocm_runtime_adapter_result_transport:${realRocmRuntimeAdapterResultTransportReason}`
+        : null,
+      ...realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
+        `real_rocm_runtime_adapter_result_transport:${gap}`
+      ),
+      runtimeAdapterResultTransportAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_result_transport_not_accepted',
       realRocmRuntimeCapabilityPreflightReason
         ? `real_rocm_runtime_capability_preflight:${realRocmRuntimeCapabilityPreflightReason}`
         : null,
@@ -13769,6 +14000,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterExecutionAccepted
         ? null
         : 'real_rocm_runtime_adapter_execution_required',
+      ...realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
+        `real_rocm_runtime_adapter_result_transport:${gap}`
+      ),
+      runtimeAdapterResultTransportAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_result_transport_required',
       ...realRocmProofSchedulingGaps.map((gap) =>
         `real_rocm_proof_scheduling:${gap}`
       ),
