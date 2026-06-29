@@ -783,6 +783,7 @@ function visualArtifactHashForRole(object, role) {
 function visualArtifactCasLocators(input) {
   const locators = collectArtifactLocators(input).filter((locator) =>
     firstText(locator.schemaVersion, locator.schema_version) === 'synthi.cas.artifact_locator.v1'
+    && visualCasLocatorLooksLikeImageEvidence(locator)
   );
   const seen = new Set();
   return locators.filter((locator) => {
@@ -799,6 +800,29 @@ function visualArtifactCasLocators(input) {
     seen.add(key);
     return true;
   });
+}
+
+function visualCasLocatorLooksLikeImageEvidence(locator = {}) {
+  const role = (firstText(locator.role, locator.artifactRole, locator.artifact_role) ?? '').toLowerCase();
+  const kind = (firstText(locator.artifactKind, locator.artifact_kind) ?? '').toLowerCase();
+  const mediaType = (firstText(locator.mediaType, locator.media_type) ?? '').toLowerCase();
+  const imageRoles = new Set([
+    'before',
+    'after',
+    'diff',
+    'before_frame',
+    'after_frame',
+    'diff_frame',
+    'baseline_frame',
+    'changed_frame',
+    'difference_frame',
+  ]);
+  return mediaType.startsWith('image/')
+    || imageRoles.has(role)
+    || kind.includes('visual')
+    || kind.includes('frame')
+    || kind.includes('screenshot')
+    || kind.includes('render');
 }
 
 function visualArtifactCasLocatorForEntry(locators, role, expectedHash) {
@@ -2585,12 +2609,17 @@ function rawVisualArtifactTransportEvidence(row = {}) {
       ?? row.visualOracleArtifacts
       ?? row.visual_oracle_artifacts,
   );
+  const suppliedLocators = compactObjectList(
+    visualArtifacts.artifactCasLocators
+      ?? visualArtifacts.artifact_cas_locators,
+  );
+  const locators = suppliedLocators.filter(visualCasLocatorLooksLikeImageEvidence);
+  const nonVisualLocators = suppliedLocators.filter((locator) => !visualCasLocatorLooksLikeImageEvidence(locator));
   return {
     visualArtifacts,
-    locators: compactObjectList(
-      visualArtifacts.artifactCasLocators
-        ?? visualArtifacts.artifact_cas_locators,
-    ),
+    locators,
+    nonVisualLocators,
+    non_visual_locators: nonVisualLocators,
     transportEvidence: compactObject(
       visualArtifacts.visualArtifactTransportEvidence
         ?? visualArtifacts.visual_artifact_transport_evidence,
@@ -3001,7 +3030,12 @@ function incrementalBindingAccepted(bindingValue = {}, options = {}) {
 }
 
 function asyncVisualCasBundleFacet(row = {}, visual = {}) {
-  const { visualArtifacts, locators, transportEvidence } = rawVisualArtifactTransportEvidence(row);
+  const {
+    visualArtifacts,
+    locators,
+    nonVisualLocators = [],
+    transportEvidence,
+  } = rawVisualArtifactTransportEvidence(row);
   const asyncVisualProofJob = rawAsyncVisualProofJob(row);
   const asyncVisualProofJobPresent = Object.keys(asyncVisualProofJob).length > 0;
   const asyncVisualProofJobBinding = asyncVisualProofJobBindingFacet(asyncVisualProofJob);
@@ -3174,6 +3208,7 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
       ? null
       : 'async_visual_worker_executable_hash_missing',
     nativeImageDependencyBound ? null : 'async_visual_native_dependency_identity_missing',
+    nonVisualLocators.length === 0 ? null : 'visual_artifact_transport_non_visual_locator_rejected',
     transportAccepted ? null : 'visual_artifact_transport_not_accepted',
     casLocatorValidationFailed ? 'visual_artifact_cas_locator_validation_failed' : null,
     locatorsAccepted ? null : 'visual_artifact_cas_locators_not_accepted',
@@ -3233,6 +3268,8 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     transport_accepted: transportAccepted,
     locatorCount: locators.length,
     locator_count: locators.length,
+    rejectedNonVisualLocatorCount: nonVisualLocators.length,
+    rejected_non_visual_locator_count: nonVisualLocators.length,
     validatedLocatorCount: validatedLocatorByRole.size,
     validated_locator_count: validatedLocatorByRole.size,
     requiredRoles: requiredRoleSet,
@@ -15277,6 +15314,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const asyncVisualProofJobBindingAccepted =
     asyncVisualCasBundle.asyncVisualProofJobPresent !== true
     || asyncVisualCasBundle.asyncVisualProofJobBinding?.accepted === true;
+  const visualTransportLocatorsAccepted =
+    Number(asyncVisualCasBundle.rejectedNonVisualLocatorCount
+      ?? asyncVisualCasBundle.rejected_non_visual_locator_count
+      ?? 0) === 0;
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';
   const cpuHmrUsed = boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used);
@@ -15314,6 +15355,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noRestart
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
     && asyncVisualProofJobBindingAccepted
+    && visualTransportLocatorsAccepted
     && (backend !== 'hiprt' || (
       runtimeProbeInstrumentation.accepted === true
       && hiprtContract.accepted === true
@@ -15344,7 +15386,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noFullRebuild
     && noRestart
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
-    && asyncVisualProofJobBindingAccepted;
+    && asyncVisualProofJobBindingAccepted
+    && visualTransportLocatorsAccepted;
   const matrixOutcome = acceptedRuntime
     ? 'full_runtime_gpu_hmr'
     : sourceAdaptedVisualProfileAccepted
@@ -15464,6 +15507,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         ? null
         : 'source_first_ingestion_not_accepted',
       asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_not_accepted',
+      visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_non_visual_locator_rejected',
       backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
@@ -15479,6 +15523,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
       ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
       ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
+      ...(visualTransportLocatorsAccepted ? [] : asyncVisualCasBundle.failedGates),
     ]) : [],
     openGaps: sourceAdaptedVisualProfileAccepted
       ? ['source_adapted_profile_not_no_shim_gpu_hmr']
@@ -15495,11 +15540,13 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
             ? 'source_first_ingestion_required'
             : null,
           asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_required',
+          visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_visual_locator_required',
           ...visual.failedGates,
           ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
           ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
           ...(asyncVisualProofJobBindingAccepted ? [] : asyncVisualCasBundle.failedGates),
+          ...(visualTransportLocatorsAccepted ? [] : asyncVisualCasBundle.failedGates),
         ])
       : [],
   });

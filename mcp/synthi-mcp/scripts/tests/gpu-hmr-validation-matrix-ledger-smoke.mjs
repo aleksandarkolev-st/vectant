@@ -290,6 +290,40 @@ function forgedVisualArtifactCasOnlySet(artifacts) {
   return copy;
 }
 
+function forgedNonVisualCasVisualTransportSet(artifacts, locator) {
+  const copy = cloneJson(artifacts);
+  copy.artifactCasLocators = [locator];
+  copy.artifact_cas_locators = [locator];
+  copy.visualArtifactTransportEvidence = {
+    schemaVersion: 'synthi.gpu_hmr.visual_artifact_transport_evidence.v1',
+    accepted: true,
+    acceptedAsTransportEvidence: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'transport_integrity_only_not_visual_or_ledger_proof',
+    locatorCount: 1,
+    entries: [{
+      schemaVersion: 'synthi.gpu_hmr.artifact_transport_evidence.v1',
+      accepted: true,
+      acceptedAsTransportEvidence: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      proofAuthority: 'transport_integrity_only',
+      contentHash: locator.contentHash,
+      artifactId: locator.artifactId,
+      artifactUri: locator.artifactUri,
+      transportKind: locator.transport?.kind,
+      manifestHash: locator.manifestHash,
+      reasons: [],
+      gaps: [],
+    }],
+    reasons: [],
+    gaps: [],
+  };
+  copy.visual_artifact_transport_evidence = copy.visualArtifactTransportEvidence;
+  return copy;
+}
+
 function forgedAsyncVisualProofJobForVisualArtifacts(artifacts, targetId) {
   const locators = artifacts.artifactCasLocators ?? artifacts.artifact_cas_locators ?? [];
   return {
@@ -1690,6 +1724,48 @@ await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-forged-visual-j
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1-source-first-forged-visual-job',
     editHash: hashValue('source-edit:hot1-source-first-forged-visual-job'),
+  },
+});
+
+const nonVisualMetadataVisualLocator = cloneJson(
+  runModeProofBase.visualArtifacts.artifactCasLocators[0],
+);
+nonVisualMetadataVisualLocator.mediaType = 'application/octet-stream';
+nonVisualMetadataVisualLocator.media_type = 'application/octet-stream';
+nonVisualMetadataVisualLocator.artifactKind = 'runtime_adapter_compute_readback';
+nonVisualMetadataVisualLocator.artifact_kind = 'runtime_adapter_compute_readback';
+nonVisualMetadataVisualLocator.role = 'raw_readback';
+await writeJson(path.join(visualDir, 'run-mode-hot1-source-first-nonvisual-cas-metadata.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-source-first-nonvisual-cas-metadata',
+    'gpu-runtime-proof:sha256:synthetic-hot1-source-first-nonvisual-cas-metadata',
+  ),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'flow-source-first-nonvisual-cas-metadata',
+  }),
+  targetId: 'flow-source-first-nonvisual-cas-metadata',
+  profileId: 'flow-source-first-nonvisual-cas-metadata',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-source-first-nonvisual-cas-metadata',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-source-first-nonvisual-cas-metadata',
+  }),
+  visualArtifacts: forgedNonVisualCasVisualTransportSet(
+    runModeProofBase.visualArtifacts,
+    nonVisualMetadataVisualLocator,
+  ),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-source-first-nonvisual-cas-metadata',
+    editHash: hashValue('source-edit:hot1-source-first-nonvisual-cas-metadata'),
   },
 });
 
@@ -8829,6 +8905,24 @@ assert.ok(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.failedGates.inc
 ));
 assert.ok(forgedSourceFirstVisualJobRunMode.asyncVisualCasBundle.failedGates.includes(
   'async_visual_proof_job_manifest_hash_mismatch',
+));
+
+const nonVisualCasMetadataRunMode = ledger.rows.find((row) =>
+  row.targetId === 'flow-source-first-nonvisual-cas-metadata'
+);
+assert.equal(nonVisualCasMetadataRunMode?.matrixOutcome, 'unproven');
+assert.equal(nonVisualCasMetadataRunMode.visual.accepted, true);
+assert.equal(nonVisualCasMetadataRunMode.asyncVisualCasBundle.accepted, false);
+assert.equal(nonVisualCasMetadataRunMode.asyncVisualCasBundle.rejectedNonVisualLocatorCount, 1);
+assert.equal(nonVisualCasMetadataRunMode.asyncVisualCasBundle.locatorCount, 0);
+assert.ok(nonVisualCasMetadataRunMode.asyncVisualCasBundle.failedGates.includes(
+  'visual_artifact_transport_non_visual_locator_rejected',
+));
+assert.ok(nonVisualCasMetadataRunMode.reasons.includes(
+  'visual_artifact_transport_non_visual_locator_rejected',
+));
+assert.ok(nonVisualCasMetadataRunMode.openGaps.includes(
+  'visual_artifact_transport_visual_locator_required',
 ));
 
 const forgedSourceFirstCasRunMode = ledger.rows.find((row) =>
