@@ -406,9 +406,15 @@ describe('CodeSite control plane transaction validation', () => {
       acknowledgedAt: null,
       ...data,
     }));
+    let eventSeq = 0;
     prisma.codeSiteEvent.count.mockResolvedValue(1);
-    prisma.codeSiteEvent.create.mockResolvedValue({ id: 'event-validation' });
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      id: `event-${data.eventType || 'codesite'}-${eventSeq += 1}`,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      ...data,
+    }));
     prisma.codeSiteEvent.findFirst.mockResolvedValue(null);
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
     prisma.codeSitePolicyDecision.create.mockImplementation(async ({ data }) => ({
       id: 'decision-1',
       createdAt: new Date('2026-06-29T23:01:00.000Z'),
@@ -446,24 +452,28 @@ describe('CodeSite control plane transaction validation', () => {
       completedAt: null,
       ...data,
     }));
-    prisma.codeSiteIncident.create.mockImplementation(async ({ data }) => ({
-      id: 'incident-created',
-      createdAt: new Date('2026-06-29T23:05:00.000Z'),
-      ...data,
-    }));
+    let latestIncident = null;
+    prisma.codeSiteIncident.create.mockImplementation(async ({ data }) => {
+      latestIncident = {
+        id: 'incident-created',
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+        ...data,
+      };
+      return latestIncident;
+    });
     prisma.codeSiteIncident.update.mockImplementation(async ({ where, data }) => ({
-      id: where.id,
-      projectId: 'project-1',
-      severity: 'critical',
-      category: 'mayday',
-      participantsJson: JSON.stringify(['API-01']),
-      affectedZonesJson: JSON.stringify(['api/auth/**']),
-      incidentReplayJson: data.incidentReplayJson,
-      replayDigest: data.replayDigest,
-      timelineEventRefsJson: data.timelineEventRefsJson,
-      policyDeltaJson: JSON.stringify(null),
-      evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
-      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      ...(latestIncident || {
+        id: where.id,
+        projectId: 'project-1',
+        severity: 'critical',
+        category: 'mayday',
+        participantsJson: JSON.stringify(['API-01']),
+        affectedZonesJson: JSON.stringify(['api/auth/**']),
+        policyDeltaJson: JSON.stringify(null),
+        evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      }),
+      ...data,
     }));
     prisma.codeSiteProofBundle.create.mockImplementation(async ({ data }) => ({
       id: 'proof-created',
@@ -714,6 +724,129 @@ describe('CodeSite control plane transaction validation', () => {
       status: 'blocked',
     });
     expect(stopWorkBody.suspendedLeaseIds).toEqual(['lease-api']);
+  });
+
+  it('closes near-miss incidents as causal black-box replay packets', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'evt-open',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'transaction_opened',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', baseSnapshot: 'repo@sha256:base' }),
+        evidenceRefsJson: JSON.stringify(['ev:snapshot']),
+        logicalTime: 1,
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      {
+        id: 'evt-clearance',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'clearance_issued',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-1',
+        detailsJson: JSON.stringify({ mutationLeaseId: 'lease-1', policyDecisionId: 'decision-1' }),
+        evidenceRefsJson: JSON.stringify(['ev:clearance']),
+        logicalTime: 2,
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      },
+      {
+        id: 'evt-attempt',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_attempted',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'transaction',
+        actorId: 'txn-1',
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', path: 'synthi/prisma/schema.prisma', tool: 'file_write' }),
+        evidenceRefsJson: JSON.stringify(['ev:attempt']),
+        logicalTime: 3,
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      },
+      {
+        id: 'evt-denied',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_denied',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-2',
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          policyDecisionId: 'decision-2',
+          reasonCodes: ['entered_no_fly_zone'],
+        }),
+        evidenceRefsJson: JSON.stringify(['ev:denied']),
+        logicalTime: 4,
+        createdAt: new Date('2026-06-29T23:03:00.000Z'),
+      },
+      {
+        id: 'evt-inspection',
+        projectId: 'project-1',
+        mutationLeaseId: null,
+        eventType: 'inspection_result',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'inspection_run',
+        actorId: 'inspection-1',
+        detailsJson: JSON.stringify({ changedPaths: ['synthi/prisma/schema.prisma'], inspectionEvidenceRefs: ['ev:inspection'] }),
+        evidenceRefsJson: JSON.stringify(['ev:inspection']),
+        logicalTime: 5,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      },
+      {
+        id: 'evt-near',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'near_miss',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-3',
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], prevented: true }),
+        evidenceRefsJson: JSON.stringify(['ev:near-miss']),
+        logicalTime: 6,
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      },
+    ]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'near_miss',
+      severity: 'warning',
+      summary: 'Schema write prevented before landing.',
+      displayCallsign: 'ATLAS-1',
+      participants: ['ATLAS-1'],
+      affectedZones: ['synthi/prisma/**'],
+      timelineEventRefs: ['evt-open', 'evt-clearance', 'evt-attempt', 'evt-denied', 'evt-inspection', 'evt-near'],
+      evidenceRefs: ['collision:evidence'],
+      policyDelta: { rule: 'schema_first_for_auth' },
+    });
+    const replay = incident.incidentReplay;
+    const replayTypes = replay.causalEvents.map((event) => event.type);
+
+    expect(incident.category).toBe('near_miss');
+    expect(replay.schemaVersion).toBe('synthi.codesite.incidentReplay.v1');
+    expect(replayTypes).toEqual(expect.arrayContaining([
+      'transaction.opened',
+      'clearance.issued',
+      'write.attempted',
+      'write.denied',
+      'inspection.result',
+      'near_miss.detected',
+      'policy_delta.proposed',
+    ]));
+    expect(replay.eventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
+    expect(replay.evidenceRefs).toEqual(expect.arrayContaining(['collision:evidence', 'ev:denied', 'ev:inspection']));
+    expect(replay.routeContext.affectedZones).toEqual(['synthi/prisma/**']);
+    expect(replay.completeness.totalEvents).toBeGreaterThanOrEqual(7);
+    expect(replay.completeness).toMatchObject({
+      presentEventTypes: expect.arrayContaining(['write.denied', 'near_miss.detected']),
+      missingEventTypes: expect.arrayContaining(['shadow.run']),
+    });
+    expect(incident.timelineEventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
   });
 
 	  it('does not mark a transaction stale because of its own write event', async () => {
@@ -1695,11 +1828,15 @@ describe('CodeSite control plane transaction validation', () => {
     expect(replay.timeline).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: 'codesite_event',
-        event: expect.objectContaining({ eventType: 'write_allowed' }),
+        event: expect.objectContaining({
+          type: 'write.allowed',
+          path: 'synthi/prisma/schema.prisma',
+        }),
       }),
       expect.objectContaining({
         source: 'incident_record',
       }),
     ]));
+    expect(replay.completeness.observedEventTypes).toEqual(expect.arrayContaining(['write.allowed']));
   });
 });

@@ -31,6 +31,21 @@ import {
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
+const BLACK_BOX_MINIMUM_EVENT_TYPES = [
+  'transaction.opened',
+  'assumption.recorded',
+  'clearance.issued',
+  'write.attempted',
+  'write.denied',
+  'snapshot.taken',
+  'shadow.run',
+  'arbiter.verdict',
+  'inspection.result',
+  'near_miss.detected',
+  'policy_delta.proposed',
+  'transaction.committed',
+  'transaction.aborted',
+];
 
 const PROJECT_INCLUDE = {
   agentSessions: true,
@@ -915,6 +930,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     ? codesiteFsEvent.type
     : null;
   const writeEvidence = writeEvidenceFromBody(body, path, codesiteFsEvent);
+  const writeEvidenceRefs = asArray(writeEvidence.evidenceRefs);
   const semanticDependencyRefs = semanticSignalsFromWrite(body);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
@@ -931,6 +947,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
+    evidenceRefs: writeEvidenceRefs,
     details: {
       transactionId: transaction.id,
       path,
@@ -965,6 +982,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       displayCallsign: transaction.mutationLease.displayCallsign,
       actorType: 'codesitefs',
       actorId: decision.id,
+      evidenceRefs: writeEvidenceRefs,
       details: {
         transactionId: transaction.id,
         path,
@@ -1009,6 +1027,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       displayCallsign: transaction.mutationLease.displayCallsign,
       actorType: 'policy_engine',
       actorId: decision.id,
+      evidenceRefs: writeEvidenceRefs,
       details: {
         transactionId: transaction.id,
         path,
@@ -1044,6 +1063,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       displayCallsign: transaction.mutationLease.displayCallsign,
       actorType: 'policy_engine',
       actorId: decision.id,
+      evidenceRefs: writeEvidenceRefs,
       details: {
         transactionId: transaction.id,
         path,
@@ -1079,6 +1099,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
+    evidenceRefs: writeEvidenceRefs,
     details: {
       transactionId: transaction.id,
       path,
@@ -2428,10 +2449,28 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
     ...oneOrMany(body.displayCallsign || body.callsign),
   ].map(String).filter(Boolean));
   const affectedZones = affectedZonesForIncident(project, body, category);
-  const replay = body.incidentReplay || body.incident_replay || {
-    eventRefs: asArray(body.timelineEventRefs || body.timeline_event_refs || []),
-    summary: body.summary || body.reason || 'CodeSite incident',
-  };
+  const evidenceRefs = unique(asArray(body.evidenceRefs || body.evidence_refs || []));
+  const policyDelta = body.policyDelta || body.policy_delta || null;
+  const initialEvents = await findIncidentReplayEvents(project.id, {
+    body,
+    participants,
+    affectedZones,
+  });
+  const replay = buildIncidentReplayPacket({
+    project,
+    incident: {
+      id: null,
+      severity: body.severity || 'medium',
+      category,
+      participants,
+      affectedZones,
+      evidenceRefs,
+      policyDelta,
+      createdAt: new Date().toISOString(),
+    },
+    body,
+    events: initialEvents,
+  });
   const incident = await prisma.codeSiteIncident.create({
     data: {
       projectId: project.id,
@@ -2441,9 +2480,9 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
       affectedZonesJson: stringifyJson(affectedZones),
       incidentReplayJson: stringifyJson(replay),
       replayDigest: digest(replay),
-      timelineEventRefsJson: stringifyJson(body.timelineEventRefs || body.timeline_event_refs || []),
-      policyDeltaJson: stringifyJson(body.policyDelta || body.policy_delta || null),
-      evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
+      timelineEventRefsJson: stringifyJson(replay.eventRefs),
+      policyDeltaJson: stringifyJson(policyDelta),
+      evidenceRefsJson: stringifyJson(evidenceRefs),
     },
   });
   const incidentEvent = await recordEvent(project.id, {
@@ -2451,6 +2490,7 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
     displayCallsign: body.displayCallsign || body.callsign || null,
     actorType: 'incident',
     actorId: incident.id,
+    evidenceRefs,
     details: {
       incidentId: incident.id,
       severity: incident.severity,
@@ -2459,8 +2499,20 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
       affectedZones,
     },
   });
+  const policyDeltaEvent = policyDelta
+    ? await recordIncidentPolicyDeltaEvent(project.id, incident, policyDelta, evidenceRefs)
+    : null;
 
-  if (category !== 'mayday') return incidentProjection(incident);
+  if (category !== 'mayday') {
+    return finalizeIncidentReplay(project, incident, body, {
+      participants,
+      affectedZones,
+      evidenceRefs,
+      policyDelta,
+      timelineEventRefs: [incidentEvent.id, policyDeltaEvent?.id].filter(Boolean),
+      extraEvents: [incidentEvent, policyDeltaEvent].filter(Boolean),
+    });
+  }
 
   const workflow = await applyMaydayGroundStop(project, incident, body, {
     affectedZones,
@@ -2470,24 +2522,276 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
   const timelineEventRefs = unique([
     ...asArray(body.timelineEventRefs || body.timeline_event_refs),
     incidentEvent.id,
+    policyDeltaEvent?.id,
     ...workflow.timelineEventRefs,
-  ]);
-  const incidentReplay = {
-    ...replay,
-    eventRefs: timelineEventRefs,
+  ].filter(Boolean));
+  const updated = await finalizeIncidentReplay(project, incident, body, {
+    participants,
+    affectedZones,
+    evidenceRefs,
+    policyDelta,
+    timelineEventRefs,
+    extraEvents: [incidentEvent, policyDeltaEvent].filter(Boolean),
     maydayWorkflow: workflow.replay,
+  });
+  return {
+    ...updated,
+    maydayWorkflow: workflow.summary,
   };
+}
+
+async function recordIncidentPolicyDeltaEvent(projectId, incident, policyDelta, evidenceRefs = []) {
+  return recordEvent(projectId, {
+    eventType: 'policy_delta_proposed',
+    displayCallsign: null,
+    actorType: 'incident',
+    actorId: incident.id,
+    evidenceRefs,
+    details: {
+      incidentId: incident.id,
+      policyDelta,
+      reason: 'incident_replay_policy_delta',
+    },
+  });
+}
+
+async function finalizeIncidentReplay(project, incident, body = {}, context = {}) {
+  const selectedEvents = await findIncidentReplayEvents(project.id, {
+    body,
+    participants: context.participants,
+    affectedZones: context.affectedZones,
+    timelineEventRefs: context.timelineEventRefs,
+    extraEvents: context.extraEvents,
+  });
+  const replay = buildIncidentReplayPacket({
+    project,
+    incident: {
+      id: incident.id,
+      severity: incident.severity,
+      category: incident.category,
+      participants: context.participants,
+      affectedZones: context.affectedZones,
+      evidenceRefs: context.evidenceRefs,
+      policyDelta: context.policyDelta,
+      createdAt: incident.createdAt,
+    },
+    body,
+    events: selectedEvents,
+    maydayWorkflow: context.maydayWorkflow,
+  });
   const updated = await prisma.codeSiteIncident.update({
     where: { id: incident.id },
     data: {
-      timelineEventRefsJson: stringifyJson(timelineEventRefs),
-      incidentReplayJson: stringifyJson(incidentReplay),
-      replayDigest: digest(incidentReplay),
+      timelineEventRefsJson: stringifyJson(replay.eventRefs),
+      incidentReplayJson: stringifyJson(replay),
+      replayDigest: digest(replay),
     },
   });
+  return incidentProjection(updated);
+}
+
+async function findIncidentReplayEvents(projectId, context = {}) {
+  const explicitRefs = new Set(unique([
+    ...asArray(context.timelineEventRefs),
+    ...asArray(context.body?.timelineEventRefs || context.body?.timeline_event_refs),
+    ...asArray(context.body?.incidentReplay?.eventRefs || context.body?.incident_replay?.eventRefs),
+    ...asArray(context.body?.incidentReplay?.events || context.body?.incident_replay?.events),
+  ].filter(Boolean)));
+  let rows = [];
+  try {
+    rows = asArray(await prisma.codeSiteEvent.findMany({
+      where: { projectId },
+      orderBy: EVENT_ORDER_BY,
+    }));
+  } catch (_) {
+    rows = [];
+  }
+  const events = rows.map(eventProjection);
+  const selected = events.filter((event) => incidentReplayEventSelected(event, {
+    explicitRefs,
+    participants: context.participants,
+    affectedZones: context.affectedZones,
+  }));
+  const byId = new Map(selected.map((event) => [event.id, event]));
+  for (const event of asArray(context.extraEvents).map(safeReplayEventProjection)) {
+    if (event?.id && !byId.has(event.id)) byId.set(event.id, event);
+  }
+  return [...byId.values()].sort(compareReplayEvents);
+}
+
+function safeReplayEventProjection(event) {
+  if (!event) return null;
+  if (event.details || event.evidenceRefs) return event;
   return {
-    ...incidentProjection(updated),
-    maydayWorkflow: workflow.summary,
+    id: event.id,
+    projectId: event.projectId,
+    mutationLeaseId: event.mutationLeaseId,
+    eventType: event.eventType,
+    displayCallsign: event.displayCallsign,
+    actorType: event.actorType,
+    actorId: event.actorId,
+    details: parseJson(event.detailsJson, event.details || {}),
+    evidenceRefs: parseJson(event.evidenceRefsJson, event.evidenceRefs || []),
+    logicalTime: event.logicalTime,
+    createdAt: event.createdAt,
+  };
+}
+
+function incidentReplayEventSelected(event, context = {}) {
+  if (!event) return false;
+  const explicitRefs = context.explicitRefs || new Set();
+  if (explicitRefs.has(event.id) || explicitRefs.has(event.eventType) || explicitRefs.has(replayEventType(event.eventType))) {
+    return true;
+  }
+  const participants = new Set(asArray(context.participants));
+  if (event.displayCallsign && participants.has(event.displayCallsign)) return true;
+  return eventTouchesAffectedZones(event, context.affectedZones);
+}
+
+function eventTouchesAffectedZones(event, affectedZones = []) {
+  const zones = asArray(affectedZones);
+  if (!zones.length) return false;
+  const details = event.details || {};
+  const paths = unique(normalizePathList([
+    details.path,
+    details.zone?.path,
+    ...asArray(details.changedPaths || details.writeSet || details.readSet || details.allowedPaths),
+    ...asArray(details.zone?.paths),
+    ...asArray(details.affectedZones),
+  ]));
+  if (!paths.length) return false;
+  return paths.some((eventPath) => zones.some((zonePath) => pathPatternsOverlap(eventPath, zonePath)));
+}
+
+function compareReplayEvents(left, right) {
+  const leftTime = Number.isFinite(left.logicalTime) ? left.logicalTime : Number.MAX_SAFE_INTEGER;
+  const rightTime = Number.isFinite(right.logicalTime) ? right.logicalTime : Number.MAX_SAFE_INTEGER;
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  const leftWall = new Date(left.createdAt || 0).getTime();
+  const rightWall = new Date(right.createdAt || 0).getTime();
+  if (leftWall !== rightWall) return leftWall - rightWall;
+  return String(left.id || '').localeCompare(String(right.id || ''));
+}
+
+function buildIncidentReplayPacket({ project, incident, body = {}, events = [], maydayWorkflow = null }) {
+  const causalEvents = events.map(normalizeIncidentReplayEvent).filter(Boolean);
+  const evidenceRefs = unique([
+    ...asArray(incident.evidenceRefs),
+    ...causalEvents.flatMap((event) => asArray(event.evidenceRefs)),
+  ]);
+  const completeness = incidentReplayCompleteness(causalEvents);
+  return {
+    schemaVersion: 'synthi.codesite.incidentReplay.v1',
+    incidentId: incident.id,
+    projectId: project.id,
+    category: incident.category,
+    severity: incident.severity,
+    summary: body.summary || body.reason || 'CodeSite incident',
+    generatedAt: new Date().toISOString(),
+    eventRefs: causalEvents.map((event) => event.eventId),
+    causalEvents,
+    evidenceRefs,
+    routeContext: incidentReplayRouteContext(project, incident.affectedZones),
+    participants: asArray(incident.participants),
+    affectedZones: asArray(incident.affectedZones),
+    policyDelta: incident.policyDelta || null,
+    completeness,
+    ...(maydayWorkflow ? { maydayWorkflow } : {}),
+    ...(body.incidentReplay || body.incident_replay ? { operatorSuppliedReplay: body.incidentReplay || body.incident_replay } : {}),
+  };
+}
+
+function normalizeIncidentReplayEvent(event) {
+  const projected = safeReplayEventProjection(event);
+  if (!projected?.id || !projected.eventType) return null;
+  const details = projected.details || {};
+  const evidenceRefs = unique([
+    ...asArray(projected.evidenceRefs),
+    ...asArray(details.evidenceRefs || details.evidence_refs),
+    ...asArray(details.inspectionEvidenceRefs || details.inspection_evidence_refs),
+    ...asArray(details.dojoEvidenceRefs || details.dojo_evidence_refs),
+  ]);
+  const pathValue = details.path
+    || asArray(details.changedPaths || details.writeSet || details.allowedPaths)[0]
+    || null;
+  return {
+    eventId: projected.id,
+    projectId: projected.projectId,
+    transactionId: details.transactionId || details.transaction_id || (projected.actorType === 'transaction' ? projected.actorId : null),
+    mutationLeaseId: projected.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null,
+    agentSessionId: details.agentSessionId || details.agent_session_id || null,
+    displayCallsign: projected.displayCallsign,
+    type: replayEventType(projected.eventType),
+    logicalTime: projected.logicalTime,
+    wallTime: projected.createdAt,
+    zoneKey: details.zone?.zoneKey || details.zoneKey || details.zone_key || details.affectedZoneKey || details.affected_zone_key || null,
+    path: pathValue,
+    policyDecisionId: details.policyDecisionId || details.policy_decision_id || null,
+    evidenceRefs,
+    details,
+  };
+}
+
+function replayEventType(eventType) {
+  return {
+    transaction_opened: 'transaction.opened',
+    assumption_recorded: 'assumption.recorded',
+    assumption_invalidated: 'assumption.invalidated',
+    clearance_issued: 'clearance.issued',
+    holding_pattern: 'clearance.holding',
+    write_attempted: 'write.attempted',
+    write_denied: 'write.denied',
+    write_quarantined: 'write.quarantined',
+    write_allowed: 'write.allowed',
+    snapshot_taken: 'snapshot.taken',
+    shadow_run: 'shadow.run',
+    arbiter_verdict: 'arbiter.verdict',
+    inspection_result: 'inspection.result',
+    landing_requested: 'inspection.requested',
+    near_miss: 'near_miss.detected',
+    policy_delta_proposed: 'policy_delta.proposed',
+    transaction_committed: 'transaction.committed',
+    transaction_aborted: 'transaction.aborted',
+    transaction_validated: 'transaction.validated',
+    ground_stop: 'ground_stop.issued',
+    mayday: 'mayday.declared',
+    rfi: 'document.rfi',
+    change_order: 'document.change_order',
+    tower_instruction: 'tower.instruction',
+    transponder_update: 'transponder.update',
+    flight_plan_filed: 'flight_plan.filed',
+    radar_result: 'radar.result',
+    black_box_closed: 'black_box.closed',
+  }[eventType] || String(eventType || 'unknown').replace(/_/g, '.');
+}
+
+function incidentReplayCompleteness(causalEvents = []) {
+  const observedTypes = unique(causalEvents.map((event) => event.type).filter(Boolean));
+  const observed = new Set(observedTypes);
+  const present = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => observed.has(type));
+  const missing = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => !observed.has(type));
+  return {
+    score: BLACK_BOX_MINIMUM_EVENT_TYPES.length ? Number((present.length / BLACK_BOX_MINIMUM_EVENT_TYPES.length).toFixed(2)) : 1,
+    presentEventTypes: present,
+    missingEventTypes: missing,
+    observedEventTypes: observedTypes,
+    totalEvents: causalEvents.length,
+  };
+}
+
+function incidentReplayRouteContext(project, affectedZones = []) {
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  return {
+    affectedZones: asArray(affectedZones),
+    zones: asArray(zonePolicy.zones).map((zone) => ({
+      zoneKey: zone.zoneKey,
+      class: zone.class,
+      label: zone.label,
+      paths: asArray(zone.paths),
+      risk: zone.risk || null,
+      rules: asArray(zone.rules),
+    })),
+    noFlyZones: asArray(zonePolicy.noFlyZones),
   };
 }
 
@@ -2830,7 +3134,13 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
     displayCallsign: run.displayCallsign,
     actorType: 'inspection',
     actorId: run.id,
-    details: { inspectionRunId: run.id, status: run.status, changedPaths: parseJson(run.changedPathsJson, []) },
+    evidenceRefs: parseJson(run.evidenceRefsJson, []),
+    details: {
+      inspectionRunId: run.id,
+      status: run.status,
+      changedPaths: parseJson(run.changedPathsJson, []),
+      inspectionEvidenceRefs: parseJson(run.evidenceRefsJson, []),
+    },
   });
   if (!shouldExecute) return inspectionProjection(run);
   const executed = await executeInspectionRun(project, run, body);
@@ -2859,15 +3169,19 @@ export async function completeInspectionRun(workspaceSlug, inspectionRunId, body
       completedAt: new Date(),
     },
   });
+  const inspectionEvidenceRefs = parseJson(updated.evidenceRefsJson, []);
   await recordEvent(run.projectId, {
     eventType: 'inspection_result',
     displayCallsign: run.displayCallsign,
     actorType: 'inspection',
     actorId: run.id,
+    evidenceRefs: inspectionEvidenceRefs,
     details: {
       inspectionRunId: run.id,
       status: updated.status,
+      changedPaths: parseJson(run.changedPathsJson, []),
       signals: parseJson(updated.inspectionSignalsJson, []),
+      inspectionEvidenceRefs,
     },
   });
   return inspectionProjection(updated);
@@ -3423,15 +3737,40 @@ export async function getIncidentReplay(workspaceSlug, incidentId) {
   if (!incident) throw notFound('incident_not_found');
   const projectedIncident = incidentProjection(incident);
   const timeline = incidentReplayTimeline(projectedIncident, incident.project.events.map(eventProjection));
+  const replay = projectedIncident.incidentReplay;
   return {
     incident: projectedIncident,
-    replay: projectedIncident.incidentReplay,
+    replay,
+    blackBox: replay,
     timeline,
-    replayDigest: projectedIncident.replayDigest || digest(timeline),
+    completeness: replay?.completeness || incidentReplayCompleteness(timeline.map((entry) => entry.event).filter(Boolean)),
+    replayDigest: projectedIncident.replayDigest || digest(replay || timeline),
   };
 }
 
 function incidentReplayTimeline(incident, events) {
+  const causalEvents = asArray(incident.incidentReplay?.causalEvents);
+  if (causalEvents.length) {
+    return [
+      ...causalEvents.map((event, index) => ({
+        sequence: index + 1,
+        source: 'incident_replay',
+        event,
+      })),
+      {
+        sequence: causalEvents.length + 1,
+        source: 'incident_record',
+        event: {
+          id: incident.id,
+          severity: incident.severity,
+          category: incident.category,
+          affectedZones: incident.affectedZones,
+          evidenceRefs: incident.evidenceRefs,
+          createdAt: incident.createdAt,
+        },
+      },
+    ];
+  }
   const refs = new Set([
     ...asArray(incident.timelineEventRefs),
     ...asArray(incident.incidentReplay?.eventRefs),
@@ -3446,7 +3785,7 @@ function incidentReplayTimeline(incident, events) {
   const eventTimeline = selected.map((event, index) => ({
     sequence: index + 1,
     source: 'codesite_event',
-    event,
+    event: normalizeIncidentReplayEvent(event),
   }));
   return [
     ...eventTimeline,
