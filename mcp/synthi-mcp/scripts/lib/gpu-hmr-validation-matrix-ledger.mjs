@@ -233,6 +233,12 @@ const MANAGED_REAL_ROCM_UPSTREAM_LIFECYCLE_REASONS = new Set([
   'upstream_run_failed',
   'upstream_lifecycle_command_failed',
 ]);
+const REAL_ROCM_TIMEOUT_SOURCES = new Set([
+  'caller_env',
+  'caller_env_without_source',
+  'package_default',
+  'runner_default',
+]);
 const SCOPED_GENERALITY_UNSUPPORTED_WITHOUT_EVIDENCE = [
   'arbitrary_library_without_matching_acceptance_contract',
   'arbitrary_target_without_same_process_loader_epoch_dispatch_and_oracle_proof',
@@ -9550,10 +9556,24 @@ function realRocmOperationalEvidenceFacet(input = {}) {
     realRocmResultCheckpointFacet(checkpoint, index)
   );
   const timeoutRunId = firstText(timeoutControlRaw.runId, timeoutControlRaw.run_id);
+  const timeoutSource = firstText(timeoutControlRaw.timeoutSource, timeoutControlRaw.timeout_source);
+  const timeoutEnvValue = finiteNumber(
+    timeoutControlRaw.timeoutEnvValue
+    ?? timeoutControlRaw.timeout_env_value
+  );
+  const timeoutMs = finiteNumber(timeoutControlRaw.timeoutMs ?? timeoutControlRaw.timeout_ms);
   const timeoutSeconds = finiteNumber(
     timeoutControlRaw.timeoutSeconds
     ?? timeoutControlRaw.timeout_seconds
   );
+  const killAfterSeconds = finiteNumber(
+    timeoutControlRaw.killAfterSeconds
+    ?? timeoutControlRaw.kill_after_seconds
+  );
+  const expectedTimeoutSeconds = timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : null;
+  const expectedKillAfterSeconds = expectedTimeoutSeconds > 0
+    ? Math.max(5, Math.min(30, Math.ceil(expectedTimeoutSeconds / 20)))
+    : null;
   const runtimeCheckpointFullRuntimeProven = firstBool(
     runtimeEvidenceCheckpointRaw.fullRuntimeProven,
     runtimeEvidenceCheckpointRaw.full_runtime_proven,
@@ -9565,6 +9585,24 @@ function realRocmOperationalEvidenceFacet(input = {}) {
       : null,
     Object.keys(timeoutControlRaw).length > 0 && !(timeoutSeconds > 0)
       ? 'real_rocm_worker_lifecycle_timeout_control_timeout_seconds_missing'
+      : null,
+    timeoutSource && !REAL_ROCM_TIMEOUT_SOURCES.has(timeoutSource)
+      ? 'real_rocm_worker_lifecycle_timeout_control_source_unknown'
+      : null,
+    timeoutMs > 0 && timeoutSeconds > 0 && timeoutSeconds !== expectedTimeoutSeconds
+      ? 'real_rocm_worker_lifecycle_timeout_control_timeout_seconds_mismatch'
+      : null,
+    timeoutMs > 0 && killAfterSeconds > 0 && killAfterSeconds !== expectedKillAfterSeconds
+      ? 'real_rocm_worker_lifecycle_timeout_control_kill_after_mismatch'
+      : null,
+    timeoutEnvValue > 0 && timeoutMs > 0 && timeoutEnvValue !== timeoutMs
+      ? 'real_rocm_worker_lifecycle_timeout_control_env_value_mismatch'
+      : null,
+    timeoutSource === 'caller_env' && !(timeoutEnvValue > 0)
+      ? 'real_rocm_worker_lifecycle_timeout_control_caller_env_value_missing'
+      : null,
+    timeoutSource === 'package_default' && timeoutMs !== 7200000
+      ? 'real_rocm_worker_lifecycle_timeout_control_package_default_mismatch'
       : null,
     ...cleanupAttempts.flatMap((cleanup) => cleanup.failedGates),
     ...cleanupAttempts.flatMap((cleanup) =>
@@ -9598,6 +9636,16 @@ function realRocmOperationalEvidenceFacet(input = {}) {
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    timeoutSource,
+    timeout_source: timeoutSource,
+    timeoutMs,
+    timeout_ms: timeoutMs,
+    timeoutSeconds,
+    timeout_seconds: timeoutSeconds,
+    killAfterSeconds,
+    kill_after_seconds: killAfterSeconds,
+    timeoutEnvValue,
+    timeout_env_value: timeoutEnvValue,
     timeoutControl,
     timeout_control: timeoutControl,
     cleanupAttempts,

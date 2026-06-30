@@ -2971,6 +2971,14 @@ const CFG = {
     false,
   ),
   upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 1200000),
+  upstreamBuildTimeoutSource: process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_SOURCE
+    ?? (
+      process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS !== undefined
+      && String(process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS).trim() !== ''
+        ? 'caller_env_without_source'
+        : 'runner_default'
+    ),
+  upstreamBuildTimeoutEnvValue: process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? null,
   dockerPreflightTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_DOCKER_PREFLIGHT_TIMEOUT_MS', 8000),
   reuseWorkerRepo: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_REUSE_WORKER_REPO', false),
   cleanUpstreamBuild: booleanFromEnv(process.env, 'SYNTHI_REAL_ROCM_CLEAN_BUILD', true),
@@ -9472,6 +9480,10 @@ exit 0
     run_id: lifecycleRunId,
     timeoutMs: CFG.upstreamBuildTimeoutMs,
     timeout_ms: CFG.upstreamBuildTimeoutMs,
+    timeoutSource: CFG.upstreamBuildTimeoutSource,
+    timeout_source: CFG.upstreamBuildTimeoutSource,
+    timeoutEnvValue: CFG.upstreamBuildTimeoutEnvValue,
+    timeout_env_value: CFG.upstreamBuildTimeoutEnvValue,
     timeoutSeconds: lifecycleTimeout.timeoutSeconds,
     timeout_seconds: lifecycleTimeout.timeout_seconds,
     killAfterSeconds: lifecycleTimeout.killAfterSeconds,

@@ -65,6 +65,12 @@ for (const scriptName of largeRocmScripts) {
   if (!command.includes("process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ??= '7200000'")) {
     failures.push(`${scriptName}:upstream_timeout_default_not_overridable`);
   }
+  if (!command.includes('process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_SOURCE ??=')) {
+    failures.push(`${scriptName}:upstream_timeout_source_missing`);
+  }
+  if (!command.includes("? 'package_default' : 'caller_env'")) {
+    failures.push(`${scriptName}:upstream_timeout_source_default_not_classified`);
+  }
   if (command.includes("process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS='7200000'")) {
     failures.push(`${scriptName}:upstream_timeout_forced`);
   }
@@ -157,5 +163,6 @@ console.log(JSON.stringify({
   largeRocmProfiles: largeRocmProfiles.map((profile) => profile.id),
   runtimeAdapterTemplate: 'runtime_boundary_log_harvest_v1',
   upstreamTimeoutDefault: '7200000',
+  upstreamTimeoutSourceRecorded: true,
   callerOverridePreserved: true,
 }, null, 2));

@@ -4,6 +4,28 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Real ROCm Timeout Source Audit
+
+Large ROCm ML package scripts now label the source of `SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS` before they apply the default. A caller-provided value is recorded as `caller_env`; the package default is recorded as `package_default`. The real ROCm runner carries that label and the raw env value into `synthi.real_rocm.worker_lifecycle_timeout_control.v1`, and validation-matrix ingestion recomputes timeout arithmetic from the retained facet: `timeoutMs`, `timeoutSeconds`, `killAfterSeconds`, `timeoutSource`, and `timeoutEnvValue` must agree.
+
+This closes an orchestration-audit gap exposed by bounded serious-project runs. A retained report can now prove whether a two-minute MIOpen/CK/hipBLASLt run actually used the caller override or silently fell back to the two-hour package default. The facet remains support/refusal evidence only; timeout source, timeout math, wrapper cleanup, and process-marker evidence cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, app-hook closure, output oracle, firewall, strict runtime proof, or proof-ledger success.
+
+Validation coverage is generic. The package-script smoke check verifies all large-ML scripts preserve caller overrides and emit timeout-source instrumentation. Matrix smoke coverage accepts a clean `caller_env` timeout (`120000 ms -> 120 s`, `killAfterSeconds=6`) and refuses a forged row whose env value says `120000` while the retained timeout claims `7200000`, with `real_rocm_worker_lifecycle_timeout_control_env_value_mismatch` and `real_rocm_operational_evidence_not_accepted`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-package-scripts-smoke.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed, upstreamTimeoutSourceRecorded=true, callerOverridePreserved=true
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; POSIX adapter-template execution self-checks still skip fail-closed on this Windows host with EPERM
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, proof gpu-validation-matrix-ledger:sha256:5276baa7c379f94928ba56bc4e02d128de51d77c800aeaa2b6febdcc9b950caa, rows=65
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke proof gpu-validation-matrix-ledger:sha256:4ef0142b948a99bfda673c66a06de5f9b39bb9949baef41428b691545c08c959, retained self-check proof gpu-validation-matrix-ledger:sha256:f4c73514d8f968a2b810ca53dd8c8419da6d85a5e8ec934e1ba931c4bcd8ec1d
+npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed, retained matrix gpu-validation-matrix-ledger:sha256:e9ee4aaa7c6386b325780c2ddc0261df7e42337c3e9c1ac6b3b9b0c6ac634bd2, rowCount=63, acceptedFullRuntimeRows=17, broadFullRuntimeRows=17
+```
+
 ## 2026-06-30 Real ROCm Lifecycle Status Classifier Hardening
 
 The real ROCm upstream lifecycle classifier now treats timeout-fallback `unknown` status fields as unknown locally, then recovers `configure_status`, `post_configure_status`, `build_status`, and `run_status` only from wrapper-owned skip lines such as `upstream build skipped after ...` and `upstream run skipped after ...`. Arbitrary project logs that print success-shaped `*_status=0` tokens are ignored for status recovery, so a build script cannot spoof a configure/build/run success by writing convenient text.

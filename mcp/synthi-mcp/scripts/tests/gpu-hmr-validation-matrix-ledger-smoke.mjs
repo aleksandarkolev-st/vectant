@@ -15966,6 +15966,134 @@ assert.ok(forgedOperationalEvidenceRow.openGaps.includes(
   'real_rocm_operational_evidence_not_accepted',
 ));
 
+const validOperationalTimeoutSourceDir = path.join(
+  logsRoot,
+  'real-rocm-operational-timeout-source-valid',
+);
+await fs.mkdir(validOperationalTimeoutSourceDir, { recursive: true });
+const validOperationalTimeoutSourceReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+validOperationalTimeoutSourceReport.slug =
+  'gpu-real-rocm-operational-timeout-source-valid-20260630';
+validOperationalTimeoutSourceReport.upstream_lifecycle_timeout_control = {
+  schemaVersion: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  schema_version: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  proofAuthority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+  proof_authority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+  runId: 'valid-timeout-source-run',
+  run_id: 'valid-timeout-source-run',
+  timeoutSource: 'caller_env',
+  timeout_source: 'caller_env',
+  timeoutEnvValue: '120000',
+  timeout_env_value: '120000',
+  timeoutMs: 120000,
+  timeout_ms: 120000,
+  timeoutSeconds: 120,
+  timeout_seconds: 120,
+  killAfterSeconds: 6,
+  kill_after_seconds: 6,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+};
+validOperationalTimeoutSourceReport.upstreamLifecycleTimeoutControl =
+  validOperationalTimeoutSourceReport.upstream_lifecycle_timeout_control;
+await writeJson(
+  path.join(
+    validOperationalTimeoutSourceDir,
+    'real-rocm-operational-timeout-source-valid.json',
+  ),
+  validOperationalTimeoutSourceReport,
+);
+const validOperationalTimeoutSourceLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [validOperationalTimeoutSourceDir],
+  generatedAt: '2026-06-30T00:00:02.2646Z',
+  includeUnproven: true,
+});
+const validOperationalTimeoutSourceRow =
+  validOperationalTimeoutSourceLedger.rows.find((row) =>
+    row.proofMode === 'real_rocm_repo_validation'
+  );
+assert.equal(validOperationalTimeoutSourceRow?.realRocmOperationalEvidence.present, true);
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.accepted, true);
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.timeoutSource, 'caller_env');
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.timeoutMs, 120000);
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.timeoutSeconds, 120);
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.killAfterSeconds, 6);
+assert.equal(validOperationalTimeoutSourceRow.realRocmOperationalEvidence.timeoutEnvValue, 120000);
+assert.ok(!validOperationalTimeoutSourceRow.reasons.includes(
+  'real_rocm_operational_evidence_not_accepted',
+));
+
+const forgedOperationalTimeoutSourceDir = path.join(
+  logsRoot,
+  'real-rocm-operational-timeout-source-forge',
+);
+await fs.mkdir(forgedOperationalTimeoutSourceDir, { recursive: true });
+const forgedOperationalTimeoutSourceReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+forgedOperationalTimeoutSourceReport.slug =
+  'gpu-real-rocm-operational-timeout-source-forge-20260630';
+forgedOperationalTimeoutSourceReport.upstream_lifecycle_timeout_control = {
+  schemaVersion: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  schema_version: 'synthi.real_rocm.worker_lifecycle_timeout_control.v1',
+  proofAuthority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+  proof_authority: 'orchestration_timeout_control_not_gpu_hmr_proof',
+  runId: 'forged-timeout-source-run',
+  run_id: 'forged-timeout-source-run',
+  timeoutSource: 'caller_env',
+  timeout_source: 'caller_env',
+  timeoutEnvValue: '120000',
+  timeout_env_value: '120000',
+  timeoutMs: 7200000,
+  timeout_ms: 7200000,
+  timeoutSeconds: 7200,
+  timeout_seconds: 7200,
+  killAfterSeconds: 30,
+  kill_after_seconds: 30,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+};
+forgedOperationalTimeoutSourceReport.upstreamLifecycleTimeoutControl =
+  forgedOperationalTimeoutSourceReport.upstream_lifecycle_timeout_control;
+await writeJson(
+  path.join(
+    forgedOperationalTimeoutSourceDir,
+    'real-rocm-operational-timeout-source-forge.json',
+  ),
+  forgedOperationalTimeoutSourceReport,
+);
+const forgedOperationalTimeoutSourceLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedOperationalTimeoutSourceDir],
+  generatedAt: '2026-06-30T00:00:02.2647Z',
+  includeUnproven: true,
+});
+const forgedOperationalTimeoutSourceRow =
+  forgedOperationalTimeoutSourceLedger.rows.find((row) =>
+    row.proofMode === 'real_rocm_repo_validation'
+  );
+assert.equal(forgedOperationalTimeoutSourceRow?.matrixOutcome, 'unproven');
+assert.equal(forgedOperationalTimeoutSourceRow.acceptedForGpuHmr, false);
+assert.equal(forgedOperationalTimeoutSourceRow.realRocmOperationalEvidence.present, true);
+assert.equal(forgedOperationalTimeoutSourceRow.realRocmOperationalEvidence.accepted, false);
+assert.ok(forgedOperationalTimeoutSourceRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_worker_lifecycle_timeout_control_env_value_mismatch',
+));
+assert.ok(forgedOperationalTimeoutSourceRow.openGaps.includes(
+  'real_rocm_operational_evidence_not_accepted',
+));
+
 const adapterBoundaryProofIdMismatchDir = path.join(
   logsRoot,
   'real-rocm-adapter-boundary-bridge-proof-id-mismatch',
