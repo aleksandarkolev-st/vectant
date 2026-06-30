@@ -12,6 +12,7 @@ const REQUIRED_FIELDS = [
   'writeSetDigest',
   'invariants',
   'evidenceRefs',
+  'portableDigest',
 ];
 
 function main(argv) {
@@ -130,6 +131,10 @@ function verifyTrailers(bundle, options) {
   }
 
   const expected = {
+    'CodeSite-Project': bundle.projectId,
+    'CodeSite-Flight': bundle.displayCallsign,
+    'CodeSite-Clearance': bundle.mutationLeaseId,
+    'CodeSite-Landing': bundle.landingStatus,
     'CodeSite-Transaction': bundle.transactionId,
     'CodeSite-Lease': bundle.mutationLeaseId,
     'CodeSite-Read-Set': bundle.readSetDigest,

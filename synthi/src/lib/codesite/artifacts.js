@@ -152,14 +152,26 @@ export function codesiteSchemas() {
       sequence: { type: 'number' },
     }, ['incidentId', 'event', 'source', 'sequence']),
     'proof-bundle.schema.json': schema('ProofBundle', {
+      schemaVersion: { type: 'string' },
+      projectId: { type: 'string' },
+      workspaceSlug: { type: ['string', 'null'] },
       transactionId: { type: 'string' },
-      mutationLeaseId: { type: ['string', 'null'] },
+      mutationLeaseId: { type: 'string' },
+      displayCallsign: { type: ['string', 'null'] },
+      landingStatus: { type: ['string', 'null'] },
       readSetDigest: { type: 'string' },
       writeSetDigest: { type: 'string' },
       invariants: { type: 'array' },
+      evidenceRefs: { type: 'array' },
+      dojoEvidenceRefs: { type: 'array' },
       repoState: { type: ['object', 'null'] },
+      incidentReplayDigest: { type: ['string', 'null'] },
+      bundleDigest: { type: ['string', 'null'] },
+      incidents: { type: 'array' },
+      lineProvenance: { type: 'array' },
+      createdAt: { type: 'string' },
       portableDigest: { type: 'string' },
-    }, ['transactionId', 'readSetDigest', 'writeSetDigest', 'portableDigest']),
+    }, ['schemaVersion', 'projectId', 'transactionId', 'mutationLeaseId', 'readSetDigest', 'writeSetDigest', 'invariants', 'evidenceRefs', 'portableDigest']),
     'line-provenance.schema.json': schema('LineProvenance', {
       filePath: { type: 'string' },
       lineAnchor: { type: 'string' },
@@ -317,7 +329,10 @@ export function buildArtifactProjection(project, controlState = null) {
       ? asArray(project.mutationLeases).find((item) => item.id === transaction.mutationLeaseId)
       : null;
     const lineProvenance = asArray(project.lineProvenance).filter((row) => row.proofBundleId === proof.id);
-    const portable = buildProofBundle({ project, transaction, mutationLease, proofBundle: proof, incidents: project.incidents, lineProvenance });
+    const landings = transaction
+      ? asArray(project.inspectionRuns).filter((run) => run.executionPlanId === mutationLease?.executionPlanId)
+      : [];
+    const portable = buildProofBundle({ project, transaction, mutationLease, proofBundle: proof, incidents: project.incidents, landingRuns: landings, lineProvenance });
     files.push(jsonFile(`${projectDir}/proof-bundles/${proof.id}.proof.json`, portable));
     files.push({
       relativePath: `${projectDir}/proof-bundles/${proof.id}.trailers.txt`,

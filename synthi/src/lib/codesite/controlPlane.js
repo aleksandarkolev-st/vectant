@@ -3890,6 +3890,13 @@ export async function getProofBundle(workspaceSlug, bundleId) {
     where: { proofBundleId: bundle.id },
     orderBy: { createdAt: 'asc' },
   });
+  const landingRuns = await prisma.codeSiteInspectionRun.findMany({
+    where: {
+      projectId: bundle.projectId,
+      ...(bundle.transaction?.mutationLease?.executionPlanId ? { executionPlanId: bundle.transaction.mutationLease.executionPlanId } : {}),
+    },
+    orderBy: [{ completedAt: 'asc' }, { requestedAt: 'asc' }],
+  });
   const projection = proofBundleProjection(bundle);
   return {
     ...projection,
@@ -3899,6 +3906,7 @@ export async function getProofBundle(workspaceSlug, bundleId) {
       mutationLease: bundle.transaction?.mutationLease ? mutationLeaseProjection(bundle.transaction.mutationLease) : null,
       proofBundle: projection,
       incidents: incidents.map(incidentProjection),
+      landingRuns: landingRuns.map(inspectionProjection),
       lineProvenance: lineProvenance.map(lineProvenanceProjection),
     }),
   };
@@ -4367,7 +4375,9 @@ function proofBundleProjection(bundle) {
     bundleDigest: bundle.bundleDigest,
     createdAt: bundle.createdAt,
     trailers: {
+      'CodeSite-Project': bundle.projectId,
       'CodeSite-Transaction': bundle.transactionId,
+      'CodeSite-Clearance': bundle.transaction?.mutationLeaseId || null,
       'CodeSite-Read-Set': bundle.readSetDigest,
       'CodeSite-Write-Set': bundle.writeSetDigest,
       'CodeSite-Black-Box': bundle.incidentReplayDigest || bundle.bundleDigest,

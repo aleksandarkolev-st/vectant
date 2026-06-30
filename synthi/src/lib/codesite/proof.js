@@ -7,6 +7,7 @@ export function buildProofBundle({
   mutationLease,
   proofBundle,
   incidents = [],
+  landingRuns = [],
   lineProvenance = [],
 } = {}) {
   const payload = {
@@ -16,6 +17,7 @@ export function buildProofBundle({
     transactionId: transaction?.id || proofBundle?.transactionId,
     mutationLeaseId: mutationLease?.id || transaction?.mutationLeaseId,
     displayCallsign: mutationLease?.displayCallsign || null,
+    landingStatus: proofBundle?.landingStatus || proofBundle?.landing_status || landingStatusForRuns(landingRuns),
     readSetDigest: proofBundle?.readSetDigest || digest(transaction?.readSet || []),
     writeSetDigest: proofBundle?.writeSetDigest || digest(transaction?.writeSet || []),
     invariants: proofBundle?.invariants || transaction?.invariants || [],
@@ -44,6 +46,15 @@ export function buildProofBundle({
   };
 }
 
+function landingStatusForRuns(runs = []) {
+  if (!runs.length) return null;
+  if (runs.some((run) => ['failed', 'blocked', 'red'].includes(String(run.status || '').toLowerCase()))) {
+    return 'go-around';
+  }
+  const latest = runs.at(-1);
+  return latest?.status || 'landed';
+}
+
 function normalizeProofTimestamp(value) {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === 'string' && value.trim()) return value;
@@ -55,6 +66,10 @@ export function proofCommitTrailers(proofBundle) {
     ? proofBundle
     : buildProofBundle({ proofBundle });
   return {
+    'CodeSite-Project': bundle.projectId,
+    'CodeSite-Flight': bundle.displayCallsign,
+    'CodeSite-Clearance': bundle.mutationLeaseId,
+    'CodeSite-Landing': bundle.landingStatus,
     'CodeSite-Transaction': bundle.transactionId,
     'CodeSite-Lease': bundle.mutationLeaseId,
     'CodeSite-Read-Set': bundle.readSetDigest,

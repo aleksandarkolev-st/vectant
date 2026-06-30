@@ -20,6 +20,7 @@ function makeBundle() {
       invariants: ['typecheck:pass', 'security:pass'],
     },
     mutationLease: { id: 'lease-1', displayCallsign: 'CODEX-04' },
+    landingRuns: [{ id: 'landing-1', status: 'landed-with-punch' }],
     proofBundle: {
       id: 'proof-1',
       transactionId: 'txn-1',
@@ -79,10 +80,15 @@ describe('CodeSite proof verifier CLI', () => {
     roots.push(root);
     const bundle = makeBundle();
     expect(bundle.createdAt).toBe('2026-06-30T11:30:00.000Z');
+    expect(bundle.landingStatus).toBe('landed-with-punch');
     const bundlePath = path.join(root, 'txn-1.proof.json');
     const trailersPath = path.join(root, 'txn-1.trailers.txt');
     fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
     fs.writeFileSync(trailersPath, formatCommitTrailers(bundle));
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Project: project-1');
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Flight: CODEX-04');
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Clearance: lease-1');
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Landing: landed-with-punch');
 
     const result = runVerifier(['--bundle', bundlePath, '--trailers', trailersPath, '--require-trailers']);
 
@@ -116,6 +122,24 @@ describe('CodeSite proof verifier CLI', () => {
       ok: false,
       reasonCodes: expect.arrayContaining(['proof_bundle_verification_failed']),
       errors: expect.arrayContaining(['portableDigest mismatch']),
+    });
+  });
+
+  it('fails when portable proof fields required by the schema are missing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    delete bundle.portableDigest;
+    const bundlePath = path.join(root, 'txn-1.missing-portable.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath]);
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining(['proof_bundle_verification_failed']),
+      errors: expect.arrayContaining([expect.stringContaining('missing required fields: portableDigest')]),
     });
   });
 

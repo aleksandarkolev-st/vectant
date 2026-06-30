@@ -2198,6 +2198,18 @@ describe('CodeSite control plane transaction validation', () => {
       promptSummary: 'CodeSite transaction commit',
       createdAt: new Date('2026-06-29T23:11:00.000Z'),
     }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-landing',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'landed-with-punch',
+      changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify(['inspection:landing']),
+      requestedAt: new Date('2026-06-29T23:08:00.000Z'),
+      completedAt: new Date('2026-06-29T23:09:00.000Z'),
+    }]);
 
     const proof = await getProofBundle('acme', 'proof-1');
 
@@ -2207,6 +2219,7 @@ describe('CodeSite control plane transaction validation', () => {
       projectId: 'project-1',
       transactionId: 'txn-1',
       mutationLeaseId: 'lease-1',
+      landingStatus: 'landed-with-punch',
       readSetDigest: 'sha256:read',
       writeSetDigest: 'sha256:write',
       repoState: expect.objectContaining({ evidenceDigest: 'sha256:repo-state' }),
