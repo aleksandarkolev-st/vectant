@@ -19221,6 +19221,15 @@ function rowIsBroadFullRuntime(row, broadProof = {}) {
     && broadLibraryAgnosticScopeProven(row, { broadProof }) === true;
 }
 
+function rowIsScopedPartitionFullRuntime(row, broadProof = {}) {
+  return rowIsScopedOnlyFullRuntime(row)
+    && !rowIsBroadFullRuntime(row, broadProof);
+}
+
+function scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof = {}) {
+  return fullRuntimeRows.filter((row) => rowIsScopedPartitionFullRuntime(row, broadProof));
+}
+
 function acceptedFullRuntimeRow(row) {
   return row.matrixOutcome === 'full_runtime_gpu_hmr'
     && row.acceptedForGpuHmr === true
@@ -19303,6 +19312,9 @@ function computeBroadLibraryAgnosticProof(rows) {
   ]);
   const accepted = openGaps.length === 0;
   const broadRuntimeRows = accepted ? fullRuntimeRows : [];
+  const scopedRuntimeRows = fullRuntimeRows.filter((row) =>
+    !broadRuntimeRows.includes(row) && rowIsScopedOnlyFullRuntime(row)
+  );
   const broadRuntimeRowIds = compactStringList(broadRuntimeRows.map((row) => row.rowId));
   const evidenceRefs = compactStringList([
     ...broadRuntimeRowIds,
@@ -19334,8 +19346,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     broad_runtime_row_ids: broadRuntimeRowIds,
     rowRefs: rowRefs(broadRuntimeRows),
     row_refs: rowRefs(broadRuntimeRows),
-    scopedRuntimeRows: fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime).length,
-    scoped_runtime_rows: fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime).length,
+    scopedRuntimeRows: scopedRuntimeRows.length,
+    scoped_runtime_rows: scopedRuntimeRows.length,
     acceptedFullRuntimeRows: fullRuntimeRows.length,
     accepted_full_runtime_rows: fullRuntimeRows.length,
     backends,
@@ -19364,8 +19376,8 @@ function computeBroadLibraryAgnosticProof(rows) {
 
 function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgnosticProof(rows)) {
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
-  const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
+  const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
   const refusalRowsForReadiness = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
@@ -19427,8 +19439,8 @@ function coverageSummary(rows) {
   }
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const broadProof = computeBroadLibraryAgnosticProof(rows);
-  const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
+  const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
   const refusalRows = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const preflightRows = rows.filter((row) => row.matrixOutcome === 'preflight_only');

@@ -81,13 +81,14 @@ Best demo surfaces:
 7. WebGPU Chrome/AMD scoped WGSL compute/readback proof: native compute pipeline, mapped raw GPU bytes, profile-declared expected-output verification, data-derived PNG proof cards, hot1/hot2-different-edit coverage, and negative ABI refusals.
 8. ROCm/HIP module runtime proof: real `.hip` to HSACO, native `hipModuleLoadData`/`hipModuleGetFunction`/`hipModuleLaunchKernel`, raw D2H readback, data-derived PNG compute proof cards, hot1/hot2-different-edit coverage, and ABI refusal.
 9. Generated/profiled ROCm/HIP compute ledger: scoped full-runtime proof artifact and output-oracle readback, not broad arbitrary HIP library acceptance.
-10. HIPRT same-process CameraRays: source-adapted ray-traced visual-profile proof with embedded ledger/runtime artifact and nonblank oracle-region evidence; useful visual evidence, not no-shim full-runtime GPU HMR acceptance.
-11. HIPRT same-process MegaKernel direct-light-gain: second source-adapted ray-traced visual-profile proof on a different HIPRT kernel path, with image-tool-inspected before/after/diff artifacts; useful visual evidence, not no-shim full-runtime GPU HMR acceptance.
-12. HIPRT MegaKernel direct-light-zero: useful adversarial visual refusal proving blank render-region output is not accepted.
-13. MIOpen large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can attempt upstream MIOpen and still refuse when configure/build, app-hook, epoch, dispatch, host-identity, and output-oracle proof are missing.
-14. ROCm examples matrix multiplication profile: useful real ROCm compute refusal proving source-derived output-oracle generation and worker sync do not count as GPU HMR without Synthi epoch, dispatch, host identity, and post-dispatch output observation.
-15. Composable Kernel large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can clone and classify a large HIP/C++ template ML repo and still refuse without target binary, app-hook, epoch, dispatch, host identity, and output-oracle proof.
-16. hipBLASLt fused GEMM/GELU/AUX/bias large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can clone, transfer, and classify a real ROCm ML library/sample path and still refuse without build dependencies, app-hook, epoch, dispatch, host identity, and output-oracle proof.
+10. Vulkan host-local scoped pipeline/readback visual proof: real Vulkan instance/device/queue, shader modules, pipeline layouts, compute pipelines, command buffers, queue submit/fence wait, epoch-1 output before epoch-2 load/publish/dispatch/output, and nonblank before/after/diff PNG readback artifacts. Useful as scoped Vulkan backend proof, not arbitrary Vulkan engine/cache acceptance.
+11. HIPRT same-process CameraRays: source-adapted ray-traced visual-profile proof with embedded ledger/runtime artifact and nonblank oracle-region evidence; useful visual evidence, not no-shim full-runtime GPU HMR acceptance.
+12. HIPRT same-process MegaKernel direct-light-gain: second source-adapted ray-traced visual-profile proof on a different HIPRT kernel path, with image-tool-inspected before/after/diff artifacts; useful visual evidence, not no-shim full-runtime GPU HMR acceptance.
+13. HIPRT MegaKernel direct-light-zero: useful adversarial visual refusal proving blank render-region output is not accepted.
+14. MIOpen large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can attempt upstream MIOpen and still refuse when configure/build, app-hook, epoch, dispatch, host-identity, and output-oracle proof are missing.
+15. ROCm examples matrix multiplication profile: useful real ROCm compute refusal proving source-derived output-oracle generation and worker sync do not count as GPU HMR without Synthi epoch, dispatch, host identity, and post-dispatch output observation.
+16. Composable Kernel large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can clone and classify a large HIP/C++ template ML repo and still refuse without target binary, app-hook, epoch, dispatch, host identity, and output-oracle proof.
+17. hipBLASLt fused GEMM/GELU/AUX/bias large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can clone, transfer, and classify a real ROCm ML library/sample path and still refuse without build dependencies, app-hook, epoch, dispatch, host identity, and output-oracle proof.
 
 Do not claim:
 
@@ -104,6 +105,7 @@ HIPRT is accepted as no-shim full-runtime GPU HMR; current HIPRT artifacts are s
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
+Scoped host-local Vulkan proof means arbitrary Vulkan projects or engines pass without their own app/runtime proof.
 General WebGPU bind-group kinds, vertex formats, engine-cache, compute beyond the explicit storage/uniform float32 readback profile, or arbitrary app shader HMR was validated on this worker.
 One generated `.hip` file proves per-kernel or smallest-safe fission without deterministic verifier evidence.
 Flow's generated `.hip` file proves per-kernel or smallest-safe fission.
@@ -113,25 +115,23 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 30 proof snapshot:
 
 ```text
-latest global matrix after the scoped OpenCL host-runtime proof and large-ROCm MIOpen bounded refusal rerun: gpu-validation-matrix-ledger:sha256:521a502b6c1d1fe3aec510942022ceee6d2e118fb6b3958a4110608350fbd1d0
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T113320Z.json
-latest global matrix summary: 60 rows, 16 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 16 scoped full-runtime GPU HMR, 16 all full-runtime rows, 31 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
-latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, opencl_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
-current accepted strict backend families: HIP, OpenCL, WebGPU
+latest global matrix after the scoped Vulkan host-runtime proof, scoped OpenCL host-runtime proof, and large-ROCm MIOpen bounded refusal rerun: gpu-validation-matrix-ledger:sha256:1ab2a6d4968c89ff3109ebf14395c9c1cd899345cd916f6903f70885e309c502
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T125807Z.json
+latest global matrix summary: 63 rows, 17 accepted full-runtime GPU HMR, 17 broad library-agnostic full-runtime GPU HMR rows by matrix-computed proof, 0 scoped full-runtime GPU HMR rows after broad matrix classification, 17 all full-runtime rows, 33 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
+latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, opencl_declared_compute_readback: 2, vulkan_declared_pipeline_visual: 1, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
+current accepted strict backend families: HIP, OpenCL, Vulkan, WebGPU
 current OpenCL full-runtime rows: hot_delta_1=gpu-validation-matrix-row:sha256:4943d7b099075a431f37236b184ad7dfbac131d385dae48eb6ed99731f1b5773, hot_delta_2=gpu-validation-matrix-row:sha256:d5e45d4eb8952ca30a1fbc882ea02b491581783f66f3fbd566de71f07959ca84
-latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, broadRuntimeRowsComputed=true, broadRuntimeRowsMissing=true, scopedRuntimeRows=16, distinctBackendCount=3, open gaps=broad_acceptance_requires_more_backend_families
+current Vulkan full-runtime row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8, proof=vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84, runtime_artifact=vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134, ledger=gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
+latest broad readiness: accepted=true, authority=matrix_computed_not_row_declared, broad proof=gpu-hmr-broad-library-agnostic-proof:sha256:ceecc271c663a3d21619119e1c80eb171f317dabe4deebc6d837c40ef65a7ea3
+claim boundary: matrix-level broad readiness is accepted across strict rows and adversarial refusals, but arbitrary target/project acceptance still requires per-project loader, epoch, dispatch, host-identity, output-oracle, firewall, and strict proof-ledger closure
 latest MIOpen bounded rerun: gpu-real-rocm-MIOpen-20260630113345, strict runtime proof gpu-runtime-proof:sha256:c2693e5f9ab7930ea7d2899fc9e19c7c2053fb803ff21adef1418acb0144c9f0, retained as refusal-only serious-project evidence with no artifact transport, epoch, dispatch, host identity, output oracle, firewall, or strict runtime closure
 global matrix: gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json
-global matrix summary: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 29 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
-global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
+previous pre-OpenCL/Vulkan baseline matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json
+previous pre-OpenCL/Vulkan baseline matrix summary: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 29 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
+previous pre-OpenCL/Vulkan baseline scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 MIOpen row after the source-first closure and large-ROCm runtime-adapter refresh: historical-gpu-validation-matrix-row-sha256-16305e7aef533eb74ffd73e8fdda199da25aef72e27be2fbb6710b632d32b235, outcome=refusal_proven, source-tree CAS/source-delta/external-header/runtime-adapter evidence only, acceptedForGpuHmr=false
-latest global matrix after source-first include-closure preservation, exact seed-manifest purity binding, explicit source-first split role hardening, runtime-adapter boundary-import hardening, runtime-adapter stage-events app-hook derivation, matrix-level broad-proof scaffold, worker-detected ROCm arch evidence, native/incremental visual proof binding, external-header matrix ingestion, CAS-validated visual locator ingestion, source-first user-path reruns, fresh large-ROCm MIOpen/Composable-Kernel/hipBLASLt refusal evidence, packaged runtime-adapter execution and adapter-result transport evidence, external visual-profile content hashes, generic real-ROCm app-hook materialization surfacing, portable CAS relative-path consumption, shared CAS mount metadata, shared real ROCm source-tree transport evidence, source-first async/CAS support coverage, source-first fixture/profile identity hardening, source-first provenance hardening, source-first generated-artifact namespace/hash-overlap hardening, source-first source-tree manifest hardening, async visual/CAS root, worker-identity hardening, matrix visual-worker recompute, deterministic visual worker lifecycle cleanup, structural negative-edit refusal closure, strict runtime-artifact authority, no-shim source-oracle gating, content-addressed source identity proof, declared HIPRT probe boundaries, declared-checkout OIDN no-shim refusal, profile-required app-hook obligation surfacing, recomputed real-ROCm obligation gates, runner-observed content-addressed large-ROCm source-delta execution gating, explicit real-ROCm top-level verdict booleans, target-progression ledger rederivation, required visual before/after pixel recompute, content-addressed visual oracle artifacts, external visual deterministic-mode recomputation, proof-hashed latest-attempt history, strict WebGPU compute runtime proof artifacts, strict HIP module runtime proof artifacts, generic worker-repo transfer refusal classification, generic real-ROCm same-process runtime-oracle target-continuity and runtime-proof closure gating, generic runtime evidence artifact-identity normalization, generic env-declared real-ROCm runtime output-oracle/app-hook/device-sidecar contract injection as evidence-only input, generic real-ROCm compile-bridge sidecar candidate derivation with unknown/CUDA rejection, retained upstream compile summaries, matrix-computed broad-readiness gap reporting, contradictory positive facet rejection, ROCm-only CUDA not-applicable hardware scope, and non-final ROCm target-progression evidence retention as non-success rows: gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json
-latest global matrix summary: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 29 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
-latest broad readiness: accepted=false, authority=matrix_computed_not_row_declared, broadRuntimeRows=0, broadRuntimeRowsComputed=true, broadRuntimeRowsMissing=true, scopedRuntimeRows=14, distinctBackendCount=2, open gaps=matrix_level_broad_generalization_proof_not_present,broad_runtime_rows_missing,broad_acceptance_requires_more_backend_families
-Broad-readiness scaffold: the matrix now carries a recomputed `synthi.gpu_hmr.broad_library_agnostic_matrix_proof.v1` proof object. It remains `accepted=false` because the current strict full-runtime rows cover HIP/WebGPU scoped profiles only; row-declared broad claims still cannot authorize broad acceptance.
-latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
+historical source-first/adapter hardening matrix before OpenCL and Vulkan host proofs: gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787, path=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json, summary=56 rows, 14 accepted full-runtime GPU HMR, 0 broad rows
+Broad-readiness scaffold current note: the matrix carries a recomputed `synthi.gpu_hmr.broad_library_agnostic_matrix_proof.v1` proof object. It now accepts only because the current matrix includes strict full-runtime HIP, OpenCL, Vulkan, and WebGPU rows plus visual/compute oracle coverage and adversarial refusals; row-declared broad claims still cannot authorize broad acceptance.
 latest OIDN declared-checkout split: OIDN HIP runtime preflight coverage is still missing, OIDN HIP output proof is refused, and the newest live row is historical-gpu-validation-matrix-row-sha256-88edda748c10b7da1a009ccc5b2a0516a4109e95116fafaf06ff913bd2ae0496 for `oidn-hiprt-rocm-preflight-20260626-after-apphook-refresh`
 history audit matrix: gpu-validation-matrix-ledger:sha256:aa905942109909b5181c6236cb348a68710ebc667ac8f8dde7d572385c7e349c
 history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260629T113226Z.json
@@ -1048,7 +1048,19 @@ No OpenCL proof is accepted on this worker, and no vendor ICD, symlink, or compa
 
 ## Vulkan Result
 
-Structured Vulkan preflight proof:
+Scoped host-local Vulkan runtime proof:
+
+```text
+proof id: vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84
+runtime artifact: vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134
+ledger: gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
+matrix row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8
+visual artifacts: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-runtime-proof/vulkan-runtime-frame-20260630124806/vulkan-before-frame.png, vulkan-after-frame.png, vulkan-diff-frame.png
+```
+
+The accepted host proof is scoped to the generated Vulkan pipeline/readback validation target. It proves a real same-process Vulkan epoch reload sequence on the host and byte-backed visual readback output. It does not prove arbitrary Vulkan engine caches, pre-recorded application command buffers, descriptor layouts, render graphs, or worker-container Vulkan.
+
+Structured Vulkan worker-container preflight proof:
 
 ```text
 proof id: vulkan-preflight-proof:sha256:d904016a24c785659424bae3cc5381ae2a84b816fee87c1f13dd335709d7a528
@@ -1057,7 +1069,7 @@ proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-
 summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-preflight/vulkan-rocm-preflight-20260609-summary.txt
 ```
 
-Vulkan was tested and rejected:
+Worker-container Vulkan was tested and rejected:
 
 ```text
 Vulkan loader: libvulkan.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libvulkan.so.1
@@ -1082,7 +1094,7 @@ noIcdSynthesized: true
 noSymlinkApplied: true
 ```
 
-No Vulkan proof is accepted on this worker, and no ICD, symlink, or compatibility shim was synthesized.
+No Vulkan proof is accepted on the worker container, and no ICD, symlink, or compatibility shim was synthesized.
 
 ## WebGPU Result
 
@@ -1351,8 +1363,8 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 - hipBLASLt large ROCm ML infrastructure is attempted under the same profile-driven real ROCm harness. The latest retained run preserves the upstream compile summary and an incomplete unknown-backend device-sidecar candidate, but it remains refused before build metadata/source-delta execution because CMake cannot find Python development/module components and no app-hook, epoch, dispatch, host-identity, or post-dispatch output-oracle proof was produced. This retained row is not counted as current full-runtime GPU HMR evidence; the older Tensile/source-delta run remains historical context only.
 - CUDA is not applicable to this local AMD ROCm proof matrix; validate CUDA only on CUDA hardware.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
-- OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
-- Vulkan needs a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof; no synthesized ICD or shim should be used.
+- OpenCL worker-container and arbitrary-project acceptance still need a real vendor ICD plus dispatch/event/readback ledger proof for each target; no synthesized ICD or shim should be used.
+- Vulkan worker-container and arbitrary-project acceptance still need a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof for each target; no synthesized ICD or shim should be used. The current host-local Vulkan row is scoped proof, not arbitrary engine acceptance.
 - WebGPU beyond the accepted explicit-empty WGSL profile and explicit-profiled uniform-buffer plus float32-vertex-buffer profile needs executed proof for additional bind group kinds, vertex formats, compute pipelines, engine caches, pipeline layouts, frame traces, and output-oracle ledger proof; browser flags must remain evidence-only.
 - Per-kernel/smallest-safe fission is proven only for the ray-light generated `trace_light_rays` island; additional projects/backends need their own deterministic verifier evidence.
 - In-app browser visual proof was unavailable because the browser connector bootstrap failed with sandbox metadata; persisted WebGPU, ray-light, and Flow before/after/diff PNGs were inspected with the local visual tool instead, and the matrix now decodes PNGs before accepting them.
