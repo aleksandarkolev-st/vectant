@@ -668,6 +668,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   const startedAt = new Date().toISOString();
   const localPath = sourceIntakePathForCandidate(candidate);
   const relativeLocalPath = path.relative(REPO_ROOT, localPath).replace(/\\/g, '/');
+  const liveGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK === '1';
   const base = {
     schemaVersion: SOURCE_INTAKE_SCHEMA,
     schema_version: SOURCE_INTAKE_SCHEMA,
@@ -708,33 +709,62 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   };
   await rm(localPath, { recursive: true, force: true });
   const githubTree = await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
+  let githubTreeFallback = null;
   if (githubTree.attempted === true) {
     if (githubTree.accepted !== true) {
-      return fail(githubTree.status, githubTree.reason, {
-        githubTree,
-        github_tree: githubTree,
+      if (githubTree.status === 'source_intake_github_tree_truncated') {
+        if (!liveGitFallbackEnabled) {
+          const gitFallbackPlan = {
+            available: true,
+            available_authority: 'fallback_plan_only_not_source_intake_or_gpu_hmr_success',
+            recommendedTransport: 'git_fetch_depth_1_blobless',
+            recommended_transport: 'git_fetch_depth_1_blobless',
+            requiresExplicitOptIn: true,
+            requires_explicit_opt_in: true,
+            optInEnv: 'SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK=1',
+            opt_in_env: 'SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK=1',
+            reason: 'github_recursive_tree_truncated',
+          };
+          return fail('source_intake_github_tree_truncated_git_fallback_disabled', githubTree.reason, {
+            githubTree,
+            github_tree: githubTree,
+            gitFallbackPlan,
+            git_fallback_plan: gitFallbackPlan,
+          });
+        }
+        githubTreeFallback = {
+          reason: 'github_recursive_tree_truncated_falling_back_to_blobless_git_tree',
+          githubTree,
+          github_tree: githubTree,
+        };
+      } else {
+        return fail(githubTree.status, githubTree.reason, {
+          githubTree,
+          github_tree: githubTree,
+        });
+      }
+    } else {
+      if (!Array.isArray(githubTree.files) || githubTree.files.length === 0) {
+        return fail('source_intake_empty_listing', 'source_tree_listing_empty', {
+          githubTree,
+          github_tree: githubTree,
+        });
+      }
+      return buildAcceptedSourceIntakeFacet({
+        base,
+        candidate,
+        files: githubTree.files,
+        transport: githubTree.transport,
+        transportEvidence: {
+          apiUrl: githubTree.apiUrl,
+          api_url: githubTree.api_url,
+          startedAt: githubTree.startedAt,
+          started_at: githubTree.started_at,
+          finishedAt: githubTree.finishedAt,
+          finished_at: githubTree.finished_at,
+        },
       });
     }
-    if (!Array.isArray(githubTree.files) || githubTree.files.length === 0) {
-      return fail('source_intake_empty_listing', 'source_tree_listing_empty', {
-        githubTree,
-        github_tree: githubTree,
-      });
-    }
-    return buildAcceptedSourceIntakeFacet({
-      base,
-      candidate,
-      files: githubTree.files,
-      transport: githubTree.transport,
-      transportEvidence: {
-        apiUrl: githubTree.apiUrl,
-        api_url: githubTree.api_url,
-        startedAt: githubTree.startedAt,
-        started_at: githubTree.started_at,
-        finishedAt: githubTree.finishedAt,
-        finished_at: githubTree.finished_at,
-      },
-    });
   }
   await mkdir(localPath, { recursive: true });
   const gitInit = await runProcess(
@@ -830,6 +860,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     files,
     transport: 'git_fetch_depth_1_blobless',
     transportEvidence: {
+      githubTreeFallback,
+      github_tree_fallback: githubTreeFallback,
       gitInit,
       git_init: gitInit,
       remoteAdd,
