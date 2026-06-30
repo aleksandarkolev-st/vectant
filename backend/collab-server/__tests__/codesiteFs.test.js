@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const {
   assertCodeSiteWriteAllowed,
   codeSiteContextFromRequest,
+  enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   normalizeRepoRelativePath,
 } = require('../codesiteFs');
@@ -66,4 +67,62 @@ test('monitor mode returns denied events without throwing', () => {
   const result = assertCodeSiteWriteAllowed(context, { path: 'api/auth/signup.ts', kind: 'write-file' });
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.event.type, 'write_denied');
+});
+
+test('enforcement records allowed transaction writes through the CodeSite control plane', async () => {
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({ ok: true, transaction: { id: 'txn-1' } }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['synthi/src/**'],
+    allowedTools: ['file_write'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+    processAncestry: ['node', 'collab-server'],
+  };
+
+  const result = await enforceCodeSiteWriteAllowed(context, {
+    path: 'synthi/src/App.jsx',
+    tool: 'file_write',
+    kind: 'write-file',
+  }, { fetch });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-write');
+  assert.deepStrictEqual(JSON.parse(calls[0].options.body), {
+    path: 'synthi/src/App.jsx',
+    tool: 'file_write',
+    evidenceRefs: [],
+    processAncestry: ['node', 'collab-server'],
+    codesiteFsEvent: result.event,
+  });
+});
+
+test('enforcement fails closed when persisted transaction policy rejects the write', async () => {
+  const fetch = async () => new Response(JSON.stringify({
+    ok: false,
+    policyDecision: { reasonCodes: ['outside_clearance_route'] },
+  }), { status: 200 });
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['synthi/src/**'],
+    allowedTools: ['file_write'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, { path: 'synthi/src/App.jsx', tool: 'file_write' }, { fetch }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('control_plane_denied_write')
+      && error.event.details.reason_codes.includes('outside_clearance_route'),
+  );
 });

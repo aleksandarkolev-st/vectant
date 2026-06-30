@@ -34,9 +34,9 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
-  assertCodeSiteWriteAllowed,
-  assertCodeSiteWritesAllowed,
   codeSiteContextFromRequest,
+  enforceCodeSiteWriteAllowed,
+  enforceCodeSiteWritesAllowed,
   isCodeSiteDeniedError,
 } = require('./codesiteFs');
 
@@ -742,7 +742,7 @@ async function flushDocToDisk(docName, options = {}) {
       logger.warn('version_baseline_read_failed', { slug, filePath }, err);
     }
   }
-  assertCodeSiteWriteAllowed(options.codesiteContext, {
+  await enforceCodeSiteWriteAllowed(options.codesiteContext, {
     path: filePath,
     kind: 'yjs_flush',
     tool: 'file_write',
@@ -895,7 +895,7 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   if (!fs.existsSync(repoPath)) return;
 
   const fullPath = path.join(repoPath, filePath);
-  assertCodeSiteWriteAllowed(scope.codesiteContext, {
+  await enforceCodeSiteWriteAllowed(scope.codesiteContext, {
     path: filePath,
     kind: 'yjs_flush',
     tool: 'file_write',
@@ -2173,7 +2173,7 @@ const server = http.createServer(async (req, res) => {
         actorUserId: parsed.userId || null,
         effectiveUserId: parsed.userId || null,
       });
-      assertCodeSiteWritesAllowed(codeSiteContext, (parsed.files || []).map((file) => ({
+      await enforceCodeSiteWritesAllowed(codeSiteContext, (parsed.files || []).map((file) => ({
         path: file?.path,
         kind: 'program-scaffold',
         tool: 'file_write',
@@ -2989,7 +2989,7 @@ const server = http.createServer(async (req, res) => {
           actorUserId: userId,
           effectiveUserId: targetUserId,
         });
-        assertCodeSiteWriteAllowed(codeSiteContext, {
+        await enforceCodeSiteWriteAllowed(codeSiteContext, {
           path: normalizedPath,
           kind: 'file-version-restore',
           tool: 'file_write',
@@ -4214,7 +4214,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'discard':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.filePath,
                       kind: 'discard',
                       tool: 'git_worktree',
@@ -4230,7 +4230,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: '**',
                       kind: 'discard-all',
                       tool: 'git_worktree',
@@ -4250,7 +4250,7 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.filePath,
                       kind: 'resolve-ours',
                       tool: 'git_worktree',
@@ -4262,7 +4262,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'resolve-theirs':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.filePath,
                       kind: 'resolve-theirs',
                       tool: 'git_worktree',
@@ -4274,7 +4274,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'mark-resolved':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.filePath,
                       kind: 'mark-resolved',
                       tool: 'git_worktree',
@@ -4282,7 +4282,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
                     break;
                 case 'abort-merge':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: '**',
                       kind: 'abort-merge',
                       tool: 'git_worktree',
@@ -4528,7 +4528,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.path,
                       kind: 'write-file',
                       tool: 'file_write',
@@ -4551,7 +4551,7 @@ const server = http.createServer(async (req, res) => {
                         continue;
                       }
                       try {
-                        assertCodeSiteWriteAllowed(codeSiteContext, {
+                        await enforceCodeSiteWriteAllowed(codeSiteContext, {
                           path: f.path,
                           kind: 'apply-shadow-patch',
                           tool: 'shadow_patch',
@@ -4578,7 +4578,7 @@ const server = http.createServer(async (req, res) => {
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
-                  assertCodeSiteWritesAllowed(codeSiteContext, (data.files || []).map((file) => ({
+                  await enforceCodeSiteWritesAllowed(codeSiteContext, (data.files || []).map((file) => ({
                     path: file?.path,
                     kind: 'write-files-batch',
                     tool: 'file_write',
@@ -4589,7 +4589,7 @@ const server = http.createServer(async (req, res) => {
                   });
                   break;
                 case 'create-directory':
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.path,
                       kind: 'create-directory',
                       tool: 'file_write',
@@ -4601,7 +4601,7 @@ const server = http.createServer(async (req, res) => {
                 case 'delete-item':
                     // Delete a file or folder from the workspace
                     console.log('[Collab] delete-item called for:', slug, data.path);
-                    assertCodeSiteWriteAllowed(codeSiteContext, {
+                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.path,
                       kind: 'delete-item',
                       tool: 'file_delete',
@@ -4615,7 +4615,7 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'rename-item':
                     // Rename / move a file or directory
-                    assertCodeSiteWritesAllowed(codeSiteContext, [
+                    await enforceCodeSiteWritesAllowed(codeSiteContext, [
                       { path: data.oldPath, kind: 'rename-item:old', tool: 'file_rename' },
                       { path: data.newPath, kind: 'rename-item:new', tool: 'file_rename' },
                     ]);

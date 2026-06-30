@@ -44,6 +44,9 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     allowedTools: parsePatternList(value(payload.allowedTools, header('x-codesite-allowed-tools'))),
     evidenceRefs: parsePatternList(value(payload.evidenceRefs, header('x-codesite-evidence-refs'))),
     processAncestry: parsePatternList(value(payload.processAncestry, header('x-codesite-process-ancestry'))),
+    controlPlaneUrl: value(payload.controlPlaneUrl, payload.control_plane_url, header('x-codesite-control-plane-url')),
+    authToken: value(payload.authToken, payload.auth_token, header('x-codesite-token')),
+    cookie: value(payload.cookie, header('cookie')),
   };
   context.active = Boolean(
     context.transactionId ||
@@ -91,6 +94,100 @@ function assertCodeSiteWriteAllowed(context, attempt) {
 
 function assertCodeSiteWritesAllowed(context, attempts) {
   return attempts.map((attempt) => assertCodeSiteWriteAllowed(context, attempt));
+}
+
+async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
+  const result = assertCodeSiteWriteAllowed(context, attempt);
+  if (result.ok) {
+    await recordCodeSiteWriteAttempt(context, result, options);
+  }
+  return result;
+}
+
+async function enforceCodeSiteWritesAllowed(context, attempts, options = {}) {
+  const results = [];
+  for (const attempt of attempts) {
+    results.push(await enforceCodeSiteWriteAllowed(context, attempt, options));
+  }
+  return results;
+}
+
+async function recordCodeSiteWriteAttempt(context, result, options = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const fetchImpl = options.fetch || global.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('codesite_control_plane_fetch_unavailable');
+  }
+  const baseUrl = resolveControlPlaneBaseUrl(context);
+  if (!baseUrl) {
+    throw new Error('codesite_control_plane_url_required');
+  }
+  const url = `${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/record-write`;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      path: result.path,
+      tool: result.tool,
+      evidenceRefs: context.evidenceRefs || [],
+      processAncestry: context.processAncestry || [],
+      codesiteFsEvent: result.event,
+    }),
+  });
+  const body = await readJsonBody(response);
+  if (!response.ok || body?.ok === false) {
+    throw new CodeSiteFSDeniedError({
+      ...result.event,
+      type: 'write_denied',
+      details: {
+        ...result.event.details,
+        reason: 'codesite_control_plane_denied_write',
+        reason_codes: [
+          'control_plane_denied_write',
+          ...asArray(body?.policyDecision?.reasonCodes || body?.decision?.reasonCodes),
+        ],
+        control_plane_status: response.status,
+        control_plane_response: body,
+      },
+    });
+  }
+  return body;
+}
+
+function resolveControlPlaneBaseUrl(context) {
+  const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
+  if (explicit) {
+    return trimTrailingSlash(String(explicit).replace('{workspace_slug}', encodeURIComponent(context.workspaceSlug || '')));
+  }
+  const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
+  if (!appBase || !context.workspaceSlug) return null;
+  return `${trimTrailingSlash(appBase)}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
+}
+
+async function readJsonBody(response) {
+  const text = await response.text().catch(() => '');
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return { text };
+  }
+}
+
+function trimTrailingSlash(value) {
+  return String(value || '').replace(/\/+$/, '');
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function evaluateCodeSiteWrite(context, attempt = {}) {
@@ -185,6 +282,8 @@ module.exports = {
   assertCodeSiteWriteAllowed,
   assertCodeSiteWritesAllowed,
   codeSiteContextFromRequest,
+  enforceCodeSiteWriteAllowed,
+  enforceCodeSiteWritesAllowed,
   evaluateCodeSiteWrite,
   isCodeSiteDeniedError,
   normalizeRepoRelativePath,
