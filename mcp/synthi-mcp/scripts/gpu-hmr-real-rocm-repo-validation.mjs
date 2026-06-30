@@ -3142,6 +3142,10 @@ const report = {
   realRocmRuntimeAdapterStageEvents: null,
   runtime_adapter_stage_events: null,
   runtimeAdapterStageEvents: null,
+  real_rocm_runtime_boundary_target_environment: null,
+  realRocmRuntimeBoundaryTargetEnvironment: null,
+  runtime_boundary_target_environment: null,
+  runtimeBoundaryTargetEnvironment: null,
   real_rocm_missing_dependency_probe: null,
   realRocmMissingDependencyProbe: null,
   missing_dependency_probe: null,
@@ -4450,6 +4454,163 @@ function runtimeAdapterWorkerEventManifestPath(adapter = CFG.runtimeAdapter) {
   const parts = normalized.split('/');
   if (parts.some((part) => !part || part === '.' || part === '..')) return '';
   return `${CFG.workerRepoPath}/${normalized}`;
+}
+
+function runtimeBoundaryTargetEnvironmentFacet({
+  lifecycleRunId = '',
+  upstreamRunEnabled = CFG.runUpstream,
+} = {}) {
+  const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
+  const adapterDeclared = adapter?.declared === true;
+  const adapterEnabled = adapter?.enabled === true;
+  const declaredResultPath = runtimeAdapterDeclaredResultPath(adapter);
+  const workerResultPath = runtimeAdapterWorkerResultPath(declaredResultPath);
+  const declaredEventManifestPath = String(
+    adapter?.eventManifestPath ?? adapter?.event_manifest_path ?? '',
+  ).trim();
+  const workerEventManifestPath = runtimeAdapterWorkerEventManifestPath(adapter);
+  const eventManifestRequested = adapterDeclared
+    && adapterEnabled
+    && (
+      Boolean(declaredEventManifestPath)
+      || adapter?.template === 'runtime_boundary_event_manifest_v1'
+    );
+  const resultPathRequested = Boolean(declaredResultPath);
+  const runtimeSession = cleanIdentifier(`upstream-${lifecycleRunId || CFG.slug}`);
+  const blockingGaps = [];
+
+  if (adapterDeclared && adapterEnabled && eventManifestRequested && !workerEventManifestPath) {
+    blockingGaps.push('runtime_boundary_target_event_manifest_path_missing');
+  }
+  if (adapterDeclared && adapterEnabled && resultPathRequested && !workerResultPath) {
+    blockingGaps.push('runtime_boundary_target_result_path_invalid');
+  }
+  if (adapterDeclared && adapterEnabled && eventManifestRequested && upstreamRunEnabled !== true) {
+    blockingGaps.push('runtime_boundary_target_upstream_run_disabled');
+  }
+
+  const targetEnvironmentEnabled = adapterDeclared && adapterEnabled;
+  const environment = targetEnvironmentEnabled
+    ? {
+        SYNTHI_GPU_HMR_RUNTIME_BOUNDARY: '1',
+        SYNTHI_REAL_ROCM_RUNTIME_SESSION: runtimeSession,
+        SYNTHI_GPU_HMR_RUNTIME_SESSION: runtimeSession,
+        SYNTHI_REAL_ROCM_PROFILE_ID: CFG.realRocmProfile.id,
+        SYNTHI_REAL_ROCM_SLUG: CFG.slug,
+        SYNTHI_REAL_ROCM_TARGET: CFG.targetName,
+        SYNTHI_REAL_ROCM_WORKER_REPO_PATH: CFG.workerRepoPath,
+        SYNTHI_REAL_ROCM_BUILD_DIR: `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`,
+        SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
+        SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_ID:
+          cleanIdentifier(`${CFG.realRocmProfile.id}-runtime-adapter`),
+        SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_COMMAND_HASH: adapter?.commandHash ?? '',
+        SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH: workerEventManifestPath,
+        SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH: workerEventManifestPath,
+        SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH: workerEventManifestPath,
+        SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH: workerEventManifestPath,
+        SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH: workerResultPath,
+        SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH: workerResultPath,
+      }
+    : {};
+  const exportedEnvironment = Object.fromEntries(
+    Object.entries(environment).filter(([, value]) => String(value ?? '').trim()),
+  );
+  const directoryPrepLines = targetEnvironmentEnabled
+    ? compactStringList([
+        workerEventManifestPath
+          ? `mkdir -p "$(dirname ${shQuote(workerEventManifestPath)})"`
+          : null,
+        workerResultPath
+          ? `mkdir -p "$(dirname ${shQuote(workerResultPath)})"`
+          : null,
+      ])
+    : [];
+  const exportLines = compactStringList([
+    ...directoryPrepLines,
+    ...Object.entries(exportedEnvironment).map(([key, value]) =>
+      `export ${key}=${shQuote(value)}`
+    ),
+  ]);
+  const exportedVariableNames = Object.keys(exportedEnvironment).sort();
+  const status = !adapterDeclared
+    ? 'runtime_boundary_target_environment_not_declared'
+    : adapterEnabled !== true
+      ? 'runtime_boundary_target_environment_disabled'
+      : eventManifestRequested && workerEventManifestPath
+        ? 'runtime_boundary_target_environment_exported'
+        : 'runtime_boundary_target_environment_not_requested';
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.runtime_boundary_target_environment.v1',
+    schema_version: 'synthi.real_rocm.runtime_boundary_target_environment.v1',
+    proofAuthority: 'target_environment_exposure_only_not_gpu_hmr_success',
+    proof_authority: 'target_environment_exposure_only_not_gpu_hmr_success',
+    adapterDeclared,
+    adapter_declared: adapterDeclared,
+    adapterEnabled,
+    adapter_enabled: adapterEnabled,
+    adapterTemplate: adapter?.template ?? null,
+    adapter_template: adapter?.template ?? null,
+    adapterCommandHash: adapter?.commandHash ?? null,
+    adapter_command_hash: adapter?.commandHash ?? null,
+    upstreamRunEnabled: upstreamRunEnabled === true,
+    upstream_run_enabled: upstreamRunEnabled === true,
+    status,
+    eventManifestRequested,
+    event_manifest_requested: eventManifestRequested,
+    resultPathRequested,
+    result_path_requested: resultPathRequested,
+    declaredEventManifestPath: declaredEventManifestPath || null,
+    declared_event_manifest_path: declaredEventManifestPath || null,
+    workerEventManifestPath: workerEventManifestPath || null,
+    worker_event_manifest_path: workerEventManifestPath || null,
+    declaredResultPath: declaredResultPath || null,
+    declared_result_path: declaredResultPath || null,
+    workerResultPath: workerResultPath || null,
+    worker_result_path: workerResultPath || null,
+    runtimeSession,
+    runtime_session: runtimeSession,
+    lifecycleRunId: lifecycleRunId || null,
+    lifecycle_run_id: lifecycleRunId || null,
+    exportedToUpstreamRun: upstreamRunEnabled === true && exportLines.length > 0,
+    exported_to_upstream_run: upstreamRunEnabled === true && exportLines.length > 0,
+    exportedVariableNames,
+    exported_variable_names: exportedVariableNames,
+    acceptedAsSupportEvidence:
+      adapterDeclared && adapterEnabled && blockingGaps.length === 0,
+    accepted_as_support_evidence:
+      adapterDeclared && adapterEnabled && blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      adapter?.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
+      adapter?.template ? `runtime-adapter-template:${adapter.template}` : null,
+      workerEventManifestPath ? `runtime-boundary-event-manifest-path:${sha256Text(workerEventManifestPath)}` : null,
+      workerResultPath ? `runtime-adapter-result-path:${sha256Text(workerResultPath)}` : null,
+    ]),
+    evidence_refs: compactStringList([
+      adapter?.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
+      adapter?.template ? `runtime-adapter-template:${adapter.template}` : null,
+      workerEventManifestPath ? `runtime-boundary-event-manifest-path:${sha256Text(workerEventManifestPath)}` : null,
+      workerResultPath ? `runtime-adapter-result-path:${sha256Text(workerResultPath)}` : null,
+    ]),
+    exportLines,
+    export_lines: exportLines,
+  };
+  facet.environmentHash = `sha256:${createHash('sha256').update(stableJson({
+    ...facet,
+    environmentHash: undefined,
+    environment_hash: undefined,
+    exportLines: undefined,
+    export_lines: undefined,
+  })).digest('hex')}`;
+  facet.environment_hash = facet.environmentHash;
+  return facet;
 }
 
 function runtimeAdapterMetric(timings, key) {
@@ -8016,6 +8177,23 @@ async function prepareUpstreamBuild() {
     throw new Error(`upstream run display environment unavailable: ${upstreamRunLaunch.reason}`);
   }
 
+  const lifecycleRunId = realRocmLifecycleRunId();
+  const runtimeBoundaryTargetEnvironment = runtimeBoundaryTargetEnvironmentFacet({
+    lifecycleRunId,
+    upstreamRunEnabled: CFG.runUpstream,
+  });
+  report.real_rocm_runtime_boundary_target_environment = runtimeBoundaryTargetEnvironment;
+  report.realRocmRuntimeBoundaryTargetEnvironment = runtimeBoundaryTargetEnvironment;
+  report.runtime_boundary_target_environment = runtimeBoundaryTargetEnvironment;
+  report.runtimeBoundaryTargetEnvironment = runtimeBoundaryTargetEnvironment;
+  report.evidence.real_rocm_runtime_boundary_target_environment =
+    runtimeBoundaryTargetEnvironment;
+  record(
+    'real ROCm runtime boundary target environment',
+    runtimeBoundaryTargetEnvironment.blockingGaps.length === 0 ? 'pass' : 'warn',
+    `status=${runtimeBoundaryTargetEnvironment.status} exported=${runtimeBoundaryTargetEnvironment.exportedToUpstreamRun} vars=${runtimeBoundaryTargetEnvironment.exportedVariableNames.length} gaps=${runtimeBoundaryTargetEnvironment.blockingGaps.join(',') || 'none'}`,
+  );
+
   const cmakeExtraArgs = CFG.cmakeArgs.length
     ? ` ${CFG.cmakeArgs.map((arg) => shQuote(arg)).join(' ')}`
     : '';
@@ -8030,6 +8208,7 @@ async function prepareUpstreamBuild() {
         `chmod 700 ${shQuote(upstreamRunLaunch.xdgRuntimeDir)} || true`,
         `export XDG_RUNTIME_DIR=${shQuote(upstreamRunLaunch.xdgRuntimeDir)}`,
         `export SYNTHI_REAL_ROCM_UPSTREAM_DISPLAY_MODE=${shQuote(upstreamRunLaunch.effectiveDisplayMode)}`,
+        ...runtimeBoundaryTargetEnvironment.exportLines,
         ...(CFG.hiprtRuntimeProbe
           ? [
               `export SYNTHI_HIPRT_DISABLE_GPU_TEXTURE_OBJECTS=1`,
@@ -8059,7 +8238,6 @@ async function prepareUpstreamBuild() {
   const hiprtPostConfigureAdaptationCommand = CFG.hiprtRuntimeProbe
     ? hiprtRuntimeProbeAdaptationCommand(CFG.workerRepoPath)
     : ':';
-  const lifecycleRunId = realRocmLifecycleRunId();
   const command = `
 set -e
 export SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID=${shQuote(lifecycleRunId)}
@@ -18038,6 +18216,79 @@ async function selfCheckRuntimeDispatchEvidence() {
       eventManifestPath: '.gpu-hmr-test-logs/runtime-adapter-events/event-manifest.json',
       runWhen: 'after_lifecycle_attempt',
     });
+    CFG.runtimeAdapter = eventManifestRuntimeAdapter;
+    CFG.runtimeAdapterSource = 'self-check';
+    const runtimeBoundaryTargetEnvironment =
+      runtimeBoundaryTargetEnvironmentFacet({
+        lifecycleRunId: 'runtime-boundary-target-env-self-check',
+        upstreamRunEnabled: true,
+      });
+    if (
+      runtimeBoundaryTargetEnvironment.schemaVersion
+        !== 'synthi.real_rocm.runtime_boundary_target_environment.v1'
+      || runtimeBoundaryTargetEnvironment.proofAuthority
+        !== 'target_environment_exposure_only_not_gpu_hmr_success'
+      || runtimeBoundaryTargetEnvironment.status
+        !== 'runtime_boundary_target_environment_exported'
+      || runtimeBoundaryTargetEnvironment.acceptedAsSupportEvidence !== true
+      || runtimeBoundaryTargetEnvironment.acceptedForGpuHmr !== false
+      || runtimeBoundaryTargetEnvironment.gpuHmrSuccess !== false
+      || runtimeBoundaryTargetEnvironment.canSatisfyRuntimeProof !== false
+      || runtimeBoundaryTargetEnvironment.blockingGaps.length !== 0
+      || !runtimeBoundaryTargetEnvironment.exportedVariableNames.includes(
+        'SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH',
+      )
+      || !runtimeBoundaryTargetEnvironment.exportedVariableNames.includes(
+        'SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH',
+      )
+      || !runtimeBoundaryTargetEnvironment.exportedVariableNames.includes(
+        'SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH',
+      )
+      || !runtimeBoundaryTargetEnvironment.exportLines.some((line) =>
+        line.includes('SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH='))
+      || !runtimeBoundaryTargetEnvironment.exportLines.some((line) =>
+        line.includes('mkdir -p') && line.includes('runtime-adapter-events'))
+    ) {
+      throw new Error(`runtime boundary target environment self-check failed ${stableJson({
+        status: runtimeBoundaryTargetEnvironment.status,
+        vars: runtimeBoundaryTargetEnvironment.exportedVariableNames,
+        gaps: runtimeBoundaryTargetEnvironment.blockingGaps,
+        accepted: runtimeBoundaryTargetEnvironment.acceptedAsSupportEvidence,
+      })}`);
+    }
+    CFG.runtimeAdapter = normalizeRealRocmRuntimeAdapter(null);
+    const undeclaredRuntimeBoundaryTargetEnvironment =
+      runtimeBoundaryTargetEnvironmentFacet({
+        lifecycleRunId: 'runtime-boundary-target-env-undeclared-self-check',
+        upstreamRunEnabled: true,
+      });
+    if (
+      undeclaredRuntimeBoundaryTargetEnvironment.status
+        !== 'runtime_boundary_target_environment_not_declared'
+      || undeclaredRuntimeBoundaryTargetEnvironment.exportLines.length !== 0
+      || undeclaredRuntimeBoundaryTargetEnvironment.exportedVariableNames.length !== 0
+      || undeclaredRuntimeBoundaryTargetEnvironment.acceptedAsSupportEvidence !== false
+      || undeclaredRuntimeBoundaryTargetEnvironment.acceptedForGpuHmr !== false
+      || undeclaredRuntimeBoundaryTargetEnvironment.gpuHmrSuccess !== false
+    ) {
+      throw new Error('runtime boundary target environment exported undeclared adapter variables');
+    }
+    CFG.runtimeAdapter = eventManifestRuntimeAdapter;
+    const disabledRunRuntimeBoundaryTargetEnvironment =
+      runtimeBoundaryTargetEnvironmentFacet({
+        lifecycleRunId: 'runtime-boundary-target-env-disabled-run-self-check',
+        upstreamRunEnabled: false,
+      });
+    if (
+      disabledRunRuntimeBoundaryTargetEnvironment.acceptedAsSupportEvidence !== false
+      || !disabledRunRuntimeBoundaryTargetEnvironment.blockingGaps.includes(
+        'runtime_boundary_target_upstream_run_disabled',
+      )
+      || disabledRunRuntimeBoundaryTargetEnvironment.acceptedForGpuHmr !== false
+      || disabledRunRuntimeBoundaryTargetEnvironment.gpuHmrSuccess !== false
+    ) {
+      throw new Error('runtime boundary target environment accepted disabled upstream run');
+    }
     if (
       afterBuildAttemptAdapter.requiresSuccessfulBuild !== false
       || runtimeAdapterSkipReasonForPhase(afterBuildAttemptAdapter, failedBuildPhase) !== null
@@ -22327,6 +22578,10 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   report.evidence = {
     real_rocm_profile_proof_obligations: report.real_rocm_profile_proof_obligations,
     runtime_capability_preflight: report.runtime_capability_preflight,
+    real_rocm_runtime_boundary_target_environment:
+      report.real_rocm_runtime_boundary_target_environment,
+    runtime_boundary_target_environment:
+      report.runtime_boundary_target_environment,
     worker_log_lines: workerEvidence,
     worker_service_log_lines: scopedWorkerEvidence,
     upstream_run_log_lines: upstreamRunEvidence,

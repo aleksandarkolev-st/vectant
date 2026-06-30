@@ -4,6 +4,22 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Boundary Target Environment
+
+Real ROCm upstream target runs now receive generic runtime-boundary environment variables only when a runtime adapter is explicitly declared and enabled. The runner records `synthi.real_rocm.runtime_boundary_target_environment.v1` with `proofAuthority=target_environment_exposure_only_not_gpu_hmr_success`, validates repo-relative result/event-manifest paths, creates worker-side parent directories, and exports aliases such as `SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH`, `SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH`, `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH`, and `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH` into the actual upstream run environment.
+
+This is project-neutral plumbing for arbitrary upstream processes to write structured runtime-boundary event manifests. It is not proof authority: the facet stays `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`; undeclared adapters export nothing; disabled upstream runs remain a support gap; and strict acceptance still requires observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime-chain closure, and an accepted strict proof ledger.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/real-rocm-upstream-lifecycle.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; includes exported target-environment support, undeclared-adapter no-export refusal, disabled-upstream support gap, and existing adapter bridge/manifest checks
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke ledger rows=65, retained matrix remains 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Runtime-Adapter Result Bridge Hardening
 
 Real ROCm runtime evidence now consumes adapter-result boundary lines only from a usable imported bridge: declared and present result, exact evidence-only authority, accepted strict proof summary, zero bridge blocking gaps, active runtime-profile id match, no GPU HMR/runtime/dispatch authority claims, and copied result transport when transport is declared.
