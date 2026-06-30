@@ -49,6 +49,93 @@ function normalizeRepoRelativePath(input) {
   return normalized;
 }
 
+async function resolveCodeSiteRepoPath(repoRoot, input) {
+  if (!repoRoot || typeof repoRoot !== 'string') {
+    throw codeSitePathError('repo_root_required', 'CodeSiteFS repo root is required for path containment');
+  }
+  const normalized = normalizeRepoRelativePath(input);
+  const repoRealPath = await fsp.realpath(repoRoot).catch((error) => {
+    throw codeSitePathError('repo_root_unavailable', error?.message || 'CodeSiteFS repo root is unavailable');
+  });
+  const absolutePath = path.resolve(repoRealPath, normalized);
+  assertPathInsideRepo(repoRealPath, absolutePath, 'repo_path_escape');
+
+  try {
+    const stat = await fsp.lstat(absolutePath);
+    const realPath = await fsp.realpath(absolutePath).catch((error) => {
+      throw codeSitePathError('repo_path_symlink_unresolved', error?.message || 'CodeSiteFS path symlink could not be resolved');
+    });
+    assertPathInsideRepo(repoRealPath, realPath, 'repo_path_symlink_escape');
+    const targetStat = stat.isSymbolicLink()
+      ? await fsp.stat(realPath)
+      : stat;
+    return {
+      path: normalized,
+      repoRealPath,
+      absolutePath,
+      realPath,
+      exists: true,
+      kind: fileKind(targetStat),
+      isSymlink: stat.isSymbolicLink(),
+      parentRealPath: path.dirname(realPath),
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const parentRealPath = await nearestExistingParentRealPath(repoRealPath, absolutePath);
+  assertPathInsideRepo(repoRealPath, parentRealPath, 'repo_parent_symlink_escape');
+  return {
+    path: normalized,
+    repoRealPath,
+    absolutePath,
+    realPath: null,
+    exists: false,
+    kind: 'missing',
+    isSymlink: false,
+    parentRealPath,
+  };
+}
+
+async function nearestExistingParentRealPath(repoRealPath, absolutePath) {
+  let current = path.dirname(absolutePath);
+  while (true) {
+    assertPathInsideRepo(repoRealPath, current, 'repo_path_escape');
+    try {
+      return await fsp.realpath(current);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw codeSitePathError('repo_parent_unavailable', error?.message || 'CodeSiteFS parent path is unavailable');
+      }
+    }
+    const next = path.dirname(current);
+    if (next === current) {
+      throw codeSitePathError('repo_parent_unavailable', 'CodeSiteFS could not find an existing parent path');
+    }
+    current = next;
+  }
+}
+
+function assertPathInsideRepo(repoRealPath, candidatePath, code) {
+  const rel = path.relative(repoRealPath, candidatePath);
+  if (rel && (rel.startsWith('..') || path.isAbsolute(rel))) {
+    throw codeSitePathError(code, `CodeSiteFS path escapes repo root: ${candidatePath}`);
+  }
+}
+
+function fileKind(stat) {
+  if (stat.isDirectory()) return 'directory';
+  if (stat.isFile()) return 'file';
+  if (stat.isSymbolicLink()) return 'symlink';
+  return 'other';
+}
+
+function codeSitePathError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
 function codeSiteContextFromRequest(req, data = {}, extra = {}) {
   const hasCodeSitePayload = Object.prototype.hasOwnProperty.call(data, 'codesite')
     || Object.prototype.hasOwnProperty.call(data, 'codeSite');
@@ -341,9 +428,21 @@ class CodeSiteFS {
     const effectiveContext = await authoritativeCodeSiteContext(this.context, this.options);
     const result = evaluateCodeSiteWrite(effectiveContext, attempt);
     const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, this.options);
-    const preparedResult = durableFailure
+    let pathResolution = null;
+    let pathFailure = null;
+    if (this.options.repoRoot && result.path) {
+      try {
+        pathResolution = await resolveCodeSiteRepoPath(this.options.repoRoot, result.path);
+      } catch (error) {
+        pathFailure = error;
+      }
+    }
+    const durableResult = durableFailure
       ? deniedWithDurableFailure(result, durableFailure)
       : result;
+    const preparedResult = pathFailure
+      ? deniedWithPathFailure(durableResult, pathFailure)
+      : durableResult;
     const prepared = {
       phase: 'prepared',
       ok: preparedResult.ok,
@@ -355,6 +454,8 @@ class CodeSiteFS {
       result: preparedResult,
       event: preparedResult.event,
       durableFailure,
+      pathResolution,
+      pathFailure,
     };
     prepared.rollbackHint = this.rollbackHint(prepared);
     return prepared;
@@ -579,6 +680,26 @@ function deniedWithDurableFailure(result, durableFailure) {
           ...durableFailure.reasonCodes,
           ...asArray(result.event.details?.reason_codes),
         ],
+      },
+    },
+  };
+}
+
+function deniedWithPathFailure(result, pathFailure) {
+  const reasonCode = pathFailure?.code || 'repo_path_containment_failed';
+  return {
+    ...result,
+    ok: false,
+    event: {
+      ...result.event,
+      type: 'write_denied',
+      details: {
+        ...result.event.details,
+        reason: pathFailure?.message || 'CodeSiteFS path failed containment validation',
+        reason_codes: unique([
+          reasonCode,
+          ...asArray(result.event.details?.reason_codes).filter((code) => code !== 'inside_clearance_route'),
+        ]),
       },
     },
   };
@@ -881,40 +1002,31 @@ async function gitOutput(repoRoot, args) {
 }
 
 async function fileDigestForRepoPath(repoRoot, relPath) {
-  const normalized = normalizeRepoRelativePath(relPath);
-  const fullPath = path.resolve(repoRoot, normalized);
-  const rel = path.relative(repoRoot, fullPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error('codesite_repo_state_path_escape');
-  }
-  try {
-    const stat = await fsp.stat(fullPath);
-    if (stat.isDirectory()) {
-      return {
-        path: normalized,
-        digest: null,
-        size: null,
-        exists: true,
-        kind: 'directory',
-      };
-    }
+  const resolved = await resolveCodeSiteRepoPath(repoRoot, relPath);
+  if (!resolved.exists) {
     return {
-      path: normalized,
-      digest: await digestFile(fullPath),
-      size: stat.size,
-      exists: true,
+      path: resolved.path,
+      digest: null,
+      size: null,
+      exists: false,
     };
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return {
-        path: normalized,
-        digest: null,
-        size: null,
-        exists: false,
-      };
-    }
-    throw error;
   }
+  if (resolved.kind === 'directory') {
+    return {
+      path: resolved.path,
+      digest: null,
+      size: null,
+      exists: true,
+      kind: 'directory',
+    };
+  }
+  const stat = await fsp.stat(resolved.realPath || resolved.absolutePath);
+  return {
+    path: resolved.path,
+    digest: await digestFile(resolved.realPath || resolved.absolutePath),
+    size: stat.size,
+    exists: true,
+  };
 }
 
 async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
@@ -1456,4 +1568,5 @@ module.exports = {
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
   normalizeRepoRelativePath,
+  resolveCodeSiteRepoPath,
 };

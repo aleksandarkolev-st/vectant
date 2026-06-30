@@ -20,6 +20,7 @@ const {
   evaluateCodeSiteWrite,
   finalizeCodeSiteQuarantineWorkspace,
   normalizeRepoRelativePath,
+  resolveCodeSiteRepoPath,
 } = require('../codesiteFs');
 
 test('normalizes repo-relative paths and rejects traversal', () => {
@@ -28,6 +29,40 @@ test('normalizes repo-relative paths and rejects traversal', () => {
   assert.throws(() => normalizeRepoRelativePath('../secret'), /path_escape/);
   assert.throws(() => normalizeRepoRelativePath('a/../../secret'), /path_escape/);
   assert.throws(() => normalizeRepoRelativePath(''), /path_required/);
+});
+
+test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-resolve-repo-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-resolve-outside-'));
+  try {
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+    await fs.writeFile(path.join(repo, 'src', 'app.js'), 'inside\n');
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'outside\n');
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(repo, 'src', 'secret-link.txt'));
+    await fs.symlink(outside, path.join(repo, 'outside-dir'));
+
+    const existing = await resolveCodeSiteRepoPath(repo, 'src/app.js');
+    assert.strictEqual(existing.path, 'src/app.js');
+    assert.strictEqual(existing.exists, true);
+    assert.strictEqual(existing.kind, 'file');
+
+    const missing = await resolveCodeSiteRepoPath(repo, 'src/new-file.js');
+    assert.strictEqual(missing.path, 'src/new-file.js');
+    assert.strictEqual(missing.exists, false);
+    assert.match(missing.parentRealPath, /src$/);
+
+    await assert.rejects(
+      () => resolveCodeSiteRepoPath(repo, 'src/secret-link.txt'),
+      (error) => error.code === 'repo_path_symlink_escape',
+    );
+    await assert.rejects(
+      () => resolveCodeSiteRepoPath(repo, 'outside-dir/new-file.js'),
+      (error) => error.code === 'repo_parent_symlink_escape',
+    );
+  } finally {
+    await fs.rm(repo, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('extracts CodeSite context from payload and headers', () => {
@@ -301,6 +336,50 @@ test('CodeSiteFS lifecycle emits denied prewrite evidence and blocks apply outsi
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].path, 'src/app.js');
   assert.strictEqual(calls[0].codesiteFsEvent.type, 'write_denied');
+});
+
+test('CodeSiteFS lifecycle blocks symlink escapes before apply', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-symlink-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-outside-'));
+  const calls = [];
+  const fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  try {
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'outside\n');
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(repo, 'src', 'secret-link.txt'));
+    const codesiteFs = createCodeSiteFS({
+      active: true,
+      workspaceSlug: 'acme',
+      transactionId: 'txn-symlink',
+      mutationLeaseId: 'lease-symlink',
+      allowedPaths: ['src/**'],
+      controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+    }, { fetch, repoRoot: repo });
+    let applied = false;
+
+    await assert.rejects(
+      () => codesiteFs.apply({
+        path: 'src/secret-link.txt',
+        tool: 'file_write',
+        kind: 'write-file',
+      }, async () => {
+        applied = true;
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.details.reason_codes.includes('repo_path_symlink_escape'),
+    );
+
+    assert.strictEqual(applied, false);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].codesiteFsEvent.type, 'write_denied');
+    assert.ok(calls[0].codesiteFsEvent.details.reason_codes.includes('repo_path_symlink_escape'));
+  } finally {
+    await fs.rm(repo, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('CodeSiteFS run validates every attempt before applying a multi-file mutation', async () => {
