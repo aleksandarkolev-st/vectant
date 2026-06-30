@@ -12577,7 +12577,10 @@ function runtimeChainOverlayRecordFromAdapterResult(adapterResult = {}) {
 
   const loaderFields = runtimeBoundaryLatestFields(lines, /\bartifact_transport\b/i);
   const epochFields = runtimeBoundaryLatestFields(lines, /\bdispatcher_epoch\b/i);
-  const dispatchFields = runtimeBoundaryLatestFields(lines, /\bnative_runtime_dispatch\b/i);
+  const dispatchFields = runtimeBoundaryLatestFields(
+    lines,
+    /\b(?:native_runtime_dispatch|synthi_gpu_launch)\b/i,
+  );
   const hostFields = runtimeBoundaryLatestFields(lines, /\bhost_identity\b/i);
   const outputFields = runtimeBoundaryLatestFields(lines, /\boutput_oracle\b/i);
   const artifactHash = firstText(

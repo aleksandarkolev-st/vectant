@@ -13599,6 +13599,48 @@ const completeAdapterBoundaryRuntimeAdapterExecution =
     completeAdapterBoundaryBridgeScope,
     completeAdapterBoundaryMaterials,
   );
+const completeAdapterBoundarySynthiLaunchLines =
+  completeAdapterBoundaryRuntimeAdapterResult.adapterRuntimeBoundaryLines.map((line) =>
+    line.replace(
+      '[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=complete attachment_provenance=native_runtime_bridge',
+      '[gpu-runtime-boundary] synthi_gpu_launch dispatch=ok proof_bridge=complete attachment_provenance=synthi_runtime_adapter',
+    )
+  );
+completeAdapterBoundaryRuntimeAdapterResult.adapterRuntimeBoundaryLines =
+  completeAdapterBoundarySynthiLaunchLines;
+completeAdapterBoundaryRuntimeAdapterResult.adapter_runtime_boundary_lines =
+  completeAdapterBoundarySynthiLaunchLines;
+completeAdapterBoundaryRuntimeAdapterResult.evidenceRefs = [
+  completeAdapterBoundaryRuntimeAdapterResult.adapterResultHash,
+  ...completeAdapterBoundarySynthiLaunchLines.map((line) => `adapter-boundary:${hashValue(line)}`),
+];
+completeAdapterBoundaryRuntimeAdapterResult.evidence_refs =
+  completeAdapterBoundaryRuntimeAdapterResult.evidenceRefs;
+const completeAdapterBoundaryExecutionSynthiLaunchLines =
+  completeAdapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines.map((line) =>
+    line.replace(
+      '[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=complete attachment_provenance=native_runtime_bridge',
+      '[gpu-runtime-boundary] synthi_gpu_launch dispatch=ok proof_bridge=complete attachment_provenance=synthi_runtime_adapter',
+    )
+  );
+completeAdapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLines =
+  completeAdapterBoundaryExecutionSynthiLaunchLines;
+completeAdapterBoundaryRuntimeAdapterExecution.runtime_boundary_lines =
+  completeAdapterBoundaryExecutionSynthiLaunchLines;
+completeAdapterBoundaryRuntimeAdapterExecution.runtimeBoundaryLineCount =
+  completeAdapterBoundaryExecutionSynthiLaunchLines.length;
+completeAdapterBoundaryRuntimeAdapterExecution.runtime_boundary_line_count =
+  completeAdapterBoundaryExecutionSynthiLaunchLines.length;
+completeAdapterBoundaryRuntimeAdapterExecution.evidenceRefs = [
+  `runtime-adapter-execution:${completeAdapterBoundaryBridgeScope}`,
+  `runtime-adapter-template:runtime_boundary_log_harvest_v1`,
+  `runtime-adapter-command:${completeAdapterBoundaryRuntimeAdapterExecution.adapterCommandHash}`,
+  ...completeAdapterBoundaryExecutionSynthiLaunchLines.map((line) =>
+    `runtime-adapter-boundary:${hashValue(line)}`
+  ),
+];
+completeAdapterBoundaryRuntimeAdapterExecution.evidence_refs =
+  completeAdapterBoundaryRuntimeAdapterExecution.evidenceRefs;
 const completeAdapterBoundaryRuntimeAdapterResultTransport =
   runtimeAdapterResultTransportFixture(completeAdapterBoundaryBridgeScope);
 const completeAdapterBoundaryReport = {
