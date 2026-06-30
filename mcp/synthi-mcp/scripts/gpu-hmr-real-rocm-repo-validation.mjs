@@ -4588,6 +4588,145 @@ function runtimeAdapterStageEventsFacet({
   };
 }
 
+function deriveRealRocmAppHookContractFromRuntimeAdapterStageEvents(stageEvents = {}) {
+  const facet = stageEvents && typeof stageEvents === 'object' && !Array.isArray(stageEvents)
+    ? stageEvents
+    : {};
+  const schemaVersion = stringField(facet, ['schemaVersion', 'schema_version', 'schema']);
+  const proofAuthority = stringField(facet, ['proofAuthority', 'proof_authority']);
+  const sourceFacetHash = stringField(facet, ['facetHash', 'facet_hash']);
+  const boundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
+    ...(Array.isArray(facet.boundary_line_hashes) ? facet.boundary_line_hashes : []),
+  ]);
+  const rawStageResults =
+    facet.stageResults && typeof facet.stageResults === 'object' && !Array.isArray(facet.stageResults)
+      ? facet.stageResults
+      : facet.stage_results && typeof facet.stage_results === 'object' && !Array.isArray(facet.stage_results)
+        ? facet.stage_results
+        : {};
+  const baseBlockingGaps = compactStringList([
+    schemaVersion === REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION
+      ? null
+      : 'runtime_adapter_stage_events_schema_mismatch',
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY
+      ? null
+      : 'runtime_adapter_stage_events_authority_mismatch',
+    facet.acceptedForGpuHmr === true || facet.accepted_for_gpu_hmr === true
+      ? 'runtime_adapter_stage_events_claimed_gpu_hmr_acceptance'
+      : null,
+    facet.gpuHmrSuccess === true || facet.gpu_hmr_success === true
+      ? 'runtime_adapter_stage_events_claimed_gpu_hmr_success'
+      : null,
+    facet.canSatisfyRuntimeProof === true || facet.can_satisfy_runtime_proof === true
+      ? 'runtime_adapter_stage_events_claimed_runtime_authority'
+      : null,
+    facet.complete === true ? null : 'runtime_adapter_stage_events_not_complete',
+    facet.acceptedAsSupportEvidence === true || facet.accepted_as_support_evidence === true
+      ? null
+      : 'runtime_adapter_stage_events_not_accepted_as_support',
+    sourceFacetHash ? null : 'runtime_adapter_stage_events_facet_hash_missing',
+    boundaryLineHashes.length > 0 ? null : 'runtime_adapter_stage_events_boundary_hashes_missing',
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const stageMap = {};
+  const stageBlockingGaps = [];
+  const contractEvidenceRefs = [];
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const rawStage = rawStageResults[stage.key] ?? rawStageResults[stage.snake] ?? {};
+    const evidenceRefs = compactStringList([
+      ...(Array.isArray(rawStage.evidenceRefs) ? rawStage.evidenceRefs : []),
+      ...(Array.isArray(rawStage.evidence_refs) ? rawStage.evidence_refs : []),
+    ]);
+    const stageBoundaryLineHashes = compactStringList([
+      ...(Array.isArray(rawStage.boundaryLineHashes) ? rawStage.boundaryLineHashes : []),
+      ...(Array.isArray(rawStage.boundary_line_hashes) ? rawStage.boundary_line_hashes : []),
+    ]);
+    const missingProofKinds = compactStringList([
+      ...(Array.isArray(rawStage.missingProofKinds) ? rawStage.missingProofKinds : []),
+      ...(Array.isArray(rawStage.missing_proof_kinds) ? rawStage.missing_proof_kinds : []),
+    ]);
+    const observed =
+      rawStage.observed === true
+      || rawStage.runtimeObserved === true
+      || rawStage.runtime_observed === true;
+    if (!observed) stageBlockingGaps.push(`app_hook_derived_stage_${stage.snake}_not_observed`);
+    if (evidenceRefs.length === 0) {
+      stageBlockingGaps.push(`app_hook_derived_stage_${stage.snake}_evidence_refs_missing`);
+    }
+    if (stageBoundaryLineHashes.length === 0) {
+      stageBlockingGaps.push(`app_hook_derived_stage_${stage.snake}_boundary_hash_missing`);
+    }
+    for (const proofKind of missingProofKinds) {
+      stageBlockingGaps.push(`app_hook_derived_stage_${stage.snake}_${proofKind}_missing`);
+    }
+    const derivedStage = {
+      declared: true,
+      required: true,
+      proofId: null,
+      proof_id: null,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+      source: 'runtime_adapter_stage_events',
+      sourceStage: stage.snake,
+      source_stage: stage.snake,
+      requiredProofKinds: realRocmStageProofKinds(stage.snake),
+      required_proof_kinds: realRocmStageProofKinds(stage.snake),
+      boundaryLineHashes: stageBoundaryLineHashes,
+      boundary_line_hashes: stageBoundaryLineHashes,
+      fieldChecks: rawStage.fieldChecks ?? rawStage.field_checks ?? {},
+      field_checks: rawStage.fieldChecks ?? rawStage.field_checks ?? {},
+    };
+    contractEvidenceRefs.push(...evidenceRefs);
+    stageMap[stage.key] = derivedStage;
+    stageMap[stage.snake] = derivedStage;
+  }
+  const blockingGaps = compactStringList([...baseBlockingGaps, ...stageBlockingGaps]);
+  if (blockingGaps.length > 0) return null;
+  const contractSeed = {
+    source: 'runtime_adapter_stage_events',
+    sourceFacetHash,
+    boundaryLineHashes,
+    stageEvidenceRefs: contractEvidenceRefs,
+  };
+  const derivedContractHash = sha256Text(stableJson(contractSeed));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_app_hook_contract.v1',
+    declared: true,
+    required: true,
+    proofAuthority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+    proof_authority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+    source: 'runtime_adapter_stage_events',
+    contractSource: 'runtime_adapter_stage_events',
+    contract_source: 'runtime_adapter_stage_events',
+    derivedFromRuntimeAdapterStageEvents: true,
+    derived_from_runtime_adapter_stage_events: true,
+    sourceFacetHash,
+    source_facet_hash: sourceFacetHash,
+    sourceBoundaryLineHashes: boundaryLineHashes,
+    source_boundary_line_hashes: boundaryLineHashes,
+    derivedContractHash,
+    derived_contract_hash: derivedContractHash,
+    requiredStages: REAL_ROCM_APP_HOOK_STAGES.map((stage) => stage.snake),
+    required_stages: REAL_ROCM_APP_HOOK_STAGES.map((stage) => stage.snake),
+    stages: stageMap,
+    artifactTransport: stageMap.artifactTransport,
+    artifact_transport: stageMap.artifactTransport,
+    epochPublication: stageMap.epochPublication,
+    epoch_publication: stageMap.epochPublication,
+    dispatchTrace: stageMap.dispatchTrace,
+    dispatch_trace: stageMap.dispatchTrace,
+    hostIdentity: stageMap.hostIdentity,
+    host_identity: stageMap.hostIdentity,
+    outputOracle: stageMap.outputOracle,
+    output_oracle: stageMap.outputOracle,
+  };
+}
+
 function runtimeProfileAdapterAppHookContract(result = {}) {
   const candidate = result.appHookContract
     ?? result.app_hook_contract
@@ -14822,6 +14961,28 @@ function realRocmAppHookContractFacet({
   const contract = appHookContract && typeof appHookContract === 'object'
     ? appHookContract
     : normalizeRealRocmAppHookContract(null);
+  const contractSource = firstRuntimeText(
+    contract.contractSource,
+    contract.contract_source,
+    contract.source,
+  );
+  const derivedFromRuntimeAdapterStageEvents =
+    contract.derivedFromRuntimeAdapterStageEvents === true
+    || contract.derived_from_runtime_adapter_stage_events === true
+    || contractSource === 'runtime_adapter_stage_events';
+  const sourceFacetHash = firstRuntimeText(contract.sourceFacetHash, contract.source_facet_hash);
+  const derivedContractHash = firstRuntimeText(
+    contract.derivedContractHash,
+    contract.derived_contract_hash,
+  );
+  const sourceBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(contract.sourceBoundaryLineHashes)
+      ? contract.sourceBoundaryLineHashes
+      : []),
+    ...(Array.isArray(contract.source_boundary_line_hashes)
+      ? contract.source_boundary_line_hashes
+      : []),
+  ]);
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
   const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
@@ -14964,6 +15125,16 @@ function realRocmAppHookContractFacet({
     can_satisfy_dispatch_proof: canSatisfyRuntimeProof,
     nativeLaunchBoundaryObserved: nativeObserved,
     native_launch_boundary_observed: nativeObserved,
+    contractSource: contractSource ?? null,
+    contract_source: contractSource ?? null,
+    derivedFromRuntimeAdapterStageEvents,
+    derived_from_runtime_adapter_stage_events: derivedFromRuntimeAdapterStageEvents,
+    sourceFacetHash: sourceFacetHash ?? null,
+    source_facet_hash: sourceFacetHash ?? null,
+    sourceBoundaryLineHashes,
+    source_boundary_line_hashes: sourceBoundaryLineHashes,
+    derivedContractHash: derivedContractHash ?? null,
+    derived_contract_hash: derivedContractHash ?? null,
     profileRequiresAppHookContract,
     profile_requires_app_hook_contract: profileRequiresAppHookContract,
     requiredReasons,
@@ -18871,6 +19042,50 @@ async function selfCheckRuntimeDispatchEvidence() {
         stageKeys: Object.keys(completeAdapterStageEvents.stageResults ?? {}),
       })}`);
     }
+    const derivedAdapterStageAppHookContract =
+      deriveRealRocmAppHookContractFromRuntimeAdapterStageEvents(completeAdapterStageEvents);
+    const derivedAdapterStageAvailableRefs = availableRealRocmEvidenceRefs({
+      runtimeDispatch: completeAdapterStageRuntimeDispatch,
+      runtimeArtifactTransport: completeAdapterStageRuntimeArtifactTransport,
+      runtimeEpochSwap: completeAdapterStageRuntimeEpochSwap,
+      runtimeOutputOracle: completeAdapterStageRuntimeOutputOracle,
+      runtimeHostPreservation: completeAdapterStageRuntimeHostPreservation,
+      runtimeAdapterStageEvents: completeAdapterStageEvents,
+    });
+    const derivedAdapterStageAppHookFacet = realRocmAppHookContractFacet({
+      appHookContract: derivedAdapterStageAppHookContract,
+      profileProofObligations: {
+        requiresAppHookContract: true,
+        requires_app_hook_contract: true,
+      },
+      runtimeDispatch: completeAdapterStageRuntimeDispatch,
+      runtimeArtifactTransport: completeAdapterStageRuntimeArtifactTransport,
+      runtimeEpochSwap: completeAdapterStageRuntimeEpochSwap,
+      runtimeOutputOracle: completeAdapterStageRuntimeOutputOracle,
+      runtimeHostPreservation: completeAdapterStageRuntimeHostPreservation,
+      fullRuntimeProof: { fullRuntimeProven: true },
+      availableEvidenceRefs: derivedAdapterStageAvailableRefs,
+    });
+    if (
+      !derivedAdapterStageAppHookContract
+      || derivedAdapterStageAppHookContract.declared !== true
+      || derivedAdapterStageAppHookContract.contractSource !== 'runtime_adapter_stage_events'
+      || derivedAdapterStageAppHookContract.proofAuthority
+        !== 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success'
+      || derivedAdapterStageAppHookContract.sourceFacetHash !== completeAdapterStageEvents.facetHash
+      || derivedAdapterStageAppHookContract.stages.outputOracle.evidenceRefs.length === 0
+      || derivedAdapterStageAppHookFacet.canSatisfyRuntimeProof !== true
+      || derivedAdapterStageAppHookFacet.contractEvidenceComplete !== true
+      || derivedAdapterStageAppHookFacet.runtimeObservationComplete !== true
+      || derivedAdapterStageAppHookFacet.derivedFromRuntimeAdapterStageEvents !== true
+      || derivedAdapterStageAppHookFacet.sourceFacetHash !== completeAdapterStageEvents.facetHash
+      || derivedAdapterStageAppHookFacet.blockingGaps.length !== 0
+    ) {
+      throw new Error(`runtime adapter stage-events app-hook derivation self-check failed ${stableJson({
+        contract: derivedAdapterStageAppHookContract,
+        facet: derivedAdapterStageAppHookFacet,
+      })}`);
+    }
     const completeAdapterTargetEnvironment = {
       schemaVersion: 'synthi.real_rocm.runtime_boundary_target_environment.v1',
       proofAuthority: 'target_environment_exposure_only_not_gpu_hmr_success',
@@ -19017,6 +19232,7 @@ async function selfCheckRuntimeDispatchEvidence() {
       || !missingOutputAdapterStageEvents.stageResults.output_oracle?.missingProofKinds.includes(
         'after_dispatch_id',
       )
+      || deriveRealRocmAppHookContractFromRuntimeAdapterStageEvents(missingOutputAdapterStageEvents) !== null
     ) {
       throw new Error('runtime adapter stage-events self-check accepted missing output oracle stage');
     }
@@ -24207,10 +24423,12 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     report.real_rocm_runtime_profile_adapter_result?.adapter_app_hook_contract
     ?? report.real_rocm_runtime_profile_adapter_result?.adapterAppHookContract
     ?? null;
+  const derivedAdapterStageAppHookContract =
+    deriveRealRocmAppHookContractFromRuntimeAdapterStageEvents(runtimeAdapterStageEvents);
   const effectiveAppHookContract =
     CFG.appHookContract?.declared === true
       ? CFG.appHookContract
-      : adapterAppHookContract ?? CFG.appHookContract;
+      : adapterAppHookContract ?? derivedAdapterStageAppHookContract ?? CFG.appHookContract;
   report.evidence.real_rocm_effective_app_hook_contract_source = {
     schemaVersion: 'synthi.real_rocm.effective_app_hook_contract_source.v1',
     schema_version: 'synthi.real_rocm.effective_app_hook_contract_source.v1',
@@ -24218,9 +24436,23 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       ? CFG.appHookContractSource
       : adapterAppHookContract
         ? 'runtime_profile_adapter_result'
+        : derivedAdapterStageAppHookContract
+          ? 'runtime_adapter_stage_events'
         : 'none',
     adapterContractUsed: CFG.appHookContract?.declared !== true && Boolean(adapterAppHookContract),
     adapter_contract_used: CFG.appHookContract?.declared !== true && Boolean(adapterAppHookContract),
+    runtimeAdapterStageEventsContractUsed:
+      CFG.appHookContract?.declared !== true
+      && !adapterAppHookContract
+      && Boolean(derivedAdapterStageAppHookContract),
+    runtime_adapter_stage_events_contract_used:
+      CFG.appHookContract?.declared !== true
+      && !adapterAppHookContract
+      && Boolean(derivedAdapterStageAppHookContract),
+    derivedContractHash: derivedAdapterStageAppHookContract?.derivedContractHash ?? null,
+    derived_contract_hash: derivedAdapterStageAppHookContract?.derived_contract_hash ?? null,
+    sourceFacetHash: derivedAdapterStageAppHookContract?.sourceFacetHash ?? null,
+    source_facet_hash: derivedAdapterStageAppHookContract?.source_facet_hash ?? null,
     proofAuthority: 'contract_source_selection_not_gpu_hmr_success',
     proof_authority: 'contract_source_selection_not_gpu_hmr_success',
   };

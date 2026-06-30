@@ -5597,15 +5597,38 @@ function realRocmAppHookContractGate({
   nativeRocmLaunchBoundary = {},
   realRocmRuntimeEligibility = {},
   realRocmAppHookContract = {},
+  realRocmRuntimeAdapterStageEvents = {},
   realRocmProfileProofObligations = {},
   realRocmProfile = {},
 } = {}) {
   const contract = compactObject(realRocmAppHookContract);
+  const stageEvents = compactObject(realRocmRuntimeAdapterStageEvents);
   const profile = compactObject(realRocmProfile);
   const profileProofObligations = compactObject(realRocmProfileProofObligations);
   const facetPresent = Object.keys(contract).length > 0;
   const profileAppHookContract = compactObject(profile.appHookContract ?? profile.app_hook_contract);
   const schemaVersion = firstText(contract.schemaVersion, contract.schema_version, contract.schema);
+  const contractSource = firstText(
+    contract.contractSource,
+    contract.contract_source,
+    contract.source,
+  );
+  const derivedFromRuntimeAdapterStageEvents =
+    contract.derivedFromRuntimeAdapterStageEvents === true
+    || contract.derived_from_runtime_adapter_stage_events === true
+    || contractSource === 'runtime_adapter_stage_events';
+  const sourceFacetHash = normalizeSha256(firstText(
+    contract.sourceFacetHash,
+    contract.source_facet_hash,
+  ));
+  const sourceBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(contract.sourceBoundaryLineHashes)
+      ? contract.sourceBoundaryLineHashes
+      : []),
+    ...(Array.isArray(contract.source_boundary_line_hashes)
+      ? contract.source_boundary_line_hashes
+      : []),
+  ]).map(normalizeSha256).filter(Boolean);
   const stageResults = compactObject(
     contract.stageResults
     ?? contract.stage_results
@@ -5670,6 +5693,56 @@ function realRocmAppHookContractGate({
     }];
   }));
   const stageFailedGaps = Object.values(stageChecks).flatMap((stage) => stage.failedGaps);
+  const derivedContractFromStageEvents =
+    derivedFromRuntimeAdapterStageEvents
+      ? realRocmDerivedAppHookContractFromStageEvents(stageEvents)
+      : {};
+  const expectedDerivedContractHash = firstText(
+    derivedContractFromStageEvents.contractHash,
+    derivedContractFromStageEvents.contract_hash,
+  );
+  const expectedSourceFacetHash = normalizeSha256(firstText(
+    derivedContractFromStageEvents.sourceFacetHash,
+    derivedContractFromStageEvents.source_facet_hash,
+  ));
+  const expectedSourceBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(derivedContractFromStageEvents.sourceBoundaryLineHashes)
+      ? derivedContractFromStageEvents.sourceBoundaryLineHashes
+      : []),
+    ...(Array.isArray(derivedContractFromStageEvents.source_boundary_line_hashes)
+      ? derivedContractFromStageEvents.source_boundary_line_hashes
+      : []),
+  ]).map(normalizeSha256).filter(Boolean);
+  const derivedSourceFailedGaps = derivedFromRuntimeAdapterStageEvents
+    ? compactStringList([
+      stageEvents.present === true
+        ? null
+        : 'real_rocm_app_hook_contract_derived_stage_events_missing',
+      stageEvents.accepted === true
+        ? null
+        : 'real_rocm_app_hook_contract_derived_stage_events_not_accepted',
+      stageEvents.complete === true
+        ? null
+        : 'real_rocm_app_hook_contract_derived_stage_events_incomplete',
+      stageEvents.acceptedAsSupportEvidence === true
+      || stageEvents.accepted_as_support_evidence === true
+        ? null
+        : 'real_rocm_app_hook_contract_derived_stage_events_support_missing',
+      expectedDerivedContractHash
+        ? null
+        : 'real_rocm_app_hook_contract_derived_stage_events_unusable',
+      sourceFacetHash && expectedSourceFacetHash && sourceFacetHash === expectedSourceFacetHash
+        ? null
+        : 'real_rocm_app_hook_contract_derived_source_facet_hash_mismatch',
+      contractHash && expectedDerivedContractHash && contractHash === expectedDerivedContractHash
+        ? null
+        : 'real_rocm_app_hook_contract_derived_contract_hash_mismatch',
+      sourceBoundaryLineHashes.length === expectedSourceBoundaryLineHashes.length
+      && sourceBoundaryLineHashes.every((hash) => expectedSourceBoundaryLineHashes.includes(hash))
+        ? null
+        : 'real_rocm_app_hook_contract_derived_boundary_hash_mismatch',
+    ])
+    : [];
   const required =
     nativeBoundaryRequiresAppHook
     || nativeBoundaryRequiresRealRocmAppHook({
@@ -5719,6 +5792,7 @@ function realRocmAppHookContractGate({
       ? 'real_rocm_app_hook_contract_blocking_gaps_present'
       : null,
     ...stageFailedGaps,
+    ...derivedSourceFailedGaps,
   ]);
   const proven =
     facetPresent
@@ -5735,6 +5809,18 @@ function realRocmAppHookContractGate({
     missing: required && !facetPresent,
     schemaVersion,
     schema_version: schemaVersion,
+    contractSource,
+    contract_source: contractSource,
+    derivedFromRuntimeAdapterStageEvents,
+    derived_from_runtime_adapter_stage_events: derivedFromRuntimeAdapterStageEvents,
+    sourceFacetHash,
+    source_facet_hash: sourceFacetHash,
+    expectedSourceFacetHash,
+    expected_source_facet_hash: expectedSourceFacetHash,
+    expectedDerivedContractHash,
+    expected_derived_contract_hash: expectedDerivedContractHash,
+    derivedSourceFailedGaps,
+    derived_source_failed_gaps: derivedSourceFailedGaps,
     stageChecks,
     stage_checks: stageChecks,
     semanticFailedGaps,
@@ -7394,6 +7480,7 @@ function realRocmRuntimeAdapterStageEventsFacet(input = {}) {
     facet.acceptedAsSupportEvidence,
     facet.accepted_as_support_evidence,
   );
+  const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
   const serializedComplete = firstBool(facet.complete);
   const boundaryLineHashes = compactStringList([
     ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
@@ -7559,6 +7646,8 @@ function realRocmRuntimeAdapterStageEventsFacet(input = {}) {
     schema_version: schemaVersion,
     proofAuthority,
     proof_authority: proofAuthority,
+    facetHash,
+    facet_hash: facetHash,
     boundaryLineCount,
     boundary_line_count: boundaryLineCount,
     boundaryLineHashes,
@@ -7573,6 +7662,169 @@ function realRocmRuntimeAdapterStageEventsFacet(input = {}) {
     stage_results: stageResults,
     evidenceRefs,
     evidence_refs: evidenceRefs,
+  };
+}
+
+function realRocmAppHookStageCamel(stageName) {
+  return stageName.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
+function realRocmDerivedAppHookContractFromStageEvents(stageEvents = {}) {
+  const facet = compactObject(stageEvents);
+  if (facet.present !== true) return {};
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const sourceFacetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
+  const sourceBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
+    ...(Array.isArray(facet.boundary_line_hashes) ? facet.boundary_line_hashes : []),
+  ]).map(normalizeSha256).filter(Boolean);
+  const rawStageResults = compactObject(facet.stageResults ?? facet.stage_results);
+  const blockingGaps = compactStringList([
+    schemaVersion === REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION
+      ? null
+      : 'runtime_adapter_stage_events_schema_mismatch',
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY
+      ? null
+      : 'runtime_adapter_stage_events_authority_mismatch',
+    facet.accepted === true ? null : 'runtime_adapter_stage_events_not_accepted',
+    facet.complete === true ? null : 'runtime_adapter_stage_events_not_complete',
+    facet.acceptedAsSupportEvidence === true
+    || facet.accepted_as_support_evidence === true
+      ? null
+      : 'runtime_adapter_stage_events_not_accepted_as_support',
+    facet.acceptedForGpuHmr === true || facet.accepted_for_gpu_hmr === true
+      ? 'runtime_adapter_stage_events_claimed_gpu_hmr_acceptance'
+      : null,
+    facet.gpuHmrSuccess === true || facet.gpu_hmr_success === true
+      ? 'runtime_adapter_stage_events_claimed_gpu_hmr_success'
+      : null,
+    facet.canSatisfyRuntimeProof === true || facet.can_satisfy_runtime_proof === true
+      ? 'runtime_adapter_stage_events_claimed_runtime_authority'
+      : null,
+    facet.canSatisfyDispatchProof === true || facet.can_satisfy_dispatch_proof === true
+      ? 'runtime_adapter_stage_events_claimed_dispatch_authority'
+      : null,
+    sourceFacetHash ? null : 'runtime_adapter_stage_events_facet_hash_missing',
+    sourceBoundaryLineHashes.length > 0
+      ? null
+      : 'runtime_adapter_stage_events_boundary_hashes_missing',
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const stageResults = {};
+  const stageEvidenceRefs = [];
+  const stageHashSeed = {};
+  for (const stageName of REAL_ROCM_APP_HOOK_REQUIRED_STAGES) {
+    const camelStage = realRocmAppHookStageCamel(stageName);
+    const rawStage = compactObject(rawStageResults[stageName] ?? rawStageResults[camelStage]);
+    const observed = firstBool(
+      rawStage.observed,
+      rawStage.runtimeObserved,
+      rawStage.runtime_observed,
+    ) === true;
+    const evidenceRefs = compactStringList([
+      ...(Array.isArray(rawStage.evidenceRefs) ? rawStage.evidenceRefs : []),
+      ...(Array.isArray(rawStage.evidence_refs) ? rawStage.evidence_refs : []),
+    ]);
+    const boundaryLineHashes = compactStringList([
+      ...(Array.isArray(rawStage.boundaryLineHashes) ? rawStage.boundaryLineHashes : []),
+      ...(Array.isArray(rawStage.boundary_line_hashes) ? rawStage.boundary_line_hashes : []),
+    ]).map(normalizeSha256).filter(Boolean);
+    const missingProofKinds = compactStringList([
+      ...(Array.isArray(rawStage.missingProofKinds) ? rawStage.missingProofKinds : []),
+      ...(Array.isArray(rawStage.missing_proof_kinds) ? rawStage.missing_proof_kinds : []),
+    ]);
+    if (!observed) blockingGaps.push(`app_hook_derived_stage_${stageName}_not_observed`);
+    if (evidenceRefs.length === 0) {
+      blockingGaps.push(`app_hook_derived_stage_${stageName}_evidence_refs_missing`);
+    }
+    if (boundaryLineHashes.length === 0) {
+      blockingGaps.push(`app_hook_derived_stage_${stageName}_boundary_hash_missing`);
+    }
+    for (const proofKind of missingProofKinds) {
+      blockingGaps.push(`app_hook_derived_stage_${stageName}_${proofKind}_missing`);
+    }
+    const result = {
+      stage: stageName,
+      declared: true,
+      required: true,
+      contractEvidencePresent: true,
+      contract_evidence_present: true,
+      runtimeObserved: true,
+      runtime_observed: true,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+      unresolvedEvidenceRefs: [],
+      unresolved_evidence_refs: [],
+      status: 'derived_from_runtime_adapter_stage_events',
+      proofAuthority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+      proof_authority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+      source: 'runtime_adapter_stage_events',
+      sourceStage: stageName,
+      source_stage: stageName,
+      sourceFacetHash,
+      source_facet_hash: sourceFacetHash,
+      boundaryLineHashes,
+      boundary_line_hashes: boundaryLineHashes,
+    };
+    stageResults[stageName] = result;
+    stageResults[camelStage] = result;
+    stageEvidenceRefs.push(...evidenceRefs);
+    stageHashSeed[stageName] = {
+      evidenceRefs,
+      boundaryLineHashes,
+    };
+  }
+  if (blockingGaps.length > 0) return {};
+  const contractHash = `sha256:${sha256Hex(stableJson({
+    source: 'runtime_adapter_stage_events',
+    sourceFacetHash,
+    sourceBoundaryLineHashes,
+    stages: stageHashSeed,
+  }))}`;
+  const evidenceRefs = compactStringList([
+    sourceFacetHash,
+    ...sourceBoundaryLineHashes,
+    ...stageEvidenceRefs,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
+    schema_version: 'synthi.gpu_hmr.real_rocm_app_hook_contract_facet.v1',
+    declared: true,
+    required: true,
+    status: 'runtime_adapter_stage_events_derived_app_hook_contract',
+    proofAuthority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+    proof_authority: 'runtime_adapter_stage_events_derived_contract_not_gpu_hmr_success',
+    contractSource: 'runtime_adapter_stage_events',
+    contract_source: 'runtime_adapter_stage_events',
+    source: 'runtime_adapter_stage_events',
+    derivedFromRuntimeAdapterStageEvents: true,
+    derived_from_runtime_adapter_stage_events: true,
+    sourceFacetHash,
+    source_facet_hash: sourceFacetHash,
+    sourceBoundaryLineHashes,
+    source_boundary_line_hashes: sourceBoundaryLineHashes,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+    nativeLaunchBoundaryObserved: true,
+    native_launch_boundary_observed: true,
+    contractEvidenceComplete: true,
+    contract_evidence_complete: true,
+    runtimeObservationComplete: true,
+    runtime_observation_complete: true,
+    stageResults,
+    stage_results: stageResults,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash,
+    contract_hash: contractHash,
   };
 }
 
@@ -9381,6 +9633,12 @@ function rowSafetyFailures(row, context = {}) {
         ?? row.real_rocm_app_hook_contract
         ?? row.appHookContract
         ?? row.app_hook_contract,
+      ),
+      realRocmRuntimeAdapterStageEvents: compactObject(
+        row.realRocmRuntimeAdapterStageEvents
+        ?? row.real_rocm_runtime_adapter_stage_events
+        ?? row.runtimeAdapterStageEvents
+        ?? row.runtime_adapter_stage_events,
       ),
       realRocmProfileProofObligations: compactObject(
         row.realRocmProfileProofObligations
@@ -15557,7 +15815,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.source_delta_execution
     ?? runtimeProofArtifact.sourceDeltaExecution,
   ));
-  const realRocmAppHookContract = compactObject(
+  const serializedRealRocmAppHookContract = compactObject(
     json.real_rocm_app_hook_contract
     ?? json.realRocmAppHookContract
     ?? json.app_hook_contract
@@ -15571,6 +15829,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.app_hook_contract
     ?? runtimeProofArtifact.appHookContract,
   );
+  const derivedRealRocmAppHookContract =
+    realRocmDerivedAppHookContractFromStageEvents(realRocmRuntimeAdapterStageEvents);
+  const realRocmAppHookContract =
+    Object.keys(serializedRealRocmAppHookContract).length > 0
+      ? serializedRealRocmAppHookContract
+      : derivedRealRocmAppHookContract;
   const realRocmSameProcessRuntimeOracle = compactObject(
     json.real_rocm_same_process_runtime_oracle
     ?? json.realRocmSameProcessRuntimeOracle
@@ -16166,6 +16430,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const appHookContractGate = realRocmAppHookContractGate({
     nativeBoundaryRequiresAppHook,
     realRocmAppHookContract,
+    realRocmRuntimeAdapterStageEvents,
     realRocmProfileProofObligations,
     realRocmProfile: profile,
   });

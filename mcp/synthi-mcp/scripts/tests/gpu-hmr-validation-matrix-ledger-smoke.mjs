@@ -14653,6 +14653,132 @@ assert.equal(
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
 
+const derivedAdapterBoundaryBridgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-derived-app-hook',
+);
+await fs.mkdir(derivedAdapterBoundaryBridgeDir, { recursive: true });
+const derivedAdapterBoundaryBridgeReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+derivedAdapterBoundaryBridgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-derived-app-hook-20260630';
+delete derivedAdapterBoundaryBridgeReport.real_rocm_app_hook_contract;
+delete derivedAdapterBoundaryBridgeReport.realRocmAppHookContract;
+delete derivedAdapterBoundaryBridgeReport.app_hook_contract;
+delete derivedAdapterBoundaryBridgeReport.appHookContract;
+delete derivedAdapterBoundaryBridgeReport.runtime_proof_artifact.realRocmAppHookContract;
+delete derivedAdapterBoundaryBridgeReport.runtime_proof_artifact.real_rocm_app_hook_contract;
+delete derivedAdapterBoundaryBridgeReport.runtime_proof_artifact.appHookContract;
+delete derivedAdapterBoundaryBridgeReport.runtime_proof_artifact.app_hook_contract;
+await writeJson(
+  path.join(
+    derivedAdapterBoundaryBridgeDir,
+    'real-rocm-adapter-boundary-derived-app-hook.json',
+  ),
+  derivedAdapterBoundaryBridgeReport,
+);
+const derivedAdapterBoundaryBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [derivedAdapterBoundaryBridgeDir],
+  generatedAt: '2026-06-30T00:00:02.264Z',
+  includeUnproven: true,
+});
+const derivedAdapterBoundaryBridgeRow = derivedAdapterBoundaryBridgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(derivedAdapterBoundaryBridgeRow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(derivedAdapterBoundaryBridgeRow.acceptedForGpuHmr, true);
+assert.equal(derivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
+assert.equal(derivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate.proven, true);
+assert.equal(
+  derivedAdapterBoundaryBridgeRow.realRocmAppHookContract.contractSource,
+  'runtime_adapter_stage_events',
+);
+assert.equal(
+  derivedAdapterBoundaryBridgeRow.realRocmAppHookContract.derivedFromRuntimeAdapterStageEvents,
+  true,
+);
+assert.equal(
+  derivedAdapterBoundaryBridgeRow.realRocmAppHookContract.sourceFacetHash,
+  derivedAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.facetHash,
+);
+assert.equal(
+  derivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate
+    .derivedFromRuntimeAdapterStageEvents,
+  true,
+);
+assert.deepEqual(
+  derivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate.derivedSourceFailedGaps,
+  [],
+);
+assert.equal(derivedAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
+assert.equal(derivedAdapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, true);
+
+const forgedDerivedAdapterBoundaryBridgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-forged-derived-app-hook',
+);
+await fs.mkdir(forgedDerivedAdapterBoundaryBridgeDir, { recursive: true });
+const forgedDerivedAdapterBoundaryBridgeReport =
+  JSON.parse(JSON.stringify(derivedAdapterBoundaryBridgeReport));
+const forgedDerivedAppHookContract =
+  JSON.parse(JSON.stringify(derivedAdapterBoundaryBridgeRow.realRocmAppHookContract));
+forgedDerivedAdapterBoundaryBridgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-forged-derived-app-hook-20260630';
+forgedDerivedAdapterBoundaryBridgeReport.real_rocm_app_hook_contract =
+  forgedDerivedAppHookContract;
+forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact.realRocmAppHookContract =
+  forgedDerivedAppHookContract;
+forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact.real_rocm_app_hook_contract =
+  forgedDerivedAppHookContract;
+delete forgedDerivedAdapterBoundaryBridgeReport.real_rocm_runtime_adapter_stage_events;
+delete forgedDerivedAdapterBoundaryBridgeReport.realRocmRuntimeAdapterStageEvents;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtime_adapter_stage_events;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtimeAdapterStageEvents;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .realRocmRuntimeAdapterStageEvents;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .real_rocm_runtime_adapter_stage_events;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .runtimeAdapterStageEvents;
+delete forgedDerivedAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .runtime_adapter_stage_events;
+await writeJson(
+  path.join(
+    forgedDerivedAdapterBoundaryBridgeDir,
+    'real-rocm-adapter-boundary-forged-derived-app-hook.json',
+  ),
+  forgedDerivedAdapterBoundaryBridgeReport,
+);
+const forgedDerivedAdapterBoundaryBridgeLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedDerivedAdapterBoundaryBridgeDir],
+    generatedAt: '2026-06-30T00:00:02.265Z',
+    includeUnproven: true,
+  });
+const forgedDerivedAdapterBoundaryBridgeRow =
+  forgedDerivedAdapterBoundaryBridgeLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(forgedDerivedAdapterBoundaryBridgeRow?.matrixOutcome, 'unproven');
+assert.equal(forgedDerivedAdapterBoundaryBridgeRow.acceptedForGpuHmr, false);
+assert.equal(forgedDerivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate.required, true);
+assert.equal(forgedDerivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate.proven, false);
+assert.ok(
+  forgedDerivedAdapterBoundaryBridgeRow.realRocmAppHookContractGate
+    .derivedSourceFailedGaps.includes(
+      'real_rocm_app_hook_contract_derived_stage_events_missing',
+    ),
+);
+assert.ok(
+  forgedDerivedAdapterBoundaryBridgeRow.reasons.includes(
+    'real_rocm_app_hook_contract_derived_stage_events_missing',
+  ),
+);
+
 const adapterBoundaryOnlyBridgeDir = path.join(
   logsRoot,
   'real-rocm-adapter-boundary-only-bridge-complete',
