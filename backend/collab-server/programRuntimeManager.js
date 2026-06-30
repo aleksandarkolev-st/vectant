@@ -313,6 +313,18 @@ function createProgramRuntimeManager(options = {}) {
     }
   }
 
+  function finalizeRuntimeQuarantine(record, reason) {
+    const finalize = record?.runtime?.finalizeCodeSiteQuarantine;
+    if (typeof finalize !== 'function') return;
+    Promise.resolve(finalize({ reason, sessionId: record.sessionId })).catch((error) => {
+      logger.warn('codesite_runtime_quarantine_finalize_failed', {
+        sessionId: record.sessionId,
+        reason,
+        error: error?.message || String(error),
+      });
+    });
+  }
+
   function scheduleManagedIdleTimer(sessionId) {
     const idleTimer = setTimeoutFn(async () => {
       const record = managedSessions.get(sessionId);
@@ -369,6 +381,7 @@ function createProgramRuntimeManager(options = {}) {
     clearManagedIdleTimer(record);
     clearManagedHealthTimer(record);
     disposeManagedRuntimeListeners(record);
+    finalizeRuntimeQuarantine(record, 'process_exit');
     record.runtime = null;
     record.exitCode = exitCode;
     record.lastActivityAt = now();
@@ -654,8 +667,17 @@ function createProgramRuntimeManager(options = {}) {
     record.stopReason = reason;
     record.lastActivityAt = now();
 
-    try { runtime?.stop?.(); } catch (_) {}
+    try { await Promise.resolve(runtime?.stop?.()); } catch (_) {}
     try { runtime?.ptyProcess?.kill?.(); } catch (_) {}
+    if (typeof runtime?.finalizeCodeSiteQuarantine === 'function') {
+      await Promise.resolve(runtime.finalizeCodeSiteQuarantine({ reason, sessionId })).catch((error) => {
+        logger.warn('codesite_runtime_quarantine_finalize_failed', {
+          sessionId,
+          reason,
+          error: error?.message || String(error),
+        });
+      });
+    }
 
     appendManagedSessionEvent(record, 'state_changed', {
       state: record.state,

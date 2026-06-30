@@ -381,6 +381,54 @@ test('restartManagedSession relaunches the runtime and stopManagedSession kills 
   assert.equal(stopped.stopReason, 'user_stop');
 });
 
+test('managed CodeSite runtime finalizes quarantine on process exit and explicit stop', async () => {
+  const timers = createTimerHarness();
+  const finalizeCalls = [];
+  const runtime = createManagedRuntimeHandle();
+  runtime.finalizeCodeSiteQuarantine = async (payload) => {
+    finalizeCalls.push(payload);
+  };
+  const runtimeManager = createProgramRuntimeManager({
+    activeSessions: new Map(),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    launchRuntime: async () => runtime,
+    logger: { warn() {} },
+  });
+
+  await runtimeManager.launchManagedSession({
+    sessionId: 'ps-codesite',
+    workspaceSlug: 'team',
+    userId: 'u1',
+    command: 'npm run dev',
+  });
+  runtime.emitExit({ exitCode: 0 });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(finalizeCalls[0].reason, 'process_exit');
+  assert.equal(finalizeCalls[0].sessionId, 'ps-codesite');
+
+  const runtime2 = createManagedRuntimeHandle();
+  runtime2.finalizeCodeSiteQuarantine = async (payload) => {
+    finalizeCalls.push(payload);
+  };
+  const runtimeManager2 = createProgramRuntimeManager({
+    activeSessions: new Map(),
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    launchRuntime: async () => runtime2,
+    logger: { warn() {} },
+  });
+  await runtimeManager2.launchManagedSession({
+    sessionId: 'ps-codesite-stop',
+    workspaceSlug: 'team',
+    userId: 'u1',
+    command: 'npm run dev',
+  });
+  await runtimeManager2.stopManagedSession('ps-codesite-stop', { reason: 'user_stop' });
+  assert.equal(finalizeCalls[1].reason, 'user_stop');
+  assert.equal(finalizeCalls[1].sessionId, 'ps-codesite-stop');
+});
+
 test('idle culls inactive managed sessions and runtime exits mark crashes', async () => {
   let nowMs = 30_000;
   const activeSessions = new Map();

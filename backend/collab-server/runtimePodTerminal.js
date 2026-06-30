@@ -1,7 +1,6 @@
 'use strict';
 
 const { PassThrough } = require('stream');
-const k8s = require('@kubernetes/client-node');
 const spawner = require('./spawner');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
 const { persistentRuntimeShellSetup } = require('./runtimePersistence');
@@ -75,7 +74,9 @@ function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
 function codeSiteProgramRuntimeLaunchMode({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid } = {}) {
   if (!codeSiteContext?.active) return 'normal';
   const { target } = programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid });
-  return target === 'headless' ? 'quarantine' : 'block-runtime';
+  if (target === 'headless') return 'quarantine';
+  if (target === 'hybrid') return 'quarantine-runtime';
+  return 'block-runtime';
 }
 
 /**
@@ -91,10 +92,22 @@ function pickRuntimeScopeForSlug(sessions, slug) {
 }
 
 function kubeConfig() {
+  const k8s = requireKubernetesClient();
   const kc = new k8s.KubeConfig();
   if (process.env.KUBERNETES_SERVICE_HOST) kc.loadFromCluster();
   else kc.loadFromDefault();
   return kc;
+}
+
+function requireKubernetesClient() {
+  try {
+    return require('@kubernetes/client-node');
+  } catch (error) {
+    const wrapped = new Error('kubernetes_client_unavailable');
+    wrapped.cause = error;
+    wrapped.code = 'KUBERNETES_CLIENT_UNAVAILABLE';
+    throw wrapped;
+  }
 }
 
 class RuntimePodPty {
@@ -223,6 +236,7 @@ async function createRuntimePodPty({
   const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
   const stderr = new PassThrough();
   const stdin = new PassThrough();
+  const k8s = requireKubernetesClient();
   const exec = new k8s.Exec(kubeConfig());
   const ws = await exec.exec(
     NAMESPACE,
@@ -272,6 +286,7 @@ async function createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, co
   const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
   const stderr = new PassThrough();
   const stdin = new PassThrough();
+  const k8s = requireKubernetesClient();
   const exec = new k8s.Exec(kubeConfig());
   const ws = await exec.exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', script], stdout, stderr, stdin, true, () => {});
   return {
@@ -309,6 +324,7 @@ async function runtimeRunOnce(runtimeScope, argv) {
   const stderr = new PassThrough();
   let buf = '';
   stdout.on('data', (chunk) => { buf += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); });
+  const k8s = requireKubernetesClient();
   const exec = new k8s.Exec(kubeConfig());
   return await new Promise((resolve) => {
     let settled = false;
@@ -361,6 +377,7 @@ async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000, env =
   stdoutStream.on('data', (c) => { if (stdout.length < MAX_OUT) stdout += Buffer.isBuffer(c) ? c.toString('utf8') : String(c); });
   stderrStream.on('data', (c) => { if (stderr.length < MAX_OUT) stderr += Buffer.isBuffer(c) ? c.toString('utf8') : String(c); });
 
+  const k8s = requireKubernetesClient();
   const exec = new k8s.Exec(kubeConfig());
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 60000);
   const script = buildRuntimeShellScript({

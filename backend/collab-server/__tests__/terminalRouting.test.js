@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalService');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalRouting');
 const {
   runtimeTerminalTarget,
   programRuntimeTarget,
@@ -31,6 +31,12 @@ test('CodeSite terminal launch mode quarantines local shells and blocks runtime-
     codeSiteContext: { active: true },
     workspaceSlug: 'repo',
   }), 'quarantine');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    usesRuntimePodTerminal: true,
+    workspaceSlug: 'repo',
+  }), 'block-runtime');
 
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
@@ -69,7 +75,7 @@ test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
 });
 
-test('CodeSite program runtime mode permits headless quarantine and blocks container targets', () => {
+test('CodeSite program runtime mode permits headless quarantine, hybrid quarantine, and blocks unenforced runtimes', () => {
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: null,
     runtimeType: 'container',
@@ -87,7 +93,7 @@ test('CodeSite program runtime mode permits headless quarantine and blocks conta
     runtimeType: 'container',
     sysboxEnabled: false,
     hasHybrid: true,
-  }), 'block-runtime');
+  }), 'quarantine-runtime');
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: { active: true },
     runtimeType: 'container',

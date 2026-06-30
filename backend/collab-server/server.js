@@ -8,7 +8,7 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
-const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells, resolveWorkspaceCwd } = require('./terminalService');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
@@ -222,12 +222,50 @@ const managedProgramRuntime = createProgramRuntimeManager({
       return createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env });
     }
     if (target === 'hybrid') {
-      await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
-      // The rootless dockerd inside the runtime container takes ~15-25s to be
-      // ready; wait for it so the program's first `docker ...` command doesn't
-      // race a not-yet-listening daemon.
-      await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
-      return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+      let codeSiteQuarantine = null;
+      let runtimeOptions = {};
+      try {
+        if (codesiteContext?.active) {
+          await ensureRuntimeFilesystem({
+            workspaceSlug,
+            filesystemUserId: userId,
+            runtimeScope: '',
+            reason: 'program_runtime_hybrid',
+          });
+          const cwd = await resolveWorkspaceCwd(workspaceSlug, userId);
+          codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codesiteContext, cwd, {
+            operation: 'program-runtime',
+            baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+          });
+          runtimeOptions = {
+            codesiteContext,
+            codeSiteQuarantineRoot: codeSiteQuarantine?.root || '',
+          };
+        }
+        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId, runtimeOptions);
+        // The rootless dockerd inside the runtime container takes ~15-25s to be
+        // ready; wait for it so the program's first `docker ...` command doesn't
+        // race a not-yet-listening daemon.
+        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId, runtimeOptions);
+        const handle = await workspaceRuntime.execInRuntime(workspaceSlug, userId, {
+          command,
+          env,
+          tty: true,
+          ...runtimeOptions,
+        });
+        return attachCodeSiteRuntimeQuarantineFinalizer(handle, codesiteContext, codeSiteQuarantine, {
+          operation: 'program-runtime',
+        });
+      } catch (err) {
+        if (codeSiteQuarantine) {
+          await finalizeCodeSiteQuarantineWorkspace(codesiteContext, codeSiteQuarantine, {
+            tool: 'program_runtime',
+          }).catch((finalizeErr) => {
+            logger.warn('codesite_program_runtime_quarantine_cleanup_failed', { err: finalizeErr?.message || finalizeErr });
+          });
+        }
+        throw err;
+      }
     }
     if (target === 'unavailable') {
       // container requested but no runtime exists — do NOT run in the docker-less
@@ -939,11 +977,46 @@ function runtimeCodeSiteEnv(context, processAncestry) {
   return codeSiteRuntimeEnv(context, { processAncestry });
 }
 
+function codeSiteRuntimeQuarantineBaseDir(cwd) {
+  const dataVolume = process.env.WORKSPACE_DATA_VOLUME || '';
+  const dataRoot = process.env.WORKSPACE_DATA_VOLUME_ROOT || '/data';
+  if (dataVolume && cwd && path.posix.resolve(cwd).startsWith(`${path.posix.resolve(dataRoot)}/`)) {
+    return path.posix.join(path.posix.resolve(dataRoot), 'codesitefs-quarantine');
+  }
+  return undefined;
+}
+
+function attachCodeSiteRuntimeQuarantineFinalizer(handle, codeSiteContext, quarantine, details = {}) {
+  if (!handle || !quarantine) return handle;
+  let finalized = false;
+  const finalize = async (extra = {}) => {
+    if (finalized) return null;
+    finalized = true;
+    return finalizeCodeSiteQuarantineWorkspace(codeSiteContext, quarantine, {
+      tool: 'program_runtime',
+      ...details,
+      ...extra,
+    });
+  };
+  return {
+    ...handle,
+    codesiteQuarantine: quarantine,
+    finalizeCodeSiteQuarantine: finalize,
+    stop: async () => {
+      let stopError = null;
+      try { handle.stop?.(); } catch (err) { stopError = err; }
+      const result = await finalize({ reason: 'runtime_stop' });
+      if (stopError) throw stopError;
+      return result;
+    },
+  };
+}
+
 function writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, surface) {
   res.writeHead(409, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     error: 'codesite_runtime_quarantine_unavailable',
-    message: 'CodeSite runtime blocked: container/sysbox execution cannot mount a quarantine workspace yet.',
+    message: 'CodeSite runtime blocked: this runtime target cannot mount a transaction quarantine workspace.',
     surface,
     codesite: codeSiteMetadata,
   }));
@@ -2214,8 +2287,19 @@ const server = http.createServer(async (req, res) => {
       parsed = body ? JSON.parse(body) : {};
     } catch (_) { parsed = {}; }
     try {
+      const actorUserId = parsed.userId || '';
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId,
+        effectiveUserId: parsed.filesystemUserId || actorUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
       const { status, body: out } = await handleEnsureRuntime({
-        workspaceRuntime, slug, userId: parsed.userId || '',
+        workspaceRuntime,
+        slug,
+        userId: actorUserId,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+        codesiteMetadata: codeSiteMetadata,
       });
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));

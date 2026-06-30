@@ -29,6 +29,22 @@ test('handleEnsureRuntime is a no-op (200) when container runtime is disabled', 
   assert.equal(res.body.enabled, false);
 });
 
+test('handleEnsureRuntime blocks active CodeSite prewarm without starting a container', async () => {
+  const rt = fakeRuntime();
+  const res = await handleEnsureRuntime({
+    workspaceRuntime: rt,
+    slug: 'repo',
+    userId: 'u1',
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codesiteMetadata: { active: true, transactionId: 'txn-1' },
+  });
+  assert.equal(res.status, 409);
+  assert.equal(res.body.error, 'codesite_runtime_quarantine_unavailable');
+  assert.deepEqual(rt.calls.ensure, []);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(rt.calls.wait, []);
+});
+
 test('handleEnsureRuntime 400s on a missing slug', async () => {
   const rt = fakeRuntime();
   const res = await handleEnsureRuntime({ workspaceRuntime: rt, slug: '', userId: 'u1' });

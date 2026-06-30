@@ -39,6 +39,7 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('./terminalRouting');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 const {
@@ -1563,24 +1564,6 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   return { ptyProcess, shell, cwd, sessionId };
 }
 
-/**
- * Decide whether a terminal session should run inside the per-workspace rootless
- * Docker runtime container (the local-dev / self-host path; production K8s uses
- * the pod-exec path instead). Requires the flag, a constructed runtime manager,
- * and a slug. Pure for testability. Mutually exclusive with the pod path, which
- * only fires when SYNTHI_TERMINAL_BACKEND=k8s-exec + spawner.mode=k8s.
- */
-function shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug }) {
-  return Boolean(enableContainerRuntime && workspaceRuntime && workspaceSlug);
-}
-
-function codeSiteTerminalLaunchMode({ codeSiteContext, runtimeScope = '', enableContainerRuntime = false, workspaceRuntime = null, workspaceSlug = '' } = {}) {
-  if (!codeSiteContext?.active) return 'normal';
-  if (shouldUseRuntimePodTerminal(runtimeScope)) return 'block-runtime';
-  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'block-runtime';
-  return 'quarantine';
-}
-
 function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
@@ -1802,7 +1785,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     codeSiteOriginalCwd = cwd;
     const launchMode = codeSiteTerminalLaunchMode({
       codeSiteContext,
-      runtimeScope,
+      usesRuntimePodTerminal: shouldUseRuntimePodTerminal(runtimeScope),
       enableContainerRuntime,
       workspaceRuntime,
       workspaceSlug,
