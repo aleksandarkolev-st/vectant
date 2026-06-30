@@ -740,6 +740,15 @@ async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, req
     .filter((item) => asArray(item.aircraft).includes(currentCallsign))
     .find((item) => item.severity === 'high');
   if (!risk) return { forecast, risk: null };
+  if (schemaFirstLeaderForRisk(requestedPlan, risk)) {
+    return {
+      forecast,
+      risk: null,
+      schemaFirstLeader: true,
+      reasonCodes: ['schema_first_leader_clearance'],
+      towerInstruction: `Schema-first clearance issued for ${currentCallsign}. Dependent overlapping flights remain in holding until this contract lands.`,
+    };
+  }
   return {
     forecast,
     risk,
@@ -751,6 +760,14 @@ async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, req
 }
 
 function applyTowerCollisionGate(policy, collisionAvoidance = null) {
+  if (collisionAvoidance?.schemaFirstLeader && policy.decision !== 'block') {
+    return {
+      ...policy,
+      reasonCodes: unique([...policy.reasonCodes, ...collisionAvoidance.reasonCodes]),
+      towerInstruction: collisionAvoidance.towerInstruction || policy.towerInstruction,
+      collisionAvoidance,
+    };
+  }
   if (!collisionAvoidance?.risk || policy.decision === 'block') return policy;
   return {
     ...policy,
@@ -760,6 +777,20 @@ function applyTowerCollisionGate(policy, collisionAvoidance = null) {
     towerInstruction: collisionAvoidance.towerInstruction,
     collisionAvoidance,
   };
+}
+
+function schemaFirstLeaderForRisk(plan, risk) {
+  if (risk?.recommendedResolution?.action !== 'schema_first') return false;
+  const declaredIntent = [
+    plan?.domain,
+    plan?.mission,
+    plan?.displayCallsign,
+  ].join(' ').toLowerCase();
+  if (declaredIntent.trim()) {
+    return /\b(schema|contract|openapi|prisma)\b|^schema-/.test(declaredIntent);
+  }
+  const routeIntent = pathsForRoute(plan?.route).join(' ').toLowerCase();
+  return /\b(schema|contract|openapi|prisma)\b|packages\/schemas/.test(routeIntent);
 }
 
 function towerCollisionInstruction(risk) {

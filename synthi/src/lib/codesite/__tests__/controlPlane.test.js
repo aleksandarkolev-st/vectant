@@ -724,12 +724,45 @@ describe('CodeSite control plane transaction validation', () => {
     ]));
   });
 
+  it('allows the verified schema-first leader through restricted collision airspace', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture(['synthi/prisma/**']));
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([{
+      ...executionPlanFixture(['synthi/prisma/**']),
+      id: 'plan-api',
+      displayCallsign: 'API-02',
+      domain: 'backend',
+      mission: 'Implement dependent API',
+      status: 'holding',
+    }]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'schema_first_leader_clearance',
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+    ]));
+    expect(lease.policyDecision.reasonCodes).not.toContain('collision_avoidance_hold');
+    expect(lease.lease.towerInstruction).toContain('Schema-first clearance issued');
+  });
+
   it('holds high-risk collision clearances before issuing active mutation rights', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue({
+      ...executionPlanFixture(['synthi/prisma/**']),
+      displayCallsign: 'API-02',
+      domain: 'backend',
+      mission: 'Implement dependent API',
+    });
     prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([
       {
         ...executionPlanFixture(['synthi/prisma/**']),
         id: 'plan-schema-active',
         displayCallsign: 'SCHEMA-01',
+        domain: 'schema',
         status: 'airborne',
       },
     ]);
