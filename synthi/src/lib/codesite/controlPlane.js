@@ -1688,6 +1688,12 @@ function requireAgentInboxAccess(session, actor) {
 
 export async function createIncident(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
+  const category = String(body.category || body.kind || 'near_miss').toLowerCase();
+  const participants = unique([
+    ...oneOrMany(body.participants),
+    ...oneOrMany(body.displayCallsign || body.callsign),
+  ].map(String).filter(Boolean));
+  const affectedZones = affectedZonesForIncident(project, body, category);
   const replay = body.incidentReplay || body.incident_replay || {
     eventRefs: asArray(body.timelineEventRefs || body.timeline_event_refs || []),
     summary: body.summary || body.reason || 'CodeSite incident',
@@ -1696,9 +1702,9 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
     data: {
       projectId: project.id,
       severity: body.severity || 'medium',
-      category: body.category || body.kind || 'near_miss',
-      participantsJson: stringifyJson(body.participants || []),
-      affectedZonesJson: stringifyJson(body.affectedZones || body.affected_zones || []),
+      category,
+      participantsJson: stringifyJson(participants),
+      affectedZonesJson: stringifyJson(affectedZones),
       incidentReplayJson: stringifyJson(replay),
       replayDigest: digest(replay),
       timelineEventRefsJson: stringifyJson(body.timelineEventRefs || body.timeline_event_refs || []),
@@ -1706,8 +1712,8 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
     },
   });
-  await recordEvent(project.id, {
-    eventType: incident.category === 'near_miss' ? 'near_miss' : 'mayday',
+  const incidentEvent = await recordEvent(project.id, {
+    eventType: category === 'near_miss' ? 'near_miss' : 'mayday',
     displayCallsign: body.displayCallsign || body.callsign || null,
     actorType: 'incident',
     actorId: incident.id,
@@ -1716,9 +1722,359 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
       severity: incident.severity,
       category: incident.category,
       replayDigest: incident.replayDigest,
+      affectedZones,
     },
   });
-  return incidentProjection(incident);
+
+  if (category !== 'mayday') return incidentProjection(incident);
+
+  const workflow = await applyMaydayGroundStop(project, incident, body, {
+    affectedZones,
+    participants,
+    incidentEvent,
+  });
+  const timelineEventRefs = unique([
+    ...asArray(body.timelineEventRefs || body.timeline_event_refs),
+    incidentEvent.id,
+    ...workflow.timelineEventRefs,
+  ]);
+  const incidentReplay = {
+    ...replay,
+    eventRefs: timelineEventRefs,
+    maydayWorkflow: workflow.replay,
+  };
+  const updated = await prisma.codeSiteIncident.update({
+    where: { id: incident.id },
+    data: {
+      timelineEventRefsJson: stringifyJson(timelineEventRefs),
+      incidentReplayJson: stringifyJson(incidentReplay),
+      replayDigest: digest(incidentReplay),
+    },
+  });
+  return {
+    ...incidentProjection(updated),
+    maydayWorkflow: workflow.summary,
+  };
+}
+
+async function applyMaydayGroundStop(project, incident, body = {}, context = {}) {
+  const affectedZones = context.affectedZones || [];
+  const participants = context.participants || [];
+  const evidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+    `codesite:incident:${incident.id}`,
+  ]);
+  const snapshot = emergencySnapshot(project, incident, {
+    affectedZones,
+    participants,
+    reason: body.reason || body.summary || 'mayday',
+  });
+  const snapshotEvent = await recordEvent(project.id, {
+    eventType: 'snapshot_taken',
+    displayCallsign: body.displayCallsign || body.callsign || null,
+    actorType: 'incident',
+    actorId: incident.id,
+    evidenceRefs,
+    details: {
+      incidentId: incident.id,
+      reason: 'mayday_ground_stop',
+      snapshot,
+    },
+  });
+  const suspended = await suspendLeasesForMayday(project, incident, body, affectedZones);
+  const inspector = await dispatchMaydayInspector(project, incident, body, affectedZones, evidenceRefs);
+  const stopWork = await openStopWorkDocument(project, incident, body, affectedZones, {
+    snapshotDigest: snapshot.digest,
+    suspendedLeaseIds: suspended.leases.map((lease) => lease.id),
+    inspectorRunId: inspector.run.id,
+  });
+  const timelineEventRefs = unique([
+    snapshotEvent.id,
+    ...suspended.events.map((event) => event.id),
+    inspector.event.id,
+    stopWork.event.id,
+  ]);
+  return {
+    timelineEventRefs,
+    replay: {
+      snapshot,
+      suspendedLeases: suspended.leases.map((lease) => ({
+        id: lease.id,
+        displayCallsign: lease.displayCallsign,
+        previousStatus: lease.previousStatus,
+        status: lease.status,
+      })),
+      inspectorRunId: inspector.run.id,
+      stopWorkDocumentId: stopWork.document.id,
+      humanResumeRequired: true,
+    },
+    summary: {
+      snapshotDigest: snapshot.digest,
+      suspendedLeases: suspended.leases.length,
+      inspectorRunId: inspector.run.id,
+      stopWorkDocumentId: stopWork.document.id,
+      humanResumeRequired: true,
+    },
+  };
+}
+
+async function suspendLeasesForMayday(project, incident, body, affectedZones) {
+  const activeLeases = await prisma.codeSiteMutationLease.findMany({
+    where: { projectId: project.id, status: 'active' },
+  });
+  const matchingLeases = activeLeases.filter((lease) => leaseIntersectsAffectedZones(lease, affectedZones));
+  const leases = [];
+  const events = [];
+  for (const lease of matchingLeases) {
+    const updated = await prisma.codeSiteMutationLease.update({
+      where: { id: lease.id },
+      data: { status: 'suspended' },
+    });
+    const decision = await createPolicyDecision(project.id, {
+      mutationLeaseId: lease.id,
+      displayCallsign: lease.displayCallsign,
+      decision: 'hold',
+      reasonCodes: unique(['mayday_ground_stop', ...maydayReasonCodes(body)]),
+      input: {
+        incidentId: incident.id,
+        affectedZones,
+        lease: mutationLeaseProjection(lease),
+      },
+      decisionJson: {
+        incidentId: incident.id,
+        affectedZones,
+        previousStatus: lease.status,
+        status: 'suspended',
+        humanResumeRequired: true,
+        towerInstruction: `Ground stop: ${lease.displayCallsign} suspended until human tower approval.`,
+      },
+    });
+    const event = await recordEvent(project.id, {
+      mutationLeaseId: lease.id,
+      eventType: 'ground_stop',
+      displayCallsign: lease.displayCallsign,
+      actorType: 'incident',
+      actorId: incident.id,
+      details: {
+        incidentId: incident.id,
+        policyDecisionId: decision.id,
+        affectedZones,
+        previousStatus: lease.status,
+        status: 'suspended',
+        humanResumeRequired: true,
+        towerInstruction: `Ground stop: ${lease.displayCallsign} suspended until human tower approval.`,
+      },
+    });
+    leases.push({ ...mutationLeaseProjection(updated), previousStatus: lease.status });
+    events.push(event);
+  }
+  if (events.length === 0) {
+    events.push(await recordEvent(project.id, {
+      eventType: 'ground_stop',
+      displayCallsign: body.displayCallsign || body.callsign || null,
+      actorType: 'incident',
+      actorId: incident.id,
+      details: {
+        incidentId: incident.id,
+        affectedZones,
+        humanResumeRequired: true,
+        towerInstruction: 'Ground stop issued. No active clearances intersected the affected airspace.',
+      },
+    }));
+  }
+  return { leases, events };
+}
+
+async function dispatchMaydayInspector(project, incident, body, affectedZones, evidenceRefs) {
+  const inspectorCallsign = body.inspectorCallsign || body.inspector_callsign || inspectorForMayday(body);
+  const run = await prisma.codeSiteInspectionRun.create({
+    data: {
+      projectId: project.id,
+      executionPlanId: body.executionPlanId || body.execution_plan_id || null,
+      displayCallsign: inspectorCallsign,
+      status: 'requested',
+      changedPathsJson: stringifyJson(affectedZones),
+      inspectionSignalsJson: stringifyJson(maydayInspectionSignals(body)),
+      evidenceRefsJson: stringifyJson(evidenceRefs),
+    },
+  });
+  const event = await recordEvent(project.id, {
+    eventType: 'landing_requested',
+    displayCallsign: inspectorCallsign,
+    actorType: 'inspection',
+    actorId: run.id,
+    evidenceRefs,
+    details: {
+      incidentId: incident.id,
+      inspectionRunId: run.id,
+      status: 'requested',
+      changedPaths: affectedZones,
+      reason: 'mayday_inspector_dispatched',
+    },
+  });
+  return { run: inspectionProjection(run), event };
+}
+
+async function openStopWorkDocument(project, incident, body, affectedZones, workflow) {
+  const document = await prisma.codeSiteDocument.create({
+    data: {
+      projectId: project.id,
+      kind: 'stop_work',
+      status: 'open',
+      title: body.stopWorkTitle || body.stop_work_title || `Ground stop: ${body.reason || body.summary || incident.category}`,
+      bodyJson: stringifyJson(redactDocumentBody({
+        incidentId: incident.id,
+        severity: incident.severity,
+        category: incident.category,
+        reason: body.reason || body.summary || 'mayday',
+        affectedZones,
+        suspendedLeaseIds: workflow.suspendedLeaseIds,
+        inspectorRunId: workflow.inspectorRunId,
+        snapshotDigest: workflow.snapshotDigest,
+        resumeGate: {
+          requiresHumanApproval: true,
+          status: 'blocked',
+          instruction: 'Human tower approval is required before affected clearances resume.',
+        },
+      })),
+      blocking: true,
+    },
+  });
+  const event = await recordEvent(project.id, {
+    eventType: 'ground_stop',
+    actorType: 'document',
+    actorId: document.id,
+    details: {
+      incidentId: incident.id,
+      documentId: document.id,
+      kind: document.kind,
+      blocking: true,
+      humanResumeRequired: true,
+    },
+  });
+  return { document: documentProjection(document), event };
+}
+
+function affectedZonesForIncident(project, body = {}, category = 'near_miss') {
+  const explicit = unique([
+    ...oneOrMany(body.affectedZones || body.affected_zones),
+    ...oneOrMany(body.affectedZone || body.affected_zone),
+    ...oneOrMany(body.affectedAirspace || body.affected_airspace),
+  ].map(String).filter(Boolean));
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const zones = asArray(zonePolicy.zones);
+  const expanded = explicit.flatMap((entry) => {
+    const zone = zones.find((candidate) => candidate.zoneKey === entry || candidate.label === entry);
+    return zone ? asArray(zone.paths) : [entry];
+  });
+  if (expanded.length) return unique(pathsForRoute(expanded));
+  if (category === 'mayday') return defaultMaydayAffectedZones(body);
+  return [];
+}
+
+function defaultMaydayAffectedZones(body = {}) {
+  const reason = String(body.reason || body.type || body.maydayType || body.mayday_type || '').toLowerCase();
+  if (/migration|drop column|destructive/.test(reason)) return ['db/migrations/**', 'synthi/prisma/**'];
+  if (/secret|credential|token|key/.test(reason)) return ['**/.env', '**/.env.*', 'secrets/**'];
+  if (/auth|permission|bypass/.test(reason)) return ['api/auth/**', 'backend/collab-server/permissionMiddleware.js'];
+  if (/contract|schema|openapi/.test(reason)) return ['packages/schemas/**', 'openapi/**', 'synthi/prisma/**'];
+  if (/infra|production|deploy/.test(reason)) return ['infra/prod/**', 'infra/production/**', 'k8s/**'];
+  return ['**'];
+}
+
+function oneOrMany(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === '') return [];
+  return [value];
+}
+
+function leaseIntersectsAffectedZones(lease, affectedZones) {
+  if (!affectedZones.length) return true;
+  const leaseJson = parseJson(lease.leaseJson, {});
+  const leasePaths = unique(pathsForRoute([
+    ...asArray(leaseJson.allowedPaths || leaseJson.route),
+    ...asArray(leaseJson.blockedPaths || leaseJson.noFlyZones),
+  ]));
+  if (!leasePaths.length) return true;
+  return leasePaths.some((leasePath) => affectedZones.some((zonePath) => pathPatternsOverlap(leasePath, zonePath)));
+}
+
+function pathPatternsOverlap(first, second) {
+  if (!first || !second) return false;
+  if (first === second || first === '**' || second === '**') return true;
+  const firstRoot = patternRoot(first);
+  const secondRoot = patternRoot(second);
+  if (!firstRoot || !secondRoot) return true;
+  return firstRoot === secondRoot
+    || firstRoot.startsWith(`${secondRoot}/`)
+    || secondRoot.startsWith(`${firstRoot}/`)
+    || matchPathPattern(firstRoot, second)
+    || matchPathPattern(secondRoot, first);
+}
+
+function patternRoot(pattern) {
+  return String(pattern || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('*')[0]
+    .replace(/\/+$/, '');
+}
+
+function maydayReasonCodes(body = {}) {
+  const reason = String(body.reason || body.type || body.maydayType || body.mayday_type || 'mayday').toLowerCase();
+  const codes = [];
+  if (/migration|drop column|destructive/.test(reason)) codes.push('destructive_migration');
+  if (/secret|credential|token|key/.test(reason)) codes.push('secret_exposure');
+  if (/auth|permission|bypass/.test(reason)) codes.push('auth_risk');
+  if (/contract|schema|openapi/.test(reason)) codes.push('contract_drift');
+  if (/infra|production|deploy/.test(reason)) codes.push('production_infra_touch');
+  return codes.length ? codes : ['mayday_declared'];
+}
+
+function maydayInspectionSignals(body = {}) {
+  const codes = maydayReasonCodes(body);
+  const signals = [
+    'clearance',
+    ...codes.map((code) => code.replace(/_risk$/, '').replace(/_touch$/, '')),
+  ];
+  if (codes.includes('destructive_migration')) signals.push('migration', 'security');
+  if (codes.includes('secret_exposure') || codes.includes('auth_risk')) signals.push('security');
+  if (codes.includes('contract_drift')) signals.push('api_contract', 'tests');
+  if (codes.includes('production_infra_touch')) signals.push('runtime', 'security');
+  return unique(signals).map((key) => ({
+    key,
+    status: 'requested',
+    evidenceRefs: [],
+  }));
+}
+
+function inspectorForMayday(body = {}) {
+  const codes = maydayReasonCodes(body);
+  if (codes.includes('destructive_migration')) return 'DB-INSPECT-02';
+  if (codes.includes('secret_exposure') || codes.includes('auth_risk')) return 'SEC-01';
+  if (codes.includes('contract_drift')) return 'API-INSPECT-01';
+  if (codes.includes('production_infra_touch')) return 'RUNTIME-INSPECT-01';
+  return 'SAFETY-INSPECT-01';
+}
+
+function emergencySnapshot(project, incident, details = {}) {
+  const payload = {
+    schemaVersion: 'synthi.codesite.emergencySnapshot.v1',
+    projectId: project.id,
+    workspaceSlug: project.workspaceSlug,
+    incidentId: incident.id,
+    reason: details.reason || null,
+    affectedZones: details.affectedZones || [],
+    participants: details.participants || [],
+    projectStatus: project.status,
+    zonePolicyDigest: digest(parseJson(project.zonePolicyJson, {})),
+    controlPlanDigest: digest(parseJson(project.controlPlanJson, {})),
+    createdAt: new Date().toISOString(),
+  };
+  return {
+    ...payload,
+    digest: digest(payload),
+  };
 }
 
 export async function createInspectionRun(workspaceSlug, projectId, body = {}) {

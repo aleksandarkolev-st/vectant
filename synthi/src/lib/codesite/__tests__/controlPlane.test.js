@@ -15,6 +15,8 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteMutationLease: {
       create: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteAgentSession: {
       findFirst: vi.fn(),
@@ -43,9 +45,12 @@ const { prisma } = vi.hoisted(() => ({
       findFirst: vi.fn(),
     },
     codeSiteInspectionRun: {
+      create: vi.fn(),
       findMany: vi.fn(),
     },
     codeSiteIncident: {
+      create: vi.fn(),
+      update: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
@@ -66,6 +71,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  createIncident,
   createDocument,
   dryRunTransactionWrites,
   getAgentInbox,
@@ -207,6 +213,19 @@ describe('CodeSite control plane transaction validation', () => {
       revokedAt: null,
       ...data,
     }));
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+    prisma.codeSiteMutationLease.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: where.id === 'lease-api' ? 'API-01' : 'DOCS-01',
+      status: data.status,
+      leaseJson: JSON.stringify({ allowedPaths: where.id === 'lease-api' ? ['api/auth/**'] : ['docs/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }));
     prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
     prisma.codeSiteAgentSession.findFirst.mockResolvedValue({
       id: 'agent-1',
@@ -272,6 +291,31 @@ describe('CodeSite control plane transaction validation', () => {
       ...data,
     }));
     prisma.codeSiteInspectionRun.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.create.mockImplementation(async ({ data }) => ({
+      id: 'inspection-created',
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteIncident.create.mockImplementation(async ({ data }) => ({
+      id: 'incident-created',
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteIncident.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      severity: 'critical',
+      category: 'mayday',
+      participantsJson: JSON.stringify(['API-01']),
+      affectedZonesJson: JSON.stringify(['api/auth/**']),
+      incidentReplayJson: data.incidentReplayJson,
+      replayDigest: data.replayDigest,
+      timelineEventRefsJson: data.timelineEventRefsJson,
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+    }));
     prisma.codeSiteProofBundle.create.mockImplementation(async ({ data }) => ({
       id: 'proof-created',
       createdAt: new Date('2026-06-29T23:03:00.000Z'),
@@ -328,6 +372,103 @@ describe('CodeSite control plane transaction validation', () => {
     expect(lease.status).toBe('active');
     expect(lease.policyDecision.reasonCodes).toContain('route_inside_clearance');
     expect(lease.policyDecision.reasonCodes).not.toContain('dojo_proof_required_for_restricted_airspace');
+  });
+
+  it('turns mayday declarations into ground stops with suspended leases and inspector dispatch', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'auth_api', class: 'A', label: 'Auth API', paths: ['api/auth/**'], rules: [], risk: 'critical' },
+          { zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], rules: [], risk: 'low' },
+        ],
+        noFlyZones: [],
+      }),
+      controlPlanJson: JSON.stringify({ strategy: 'schema-first' }),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([
+      {
+        id: 'lease-api',
+        projectId: 'project-1',
+        executionPlanId: 'plan-api',
+        agentSessionId: 'agent-api',
+        displayCallsign: 'API-01',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['api/auth/**'] }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+      {
+        id: 'lease-docs',
+        projectId: 'project-1',
+        executionPlanId: 'plan-docs',
+        agentSessionId: 'agent-docs',
+        displayCallsign: 'DOCS-01',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'] }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+    ]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'mayday',
+      severity: 'critical',
+      reason: 'auth bypass detected',
+      displayCallsign: 'API-01',
+      participants: ['API-01'],
+      affectedZones: ['auth_api'],
+      evidenceRefs: ['runtime:event:mayday'],
+    });
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    const stopWorkBody = JSON.parse(prisma.codeSiteDocument.create.mock.calls.at(-1)[0].data.bodyJson);
+    const inspectionRun = prisma.codeSiteInspectionRun.create.mock.calls.at(-1)[0].data;
+    const inspectionSignals = JSON.parse(inspectionRun.inspectionSignalsJson);
+
+    expect(incident.category).toBe('mayday');
+    expect(incident.maydayWorkflow).toMatchObject({
+      suspendedLeases: 1,
+      inspectorRunId: 'inspection-created',
+      stopWorkDocumentId: 'doc-1',
+      humanResumeRequired: true,
+    });
+    expect(prisma.codeSiteMutationLease.update).toHaveBeenCalledTimes(1);
+    expect(prisma.codeSiteMutationLease.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'lease-api' },
+      data: { status: 'suspended' },
+    }));
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-api',
+        decision: 'hold',
+        reasonCodesJson: expect.stringContaining('mayday_ground_stop'),
+      }),
+    }));
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      'mayday',
+      'snapshot_taken',
+      'ground_stop',
+      'landing_requested',
+    ]));
+    expect(inspectionRun).toMatchObject({
+      displayCallsign: 'SEC-01',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['api/auth/**']),
+    });
+    expect(inspectionSignals.map((signal) => signal.key)).toEqual(expect.arrayContaining(['auth', 'security']));
+    expect(stopWorkBody.resumeGate).toMatchObject({
+      requiresHumanApproval: true,
+      status: 'blocked',
+    });
+    expect(stopWorkBody.suspendedLeaseIds).toEqual(['lease-api']);
   });
 
 	  it('does not mark a transaction stale because of its own write event', async () => {
