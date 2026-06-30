@@ -4,6 +4,30 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Boundary Target-Process Provenance
+
+Real ROCm runtime-boundary support now binds adapter/native-observer boundary lines to target-process provenance before those lines can support final real-ROCm acceptance. The native launch observer emits a generic runtime session from `SYNTHI_REAL_ROCM_RUNTIME_SESSION` or `SYNTHI_GPU_HMR_RUNTIME_SESSION`, falling back to a process-derived observer session only when no explicit session is provided, and includes `process_id=pid:<pid>` on emitted `[gpu-runtime-boundary]` lines.
+
+The runner derives `synthi.real_rocm.runtime_boundary_target_process_provenance.v1` from adapter boundary lines, target-environment exposure, adapter-result bridge evidence, adapter execution evidence, and adapter-result transport evidence. The facet is accepted only as support evidence when it binds exactly one runtime session, exactly one explicit process identity, accepted target-environment exposure, a matching target-environment session, complete required boundary-event coverage, and no GPU HMR/runtime/dispatch authority claims.
+
+The validation matrix recomputes this support facet from raw adapter-result or adapter-execution boundary lines rather than trusting serialized provenance fields. Serialized-only target-process provenance, missing source boundary lines, missing explicit process IDs, missing target-environment session, and declared-but-not-copied adapter result transport remain refusal/support gaps even when the report carries accepted-looking hashes or line records.
+
+This is not a success path. The facet stays `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. A full-runtime proof that otherwise looks successful is degraded when adapter boundary events are present but target-process provenance is missing or failed. Strict acceptance still requires real artifact transport into the target process, epoch publication, dispatch trace, host identity, output oracle, firewall proof, accepted strict runtime proof artifact, and recomputed ledger closure.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-proof-artifact.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+docker exec vectant-ade-worker-1 sh -lc "cc -fsyntax-only /tmp/synthi_gpu_native_launch_observer.c" -> passed after copying the edited native observer source into the worker container
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; includes target-process provenance positive coverage, session-mismatch refusal, missing-process-identity refusal, and strict proof downgrade when provenance is absent or failed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed; 65-row smoke ledger includes support-only target-process provenance, forged target-process authority refusal, and serialized-only target-process provenance refusal
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke ledger `gpu-validation-matrix-ledger:sha256:13a6cdc8656e44781a78f99837a981271f95e94983b238ddba3837b2686faa65`, retained matrix `gpu-validation-matrix-ledger:sha256:4d8d07c74c792d6ad7000e3d9ac3524714bb832acf357738bb83d9f9efb52590`, retained matrix remains 56 rows, 14 scoped full-runtime rows, 0 broad rows
+npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed; retained matrix remains `gpu-validation-matrix-ledger:sha256:2c62b8583f5ba2d1f1c18c9694a3401fe3e4b38ba2997d791cd5845003a451da`, 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Runtime-Boundary Target Environment
 
 Real ROCm upstream target runs now receive generic runtime-boundary environment variables only when a runtime adapter is explicitly declared and enabled. The runner records `synthi.real_rocm.runtime_boundary_target_environment.v1` with `proofAuthority=target_environment_exposure_only_not_gpu_hmr_success`, validates repo-relative result/event-manifest paths, creates worker-side parent directories, and exports aliases such as `SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH`, `SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH`, `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH`, and `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH` into the actual upstream run environment.

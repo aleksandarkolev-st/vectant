@@ -37,6 +37,10 @@ const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_boundary_target_environment.v1';
 const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_AUTHORITY =
   'target_environment_exposure_only_not_gpu_hmr_success';
+const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_PROCESS_PROVENANCE_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_boundary_target_process_provenance.v1';
+const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_PROCESS_PROVENANCE_AUTHORITY =
+  'runtime_boundary_target_process_provenance_only_not_gpu_hmr_success';
 
 function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
@@ -979,6 +983,21 @@ function realRocmRuntimeBoundaryTargetEnvironmentSnapshot(input = {}, validation
     ?? null;
 }
 
+function realRocmRuntimeBoundaryTargetProcessProvenanceSnapshot(
+  input = {},
+  validationContext = null,
+) {
+  return objectOrNull(input.realRocmRuntimeBoundaryTargetProcessProvenance)
+    ?? objectOrNull(input.real_rocm_runtime_boundary_target_process_provenance)
+    ?? objectOrNull(input.runtimeBoundaryTargetProcessProvenance)
+    ?? objectOrNull(input.runtime_boundary_target_process_provenance)
+    ?? objectOrNull(validationContext?.realRocmRuntimeBoundaryTargetProcessProvenance)
+    ?? objectOrNull(validationContext?.real_rocm_runtime_boundary_target_process_provenance)
+    ?? objectOrNull(validationContext?.runtimeBoundaryTargetProcessProvenance)
+    ?? objectOrNull(validationContext?.runtime_boundary_target_process_provenance)
+    ?? null;
+}
+
 function realRocmSameProcessRuntimeOracleSnapshot(input = {}, validationContext = null) {
   return objectOrNull(input.realRocmSameProcessRuntimeOracle)
     ?? objectOrNull(input.real_rocm_same_process_runtime_oracle)
@@ -1136,6 +1155,177 @@ function realRocmRuntimeBoundaryTargetEnvironmentLimitations(facet) {
     observed_state: observedState,
     degradedState: 'gpu-hmr-runtime-boundary-target-environment-rejected',
     degraded_state: 'gpu-hmr-runtime-boundary-target-environment-rejected',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
+function realRocmRuntimeBoundaryTargetProcessProvenanceLimitations(facet) {
+  if (!objectOrNull(facet)) return [];
+  const present = facet.present === true;
+  const schemaVersion = firstString(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstString(facet.proofAuthority, facet.proof_authority);
+  const acceptedAsSupportEvidence =
+    facet.acceptedAsSupportEvidence === true || facet.accepted_as_support_evidence === true;
+  const acceptedForGpuHmr =
+    facet.acceptedForGpuHmr === true || facet.accepted_for_gpu_hmr === true;
+  const gpuHmrSuccess =
+    facet.gpuHmrSuccess === true || facet.gpu_hmr_success === true;
+  const canSatisfyRuntimeProof =
+    facet.canSatisfyRuntimeProof === true || facet.can_satisfy_runtime_proof === true;
+  const canSatisfyDispatchProof =
+    facet.canSatisfyDispatchProof === true || facet.can_satisfy_dispatch_proof === true;
+  const boundaryLineCount = Number.isFinite(facet.boundaryLineCount)
+    ? Number(facet.boundaryLineCount)
+    : (Number.isFinite(facet.boundary_line_count) ? Number(facet.boundary_line_count) : 0);
+  const boundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
+    ...(Array.isArray(facet.boundary_line_hashes) ? facet.boundary_line_hashes : []),
+  ]);
+  const sourceBoundaryLinesProven =
+    facet.sourceBoundaryLinesProven === true
+    || facet.source_boundary_lines_proven === true;
+  const runtimeSessions = compactStringList([
+    ...(Array.isArray(facet.runtimeSessions) ? facet.runtimeSessions : []),
+    ...(Array.isArray(facet.runtime_sessions) ? facet.runtime_sessions : []),
+  ]);
+  const processIds = compactStringList([
+    ...(Array.isArray(facet.processIds) ? facet.processIds : []),
+    ...(Array.isArray(facet.process_ids) ? facet.process_ids : []),
+  ]);
+  const missingProcessLineHashes = compactStringList([
+    ...(Array.isArray(facet.missingProcessLineHashes) ? facet.missingProcessLineHashes : []),
+    ...(Array.isArray(facet.missing_process_line_hashes) ? facet.missing_process_line_hashes : []),
+  ]);
+  const processSessionMismatchHashes = compactStringList([
+    ...(Array.isArray(facet.processSessionMismatchHashes)
+      ? facet.processSessionMismatchHashes
+      : []),
+    ...(Array.isArray(facet.process_session_mismatch_hashes)
+      ? facet.process_session_mismatch_hashes
+      : []),
+  ]);
+  const coverage = objectOrNull(facet.coverage);
+  const coverageMissingEventKinds = compactStringList([
+    ...(Array.isArray(coverage?.missingEventKinds) ? coverage.missingEventKinds : []),
+    ...(Array.isArray(coverage?.missing_event_kinds) ? coverage.missing_event_kinds : []),
+  ]);
+  const targetEnvironmentAccepted =
+    facet.targetEnvironmentAccepted === true || facet.target_environment_accepted === true;
+  const targetEnvironmentSession = firstString(
+    facet.targetEnvironmentSession,
+    facet.target_environment_session,
+  );
+  const targetEnvironmentSessionMatched =
+    facet.targetEnvironmentSessionMatched === true
+    || facet.target_environment_session_matched === true;
+  const resultTransportCopied =
+    facet.resultTransportCopied !== false && facet.result_transport_copied !== false;
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const serializedBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const claimedAuthority =
+    acceptedForGpuHmr || gpuHmrSuccess || canSatisfyRuntimeProof || canSatisfyDispatchProof;
+  const active =
+    present || acceptedAsSupportEvidence || boundaryLineCount > 0 || boundaryLineHashes.length > 0
+    || claimedAuthority;
+  if (!active) return [];
+  const blockingGaps = compactStringList([
+    schemaVersion === REAL_ROCM_RUNTIME_BOUNDARY_TARGET_PROCESS_PROVENANCE_SCHEMA_VERSION
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_provenance_schema_unknown',
+    proofAuthority === REAL_ROCM_RUNTIME_BOUNDARY_TARGET_PROCESS_PROVENANCE_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_provenance_authority_unknown',
+    acceptedForGpuHmr
+      ? 'real_rocm_runtime_boundary_target_process_provenance_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess
+      ? 'real_rocm_runtime_boundary_target_process_provenance_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof
+      ? 'real_rocm_runtime_boundary_target_process_provenance_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof
+      ? 'real_rocm_runtime_boundary_target_process_provenance_claimed_dispatch_authority'
+      : null,
+    present ? null : 'real_rocm_runtime_boundary_target_process_provenance_absent',
+    acceptedAsSupportEvidence
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_provenance_unaccepted',
+    boundaryLineHashes.length > 0
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_boundary_hashes_missing',
+    sourceBoundaryLinesProven
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_source_lines_missing',
+    runtimeSessions.length === 1
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_session_not_unique',
+    processIds.length === 1
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_id_not_unique',
+    missingProcessLineHashes.length === 0
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_identity_fields_missing',
+    processSessionMismatchHashes.length === 0
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_session_process_mismatch',
+    coverageMissingEventKinds.length === 0
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_required_events_incomplete',
+    targetEnvironmentAccepted
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_target_environment_not_accepted',
+    targetEnvironmentSession
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_target_environment_session_missing',
+    targetEnvironmentSessionMatched
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_target_environment_session_mismatch',
+    resultTransportCopied
+      ? null
+      : 'real_rocm_runtime_boundary_target_process_result_transport_not_copied',
+    ...serializedFailedGates,
+    ...serializedBlockingGaps,
+  ]);
+  if (blockingGaps.length === 0) return [];
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    facet.facetHash,
+    facet.facet_hash,
+    ...boundaryLineHashes,
+  ]);
+  const observedState = firstString(
+    facet.status,
+    facet.reason,
+    blockingGaps[0],
+    'real_rocm_runtime_boundary_target_process_provenance_unproven',
+  );
+  return [{
+    stageId: 'real-rocm-runtime-boundary-target-process-provenance',
+    stage_id: 'real-rocm-runtime-boundary-target-process-provenance',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-runtime-boundary-target-process-provenance-support-only',
+    required_state: 'gpu-hmr-runtime-boundary-target-process-provenance-support-only',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-runtime-boundary-target-process-provenance-rejected',
+    degraded_state: 'gpu-hmr-runtime-boundary-target-process-provenance-rejected',
     degradedReason: observedState,
     degraded_reason: observedState,
     blockingGaps,
@@ -2907,6 +3097,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     realRocmRuntimeProfileAdapterResultSnapshot(input, validationContext);
   const realRocmRuntimeBoundaryTargetEnvironment =
     realRocmRuntimeBoundaryTargetEnvironmentSnapshot(input, validationContext);
+  const realRocmRuntimeBoundaryTargetProcessProvenance =
+    realRocmRuntimeBoundaryTargetProcessProvenanceSnapshot(input, validationContext);
   const realRocmSameProcessRuntimeOracle =
     realRocmSameProcessRuntimeOracleSnapshot(input, validationContext);
   const realRocmMissingDependencyProbe =
@@ -3014,6 +3206,9 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...realRocmRuntimeBoundaryTargetEnvironmentLimitations(
       realRocmRuntimeBoundaryTargetEnvironment,
     ),
+    ...realRocmRuntimeBoundaryTargetProcessProvenanceLimitations(
+      realRocmRuntimeBoundaryTargetProcessProvenance,
+    ),
     ...realRocmSameProcessRuntimeOracleLimitations(realRocmSameProcessRuntimeOracle),
     ...realRocmMissingDependencyProbeLimitations(realRocmMissingDependencyProbe),
     ...targetProgressionGateLimitations(targetProgressionGates),
@@ -3030,6 +3225,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(realRocmAppHookMaterialization),
     ...evidenceStringsFromValue(realRocmRuntimeProfileAdapterResult),
     ...evidenceStringsFromValue(realRocmRuntimeBoundaryTargetEnvironment),
+    ...evidenceStringsFromValue(realRocmRuntimeBoundaryTargetProcessProvenance),
     ...evidenceStringsFromValue(realRocmSameProcessRuntimeOracle),
     ...evidenceStringsFromValue(realRocmMissingDependencyProbe),
   ]);
@@ -3081,6 +3277,13 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       realRocmRuntimeBoundaryTargetEnvironment,
     runtimeBoundaryTargetEnvironment: realRocmRuntimeBoundaryTargetEnvironment,
     runtime_boundary_target_environment: realRocmRuntimeBoundaryTargetEnvironment,
+    realRocmRuntimeBoundaryTargetProcessProvenance,
+    real_rocm_runtime_boundary_target_process_provenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
+    runtimeBoundaryTargetProcessProvenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
+    runtime_boundary_target_process_provenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
@@ -3124,6 +3327,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     realRocmAppHookMaterialization,
     realRocmRuntimeProfileAdapterResult,
     realRocmRuntimeBoundaryTargetEnvironment,
+    realRocmRuntimeBoundaryTargetProcessProvenance,
     realRocmSameProcessRuntimeOracle,
     realRocmMissingDependencyProbe,
     adversarialPreflight,
@@ -3199,6 +3403,13 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
       realRocmRuntimeBoundaryTargetEnvironment,
     runtimeBoundaryTargetEnvironment: realRocmRuntimeBoundaryTargetEnvironment,
     runtime_boundary_target_environment: realRocmRuntimeBoundaryTargetEnvironment,
+    realRocmRuntimeBoundaryTargetProcessProvenance,
+    real_rocm_runtime_boundary_target_process_provenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
+    runtimeBoundaryTargetProcessProvenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
+    runtime_boundary_target_process_provenance:
+      realRocmRuntimeBoundaryTargetProcessProvenance,
     realRocmSameProcessRuntimeOracle,
     real_rocm_same_process_runtime_oracle: realRocmSameProcessRuntimeOracle,
     sameProcessRuntimeOracle: realRocmSameProcessRuntimeOracle,
