@@ -8,6 +8,7 @@ import {
   digest,
   evaluateLeaseRequest,
   evaluatePathMutation,
+  matchPathPattern,
   normalizePath,
   normalizePathList,
   pathsForRoute,
@@ -802,7 +803,44 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
   const validation = await validateTransaction(workspaceSlug, transactionId);
   if (!validation.decision.ok) return validation;
   const transaction = await requireTransaction(workspaceSlug, transactionId);
-  const bundle = await createProofBundleForTransaction(transaction, body);
+  const inspectionDecision = await verifyLandingInspections(transaction);
+  if (!inspectionDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: inspectionDecision.reasonCodes,
+      missingInspectionPaths: inspectionDecision.missingPaths,
+      missingInspectionSignals: inspectionDecision.missingSignals,
+      inspectionRuns: inspectionDecision.inspectionRuns.map(inspectionProjection),
+      validatedAt: new Date().toISOString(),
+    };
+    const updated = await prisma.codeSiteMutationTransaction.update({
+      where: { id: transaction.id },
+      data: {
+        status: 'blocked',
+        commitDecisionJson: stringifyJson(decision),
+      },
+    });
+    await recordEvent(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      eventType: 'transaction_validated',
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      actorType: 'transaction',
+      actorId: transaction.id,
+      details: {
+        transactionId: transaction.id,
+        decision,
+        towerInstruction: 'Landing inspection evidence is required before a proof-carrying commit can land.',
+      },
+    });
+    return { decision, transaction: transactionProjection(updated) };
+  }
+
+  const bundle = await createProofBundleForTransaction(transaction, {
+    ...body,
+    inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
+    inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
+  });
   const updated = await prisma.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
     data: {
@@ -823,6 +861,8 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
       proofBundleId: bundle.id,
       proofBundleDigest: bundle.bundleDigest,
       writeSet: parseJson(transaction.writeSetJson, []),
+      inspectionRunIds: inspectionDecision.inspectionRuns.map((run) => run.id),
+      inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   });
   return { transaction: transactionProjection(updated), proofBundle: proofBundleProjection(bundle) };
@@ -853,7 +893,10 @@ async function createProofBundleForTransaction(transaction, body = {}) {
   const readSet = parseJson(transaction.readSetJson, []);
   const writeSet = parseJson(transaction.writeSetJson, []);
   const invariants = parseJson(transaction.invariantsJson, []);
-  const evidenceRefs = asArray(body.evidenceRefs || body.evidence_refs || []).concat([
+  const evidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs || []),
+    ...asArray(body.inspectionEvidenceRefs || body.inspection_evidence_refs || []),
+    ...asArray(body.inspectionRunRefs || body.inspection_run_refs || []).map((id) => `codesite:inspection:${id}`),
     `codesite:transaction:${transaction.id}`,
     `codesite:lease:${transaction.mutationLeaseId}`,
   ]);
@@ -879,6 +922,130 @@ async function createProofBundleForTransaction(transaction, body = {}) {
       bundleDigest,
     },
   });
+}
+
+async function verifyLandingInspections(transaction) {
+  const changedPaths = unique([
+    ...parseJson(transaction.writeSetJson, []),
+    ...parseJson(transaction.observedWriteSetJson, []),
+  ]);
+  if (changedPaths.length === 0) {
+    return { ok: true, reasonCodes: ['no_write_set_no_landing_required'], inspectionRuns: [], evidenceRefs: [] };
+  }
+
+  const runs = await prisma.codeSiteInspectionRun.findMany({
+    where: { projectId: transaction.projectId },
+    orderBy: [{ completedAt: 'desc' }, { requestedAt: 'desc' }],
+  });
+  const scopedRuns = runs.filter((run) => inspectionRunInTransactionScope(run, transaction));
+  const passedRuns = scopedRuns.filter(inspectionRunPassed);
+  const coveringRuns = passedRuns.filter((run) => inspectionCoversAllPaths(run, changedPaths));
+  const evidenceRefs = unique(coveringRuns.flatMap(inspectionEvidenceRefs));
+  const requiredSignals = requiredInspectionSignals(transaction);
+  const missingPaths = changedPaths.filter((path) => !coveringRuns.some((run) => inspectionCoversPath(run, path)));
+  const missingSignals = requiredSignals.filter((signal) => (
+    signal !== 'landing' && !coveringRuns.some((run) => inspectionSatisfiesSignal(run, signal))
+  ));
+
+  if (requiredSignals.includes('landing') && coveringRuns.length === 0) {
+    missingSignals.push('landing');
+  }
+
+  const reasonCodes = [
+    ...(missingPaths.length ? ['inspection_path_coverage_required'] : []),
+    ...(missingSignals.length ? ['inspection_signal_required'] : []),
+    ...(evidenceRefs.length === 0 ? ['inspection_evidence_required'] : []),
+  ];
+
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes: reasonCodes.length ? reasonCodes : ['landing_inspection_passed'],
+    missingPaths,
+    missingSignals,
+    inspectionRuns: coveringRuns,
+    evidenceRefs,
+  };
+}
+
+function inspectionRunInTransactionScope(run, transaction) {
+  if (run.executionPlanId && transaction.mutationLease.executionPlanId) {
+    return run.executionPlanId === transaction.mutationLease.executionPlanId;
+  }
+  return !run.displayCallsign || run.displayCallsign === transaction.mutationLease.displayCallsign;
+}
+
+function inspectionRunPassed(run) {
+  const status = normalizeInspectionSignal(run.status);
+  if (['failed', 'failure', 'blocked', 'red', 'go_around'].includes(status)) return false;
+  const signals = asArray(parseJson(run.inspectionSignalsJson, []));
+  return signals.every((signal) => !inspectionSignalFailed(signal));
+}
+
+function inspectionSignalFailed(signal) {
+  if (typeof signal === 'string') {
+    return /(^|[:_.-])(fail|failed|failure|blocked|red|error)([:_.-]|$)/i.test(signal);
+  }
+  const status = normalizeInspectionSignal(signal?.status || signal?.result || signal?.outcome || signal?.verdict || 'passed');
+  return ['failed', 'failure', 'blocked', 'red', 'error'].includes(status);
+}
+
+function inspectionCoversAllPaths(run, changedPaths) {
+  return changedPaths.every((path) => inspectionCoversPath(run, path));
+}
+
+function inspectionCoversPath(run, path) {
+  const changedPaths = normalizePathList(parseJson(run.changedPathsJson, []));
+  if (changedPaths.length === 0) return false;
+  return changedPaths.some((pattern) => {
+    const rel = normalizePath(pattern);
+    return rel === path || matchPathPattern(path, pattern);
+  });
+}
+
+function inspectionEvidenceRefs(run) {
+  const signalRefs = asArray(parseJson(run.inspectionSignalsJson, []))
+    .flatMap((signal) => asArray(signal?.evidenceRefs || signal?.evidence_refs || signal?.evidenceRef || signal?.evidence_ref));
+  return unique([
+    ...asArray(parseJson(run.evidenceRefsJson, [])),
+    ...signalRefs,
+    `codesite:inspection:${run.id}`,
+  ].filter(Boolean));
+}
+
+function requiredInspectionSignals(transaction) {
+  const lease = parseJson(transaction.mutationLease.leaseJson, {});
+  const requiredRadar = asArray(lease.requiredRadar || lease.required_radar)
+    .map(normalizeInspectionSignal)
+    .filter(Boolean);
+  const invariantSignals = asArray(parseJson(transaction.invariantsJson, []))
+    .filter((invariant) => /[:_.-]pass$/i.test(String(invariant || '')))
+    .map(normalizeInspectionSignal)
+    .filter(Boolean);
+  const required = unique([...requiredRadar, ...invariantSignals]);
+  return required.length ? required : ['landing'];
+}
+
+function inspectionSatisfiesSignal(run, requiredSignal) {
+  const signals = asArray(parseJson(run.inspectionSignalsJson, []));
+  return signals.some((signal) => {
+    if (inspectionSignalFailed(signal)) return false;
+    return normalizeInspectionSignal(signalKey(signal)) === requiredSignal;
+  });
+}
+
+function signalKey(signal) {
+  if (typeof signal === 'string') return signal;
+  return signal?.key || signal?.signal || signal?.type || signal?.name || signal?.inspector || '';
+}
+
+function normalizeInspectionSignal(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[:.-]+/g, '_')
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/_pass(ed)?$/, '')
+    .replace(/^_+|_+$/g, '');
 }
 
 async function seedLineProvenance(transaction, bundle) {
