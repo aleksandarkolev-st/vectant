@@ -1841,6 +1841,7 @@ function availableRealRocmEvidenceRefs({
   runtimeEpochSwap = {},
   runtimeOutputOracle = {},
   runtimeHostPreservation = {},
+  runtimeAdapterStageEvents = {},
   proofArtifactRecords = [],
 } = {}) {
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
@@ -1863,6 +1864,15 @@ function availableRealRocmEvidenceRefs({
     Number(runtimeOutputOracle.total_count ?? 0) > 0 ? 'runtime_output_oracle' : null,
     ...(Array.isArray(runtimeOutputOracle.evidence_refs) ? runtimeOutputOracle.evidence_refs : []),
     ...(Array.isArray(runtimeOutputOracle.evidenceRefs) ? runtimeOutputOracle.evidenceRefs : []),
+    runtimeAdapterStageEvents.present === true ? 'runtime_adapter_stage_events' : null,
+    runtimeAdapterStageEvents.facetHash,
+    runtimeAdapterStageEvents.facet_hash,
+    ...(Array.isArray(runtimeAdapterStageEvents.evidence_refs)
+      ? runtimeAdapterStageEvents.evidence_refs
+      : []),
+    ...(Array.isArray(runtimeAdapterStageEvents.evidenceRefs)
+      ? runtimeAdapterStageEvents.evidenceRefs
+      : []),
     ...proofArtifactRecords.flatMap((entry) => [
       entry?.artifactId,
       entry?.artifact_id,
@@ -3068,6 +3078,10 @@ const report = {
   realRocmRuntimeAdapterExecution: null,
   runtime_adapter_execution: null,
   runtimeAdapterExecution: null,
+  real_rocm_runtime_adapter_stage_events: null,
+  realRocmRuntimeAdapterStageEvents: null,
+  runtime_adapter_stage_events: null,
+  runtimeAdapterStageEvents: null,
   real_rocm_missing_dependency_probe: null,
   realRocmMissingDependencyProbe: null,
   missing_dependency_probe: null,
@@ -3602,6 +3616,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_boundary_coverage.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY =
   'adapter_boundary_coverage_diagnostic_only_not_runtime_authority';
+const REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_stage_events.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY =
+  'runtime_adapter_stage_events_normalized_not_runtime_authority';
 const REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS = Object.freeze([
   {
     kind: 'artifact_transport',
@@ -3701,6 +3719,251 @@ function runtimeAdapterBoundaryCoverage(lines = []) {
     ...observedFlags,
     coverageHash: sha256Text(stableJson(coverageSeed)),
     coverage_hash: sha256Text(stableJson(coverageSeed)),
+  };
+}
+
+function runtimeAdapterBoundaryLinesForStage(lines = [], stage = {}) {
+  const pattern = REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS.find((event) =>
+    event.kind === stage.snake
+  )?.pattern;
+  if (!pattern) return [];
+  return compactStringList(Array.isArray(lines) ? lines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(line))
+    .filter((line) => pattern.test(line));
+}
+
+function runtimeAdapterLatestField(lines = [], ...keys) {
+  const normalizedLines = compactStringList(lines);
+  for (let index = normalizedLines.length - 1; index >= 0; index -= 1) {
+    const line = normalizedLines[index];
+    for (const key of keys) {
+      const value = logField(line, key);
+      if (value && value !== 'none') return value;
+    }
+  }
+  return null;
+}
+
+function runtimeAdapterStageMissingProofKinds({
+  stage,
+  lines = [],
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+} = {}) {
+  const proofKinds = realRocmStageProofKinds(stage.snake);
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  const lineObserved = lines.length > 0;
+  const outputLatest = runtimeOutputOracle.latest ?? runtimeOutputOracle.output_oracle ?? {};
+  const fieldChecks = {
+    artifact_transport: {
+      changed_artifact_hash: Boolean(
+        runtimeArtifactTransport.artifact_hash
+        || runtimeArtifactTransport.artifactHash
+        || runtimeAdapterLatestField(lines, 'artifact_hash', 'artifact_content_hash'),
+      ),
+      same_process_transport_event: Boolean(
+        runtimeArtifactTransport.ram_transport_proven === true
+        || runtimeArtifactTransport.memory_resident === true
+        || runtimeAdapterLatestField(lines, 'runtime_session'),
+      ),
+      loaded_artifact_hash: Boolean(
+        runtimeArtifactTransport.artifact_hash
+        || runtimeArtifactTransport.artifactHash
+        || runtimeAdapterLatestField(lines, 'artifact_hash', 'loaded_artifact_hash'),
+      ),
+    },
+    epoch_publication: {
+      published_epoch: Boolean(
+        epochEvidence.epoch
+        || epochEvidence.published_epoch
+        || runtimeAdapterLatestField(lines, 'epoch', 'active_epoch', 'generation', 'active_generation'),
+      ),
+      published_artifact_hash: Boolean(
+        epochEvidence.artifact_hash
+        || epochEvidence.artifactHash
+        || runtimeAdapterLatestField(lines, 'artifact_hash', 'new_artifact_hash'),
+      ),
+      same_process_epoch_event: Boolean(
+        runtimeAdapterLatestField(lines, 'runtime_session', 'process_id')
+        || Number(epochEvidence.total_count ?? 0) > 0,
+      ),
+    },
+    dispatch_trace: {
+      dispatch_id: Boolean(
+        runtimeDispatch.dispatch_id
+        || runtimeAdapterLatestField(lines, 'dispatch_id', 'dispatch'),
+      ),
+      dispatch_epoch: Boolean(
+        runtimeDispatch.epoch
+        || runtimeAdapterLatestField(lines, 'epoch', 'active_epoch', 'generation', 'active_generation'),
+      ),
+      dispatch_artifact_hash: Boolean(
+        runtimeDispatch.runtime_artifact_id
+        || runtimeAdapterLatestField(lines, 'artifact_id', 'artifact_hash'),
+      ),
+    },
+    host_identity: {
+      process_id: Boolean(
+        hostEvidence.process_id
+        || runtimeAdapterLatestField(lines, 'process_id', 'pid', 'runtime_session'),
+      ),
+      device_identity: Boolean(
+        hostEvidence.device_uuid
+        || runtimeAdapterLatestField(lines, 'device_uuid', 'device_id'),
+      ),
+      context_or_queue_identity: Boolean(
+        hostEvidence.context_id
+        || hostEvidence.queue_id
+        || runtimeAdapterLatestField(lines, 'context_id', 'queue_id', 'stream', 'context'),
+      ),
+    },
+    output_oracle: {
+      after_dispatch_id: Boolean(
+        runtimeOutputOracle.after_dispatch_id
+        || outputLatest.after_dispatch_id
+        || runtimeAdapterLatestField(lines, 'after_dispatch_id'),
+      ),
+      output_target_id: Boolean(
+        runtimeOutputOracle.output_target_id
+        || outputLatest.output_target_id
+        || outputLatest.target_id
+        || runtimeAdapterLatestField(lines, 'output_target_id', 'output_target', 'target_id'),
+      ),
+      readback_or_visual_artifact: Boolean(
+        runtimeOutputOracle.compute_oracle_artifacts
+        || runtimeOutputOracle.visual_oracle_artifacts
+        || outputLatest.raw_readback_bin
+        || outputLatest.raw_readback_cas_manifest
+        || outputLatest.before_image
+        || outputLatest.before_image_cas_manifest
+        || runtimeAdapterLatestField(
+          lines,
+          'raw_readback_bin',
+          'raw_readback_cas_manifest',
+          'before_image',
+          'before_image_cas_manifest',
+          'readback_sample_sha256',
+          'readback_bytes',
+        ),
+      ),
+    },
+  }[stage.snake] ?? {};
+  return {
+    fieldChecks,
+    missingProofKinds: lineObserved
+      ? proofKinds.filter((kind) => fieldChecks[kind] !== true)
+      : proofKinds,
+  };
+}
+
+function runtimeAdapterStageEventsFacet({
+  boundaryLines = [],
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+} = {}) {
+  const normalizedBoundaryLines = compactStringList(boundaryLines)
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const stageResults = {};
+  for (const stage of REAL_ROCM_APP_HOOK_STAGES) {
+    const stageLines = runtimeAdapterBoundaryLinesForStage(normalizedBoundaryLines, stage);
+    const evidenceRefs = runtimeBoundaryLineEvidenceRefs(
+      stageLines,
+      `runtime-adapter-stage:${stage.snake}`,
+    );
+    const { fieldChecks, missingProofKinds } = runtimeAdapterStageMissingProofKinds({
+      stage,
+      lines: stageLines,
+      runtimeDispatch,
+      runtimeArtifactTransport,
+      runtimeEpochSwap,
+      runtimeOutputOracle,
+      runtimeHostPreservation,
+    });
+    const result = {
+      stage: stage.snake,
+      observed: stageLines.length > 0,
+      runtimeObserved: stageLines.length > 0,
+      runtime_observed: stageLines.length > 0,
+      boundaryLineCount: stageLines.length,
+      boundary_line_count: stageLines.length,
+      boundaryLineHashes: runtimeBoundaryLineHashes(stageLines),
+      boundary_line_hashes: runtimeBoundaryLineHashes(stageLines),
+      requiredProofKinds: realRocmStageProofKinds(stage.snake),
+      required_proof_kinds: realRocmStageProofKinds(stage.snake),
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
+      fieldChecks,
+      field_checks: fieldChecks,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    };
+    stageResults[stage.key] = result;
+    stageResults[stage.snake] = result;
+  }
+  const missingStages = REAL_ROCM_APP_HOOK_STAGES
+    .filter((stage) => stageResults[stage.snake].observed !== true)
+    .map((stage) => stage.snake);
+  const blockingGaps = REAL_ROCM_APP_HOOK_STAGES.flatMap((stage) => {
+    const result = stageResults[stage.snake];
+    return compactStringList([
+      result.observed === true ? null : `runtime_adapter_stage_${stage.snake}_missing`,
+      ...result.missing_proof_kinds.map((kind) =>
+        `runtime_adapter_stage_${stage.snake}_${kind}_missing`
+      ),
+    ]);
+  });
+  const evidenceRefs = compactStringList([
+    ...Object.values(stageResults).flatMap((stage) =>
+      Array.isArray(stage.evidence_refs) ? stage.evidence_refs : []
+    ),
+  ]);
+  const complete = blockingGaps.length === 0 && normalizedBoundaryLines.length > 0;
+  return {
+    schemaVersion: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION,
+    proofAuthority: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY,
+    proof_authority: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY,
+    present: normalizedBoundaryLines.length > 0,
+    complete,
+    acceptedAsSupportEvidence: normalizedBoundaryLines.length > 0 && complete,
+    accepted_as_support_evidence: normalizedBoundaryLines.length > 0 && complete,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    boundaryLineCount: normalizedBoundaryLines.length,
+    boundary_line_count: normalizedBoundaryLines.length,
+    boundaryLineHashes: runtimeBoundaryLineHashes(normalizedBoundaryLines),
+    boundary_line_hashes: runtimeBoundaryLineHashes(normalizedBoundaryLines),
+    missingStages,
+    missing_stages: missingStages,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    stageResults,
+    stage_results: stageResults,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    facetHash: sha256Text(stableJson({
+      boundaryLineHashes: runtimeBoundaryLineHashes(normalizedBoundaryLines),
+      stageResults,
+      blockingGaps,
+    })),
+    facet_hash: sha256Text(stableJson({
+      boundaryLineHashes: runtimeBoundaryLineHashes(normalizedBoundaryLines),
+      stageResults,
+      blockingGaps,
+    })),
   };
 }
 
@@ -16798,6 +17061,18 @@ async function selfCheckRuntimeDispatchEvidence() {
   const adapterResultSelfCheckPath = path.join(adapterResultSelfCheckDir, 'adapter-result.json');
   const adapterRuntimeBoundaryLine =
     `[gpu-runtime-boundary] artifact_transport runtime_session=pid123-self-check generation=2 artifact_hash=sha256:${'a'.repeat(64)} artifact_bytes=4 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:sha256:${'a'.repeat(64)} ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok`;
+  const completeAdapterRuntimeBoundaryLines = [
+    `[gpu-runtime-boundary] artifact_transport runtime_session=pid123-self-check process_id=pid:123 generation=generation:2 artifact_hash=sha256:${'a'.repeat(64)} artifact_bytes=4 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:sha256:${'a'.repeat(64)} ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok`,
+    `[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid123-self-check process_id=pid:123 epoch=epoch:2 active_generation=generation:2 previous_generation=generation:1 new_artifact_hash=sha256:${'a'.repeat(64)} dispatch_table_entry_id=entry:self-check stream_ordering_proven=true old_generation_retired=true`,
+    `[gpu-runtime-boundary] synthi_gpu_launch dispatch=ok runtime_session=pid123-self-check process_id=pid:123 artifact_id=artifact:sha256:${'a'.repeat(64)} epoch=epoch:2 generation=generation:2 dispatch_id=dispatch:self-check output_target_id=output-target:self-check dispatch_table_entry_id=entry:self-check dispatch_timestamp=3000 kernel=self_check_kernel`,
+    '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x1 aux=1 generation=1 runtime_session=pid123-self-check process_id=pid:123 device_uuid=gpu:self-check context_id=context:0 queue_id=stream:0',
+    '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x1 aux=1 generation=2 runtime_session=pid123-self-check process_id=pid:123 device_uuid=gpu:self-check context_id=context:0 queue_id=stream:0',
+    '[gpu-runtime-boundary] host_identity role=host_state ptr=0x2 aux=2 generation=1 runtime_session=pid123-self-check process_id=pid:123',
+    '[gpu-runtime-boundary] host_identity role=host_state ptr=0x2 aux=2 generation=2 runtime_session=pid123-self-check process_id=pid:123',
+    '[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3 aux=3 generation=1 runtime_session=pid123-self-check process_id=pid:123',
+    '[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3 aux=3 generation=2 runtime_session=pid123-self-check process_id=pid:123 context_id=context:0 queue_id=stream:0',
+    `[gpu-runtime-boundary] output_oracle id=oracle:self-check kind=buffer_checksum expected=sha256:${'b'.repeat(64)} actual=sha256:${'b'.repeat(64)} passed=true runtime_session=pid123-self-check process_id=pid:123 artifact_id=artifact:sha256:${'a'.repeat(64)} epoch=epoch:2 generation=generation:2 output_target_id=output-target:self-check after_dispatch_id=dispatch:self-check readback_timestamp=4000 readback_bytes=4 readback_sample_sha256=sha256:${'b'.repeat(64)}`,
+  ];
   const adapterResultSelfCheck = {
     schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
     profileId: 'self-check-runtime-profile',
@@ -16842,6 +17117,9 @@ async function selfCheckRuntimeDispatchEvidence() {
   const savedRuntimeAdapterExecution = report.real_rocm_runtime_adapter_execution;
   const savedRuntimeAdapterExecutionEvidence =
     report.evidence?.real_rocm_runtime_adapter_execution;
+  const savedRuntimeAdapterStageEvents = report.real_rocm_runtime_adapter_stage_events;
+  const savedRuntimeAdapterStageEventsEvidence =
+    report.evidence?.runtime_adapter_stage_events;
   try {
     await mkdir(adapterResultSelfCheckDir, { recursive: true });
     await writeFile(
@@ -16972,6 +17250,105 @@ async function selfCheckRuntimeDispatchEvidence() {
       || adapterExecutionTransportEvidence.artifact_hash !== `sha256:${'a'.repeat(64)}`
     ) {
       throw new Error('runtime adapter execution boundary lines did not feed artifact transport evidence');
+    }
+    const completeAdapterStageRuntimeDispatch = runtimeDispatchEvidence(
+      completeAdapterRuntimeBoundaryLines,
+    );
+    const completeAdapterStageRuntimeArtifactTransport = runtimeArtifactTransportEvidence(
+      completeAdapterRuntimeBoundaryLines,
+    );
+    const completeAdapterStageRuntimeEpochSwap = epochSwapProofFromRuntimeEvidence(
+      completeAdapterRuntimeBoundaryLines,
+    );
+    const completeAdapterStageRuntimeOutputOracle = runtimeOutputOracleEvidence(
+      completeAdapterRuntimeBoundaryLines,
+    );
+    const completeAdapterStageRuntimeHostPreservation = hostPreservationProofFromRuntimeEvidence(
+      completeAdapterRuntimeBoundaryLines,
+      {
+        epochProof: completeAdapterStageRuntimeEpochSwap.proof,
+      },
+    );
+    const completeAdapterStageEvents = runtimeAdapterStageEventsFacet({
+      boundaryLines: completeAdapterRuntimeBoundaryLines,
+      runtimeDispatch: completeAdapterStageRuntimeDispatch,
+      runtimeArtifactTransport: completeAdapterStageRuntimeArtifactTransport,
+      runtimeEpochSwap: completeAdapterStageRuntimeEpochSwap,
+      runtimeOutputOracle: completeAdapterStageRuntimeOutputOracle,
+      runtimeHostPreservation: completeAdapterStageRuntimeHostPreservation,
+    });
+    if (
+      completeAdapterStageEvents.schemaVersion
+        !== REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION
+      || completeAdapterStageEvents.complete !== true
+      || completeAdapterStageEvents.acceptedAsSupportEvidence !== true
+      || completeAdapterStageEvents.acceptedForGpuHmr !== false
+      || completeAdapterStageEvents.gpuHmrSuccess !== false
+      || completeAdapterStageEvents.canSatisfyRuntimeProof !== false
+      || completeAdapterStageEvents.boundaryLineCount !== completeAdapterRuntimeBoundaryLines.length
+      || completeAdapterStageEvents.missingStages.length !== 0
+      || completeAdapterStageEvents.blockingGaps.length !== 0
+      || completeAdapterStageEvents.stageResults.output_oracle?.observed !== true
+      || completeAdapterStageEvents.stageResults.output_oracle?.missingProofKinds.length !== 0
+      || !completeAdapterStageEvents.evidenceRefs.some((ref) =>
+        ref.startsWith('runtime-adapter-stage:output_oracle:sha256:')
+      )
+    ) {
+      throw new Error(`runtime adapter stage-events self-check rejected complete generic boundary events ${stableJson({
+        complete: completeAdapterStageEvents.complete,
+        missingStages: completeAdapterStageEvents.missingStages,
+        blockingGaps: completeAdapterStageEvents.blockingGaps,
+        outputOracle: completeAdapterStageEvents.stageResults.output_oracle,
+        stageKeys: Object.keys(completeAdapterStageEvents.stageResults ?? {}),
+      })}`);
+    }
+    const missingOutputAdapterStageLines = completeAdapterRuntimeBoundaryLines
+      .filter((line) => !/\boutput_oracle\b/i.test(line));
+    const missingOutputAdapterStageEvents = runtimeAdapterStageEventsFacet({
+      boundaryLines: missingOutputAdapterStageLines,
+      runtimeDispatch: runtimeDispatchEvidence(missingOutputAdapterStageLines),
+      runtimeArtifactTransport: runtimeArtifactTransportEvidence(missingOutputAdapterStageLines),
+      runtimeEpochSwap: epochSwapProofFromRuntimeEvidence(missingOutputAdapterStageLines),
+      runtimeOutputOracle: runtimeOutputOracleEvidence(missingOutputAdapterStageLines),
+      runtimeHostPreservation: hostPreservationProofFromRuntimeEvidence(missingOutputAdapterStageLines),
+    });
+    if (
+      missingOutputAdapterStageEvents.complete !== false
+      || missingOutputAdapterStageEvents.acceptedAsSupportEvidence !== false
+      || !missingOutputAdapterStageEvents.missingStages.includes('output_oracle')
+      || !missingOutputAdapterStageEvents.blockingGaps.includes(
+        'runtime_adapter_stage_output_oracle_missing',
+      )
+      || !missingOutputAdapterStageEvents.stageResults.output_oracle?.missingProofKinds.includes(
+        'after_dispatch_id',
+      )
+    ) {
+      throw new Error('runtime adapter stage-events self-check accepted missing output oracle stage');
+    }
+    const weakOutputAdapterStageLines = completeAdapterRuntimeBoundaryLines.map((line) =>
+      /\boutput_oracle\b/i.test(line)
+        ? line.replace(/\sreadback_bytes=4\sreadback_sample_sha256=sha256:[a-f0-9]{64}/i, '')
+        : line
+    );
+    const weakOutputAdapterStageEvents = runtimeAdapterStageEventsFacet({
+      boundaryLines: weakOutputAdapterStageLines,
+      runtimeDispatch: runtimeDispatchEvidence(weakOutputAdapterStageLines),
+      runtimeArtifactTransport: runtimeArtifactTransportEvidence(weakOutputAdapterStageLines),
+      runtimeEpochSwap: epochSwapProofFromRuntimeEvidence(weakOutputAdapterStageLines),
+      runtimeOutputOracle: runtimeOutputOracleEvidence(weakOutputAdapterStageLines),
+      runtimeHostPreservation: hostPreservationProofFromRuntimeEvidence(weakOutputAdapterStageLines),
+    });
+    if (
+      weakOutputAdapterStageEvents.complete !== false
+      || weakOutputAdapterStageEvents.acceptedAsSupportEvidence !== false
+      || !weakOutputAdapterStageEvents.stageResults.output_oracle?.missingProofKinds.includes(
+        'readback_or_visual_artifact',
+      )
+      || !weakOutputAdapterStageEvents.blockingGaps.includes(
+        'runtime_adapter_stage_output_oracle_readback_or_visual_artifact_missing',
+      )
+    ) {
+      throw new Error('runtime adapter stage-events self-check accepted weak output artifact evidence');
     }
     const failedBuildPhase = {
       name: 'upstream_gpu_build_run',
@@ -17144,11 +17521,17 @@ async function selfCheckRuntimeDispatchEvidence() {
     report.realRocmRuntimeAdapterExecution = savedRuntimeAdapterExecution;
     report.runtime_adapter_execution = savedRuntimeAdapterExecution;
     report.runtimeAdapterExecution = savedRuntimeAdapterExecution;
+    report.real_rocm_runtime_adapter_stage_events = savedRuntimeAdapterStageEvents;
+    report.realRocmRuntimeAdapterStageEvents = savedRuntimeAdapterStageEvents;
+    report.runtime_adapter_stage_events = savedRuntimeAdapterStageEvents;
+    report.runtimeAdapterStageEvents = savedRuntimeAdapterStageEvents;
     if (report.evidence) {
       report.evidence.real_rocm_runtime_profile_adapter_result =
         savedRuntimeProfileAdapterResultEvidence;
       report.evidence.real_rocm_runtime_adapter_execution =
         savedRuntimeAdapterExecutionEvidence;
+      report.evidence.runtime_adapter_stage_events =
+        savedRuntimeAdapterStageEventsEvidence;
     }
   }
   const parsedCmakeArgs = parseStringArrayEnv(
@@ -21162,6 +21545,14 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
     epochProof: runtimeEpochSwap.proof,
   });
+  const runtimeAdapterStageEvents = runtimeAdapterStageEventsFacet({
+    boundaryLines: adapterRuntimeBoundaryLines,
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+  });
   const runtimeSourceFiles = Array.isArray(context?.files) ? context.files : [];
   const runtimeBuildMetadata =
     context?.buildMetadata && typeof context.buildMetadata === 'object' && !Array.isArray(context.buildMetadata)
@@ -21255,9 +21646,14 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtime_epoch_swap: runtimeEpochSwap.evidence,
     runtime_output_oracle: runtimeOutputOracle,
     runtime_host_identity: runtimeHostPreservation.evidence,
+    runtime_adapter_stage_events: runtimeAdapterStageEvents,
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
     runtime_identity_changes: runtimeIdentityChanges,
   };
+  report.real_rocm_runtime_adapter_stage_events = runtimeAdapterStageEvents;
+  report.realRocmRuntimeAdapterStageEvents = runtimeAdapterStageEvents;
+  report.runtime_adapter_stage_events = runtimeAdapterStageEvents;
+  report.runtimeAdapterStageEvents = runtimeAdapterStageEvents;
   report.modelProvenance = structuredModelProvenance;
   report.model_provenance = structuredModelProvenance;
   report.evidence.ai_split_provenance = classifyFreshAiSplitProvenance({
@@ -21628,6 +22024,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeEpochSwap,
     runtimeOutputOracle,
     runtimeHostPreservation,
+    runtimeAdapterStageEvents,
     proofArtifactRecords,
   });
   const adapterAppHookContract =

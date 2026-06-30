@@ -133,6 +133,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_execution.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY =
   'adapter_execution_evidence_only_not_runtime_authority';
+const REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_stage_events.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY =
+  'runtime_adapter_stage_events_normalized_not_runtime_authority';
 const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_result_transport.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY =
@@ -211,6 +215,33 @@ const REAL_ROCM_APP_HOOK_REQUIRED_STAGES = Object.freeze([
   'host_identity',
   'output_oracle',
 ]);
+const REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS = Object.freeze({
+  artifact_transport: Object.freeze([
+    'changed_artifact_hash',
+    'same_process_transport_event',
+    'loaded_artifact_hash',
+  ]),
+  epoch_publication: Object.freeze([
+    'published_epoch',
+    'published_artifact_hash',
+    'same_process_epoch_event',
+  ]),
+  dispatch_trace: Object.freeze([
+    'dispatch_id',
+    'dispatch_epoch',
+    'dispatch_artifact_hash',
+  ]),
+  host_identity: Object.freeze([
+    'process_id',
+    'device_identity',
+    'context_or_queue_identity',
+  ]),
+  output_oracle: Object.freeze([
+    'after_dispatch_id',
+    'output_target_id',
+    'readback_or_visual_artifact',
+  ]),
+});
 const REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS = Object.freeze([
   {
     kind: 'artifact_transport',
@@ -619,6 +650,10 @@ function runtimeBoundaryLineHashes(lines = []) {
 
 function runtimeBoundaryLineEvidenceRefs(lines = [], prefix = 'runtime-boundary-line') {
   return runtimeBoundaryLineHashes(lines).map((hash) => `${prefix}:${hash}`);
+}
+
+function realRocmStageProofKinds(stage) {
+  return [...(REAL_ROCM_APP_HOOK_STAGE_PROOF_KINDS[stage] ?? [])];
 }
 
 function runtimeBoundaryIntegerField(...values) {
@@ -7233,6 +7268,247 @@ function realRocmRuntimeAdapterExecutionFacet(input = {}) {
   };
 }
 
+function realRocmRuntimeAdapterStageEventsFacet(input = {}) {
+  const facet = compactObject(input);
+  const rawPresent = firstBool(facet.present);
+  const rawBoundaryLineCount = finiteNumber(
+    facet.boundaryLineCount
+    ?? facet.boundary_line_count,
+  );
+  const hasStageInput =
+    facet.stageResults && typeof facet.stageResults === 'object'
+    || facet.stage_results && typeof facet.stage_results === 'object';
+  if (
+    Object.keys(facet).length === 0
+    || (rawPresent !== true && !(rawBoundaryLineCount > 0) && !hasStageInput)
+  ) {
+    return {
+      present: false,
+      accepted: null,
+      complete: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+      missingStages: [],
+      missing_stages: [],
+      stageResults: {},
+      stage_results: {},
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const acceptedAsSupportEvidence = firstBool(
+    facet.acceptedAsSupportEvidence,
+    facet.accepted_as_support_evidence,
+  );
+  const serializedComplete = firstBool(facet.complete);
+  const boundaryLineHashes = compactStringList([
+    ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
+    ...(Array.isArray(facet.boundary_line_hashes) ? facet.boundary_line_hashes : []),
+  ]).map(normalizeSha256).filter(Boolean);
+  const boundaryLineCount = rawBoundaryLineCount ?? boundaryLineHashes.length;
+  const rawStageResults =
+    facet.stageResults && typeof facet.stageResults === 'object'
+      ? facet.stageResults
+      : facet.stage_results && typeof facet.stage_results === 'object'
+        ? facet.stage_results
+        : {};
+  const stageKeyMap = {
+    artifact_transport: 'artifactTransport',
+    epoch_publication: 'epochPublication',
+    dispatch_trace: 'dispatchTrace',
+    host_identity: 'hostIdentity',
+    output_oracle: 'outputOracle',
+  };
+  const stageResults = {};
+  const recomputedMissingStages = [];
+  const recomputedBlockingGaps = [];
+  for (const stage of REAL_ROCM_APP_HOOK_REQUIRED_STAGES) {
+    const camelKey = stageKeyMap[stage] ?? stage;
+    const rawStage = compactObject(rawStageResults[stage] ?? rawStageResults[camelKey] ?? {});
+    const observed = firstBool(
+      rawStage.observed,
+      rawStage.runtimeObserved,
+      rawStage.runtime_observed,
+    ) === true;
+    const requiredProofKinds = realRocmStageProofKinds(stage);
+    const serializedMissingProofKinds = compactStringList([
+      ...(Array.isArray(rawStage.missingProofKinds) ? rawStage.missingProofKinds : []),
+      ...(Array.isArray(rawStage.missing_proof_kinds) ? rawStage.missing_proof_kinds : []),
+    ]);
+    const fieldChecks = rawStage.fieldChecks ?? rawStage.field_checks ?? {};
+    const fieldCheckMissingProofKinds =
+      observed && fieldChecks && typeof fieldChecks === 'object' && !Array.isArray(fieldChecks)
+        ? requiredProofKinds.filter((kind) => fieldChecks[kind] !== true)
+        : observed
+          ? requiredProofKinds
+          : requiredProofKinds;
+    const missingProofKinds = compactStringList([
+      ...serializedMissingProofKinds,
+      ...fieldCheckMissingProofKinds,
+    ]);
+    const stageBoundaryLineCount =
+      finiteNumber(rawStage.boundaryLineCount ?? rawStage.boundary_line_count) ?? 0;
+    const stageBoundaryLineHashes = compactStringList([
+      ...(Array.isArray(rawStage.boundaryLineHashes) ? rawStage.boundaryLineHashes : []),
+      ...(Array.isArray(rawStage.boundary_line_hashes) ? rawStage.boundary_line_hashes : []),
+    ]).map(normalizeSha256).filter(Boolean);
+    const stageEvidenceRefs = compactStringList([
+      ...(Array.isArray(rawStage.evidenceRefs) ? rawStage.evidenceRefs : []),
+      ...(Array.isArray(rawStage.evidence_refs) ? rawStage.evidence_refs : []),
+    ]);
+    const result = {
+      stage,
+      observed,
+      runtimeObserved: observed,
+      runtime_observed: observed,
+      boundaryLineCount: stageBoundaryLineCount,
+      boundary_line_count: stageBoundaryLineCount,
+      boundaryLineHashes: stageBoundaryLineHashes,
+      boundary_line_hashes: stageBoundaryLineHashes,
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
+      fieldChecks,
+      field_checks: fieldChecks,
+      evidenceRefs: stageEvidenceRefs,
+      evidence_refs: stageEvidenceRefs,
+    };
+    if (!observed) {
+      recomputedMissingStages.push(stage);
+      recomputedBlockingGaps.push(`runtime_adapter_stage_${stage}_missing`);
+    }
+    if (observed && stageBoundaryLineCount <= 0) {
+      recomputedBlockingGaps.push(`runtime_adapter_stage_${stage}_boundary_line_missing`);
+    }
+    if (observed && stageBoundaryLineHashes.length === 0) {
+      recomputedBlockingGaps.push(`runtime_adapter_stage_${stage}_boundary_hash_missing`);
+    }
+    if (observed && stageEvidenceRefs.length === 0) {
+      recomputedBlockingGaps.push(`runtime_adapter_stage_${stage}_evidence_refs_missing`);
+    }
+    for (const proofKind of missingProofKinds) {
+      recomputedBlockingGaps.push(`runtime_adapter_stage_${stage}_${proofKind}_missing`);
+    }
+    stageResults[camelKey] = result;
+    stageResults[stage] = result;
+  }
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...recomputedBlockingGaps,
+  ]);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    facet.facetHash,
+    facet.facet_hash,
+    ...Object.values(stageResults).flatMap((stage) =>
+      Array.isArray(stage.evidence_refs) ? stage.evidence_refs : []
+    ),
+  ]);
+  const recomputedComplete =
+    boundaryLineCount > 0
+    && recomputedMissingStages.length === 0
+    && recomputedBlockingGaps.length === 0;
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_runtime_adapter_stage_events_schema_missing',
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION
+      ? 'real_rocm_runtime_adapter_stage_events_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_adapter_stage_events_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_adapter_stage_events_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_adapter_stage_events_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_adapter_stage_events_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_adapter_stage_events_claimed_dispatch_authority'
+      : null,
+    serializedComplete === true && recomputedComplete !== true
+      ? 'real_rocm_runtime_adapter_stage_events_complete_claim_has_missing_stage_proof'
+      : null,
+    acceptedAsSupportEvidence === true && recomputedComplete !== true
+      ? 'real_rocm_runtime_adapter_stage_events_support_claim_has_missing_stage_proof'
+      : null,
+    recomputedComplete !== true && blockingGaps.length === 0
+      ? 'real_rocm_runtime_adapter_stage_events_incomplete_without_gap'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0 && blockingGaps.length === 0 && recomputedComplete,
+    complete: recomputedComplete,
+    acceptedAsSupportEvidence: acceptedAsSupportEvidence === true && recomputedComplete,
+    accepted_as_support_evidence: acceptedAsSupportEvidence === true && recomputedComplete,
+    acceptedForGpuHmr: acceptedForGpuHmr === true,
+    accepted_for_gpu_hmr: acceptedForGpuHmr === true,
+    gpuHmrSuccess: gpuHmrSuccess === true,
+    gpu_hmr_success: gpuHmrSuccess === true,
+    canSatisfyRuntimeProof: canSatisfyRuntimeProof === true,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof === true,
+    canSatisfyDispatchProof: canSatisfyDispatchProof === true,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    boundaryLineCount,
+    boundary_line_count: boundaryLineCount,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    missingStages: recomputedMissingStages,
+    missing_stages: recomputedMissingStages,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    stageResults,
+    stage_results: stageResults,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -12971,6 +13247,133 @@ function adapterBoundaryOverlayConflictCodes(baseRecord = {}, overlay = {}) {
   ]);
 }
 
+function runtimeChainBaseClosureGaps(record = {}) {
+  const base = compactObject(record);
+  const loaderEvent = compactObject(base.loaderEvent ?? base.loader_event);
+  const epochPublishEvent = compactObject(base.epochPublishEvent ?? base.epoch_publish_event);
+  const dispatchEvent = compactObject(base.dispatchEvent ?? base.dispatch_event);
+  const outputEvent = compactObject(base.outputEvent ?? base.output_event);
+  const retirementEvent = compactObject(base.retirementEvent ?? base.retirement_event);
+  const processIdentity = compactObject(base.processIdentity ?? base.process_identity);
+  const artifactAfterHash = firstText(base.artifactAfterHash, base.artifact_after_hash);
+  const loaderArtifactHash = firstText(loaderEvent.artifact_hash, loaderEvent.artifactHash);
+  const epochArtifactHash = firstText(epochPublishEvent.artifact_hash, epochPublishEvent.artifactHash);
+  const dispatchArtifactHash = firstText(dispatchEvent.artifact_hash, dispatchEvent.artifactHash);
+  const outputArtifactHash = firstText(outputEvent.artifact_hash, outputEvent.artifactHash);
+  const selectedTransport = selectedArtifactTransport(loaderEvent, base);
+  const transportHash = transportArtifactHash(loaderEvent, base);
+  const inMemoryTransportAccepted = inMemoryArtifactTransportAccepted(loaderEvent, base);
+  const requiredRuntimeSessionEvidence = stringEvidenceList([
+    eventRuntimeSessionId(loaderEvent),
+    eventRuntimeSessionId(epochPublishEvent),
+    eventRuntimeSessionId(dispatchEvent),
+    eventRuntimeSessionId(outputEvent),
+    eventRuntimeSessionId(processIdentity),
+  ]);
+  const requiredProcessIdEvidence = stringEvidenceList([
+    firstText(processIdentity.process_id, processIdentity.processId),
+    firstText(loaderEvent.process_id, loaderEvent.processId),
+    firstText(epochPublishEvent.process_id, epochPublishEvent.processId),
+    firstText(dispatchEvent.process_id, dispatchEvent.processId),
+    firstText(outputEvent.process_id, outputEvent.processId),
+  ]);
+  const requiredEpochEvidence = stringEvidenceList([
+    firstEpochText(epochPublishEvent.epoch),
+    firstEpochText(dispatchEvent.epoch),
+    firstEpochText(outputEvent.epoch),
+  ]);
+  const requiredDispatchTableEntryEvidence = stringEvidenceList([
+    eventDispatchTableEntryId(epochPublishEvent),
+    eventDispatchTableEntryId(dispatchEvent),
+    eventDispatchTableEntryId(outputEvent),
+  ]);
+  const dispatchId = firstText(dispatchEvent.id, dispatchEvent.dispatch_id, dispatchEvent.dispatchId);
+  const outputAfterDispatchId = firstText(
+    outputEvent.after_dispatch_id,
+    outputEvent.afterDispatchId,
+    outputEvent.dispatch_id,
+    outputEvent.dispatchId,
+  );
+  const requiredOutputTargetEvidence = stringEvidenceList([
+    eventOutputTargetId(dispatchEvent),
+    eventOutputTargetId(outputEvent),
+  ]);
+  const timestamps = {
+    loader: eventTimestampNs(loaderEvent),
+    epochPublish: eventTimestampNs(epochPublishEvent),
+    dispatch: eventTimestampNs(dispatchEvent),
+    output: eventTimestampNs(outputEvent),
+    retirement: eventTimestampNs(retirementEvent),
+  };
+  const timestampOrderAccepted =
+    timestamps.loader !== null
+    && timestamps.epochPublish !== null
+    && timestamps.dispatch !== null
+    && timestamps.output !== null
+    && timestamps.loader <= timestamps.epochPublish
+    && timestamps.epochPublish <= timestamps.dispatch
+    && timestamps.dispatch <= timestamps.output
+    && (timestamps.retirement === null || timestamps.output <= timestamps.retirement);
+  const requiredArtifactHashEvidence = stringEvidenceList([
+    artifactAfterHash,
+    loaderArtifactHash,
+    epochArtifactHash,
+    dispatchArtifactHash,
+    outputArtifactHash,
+    transportHash,
+  ]);
+  return compactStringList([
+    Object.keys(base).length > 0
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_record_missing',
+    requiredArtifactHashEvidence.length >= 6
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_artifact_hash_missing',
+    selectedTransport
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_transport_kind_missing',
+    transportHash
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_transport_hash_missing',
+    inMemoryTransportAccepted
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_memory_transport_missing',
+    requiredRuntimeSessionEvidence.length >= 5
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_session_missing',
+    requiredProcessIdEvidence.length >= 5
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_process_identity_missing',
+    requiredEpochEvidence.length >= 3
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_epoch_missing',
+    dispatchId
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_dispatch_id_missing',
+    dispatchId && outputAfterDispatchId === dispatchId
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_output_dispatch_mismatch',
+    requiredDispatchTableEntryEvidence.length >= 3
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_dispatch_table_entry_missing',
+    requiredOutputTargetEvidence.length >= 2
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_output_target_missing',
+    timestampOrderAccepted
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_timestamp_order_invalid',
+    base.cpuHmrUsed === false || base.cpu_hmr_used === false
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_cpu_hmr_not_false',
+    base.fullRebuildUsed === false || base.full_rebuild_used === false
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_full_rebuild_not_false',
+    base.processRestarted === false || base.process_restarted === false
+      ? null
+      : 'real_rocm_runtime_chain_adapter_overlay_base_process_restart_not_false',
+  ]);
+}
+
 function realRocmRuntimeChainFacet({
   ledger = {},
   proofLedger = {},
@@ -13022,6 +13425,9 @@ function realRocmRuntimeChainFacet({
     ...adapterResultConflictCodes,
     ...adapterExecutionConflictCodes,
   ]);
+  const adapterOverlayBaseClosureGaps = adapterBoundaryOverlayLineCount > 0
+    ? runtimeChainBaseClosureGaps(baseRecord)
+    : [];
   const loaderEvent = compactObject(record.loaderEvent ?? record.loader_event);
   const epochPublishEvent = compactObject(record.epochPublishEvent ?? record.epoch_publish_event);
   const dispatchEvent = compactObject(record.dispatchEvent ?? record.dispatch_event);
@@ -13170,6 +13576,7 @@ function realRocmRuntimeChainFacet({
     record.processRestarted === false || record.process_restarted === false
       ? null
       : 'real_rocm_runtime_chain_process_restart_not_false',
+    ...adapterOverlayBaseClosureGaps,
     ...adapterOverlayConflictCodes,
   ]);
   const failedGates = failedGateCodes.map((code) => ({ code }));
@@ -13209,6 +13616,8 @@ function realRocmRuntimeChainFacet({
     adapter_boundary_overlay_evidence_refs: adapterBoundaryOverlayEvidenceRefs,
     adapterBoundaryOverlaySources: adapterBoundaryOverlaySources,
     adapter_boundary_overlay_sources: adapterBoundaryOverlaySources,
+    adapterOverlayBaseClosureGaps,
+    adapter_overlay_base_closure_gaps: adapterOverlayBaseClosureGaps,
     failedGates,
     failed_gates: failedGates,
   };
@@ -14258,6 +14667,24 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? evidence.runtime_adapter_execution
     ?? evidence.runtimeAdapterExecution,
   ));
+  const realRocmRuntimeAdapterStageEvents = realRocmRuntimeAdapterStageEventsFacet(compactObject(
+    json.real_rocm_runtime_adapter_stage_events
+    ?? json.realRocmRuntimeAdapterStageEvents
+    ?? json.runtime_adapter_stage_events
+    ?? json.runtimeAdapterStageEvents
+    ?? summary.real_rocm_runtime_adapter_stage_events
+    ?? summary.realRocmRuntimeAdapterStageEvents
+    ?? summary.runtime_adapter_stage_events
+    ?? summary.runtimeAdapterStageEvents
+    ?? runtimeProofArtifact.real_rocm_runtime_adapter_stage_events
+    ?? runtimeProofArtifact.realRocmRuntimeAdapterStageEvents
+    ?? runtimeProofArtifact.runtime_adapter_stage_events
+    ?? runtimeProofArtifact.runtimeAdapterStageEvents
+    ?? evidence.real_rocm_runtime_adapter_stage_events
+    ?? evidence.realRocmRuntimeAdapterStageEvents
+    ?? evidence.runtime_adapter_stage_events
+    ?? evidence.runtimeAdapterStageEvents,
+  ));
   const realRocmRuntimeAdapterResultTransport =
     realRocmRuntimeAdapterResultTransportFacet(compactObject(
       json.real_rocm_runtime_adapter_result_transport
@@ -14730,6 +15157,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           : []),
       ])
       : [];
+  const realRocmRuntimeAdapterStageEventsGaps =
+    realRocmRuntimeAdapterStageEvents.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmRuntimeAdapterStageEvents.blockingGaps)
+          ? realRocmRuntimeAdapterStageEvents.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterStageEvents.blocking_gaps)
+          ? realRocmRuntimeAdapterStageEvents.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterStageEvents.failedGates)
+          ? realRocmRuntimeAdapterStageEvents.failedGates
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterStageEvents.failed_gates)
+          ? realRocmRuntimeAdapterStageEvents.failed_gates
+          : []),
+      ])
+      : [];
   const realRocmRuntimeAdapterResultTransportGaps =
     realRocmRuntimeAdapterResultTransport.present === true
       ? compactStringList([
@@ -14876,6 +15320,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmRuntimeAdapterExecution.present === true
       ? firstText(realRocmRuntimeAdapterExecution.status, realRocmRuntimeAdapterExecution.reason)
       : null;
+  const realRocmRuntimeAdapterStageEventsReason =
+    realRocmRuntimeAdapterStageEvents.present === true
+      ? firstText(
+        realRocmRuntimeAdapterStageEvents.status,
+        realRocmRuntimeAdapterStageEvents.reason,
+        realRocmRuntimeAdapterStageEvents.proofAuthority,
+        realRocmRuntimeAdapterStageEvents.proof_authority,
+      )
+      : null;
   const realRocmRuntimeAdapterResultTransportReason =
     realRocmRuntimeAdapterResultTransport.present === true
       ? firstText(
@@ -14997,6 +15450,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeAdapterExecutionAccepted =
     realRocmRuntimeAdapterExecution.present !== true
     || realRocmRuntimeAdapterExecution.accepted === true;
+  const runtimeAdapterStageEventsAccepted =
+    realRocmRuntimeAdapterStageEvents.present !== true
+    || realRocmRuntimeAdapterStageEvents.accepted === true;
   const runtimeAdapterResultTransportAccepted =
     realRocmRuntimeAdapterResultTransport.present !== true
     || realRocmRuntimeAdapterResultTransport.accepted === true;
@@ -15091,6 +15547,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && appHookMaterializationAccepted === true
     && runtimeProfileAdapterResultAccepted === true
     && runtimeAdapterExecutionAccepted === true
+    && runtimeAdapterStageEventsAccepted === true
     && runtimeAdapterResultTransportAccepted === true
     && realRocmOperationalEvidenceAccepted === true
     && externalHeaderPrerequisitesAccepted === true
@@ -15326,6 +15783,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_adapter_execution: realRocmRuntimeAdapterExecution,
     runtimeAdapterExecution: realRocmRuntimeAdapterExecution,
     runtime_adapter_execution: realRocmRuntimeAdapterExecution,
+    realRocmRuntimeAdapterStageEvents,
+    real_rocm_runtime_adapter_stage_events: realRocmRuntimeAdapterStageEvents,
+    runtimeAdapterStageEvents: realRocmRuntimeAdapterStageEvents,
+    runtime_adapter_stage_events: realRocmRuntimeAdapterStageEvents,
     realRocmRuntimeAdapterResultTransport,
     real_rocm_runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
     runtimeAdapterResultTransport: realRocmRuntimeAdapterResultTransport,
@@ -15411,6 +15872,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterExecutionAccepted
         ? null
         : 'real_rocm_runtime_adapter_execution_not_accepted',
+      realRocmRuntimeAdapterStageEventsReason
+        ? `real_rocm_runtime_adapter_stage_events:${realRocmRuntimeAdapterStageEventsReason}`
+        : null,
+      ...realRocmRuntimeAdapterStageEventsGaps.map((gap) =>
+        `real_rocm_runtime_adapter_stage_events:${gap}`
+      ),
+      runtimeAdapterStageEventsAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_stage_events_not_accepted',
       realRocmRuntimeAdapterResultTransportReason
         ? `real_rocm_runtime_adapter_result_transport:${realRocmRuntimeAdapterResultTransportReason}`
         : null,
@@ -15549,6 +16019,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterExecutionAccepted
         ? null
         : 'real_rocm_runtime_adapter_execution_required',
+      ...realRocmRuntimeAdapterStageEventsGaps.map((gap) =>
+        `real_rocm_runtime_adapter_stage_events:${gap}`
+      ),
+      runtimeAdapterStageEventsAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_stage_events_required',
       ...realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
         `real_rocm_runtime_adapter_result_transport:${gap}`
       ),

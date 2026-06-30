@@ -4048,6 +4048,137 @@ function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
   };
 }
 
+function runtimeAdapterStageEventsFixture(lines, overrides = {}) {
+  const stageDefs = [
+    {
+      camel: 'artifactTransport',
+      snake: 'artifact_transport',
+      pattern: /\bartifact_transport\b/i,
+      proofKinds: [
+        'changed_artifact_hash',
+        'same_process_transport_event',
+        'loaded_artifact_hash',
+      ],
+    },
+    {
+      camel: 'epochPublication',
+      snake: 'epoch_publication',
+      pattern: /\bdispatcher_epoch\b/i,
+      proofKinds: [
+        'published_epoch',
+        'published_artifact_hash',
+        'same_process_epoch_event',
+      ],
+    },
+    {
+      camel: 'dispatchTrace',
+      snake: 'dispatch_trace',
+      pattern: /\b(?:native_runtime_dispatch|synthi_gpu_launch)\b/i,
+      proofKinds: [
+        'dispatch_id',
+        'dispatch_epoch',
+        'dispatch_artifact_hash',
+      ],
+    },
+    {
+      camel: 'hostIdentity',
+      snake: 'host_identity',
+      pattern: /\bhost_identity\b/i,
+      proofKinds: [
+        'process_id',
+        'device_identity',
+        'context_or_queue_identity',
+      ],
+    },
+    {
+      camel: 'outputOracle',
+      snake: 'output_oracle',
+      pattern: /\boutput_oracle\b/i,
+      proofKinds: [
+        'after_dispatch_id',
+        'output_target_id',
+        'readback_or_visual_artifact',
+      ],
+    },
+  ];
+  const normalizedLines = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(String(line ?? '')));
+  const stageResults = {};
+  const blockingGaps = [];
+  for (const stage of stageDefs) {
+    const stageLines = normalizedLines.filter((line) => stage.pattern.test(line));
+    const observed = stageLines.length > 0;
+    const fieldChecks = Object.fromEntries(stage.proofKinds.map((kind) => [kind, observed]));
+    const result = {
+      stage: stage.snake,
+      observed,
+      runtimeObserved: observed,
+      runtime_observed: observed,
+      boundaryLineCount: stageLines.length,
+      boundary_line_count: stageLines.length,
+      boundaryLineHashes: stageLines.map(hashValue),
+      boundary_line_hashes: stageLines.map(hashValue),
+      requiredProofKinds: stage.proofKinds,
+      required_proof_kinds: stage.proofKinds,
+      missingProofKinds: observed ? [] : stage.proofKinds,
+      missing_proof_kinds: observed ? [] : stage.proofKinds,
+      fieldChecks,
+      field_checks: fieldChecks,
+      evidenceRefs: stageLines.map((line) =>
+        `runtime-adapter-stage:${stage.snake}:${hashValue(line)}`
+      ),
+      evidence_refs: stageLines.map((line) =>
+        `runtime-adapter-stage:${stage.snake}:${hashValue(line)}`
+      ),
+    };
+    if (!observed) blockingGaps.push(`runtime_adapter_stage_${stage.snake}_missing`);
+    for (const proofKind of result.missingProofKinds) {
+      blockingGaps.push(`runtime_adapter_stage_${stage.snake}_${proofKind}_missing`);
+    }
+    stageResults[stage.camel] = result;
+    stageResults[stage.snake] = result;
+  }
+  const boundaryLineHashes = normalizedLines.map(hashValue);
+  const facetSeed = { boundaryLineHashes, stageResults, blockingGaps };
+  return {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_stage_events.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_stage_events.v1',
+    proofAuthority: 'runtime_adapter_stage_events_normalized_not_runtime_authority',
+    proof_authority: 'runtime_adapter_stage_events_normalized_not_runtime_authority',
+    present: normalizedLines.length > 0,
+    complete: blockingGaps.length === 0 && normalizedLines.length > 0,
+    acceptedAsSupportEvidence: blockingGaps.length === 0 && normalizedLines.length > 0,
+    accepted_as_support_evidence: blockingGaps.length === 0 && normalizedLines.length > 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    boundaryLineCount: normalizedLines.length,
+    boundary_line_count: normalizedLines.length,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    missingStages: stageDefs
+      .filter((stage) => stageResults[stage.snake].observed !== true)
+      .map((stage) => stage.snake),
+    missing_stages: stageDefs
+      .filter((stage) => stageResults[stage.snake].observed !== true)
+      .map((stage) => stage.snake),
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    stageResults,
+    stage_results: stageResults,
+    evidenceRefs: Object.values(stageResults).flatMap((stage) => stage.evidenceRefs),
+    evidence_refs: Object.values(stageResults).flatMap((stage) => stage.evidenceRefs),
+    facetHash: hashValue(stableJson(facetSeed)),
+    facet_hash: hashValue(stableJson(facetSeed)),
+    ...overrides,
+  };
+}
+
 function acceptedLargeRocmSourceDeltaExecution(scope) {
   return {
     schemaVersion: 'synthi.gpu_hmr.real_rocm_source_delta_execution.v1',
@@ -13667,6 +13798,8 @@ completeAdapterBoundaryRuntimeAdapterExecution.evidenceRefs = [
 ];
 completeAdapterBoundaryRuntimeAdapterExecution.evidence_refs =
   completeAdapterBoundaryRuntimeAdapterExecution.evidenceRefs;
+const completeAdapterBoundaryRuntimeAdapterStageEvents =
+  runtimeAdapterStageEventsFixture(completeAdapterBoundaryExecutionSynthiLaunchLines);
 const completeAdapterBoundaryRuntimeAdapterResultTransport =
   runtimeAdapterResultTransportFixture(completeAdapterBoundaryBridgeScope);
 const completeAdapterBoundaryReport = {
@@ -13765,6 +13898,7 @@ const completeAdapterBoundaryReport = {
   real_rocm_sidecar_runtime_consistency: completeAdapterBoundarySidecarConsistency,
   real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
   real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+  real_rocm_runtime_adapter_stage_events: completeAdapterBoundaryRuntimeAdapterStageEvents,
   real_rocm_runtime_adapter_result_transport:
     completeAdapterBoundaryRuntimeAdapterResultTransport,
   ...completeAdapterBoundaryMaterials,
@@ -13800,6 +13934,8 @@ const completeAdapterBoundaryReport = {
     real_rocm_runtime_profile_adapter_result: completeAdapterBoundaryRuntimeAdapterResult,
     realRocmRuntimeAdapterExecution: completeAdapterBoundaryRuntimeAdapterExecution,
     real_rocm_runtime_adapter_execution: completeAdapterBoundaryRuntimeAdapterExecution,
+    realRocmRuntimeAdapterStageEvents: completeAdapterBoundaryRuntimeAdapterStageEvents,
+    real_rocm_runtime_adapter_stage_events: completeAdapterBoundaryRuntimeAdapterStageEvents,
     realRocmRuntimeAdapterResultTransport:
       completeAdapterBoundaryRuntimeAdapterResultTransport,
     real_rocm_runtime_adapter_result_transport:
@@ -13897,6 +14033,32 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.adapterCommandHash,
   hashValue(`runtime-adapter-command:${completeAdapterBoundaryBridgeScope}`),
 );
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.accepted, true);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.acceptedAsSupportEvidence,
+  true,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.canSatisfyRuntimeProof,
+  false,
+);
+assert.deepEqual(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents.missingStages,
+  [],
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterStageEvents
+    .stageResults.output_oracle.fieldChecks.readback_or_visual_artifact,
+  true,
+);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.accepted, true);
 assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.acceptedForGpuHmr,
@@ -13945,6 +14107,164 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.outputTargetId,
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
+
+const adapterStageEventsForgedAuthorityDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-stage-events-forged-authority',
+);
+await fs.mkdir(adapterStageEventsForgedAuthorityDir, { recursive: true });
+const adapterStageEventsForgedAuthorityReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterStageEventsForgedAuthorityFacet = {
+  ...adapterStageEventsForgedAuthorityReport.real_rocm_runtime_adapter_stage_events,
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+};
+adapterStageEventsForgedAuthorityReport.slug =
+  'gpu-real-rocm-adapter-stage-events-forged-authority-20260629';
+adapterStageEventsForgedAuthorityReport.real_rocm_runtime_adapter_stage_events =
+  adapterStageEventsForgedAuthorityFacet;
+adapterStageEventsForgedAuthorityReport.runtime_proof_artifact.realRocmRuntimeAdapterStageEvents =
+  adapterStageEventsForgedAuthorityFacet;
+adapterStageEventsForgedAuthorityReport.runtime_proof_artifact.real_rocm_runtime_adapter_stage_events =
+  adapterStageEventsForgedAuthorityFacet;
+await writeJson(
+  path.join(
+    adapterStageEventsForgedAuthorityDir,
+    'real-rocm-adapter-stage-events-forged-authority.json',
+  ),
+  adapterStageEventsForgedAuthorityReport,
+);
+const adapterStageEventsForgedAuthorityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterStageEventsForgedAuthorityDir],
+  generatedAt: '2026-06-29T00:00:02.265Z',
+  includeUnproven: true,
+});
+const adapterStageEventsForgedAuthorityRow =
+  adapterStageEventsForgedAuthorityLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(adapterStageEventsForgedAuthorityRow?.matrixOutcome, 'unproven');
+assert.equal(adapterStageEventsForgedAuthorityRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterStageEventsForgedAuthorityRow.realRocmRuntimeAdapterStageEvents.accepted,
+  false,
+);
+assert.ok(
+  adapterStageEventsForgedAuthorityRow.reasons.includes(
+    'real_rocm_runtime_adapter_stage_events:real_rocm_runtime_adapter_stage_events_claimed_gpu_hmr_acceptance',
+  ),
+);
+assert.ok(
+  adapterStageEventsForgedAuthorityRow.reasons.includes(
+    'real_rocm_runtime_adapter_stage_events:real_rocm_runtime_adapter_stage_events_claimed_runtime_authority',
+  ),
+);
+
+const adapterOverlayOnlyClosureDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-overlay-only-runtime-chain-closure',
+);
+await fs.mkdir(adapterOverlayOnlyClosureDir, { recursive: true });
+const adapterOverlayOnlyClosureReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterOverlayOnlyClosureRecord =
+  adapterOverlayOnlyClosureReport.runtime_proof_artifact.proofLedger.records[0];
+for (const key of [
+  'selected_loader_transport',
+  'selectedLoaderTransport',
+  'artifact_transport',
+  'artifactTransport',
+]) {
+  if (adapterOverlayOnlyClosureRecord.loader_event) {
+    delete adapterOverlayOnlyClosureRecord.loader_event[key];
+  }
+  if (adapterOverlayOnlyClosureRecord.loaderEvent) {
+    delete adapterOverlayOnlyClosureRecord.loaderEvent[key];
+  }
+}
+for (const event of [
+  adapterOverlayOnlyClosureRecord.epoch_publish_event,
+  adapterOverlayOnlyClosureRecord.epochPublishEvent,
+  adapterOverlayOnlyClosureRecord.dispatch_event,
+  adapterOverlayOnlyClosureRecord.dispatchEvent,
+  adapterOverlayOnlyClosureRecord.output_event,
+  adapterOverlayOnlyClosureRecord.outputEvent,
+]) {
+  if (!event) continue;
+  delete event.dispatch_table_entry_id;
+  delete event.dispatchTableEntryId;
+}
+for (const event of [
+  adapterOverlayOnlyClosureRecord.dispatch_event,
+  adapterOverlayOnlyClosureRecord.dispatchEvent,
+  adapterOverlayOnlyClosureRecord.output_event,
+  adapterOverlayOnlyClosureRecord.outputEvent,
+]) {
+  if (!event) continue;
+  delete event.output_target_id;
+  delete event.outputTargetId;
+}
+const adapterOverlayOnlyClosureProofLedger =
+  buildGpuHmrProofLedger(adapterOverlayOnlyClosureRecord);
+const adapterOverlayOnlyClosureProofLedgerQuery =
+  queryGpuHmrLedgerInvariants(adapterOverlayOnlyClosureProofLedger);
+assert.deepEqual(adapterOverlayOnlyClosureProofLedgerQuery.failedInvariants, []);
+assert.equal(adapterOverlayOnlyClosureProofLedgerQuery.gpuHmrSuccess, true);
+adapterOverlayOnlyClosureReport.slug =
+  'gpu-real-rocm-adapter-overlay-only-runtime-chain-closure-20260629';
+adapterOverlayOnlyClosureReport.proofLedger = adapterOverlayOnlyClosureProofLedger;
+adapterOverlayOnlyClosureReport.proof_ledger = adapterOverlayOnlyClosureProofLedger;
+adapterOverlayOnlyClosureReport.proofLedgerQuery =
+  adapterOverlayOnlyClosureProofLedgerQuery;
+adapterOverlayOnlyClosureReport.proof_ledger_query =
+  adapterOverlayOnlyClosureProofLedgerQuery;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.proofLedger =
+  adapterOverlayOnlyClosureProofLedger;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.proof_ledger =
+  adapterOverlayOnlyClosureProofLedger;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.proofLedgerQuery =
+  adapterOverlayOnlyClosureProofLedgerQuery;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.proof_ledger_query =
+  adapterOverlayOnlyClosureProofLedgerQuery;
+await writeJson(
+  path.join(
+    adapterOverlayOnlyClosureDir,
+    'real-rocm-adapter-overlay-only-runtime-chain-closure.json',
+  ),
+  adapterOverlayOnlyClosureReport,
+);
+const adapterOverlayOnlyClosureLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterOverlayOnlyClosureDir],
+  generatedAt: '2026-06-29T00:00:02.266Z',
+  includeUnproven: true,
+});
+const adapterOverlayOnlyClosureRow =
+  adapterOverlayOnlyClosureLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(adapterOverlayOnlyClosureRow?.matrixOutcome, 'unproven');
+assert.equal(adapterOverlayOnlyClosureRow.acceptedForGpuHmr, false);
+assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
+  (failure) =>
+    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_transport_kind_missing',
+));
+assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
+  (failure) =>
+    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_dispatch_table_entry_missing',
+));
+assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
+  (failure) =>
+    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_output_target_missing',
+));
 
 const adapterBoundaryWeakHostIdentityDir = path.join(
   logsRoot,

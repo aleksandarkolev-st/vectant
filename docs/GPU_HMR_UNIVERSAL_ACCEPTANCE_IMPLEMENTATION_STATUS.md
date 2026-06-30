@@ -4,6 +4,27 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Adapter Stage Events And Overlay Closure
+
+The real ROCm runtime-adapter path now emits a generic support-only `synthi.real_rocm.runtime_adapter_stage_events.v1` facet from adapter `[gpu-runtime-boundary]` output. The runner normalizes boundary lines into the five app-hook stages `artifact_transport`, `epoch_publication`, `dispatch_trace`, `host_identity`, and `output_oracle`, records per-stage boundary hashes, evidence refs, field checks, missing proof kinds, and a content-addressed facet hash, and preserves the facet in retained reports and runtime evidence.
+
+The facet cannot authorize GPU HMR. It is always `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, `canSatisfyRuntimeProof=false`, and `canSatisfyDispatchProof=false`. Validation-matrix ingestion recomputes stage proof-kind requirements from the field checks and rejects forged stage-event facets that claim GPU HMR, runtime, or dispatch authority.
+
+Adapter boundary overlays are also constrained so they cannot close a runtime chain by declaration. When adapter boundary lines are present, the base ledger/runtime record must independently carry the core closure fields for artifact transport kind/hash, same-process runtime session, process identity, epoch, dispatch ID, dispatch-table entry, output target, post-dispatch output identity, timestamp order, and CPU/full-rebuild/restart firewall state. Overlay evidence can support consistency with an already closed chain; it cannot replace loader, epoch, dispatch, host-identity, output-oracle, firewall, or strict runtime-proof closure.
+
+New smoke coverage includes a complete stage-events fixture, a forged authority fixture that remains `unproven`, and an overlay-only runtime-chain fixture where the strict ledger is internally successful but the matrix refuses because required base closure fields are missing. This is generic large-project adapter hardening, not project-specific acceptance and not broad library-agnostic GPU HMR.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed with complete stage-events support evidence and weak/missing-stage negatives refused
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed with forged stage-event authority and adapter-overlay-only closure refused
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; current retained matrix still reports 56 rows, 14 accepted scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows
+```
+
 ## 2026-06-30 Runtime-Adapter Visual Oracle Bridge
 
 The real ROCm runtime-adapter bridge now accepts generic visual output-oracle artifacts from adapter-emitted `[gpu-runtime-boundary] output_oracle` lines. An adapter can declare before/after/diff PNG paths or role-bound CAS manifests, SHA-256 hashes, camera-state hash, swapchain size, capture backend, frame number, output target, dispatch ID, artifact ID, and deterministic probe metadata.
