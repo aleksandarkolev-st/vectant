@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -389,10 +389,24 @@ function killChildTree(child) {
   }
   if (process.platform === 'win32') {
     try {
-      const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-      killer.on('error', () => {});
+      spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        timeout: 3000,
+      });
     } catch {
       // child.kill above is the portable fallback.
+    }
+    try {
+      spawnSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `Stop-Process -Id ${Number(child.pid)} -Force -ErrorAction SilentlyContinue`,
+      ], {
+        stdio: 'ignore',
+        timeout: 3000,
+      });
+    } catch {
+      // taskkill/child.kill may already have handled the child.
     }
   }
   const hardKill = setTimeout(() => {
@@ -404,6 +418,99 @@ function killChildTree(child) {
   }, 2000);
   hardKill.unref?.();
   return true;
+}
+
+function releaseChildHandles(child) {
+  try {
+    child?.stdin?.destroy?.();
+  } catch {
+    // Best-effort timeout cleanup only.
+  }
+  try {
+    child?.stdout?.destroy?.();
+  } catch {
+    // Best-effort timeout cleanup only.
+  }
+  try {
+    child?.stderr?.destroy?.();
+  } catch {
+    // Best-effort timeout cleanup only.
+  }
+  try {
+    child?.unref?.();
+  } catch {
+    // Best-effort timeout cleanup only.
+  }
+}
+
+function cleanupSourceIntakeGitProcesses(localPath) {
+  if (process.platform !== 'win32') {
+    return {
+      attempted: false,
+      reason: 'source_intake_git_process_cleanup_not_needed_on_non_windows',
+    };
+  }
+  const startedAt = new Date().toISOString();
+  const needle = path.resolve(localPath).replace(/'/g, "''");
+  const script = [
+    `$needle='${needle}'`,
+    '$procs=Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*$needle*" -and ($_.Name -like "git*.exe" -or $_.Name -eq "ssh.exe") }',
+    '$ids=@($procs | ForEach-Object { $_.ProcessId })',
+    'if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue }',
+    '$ids -join ","',
+  ].join('; ');
+  try {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 8000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const cleanedPids = String(result.stdout ?? '')
+      .trim()
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    return {
+      attempted: true,
+      proofAuthority: 'source_intake_timeout_cleanup_only_not_gpu_hmr_success',
+      proof_authority: 'source_intake_timeout_cleanup_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      localPath: path.relative(REPO_ROOT, path.resolve(localPath)).replace(/\\/g, '/'),
+      local_path: path.relative(REPO_ROOT, path.resolve(localPath)).replace(/\\/g, '/'),
+      cleanedPids,
+      cleaned_pids: cleanedPids,
+      exitCode: result.status,
+      exit_code: result.status,
+      signal: result.signal,
+      timedOut: result.error?.code === 'ETIMEDOUT',
+      timed_out: result.error?.code === 'ETIMEDOUT',
+      stderrTail: tail(result.stderr ?? '', 2000),
+      stderr_tail: tail(result.stderr ?? '', 2000),
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      proofAuthority: 'source_intake_timeout_cleanup_only_not_gpu_hmr_success',
+      proof_authority: 'source_intake_timeout_cleanup_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      error: error?.message || String(error),
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
 }
 
 function runProcess(command, args, options) {
@@ -440,10 +547,22 @@ function runProcess(command, args, options) {
     let timedOut = false;
     let timeoutKillAttempted = false;
     let settled = false;
+    let timeoutFinalizeTimer = null;
     const timer = Number(timeoutMs) > 0
       ? setTimeout(() => {
         timedOut = true;
         timeoutKillAttempted = killChildTree(child);
+        timeoutFinalizeTimer = setTimeout(() => {
+          releaseChildHandles(child);
+          finish({
+            exitCode: null,
+            signal: 'timeout-forced-finalize',
+            error: 'process_timeout_forced_finalize',
+            stdout,
+            stderr,
+          });
+        }, 5000);
+        timeoutFinalizeTimer.unref?.();
       }, Number(timeoutMs))
       : null;
     timer?.unref?.();
@@ -451,6 +570,7 @@ function runProcess(command, args, options) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (timeoutFinalizeTimer) clearTimeout(timeoutFinalizeTimer);
       resolve({
         ...payload,
         timedOut,
@@ -685,6 +805,51 @@ async function readBuildFileContent({
       path: pathName,
       accepted: true,
       transport: 'local_git_show',
+      content: show.stdout,
+    };
+  }
+  if (transport === 'git_fetch_depth_1_blobless') {
+    const repoPath = transportEvidence?.resolvedLocalPath
+      ?? transportEvidence?.resolved_local_path
+      ?? transportEvidence?.localPath
+      ?? transportEvidence?.local_path;
+    if (!repoPath) {
+      return {
+        path: pathName,
+        accepted: false,
+        status: 'git_fetch_build_file_repo_path_missing',
+        reason: 'git_fetch_build_file_repo_path_missing',
+        transport,
+      };
+    }
+    const resolvedRepoPath = path.isAbsolute(String(repoPath))
+      ? path.resolve(String(repoPath))
+      : path.resolve(REPO_ROOT, String(repoPath));
+    const show = await runProcess(
+      'git',
+      ['-C', resolvedRepoPath, 'show', `${candidate.immutableCommit}:${pathName}`],
+      {
+        cwd: REPO_ROOT,
+        timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
+        stdoutMax: BUILD_METADATA_CONTENT_MAX_BYTES + 4096,
+        stderrMax: 16000,
+        streamOutput: false,
+      },
+    );
+    if (show.exitCode !== 0 || show.timedOut || show.error) {
+      return {
+        path: pathName,
+        accepted: false,
+        status: 'git_fetch_build_file_read_failed',
+        reason: 'git_fetch_build_file_read_failed',
+        transport,
+        result: show,
+      };
+    }
+    return {
+      path: pathName,
+      accepted: true,
+      transport: 'git_fetch_blobless_show',
       content: show.stdout,
     };
   }
@@ -1296,6 +1461,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   const localPath = sourceIntakePathForCandidate(candidate);
   const relativeLocalPath = path.relative(REPO_ROOT, localPath).replace(/\\/g, '/');
   const liveGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK === '1';
+  const forceGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK === '1';
   const base = {
     schemaVersion: SOURCE_INTAKE_SCHEMA,
     schema_version: SOURCE_INTAKE_SCHEMA,
@@ -1315,6 +1481,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     immutable_commit: candidate.immutableCommit,
     localPath: relativeLocalPath,
     local_path: relativeLocalPath,
+    gitFallbackForced: forceGitFallbackEnabled,
+    git_fallback_forced: forceGitFallbackEnabled,
     startedAt,
     started_at: startedAt,
   };
@@ -1369,8 +1537,16 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     });
   }
   await rm(localPath, { recursive: true, force: true });
-  const githubTree = await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
-  let githubTreeFallback = null;
+  const githubTree = forceGitFallbackEnabled
+    ? { attempted: false, skipped: true, reason: 'forced_git_fallback_for_source_tree_intake' }
+    : await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
+  let githubTreeFallback = forceGitFallbackEnabled
+    ? {
+      reason: 'forced_git_fallback_for_source_tree_intake',
+      forcedByEnv: 'SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK=1',
+      forced_by_env: 'SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK=1',
+    }
+    : null;
   if (githubTree.attempted === true) {
     if (githubTree.accepted !== true) {
       if (githubTree.status === 'source_intake_github_tree_truncated') {
@@ -1475,9 +1651,14 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     },
   );
   if (fetch.exitCode !== 0 || fetch.timedOut || fetch.error) {
+    const sourceIntakeProcessCleanup = fetch.timedOut || fetch.error
+      ? cleanupSourceIntakeGitProcesses(localPath)
+      : null;
     return fail('source_intake_fetch_failed', 'source_tree_fetch_failed', {
       fetch,
       fetch_result: fetch,
+      sourceIntakeProcessCleanup,
+      source_intake_process_cleanup: sourceIntakeProcessCleanup,
     });
   }
   const commitCheck = await runProcess(
@@ -1507,9 +1688,14 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     },
   );
   if (lsTree.exitCode !== 0 || lsTree.timedOut || lsTree.error) {
+    const sourceIntakeProcessCleanup = lsTree.timedOut || lsTree.error
+      ? cleanupSourceIntakeGitProcesses(localPath)
+      : null;
     return fail('source_intake_listing_failed', 'source_tree_listing_failed', {
       listingResult: lsTree,
       listing_result: lsTree,
+      sourceIntakeProcessCleanup,
+      source_intake_process_cleanup: sourceIntakeProcessCleanup,
     });
   }
   const files = parseGitLsTree(lsTree.stdout);
@@ -1524,6 +1710,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     transportEvidence: {
       githubTreeFallback,
       github_tree_fallback: githubTreeFallback,
+      resolvedLocalPath: localPath,
+      resolved_local_path: localPath,
+      localPath: relativeLocalPath,
+      local_path: relativeLocalPath,
       gitInit,
       git_init: gitInit,
       remoteAdd,
@@ -2184,6 +2374,23 @@ async function selfCheck() {
     || localResult.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path local git source intake self-check failed');
+  }
+  const fallbackContentRead = await readBuildFileContent({
+    candidate: localCandidate,
+    file: { path: 'CMakeLists.txt', object: 'self-check-cmake', byteLength: 64 },
+    transport: 'git_fetch_depth_1_blobless',
+    transportEvidence: {
+      resolvedLocalPath: localRepoPath,
+      resolved_local_path: localRepoPath,
+    },
+    sourceIntakeTimeoutMs: 30000,
+  });
+  if (
+    fallbackContentRead.accepted !== true
+    || fallbackContentRead.transport !== 'git_fetch_blobless_show'
+    || !String(fallbackContentRead.content ?? '').includes('project(local_user_project)')
+  ) {
+    throw new Error('random large-project cold-path git fallback build-file content self-check failed');
   }
   await writeFile(path.join(localRepoPath, 'untracked-dirty.tmp'), 'dirty\n');
   const { manifest: dirtyManifest } = await buildManifest({
