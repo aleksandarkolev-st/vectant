@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { resolveActor } from '@/lib/integrations/session';
 import { canWriteScope } from '@/lib/integrations/scope';
 import { canPublish } from '@/lib/programs/entitlements';
-import { submitForReview } from '@/lib/programs/reviewOrchestrator';
+import { submitForReview, processSubmission } from '@/lib/programs/reviewOrchestrator';
 import { discoverManifest } from '@/lib/programs/runtimeClient';
 
 export const runtime = 'nodejs';
@@ -46,6 +46,13 @@ export async function POST(req, { params }) {
     sourceImageRef,
     submittedByUserId: actor.userId,
   });
+
+  // Image submissions come back queued (`submitted`); kick off processing without
+  // blocking the response. The cron `process-pending` sweep is the durable backstop
+  // if this instance dies mid-pipeline.
+  if (submission?.reviewState === 'submitted' && submission.versionId) {
+    void processSubmission(submission.versionId).catch(() => {});
+  }
 
   return NextResponse.json({ submission });
 }

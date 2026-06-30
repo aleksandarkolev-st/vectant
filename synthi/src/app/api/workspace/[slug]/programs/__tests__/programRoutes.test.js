@@ -24,7 +24,9 @@ const h = vi.hoisted(() => ({
   scaffoldProgram: vi.fn(),
   fetchDetectedRepoProgram: vi.fn(),
   submitForReview: vi.fn(),
+  processSubmission: vi.fn(),
   listSubmissionsForWorkspace: vi.fn(),
+  unpublishProgram: vi.fn(),
   canPublish: vi.fn(),
 }));
 
@@ -47,6 +49,7 @@ vi.mock('@/lib/programs/store', () => ({
   getPublishedProgramVersion: h.getPublishedProgramVersion,
   incrementInstallCount: h.incrementInstallCount,
   listSubmissionsForWorkspace: h.listSubmissionsForWorkspace,
+  unpublishProgram: h.unpublishProgram,
   // Real-ish projection so the install route can return a public install.
   toPublicInstall: (row) =>
     row
@@ -63,7 +66,7 @@ vi.mock('@/lib/programs/runtimeClient', () => ({
   scaffoldProgram: h.scaffoldProgram,
   fetchDetectedRepoProgram: h.fetchDetectedRepoProgram,
 }));
-vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview }));
+vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview, processSubmission: h.processSubmission }));
 vi.mock('@/lib/programs/entitlements', () => ({ canPublish: h.canPublish, isPlatformAdmin: vi.fn() }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
@@ -72,6 +75,7 @@ import { POST as POST_INSTALL } from '../install/route.js';
 import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
 import { POST as POST_PUBLISH } from '../publish/route.js';
 import { GET as GET_SUBMISSIONS } from '../submissions/route.js';
+import { POST as POST_UNPUBLISH } from '../unpublish/route.js';
 import { POST as POST_SCAFFOLD } from '../scaffold/route.js';
 import { GET as GET_DETECT, POST as POST_DETECT } from '../detect/route.js';
 
@@ -151,6 +155,40 @@ describe('POST /programs/publish (submit to review)', () => {
     const body = await res.json();
     expect(body.submission.reviewState).toBe('rejected');
     expect(body.submission.reasons[0].code).toBe('host_escape');
+  });
+});
+
+describe('POST /programs/publish — queued image submission kicks off processing', () => {
+  it('returns the queued submission and fire-and-forgets processSubmission', async () => {
+    h.discoverManifest.mockResolvedValue({ config: { packageId: 'tool', version: '1.0.0', runtimeType: 'container', launch: 'docker run reg.io/me/tool:1' }, source: 'vectant.programs.json' });
+    h.submitForReview.mockResolvedValue({ versionId: 'ver1', reviewState: 'submitted' });
+    h.processSubmission.mockResolvedValue({ reviewState: 'published' });
+    const res = await POST_PUBLISH(req('http://x/api/workspace/team/programs/publish', { sourceImageRef: 'reg.io/me/tool:1' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).submission.reviewState).toBe('submitted');
+    expect(h.processSubmission).toHaveBeenCalledWith('ver1');
+  });
+});
+
+describe('POST /programs/unpublish', () => {
+  it('unpublishes the workspace own program for an owner/admin', async () => {
+    h.unpublishProgram.mockResolvedValue({ id: 'p1', publishedVersion: null });
+    const res = await POST_UNPUBLISH(req('http://x/api/workspace/team/programs/unpublish', { packageId: '@team/tool' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    expect(h.unpublishProgram).toHaveBeenCalledWith('@team/tool');
+  });
+
+  it('rejects a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_UNPUBLISH(req('http://x/api/workspace/team/programs/unpublish', { packageId: '@team/tool' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.unpublishProgram).not.toHaveBeenCalled();
+  });
+
+  it('refuses to unpublish a program owned by another workspace (403)', async () => {
+    const res = await POST_UNPUBLISH(req('http://x/api/workspace/team/programs/unpublish', { packageId: '@other/tool' }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.unpublishProgram).not.toHaveBeenCalled();
   });
 });
 
