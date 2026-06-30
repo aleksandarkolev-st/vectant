@@ -117,6 +117,10 @@ test('derives sanitized CodeSite runtime env and metadata for managed processes'
     transactionId: 'txn-1',
     mutationLeaseId: 'lease-1',
     displayCallsign: 'ATLAS-1',
+    agentSessionId: null,
+    agentProvider: null,
+    agentRuntime: null,
+    managedAgent: false,
     allowedPaths: ['synthi/src/**'],
     blockedPaths: ['secrets/**'],
     allowedTools: ['file_write'],
@@ -239,6 +243,147 @@ test('enforcement records allowed transaction writes through the CodeSite contro
     }],
     codesiteFsEvent: result.event,
   });
+});
+
+test('managed agent writes fail closed without an active transaction', async () => {
+  const context = codeSiteContextFromRequest({ headers: {} }, {
+    agentSessionId: 'ags-1',
+    managedAgent: true,
+  }, {
+    workspaceSlug: 'acme',
+    actorUserId: 'agent-owner-1',
+  });
+
+  assert.strictEqual(context.active, true);
+  assert.strictEqual(context.managedAgent, true);
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch: async () => new Response('{}') }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('codesite_transaction_required'),
+  );
+});
+
+test('managed agent enforcement hydrates transaction write set instead of trusting forged allowed paths', async () => {
+  const calls = [];
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/transactions/txn-1')) {
+      return new Response(JSON.stringify({
+        transaction: {
+          id: 'txn-1',
+          status: 'open',
+          mutationLeaseId: 'lease-1',
+          agentSessionId: 'ags-1',
+          writeSet: ['docs/**'],
+          observedWriteSet: [],
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      ok: false,
+      policyDecision: { reasonCodes: ['outside_clearance_route'] },
+    }), { status: 200 });
+  };
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-codesite-managed-agent': '1',
+      'x-codesite-transaction-id': 'txn-1',
+      'x-codesite-agent-session-id': 'ags-1',
+      'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+      'x-codesite-allowed-paths': 'api/**',
+    },
+  }, {}, { workspaceSlug: 'acme' });
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'api/auth/signup.ts',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('outside_clearance_route'),
+  );
+
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1');
+  const body = JSON.parse(calls[1].options.body);
+  assert.strictEqual(body.path, 'api/auth/signup.ts');
+  assert.strictEqual(body.codesiteFsEvent.type, 'write_denied');
+  assert.strictEqual(body.codesiteFsEvent.details.reason_codes.includes('outside_clearance_route'), true);
+});
+
+test('managed agent enforcement rejects stale or closed transactions before writes', async () => {
+  const fetch = async (url) => {
+    if (url.endsWith('/transactions/txn-closed')) {
+      return new Response(JSON.stringify({
+        transaction: {
+          id: 'txn-closed',
+          status: 'committed',
+          mutationLeaseId: 'lease-1',
+          agentSessionId: 'ags-1',
+          writeSet: ['synthi/src/**'],
+        },
+      }), { status: 200 });
+    }
+    throw new Error('unexpected fetch');
+  };
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-codesite-managed-agent': '1',
+      'x-codesite-transaction-id': 'txn-closed',
+      'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+    },
+  }, {}, { workspaceSlug: 'acme' });
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('codesite_transaction_not_open')
+      && error.event.details.reason_codes.includes('codesite_authoritative_context_required'),
+  );
+});
+
+test('managed agent enforcement rejects authoritative transactions with no write set', async () => {
+  const fetch = async (url) => {
+    if (url.endsWith('/transactions/txn-empty')) {
+      return new Response(JSON.stringify({
+        transaction: {
+          id: 'txn-empty',
+          status: 'open',
+          mutationLeaseId: 'lease-1',
+          agentSessionId: 'ags-1',
+          writeSet: [],
+          observedWriteSet: [],
+        },
+      }), { status: 200 });
+    }
+    throw new Error('unexpected fetch');
+  };
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-codesite-managed-agent': '1',
+      'x-codesite-transaction-id': 'txn-empty',
+      'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+    },
+  }, {}, { workspaceSlug: 'acme' });
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('codesite_transaction_write_set_required'),
+  );
 });
 
 test('enforcement fails closed without durable CodeSite control-plane context', async () => {

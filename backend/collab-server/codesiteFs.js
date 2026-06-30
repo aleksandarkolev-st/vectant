@@ -65,13 +65,26 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     header('x-codesite-required'),
     header('x-codesite-active'),
   ));
+  const managedAgent = truthy(value(
+    payload.managedAgent,
+    payload.managed_agent,
+    data.managedAgent,
+    data.managed_agent,
+    data.codesiteManagedAgent,
+    data.codeSiteManagedAgent,
+    header('x-codesite-managed-agent'),
+  ));
   const context = {
     active: false,
     required,
+    managedAgent,
     mode: explicitMode || 'enforce',
     workspaceSlug: extra.workspaceSlug || data.workspaceSlug || data.slug || null,
     actorUserId: extra.actorUserId || data.userId || data.actorUserId || header('x-user-id') || null,
     effectiveUserId: extra.effectiveUserId || null,
+    agentSessionId: value(payload.agentSessionId, payload.agent_session_id, data.agentSessionId, data.agent_session_id, header('x-codesite-agent-session-id')),
+    agentProvider: value(payload.agentProvider, payload.agent_provider, data.agentProvider, data.agent_provider, header('x-codesite-agent-provider')),
+    agentRuntime: value(payload.agentRuntime, payload.agent_runtime, data.agentRuntime, data.agent_runtime, header('x-codesite-agent-runtime')),
     displayCallsign: value(payload.displayCallsign, payload.callsign, header('x-codesite-callsign')),
     mutationLeaseId: value(payload.mutationLeaseId, payload.leaseId, header('x-codesite-lease-id')),
     transactionId: value(payload.transactionId, header('x-codesite-transaction-id')),
@@ -87,6 +100,8 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
   context.active = Boolean(
     context.transactionId ||
     context.mutationLeaseId ||
+    context.agentSessionId ||
+    context.managedAgent ||
     context.allowedPaths.length ||
     context.blockedPaths.length ||
     required ||
@@ -158,6 +173,9 @@ function codeSiteRuntimeEnv(context = {}, extra = {}) {
   setEnv(env, 'SYNTHI_CODESITE_CALLSIGN', context.displayCallsign);
   setEnv(env, 'CODESITE_ACTOR_USER_ID', context.actorUserId);
   setEnv(env, 'CODESITE_EFFECTIVE_USER_ID', context.effectiveUserId);
+  setEnv(env, 'CODESITE_AGENT_SESSION_ID', context.agentSessionId);
+  setEnv(env, 'CODESITE_AGENT_PROVIDER', context.agentProvider);
+  setEnv(env, 'CODESITE_AGENT_RUNTIME', context.agentRuntime);
   setEnv(env, 'CODESITE_ALLOWED_PATHS', jsonEnv(context.allowedPaths));
   setEnv(env, 'CODESITE_BLOCKED_PATHS', jsonEnv(context.blockedPaths));
   setEnv(env, 'CODESITE_ALLOWED_TOOLS', jsonEnv(context.allowedTools));
@@ -175,6 +193,10 @@ function codeSiteRuntimeMetadata(context = {}) {
     transactionId: context.transactionId || null,
     mutationLeaseId: context.mutationLeaseId || null,
     displayCallsign: context.displayCallsign || null,
+    agentSessionId: context.agentSessionId || null,
+    agentProvider: context.agentProvider || null,
+    agentRuntime: context.agentRuntime || null,
+    managedAgent: Boolean(context.managedAgent),
     allowedPaths: context.allowedPaths || [],
     blockedPaths: context.blockedPaths || [],
     allowedTools: context.allowedTools || [],
@@ -238,9 +260,10 @@ function assertCodeSiteWritesAllowed(context, attempts) {
 }
 
 async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
-  const result = evaluateCodeSiteWrite(context, attempt);
-  const durableFailure = evaluateCodeSiteDurableContext(context, options);
-  if (durableFailure && context?.mode !== 'monitor') {
+  const effectiveContext = await authoritativeCodeSiteContext(context, options);
+  const result = evaluateCodeSiteWrite(effectiveContext, attempt);
+  const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, options);
+  if (durableFailure && effectiveContext?.mode !== 'monitor') {
     throw new CodeSiteFSDeniedError({
       ...result.event,
       type: 'write_denied',
@@ -254,18 +277,18 @@ async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
       },
     });
   }
-  if (context?.active && context.transactionId) {
+  if (effectiveContext?.active && effectiveContext.transactionId) {
     try {
-      await recordCodeSiteWriteAttempt(context, result, {
+      await recordCodeSiteWriteAttempt(effectiveContext, result, {
         ...options,
-        acceptDenied: options.acceptDenied || !result.ok || context.mode === 'monitor',
+        acceptDenied: options.acceptDenied || !result.ok || effectiveContext.mode === 'monitor',
       });
     } catch (error) {
       if (result.ok) throw error;
       result.event.details.persistence_error = error?.message || 'codesite_denied_write_persistence_failed';
     }
   }
-  if (!result.ok && context?.mode !== 'monitor') {
+  if (!result.ok && effectiveContext?.mode !== 'monitor') {
     throw new CodeSiteFSDeniedError(result.event);
   }
   return result;
@@ -282,10 +305,90 @@ async function enforceCodeSiteWritesAllowed(context, attempts, options = {}) {
 function evaluateCodeSiteDurableContext(context, options = {}) {
   if (!context?.active || context.mode === 'monitor') return null;
   const reasonCodes = [];
+  reasonCodes.push(...asArray(context.hydrationFailure?.reasonCodes));
   if (!context.transactionId) reasonCodes.push('codesite_transaction_required');
   if (!resolveControlPlaneBaseUrl(context)) reasonCodes.push('codesite_control_plane_url_required');
   if (typeof (options.fetch || global.fetch) !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
+  if (requiresAuthoritativeContext(context, options) && !context.authoritative) {
+    reasonCodes.push('codesite_authoritative_context_required');
+  }
   return reasonCodes.length ? { reasonCodes } : null;
+}
+
+async function authoritativeCodeSiteContext(context, options = {}) {
+  if (!requiresAuthoritativeContext(context, options) || context?.mode === 'monitor') {
+    return context;
+  }
+  const base = { ...(context || {}), active: true };
+  if (!base.transactionId) {
+    return withHydrationFailure(base, ['codesite_transaction_required']);
+  }
+  const fetchImpl = options.fetch || global.fetch;
+  const baseUrl = resolveControlPlaneBaseUrl(base);
+  const reasonCodes = [];
+  if (!baseUrl) reasonCodes.push('codesite_control_plane_url_required');
+  if (typeof fetchImpl !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
+  if (reasonCodes.length) return withHydrationFailure(base, reasonCodes);
+
+  try {
+    const transaction = await loadCodeSiteTransaction(base, {
+      fetch: fetchImpl,
+      baseUrl,
+      headers: codeSiteControlPlaneHeaders(base),
+    });
+    if (!transaction) return withHydrationFailure(base, ['codesite_transaction_not_found']);
+    if (!isWritableTransactionStatus(transaction.status)) {
+      return withHydrationFailure(base, ['codesite_transaction_not_open'], { transactionStatus: transaction.status });
+    }
+    const allowedPaths = parsePatternList([
+      ...asArray(transaction.writeSet),
+      ...asArray(transaction.observedWriteSet),
+    ]);
+    if (allowedPaths.length === 0) {
+      return withHydrationFailure(base, ['codesite_transaction_write_set_required'], { transactionStatus: transaction.status });
+    }
+    return {
+      ...base,
+      authoritative: true,
+      authoritativeSource: 'control_plane_transaction',
+      authoritativeTransactionStatus: transaction.status || null,
+      mutationLeaseId: transaction.mutationLeaseId || base.mutationLeaseId || null,
+      agentSessionId: transaction.agentSessionId || base.agentSessionId || null,
+      allowedPaths,
+      blockedPaths: [],
+    };
+  } catch (error) {
+    return withHydrationFailure(base, ['codesite_transaction_load_failed'], { error: error?.message || String(error) });
+  }
+}
+
+function requiresAuthoritativeContext(context = {}, options = {}) {
+  return Boolean(options.requireAuthoritativeContext || context.required || context.managedAgent);
+}
+
+function withHydrationFailure(context, reasonCodes, extra = {}) {
+  return {
+    ...context,
+    active: true,
+    authoritative: false,
+    hydrationFailure: {
+      reasonCodes: unique(reasonCodes),
+      ...extra,
+    },
+  };
+}
+
+function isWritableTransactionStatus(status) {
+  return ['open'].includes(String(status || '').toLowerCase());
+}
+
+function codeSiteControlPlaneHeaders(context) {
+  const headers = { accept: 'application/json' };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  return headers;
 }
 
 async function recordCodeSiteWriteAttempt(context, result, options = {}) {
