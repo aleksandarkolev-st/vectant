@@ -993,6 +993,32 @@ async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn
   }, applyFn, options);
 }
 
+function codeSiteProvisioningAttempt(kind) {
+  return {
+    path: '**',
+    kind,
+    tool: 'git_provisioning',
+  };
+}
+
+async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
+  if (!context?.active) return null;
+  return enforceCodeSiteWriteAllowed(
+    context,
+    codeSiteProvisioningAttempt(kind),
+    codeSiteEnforceOptions(context, options),
+  );
+}
+
+function needsCodeSiteUserRepoProvisioning(slug, userId) {
+  if (!userId) return false;
+  try {
+    return !gitService.isUserRepoInitialized(slug, userId);
+  } catch (_) {
+    return true;
+  }
+}
+
 function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   return codeSiteContextFromRequest(req, parsed, {
     workspaceSlug: extra.workspaceSlug,
@@ -1925,6 +1951,13 @@ const server = http.createServer(async (req, res) => {
     const effectiveUserId = sessionId && userId
       ? sessionManager.getEffectiveUserId(userId, sessionId)
       : userId;
+    const prepCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const prepCodeSiteContext = codeSiteContextFromRequest(req, prepCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: effectiveUserId || null,
+    });
+    const prepCodeSiteEnforcement = codeSiteEnforceOptions(prepCodeSiteContext);
 
     if (req.method === 'GET') {
       const status = await workspacePrepManager.getWorkspacePrepStatus(slug, effectiveUserId);
@@ -1945,11 +1978,31 @@ const server = http.createServer(async (req, res) => {
 
       const hKey = hydrationKey(slug, effectiveUserId);
       if (!hydratedSlugs.has(hKey)) {
-        await gitService.initRepo(slug, null, effectiveUserId);
+        try {
+          if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+            await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare:auto-init', prepCodeSiteEnforcement);
+          }
+          await gitService.initRepo(slug, null, effectiveUserId);
+        } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
+          throw e;
+        }
         hydratedSlugs.add(hKey);
       }
 
       const force = /^(1|true|yes)$/i.test(String(urlObj.searchParams.get('force') || ''));
+      try {
+        await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare', prepCodeSiteEnforcement);
+      } catch (e) {
+        if (e?.code === 'CODESITE_WRITE_DENIED') {
+          writeCodeSiteDenied(res, e);
+          return;
+        }
+        throw e;
+      }
       const status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
         force,
         trigger: 'workspace_prepare_api',
@@ -2066,6 +2119,13 @@ const server = http.createServer(async (req, res) => {
     
     // Extract optional userId for per-user repo support
     const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    const fileContentCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const fileContentCodeSiteContext = codeSiteContextFromRequest(req, fileContentCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: userId || null,
+    });
+    const fileContentCodeSiteEnforcement = codeSiteEnforceOptions(fileContentCodeSiteContext);
 
     try {
       // Ensure repo exists and (when configured) hydrate from GCS before reading.
@@ -2073,9 +2133,16 @@ const server = http.createServer(async (req, res) => {
       const hKey = hydrationKey(slug, userId);
       if (!hydratedSlugs.has(hKey)) {
         try {
+          if (!userId || needsCodeSiteUserRepoProvisioning(slug, userId)) {
+            await enforceCodeSiteProvisioningAllowed(fileContentCodeSiteContext, 'file-content:auto-init', fileContentCodeSiteEnforcement);
+          }
           await gitService.initRepo(slug, null, userId);
           hydratedSlugs.add(hKey);
         } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
           if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
           }
@@ -4350,14 +4417,21 @@ const server = http.createServer(async (req, res) => {
         // exists with partial/stale content (e.g. .code_intel artifacts).
         // Now safe to run AFTER permission check.
         const hKey = hydrationKey(slug, effectiveUserId);
-        if (action !== 'clone' && !hydratedSlugs.has(hKey)) {
+        if (action !== 'clone' && action !== 'init' && !hydratedSlugs.has(hKey)) {
           try {
             // initRepo will mkdir the repo path, init .git, and (when configured)
             // pull the current workspace contents from GCS.
             // Pass effectiveUserId so it also provisions the per-user working tree.
+            if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+              await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:auto-init', codeSiteEnforcement);
+            }
             await gitService.initRepo(slug, null, effectiveUserId);
             hydratedSlugs.add(hKey);
           } catch (e) {
+            if (e?.code === 'CODESITE_WRITE_DENIED') {
+              writeCodeSiteDenied(res, e);
+              return;
+            }
             // If init fails, continue so the normal handler can return a structured error.
             if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
               console.warn('[Collab] auto-init repo failed for slug:', slug, e?.message || e);
@@ -4372,12 +4446,19 @@ const server = http.createServer(async (req, res) => {
             // skip provisioning a separate repo.
             if (effectiveUserId) {
               try {
+                if (needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+                  await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:ensure-user-repo', codeSiteEnforcement);
+                }
                 await gitService.ensureUserRepo(slug, effectiveUserId);
                 // Pin the per-user repo in the cache so it won't be evicted
                 // while this user is actively interacting with the workspace.
                 // Unpinning happens when the notification WS disconnects.
                 repoCache.pin(slug, effectiveUserId);
               } catch (e) {
+                if (e?.code === 'CODESITE_WRITE_DENIED') {
+                  writeCodeSiteDenied(res, e);
+                  return;
+                }
                 // For non-clone/init actions this is a real error — the user
                 // cannot operate without an isolated repo.
                 if (action !== 'clone' && action !== 'init') {

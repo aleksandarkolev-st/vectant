@@ -24,8 +24,6 @@ test('maps path-scoped index actions to git_index attempts', () => {
 test('maps repo-wide worktree actions to broad git_worktree attempts', () => {
   for (const action of [
     'abort-merge',
-    'init',
-    'clone',
     'checkout',
     'discard-all',
     'pull',
@@ -43,6 +41,16 @@ test('maps repo-wide worktree actions to broad git_worktree attempts', () => {
       path: '**',
       kind: action,
       tool: 'git_worktree',
+    }]);
+  }
+});
+
+test('maps repo provisioning actions to git_provisioning attempts', () => {
+  for (const action of ['init', 'clone']) {
+    assert.deepEqual(codeSiteGitActionAttempts(action), [{
+      path: '**',
+      kind: action,
+      tool: 'git_provisioning',
     }]);
   }
 });

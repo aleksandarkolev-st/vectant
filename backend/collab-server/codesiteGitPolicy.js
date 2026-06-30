@@ -12,6 +12,11 @@ const REPO_INDEX_ACTIONS = new Set([
   'unstage-all',
 ]);
 
+const GIT_PROVISIONING_ACTIONS = new Set([
+  'init',
+  'clone',
+]);
+
 const PATH_SCOPED_WORKTREE_ACTIONS = new Set([
   'discard',
   'discard-lines',
@@ -22,8 +27,6 @@ const PATH_SCOPED_WORKTREE_ACTIONS = new Set([
 
 const REPO_WORKTREE_ACTIONS = new Set([
   'abort-merge',
-  'init',
-  'clone',
   'checkout',
   'discard-all',
   'pull',
@@ -102,6 +105,9 @@ function codeSiteGitActionAttempts(action, data = {}) {
   }
   if (REPO_INDEX_ACTIONS.has(normalizedAction)) {
     return [gitAttempt(normalizedAction, '**', 'git_index')];
+  }
+  if (GIT_PROVISIONING_ACTIONS.has(normalizedAction)) {
+    return [gitAttempt(normalizedAction, '**', 'git_provisioning')];
   }
   if (PATH_SCOPED_WORKTREE_ACTIONS.has(normalizedAction)) {
     return [gitAttempt(normalizedAction, data.filePath || '**', 'git_worktree')];
