@@ -1,6 +1,7 @@
 import prisma from '@/lib/prisma';
 import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
+import { buildProofBundle as buildPortableProofBundle } from './proof';
 import {
   classifyPath,
   compileZonePolicy,
@@ -1210,20 +1211,86 @@ export async function getLineProvenance(workspaceSlug, { filePath, lineAnchor } 
 export async function getProofBundle(workspaceSlug, bundleId) {
   const bundle = await prisma.codeSiteProofBundle.findFirst({
     where: { id: bundleId, project: { workspaceSlug } },
+    include: {
+      project: true,
+      transaction: {
+        include: {
+          mutationLease: true,
+        },
+      },
+    },
   });
   if (!bundle) throw notFound('proof_bundle_not_found');
-  return proofBundleProjection(bundle);
+  const incidents = await prisma.codeSiteIncident.findMany({
+    where: { projectId: bundle.projectId },
+    orderBy: { createdAt: 'asc' },
+  });
+  const lineProvenance = await prisma.codeSiteLineProvenance.findMany({
+    where: { proofBundleId: bundle.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  const projection = proofBundleProjection(bundle);
+  return {
+    ...projection,
+    portableProofBundle: buildPortableProofBundle({
+      project: projectProjection(bundle.project),
+      transaction: transactionProjection(bundle.transaction),
+      mutationLease: bundle.transaction?.mutationLease ? mutationLeaseProjection(bundle.transaction.mutationLease) : null,
+      proofBundle: projection,
+      incidents: incidents.map(incidentProjection),
+      lineProvenance: lineProvenance.map(lineProvenanceProjection),
+    }),
+  };
 }
 
 export async function getIncidentReplay(workspaceSlug, incidentId) {
   const incident = await prisma.codeSiteIncident.findFirst({
     where: { id: incidentId, project: { workspaceSlug } },
+    include: { project: { include: { events: { orderBy: { createdAt: 'asc' } } } } },
   });
   if (!incident) throw notFound('incident_not_found');
+  const projectedIncident = incidentProjection(incident);
+  const timeline = incidentReplayTimeline(projectedIncident, incident.project.events.map(eventProjection));
   return {
-    incident: incidentProjection(incident),
-    replay: parseJson(incident.incidentReplayJson, {}),
+    incident: projectedIncident,
+    replay: projectedIncident.incidentReplay,
+    timeline,
+    replayDigest: projectedIncident.replayDigest || digest(timeline),
   };
+}
+
+function incidentReplayTimeline(incident, events) {
+  const refs = new Set([
+    ...asArray(incident.timelineEventRefs),
+    ...asArray(incident.incidentReplay?.eventRefs),
+    ...asArray(incident.incidentReplay?.events),
+  ].filter(Boolean));
+  const participants = new Set(asArray(incident.participants));
+  const selected = events.filter((event) => (
+    refs.has(event.id)
+    || refs.has(event.eventType)
+    || participants.has(event.displayCallsign)
+  ));
+  const eventTimeline = selected.map((event, index) => ({
+    sequence: index + 1,
+    source: 'codesite_event',
+    event,
+  }));
+  return [
+    ...eventTimeline,
+    {
+      sequence: eventTimeline.length + 1,
+      source: 'incident_record',
+      event: {
+        id: incident.id,
+        severity: incident.severity,
+        category: incident.category,
+        affectedZones: incident.affectedZones,
+        evidenceRefs: incident.evidenceRefs,
+        createdAt: incident.createdAt,
+      },
+    },
+  ];
 }
 
 async function recordEvent(projectId, input) {

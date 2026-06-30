@@ -17,6 +17,16 @@ const { prisma } = vi.hoisted(() => ({
       create: vi.fn(),
       findMany: vi.fn(),
     },
+    codeSiteProofBundle: {
+      findFirst: vi.fn(),
+    },
+    codeSiteIncident: {
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteLineProvenance: {
+      findMany: vi.fn(),
+    },
   },
 }));
 
@@ -24,7 +34,7 @@ vi.mock('@/lib/prisma', () => ({
   default: prisma,
 }));
 
-import { validateTransaction } from '../controlPlane.js';
+import { getIncidentReplay, getProofBundle, validateTransaction } from '../controlPlane.js';
 
 function transactionFixture() {
   return {
@@ -106,5 +116,112 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'validated' }),
     }));
+  });
+
+  it('returns portable proof material with proof bundle lookups', async () => {
+    const transaction = transactionFixture();
+    prisma.codeSiteProofBundle.findFirst.mockResolvedValue({
+      id: 'proof-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: 'abc123',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['test:pass']),
+      dojoEvidenceRefsJson: JSON.stringify(['dojo:proof']),
+      incidentReplayDigest: 'sha256:incident',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:10:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Proof project',
+        request: 'Prove it',
+        status: 'active',
+        zonePolicyJson: JSON.stringify({ zones: [] }),
+        controlPlanJson: JSON.stringify({}),
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+        updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      transaction: {
+        ...transaction,
+        mutationLease: transaction.mutationLease,
+      },
+    });
+    prisma.codeSiteIncident.findMany.mockResolvedValue([]);
+    prisma.codeSiteLineProvenance.findMany.mockResolvedValue([{
+      id: 'line-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'L1',
+      displayCallsign: 'ATLAS-1',
+      reasonRef: 'transaction:txn-1',
+      evidenceRefsJson: JSON.stringify(['proof:proof-1']),
+      dojoSourceRefsJson: JSON.stringify([]),
+      proofBundleId: 'proof-1',
+      processAncestryJson: JSON.stringify([]),
+      promptSummary: 'CodeSite transaction commit',
+      createdAt: new Date('2026-06-29T23:11:00.000Z'),
+    }]);
+
+    const proof = await getProofBundle('acme', 'proof-1');
+
+    expect(proof.bundleDigest).toBe('sha256:bundle');
+    expect(proof.portableProofBundle).toMatchObject({
+      schemaVersion: 'synthi.codesite.proofBundle.v1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+    });
+    expect(proof.portableProofBundle.portableDigest).toMatch(/^sha256:/);
+  });
+
+  it('builds incident replay timelines from referenced events', async () => {
+    prisma.codeSiteIncident.findFirst.mockResolvedValue({
+      id: 'incident-1',
+      projectId: 'project-1',
+      severity: 'warning',
+      category: 'near_miss',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['synthi/prisma/**']),
+      incidentReplayJson: JSON.stringify({ events: ['write_allowed'], summary: 'Predicted collision' }),
+      replayDigest: 'sha256:replay',
+      timelineEventRefsJson: JSON.stringify(['evt-1']),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['collision:evidence']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      project: {
+        events: [{
+          id: 'evt-1',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_allowed',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'transaction',
+          actorId: 'txn-1',
+          detailsJson: JSON.stringify({ path: 'synthi/prisma/schema.prisma' }),
+          evidenceRefsJson: JSON.stringify([]),
+          logicalTime: 1,
+          createdAt: new Date('2026-06-29T23:11:00.000Z'),
+        }],
+      },
+    });
+
+    const replay = await getIncidentReplay('acme', 'incident-1');
+
+    expect(replay.replayDigest).toBe('sha256:replay');
+    expect(replay.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'codesite_event',
+        event: expect.objectContaining({ eventType: 'write_allowed' }),
+      }),
+      expect.objectContaining({
+        source: 'incident_record',
+      }),
+    ]));
   });
 });
