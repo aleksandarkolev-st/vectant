@@ -4,6 +4,24 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Real ROCm Run-Id Lifecycle Status Recovery
+
+The real ROCm runner now binds upstream lifecycle status recovery to a fresh `SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID` for each attempt. Before configure starts, the worker truncates configure/build/run logs, writes a run-id-bound `synthi.real_rocm.worker_lifecycle_status_recovery.v1` status file, and clears any prior configure metadata snapshot. CMake metadata is copied into a run-local snapshot only after configure returns successfully.
+
+This closes the stale-log/stale-metadata gap exposed by bounded MIOpen attempts. If the worker timeout kills configure before CMake returns, the status facet remains `configure_exit_code=unknown`, `run_exit_code=not-run`, and `metadata_snapshot_status=unknown`; the classifier records `upstream_configure_status_incomplete_after_lifecycle_failure` as refusal-only evidence. Metadata recovery then tries only the current run's snapshot and the current build tree. Old wrapper-owned skip lines and old `compile_commands.json` files cannot satisfy source-delta, runtime-boundary, output-oracle, or strict ledger gates.
+
+The latest bounded MIOpen rerun, `gpu-real-rocm-MIOpen-20260630171112`, exercised that path with `SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000`. It reached shared-CAS source staging, external header prerequisite evidence, target-environment export, finalizer adapter execution, and adapter-result transport, then failed closed because configure did not return before the lifecycle timeout and no current-run metadata snapshot existed. The retained result has `gpuHmrSuccess=false`, `fullRuntimeProven=false`, rejected strict runtime proof `gpu-runtime-proof:sha256:7092e5e2b9ecb63442d8db218268caba18f82ef4939d3568edb0121b8ed81ad0`, no event-manifest boundary lines, no artifact transport, no epoch, no dispatch, no host identity, no output oracle, no firewall, and no runtime-chain or proof-ledger closure. This supersedes the older stale-log diagnosis while remaining large-project refusal evidence only.
+
+The validation plan now also has an explicit random large-project cold-path lane. Sampled projects must record selection seed, repo URL, immutable commit, size signals, cold source-tree intake, build metadata discovery, runtime-boundary classification, and fail-closed gaps. Acceptance for any sampled project still requires the normal same-process loader, epoch, dispatch, host-identity, output-oracle, firewall, and strict ledger gates; otherwise the correct outcome is a precise refusal, not a generalized success claim.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including run-id lifecycle status recovery and metadata snapshot checks
+npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen with SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000 -> failed closed, gpu-real-rocm-MIOpen-20260630171112
+```
+
 ## 2026-06-30 Source-First Compile-Proof Gate And Default Visual Rerun
 
 The source-first agent-split runner now separates a cold compile-proof gate from a runtime GPU HMR acceptance gate. A structured `synthi.gpu_hmr.requested_proof_state_gate.v1` record can accept only the requested `gpu-hmr-compile-proven` boundary from a top-level rejected wait when the structured validation is satisfied, the effective rank is at least compile-proven, the immutable proof id is present, and the proof artifact path is present. The evidence is explicitly non-authoritative for runtime acceptance: `proofAuthority=structured_requested_proof_state_validation_only_not_gpu_hmr_acceptance`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. Rejected waits cannot satisfy full-runtime, output-oracle, visual, host-preservation, or hot-device HMR gates.
@@ -1421,7 +1439,7 @@ visual artifacts: none; compute-only target with no frame-gated visual proof, an
 
 This is not production-grade acceptance for every arbitrary GPU project. The current accepted full-runtime scope is scoped generated/profiled ROCm/HIP preview device-artifact rows, scoped HIP module/readback rows with accepted strict runtime proof artifacts, scoped OpenCL host-runtime compute/readback rows with accepted strict runtime proof artifacts, scoped Vulkan host-runtime pipeline/readback visual proof, and the explicitly proven scoped WebGPU visual and compute/readback profiles. HIPRT CameraRays and MegaKernel direct-light-gain are preserved as source-adapted visual-profile evidence only, not accepted no-shim full-runtime GPU HMR.
 
-Still open or refused: MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, real ROCm Composable Kernel full-runtime GPU HMR, real ROCm hipBLASLt full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, OpenCL arbitrary-project/container-worker acceptance beyond the scoped host-runtime readback probe, arbitrary Vulkan application/engine/cache/command-buffer acceptance beyond the scoped host-runtime pipeline visual probe, Bevy, WebGPU compute/resource forms beyond the proven explicit storage/uniform float32 readback profile, WebGPU engine-owned pipeline caches, and WebGPU resource layouts beyond the proven visual/compute subsets. CUDA is not applicable to this local AMD ROCm matrix and still needs a separate CUDA-machine run.
+Still open or refused: MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, real ROCm Composable Kernel full-runtime GPU HMR, real ROCm hipBLASLt full-runtime GPU HMR, retained random large arbitrary-project cold-path sampling beyond the current enrolled large-ROCm profiles, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, OpenCL arbitrary-project/container-worker acceptance beyond the scoped host-runtime readback probe, arbitrary Vulkan application/engine/cache/command-buffer acceptance beyond the scoped host-runtime pipeline visual probe, Bevy, WebGPU compute/resource forms beyond the proven explicit storage/uniform float32 readback profile, WebGPU engine-owned pipeline caches, and WebGPU resource layouts beyond the proven visual/compute subsets. CUDA is not applicable to this local AMD ROCm matrix and still needs a separate CUDA-machine run.
 
 ## Hard Rules Preserved
 
