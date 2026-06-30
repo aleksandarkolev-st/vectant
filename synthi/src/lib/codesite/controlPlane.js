@@ -1,3 +1,5 @@
+import { spawn } from 'child_process';
+import path from 'path';
 import prisma from '@/lib/prisma';
 import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
@@ -15,7 +17,12 @@ import {
   predictCollisions,
 } from './policy';
 import { discoverRepoPolicySignals } from './repoPolicyCompiler';
-import { buildReadSnapshotEvidence, normalizeReadSnapshotEvidence, validateReadSnapshotEvidence } from './repoSnapshot';
+import {
+  buildReadSnapshotEvidence,
+  normalizeReadSnapshotEvidence,
+  resolveCodeSiteRepoRoot,
+  validateReadSnapshotEvidence,
+} from './repoSnapshot';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 
@@ -2107,12 +2114,13 @@ function emergencySnapshot(project, incident, details = {}) {
 
 export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
+  const shouldExecute = inspectionExecutionRequested(body);
   const run = await prisma.codeSiteInspectionRun.create({
     data: {
       projectId: project.id,
       executionPlanId: body.executionPlanId || body.execution_plan_id || null,
       displayCallsign: body.displayCallsign || body.callsign || 'INSPECT-01',
-      status: body.status || 'requested',
+      status: shouldExecute ? 'running' : body.status || 'requested',
       changedPathsJson: stringifyJson(normalizePathList(body.changedPaths || body.changed_paths || [])),
       inspectionSignalsJson: stringifyJson(body.inspectionSignals || body.inspection_signals || []),
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
@@ -2125,7 +2133,9 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
     actorId: run.id,
     details: { inspectionRunId: run.id, status: run.status, changedPaths: parseJson(run.changedPathsJson, []) },
   });
-  return inspectionProjection(run);
+  if (!shouldExecute) return inspectionProjection(run);
+  const executed = await executeInspectionRun(project, run, body);
+  return inspectionProjection(executed);
 }
 
 export async function completeInspectionRun(workspaceSlug, inspectionRunId, body = {}) {
@@ -2133,6 +2143,14 @@ export async function completeInspectionRun(workspaceSlug, inspectionRunId, body
     where: { id: inspectionRunId, project: { workspaceSlug } },
   });
   if (!run) throw notFound('inspection_run_not_found');
+  if (inspectionExecutionRequested(body)) {
+    const project = await requireProject(workspaceSlug, run.projectId);
+    const running = await prisma.codeSiteInspectionRun.update({
+      where: { id: run.id },
+      data: { status: 'running' },
+    });
+    return inspectionProjection(await executeInspectionRun(project, running, body));
+  }
   const updated = await prisma.codeSiteInspectionRun.update({
     where: { id: run.id },
     data: {
@@ -2154,6 +2172,251 @@ export async function completeInspectionRun(workspaceSlug, inspectionRunId, body
     },
   });
   return inspectionProjection(updated);
+}
+
+async function executeInspectionRun(project, run, body = {}) {
+  const commandSpecs = normalizeInspectionCommands(body);
+  if (commandSpecs.length === 0) {
+    const failed = await prisma.codeSiteInspectionRun.update({
+      where: { id: run.id },
+      data: {
+        status: 'failed',
+        inspectionSignalsJson: stringifyJson([
+          ...asArray(parseJson(run.inspectionSignalsJson, [])),
+          {
+            key: 'inspection_command',
+            status: 'failed',
+            reason: 'inspection_command_required',
+            evidenceRefs: [],
+          },
+        ]),
+        evidenceRefsJson: stringifyJson(parseJson(run.evidenceRefsJson, [])),
+        completedAt: new Date(),
+      },
+    });
+    await recordInspectionExecutionEvents(project.id, failed, [{
+      key: 'inspection_command',
+      status: 'failed',
+      reason: 'inspection_command_required',
+      evidenceRefs: [],
+    }]);
+    return failed;
+  }
+
+  const repoRoot = resolveCodeSiteRepoRoot({ repoRoot: body.repoRoot || body.repo_root });
+  const startedSignals = asArray(parseJson(run.inspectionSignalsJson, []));
+  const commandSignals = [];
+  for (const spec of commandSpecs) {
+    commandSignals.push(await runInspectionCommand(spec, repoRoot));
+  }
+  const evidenceRefs = unique([
+    ...parseJson(run.evidenceRefsJson, []),
+    ...commandSignals.flatMap((signal) => asArray(signal.evidenceRefs || signal.evidence_refs)),
+  ]);
+  const status = commandSignals.every((signal) => normalizeInspectionSignal(signal.status) === 'passed') ? 'completed' : 'failed';
+  const updated = await prisma.codeSiteInspectionRun.update({
+    where: { id: run.id },
+    data: {
+      status,
+      inspectionSignalsJson: stringifyJson([...startedSignals, ...commandSignals]),
+      evidenceRefsJson: stringifyJson(evidenceRefs),
+      completedAt: new Date(),
+    },
+  });
+  await recordInspectionExecutionEvents(project.id, updated, commandSignals);
+  return updated;
+}
+
+function inspectionExecutionRequested(body = {}) {
+  return body.execute === true
+    || body.autoRun === true
+    || body.auto_run === true
+    || asArray(body.commands || body.inspectionCommands || body.inspection_commands).length > 0;
+}
+
+function normalizeInspectionCommands(body = {}) {
+  return asArray(body.commands || body.inspectionCommands || body.inspection_commands)
+    .map((command, index) => normalizeInspectionCommand(command, index))
+    .filter(Boolean);
+}
+
+function normalizeInspectionCommand(command, index) {
+  if (Array.isArray(command)) {
+    const [executable, ...args] = command.map((part) => String(part));
+    if (!executable) return null;
+    return {
+      key: normalizeInspectionSignal(executable) || `command_${index + 1}`,
+      executable,
+      args,
+      cwd: null,
+      timeoutMs: null,
+    };
+  }
+  if (!command || typeof command !== 'object') return null;
+  const executable = String(command.command || command.executable || command.bin || '').trim();
+  if (!executable) return null;
+  return {
+    key: normalizeInspectionSignal(command.key || command.signal || command.name || executable) || `command_${index + 1}`,
+    executable,
+    args: asArray(command.args || command.argv).map((arg) => String(arg)),
+    cwd: normalizePath(command.cwd || command.workingDirectory || command.working_directory) || null,
+    timeoutMs: parseOptionalNumber(command.timeoutMs ?? command.timeout_ms),
+  };
+}
+
+async function runInspectionCommand(spec, repoRoot) {
+  const startedAt = new Date();
+  const cwd = resolveInspectionCwd(repoRoot, spec.cwd);
+  const timeoutMs = normalizeInspectionTimeout(spec.timeoutMs);
+  const result = await runCommand(spec.executable, spec.args, { cwd, timeoutMs });
+  const completedAt = new Date();
+  const status = result.exitCode === 0 && !result.timedOut ? 'passed' : 'failed';
+  const evidenceDigest = digest({
+    key: spec.key,
+    executable: spec.executable,
+    args: spec.args,
+    cwd: path.relative(repoRoot, cwd) || '.',
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    stdoutTail: result.stdoutTail,
+    stderrTail: result.stderrTail,
+    startedAt: startedAt.toISOString(),
+    completedAt: completedAt.toISOString(),
+  });
+  const evidenceRefs = unique([
+    durableInspectionCommandRef(spec.key, evidenceDigest),
+    `artifact:${evidenceDigest}`,
+  ]);
+  return {
+    key: spec.key,
+    status,
+    command: {
+      executable: spec.executable,
+      args: spec.args,
+      cwd: path.relative(repoRoot, cwd) || '.',
+      timeoutMs,
+    },
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    durationMs: completedAt.getTime() - startedAt.getTime(),
+    stdoutTail: result.stdoutTail,
+    stderrTail: result.stderrTail,
+    evidenceDigest,
+    evidenceRefs,
+    source: 'codesite_inspection_executor',
+    startedAt: startedAt.toISOString(),
+    completedAt: completedAt.toISOString(),
+  };
+}
+
+function resolveInspectionCwd(repoRoot, cwd) {
+  const root = path.resolve(repoRoot || process.cwd());
+  if (!cwd) return root;
+  const target = path.resolve(root, cwd);
+  const relative = path.relative(root, target);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+    throw badRequest('inspection_cwd_outside_repo', { cwd });
+  }
+  return target;
+}
+
+function normalizeInspectionTimeout(value) {
+  const max = Number(process.env.SYNTHI_CODESITE_INSPECTION_MAX_TIMEOUT_MS || 120000);
+  const fallback = Number(process.env.SYNTHI_CODESITE_INSPECTION_TIMEOUT_MS || 30000);
+  const requested = Number(value || fallback);
+  const timeout = Number.isFinite(requested) && requested > 0 ? requested : fallback;
+  return Math.min(timeout, Number.isFinite(max) && max > 0 ? max : 120000);
+}
+
+function parseOptionalNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function runCommand(executable, args, { cwd, timeoutMs }) {
+  return new Promise((resolve) => {
+    const child = spawn(executable, args, {
+      cwd,
+      env: process.env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout = tail(`${stdout}${chunk.toString('utf8')}`);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = tail(`${stderr}${chunk.toString('utf8')}`);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({
+        exitCode: 127,
+        signal: null,
+        timedOut,
+        stdoutTail: stdout,
+        stderrTail: tail(`${stderr}${error?.message || String(error)}`),
+      });
+    });
+    child.on('close', (exitCode, signal) => {
+      clearTimeout(timer);
+      resolve({
+        exitCode: Number.isInteger(exitCode) ? exitCode : null,
+        signal,
+        timedOut,
+        stdoutTail: stdout,
+        stderrTail: stderr,
+      });
+    });
+  });
+}
+
+function tail(value, limit = 8000) {
+  const text = String(value || '');
+  return text.length > limit ? text.slice(-limit) : text;
+}
+
+function durableInspectionCommandRef(key, evidenceDigest) {
+  const normalized = normalizeInspectionSignal(key);
+  if (/typecheck|tsc/.test(normalized)) return `typecheck:run:${evidenceDigest}`;
+  if (/test|vitest|jest|playwright|spec/.test(normalized)) return `test:run:${evidenceDigest}`;
+  if (/security|secret|auth/.test(normalized)) return `runtime:event:${evidenceDigest}`;
+  return `artifact:${evidenceDigest}`;
+}
+
+async function recordInspectionExecutionEvents(projectId, run, signals) {
+  await recordEvent(projectId, {
+    eventType: 'radar_result',
+    displayCallsign: run.displayCallsign,
+    actorType: 'inspection',
+    actorId: run.id,
+    details: {
+      inspectionRunId: run.id,
+      status: run.status,
+      signals,
+    },
+  });
+  await recordEvent(projectId, {
+    eventType: 'inspection_result',
+    displayCallsign: run.displayCallsign,
+    actorType: 'inspection',
+    actorId: run.id,
+    details: {
+      inspectionRunId: run.id,
+      status: run.status,
+      signals,
+    },
+  });
 }
 
 export async function createCounterfactualRun(workspaceSlug, projectId, body = {}) {

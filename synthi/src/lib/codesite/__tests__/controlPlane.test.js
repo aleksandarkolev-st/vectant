@@ -49,7 +49,9 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteInspectionRun: {
       create: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteIncident: {
       create: vi.fn(),
@@ -76,6 +78,7 @@ import {
   acknowledgeInboxItem,
   createIncident,
   createDocument,
+  createInspectionRun,
   dryRunTransactionWrites,
   getAgentInbox,
   getEvents,
@@ -298,6 +301,31 @@ describe('CodeSite control plane transaction validation', () => {
     prisma.codeSiteInspectionRun.findMany.mockResolvedValue([]);
     prisma.codeSiteInspectionRun.create.mockImplementation(async ({ data }) => ({
       id: 'inspection-created',
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteInspectionRun.findFirst.mockResolvedValue({
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify([]),
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+    });
+    prisma.codeSiteInspectionRun.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify([]),
       requestedAt: new Date('2026-06-29T23:05:00.000Z'),
       completedAt: null,
       ...data,
@@ -593,6 +621,45 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('executes landing inspection commands and records durable radar evidence', async () => {
+    const run = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      execute: true,
+      commands: [{
+        key: 'tests',
+        command: process.execPath,
+        args: ['-e', 'console.log("codesite inspection ok")'],
+        timeoutMs: 5000,
+      }],
+    });
+
+    expect(run.status).toBe('completed');
+    expect(run.inspectionSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'tests',
+        status: 'passed',
+        exitCode: 0,
+        stdoutTail: expect.stringContaining('codesite inspection ok'),
+        evidenceRefs: expect.arrayContaining([expect.stringMatching(/^test:run:sha256:/)]),
+      }),
+    ]));
+    expect(run.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(/^test:run:sha256:/)]));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'radar_result',
+        actorId: 'inspection-created',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'inspection_result',
+        actorId: 'inspection-created',
+      }),
     }));
   });
 
