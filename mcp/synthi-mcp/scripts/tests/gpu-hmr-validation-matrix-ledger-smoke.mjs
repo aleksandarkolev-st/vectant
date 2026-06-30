@@ -6619,6 +6619,141 @@ function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
   return out;
 }
 
+function scopedGeneralityClaim(acceptanceScope) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.generality_claim.v1',
+    authority: 'matrix_computed_from_acceptance_scope',
+    acceptanceScope,
+    acceptance_scope: acceptanceScope,
+    claimScope: 'scoped_profile',
+    claim_scope: 'scoped_profile',
+    profileScopedOnly: true,
+    profile_scoped_only: true,
+    broadLibraryAgnosticAccepted: false,
+    broad_library_agnostic_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    unsupportedWithoutEvidence: [
+      'arbitrary_library_hmr_not_proven',
+      'arbitrary_target_runtime_not_proven',
+    ],
+    unsupported_without_evidence: [
+      'arbitrary_library_hmr_not_proven',
+      'arbitrary_target_runtime_not_proven',
+    ],
+    openGaps: ['broad_library_agnostic_proof_not_present'],
+    open_gaps: ['broad_library_agnostic_proof_not_present'],
+    failedGates: [],
+    failed_gates: [],
+  };
+}
+
+function acceptedBroadReadinessCandidate({
+  targetId,
+  backend,
+  acceptanceScope,
+  proofMode = 'strict_runtime_ledger',
+  oracle = 'compute',
+}) {
+  const row = acceptedAuthoritativeMatrixRow(targetId, {
+    backend,
+    proofMode,
+    proof_mode: proofMode,
+    acceptanceScope,
+    acceptance_scope: acceptanceScope,
+    claimScope: 'scoped_profile',
+    claim_scope: 'scoped_profile',
+    generalityClaim: scopedGeneralityClaim(acceptanceScope),
+    generality_claim: scopedGeneralityClaim(acceptanceScope),
+  });
+  row.acceptanceContract = {
+    ...(row.acceptanceContract ?? row.acceptance_contract ?? {}),
+    projectId: targetId,
+    project_id: targetId,
+  };
+  row.acceptance_contract = row.acceptanceContract;
+  row.ledger.record.projectId = targetId;
+  row.ledger.record.project_id = targetId;
+  row.ledger.record.editId = `edit:${targetId}`;
+  row.ledger.record.edit_id = `edit:${targetId}`;
+  row.ledger.record.backend = backend;
+  row.ledger.record.proofId = null;
+  row.ledger.record.proof_id = null;
+  const recomputedLedger = queryGpuHmrLedgerInvariants(row.ledger.record, {
+    ignoreSuppliedLedgerQueryAndSuccess: true,
+  });
+  const recomputedLedgerProofId = recomputedLedger.record.proofId;
+  row.ledger.record.proofId = recomputedLedgerProofId;
+  row.ledger.record.proof_id = recomputedLedgerProofId;
+  row.ledger.proofId = recomputedLedgerProofId;
+  row.ledger.proof_id = recomputedLedgerProofId;
+  row.proofIds = [
+    recomputedLedgerProofId,
+    ...[...new Set((Array.isArray(row.proofIds ?? row.proof_ids) ? (row.proofIds ?? row.proof_ids) : []))]
+      .filter((proofId) => !proofId.startsWith('gpu-ledger-proof:sha256:')),
+  ];
+  row.proof_ids = row.proofIds;
+  if (oracle === 'visual') {
+    row.visual = {
+      ...(row.visual ?? {}),
+      required: true,
+      accepted: true,
+    };
+    row.outputOracleFacet = {
+      ...(row.outputOracleFacet ?? {}),
+      kind: 'visual_oracle',
+      accepted: true,
+    };
+    row.output_oracle_facet = row.outputOracleFacet;
+  } else {
+    row.visual = {
+      ...(row.visual ?? {}),
+      required: false,
+      accepted: true,
+    };
+    row.outputOracleFacet = {
+      ...(row.outputOracleFacet ?? {}),
+      kind: 'compute_oracle',
+      accepted: true,
+    };
+    row.output_oracle_facet = row.outputOracleFacet;
+  }
+  return withQueryRecomputedRowId(row);
+}
+
+function refusalMatrixRow(targetId, backend = 'hip') {
+  return withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`refusal:${targetId}`)}`,
+    backend,
+    targetId,
+    target_id: targetId,
+    profileId: targetId,
+    profile_id: targetId,
+    proofMode: 'adversarial_refusal_fixture',
+    proof_mode: 'adversarial_refusal_fixture',
+    matrixOutcome: 'refusal_proven',
+    matrix_outcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptance_class: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    refusalProven: true,
+    refusal_proven: true,
+    proofChainAccepted: true,
+    proof_chain_accepted: true,
+    proofChain: 'adversarial_refusal_fixture',
+    proof_chain: 'adversarial_refusal_fixture',
+    reasons: ['adversarial_refusal_fixture'],
+    openGaps: [],
+    open_gaps: [],
+  });
+}
+
 function withQueryRecomputedRowId(row) {
   const probe = {
     ...JSON.parse(JSON.stringify(row)),
@@ -7031,6 +7166,74 @@ assert.ok(forgedBroadScopeWithFacetQuery.failedGates.some((gate) =>
 assert.ok(forgedBroadScopeWithFacetQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_known_acceptance_scope'
 ));
+assert.equal(
+  forgedBroadScopeWithFacetQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.accepted,
+  false,
+);
+
+const broadReadinessRows = [
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-hip-visual',
+    backend: 'hip',
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    oracle: 'visual',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-webgpu-compute',
+    backend: 'webgpu',
+    acceptanceScope: 'webgpu_declared_compute_readback',
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-opencl-compute',
+    backend: 'opencl',
+    acceptanceScope: 'opencl_declared_compute_readback',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-vulkan-visual',
+    backend: 'vulkan',
+    acceptanceScope: 'vulkan_declared_pipeline_visual',
+    oracle: 'visual',
+  }),
+  ...Array.from({ length: 8 }, (_, index) =>
+    refusalMatrixRow(`broad-readiness-adversarial-refusal-${index + 1}`)
+  ),
+];
+const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: broadReadinessRows,
+});
+assert.equal(broadReadinessQuery.accepted, true);
+assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
+assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 4);
+assert.equal(
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.broad_library_agnostic,
+  4,
+);
+assert.equal(
+  broadReadinessQuery.summary.fullRuntimeGeneralityBreakdown.broad_library_agnostic,
+  4,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  true,
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
+  [],
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof.authority,
+  'matrix_recomputed_from_strict_full_runtime_rows',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .broadRuntimeRows,
+  4,
+);
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
