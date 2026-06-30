@@ -58,6 +58,9 @@ const CFG = {
   gpuArchSource: process.env.SYNTHI_GPU_ARCH ? 'env:SYNTHI_GPU_ARCH' : null,
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 180000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 15000),
+  strictProofRetryEnabled: process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY !== '0',
+  strictProofRetryTimeoutMs: Number(process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_TIMEOUT_MS ?? 45000),
+  strictProofRetryDelayMs: Number(process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_DELAY_MS ?? 250),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'local').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? process.env.SYNTHI_MCP_CONTAINER ?? null,
   mcpContainerEntry: process.env.MCP_CONTAINER_ENTRY ?? process.env.SYNTHI_MCP_CONTAINER_ENTRY ?? null,
@@ -1168,6 +1171,29 @@ class McpClient {
 }
 
 let mcpState = null;
+function disposeMcpProcess(proc) {
+  const disposed = {
+    stdinEnded: false,
+    stdin_ended: false,
+    killed: false,
+  };
+  if (!proc) return disposed;
+  try {
+    proc.stdin?.end?.();
+    disposed.stdinEnded = true;
+    disposed.stdin_ended = true;
+  } catch {
+    // ignore shutdown races
+  }
+  try {
+    proc.kill?.('SIGTERM');
+    disposed.killed = true;
+  } catch {
+    // ignore shutdown races
+  }
+  return disposed;
+}
+
 async function startMcp() {
   if (mcpState?.client) return mcpState;
   let proc;
@@ -1205,17 +1231,27 @@ async function startMcp() {
     });
   }
   const client = new McpClient(proc);
-  await client.request('initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'synthi-gpu-hmr-agent-split-test', version: '0.0.1' },
-  }, 20000);
-  await client.request('notifications/initialized', {}, 5000).catch(() => {});
-  const tools = await client.request('tools/list', {}, 20000);
-  const names = tools.tools?.map((t) => t.name) ?? [];
-  record('mcp tools/list', names.includes('synthi_compile') && names.includes('synthi_wait_hmr') ? 'pass' : 'fail', `count=${names.length}`);
-  mcpState = { proc, client, attached: false };
-  return mcpState;
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'synthi-gpu-hmr-agent-split-test', version: '0.0.1' },
+    }, CFG.mcpRequestTimeoutMs);
+    await client.request('notifications/initialized', {}, 5000).catch(() => {});
+    const tools = await client.request('tools/list', {}, CFG.mcpRequestTimeoutMs);
+    const names = tools.tools?.map((t) => t.name) ?? [];
+    record('mcp tools/list', names.includes('synthi_compile') && names.includes('synthi_wait_hmr') ? 'pass' : 'fail', `count=${names.length}`);
+    mcpState = { proc, client, attached: false };
+    return mcpState;
+  } catch (err) {
+    const disposed = disposeMcpProcess(proc);
+    record(
+      'mcp startup cleanup',
+      disposed.killed ? 'warn' : 'fail',
+      `initialize_failed=${String(err?.message ?? err).slice(0, 200)} killed=${disposed.killed}`,
+    );
+    throw err;
+  }
 }
 
 async function ensureMcpAttached() {
@@ -1233,8 +1269,7 @@ async function ensureMcpAttached() {
 
 async function stopMcp() {
   if (!mcpState) return;
-  try { mcpState.proc.stdin.end(); } catch { /* ignore */ }
-  try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
+  disposeMcpProcess(mcpState.proc);
   mcpState = null;
 }
 
@@ -2499,6 +2534,267 @@ function assertNoSynthiAbi(source, options = {}) {
   return evidence;
 }
 
+function waitResultFromWaitHmrToolError(err) {
+  const message = String(err?.message ?? err ?? '');
+  const match = message.match(/tool synthi_wait_hmr isError:\s*(\{[\s\S]*\})$/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.error !== 'gpu_hmr_proof_insufficient') return null;
+    return {
+      ...parsed,
+      status: parsed.status ?? 'timeout',
+      source: parsed.source ?? 'tool_error',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function waitProofValidation(wait) {
+  return wait?.gpu_proof_validation && typeof wait.gpu_proof_validation === 'object'
+    ? wait.gpu_proof_validation
+    : wait?.gpuProofValidation && typeof wait.gpuProofValidation === 'object'
+      ? wait.gpuProofValidation
+      : {};
+}
+
+function waitProofReason(wait) {
+  const validation = waitProofValidation(wait);
+  return String(
+    validation.reason
+      ?? wait?.reason
+      ?? wait?.gpu_proof_wait?.reason
+      ?? wait?.gpuProofWait?.reason
+      ?? '',
+  ).trim();
+}
+
+function waitProofWaitStatus(wait) {
+  return String(
+    wait?.gpu_proof_wait?.status
+      ?? wait?.gpuProofWait?.status
+      ?? wait?.proof_wait_timeout_intelligence?.status
+      ?? wait?.proofWaitTimeoutIntelligence?.status
+      ?? '',
+  ).trim();
+}
+
+function strictProofRequested(waitContract) {
+  const waitArgs = waitContract?.waitArgs ?? {};
+  return waitArgs.requireGpuFullRuntimeProof === true
+    || (typeof waitArgs.requiredGpuProofState === 'string' && waitArgs.requiredGpuProofState.trim());
+}
+
+const STRICT_PROOF_PENDING_RETRY_REASONS = new Set([
+  'proof_state_missing',
+  'gpu_proof_state_missing',
+  'proof_ledger_missing',
+  'proof_ledger_not_ready',
+  'runtime_proof_artifact_missing',
+  'runtime_proof_artifact_not_ready',
+  'strict_runtime_proof_missing',
+  'proof_slice_missing',
+  'strict_proof_pending',
+  'runtime_proof_pending',
+  'proof_pending',
+]);
+
+function strictProofWaitRetryReason(wait, waitContract) {
+  if (!strictProofRequested(waitContract)) return null;
+  if (!wait || wait.status === 'applied') return null;
+  if (wait.error !== 'gpu_hmr_proof_insufficient') return null;
+  if (!['timeout', 'timeout_or_error'].includes(String(wait.status ?? ''))) return null;
+  const proofWaitStatus = waitProofWaitStatus(wait);
+  if (proofWaitStatus === 'failed_fast') return null;
+  const reason = waitProofReason(wait);
+  if (!STRICT_PROOF_PENDING_RETRY_REASONS.has(reason)) return null;
+  return reason;
+}
+
+function waitAttemptSummary(wait, attemptIndex, sliceTimeoutMs) {
+  const validation = waitProofValidation(wait);
+  const telemetry = proofTelemetryObject(wait);
+  const proofLedgerValidation = validation.proofLedgerValidation
+    ?? validation.proof_ledger_validation
+    ?? null;
+  const runtimeArtifactValidation = validation.runtimeProofArtifactValidation
+    ?? validation.runtime_proof_artifact_validation
+    ?? null;
+  const failedGates = Array.isArray(validation.failedGates)
+    ? validation.failedGates
+    : Array.isArray(validation.failed_gates)
+      ? validation.failed_gates
+      : [];
+  return {
+    attemptIndex,
+    attempt_index: attemptIndex,
+    sliceTimeoutMs,
+    slice_timeout_ms: sliceTimeoutMs,
+    status: wait?.status ?? null,
+    error: wait?.error ?? null,
+    source: wait?.source ?? null,
+    reason: waitProofReason(wait) || null,
+    resultState: validation.resultState ?? validation.result_state ?? telemetry.resultState ?? telemetry.result_state ?? null,
+    result_state: validation.resultState ?? validation.result_state ?? telemetry.resultState ?? telemetry.result_state ?? null,
+    effectiveResultRank: validation.effectiveResultRank ?? validation.effective_result_rank ?? null,
+    effective_result_rank: validation.effectiveResultRank ?? validation.effective_result_rank ?? null,
+    proofId: telemetry.proofId ?? telemetry.proof_id ?? null,
+    proof_id: telemetry.proofId ?? telemetry.proof_id ?? null,
+    proofArtifactPath: telemetry.proofArtifactPath ?? telemetry.proof_artifact_path ?? null,
+    proof_artifact_path: telemetry.proofArtifactPath ?? telemetry.proof_artifact_path ?? null,
+    failedGates,
+    failed_gates: failedGates,
+    proofLedgerAccepted: proofLedgerValidation?.accepted ?? null,
+    proof_ledger_accepted: proofLedgerValidation?.accepted ?? null,
+    runtimeProofArtifactAccepted: runtimeArtifactValidation?.accepted ?? null,
+    runtime_proof_artifact_accepted: runtimeArtifactValidation?.accepted ?? null,
+  };
+}
+
+function strictProofWaitRetryEvidence({
+  attempted,
+  initialWait,
+  finalWait,
+  reason,
+  initialTimeoutMs,
+  retryTimeoutMs,
+  retryDelayMs,
+  waitContract,
+  elapsedMs,
+} = {}) {
+  const finalApplied = finalWait?.status === 'applied';
+  const binding = waitContract?.binding ?? {};
+  const evidence = {
+    schemaVersion: 'synthi.gpu_hmr.strict_proof_wait_retry.v1',
+    schema_version: 'synthi.gpu_hmr.strict_proof_wait_retry.v1',
+    proofAuthority: 'strict_proof_wait_retry_scheduling_only_not_gpu_hmr_acceptance',
+    proof_authority: 'strict_proof_wait_retry_scheduling_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    attempted: attempted === true,
+    decision: attempted === true ? 'retry' : 'stop',
+    maxAttempts: 2,
+    max_attempts: 2,
+    attemptCount: attempted === true ? 2 : 1,
+    attempt_count: attempted === true ? 2 : 1,
+    reason: reason ?? waitProofReason(initialWait) ?? null,
+    stopReason: finalApplied ? 'proof_ready' : 'retry_budget_exhausted',
+    stop_reason: finalApplied ? 'proof_ready' : 'retry_budget_exhausted',
+    initialStatus: initialWait?.status ?? null,
+    initial_status: initialWait?.status ?? null,
+    initialError: initialWait?.error ?? null,
+    initial_error: initialWait?.error ?? null,
+    finalStatus: finalWait?.status ?? null,
+    final_status: finalWait?.status ?? null,
+    finalReason: finalWait ? waitProofReason(finalWait) || null : null,
+    final_reason: finalWait ? waitProofReason(finalWait) || null : null,
+    initialTimeoutMs: Number.isFinite(initialTimeoutMs) ? initialTimeoutMs : null,
+    initial_timeout_ms: Number.isFinite(initialTimeoutMs) ? initialTimeoutMs : null,
+    retryTimeoutMs: Number.isFinite(retryTimeoutMs) ? retryTimeoutMs : null,
+    retry_timeout_ms: Number.isFinite(retryTimeoutMs) ? retryTimeoutMs : null,
+    retryDelayMs: Number.isFinite(retryDelayMs) ? retryDelayMs : null,
+    retry_delay_ms: Number.isFinite(retryDelayMs) ? retryDelayMs : null,
+    elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    elapsed_ms: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    workspaceSlug: binding.workspaceSlug ?? CFG.slug,
+    workspace_slug: binding.workspaceSlug ?? CFG.slug,
+    compileDispatchedAt: binding.compileDispatchedAt ?? null,
+    compile_dispatched_at: binding.compileDispatchedAt ?? null,
+    sinceTs: binding.sinceTs ?? waitContract?.waitArgs?.since_ts ?? null,
+    since_ts: binding.sinceTs ?? waitContract?.waitArgs?.since_ts ?? null,
+    module: waitContract?.waitArgs?.module ?? null,
+    selectedPath: binding.selectedPath ?? null,
+    selected_path: binding.selectedPath ?? null,
+    editId: binding.editId ?? null,
+    edit_id: binding.editId ?? null,
+    editHash: binding.editHash ?? null,
+    edit_hash: binding.editHash ?? null,
+    artifactHashAfter: binding.artifactHashAfter ?? null,
+    artifact_hash_after: binding.artifactHashAfter ?? null,
+    requireGpuFullRuntimeProof: waitContract?.waitArgs?.requireGpuFullRuntimeProof === true,
+    require_gpu_full_runtime_proof: waitContract?.waitArgs?.requireGpuFullRuntimeProof === true,
+    requiredGpuProofState: waitContract?.waitArgs?.requiredGpuProofState ?? null,
+    required_gpu_proof_state: waitContract?.waitArgs?.requiredGpuProofState ?? null,
+    attempts: [
+      waitAttemptSummary(initialWait, 1, evidenceNumberOrNull(initialTimeoutMs)),
+      ...(attempted === true ? [waitAttemptSummary(finalWait, 2, evidenceNumberOrNull(retryTimeoutMs))] : []),
+    ],
+    blockingGaps: finalApplied ? [] : ['strict_proof_wait_retry_final_status_not_applied'],
+    blocking_gaps: finalApplied ? [] : ['strict_proof_wait_retry_final_status_not_applied'],
+  };
+  evidence.evidenceRefs = [`strict-proof-wait-retry:${sha256Hex(stableJson({
+    reason: evidence.reason,
+    initialStatus: evidence.initialStatus,
+    finalStatus: evidence.finalStatus,
+    initialTimeoutMs: evidence.initialTimeoutMs,
+    retryTimeoutMs: evidence.retryTimeoutMs,
+    requiredGpuProofState: evidence.requiredGpuProofState,
+    requireGpuFullRuntimeProof: evidence.requireGpuFullRuntimeProof,
+    sinceTs: evidence.sinceTs,
+    module: evidence.module,
+    selectedPath: evidence.selectedPath,
+    editHash: evidence.editHash,
+  }))}`];
+  evidence.evidence_refs = evidence.evidenceRefs;
+  return evidence;
+}
+
+function evidenceNumberOrNull(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+async function callWaitHmrTool(state, waitArgs, timeoutMs) {
+  try {
+    return await state.client.toolCall('synthi_wait_hmr', waitArgs, timeoutMs);
+  } catch (err) {
+    return waitResultFromWaitHmrToolError(err)
+      ?? { status: 'timeout_or_error', error: String(err?.message ?? err).slice(0, 4000) };
+  }
+}
+
+async function waitHmrWithStrictProofRetry(state, waitContract, timeoutMs, options = {}) {
+  const retryStartNs = process.hrtime.bigint();
+  const wait = await callWaitHmrTool(state, waitContract.waitArgs, timeoutMs + 5000);
+  const retryReason = strictProofWaitRetryReason(wait, waitContract);
+  const retryTimeoutMs = Number.isFinite(options.strictProofRetryTimeoutMs)
+    ? options.strictProofRetryTimeoutMs
+    : CFG.strictProofRetryTimeoutMs;
+  const retryDelayMs = Number.isFinite(options.strictProofRetryDelayMs)
+    ? options.strictProofRetryDelayMs
+    : CFG.strictProofRetryDelayMs;
+  const retryEnabled = options.strictProofRetryEnabled ?? CFG.strictProofRetryEnabled;
+  if (!retryEnabled || !retryReason || !Number.isFinite(retryTimeoutMs) || retryTimeoutMs <= 0) {
+    return { wait, retryEvidence: null };
+  }
+  if (Number.isFinite(retryDelayMs) && retryDelayMs > 0) {
+    await sleep(retryDelayMs);
+  }
+  const retryWaitArgs = {
+    ...waitContract.waitArgs,
+    timeoutMs: retryTimeoutMs,
+  };
+  const retryWait = await callWaitHmrTool(state, retryWaitArgs, retryTimeoutMs + 5000);
+  const retryEndNs = process.hrtime.bigint();
+  const retryEvidence = strictProofWaitRetryEvidence({
+    attempted: true,
+    initialWait: wait,
+    finalWait: retryWait,
+    reason: retryReason,
+    initialTimeoutMs: timeoutMs,
+    retryTimeoutMs,
+    retryDelayMs: Number.isFinite(retryDelayMs) ? retryDelayMs : null,
+    waitContract,
+    elapsedMs: Number(retryEndNs - retryStartNs) / 1_000_000,
+  });
+  return { wait: retryWait, retryEvidence };
+}
+
 async function compileViaMcp(args, timeoutMs, options = {}) {
   const state = await ensureMcpAttached();
   const compileStartNs = process.hrtime.bigint();
@@ -2511,11 +2807,7 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
   }
   const waitContract = waitContractForCompile({ args, compile, timeoutMs, options });
   const waitStartNs = process.hrtime.bigint();
-  const wait = await state.client.toolCall(
-    'synthi_wait_hmr',
-    waitContract.waitArgs,
-    timeoutMs + 5000,
-  ).catch((e) => ({ status: 'timeout_or_error', error: e.message }));
+  const { wait, retryEvidence } = await waitHmrWithStrictProofRetry(state, waitContract, timeoutMs, options);
   const waitEndNs = process.hrtime.bigint();
   const timingMetrics = {
     schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
@@ -2550,6 +2842,10 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     timingMetrics,
     timing_metrics: timingMetrics,
   };
+  if (retryEvidence) {
+    waitSummary.proofFinalizationRetry = retryEvidence;
+    waitSummary.proof_finalization_retry = retryEvidence;
+  }
   if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
   if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
   if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
@@ -2846,7 +3142,28 @@ function waitContractForCompile({ args, compile, timeoutMs, options = {} }) {
   } else if (isGpuDeviceEdit && process.env.SYNTHI_GPU_HMR_REQUIRE_FULL_RUNTIME_PROOF !== '0') {
     waitArgs.requireGpuFullRuntimeProof = true;
   }
-  return { waitArgs, role, isGpuDeviceEdit };
+  return {
+    waitArgs,
+    role,
+    isGpuDeviceEdit,
+    binding: {
+      workspaceSlug: CFG.slug,
+      workspace_slug: CFG.slug,
+      compileDispatchedAt: Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : null,
+      compile_dispatched_at: Number.isFinite(compile?.dispatched_at) ? compile.dispatched_at : null,
+      sinceTs: waitArgs.since_ts ?? null,
+      since_ts: waitArgs.since_ts ?? null,
+      module: waitArgs.module ?? null,
+      selectedPath: filename || null,
+      selected_path: filename || null,
+      editId: options.editId ?? null,
+      edit_id: options.editId ?? null,
+      editHash: options.editHash ?? null,
+      edit_hash: options.editHash ?? null,
+      artifactHashAfter: compile?.artifact_hash_after ?? compile?.artifactHashAfter ?? compile?.artifact_hash ?? compile?.artifactHash ?? null,
+      artifact_hash_after: compile?.artifact_hash_after ?? compile?.artifactHashAfter ?? compile?.artifact_hash ?? compile?.artifactHash ?? null,
+    },
+  };
 }
 
 function declaredManifestModuleFiles(manifest) {
@@ -4846,6 +5163,166 @@ function selfCheckRunModeVisualLedgerClockDomain() {
   }
   ledgerFirewallFieldsFromProof(proof);
   console.log('run-mode visual ledger clock-domain self-check passed');
+}
+
+async function selfCheckProofFinalizationRetry() {
+  const selectedPath = '.synthi/generated/gpu/device.hip';
+  const waitContract = waitContractForCompile({
+    args: {
+      filename: selectedPath,
+      compile_manifest: {
+        module_files: {
+          device: selectedPath,
+          host: '.synthi/generated/gpu/host_runner.cpp',
+        },
+        gpu: {
+          device_roles: [{
+            id: 'device',
+            path: selectedPath,
+            compiler: 'hipcc',
+          }],
+        },
+      },
+    },
+    compile: {
+      ok: true,
+      dispatched_at: 12345,
+      artifact_hash_after: `sha256:${'d'.repeat(64)}`,
+    },
+    timeoutMs: 15000,
+    options: {
+      editId: 'self-check-proof-retry-edit',
+      editHash: `sha256:${'e'.repeat(64)}`,
+      requiredGpuProofState: 'gpu-hmr-full-runtime-proven',
+    },
+  });
+  const pendingWaitError = new Error(`tool synthi_wait_hmr isError: ${JSON.stringify({
+    error: 'gpu_hmr_proof_insufficient',
+    status: 'timeout',
+    gpu_proof_validation: {
+      reason: 'proof_state_missing',
+      resultState: 'gpu-hmr-dispatch-observed',
+      effectiveResultRank: 5,
+    },
+  })}`);
+  const parsedPending = waitResultFromWaitHmrToolError(pendingWaitError);
+  const proofLedgerMissing = {
+    error: 'gpu_hmr_proof_insufficient',
+    status: 'timeout',
+    gpu_proof_validation: {
+      reason: 'proof_ledger_missing',
+    },
+  };
+  const terminalRejected = {
+    error: 'gpu_hmr_proof_insufficient',
+    status: 'timeout',
+    gpu_proof_validation: {
+      reason: 'proof_ledger_rejected',
+    },
+  };
+  const failedFast = {
+    error: 'gpu_hmr_proof_insufficient',
+    status: 'timeout',
+    gpu_proof_validation: {
+      reason: 'proof_state_missing',
+    },
+    gpu_proof_wait: {
+      status: 'failed_fast',
+    },
+  };
+  const nonStrictContract = {
+    waitArgs: {
+      timeoutMs: 15000,
+    },
+  };
+  let callCount = 0;
+  const fakeState = {
+    client: {
+      async toolCall(name, args) {
+        if (name !== 'synthi_wait_hmr') throw new Error(`unexpected tool ${name}`);
+        if (args.module !== 'device' || args.since_ts !== 12345) {
+          throw new Error(`wait contract drifted: ${JSON.stringify(args)}`);
+        }
+        callCount += 1;
+        if (callCount === 1) throw pendingWaitError;
+        return {
+          status: 'applied',
+          source: 'self_check',
+          gpu_proof_validation: {
+            satisfied: true,
+            resultState: 'gpu-hmr-full-runtime-proven',
+            effectiveResultRank: 9,
+          },
+          gpu_proof_telemetry: {
+            proofId: `gpu-runtime-proof:sha256:${'f'.repeat(64)}`,
+            proofArtifactPath: '/tmp/self-check-runtime-proof.json',
+          },
+        };
+      },
+    },
+  };
+  const { wait, retryEvidence } = await waitHmrWithStrictProofRetry(fakeState, waitContract, 15000, {
+    strictProofRetryTimeoutMs: 30000,
+    strictProofRetryDelayMs: 0,
+  });
+  if (
+    parsedPending?.error !== 'gpu_hmr_proof_insufficient'
+    || strictProofWaitRetryReason(parsedPending, waitContract) !== 'proof_state_missing'
+    || strictProofWaitRetryReason(proofLedgerMissing, waitContract) !== 'proof_ledger_missing'
+    || strictProofWaitRetryReason(terminalRejected, waitContract) !== null
+    || strictProofWaitRetryReason(failedFast, waitContract) !== null
+    || strictProofWaitRetryReason(parsedPending, nonStrictContract) !== null
+    || callCount !== 2
+    || wait.status !== 'applied'
+    || retryEvidence?.proofAuthority !== 'strict_proof_wait_retry_scheduling_only_not_gpu_hmr_acceptance'
+    || retryEvidence.acceptedForGpuHmr !== false
+    || retryEvidence.gpuHmrSuccess !== false
+    || retryEvidence.canSatisfyRuntimeProof !== false
+    || retryEvidence.reason !== 'proof_state_missing'
+    || retryEvidence.stopReason !== 'proof_ready'
+    || retryEvidence.sinceTs !== 12345
+    || retryEvidence.module !== 'device'
+    || retryEvidence.selectedPath !== selectedPath
+    || retryEvidence.editHash !== `sha256:${'e'.repeat(64)}`
+    || retryEvidence.requiredGpuProofState !== 'gpu-hmr-full-runtime-proven'
+    || !Array.isArray(retryEvidence.attempts)
+    || retryEvidence.attempts.length !== 2
+    || retryEvidence.attempts[0].reason !== 'proof_state_missing'
+    || retryEvidence.attempts[1].status !== 'applied'
+  ) {
+    throw new Error(`proof-finalization retry self-check failed: ${JSON.stringify({
+      parsedPending,
+      retryReason: strictProofWaitRetryReason(parsedPending, waitContract),
+      callCount,
+      waitStatus: wait.status,
+      retryEvidence,
+    }).slice(0, 4000)}`);
+  }
+  console.log('proof-finalization retry self-check passed');
+}
+
+function selfCheckMcpStartupCleanup() {
+  const calls = [];
+  const fakeProc = {
+    stdin: {
+      end() {
+        calls.push('stdin.end');
+      },
+    },
+    kill(signal) {
+      calls.push(`kill:${signal}`);
+      return true;
+    },
+  };
+  const disposed = disposeMcpProcess(fakeProc);
+  if (
+    disposed.stdinEnded !== true
+    || disposed.killed !== true
+    || calls.join('|') !== 'stdin.end|kill:SIGTERM'
+  ) {
+    throw new Error(`MCP startup cleanup self-check failed: ${JSON.stringify({ disposed, calls })}`);
+  }
+  console.log('MCP startup cleanup self-check passed');
 }
 
 function literalOccurrenceCount(source, needle) {
@@ -6883,6 +7360,8 @@ if (process.argv.includes('--self-check')) {
   try {
     selfCheckAgentVisualProfile();
     selfCheckRunModeVisualLedgerClockDomain();
+    await selfCheckProofFinalizationRetry();
+    selfCheckMcpStartupCleanup();
   } catch (err) {
     console.error(err.stack || err.message);
     process.exitCode = 1;
