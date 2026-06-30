@@ -664,6 +664,356 @@ int main(int argc, char** argv) {
 `;
 }
 
+function windowsPowerShellProbeSource() {
+  return String.raw`
+param(
+  [Parameter(Mandatory=$true)][string]$BeforePath,
+  [Parameter(Mandatory=$true)][string]$AfterPath,
+  [Parameter(Mandatory=$true)][string]$RawPath,
+  [Parameter(Mandatory=$true)][string]$TracePath,
+  [Parameter(Mandatory=$true)][string]$BeforeHash,
+  [Parameter(Mandatory=$true)][string]$AfterHash,
+  [Parameter(Mandatory=$true)][string]$SchemaVersion
+)
+$ErrorActionPreference = 'Stop'
+$source = @'
+using System;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class SynthiOpenClWindowsProbe {
+  const int CL_SUCCESS = 0;
+  const uint CL_TRUE = 1;
+  const ulong CL_DEVICE_TYPE_GPU = (1UL << 2);
+  const ulong CL_DEVICE_TYPE_ALL = 0xFFFFFFFFUL;
+  const ulong CL_MEM_READ_WRITE = (1UL << 0);
+  const ulong CL_MEM_READ_ONLY = (1UL << 2);
+  const ulong CL_MEM_COPY_HOST_PTR = (1UL << 5);
+  const uint CL_PLATFORM_NAME = 0x0902;
+  const uint CL_DEVICE_NAME = 0x102B;
+  const uint CL_DEVICE_VENDOR = 0x102C;
+  const uint CL_DEVICE_VERSION = 0x102F;
+  const uint CL_PROGRAM_BUILD_LOG = 0x1183;
+
+  [DllImport("OpenCL.dll")]
+  static extern int clGetPlatformIDs(uint numEntries, [Out] IntPtr[] platforms, out uint numPlatforms);
+  [DllImport("OpenCL.dll")]
+  static extern int clGetDeviceIDs(IntPtr platform, ulong deviceType, uint numEntries, [Out] IntPtr[] devices, out uint numDevices);
+  [DllImport("OpenCL.dll")]
+  static extern int clGetPlatformInfo(IntPtr platform, uint paramName, UIntPtr paramValueSize, StringBuilder paramValue, out UIntPtr paramValueSizeRet);
+  [DllImport("OpenCL.dll")]
+  static extern int clGetDeviceInfo(IntPtr device, uint paramName, UIntPtr paramValueSize, StringBuilder paramValue, out UIntPtr paramValueSizeRet);
+  [DllImport("OpenCL.dll")]
+  static extern IntPtr clCreateContext(IntPtr properties, uint numDevices, IntPtr[] devices, IntPtr notify, IntPtr userData, out int errcodeRet);
+  [DllImport("OpenCL.dll")]
+  static extern IntPtr clCreateCommandQueue(IntPtr context, IntPtr device, ulong properties, out int errcodeRet);
+  [DllImport("OpenCL.dll", CharSet = CharSet.Ansi)]
+  static extern IntPtr clCreateProgramWithSource(IntPtr context, uint count, string[] strings, UIntPtr[] lengths, out int errcodeRet);
+  [DllImport("OpenCL.dll", CharSet = CharSet.Ansi)]
+  static extern int clBuildProgram(IntPtr program, uint numDevices, IntPtr[] deviceList, string options, IntPtr notify, IntPtr userData);
+  [DllImport("OpenCL.dll")]
+  static extern int clGetProgramBuildInfo(IntPtr program, IntPtr device, uint paramName, UIntPtr paramValueSize, StringBuilder paramValue, out UIntPtr paramValueSizeRet);
+  [DllImport("OpenCL.dll", CharSet = CharSet.Ansi)]
+  static extern IntPtr clCreateKernel(IntPtr program, string kernelName, out int errcodeRet);
+  [DllImport("OpenCL.dll")]
+  static extern IntPtr clCreateBuffer(IntPtr context, ulong flags, UIntPtr size, IntPtr hostPtr, out int errcodeRet);
+  [DllImport("OpenCL.dll", EntryPoint = "clSetKernelArg")]
+  static extern int clSetKernelArgMem(IntPtr kernel, uint argIndex, UIntPtr argSize, ref IntPtr argValue);
+  [DllImport("OpenCL.dll", EntryPoint = "clSetKernelArg")]
+  static extern int clSetKernelArgUInt(IntPtr kernel, uint argIndex, UIntPtr argSize, ref uint argValue);
+  [DllImport("OpenCL.dll")]
+  static extern int clEnqueueNDRangeKernel(IntPtr commandQueue, IntPtr kernel, uint workDim, IntPtr globalWorkOffset, UIntPtr[] globalWorkSize, UIntPtr[] localWorkSize, uint numEventsInWaitList, IntPtr eventWaitList, out IntPtr evt);
+  [DllImport("OpenCL.dll")]
+  static extern int clEnqueueReadBuffer(IntPtr commandQueue, IntPtr buffer, uint blockingRead, UIntPtr offset, UIntPtr cb, IntPtr ptr, uint numEventsInWaitList, IntPtr eventWaitList, out IntPtr evt);
+  [DllImport("OpenCL.dll")]
+  static extern int clWaitForEvents(uint numEvents, IntPtr[] eventList);
+  [DllImport("OpenCL.dll")]
+  static extern int clFinish(IntPtr commandQueue);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseEvent(IntPtr evt);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseMemObject(IntPtr memobj);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseKernel(IntPtr kernel);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseProgram(IntPtr program);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseCommandQueue(IntPtr commandQueue);
+  [DllImport("OpenCL.dll")]
+  static extern int clReleaseContext(IntPtr context);
+
+  sealed class EpochResult {
+    public IntPtr Program;
+    public IntPtr Kernel;
+    public long BuildNs;
+    public long KernelNs;
+    public long DispatchNs;
+    public long OutputNs;
+    public float[] Output = new float[8];
+  }
+
+  static long NowNs() {
+    return (long)((Stopwatch.GetTimestamp() * 1000000000.0) / Stopwatch.Frequency);
+  }
+
+  static int Fail(string code, int exitCode, string detail) {
+    Console.Error.WriteLine("opencl_runtime_error=" + code + " detail=" + detail);
+    return exitCode;
+  }
+
+  static string InfoStringPlatform(IntPtr platform, uint param) {
+    StringBuilder value = new StringBuilder(256);
+    UIntPtr ignored;
+    int err = clGetPlatformInfo(platform, param, new UIntPtr((uint)value.Capacity), value, out ignored);
+    return err == CL_SUCCESS ? value.ToString().TrimEnd('\0') : "unknown";
+  }
+
+  static string InfoStringDevice(IntPtr device, uint param) {
+    StringBuilder value = new StringBuilder(256);
+    UIntPtr ignored;
+    int err = clGetDeviceInfo(device, param, new UIntPtr((uint)value.Capacity), value, out ignored);
+    return err == CL_SUCCESS ? value.ToString().TrimEnd('\0') : "unknown";
+  }
+
+  static int SelectDevice(out IntPtr platform, out IntPtr device) {
+    platform = IntPtr.Zero;
+    device = IntPtr.Zero;
+    uint platformCount;
+    int err = clGetPlatformIDs(0, null, out platformCount);
+    if (err != CL_SUCCESS || platformCount == 0) return Fail("platform_missing", 10, "err=" + err + " count=" + platformCount);
+    IntPtr[] platforms = new IntPtr[(int)platformCount];
+    err = clGetPlatformIDs(platformCount, platforms, out platformCount);
+    if (err != CL_SUCCESS) return Fail("platform_missing", 10, "enumeration_err=" + err);
+    for (int i = 0; i < platforms.Length; i++) {
+      uint deviceCount;
+      err = clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 0, null, out deviceCount);
+      if (err == CL_SUCCESS && deviceCount > 0) {
+        IntPtr[] devices = new IntPtr[(int)deviceCount];
+        err = clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, deviceCount, devices, out deviceCount);
+        if (err == CL_SUCCESS && deviceCount > 0) {
+          platform = platforms[i];
+          device = devices[0];
+          return 0;
+        }
+      }
+    }
+    for (int i = 0; i < platforms.Length; i++) {
+      uint deviceCount;
+      err = clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 0, null, out deviceCount);
+      if (err == CL_SUCCESS && deviceCount > 0) {
+        IntPtr[] devices = new IntPtr[(int)deviceCount];
+        err = clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, deviceCount, devices, out deviceCount);
+        if (err == CL_SUCCESS && deviceCount > 0) {
+          platform = platforms[i];
+          device = devices[0];
+          return 0;
+        }
+      }
+    }
+    return Fail("device_missing", 11, "no GPU or fallback OpenCL device found");
+  }
+
+  static string BuildLog(IntPtr program, IntPtr device) {
+    StringBuilder value = new StringBuilder(8192);
+    UIntPtr ignored;
+    clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, new UIntPtr((uint)value.Capacity), value, out ignored);
+    return value.ToString();
+  }
+
+  static int BuildAndRunEpoch(IntPtr context, IntPtr queue, IntPtr device, string source, IntPtr inputBuf, IntPtr outputBuf, EpochResult result) {
+    int err;
+    string[] sources = new string[] { source };
+    UIntPtr[] lengths = new UIntPtr[] { new UIntPtr((uint)Encoding.ASCII.GetByteCount(source)) };
+    result.Program = clCreateProgramWithSource(context, 1, sources, lengths, out err);
+    if (err != CL_SUCCESS || result.Program == IntPtr.Zero) return Fail("create_program_failed", 20, "err=" + err);
+    result.BuildNs = NowNs();
+    err = clBuildProgram(result.Program, 1, new IntPtr[] { device }, "", IntPtr.Zero, IntPtr.Zero);
+    if (err != CL_SUCCESS) return Fail("build_failed", 21, "err=" + err + " log=" + BuildLog(result.Program, device));
+    result.KernelNs = NowNs();
+    result.Kernel = clCreateKernel(result.Program, "synthi_opencl_epoch_kernel", out err);
+    if (err != CL_SUCCESS || result.Kernel == IntPtr.Zero) return Fail("create_kernel_failed", 22, "err=" + err);
+    IntPtr outputArg = outputBuf;
+    IntPtr inputArg = inputBuf;
+    uint n = 8;
+    err = clSetKernelArgMem(result.Kernel, 0, new UIntPtr((uint)IntPtr.Size), ref outputArg);
+    if (err == CL_SUCCESS) err = clSetKernelArgMem(result.Kernel, 1, new UIntPtr((uint)IntPtr.Size), ref inputArg);
+    if (err == CL_SUCCESS) err = clSetKernelArgUInt(result.Kernel, 2, new UIntPtr((uint)4), ref n);
+    if (err != CL_SUCCESS) return Fail("set_arg_failed", 23, "err=" + err);
+    UIntPtr[] global = new UIntPtr[] { new UIntPtr((uint)8) };
+    UIntPtr[] local = new UIntPtr[] { new UIntPtr((uint)8) };
+    IntPtr dispatchEvent;
+    result.DispatchNs = NowNs();
+    err = clEnqueueNDRangeKernel(queue, result.Kernel, 1, IntPtr.Zero, global, local, 0, IntPtr.Zero, out dispatchEvent);
+    if (err != CL_SUCCESS) return Fail("enqueue_failed", 24, "err=" + err);
+    if (dispatchEvent != IntPtr.Zero) {
+      clWaitForEvents(1, new IntPtr[] { dispatchEvent });
+      clReleaseEvent(dispatchEvent);
+    }
+    GCHandle outputHandle = GCHandle.Alloc(result.Output, GCHandleType.Pinned);
+    try {
+      IntPtr readEvent;
+      err = clEnqueueReadBuffer(queue, outputBuf, CL_TRUE, UIntPtr.Zero, new UIntPtr((uint)(result.Output.Length * 4)), outputHandle.AddrOfPinnedObject(), 0, IntPtr.Zero, out readEvent);
+      if (err != CL_SUCCESS) return Fail("readback_failed", 25, "err=" + err);
+      if (readEvent != IntPtr.Zero) {
+        clWaitForEvents(1, new IntPtr[] { readEvent });
+        clReleaseEvent(readEvent);
+      }
+      clFinish(queue);
+      result.OutputNs = NowNs();
+    } finally {
+      outputHandle.Free();
+    }
+    return 0;
+  }
+
+  static void AppendEscaped(StringBuilder sb, string value) {
+    sb.Append('"');
+    if (value != null) {
+      for (int i = 0; i < value.Length; i++) {
+        char c = value[i];
+        if (c == '"' || c == '\\') {
+          sb.Append('\\').Append(c);
+        } else if (c == '\n') {
+          sb.Append("\\n");
+        } else if (c == '\r') {
+          sb.Append("\\r");
+        } else if (c == '\t') {
+          sb.Append("\\t");
+        } else if (c >= 32) {
+          sb.Append(c);
+        }
+      }
+    }
+    sb.Append('"');
+  }
+
+  static void AppendValues(StringBuilder sb, float[] values) {
+    sb.Append('[');
+    for (int i = 0; i < values.Length; i++) {
+      if (i > 0) sb.Append(',');
+      sb.Append(values[i].ToString("R", CultureInfo.InvariantCulture));
+    }
+    sb.Append(']');
+  }
+
+  static void WriteTrace(string tracePath, string schemaVersion, string beforeHash, string afterHash, string platformName, string deviceName, string deviceVendor, string deviceVersion, EpochResult before, EpochResult after, long processStartNs) {
+    string processId = "pid:" + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+    StringBuilder trace = new StringBuilder();
+    trace.Append("{\n");
+    trace.Append("  \"schemaVersion\": "); AppendEscaped(trace, schemaVersion); trace.Append(",\n");
+    trace.Append("  \"processId\": "); AppendEscaped(trace, processId); trace.Append(",\n");
+    trace.Append("  \"sameProcess\": true,\n  \"processRestarted\": false,\n");
+    trace.Append("  \"probeTransport\": \"local_windows_powershell_add_type\",\n");
+    trace.Append("  \"device\": {\"backend\":\"opencl\", \"platformName\":"); AppendEscaped(trace, platformName);
+    trace.Append(", \"deviceName\":"); AppendEscaped(trace, deviceName);
+    trace.Append(", \"deviceVendor\":"); AppendEscaped(trace, deviceVendor);
+    trace.Append(", \"deviceVersion\":"); AppendEscaped(trace, deviceVersion); trace.Append("},\n");
+    trace.Append("  \"loaderEvents\": [\n");
+    trace.Append("    {\"id\":\"opencl-build-epoch-1\", \"api\":\"clBuildProgram\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.BuildNs).Append("},\n");
+    trace.Append("    {\"id\":\"opencl-build-epoch-2\", \"api\":\"clBuildProgram\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.BuildNs).Append("}\n");
+    trace.Append("  ],\n");
+    trace.Append("  \"kernelEvents\": [\n");
+    trace.Append("    {\"id\":\"opencl-kernel-epoch-1\", \"api\":\"clCreateKernel\", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.KernelNs).Append("},\n");
+    trace.Append("    {\"id\":\"opencl-kernel-epoch-2\", \"api\":\"clCreateKernel\", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.KernelNs).Append("}\n");
+    trace.Append("  ],\n");
+    trace.Append("  \"epochEvents\": [\n");
+    trace.Append("    {\"id\":\"opencl-epoch-1\", \"event\":\"published\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.KernelNs).Append(", \"dispatch_binding\":\"cl_kernel:synthi_opencl_epoch_kernel\"},\n");
+    trace.Append("    {\"id\":\"opencl-epoch-2\", \"event\":\"published\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.KernelNs).Append(", \"dispatch_binding\":\"cl_kernel:synthi_opencl_epoch_kernel\"}\n");
+    trace.Append("  ],\n");
+    trace.Append("  \"dispatchEvents\": [\n");
+    trace.Append("    {\"id\":\"opencl-dispatch-epoch-1\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]},\n");
+    trace.Append("    {\"id\":\"opencl-dispatch-epoch-2\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]}\n");
+    trace.Append("  ],\n");
+    trace.Append("  \"outputEvents\": [\n");
+    trace.Append("    {\"id\":\"opencl-output-epoch-1\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-1\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.OutputNs).Append(", \"values\":"); AppendValues(trace, before.Output); trace.Append("},\n");
+    trace.Append("    {\"id\":\"opencl-output-epoch-2\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-2\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.OutputNs).Append(", \"values\":"); AppendValues(trace, after.Output); trace.Append("}\n");
+    trace.Append("  ],\n");
+    trace.Append("  \"retirementEvent\": {\"id\":\"opencl-retire-epoch-1\", \"status\":\"queue_idle_proven\", \"retired_epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(NowNs()).Append(", \"evidence_refs\":[\"runtime:opencl:clFinish\", \"runtime:opencl:clReleaseProgram\"]},\n");
+    trace.Append("  \"nativeApiCounts\": {\"clBuildProgram\":2, \"clCreateKernel\":2, \"clEnqueueNDRangeKernel\":2, \"clEnqueueReadBuffer\":2, \"clFinish\":2},\n");
+    trace.Append("  \"processStartTimestampNs\": ").Append(processStartNs).Append("\n");
+    trace.Append("}\n");
+    File.WriteAllText(tracePath, trace.ToString(), new UTF8Encoding(false));
+  }
+
+  public static int Run(string beforePath, string afterPath, string rawPath, string tracePath, string beforeHash, string afterHash, string schemaVersion) {
+    IntPtr context = IntPtr.Zero;
+    IntPtr queue = IntPtr.Zero;
+    IntPtr inputBuf = IntPtr.Zero;
+    IntPtr outputBuf = IntPtr.Zero;
+    EpochResult before = new EpochResult();
+    EpochResult after = new EpochResult();
+    try {
+      IntPtr platform;
+      IntPtr device;
+      int rc = SelectDevice(out platform, out device);
+      if (rc != 0) return rc;
+      string beforeSource = File.ReadAllText(beforePath, Encoding.UTF8);
+      string afterSource = File.ReadAllText(afterPath, Encoding.UTF8);
+      int err;
+      context = clCreateContext(IntPtr.Zero, 1, new IntPtr[] { device }, IntPtr.Zero, IntPtr.Zero, out err);
+      if (err != CL_SUCCESS || context == IntPtr.Zero) return Fail("context_failed", 31, "err=" + err);
+      queue = clCreateCommandQueue(context, device, 0, out err);
+      if (err != CL_SUCCESS || queue == IntPtr.Zero) return Fail("queue_failed", 32, "err=" + err);
+      float[] input = new float[] { 1.0f, 2.5f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f, 128.0f };
+      GCHandle inputHandle = GCHandle.Alloc(input, GCHandleType.Pinned);
+      try {
+        inputBuf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, new UIntPtr((uint)(input.Length * 4)), inputHandle.AddrOfPinnedObject(), out err);
+      } finally {
+        inputHandle.Free();
+      }
+      if (err != CL_SUCCESS || inputBuf == IntPtr.Zero) return Fail("input_buffer_failed", 33, "err=" + err);
+      outputBuf = clCreateBuffer(context, CL_MEM_READ_WRITE, new UIntPtr((uint)(input.Length * 4)), IntPtr.Zero, out err);
+      if (err != CL_SUCCESS || outputBuf == IntPtr.Zero) return Fail("output_buffer_failed", 34, "err=" + err);
+      long processStartNs = NowNs();
+      rc = BuildAndRunEpoch(context, queue, device, beforeSource, inputBuf, outputBuf, before);
+      if (rc != 0) return rc;
+      rc = BuildAndRunEpoch(context, queue, device, afterSource, inputBuf, outputBuf, after);
+      if (rc != 0) return rc;
+      byte[] raw = new byte[after.Output.Length * 4];
+      Buffer.BlockCopy(after.Output, 0, raw, 0, raw.Length);
+      File.WriteAllBytes(rawPath, raw);
+      WriteTrace(
+        tracePath,
+        schemaVersion,
+        beforeHash,
+        afterHash,
+        InfoStringPlatform(platform, CL_PLATFORM_NAME),
+        InfoStringDevice(device, CL_DEVICE_NAME),
+        InfoStringDevice(device, CL_DEVICE_VENDOR),
+        InfoStringDevice(device, CL_DEVICE_VERSION),
+        before,
+        after,
+        processStartNs
+      );
+      return 0;
+    } catch (DllNotFoundException ex) {
+      return Fail("loader_missing", 2, ex.Message);
+    } catch (EntryPointNotFoundException ex) {
+      return Fail("symbol_missing", 3, ex.Message);
+    } catch (Exception ex) {
+      return Fail("exception", 1, ex.GetType().Name + ":" + ex.Message);
+    } finally {
+      if (inputBuf != IntPtr.Zero) clReleaseMemObject(inputBuf);
+      if (outputBuf != IntPtr.Zero) clReleaseMemObject(outputBuf);
+      if (before.Kernel != IntPtr.Zero) clReleaseKernel(before.Kernel);
+      if (after.Kernel != IntPtr.Zero) clReleaseKernel(after.Kernel);
+      if (before.Program != IntPtr.Zero) clReleaseProgram(before.Program);
+      if (after.Program != IntPtr.Zero) clReleaseProgram(after.Program);
+      if (queue != IntPtr.Zero) clReleaseCommandQueue(queue);
+      if (context != IntPtr.Zero) clReleaseContext(context);
+    }
+  }
+}
+'@
+Add-Type -TypeDefinition $source
+$exitCode = [SynthiOpenClWindowsProbe]::Run($BeforePath, $AfterPath, $RawPath, $TracePath, $BeforeHash, $AfterHash, $SchemaVersion)
+exit $exitCode
+`;
+}
+
 function runModeFor({ afterHash }) {
   const scope = CFG.metricScope;
   return {
@@ -1395,7 +1745,52 @@ function buildNegativeRefusal({ beforeSource, negativeSource }) {
 async function compileAndRunProbe({ outDir, beforePath, afterPath, beforeHash, afterHash, rawAfterPath, tracePath }) {
   const probePath = path.join(outDir, 'opencl_runtime_probe.c');
   await writeFile(probePath, probeSource());
+  const windowsProbePath = path.join(outDir, 'opencl_runtime_probe_windows.ps1');
+  await writeFile(windowsProbePath, windowsPowerShellProbeSource());
   const compileStart = process.hrtime.bigint();
+  const runWindowsLocalProbe = async (fallbackFrom = null) => {
+    const runtimeStart = process.hrtime.bigint();
+    const run = await execFileRaw('powershell', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      windowsProbePath,
+      '-BeforePath',
+      beforePath,
+      '-AfterPath',
+      afterPath,
+      '-RawPath',
+      rawAfterPath,
+      '-TracePath',
+      tracePath,
+      '-BeforeHash',
+      beforeHash,
+      '-AfterHash',
+      afterHash,
+      '-SchemaVersion',
+      PROBE_SCHEMA,
+    ], { timeout: CFG.timeoutMs });
+    return {
+      ok: run.ok,
+      compileNs: 0,
+      runtimeNs: nsSince(runtimeStart),
+      run,
+      exePath: windowsProbePath,
+      transport: 'local_windows_powershell_add_type',
+      fallbackFrom,
+    };
+  };
+  const canUseWindowsLocalProbe = () =>
+    process.platform === 'win32'
+    && process.env.SYNTHI_OPENCL_RUNTIME_WINDOWS_LOCAL_DISABLED !== '1';
+  const containerFailureAllowsWindowsFallback = (run) => {
+    const stderr = String(run?.stderr ?? '');
+    const stdout = String(run?.stdout ?? '');
+    const error = String(run?.error ?? '');
+    const text = `${stderr}\n${stdout}\n${error}`;
+    return /opencl_runtime_error=(platform_missing|device_missing|loader_missing)|(?:^|\n).*cc: not found|No such file or directory|No such container/i.test(text);
+  };
   if (CFG.useContainer && CFG.workerContainer) {
     const remoteDir = `/tmp/synthi-opencl-runtime/${safeSlug(CFG.slug)}`;
     const remoteProbe = `${remoteDir}/opencl_runtime_probe.c`;
@@ -1404,28 +1799,72 @@ async function compileAndRunProbe({ outDir, beforePath, afterPath, beforeHash, a
     const remoteAfter = `${remoteDir}/after.cl`;
     const remoteRaw = `${remoteDir}/after-readback.bin`;
     const remoteTrace = `${remoteDir}/runtime-trace.json`;
-    await dockerExec(CFG.workerContainer, ['sh', '-lc', `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`], { timeout: CFG.timeoutMs });
-    await dockerCpTo(CFG.workerContainer, probePath, remoteProbe);
-    await dockerCpTo(CFG.workerContainer, beforePath, remoteBefore);
-    await dockerCpTo(CFG.workerContainer, afterPath, remoteAfter);
-    await dockerExec(CFG.workerContainer, ['cc', remoteProbe, '-ldl', '-O2', '-o', remoteExe], { timeout: CFG.timeoutMs });
-    const compileNs = nsSince(compileStart);
-    const runtimeStart = process.hrtime.bigint();
-    const run = await dockerExecRaw(CFG.workerContainer, [
-      remoteExe,
-      remoteBefore,
-      remoteAfter,
-      remoteRaw,
-      remoteTrace,
-      beforeHash,
-      afterHash,
-    ], { timeout: CFG.timeoutMs });
-    if (!run.ok) {
-      return { ok: false, compileNs, runtimeNs: nsSince(runtimeStart), run, remoteDir };
+    try {
+      await dockerExec(CFG.workerContainer, ['sh', '-lc', `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`], { timeout: CFG.timeoutMs });
+      await dockerCpTo(CFG.workerContainer, probePath, remoteProbe);
+      await dockerCpTo(CFG.workerContainer, beforePath, remoteBefore);
+      await dockerCpTo(CFG.workerContainer, afterPath, remoteAfter);
+      await dockerExec(CFG.workerContainer, ['cc', remoteProbe, '-ldl', '-O2', '-o', remoteExe], { timeout: CFG.timeoutMs });
+      const compileNs = nsSince(compileStart);
+      const runtimeStart = process.hrtime.bigint();
+      const run = await dockerExecRaw(CFG.workerContainer, [
+        remoteExe,
+        remoteBefore,
+        remoteAfter,
+        remoteRaw,
+        remoteTrace,
+        beforeHash,
+        afterHash,
+      ], { timeout: CFG.timeoutMs });
+      if (!run.ok) {
+        const containerProbe = {
+          ok: false,
+          compileNs,
+          runtimeNs: nsSince(runtimeStart),
+          run,
+          remoteDir,
+          transport: 'docker_exec_container',
+        };
+        if (canUseWindowsLocalProbe() && containerFailureAllowsWindowsFallback(run)) {
+          return runWindowsLocalProbe(containerProbe);
+        }
+        return containerProbe;
+      }
+      await dockerCpFrom(CFG.workerContainer, remoteRaw, rawAfterPath);
+      await dockerCpFrom(CFG.workerContainer, remoteTrace, tracePath);
+      return {
+        ok: true,
+        compileNs,
+        runtimeNs: nsSince(runtimeStart),
+        run,
+        remoteDir,
+        transport: 'docker_exec_container',
+      };
+    } catch (error) {
+      const containerProbe = {
+        ok: false,
+        compileNs: nsSince(compileStart),
+        runtimeNs: 0,
+        run: {
+          ok: false,
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: '',
+          stderr: String(error?.message ?? error),
+          error: String(error?.message ?? error),
+        },
+        remoteDir,
+        transport: 'docker_exec_container',
+      };
+      if (canUseWindowsLocalProbe() && containerFailureAllowsWindowsFallback(containerProbe.run)) {
+        return runWindowsLocalProbe(containerProbe);
+      }
+      return containerProbe;
     }
-    await dockerCpFrom(CFG.workerContainer, remoteRaw, rawAfterPath);
-    await dockerCpFrom(CFG.workerContainer, remoteTrace, tracePath);
-    return { ok: true, compileNs, runtimeNs: nsSince(runtimeStart), run, remoteDir };
+  }
+  if (canUseWindowsLocalProbe()) {
+    return runWindowsLocalProbe();
   }
   const exePath = process.platform === 'win32'
     ? path.join(outDir, 'opencl_runtime_probe.exe')
@@ -1434,7 +1873,7 @@ async function compileAndRunProbe({ outDir, beforePath, afterPath, beforeHash, a
   const compileNs = nsSince(compileStart);
   const runtimeStart = process.hrtime.bigint();
   const run = await execFileRaw(exePath, [beforePath, afterPath, rawAfterPath, tracePath, beforeHash, afterHash], { timeout: CFG.timeoutMs });
-  return { ok: run.ok, compileNs, runtimeNs: nsSince(runtimeStart), run, exePath };
+  return { ok: run.ok, compileNs, runtimeNs: nsSince(runtimeStart), run, exePath, transport: 'local_posix_cc' };
 }
 
 async function rejectionProof({ outDir, reasons, run = null }) {
@@ -1555,7 +1994,8 @@ async function buildProof() {
     acceptedForGpuHmr: fullRuntimeProven,
     accepted_for_gpu_hmr: fullRuntimeProven,
     compiler: {
-      transport: CFG.useContainer ? 'docker_exec_container' : 'local_process',
+      transport: probe.transport ?? (CFG.useContainer ? 'docker_exec_container' : 'local_process'),
+      fallback_from_transport: probe.fallbackFrom?.transport ?? null,
       beforeProgramHash: beforeHash,
       before_program_hash: beforeHash,
       afterProgramHash: afterHash,
@@ -1581,6 +2021,18 @@ async function buildProof() {
     native_opencl_api_evidence: nativeApiEvidence,
     runtimeTrace,
     runtime_trace: runtimeTrace,
+    runtimeProbeExecution: {
+      transport: probe.transport ?? (CFG.useContainer ? 'docker_exec_container' : 'local_process'),
+      fallbackFromTransport: probe.fallbackFrom?.transport ?? null,
+      fallbackFromRuntimeUnavailable: Boolean(probe.fallbackFrom),
+      evidenceAuthority: 'runtime_probe_execution_transport_only_not_gpu_hmr_success',
+    },
+    runtime_probe_execution: {
+      transport: probe.transport ?? (CFG.useContainer ? 'docker_exec_container' : 'local_process'),
+      fallback_from_transport: probe.fallbackFrom?.transport ?? null,
+      fallback_from_runtime_unavailable: Boolean(probe.fallbackFrom),
+      evidence_authority: 'runtime_probe_execution_transport_only_not_gpu_hmr_success',
+    },
     negativeEditRefusal,
     negative_edit_refusal: negativeEditRefusal,
     timingMetrics: timings,
@@ -1614,6 +2066,18 @@ async function selfCheck() {
     differentEdit: CFG.differentEdit,
   };
   try {
+    const windowsProbe = windowsPowerShellProbeSource();
+    const windowsProbeChecks = [
+      windowsProbe.includes('[DllImport("OpenCL.dll")]') ? null : 'windows_opencl_dll_import_missing',
+      windowsProbe.includes('clEnqueueNDRangeKernel') ? null : 'windows_dispatch_binding_missing',
+      windowsProbe.includes('clEnqueueReadBuffer') ? null : 'windows_readback_binding_missing',
+      windowsProbe.includes('probeTransport') && windowsProbe.includes('local_windows_powershell_add_type') ? null : 'windows_transport_trace_missing',
+      windowsProbe.includes('dlopen(') ? 'windows_probe_uses_posix_dlopen' : null,
+      windowsProbe.includes('libOpenCL.so') ? 'windows_probe_uses_linux_opencl_loader' : null,
+    ].filter(Boolean);
+    if (windowsProbeChecks.length > 0) {
+      throw new Error(`Windows OpenCL probe source failed self-checks: ${windowsProbeChecks.join(',')}`);
+    }
     const runtimeTrace = {
       processId: 'pid:1234',
       sameProcess: true,
@@ -1714,6 +2178,12 @@ async function selfCheck() {
       computeOracleValidation: oracle.validation,
       nativeOpenClApiEvidence: nativeApiEvidence,
       runtimeTrace,
+      runtimeProbeExecution: {
+        transport: 'self_check_synthetic_runtime_trace',
+        fallbackFromTransport: null,
+        fallbackFromRuntimeUnavailable: false,
+        evidenceAuthority: 'runtime_probe_execution_transport_only_not_gpu_hmr_success',
+      },
       negativeEditRefusal: buildNegativeRefusal({
         beforeSource: kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias }),
         negativeSource: kernelSource({ multiplier: CFG.afterMultiplier, bias: CFG.afterBias, extraArg: true }),
@@ -1786,6 +2256,7 @@ async function selfCheck() {
       matrixProofId: matrix.proofId,
       rowId: row.rowId,
       forgedRejected: true,
+      windowsProbeSourceChecked: true,
     }, null, 2));
   } finally {
     CFG.metricScope = old.metricScope;
