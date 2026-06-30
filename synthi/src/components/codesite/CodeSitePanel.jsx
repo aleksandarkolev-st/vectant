@@ -153,11 +153,11 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap gap-1">
+    <div className="flex min-w-0 flex-wrap items-start gap-1 self-start">
       {visible.map((path) => (
         <code
           key={path}
-          className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]"
+          className="inline-block max-w-full truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
           title={path}
         >
@@ -279,7 +279,7 @@ function AirspaceMap({ zones, noFlyZones, flights, risks }) {
                 <PathList paths={zonePaths(zone)} empty="route pending" />
                 <div className="flex justify-end gap-1">
                   {relatedFlights.length ? relatedFlights.map((flight) => (
-                    <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'animate-pulse' : ''}>
+                    <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
                       {compact(flight.displayCallsign, 'agent')}
                     </Pill>
                   )) : <Pill>clear</Pill>}
@@ -310,8 +310,10 @@ function JsonPreview({ value, maxLines = 10 }) {
   const lines = text.split('\n').slice(0, maxLines).join('\n');
   return (
     <pre
+      aria-label="CodeSite JSON proof details"
       className="max-h-44 overflow-auto rounded border p-2 text-[10px] leading-4"
       style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
+      tabIndex={0}
     >
       {lines}
     </pre>
@@ -456,17 +458,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {hasProjects ? (
-            <select
-              data-testid="codesite-project-select"
-              value={radarState.selectedProjectId || ''}
-              onChange={(event) => setSelectedProjectId(event.target.value || null)}
-              className="h-8 min-w-0 basis-full truncate rounded border px-2 text-xs outline-none sm:min-w-[220px] sm:basis-0 sm:flex-1"
-              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
-            >
-              {radarState.projects.map((project) => (
-                <option key={project.id} value={project.id}>{project.title}</option>
-              ))}
-            </select>
+            <div className="min-w-0 basis-full sm:min-w-[220px] sm:basis-0 sm:flex-1">
+              <label htmlFor="codesite-project-select" className="sr-only">CodeSite project</label>
+              <select
+                id="codesite-project-select"
+                data-testid="codesite-project-select"
+                value={radarState.selectedProjectId || ''}
+                onChange={(event) => setSelectedProjectId(event.target.value || null)}
+                className="h-8 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+              >
+                {radarState.projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.title}</option>
+                ))}
+              </select>
+            </div>
           ) : null}
 
           <IconButton title="Refresh" onClick={() => loadRadar()} disabled={loading || acting} testId="codesite-refresh">
@@ -488,7 +494,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       {loading && !currentProject && !error ? (
         <LoadingSkeleton />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" tabIndex={0} aria-label="CodeSite evidence sections">
           {error ? (
             <div className="m-3 rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 38%, var(--border-subtle))', color: 'var(--text-primary)' }}>
               {error.status ? `${error.status}: ` : null}{error.message}
@@ -504,14 +510,18 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
               >
                 <div className="mb-2 text-sm font-medium">No CodeSite projects</div>
-                <div className="flex gap-2">
-                  <input
-                    value={newProjectTitle}
-                    onChange={(event) => setNewProjectTitle(event.target.value)}
-                    placeholder="Coordination run"
-                    className="h-8 min-w-0 flex-1 rounded border px-2 text-xs outline-none"
-                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
-                  />
+                <div className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <label htmlFor="codesite-new-project-title" className="mb-1 block text-[11px]" style={{ color: 'var(--text-muted)' }}>Project title</label>
+                    <input
+                      id="codesite-new-project-title"
+                      value={newProjectTitle}
+                      onChange={(event) => setNewProjectTitle(event.target.value)}
+                      placeholder="Coordination run"
+                      className="h-8 w-full min-w-0 rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
+                      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
+                    />
+                  </div>
                   <IconButton title="Open project" variant="primary" disabled={acting || !workspaceSlug} type="submit">
                     <Plus className="h-3.5 w-3.5" />
                     Open

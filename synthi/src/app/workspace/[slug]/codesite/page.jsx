@@ -7,7 +7,7 @@ export default async function CodeSiteWorkspacePage({ params }) {
 
   return (
     <main
-      className="h-screen w-screen overflow-hidden"
+      className="h-[100dvh] min-h-[100dvh] w-screen overflow-hidden"
       style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}
     >
       <CodeSitePanel workspaceSlug={slug} />
