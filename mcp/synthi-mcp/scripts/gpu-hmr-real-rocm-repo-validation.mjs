@@ -13015,6 +13015,123 @@ function outputOracleContractFromRuntimeProfile(runtimeProfile) {
   return Object.keys(contract).length > 0 ? contract : null;
 }
 
+function outputOracleContractFromRuntimeEvidence(runtimeOutputOracle = {}, oracleArtifacts = null) {
+  const latest = runtimeOutputOracle.output_oracle ?? runtimeOutputOracle.latest ?? null;
+  if (
+    !latest
+    || runtimeOutputOracle.deterministic_oracle_passed !== true
+    || !oracleArtifacts
+    || typeof oracleArtifacts !== 'object'
+    || Array.isArray(oracleArtifacts)
+  ) {
+    return null;
+  }
+  const hasAcceptedComputeArtifacts = Boolean(oracleArtifacts.compute_oracle_artifacts)
+    && computeOracleArtifactProof({
+      oracleArtifacts: {
+        compute_oracle_artifacts: oracleArtifacts.compute_oracle_artifacts,
+      },
+    }).accepted === true;
+  const hasAcceptedVisualArtifacts = Boolean(oracleArtifacts.visual_oracle_artifacts)
+    && oracleArtifacts.visual_oracle_artifacts.accepted === true;
+  const hasAcceptedArtifacts = hasAcceptedComputeArtifacts || hasAcceptedVisualArtifacts;
+  if (!hasAcceptedArtifacts) return null;
+  const contract = {};
+  const fieldMap = {
+    oracleId: ['oracleId', 'oracle_id', 'id'],
+    requiredOracleId: ['requiredOracleId', 'required_oracle_id', 'oracleId', 'oracle_id', 'id'],
+    kind: ['kind'],
+    expected: ['expected', 'expectedSha256', 'expected_sha256', 'expectedHash', 'expected_hash'],
+    actual: ['actual', 'actualSha256', 'actual_sha256', 'actualHash', 'actual_hash'],
+    producer: ['producer', 'producerId', 'producer_id'],
+    outputTargetId: ['outputTargetId', 'output_target_id', 'target_id', 'target'],
+    artifactId: ['artifactId', 'artifact_id'],
+    runtimeSessionId: ['runtimeSession', 'runtime_session', 'runtimeSessionId', 'runtime_session_id'],
+    afterDispatchId: ['afterDispatchId', 'after_dispatch_id', 'dispatchId', 'dispatch_id'],
+    probeMode: ['probeMode', 'probe_mode'],
+    probeConfigHash: ['probeConfigHash', 'probe_config_hash'],
+  };
+  for (const [canonical, fields] of Object.entries(fieldMap)) {
+    const value = stringField(latest, fields);
+    if (value) contract[canonical] = value;
+  }
+  return Object.keys(contract).length > 0 ? contract : null;
+}
+
+function recordRuntimeOutputOracleResolution(runtimeOutputOracle = {}, oracleArtifacts = null) {
+  const contract = outputOracleContractFromRuntimeEvidence(runtimeOutputOracle, oracleArtifacts);
+  if (!contract) return false;
+  report.output_oracle_contract = {
+    ...(report.output_oracle_contract ?? {}),
+    ...contract,
+    evidenceAuthority: 'runtime_output_oracle_evidence_not_declaration',
+    evidence_authority: 'runtime_output_oracle_evidence_not_declaration',
+  };
+  report.output_oracle_runtime_profile = {
+    ...(report.output_oracle_runtime_profile ?? {}),
+    ...contract,
+    schemaVersion: 'synthi.gpu_hmr.runtime_output_oracle_profile.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_output_oracle_profile.v1',
+    source: 'runtime_output_oracle_evidence',
+    outputOracleArtifactKinds: compactStringList([
+      oracleArtifacts.compute_oracle_artifacts ? 'compute_oracle_artifacts' : null,
+      oracleArtifacts.visual_oracle_artifacts ? 'visual_oracle_artifacts' : null,
+    ]),
+    output_oracle_artifact_kinds: compactStringList([
+      oracleArtifacts.compute_oracle_artifacts ? 'compute_oracle_artifacts' : null,
+      oracleArtifacts.visual_oracle_artifacts ? 'visual_oracle_artifacts' : null,
+    ]),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  report.output_oracle_resolution = {
+    ...report.output_oracle_resolution,
+    requestedProfile: report.output_oracle_resolution?.requestedProfile ?? CFG.outputOracleProfile,
+    requested_profile: report.output_oracle_resolution?.requested_profile ?? CFG.outputOracleProfile,
+    mode: report.output_oracle_resolution?.mode ?? CFG.outputOracleProfile,
+    selectedSource: 'runtime_output_oracle_evidence',
+    selected_source: 'runtime_output_oracle_evidence',
+    disabledReason: null,
+    disabled_reason: null,
+    failedReason: null,
+    failed_reason: null,
+    contractPresent: true,
+    contract_present: true,
+    runtimeProfilePresent: true,
+    runtime_profile_present: true,
+    runtimeProfileSynced: true,
+    runtime_profile_synced: true,
+    runtimeOutputOracleEvidenceAccepted: true,
+    runtime_output_oracle_evidence_accepted: true,
+  };
+  report.output_oracle_adaptations.push({
+    profileId: 'runtime-output-oracle-evidence',
+    profile_id: 'runtime-output-oracle-evidence',
+    profileLabel: 'Runtime output oracle evidence',
+    profile_label: 'Runtime output oracle evidence',
+    kind: 'runtime_output_oracle_evidence',
+    sourceAdaptedProfile: false,
+    source_adapted_profile: false,
+    oracleId: contract.oracleId ?? null,
+    expectedSha256: contract.expected ?? null,
+    expected_sha256: contract.expected ?? null,
+    actualSha256: contract.actual ?? null,
+    actual_sha256: contract.actual ?? null,
+    producer: contract.producer ?? null,
+    outputTargetId: contract.outputTargetId ?? null,
+    output_target_id: contract.outputTargetId ?? null,
+    runtimeSessionId: contract.runtimeSessionId ?? null,
+    runtime_session_id: contract.runtimeSessionId ?? null,
+    afterDispatchId: contract.afterDispatchId ?? null,
+    after_dispatch_id: contract.afterDispatchId ?? null,
+  });
+  return true;
+}
+
 function candidateOutputOracleAdaptations(files) {
   const file = files.find((candidate) => candidate.path === CFG.deltaFile);
   if (!file) return [];
@@ -20504,6 +20621,40 @@ int main()
   ) {
     throw new Error('runtime adapter file-backed output oracle artifact self-check failed');
   }
+  const saveOutputOracleReportState = () => ({
+    outputOracleContract: report.output_oracle_contract,
+    outputOracleRuntimeProfile: report.output_oracle_runtime_profile,
+    outputOracleResolution: report.output_oracle_resolution,
+    outputOracleAdaptations: [...(report.output_oracle_adaptations ?? [])],
+  });
+  const restoreOutputOracleReportState = (saved) => {
+    report.output_oracle_contract = saved.outputOracleContract;
+    report.output_oracle_runtime_profile = saved.outputOracleRuntimeProfile;
+    report.output_oracle_resolution = saved.outputOracleResolution;
+    report.output_oracle_adaptations = [...saved.outputOracleAdaptations];
+  };
+  const runtimeResolutionState = saveOutputOracleReportState();
+  try {
+    const runtimeResolutionAccepted = recordRuntimeOutputOracleResolution(
+      adapterFileBackedOutputEvidence,
+      { compute_oracle_artifacts: verifiedAdapterFileBackedArtifacts },
+    );
+    if (
+      runtimeResolutionAccepted !== true
+      || report.output_oracle_resolution?.selectedSource !== 'runtime_output_oracle_evidence'
+      || report.output_oracle_resolution?.contractPresent !== true
+      || report.output_oracle_resolution?.runtimeProfilePresent !== true
+      || report.output_oracle_resolution?.runtimeProfileSynced !== true
+      || report.output_oracle_contract?.evidenceAuthority !== 'runtime_output_oracle_evidence_not_declaration'
+      || report.output_oracle_runtime_profile?.source !== 'runtime_output_oracle_evidence'
+      || report.output_oracle_runtime_profile?.acceptedForGpuHmr !== false
+      || report.output_oracle_runtime_profile?.gpuHmrSuccess !== false
+    ) {
+      throw new Error('runtime output oracle evidence resolution self-check failed');
+    }
+  } finally {
+    restoreOutputOracleReportState(runtimeResolutionState);
+  }
   const rawReadbackCasManifest = await buildArtifactCasManifest({
     localPath: computeRawPath,
     artifactKind: 'runtime_adapter_compute_readback',
@@ -20736,6 +20887,23 @@ int main()
   ) {
     throw new Error('runtime adapter file-backed visual output oracle artifact self-check failed');
   }
+  const visualRuntimeResolutionState = saveOutputOracleReportState();
+  try {
+    const visualRuntimeResolutionAccepted = recordRuntimeOutputOracleResolution(
+      adapterVisualOutputEvidence,
+      { visual_oracle_artifacts: adapterVisualArtifacts },
+    );
+    if (
+      visualRuntimeResolutionAccepted !== true
+      || report.output_oracle_resolution?.selectedSource !== 'runtime_output_oracle_evidence'
+      || report.output_oracle_contract?.oracleId !== 'probe.visual-file-backed'
+      || !report.output_oracle_runtime_profile?.outputOracleArtifactKinds?.includes('visual_oracle_artifacts')
+    ) {
+      throw new Error('runtime output oracle visual evidence resolution self-check failed');
+    }
+  } finally {
+    restoreOutputOracleReportState(visualRuntimeResolutionState);
+  }
   const forgedAdapterVisualEvidence = runtimeOutputOracleEvidence([
     [
       '[gpu-runtime-boundary] output_oracle',
@@ -20778,6 +20946,21 @@ int main()
     || !forgedAdapterVisualArtifacts?.blocking_gaps?.includes('adapter_visual_after_hash_mismatch')
   ) {
     throw new Error('runtime adapter file-backed visual forged hash self-check failed');
+  }
+  const forgedVisualRuntimeResolutionState = saveOutputOracleReportState();
+  try {
+    const forgedVisualRuntimeResolutionAccepted = recordRuntimeOutputOracleResolution(
+      forgedAdapterVisualEvidence,
+      { visual_oracle_artifacts: forgedAdapterVisualArtifacts },
+    );
+    if (
+      forgedVisualRuntimeResolutionAccepted !== false
+      || report.output_oracle_resolution !== forgedVisualRuntimeResolutionState.outputOracleResolution
+    ) {
+      throw new Error('runtime output oracle visual forged artifact resolution self-check failed');
+    }
+  } finally {
+    restoreOutputOracleReportState(forgedVisualRuntimeResolutionState);
   }
   const escapedVisualPath = path.join(
     path.dirname(computeOracleTempDir),
@@ -20879,6 +21062,21 @@ int main()
     || forgedAdapterProof.accepted === true
   ) {
     throw new Error('runtime adapter file-backed forged hash self-check failed');
+  }
+  const forgedRuntimeResolutionState = saveOutputOracleReportState();
+  try {
+    const forgedRuntimeResolutionAccepted = recordRuntimeOutputOracleResolution(
+      forgedAdapterFileBackedOutputEvidence,
+      { compute_oracle_artifacts: verifiedForgedAdapterArtifacts },
+    );
+    if (
+      forgedRuntimeResolutionAccepted !== false
+      || report.output_oracle_resolution !== forgedRuntimeResolutionState.outputOracleResolution
+    ) {
+      throw new Error('runtime output oracle evidence forged artifact resolution self-check failed');
+    }
+  } finally {
+    restoreOutputOracleReportState(forgedRuntimeResolutionState);
   }
   const escapedReadbackPath = path.join(
     path.dirname(computeOracleTempDir),
@@ -23267,6 +23465,13 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtimeOutputOracleArtifacts = Object.keys(oracleArtifactBundle).length > 0
       ? oracleArtifactBundle
       : null;
+    if (recordRuntimeOutputOracleResolution(runtimeOutputOracle, runtimeOutputOracleArtifacts)) {
+      record(
+        'runtime output oracle resolution',
+        'pass',
+        `source=runtime_output_oracle_evidence oracle=${runtimeOutputOracle.output_oracle?.oracleId ?? runtimeOutputOracle.latest?.oracleId ?? 'unknown'}`,
+      );
+    }
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
   }

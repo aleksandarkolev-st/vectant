@@ -10284,7 +10284,7 @@ await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
     requestedProfile: 'profile.tensor.checksum.v1',
     mode: 'profile.tensor.checksum.v1',
     sourceDerivedCandidateCount: 0,
-    selectedSource: 'profile_runtime_profile',
+    selectedSource: 'runtime_output_oracle_evidence',
     disabledReason: null,
     failedReason: null,
     contractPresent: true,
@@ -10362,7 +10362,7 @@ assert.equal(acceptedRealRocm.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedRealRocm.runtimeProofArtifact.accepted, true);
 assert.equal(acceptedRealRocm.visual.present, true);
 assert.equal(acceptedRealRocm.visual.accepted, true);
-assert.equal(acceptedRealRocm.outputOracleResolution.selectedSource, 'profile_runtime_profile');
+assert.equal(acceptedRealRocm.outputOracleResolution.selectedSource, 'runtime_output_oracle_evidence');
 assert.equal(acceptedRealRocm.outputOracleResolution.contractPresent, true);
 assert.equal(acceptedRealRocm.targetProgression.phase, 'small-oracle');
 assert.equal(acceptedRealRocm.targetProgressionGates[0]?.status, 'pass');
@@ -10661,6 +10661,28 @@ const forgedUndertypedOutputResolutionRocm = await writeForgedRealRocmAcceptance
   ],
 });
 assert.equal(forgedUndertypedOutputResolutionRocm.outputOracleResolutionGate.accepted, false);
+
+const forgedUnsupportedOutputResolutionRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'unsupported-output-resolution-source',
+  outputOracleResolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    sourceDerivedCandidateCount: 0,
+    selectedSource: 'serialized_success_flag',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  expectedReasons: ['real_rocm_output_oracle_resolution_not_accepted'],
+  expectedOpenGaps: [
+    'real_rocm_output_oracle_resolution_required',
+    'real_rocm_output_oracle_source_unsupported',
+  ],
+});
+assert.equal(forgedUnsupportedOutputResolutionRocm.outputOracleResolutionGate.accepted, false);
 
 const forgedMissingSidecarRocm = await writeForgedRealRocmAcceptanceGateCase({
   slug: 'missing-sidecar-consistency',

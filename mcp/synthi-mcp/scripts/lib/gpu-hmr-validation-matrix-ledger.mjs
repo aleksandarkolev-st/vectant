@@ -177,6 +177,7 @@ const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
   'profile_runtime_profile',
+  'runtime_output_oracle_evidence',
   'source_derived_profile',
 ]);
 const TARGET_PROGRESSION_PHASES = new Set([
