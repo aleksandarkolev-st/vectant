@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -169,6 +169,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--candidate') out.candidateId = argv[++i];
     else if (arg === '--candidates') out.candidatesPath = argv[++i];
     else if (arg === '--source-url') out.sourceUrl = argv[++i];
+    else if (arg === '--repo-path') out.repoPath = argv[++i];
     else if (arg === '--commit' || arg === '--immutable-commit') out.immutableCommit = argv[++i];
     else if (arg === '--source-id') out.sourceId = argv[++i];
     else if (arg === '--backend-family') out.backendFamily = argv[++i];
@@ -224,6 +225,13 @@ function cleanCandidate(raw, index = 0) {
   ).trim().toLowerCase();
   const profilePath = String(candidate.profilePath ?? candidate.profile_path ?? '').trim();
   const sourceUrl = String(candidate.sourceUrl ?? candidate.source_url ?? candidate.repo?.url ?? '').trim();
+  const localRepoPath = String(
+    candidate.localRepoPath
+      ?? candidate.local_repo_path
+      ?? candidate.repoPath
+      ?? candidate.repo_path
+      ?? '',
+  ).trim();
   const immutableCommit = String(
     candidate.immutableCommit
       ?? candidate.immutable_commit
@@ -254,6 +262,8 @@ function cleanCandidate(raw, index = 0) {
     candidateSource: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
     candidate_source: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
     sourceUrl,
+    localRepoPath: localRepoPath ? path.resolve(localRepoPath) : null,
+    local_repo_path: localRepoPath ? path.resolve(localRepoPath) : null,
     immutableCommit,
     sizeSignals: candidate.sizeSignals ?? candidate.size_signals ?? {},
     buildSystemHints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
@@ -267,27 +277,34 @@ function cleanCandidate(raw, index = 0) {
 
 function directCandidateFromInput({
   sourceUrl,
+  repoPath,
   immutableCommit,
   sourceId,
   backendFamily,
 } = {}) {
   const url = String(sourceUrl ?? '').trim();
+  const repo = String(repoPath ?? '').trim();
   const commit = String(immutableCommit ?? '').trim();
-  if (!url && !commit) return null;
-  if (!url || !commit) {
-    throw new Error('direct cold-path source input requires both --source-url and --commit');
+  if (!url && !repo && !commit) return null;
+  if ((!url && !repo) || !commit) {
+    throw new Error('direct cold-path source input requires --source-url or --repo-path plus --commit');
   }
+  const resolvedRepo = repo ? path.resolve(repo) : null;
+  const effectiveSourceUrl = url || pathToFileURL(resolvedRepo).href;
   const id = String(sourceId ?? '').trim()
-    || `direct-${safeSlug(url)}-${sha256(`${url}\0${commit}`).slice(0, 12)}`;
+    || `direct-${safeSlug(url || resolvedRepo)}-${sha256(`${effectiveSourceUrl}\0${commit}`).slice(0, 12)}`;
   return cleanCandidate({
     id,
     backendFamily: backendFamily || 'unknown_gpu_project',
-    candidateSource: 'direct_source_url_commit',
-    sourceUrl: url,
+    candidateSource: resolvedRepo ? 'direct_local_git_repo_path' : 'direct_source_url_commit',
+    sourceUrl: effectiveSourceUrl,
+    localRepoPath: resolvedRepo,
     immutableCommit: commit,
     sizeSignals: {
       class: 'large_arbitrary_user_project',
-      coldPathKind: 'direct_source_url_commit_cold_intake',
+      coldPathKind: resolvedRepo
+        ? 'direct_local_git_repo_cold_intake'
+        : 'direct_source_url_commit_cold_intake',
       inputMode: 'cli_or_env_direct_source',
     },
     runtimeBoundaryHints: {
@@ -680,6 +697,142 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   }
 }
 
+async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
+  if (!candidate.localRepoPath) return { attempted: false };
+  const repoPath = path.resolve(candidate.localRepoPath);
+  const startedAt = new Date().toISOString();
+  const baseRunOptions = {
+    cwd: REPO_ROOT,
+    timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
+    stdoutMax: 8 * 1024 * 1024,
+    stderrMax: 64000,
+    streamOutput: false,
+  };
+  const topLevel = await runProcess(
+    'git',
+    ['-C', repoPath, 'rev-parse', '--show-toplevel'],
+    baseRunOptions,
+  );
+  if (topLevel.exitCode !== 0 || topLevel.timedOut || topLevel.error) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_top_level_failed',
+      reason: 'source_tree_local_git_top_level_failed',
+      repoPath,
+      repo_path: repoPath,
+      topLevel,
+      top_level: topLevel,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  const resolvedTopLevel = path.resolve(topLevel.stdout.trim());
+  const commitCheck = await runProcess(
+    'git',
+    ['-C', resolvedTopLevel, 'cat-file', '-e', `${candidate.immutableCommit}^{commit}`],
+    baseRunOptions,
+  );
+  if (commitCheck.exitCode !== 0 || commitCheck.timedOut || commitCheck.error) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_commit_missing',
+      reason: 'source_tree_local_git_commit_missing',
+      repoPath,
+      repo_path: repoPath,
+      resolvedTopLevel,
+      resolved_top_level: resolvedTopLevel,
+      commitCheck,
+      commit_check: commitCheck,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  const dirtyCheck = await runProcess(
+    'git',
+    ['-C', resolvedTopLevel, 'status', '--porcelain=v1', '--untracked-files=all'],
+    baseRunOptions,
+  );
+  if (dirtyCheck.exitCode !== 0 || dirtyCheck.timedOut || dirtyCheck.error) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_status_failed',
+      reason: 'source_tree_local_git_status_failed',
+      repoPath,
+      repo_path: repoPath,
+      resolvedTopLevel,
+      resolved_top_level: resolvedTopLevel,
+      dirtyCheck,
+      dirty_check: dirtyCheck,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  if (dirtyCheck.stdout.trim()) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_dirty',
+      reason: 'source_tree_local_worktree_dirty',
+      repoPath,
+      repo_path: repoPath,
+      resolvedTopLevel,
+      resolved_top_level: resolvedTopLevel,
+      dirtyStatusTail: tail(dirtyCheck.stdout, 4000),
+      dirty_status_tail: tail(dirtyCheck.stdout, 4000),
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  const lsTree = await runProcess(
+    'git',
+    ['-C', resolvedTopLevel, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
+    baseRunOptions,
+  );
+  if (lsTree.exitCode !== 0 || lsTree.timedOut || lsTree.error) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_listing_failed',
+      reason: 'source_tree_local_git_listing_failed',
+      repoPath,
+      repo_path: repoPath,
+      resolvedTopLevel,
+      resolved_top_level: resolvedTopLevel,
+      lsTree,
+      ls_tree: lsTree,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  return {
+    attempted: true,
+    accepted: true,
+    transport: 'local_git_ls_tree_clean_worktree',
+    repoPath,
+    repo_path: repoPath,
+    resolvedTopLevel,
+    resolved_top_level: resolvedTopLevel,
+    files: parseGitLsTree(lsTree.stdout),
+    startedAt,
+    started_at: startedAt,
+    finishedAt: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  };
+}
+
 function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, transportEvidence = {} }) {
   const listingIdentity = files.map((file) => ({
     path: file.path,
@@ -746,6 +899,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     can_satisfy_runtime_proof: false,
     sourceUrl: candidate.sourceUrl,
     source_url: candidate.sourceUrl,
+    localRepoPath: candidate.localRepoPath,
+    local_repo_path: candidate.localRepoPath,
     immutableCommit: candidate.immutableCommit,
     immutable_commit: candidate.immutableCommit,
     localPath: relativeLocalPath,
@@ -771,6 +926,37 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       facet_hash: contentHash(stableJson(facet)),
     };
   };
+  const localGitListing = await readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs });
+  if (localGitListing.attempted === true) {
+    if (localGitListing.accepted !== true) {
+      return fail(localGitListing.status, localGitListing.reason, {
+        localGitListing,
+        local_git_listing: localGitListing,
+      });
+    }
+    if (!Array.isArray(localGitListing.files) || localGitListing.files.length === 0) {
+      return fail('source_intake_local_git_empty_listing', 'source_tree_local_git_empty_listing', {
+        localGitListing,
+        local_git_listing: localGitListing,
+      });
+    }
+    return buildAcceptedSourceIntakeFacet({
+      base,
+      candidate,
+      files: localGitListing.files,
+      transport: localGitListing.transport,
+      transportEvidence: {
+        repoPath: localGitListing.repoPath,
+        repo_path: localGitListing.repo_path,
+        resolvedTopLevel: localGitListing.resolvedTopLevel,
+        resolved_top_level: localGitListing.resolved_top_level,
+        startedAt: localGitListing.startedAt,
+        started_at: localGitListing.started_at,
+        finishedAt: localGitListing.finishedAt,
+        finished_at: localGitListing.finished_at,
+      },
+    });
+  }
   await rm(localPath, { recursive: true, force: true });
   const githubTree = await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
   let githubTreeFallback = null;
@@ -981,6 +1167,8 @@ async function runSelectedCandidate(
       runner_attempted: false,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
+      localRepoPath: candidate.localRepoPath,
+      local_repo_path: candidate.localRepoPath,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
       sourceTreeIntakeAccepted,
@@ -1208,6 +1396,8 @@ function createManifest({
       candidate_source: candidate.candidateSource,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
+      localRepoPath: candidate.localRepoPath,
+      local_repo_path: candidate.localRepoPath,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
       sizeSignals: candidate.sizeSignals,
@@ -1231,6 +1421,8 @@ function createManifest({
       candidate_source: candidate.candidateSource,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
+      localRepoPath: candidate.localRepoPath,
+      local_repo_path: candidate.localRepoPath,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
       selectionRank: candidate.selectionRank,
@@ -1483,6 +1675,91 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct source refusal self-check failed');
   }
+  const localRepoPath = path.join(LOG_DIR, 'self-check', 'local-user-project');
+  await rm(localRepoPath, { recursive: true, force: true });
+  await mkdir(path.join(localRepoPath, 'kernels'), { recursive: true });
+  await writeFile(path.join(localRepoPath, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)\nproject(local_user_project)\n');
+  await writeFile(path.join(localRepoPath, 'kernels', 'example.hip'), '__global__ void k(float* out) { out[0] = 1.0f; }\n');
+  const localGitInit = await runProcess('git', ['init', localRepoPath], {
+    cwd: REPO_ROOT,
+    timeoutMs: 30000,
+    streamOutput: false,
+  });
+  const localGitAdd = await runProcess('git', ['-C', localRepoPath, 'add', '.'], {
+    cwd: REPO_ROOT,
+    timeoutMs: 30000,
+    streamOutput: false,
+  });
+  const localGitCommit = await runProcess(
+    'git',
+    ['-C', localRepoPath, '-c', 'user.email=synthi@example.invalid', '-c', 'user.name=Synthi Self Check', 'commit', '-m', 'initial'],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: 30000,
+      streamOutput: false,
+    },
+  );
+  if (localGitInit.exitCode !== 0 || localGitAdd.exitCode !== 0 || localGitCommit.exitCode !== 0) {
+    throw new Error('random large-project cold-path local git fixture setup failed');
+  }
+  const localGitHead = await runProcess('git', ['-C', localRepoPath, 'rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    timeoutMs: 30000,
+    streamOutput: false,
+  });
+  const localCommit = localGitHead.stdout.trim();
+  const localCandidate = directCandidateFromInput({
+    repoPath: localRepoPath,
+    immutableCommit: localCommit,
+    sourceId: 'local-user-project',
+  });
+  const { manifest: localManifest } = await buildManifest({
+    seed: 'local-source-self-check-seed',
+    count: 1,
+    candidateId: localCandidate.id,
+    dryRun: false,
+    timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
+    sourceIntake: true,
+    sourceIntakeTimeoutMs: 30000,
+    candidates: [localCandidate],
+    outputDir: path.join(LOG_DIR, 'self-check'),
+  });
+  const localResult = localManifest.results[0] ?? {};
+  if (
+    localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
+    || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
+    || localResult.sourceTreeIntakeAccepted !== true
+    || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
+    || !localResult.sourceIntakeEvidence?.backendCandidates?.includes('hip_rocm')
+    || localResult.acceptedForGpuHmr !== false
+    || localResult.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-path local git source intake self-check failed');
+  }
+  await writeFile(path.join(localRepoPath, 'untracked-dirty.tmp'), 'dirty\n');
+  const { manifest: dirtyManifest } = await buildManifest({
+    seed: 'dirty-local-source-self-check-seed',
+    count: 1,
+    candidateId: localCandidate.id,
+    dryRun: false,
+    timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
+    sourceIntake: true,
+    sourceIntakeTimeoutMs: 30000,
+    candidates: [localCandidate],
+    outputDir: path.join(LOG_DIR, 'self-check'),
+  });
+  const dirtyResult = dirtyManifest.results[0] ?? {};
+  if (
+    dirtyResult.sourceTreeIntakeAccepted !== false
+    || dirtyResult.sourceIntakeEvidence?.status !== 'source_intake_local_git_dirty'
+    || !dirtyResult.blockingGaps?.includes('source_tree_intake_missing')
+    || dirtyResult.acceptedForGpuHmr !== false
+    || dirtyResult.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-path dirty local git refusal self-check failed');
+  }
   console.log('random large-project cold-path self-check passed');
 }
 
@@ -1508,6 +1785,7 @@ async function main() {
   );
   const directCandidate = directCandidateFromInput({
     sourceUrl: args.sourceUrl ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL,
+    repoPath: args.repoPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_REPO_PATH,
     immutableCommit: args.immutableCommit ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT,
     sourceId: args.sourceId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID,
     backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
