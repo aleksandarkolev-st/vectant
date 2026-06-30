@@ -84,13 +84,43 @@ export async function createProject(workspaceSlug, actor, body = {}) {
   });
 
   await upsertMutationZones(workspaceSlug, zonePolicy);
+  const workflowBootstrap = await bootstrapAutomaticWorkflow({
+    project,
+    actor,
+    zonePolicy,
+    controlPlan,
+    body,
+  });
+  if (workflowBootstrap.enabled) {
+    await prisma.codeSiteProject.update({
+      where: { id: project.id },
+      data: {
+        controlPlanJson: stringifyJson({
+          ...controlPlan,
+          towerState: 'preflight',
+          selectedStrategy: workflowBootstrap.selectedStrategy,
+          missions: workflowBootstrap.missions,
+          routeIntersections: workflowBootstrap.forecast.risks,
+          automaticWorkflow: {
+            enabled: true,
+            agentSessionIds: workflowBootstrap.agentSessions.map((session) => session.id),
+            executionPlanIds: workflowBootstrap.executionPlans.map((plan) => plan.id),
+            collisionForecast: workflowBootstrap.forecast,
+          },
+        }),
+      },
+    });
+  }
   await recordEvent(project.id, {
     eventType: 'tower_instruction',
     actorType: 'human',
     actorId: actor?.userId || null,
     details: {
-      instruction: 'CodeSite project opened. File flight plans before mutation.',
+      instruction: workflowBootstrap.enabled
+        ? `Tower filed ${workflowBootstrap.executionPlans.length} initial flight plans.`
+        : 'CodeSite project opened. File flight plans before mutation.',
       controlPlan,
+      automaticWorkflow: workflowBootstrap.enabled ? workflowBootstrap.summary : null,
     },
   });
 
@@ -111,6 +141,226 @@ function buildInitialControlPlan({ title, request, body, zonePolicy }) {
     zoneDigest: digest(zonePolicy),
     createdAt: new Date().toISOString(),
   };
+}
+
+async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlPlan, body = {} }) {
+  const enabled = body.autoWorkflow === true
+    || body.auto_workflow === true
+    || body.automaticWorkflow === true
+    || body.automatic_workflow === true
+    || body.towerAutoPlan === true
+    || body.tower_auto_plan === true;
+  if (!enabled) {
+    return {
+      enabled: false,
+      missions: asArray(controlPlan.missions),
+      forecast: { riskLevel: 'low', risks: [] },
+      selectedStrategy: controlPlan.selectedStrategy,
+      agentSessions: [],
+      executionPlans: [],
+      summary: null,
+    };
+  }
+
+  const missions = normalizeAutomaticMissions(controlPlan.missions, zonePolicy, project.request);
+  const pseudoPlans = missions.map((mission) => ({
+    id: mission.key,
+    displayCallsign: mission.callsign,
+    route: mission.route,
+  }));
+  const forecast = predictCollisions({ executionPlans: pseudoPlans, leases: [], zonePolicy });
+  const selectedStrategy = selectTowerStrategy(forecast, missions, body.strategy || controlPlan.selectedStrategy);
+  const agentSessions = [];
+  const executionPlans = [];
+  for (let index = 0; index < missions.length; index += 1) {
+    const mission = missions[index];
+    const status = planStatusForAutomaticMission(mission, index, selectedStrategy, forecast);
+    const session = await prisma.codeSiteAgentSession.create({
+      data: {
+        projectId: project.id,
+        ownerUserId: mission.ownerUserId || actor?.userId || 'codesite-tower',
+        agentProvider: mission.agentProvider || 'codex',
+        agentRuntime: mission.agentRuntime || 'tower-auto-plan',
+        providerSessionRef: null,
+        displayCallsign: mission.callsign,
+        status: 'registered',
+        permissionsJson: stringifyJson(['codesite:mutation', 'codesite:inbox']),
+        redactionPolicyJson: stringifyJson(defaultRedactionPolicy()),
+      },
+    });
+    agentSessions.push(session);
+    await recordEvent(project.id, {
+      eventType: 'transponder_update',
+      displayCallsign: session.displayCallsign,
+      actorType: 'agent_session',
+      actorId: session.id,
+      details: {
+        status: session.status,
+        provider: session.agentProvider,
+        runtime: session.agentRuntime,
+        instruction: `${session.displayCallsign} registered by tower automatic workflow.`,
+      },
+    });
+    const plan = await prisma.codeSiteExecutionPlan.create({
+      data: {
+        projectId: project.id,
+        agentSessionId: session.id,
+        displayCallsign: mission.callsign,
+        mission: mission.mission,
+        domain: mission.domain,
+        status,
+        routeJson: stringifyJson(mission.route),
+        blockedZonesJson: stringifyJson(mission.blockedZones),
+        abortJson: stringifyJson(mission.abortConditions),
+        requestedToolsJson: stringifyJson(mission.requestedTools),
+        estimatedDurationMs: mission.estimatedDurationMs,
+      },
+    });
+    executionPlans.push(plan);
+    await recordEvent(project.id, {
+      eventType: 'flight_plan_filed',
+      displayCallsign: plan.displayCallsign,
+      actorType: 'agent_session',
+      actorId: session.id,
+      details: {
+        executionPlanId: plan.id,
+        mission: plan.mission,
+        route: mission.route,
+        status,
+        automaticWorkflow: true,
+        towerInstruction: status === 'holding'
+          ? 'Hold position until schema-first route lands and assumptions refresh.'
+          : 'Proceed to preflight and request clearance.',
+      },
+    });
+  }
+  return {
+    enabled: true,
+    missions,
+    forecast,
+    selectedStrategy,
+    agentSessions,
+    executionPlans,
+    summary: {
+      selectedStrategy,
+      riskLevel: forecast.riskLevel,
+      missionCount: missions.length,
+      heldFlights: executionPlans.filter((plan) => plan.status === 'holding').map((plan) => plan.displayCallsign),
+    },
+  };
+}
+
+function normalizeAutomaticMissions(inputMissions, zonePolicy, request) {
+  const explicit = asArray(inputMissions);
+  const missions = explicit.length ? explicit : inferMissionsFromAirspace(zonePolicy, request);
+  return missions.map((mission, index) => normalizeAutomaticMission(mission, index));
+}
+
+function inferMissionsFromAirspace(zonePolicy, request) {
+  const zones = asArray(zonePolicy?.zones);
+  const authoredZones = zones.filter((zone) => zone?.source !== 'compiled_default');
+  const candidateZones = authoredZones.length ? authoredZones : zones;
+  const sorted = candidateZones
+    .filter((zone) => asArray(zone.paths).length > 0)
+    .sort((left, right) => zonePriority(left) - zonePriority(right));
+  const inferred = [];
+  for (const zone of sorted) {
+    const domain = domainForZone(zone);
+    if (inferred.some((mission) => mission.domain === domain)) continue;
+    inferred.push({
+      mission: missionTitleForDomain(domain, request),
+      domain,
+      callsign: callsignForDomain(domain, inferred.length),
+      route: asArray(zone.paths),
+      requestedTools: domain === 'inspection' ? ['read_file', 'npm_test'] : ['file_write', 'npm_test'],
+      abortConditions: ['shared contract changed', 'required radar failed'],
+    });
+    if (inferred.length >= 4) break;
+  }
+  if (inferred.length) return inferred;
+  return [{
+    mission: `Coordinate ${request || 'requested work'}`,
+    domain: 'implementation',
+    callsign: 'CODEX-01',
+    route: ['docs/**'],
+    requestedTools: ['file_write'],
+    abortConditions: ['required radar failed'],
+  }];
+}
+
+function normalizeAutomaticMission(mission, index) {
+  const domain = String(mission.domain || mission.altitude || domainForRoute(mission.route) || 'implementation').toLowerCase();
+  const route = pathsForRoute(mission.route || mission.allowedPaths || mission.allowed_paths || ['docs/**']);
+  return {
+    key: mission.key || mission.id || `mission-${index + 1}`,
+    mission: String(mission.mission || mission.title || mission.request || missionTitleForDomain(domain)).trim(),
+    domain,
+    callsign: String(mission.displayCallsign || mission.callsign || callsignForDomain(domain, index)).toUpperCase(),
+    route,
+    blockedZones: pathsForRoute(mission.blockedZones || mission.noFlyZones || mission.no_fly_zones || []),
+    requestedTools: asArray(mission.requestedTools || mission.requested_tools || ['file_write', 'npm_test']),
+    abortConditions: asArray(mission.abortConditions || mission.abort_conditions || ['required radar failed']),
+    estimatedDurationMs: normalizeDurationMs(mission.estimatedDurationMs || mission.estimated_duration_ms || mission.estimatedDuration),
+    agentProvider: mission.agentProvider || mission.provider || 'codex',
+    agentRuntime: mission.agentRuntime || mission.runtime || 'tower-auto-plan',
+    ownerUserId: mission.ownerUserId || mission.owner_user_id || null,
+  };
+}
+
+function zonePriority(zone) {
+  const klass = String(zone?.class || '').toUpperCase();
+  const rank = { A: 0, B: 1, C: 2, D: 3 }[klass] ?? 4;
+  return rank;
+}
+
+function domainForZone(zone) {
+  const haystack = `${zone?.zoneKey || ''} ${zone?.label || ''} ${asArray(zone?.paths).join(' ')}`.toLowerCase();
+  if (/schema|openapi|contract|prisma|migration|package|export/.test(haystack)) return 'schema';
+  if (/test|spec|e2e|playwright|vitest/.test(haystack)) return 'inspection';
+  if (/web|ui|frontend|component|app/.test(haystack)) return 'frontend';
+  if (/api|auth|billing|backend|server/.test(haystack)) return 'backend';
+  if (/infra|deploy|k8s|terraform/.test(haystack)) return 'infra';
+  return 'implementation';
+}
+
+function domainForRoute(route = []) {
+  return domainForZone({ paths: route });
+}
+
+function callsignForDomain(domain, index) {
+  const prefixes = {
+    schema: 'SCHEMA',
+    backend: 'API',
+    frontend: 'UI',
+    inspection: 'TEST',
+    infra: 'INFRA',
+    implementation: 'CODEX',
+  };
+  return `${prefixes[domain] || 'CODEX'}-${String(index + 1).padStart(2, '0')}`;
+}
+
+function missionTitleForDomain(domain, request = 'requested work') {
+  const titles = {
+    schema: `Stabilize shared contract for ${request}`,
+    backend: `Implement backend route for ${request}`,
+    frontend: `Implement frontend flow for ${request}`,
+    inspection: `Run landing radar for ${request}`,
+    infra: `Prepare infrastructure changes for ${request}`,
+    implementation: `Implement ${request}`,
+  };
+  return titles[domain] || titles.implementation;
+}
+
+function selectTowerStrategy(forecast, missions, requestedStrategy) {
+  if (requestedStrategy && requestedStrategy !== 'airspace_survey_first') return requestedStrategy;
+  if (forecast.riskLevel === 'high' && missions.some((mission) => mission.domain === 'schema')) return 'schema-first';
+  if (missions.some((mission) => mission.domain === 'inspection')) return 'test-first';
+  return 'parallel-with-clearances';
+}
+
+function planStatusForAutomaticMission(mission, index, selectedStrategy, forecast) {
+  if (selectedStrategy === 'schema-first' && mission.domain !== 'schema' && forecast.riskLevel === 'high') return 'holding';
+  return index === 0 ? 'preflight' : 'filed';
 }
 
 async function upsertMutationZones(workspaceSlug, zonePolicy) {

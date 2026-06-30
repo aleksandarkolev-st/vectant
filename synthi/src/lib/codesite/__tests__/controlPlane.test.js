@@ -15,10 +15,13 @@ const { prisma } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     codeSiteProject: {
+      create: vi.fn(),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteExecutionPlan: {
+      create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
@@ -28,6 +31,7 @@ const { prisma } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     codeSiteAgentSession: {
+      create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
@@ -74,6 +78,9 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteDocument: {
       create: vi.fn(),
     },
+    codeSiteMutationZone: {
+      upsert: vi.fn(),
+    },
   },
 }));
 
@@ -84,6 +91,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  createProject,
   createIncident,
   createDocument,
   createInspectionRun,
@@ -261,6 +269,23 @@ describe('CodeSite control plane transaction validation', () => {
         noFlyZones: ['secrets/**'],
       }),
     });
+    prisma.codeSiteProject.create.mockImplementation(async ({ data }) => ({
+      id: 'project-created',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteProject.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: data.controlPlanJson,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    }));
     prisma.codeSiteProject.findFirst.mockResolvedValue({
       id: 'project-1',
       workspaceSlug: 'acme',
@@ -272,8 +297,15 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:00:00.000Z'),
       updatedAt: new Date('2026-06-29T23:00:00.000Z'),
     });
+    prisma.codeSiteMutationZone.upsert.mockResolvedValue({});
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
     prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+    prisma.codeSiteExecutionPlan.create.mockImplementation(async ({ data }) => ({
+      id: `plan-${data.displayCallsign}`,
+      filedAt: new Date('2026-06-29T23:01:00.000Z'),
+      closedAt: null,
+      ...data,
+    }));
     prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
       id: 'lease-created',
       issuedAt: new Date('2026-06-29T23:00:00.000Z'),
@@ -319,6 +351,12 @@ describe('CodeSite control plane transaction validation', () => {
       ownerUserId: 'user-1',
       displayCallsign: 'ATLAS-1',
     });
+    prisma.codeSiteAgentSession.create.mockImplementation(async ({ data }) => ({
+      id: `agent-${data.displayCallsign}`,
+      createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      endedAt: null,
+      ...data,
+    }));
     prisma.codeSiteAgentSession.findMany.mockResolvedValue([{
       id: 'agent-2',
       projectId: 'project-1',
@@ -434,6 +472,49 @@ describe('CodeSite control plane transaction validation', () => {
     }));
     prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
 	  });
+
+  it('bootstraps automatic tower workflow with schema-first holding plans', async () => {
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Build signup',
+      request: 'Build signup with email verification',
+      autoWorkflow: true,
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'schema', class: 'B', label: 'Shared schema', paths: ['packages/schemas/**'], rules: [], risk: 'high' },
+          { zoneKey: 'frontend', class: 'C', label: 'Frontend UI', paths: ['components/auth/**'], rules: [], risk: 'medium' },
+        ],
+        repoSignals: {
+          files: ['packages/schemas/auth.ts', 'components/auth/SignupForm.tsx'],
+          importEdges: [{ from: 'components/auth/SignupForm.tsx', imports: ['packages/schemas/auth.ts'] }],
+        },
+      },
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledTimes(2);
+    expect(prisma.codeSiteExecutionPlan.create).toHaveBeenCalledTimes(2);
+    const createdPlans = prisma.codeSiteExecutionPlan.create.mock.calls.map((call) => call[0].data);
+    expect(createdPlans.map((plan) => plan.domain)).toEqual(['schema', 'frontend']);
+    expect(createdPlans[0]).toMatchObject({ displayCallsign: 'SCHEMA-01', status: 'preflight' });
+    expect(createdPlans[1]).toMatchObject({ displayCallsign: 'UI-02', status: 'holding' });
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.selectedStrategy).toBe('schema-first');
+    expect(controlPlan.automaticWorkflow).toMatchObject({
+      enabled: true,
+      collisionForecast: { riskLevel: 'high' },
+    });
+    expect(controlPlan.routeIntersections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'semantic_collision',
+        recommendedResolution: expect.objectContaining({ action: 'schema_first' }),
+      }),
+    ]));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'flight_plan_filed',
+        detailsJson: expect.stringContaining('Hold position until schema-first route lands'),
+      }),
+    }));
+  });
 
   it('blocks restricted airspace clearances without executable Dojo proof', async () => {
     const lease = await requestMutationLease('acme', 'plan-1', {
