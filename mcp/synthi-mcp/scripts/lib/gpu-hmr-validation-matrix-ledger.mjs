@@ -150,6 +150,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_result_transport.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY =
   'runtime_adapter_result_transport_only_not_gpu_hmr_success';
+const REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_TRANSPORT_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_adapter_event_manifest_transport.v1';
+const REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_TRANSPORT_AUTHORITY =
+  'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_boundary_target_environment.v1';
 const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_AUTHORITY =
@@ -7600,7 +7604,12 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const status = firstText(facet.status, facet.reason);
   const declared = firstBool(facet.declared) === true;
-  const resultPresent = firstBool(facet.present, facet.resultPresent, facet.result_present);
+  const serializedPresent = firstBool(facet.present);
+  const resultPresent = firstBool(facet.resultPresent, facet.result_present);
+  const eventManifestPresent = firstBool(
+    facet.eventManifestPresent,
+    facet.event_manifest_present,
+  );
   const acceptedAsRefusalEvidence = firstBool(
     facet.acceptedAsRefusalEvidence,
     facet.accepted_as_refusal_evidence,
@@ -7654,9 +7663,23 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
       : []),
     ...(Array.isArray(facet.runtimeBoundaryLines) ? facet.runtimeBoundaryLines : []),
     ...(Array.isArray(facet.runtime_boundary_lines) ? facet.runtime_boundary_lines : []),
+    ...(Array.isArray(facet.eventManifestBoundaryLines)
+      ? facet.eventManifestBoundaryLines
+      : []),
+    ...(Array.isArray(facet.event_manifest_boundary_lines)
+      ? facet.event_manifest_boundary_lines
+      : []),
     ...(Array.isArray(facet.boundaryLines) ? facet.boundaryLines : []),
     ...(Array.isArray(facet.boundary_lines) ? facet.boundary_lines : []),
   ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const boundaryPayloadPresent =
+    resultPresent === true
+    || eventManifestPresent === true
+    || adapterRuntimeBoundaryLines.length > 0;
+  const resultUnreadableIsBoundaryImportNeutral =
+    resultPresent !== true
+    && eventManifestPresent === true
+    && adapterRuntimeBoundaryLines.length > 0;
   const adapterBoundaryCoverage = realRocmRuntimeAdapterBoundaryCoverage(
     adapterRuntimeBoundaryLines,
     facet.adapterBoundaryCoverage ?? facet.adapter_boundary_coverage,
@@ -7700,8 +7723,20 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     ...(Array.isArray(facet.boundary_import_blocking_gaps) ? facet.boundary_import_blocking_gaps : []),
   ]).filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted');
   const boundaryImportBlockingGaps = compactStringList([
-    ...serializedBoundaryImportBlockingGaps,
-    ...blockingGaps.filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted'),
+    ...serializedBoundaryImportBlockingGaps.filter((gap) =>
+      !(gap === 'runtime_profile_adapter_result_unreadable'
+        && resultUnreadableIsBoundaryImportNeutral)
+    ),
+    ...blockingGaps.filter((gap) => {
+      if (gap === 'runtime_profile_adapter_strict_runtime_proof_not_accepted') return false;
+      if (
+        gap === 'runtime_profile_adapter_result_unreadable'
+        && resultUnreadableIsBoundaryImportNeutral
+      ) {
+        return false;
+      }
+      return true;
+    }),
     adapterRuntimeBoundaryLines.length > 0
       ? null
       : 'runtime_profile_adapter_boundary_lines_missing',
@@ -7732,7 +7767,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     canSatisfyDispatchProof === true
       ? 'real_rocm_runtime_profile_adapter_result_claimed_dispatch_authority'
       : null,
-    declared && resultPresent !== true && blockingGaps.length === 0
+    declared && boundaryPayloadPresent !== true && blockingGaps.length === 0
       ? 'real_rocm_runtime_profile_adapter_result_missing_without_gap'
       : null,
     acceptedAsRefusalEvidence && blockingGaps.length === 0
@@ -7780,7 +7815,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     failedGates.filter((gate) => !strictSummaryOnlyGates.has(gate)),
   );
   const acceptedAsBoundaryEvidence =
-    resultPresent === true
+    boundaryPayloadPresent === true
     && adapterRuntimeBoundaryLines.length > 0
     && adapterBoundaryCoverage.acceptedAsDiagnosticEvidence === true
     && adapterBoundaryCoverage.missingEventKinds.length === 0
@@ -7791,6 +7826,12 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     declared,
     resultPresent: resultPresent === true,
     result_present: resultPresent === true,
+    eventManifestPresent: eventManifestPresent === true,
+    event_manifest_present: eventManifestPresent === true,
+    serializedPresent: serializedPresent === true,
+    serialized_present: serializedPresent === true,
+    boundaryPayloadPresent,
+    boundary_payload_present: boundaryPayloadPresent,
     accepted: failedGates.length === 0,
     acceptedAsRefusalEvidence,
     accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
@@ -8757,6 +8798,220 @@ function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
   };
 }
 
+function realRocmRuntimeAdapterEventManifestTransportFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const status = firstText(facet.status, facet.reason);
+  const declared = firstBool(facet.declared) === true;
+  const copied = firstBool(
+    facet.copied,
+    facet.eventManifestCopied,
+    facet.event_manifest_copied,
+  ) === true;
+  const adapterTemplate = firstText(
+    facet.adapterTemplate,
+    facet.adapter_template,
+    facet.template,
+  );
+  const adapterCommandHash = normalizeSha256(firstText(
+    facet.adapterCommandHash,
+    facet.adapter_command_hash,
+    facet.commandHash,
+    facet.command_hash,
+  ));
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const byteLength = finiteNumber(facet.byteLength ?? facet.byte_length);
+  const rawSha256 = firstText(
+    facet.rawSha256,
+    facet.raw_sha256,
+    facet.eventManifestSha256,
+    facet.event_manifest_sha256,
+    facet.resultSha256,
+    facet.result_sha256,
+    facet.resultHash,
+    facet.result_hash,
+  );
+  const declaredPath = firstText(facet.declaredPath, facet.declared_path);
+  const hostPath = firstText(facet.hostPath, facet.host_path);
+  const workerPath = firstText(facet.workerPath, facet.worker_path);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+  ]);
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const copiedStatus = status === 'runtime_adapter_event_manifest_transport_copied';
+  const notDeclaredStatus = status === 'runtime_adapter_event_manifest_transport_not_declared';
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_runtime_adapter_event_manifest_transport_schema_missing',
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_TRANSPORT_SCHEMA_VERSION
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_TRANSPORT_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_adapter_event_manifest_transport_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_claimed_dispatch_authority'
+      : null,
+    !status ? 'real_rocm_runtime_adapter_event_manifest_transport_status_missing' : null,
+    declared && copiedStatus && copied !== true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_copied_flag_missing'
+      : null,
+    declared && copied && copiedStatus !== true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_copied_status_missing'
+      : null,
+    declared && copied && !rawSha256
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_hash_missing'
+      : null,
+    declared && copied && !(byteLength > 0)
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_byte_length_missing'
+      : null,
+    declared && copied && evidenceRefs.length === 0
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_evidence_refs_missing'
+      : null,
+    declared && !copied && blockingGaps.length === 0
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_missing_without_gap'
+      : null,
+    copied && declared !== true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_copied_without_declaration'
+      : null,
+    !declared && !notDeclaredStatus && copied !== true
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_unexpected_status_without_declaration'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0 && blockingGaps.length === 0,
+    declared,
+    copied,
+    status,
+    adapterTemplate: adapterTemplate ?? null,
+    adapter_template: adapterTemplate ?? null,
+    adapterCommandHash: adapterCommandHash ?? null,
+    adapter_command_hash: adapterCommandHash ?? null,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    declaredPath: declaredPath ?? null,
+    declared_path: declaredPath ?? null,
+    hostPath: hostPath ?? null,
+    host_path: hostPath ?? null,
+    workerPath: workerPath ?? null,
+    worker_path: workerPath ?? null,
+    byteLength: byteLength ?? 0,
+    byte_length: byteLength ?? 0,
+    rawSha256: rawSha256 ?? null,
+    raw_sha256: rawSha256 ?? null,
+    acceptedForGpuHmr: acceptedForGpuHmr === true,
+    accepted_for_gpu_hmr: acceptedForGpuHmr === true,
+    gpuHmrSuccess: gpuHmrSuccess === true,
+    gpu_hmr_success: gpuHmrSuccess === true,
+    canSatisfyRuntimeProof: canSatisfyRuntimeProof === true,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof === true,
+    canSatisfyDispatchProof: canSatisfyDispatchProof === true,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
+function realRocmRuntimeAdapterResultTransportMissingBytesOnly(facet = {}) {
+  if (facet?.present !== true) return true;
+  if (facet.accepted === true) return true;
+  const status = firstText(facet.status, facet.reason);
+  const failedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  return status === 'runtime_adapter_result_transport_missing'
+    && failedGates.length === 0
+    && blockingGaps.length > 0
+    && blockingGaps.every((gap) => gap === 'runtime_adapter_result_transport_worker_file_missing');
+}
+
+function realRocmRuntimeAdapterBoundaryOnlyTransportUsable({
+  adapterResult = {},
+  resultTransport = {},
+  eventManifestTransport = {},
+} = {}) {
+  if (
+    adapterResult?.present !== true
+    || adapterResult.acceptedAsBoundaryEvidence !== true
+  ) {
+    return false;
+  }
+  if (resultTransport?.present === true && resultTransport.accepted === true) {
+    return true;
+  }
+  return adapterResult.resultPresent !== true
+    && adapterResult.eventManifestPresent === true
+    && adapterResult.boundaryPayloadPresent === true
+    && eventManifestTransport?.present === true
+    && eventManifestTransport.accepted === true
+    && eventManifestTransport.copied === true
+    && realRocmRuntimeAdapterResultTransportMissingBytesOnly(resultTransport);
+}
+
 function realRocmRuntimeBoundaryTargetEnvironmentFacet(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -9121,6 +9376,10 @@ function realRocmRuntimeBoundaryTargetProcessProvenanceFacet(input = {}) {
     facet.adapterResultTransport
     ?? facet.adapter_result_transport,
   );
+  const adapterEventManifestTransport = compactObject(
+    facet.adapterEventManifestTransport
+    ?? facet.adapter_event_manifest_transport,
+  );
   const resultTransportDeclared =
     adapterResultTransport.declared === true
     || adapterResultTransport.present === true
@@ -9129,6 +9388,27 @@ function realRocmRuntimeBoundaryTargetProcessProvenanceFacet(input = {}) {
     !resultTransportDeclared
     || adapterResultTransport.copied === true
     || firstText(adapterResultTransport.status) === 'runtime_adapter_result_transport_copied';
+  const eventManifestTransportDeclared =
+    adapterEventManifestTransport.declared === true
+    || adapterEventManifestTransport.present === true
+    || Boolean(firstText(adapterEventManifestTransport.status));
+  const eventManifestTransportCopied =
+    !eventManifestTransportDeclared
+    || adapterEventManifestTransport.copied === true
+    || firstText(adapterEventManifestTransport.status)
+      === 'runtime_adapter_event_manifest_transport_copied'
+    || (
+      firstBool(
+        facet.eventManifestTransportCopied,
+        facet.event_manifest_transport_copied,
+      ) === true
+      && firstBool(
+        facet.boundarySourceTransportCopied,
+        facet.boundary_source_transport_copied,
+      ) === true
+    );
+  const boundarySourceTransportCopied =
+    resultTransportCopied || eventManifestTransportCopied;
   const serializedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
     ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
@@ -9168,9 +9448,9 @@ function realRocmRuntimeBoundaryTargetProcessProvenanceFacet(input = {}) {
     targetEnvironmentSessionMatched
       ? null
       : 'runtime_boundary_target_environment_session_mismatch',
-    resultTransportCopied
+    boundarySourceTransportCopied
       ? null
-      : 'runtime_boundary_target_result_transport_not_copied',
+      : 'runtime_boundary_target_boundary_source_transport_not_copied',
   ]);
   const blockingGaps = compactStringList([
     ...serializedBlockingGaps,
@@ -9273,6 +9553,10 @@ function realRocmRuntimeBoundaryTargetProcessProvenanceFacet(input = {}) {
     target_environment_session_matched: targetEnvironmentSessionMatched,
     resultTransportCopied,
     result_transport_copied: resultTransportCopied,
+    eventManifestTransportCopied,
+    event_manifest_transport_copied: eventManifestTransportCopied,
+    boundarySourceTransportCopied,
+    boundary_source_transport_copied: boundarySourceTransportCopied,
     coverage,
     blockingGaps,
     blocking_gaps: blockingGaps,
@@ -10534,15 +10818,6 @@ function rowSafetyFailures(row, context = {}) {
       ?? row.runtimeProfileAdapterResult
       ?? row.runtime_profile_adapter_result,
     ));
-    if (
-      runtimeProfileAdapterResult.present === true
-      && runtimeProfileAdapterResult.accepted !== true
-    ) {
-      failures.push({
-        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_profile_adapter_result',
-      });
-      failures.push(...runtimeProfileAdapterResult.failedGates.map((code) => ({ code })));
-    }
     const runtimeAdapterExecution = realRocmRuntimeAdapterExecutionFacet(compactObject(
       row.realRocmRuntimeAdapterExecution
       ?? row.real_rocm_runtime_adapter_execution
@@ -10564,14 +10839,48 @@ function rowSafetyFailures(row, context = {}) {
       ?? row.runtimeAdapterResultTransport
       ?? row.runtime_adapter_result_transport,
     ));
+    const runtimeAdapterEventManifestTransport =
+      realRocmRuntimeAdapterEventManifestTransportFacet(compactObject(
+        row.realRocmRuntimeAdapterEventManifestTransport
+        ?? row.real_rocm_runtime_adapter_event_manifest_transport
+        ?? row.runtimeAdapterEventManifestTransport
+      ?? row.runtime_adapter_event_manifest_transport,
+    ));
+    const runtimeAdapterBoundaryOnlyTransportUsable =
+      realRocmRuntimeAdapterBoundaryOnlyTransportUsable({
+        adapterResult: runtimeProfileAdapterResult,
+        resultTransport: runtimeAdapterResultTransport,
+        eventManifestTransport: runtimeAdapterEventManifestTransport,
+      });
+    if (
+      runtimeProfileAdapterResult.present === true
+      && runtimeProfileAdapterResult.accepted !== true
+      && runtimeAdapterBoundaryOnlyTransportUsable !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_profile_adapter_result',
+      });
+      failures.push(...runtimeProfileAdapterResult.failedGates.map((code) => ({ code })));
+    }
     if (
       runtimeAdapterResultTransport.present === true
       && runtimeAdapterResultTransport.accepted !== true
+      && runtimeAdapterBoundaryOnlyTransportUsable !== true
     ) {
       failures.push({
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_result_transport',
       });
       failures.push(...runtimeAdapterResultTransport.failedGates.map((code) => ({ code })));
+    }
+    if (
+      runtimeAdapterEventManifestTransport.present === true
+      && runtimeAdapterEventManifestTransport.accepted !== true
+      && runtimeAdapterResultTransport.accepted !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_event_manifest_transport',
+      });
+      failures.push(...runtimeAdapterEventManifestTransport.failedGates.map((code) => ({ code })));
     }
     const runtimeBoundaryTargetEnvironment = realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
       row.realRocmRuntimeBoundaryTargetEnvironment
@@ -17104,6 +17413,25 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ?? evidence.runtime_adapter_result_transport
       ?? evidence.runtimeAdapterResultTransport,
     ));
+  const realRocmRuntimeAdapterEventManifestTransport =
+    realRocmRuntimeAdapterEventManifestTransportFacet(compactObject(
+      json.real_rocm_runtime_adapter_event_manifest_transport
+      ?? json.realRocmRuntimeAdapterEventManifestTransport
+      ?? json.runtime_adapter_event_manifest_transport
+      ?? json.runtimeAdapterEventManifestTransport
+      ?? summary.real_rocm_runtime_adapter_event_manifest_transport
+      ?? summary.realRocmRuntimeAdapterEventManifestTransport
+      ?? summary.runtime_adapter_event_manifest_transport
+      ?? summary.runtimeAdapterEventManifestTransport
+      ?? runtimeProofArtifact.real_rocm_runtime_adapter_event_manifest_transport
+      ?? runtimeProofArtifact.realRocmRuntimeAdapterEventManifestTransport
+      ?? runtimeProofArtifact.runtime_adapter_event_manifest_transport
+      ?? runtimeProofArtifact.runtimeAdapterEventManifestTransport
+      ?? evidence.real_rocm_runtime_adapter_event_manifest_transport
+      ?? evidence.realRocmRuntimeAdapterEventManifestTransport
+      ?? evidence.runtime_adapter_event_manifest_transport
+      ?? evidence.runtimeAdapterEventManifestTransport,
+    ));
   const realRocmRuntimeBoundaryTargetEnvironment =
     realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
       json.real_rocm_runtime_boundary_target_environment
@@ -17146,6 +17474,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       sourceRuntimeBoundaryLines: runtimeBoundaryTargetProcessSourceLines,
       targetEnvironment: realRocmRuntimeBoundaryTargetEnvironment,
       adapterResultTransport: realRocmRuntimeAdapterResultTransport,
+      adapterEventManifestTransport: realRocmRuntimeAdapterEventManifestTransport,
     }));
   const realRocmOperationalEvidence = realRocmOperationalEvidenceFacet({
     timeoutControl: compactObject(
@@ -17649,6 +17978,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           : []),
       ])
       : [];
+  const realRocmRuntimeAdapterEventManifestTransportGaps =
+    realRocmRuntimeAdapterEventManifestTransport.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmRuntimeAdapterEventManifestTransport.blockingGaps)
+          ? realRocmRuntimeAdapterEventManifestTransport.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterEventManifestTransport.blocking_gaps)
+          ? realRocmRuntimeAdapterEventManifestTransport.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterEventManifestTransport.failedGates)
+          ? realRocmRuntimeAdapterEventManifestTransport.failedGates
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterEventManifestTransport.failed_gates)
+          ? realRocmRuntimeAdapterEventManifestTransport.failed_gates
+          : []),
+      ])
+      : [];
   const realRocmRuntimeBoundaryTargetEnvironmentGaps =
     realRocmRuntimeBoundaryTargetEnvironment.present === true
       ? compactStringList([
@@ -17828,6 +18174,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         realRocmRuntimeAdapterResultTransport.reason,
       )
       : null;
+  const realRocmRuntimeAdapterEventManifestTransportReason =
+    realRocmRuntimeAdapterEventManifestTransport.present === true
+      ? firstText(
+        realRocmRuntimeAdapterEventManifestTransport.status,
+        realRocmRuntimeAdapterEventManifestTransport.reason,
+      )
+      : null;
   const realRocmRuntimeBoundaryTargetEnvironmentReason =
     realRocmRuntimeBoundaryTargetEnvironment.present === true
       ? firstText(
@@ -17980,13 +18333,6 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const appHookMaterializationAccepted =
     appHookMaterializationGate.required !== true
     || appHookMaterializationGate.accepted === true;
-  const runtimeProfileAdapterResultAccepted =
-    realRocmRuntimeProfileAdapterResult.present !== true
-    || (
-      realRocmRuntimeProfileAdapterResult.accepted === true
-      && runtimeProfileAdapterResultBindingGates.length === 0
-    )
-    || runtimeProfileAdapterResultBoundaryOnlyAccepted === true;
   const runtimeAdapterExecutionAccepted =
     realRocmRuntimeAdapterExecution.present !== true
     || realRocmRuntimeAdapterExecution.accepted === true;
@@ -17996,6 +18342,32 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeAdapterResultTransportAccepted =
     realRocmRuntimeAdapterResultTransport.present !== true
     || realRocmRuntimeAdapterResultTransport.accepted === true;
+  const runtimeAdapterResultTransportUsable =
+    realRocmRuntimeAdapterResultTransport.present === true
+    && realRocmRuntimeAdapterResultTransport.accepted === true;
+  const runtimeAdapterBoundaryOnlyTransportUsable =
+    realRocmRuntimeAdapterBoundaryOnlyTransportUsable({
+      adapterResult: realRocmRuntimeProfileAdapterResult,
+      resultTransport: realRocmRuntimeAdapterResultTransport,
+      eventManifestTransport: realRocmRuntimeAdapterEventManifestTransport,
+    });
+  const runtimeProfileAdapterResultAccepted =
+    realRocmRuntimeProfileAdapterResult.present !== true
+    || (
+      realRocmRuntimeProfileAdapterResult.accepted === true
+      && runtimeProfileAdapterResultBindingGates.length === 0
+    )
+    || (
+      runtimeProfileAdapterResultBoundaryOnlyAccepted === true
+      && runtimeAdapterBoundaryOnlyTransportUsable === true
+    );
+  const runtimeAdapterBoundaryTransportPresent =
+    realRocmRuntimeAdapterResultTransport.present === true
+    || realRocmRuntimeAdapterEventManifestTransport.present === true;
+  const runtimeAdapterBoundaryTransportAccepted =
+    runtimeAdapterBoundaryTransportPresent !== true
+    || runtimeAdapterResultTransportUsable
+    || runtimeAdapterBoundaryOnlyTransportUsable;
   const runtimeBoundaryTargetEnvironmentAccepted =
     realRocmRuntimeBoundaryTargetEnvironment.present !== true
     || realRocmRuntimeBoundaryTargetEnvironment.accepted === true;
@@ -18094,7 +18466,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeProfileAdapterResultAccepted === true
     && runtimeAdapterExecutionAccepted === true
     && runtimeAdapterStageEventsAccepted === true
-    && runtimeAdapterResultTransportAccepted === true
+    && runtimeAdapterBoundaryTransportAccepted === true
     && runtimeBoundaryTargetEnvironmentAccepted === true
     && runtimeBoundaryTargetProcessProvenanceAccepted === true
     && realRocmOperationalEvidenceAccepted === true
@@ -18349,6 +18721,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
     runtimeAdapterResultTransport: realRocmRuntimeAdapterResultTransport,
     runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
+    realRocmRuntimeAdapterEventManifestTransport,
+    real_rocm_runtime_adapter_event_manifest_transport:
+      realRocmRuntimeAdapterEventManifestTransport,
+    runtimeAdapterEventManifestTransport: realRocmRuntimeAdapterEventManifestTransport,
+    runtime_adapter_event_manifest_transport:
+      realRocmRuntimeAdapterEventManifestTransport,
     realRocmRuntimeBoundaryTargetEnvironment,
     real_rocm_runtime_boundary_target_environment:
       realRocmRuntimeBoundaryTargetEnvironment,
@@ -18454,12 +18832,25 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       realRocmRuntimeAdapterResultTransportReason
         ? `real_rocm_runtime_adapter_result_transport:${realRocmRuntimeAdapterResultTransportReason}`
         : null,
-      ...realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
-        `real_rocm_runtime_adapter_result_transport:${gap}`
+      ...(
+        runtimeAdapterBoundaryOnlyTransportUsable
+          ? []
+          : realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
+            `real_rocm_runtime_adapter_result_transport:${gap}`
+          )
       ),
-      runtimeAdapterResultTransportAccepted
+      realRocmRuntimeAdapterEventManifestTransportReason
+        ? `real_rocm_runtime_adapter_event_manifest_transport:${realRocmRuntimeAdapterEventManifestTransportReason}`
+        : null,
+      ...realRocmRuntimeAdapterEventManifestTransportGaps.map((gap) =>
+        `real_rocm_runtime_adapter_event_manifest_transport:${gap}`
+      ),
+      runtimeAdapterResultTransportAccepted || runtimeAdapterBoundaryOnlyTransportUsable
         ? null
         : 'real_rocm_runtime_adapter_result_transport_not_accepted',
+      runtimeAdapterBoundaryTransportAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_boundary_transport_not_accepted',
       realRocmRuntimeBoundaryTargetEnvironmentReason
         ? `real_rocm_runtime_boundary_target_environment:${realRocmRuntimeBoundaryTargetEnvironmentReason}`
         : null,
@@ -18613,12 +19004,22 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterStageEventsAccepted
         ? null
         : 'real_rocm_runtime_adapter_stage_events_required',
-      ...realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
-        `real_rocm_runtime_adapter_result_transport:${gap}`
+      ...(
+        runtimeAdapterBoundaryOnlyTransportUsable
+          ? []
+          : realRocmRuntimeAdapterResultTransportGaps.map((gap) =>
+            `real_rocm_runtime_adapter_result_transport:${gap}`
+          )
       ),
-      runtimeAdapterResultTransportAccepted
+      ...realRocmRuntimeAdapterEventManifestTransportGaps.map((gap) =>
+        `real_rocm_runtime_adapter_event_manifest_transport:${gap}`
+      ),
+      runtimeAdapterResultTransportAccepted || runtimeAdapterBoundaryOnlyTransportUsable
         ? null
         : 'real_rocm_runtime_adapter_result_transport_required',
+      runtimeAdapterBoundaryTransportAccepted
+        ? null
+        : 'real_rocm_runtime_adapter_boundary_transport_required',
       ...realRocmRuntimeBoundaryTargetEnvironmentGaps.map((gap) =>
         `real_rocm_runtime_boundary_target_environment:${gap}`
       ),

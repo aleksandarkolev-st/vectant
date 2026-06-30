@@ -4,6 +4,20 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Matrix Event-Manifest Boundary Transport
+
+Validation-matrix ingestion now treats copied real ROCm runtime-adapter event manifests as first-class boundary-source transport, separate from adapter-result bytes. A boundary-only bridge can preserve `resultPresent=false`, `eventManifestPresent=true`, and boundary lines from the event manifest while still refusing strict adapter-result import. The matrix recomputes the boundary payload, ignores `runtime_profile_adapter_result_unreadable` only for boundary import when the event manifest is present and carries accepted boundary lines, and recomputes target-process provenance with `eventManifestTransportCopied` plus `boundarySourceTransportCopied`.
+
+This is generic adapter plumbing, not a large-project shortcut. Copied runtime-adapter event manifests may satisfy boundary-source transport only for boundary-only adapter-result evidence, only when the event-manifest transport facet is accepted, and only when the adapter-result transport failure is limited to missing result bytes. Forged result-transport schema/authority/success claims remain blockers even if event-manifest transport is clean. Both transport facets reject wrong schema, wrong evidence-only authority, missing copied status, missing hash/byte length/evidence refs, and any GPU HMR/runtime/dispatch authority claims. Full-runtime acceptance still depends on strict proof-ledger success, runtime-chain closure, output oracle bytes, target-process provenance, same-process/firewall proof, and row-safety checks.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; focused smoke proof gpu-validation-matrix-ledger:sha256:c009e5f61f48f963ad57fa3112b5118d71c89a25240cbcc7839a79a0f38119d9, rows=65; retained self-check proof gpu-validation-matrix-ledger:sha256:0e55b69fdd414c23e884cd126af1d1342c72c26b6abcc18a01aa704a5ed629f4
+```
+
 ## 2026-06-30 Real ROCm Timeout Source Audit
 
 Large ROCm ML package scripts now label the source of `SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS` before they apply the default. A caller-provided value is recorded as `caller_env`; the package default is recorded as `package_default`. The real ROCm runner carries that label and the raw env value into `synthi.real_rocm.worker_lifecycle_timeout_control.v1`, and validation-matrix ingestion recomputes timeout arithmetic from the retained facet: `timeoutMs`, `timeoutSeconds`, `killAfterSeconds`, `timeoutSource`, and `timeoutEnvValue` must agree.
