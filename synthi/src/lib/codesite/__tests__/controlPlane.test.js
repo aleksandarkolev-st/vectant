@@ -37,7 +37,7 @@ vi.mock('@/lib/prisma', () => ({
   default: prisma,
 }));
 
-import { getIncidentReplay, getProofBundle, recordTransactionWrite, validateTransaction } from '../controlPlane.js';
+import { getIncidentReplay, getProofBundle, getSourceStateSince, recordTransactionWrite, validateTransaction } from '../controlPlane.js';
 
 function transactionFixture() {
   return {
@@ -124,6 +124,32 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'validated' }),
     }));
+  });
+
+  it('returns source-state since a transaction without mutating validation state', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-other-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-other',
+        displayCallsign: 'BETA-2',
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-other',
+          path: 'synthi/prisma/schema.prisma',
+        }),
+      },
+    ]);
+
+    const result = await getSourceStateSince('acme', 'txn-1');
+
+    expect(result.sourceState.changedPaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(result.sourceState.staleReads).toEqual([expect.objectContaining({
+      eventId: 'event-other-write',
+      displayCallsign: 'BETA-2',
+    })]);
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
   });
 
   it('records CodeSiteFS denied write evidence before returning a block decision', async () => {

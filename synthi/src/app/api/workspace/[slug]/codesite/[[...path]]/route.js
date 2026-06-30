@@ -22,6 +22,7 @@ import {
   getProofBundle,
   getProject,
   getSchemas,
+  getSourceStateSince,
   getTransaction,
   listProjects,
   openTransaction,
@@ -116,7 +117,7 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
-      return okJson(await validateTransaction(slug, route[1]));
+      return okJson(await getSourceStateSince(slug, route[1]));
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] === 'stream') {
@@ -240,7 +241,7 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
-      return okJson(await validateTransaction(slug, route[1]));
+      return okJson(await getSourceStateSince(slug, route[1]));
     }
 
     if (route[0] === 'projects' && route[2] === 'collision-predict') {

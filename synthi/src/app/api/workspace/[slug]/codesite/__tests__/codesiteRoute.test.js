@@ -18,6 +18,7 @@ const {
     getControlState: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
+    getSourceStateSince: vi.fn(),
     validateTransaction: vi.fn(),
   },
 }));
@@ -64,6 +65,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getProofBundle',
     'getProject',
     'getSchemas',
+    'getSourceStateSince',
     'getTransaction',
     'listProjects',
     'openTransaction',
@@ -164,8 +166,8 @@ describe('CodeSite catch-all route', () => {
   });
 
   it('serves source-state-since through the documented read endpoint', async () => {
-    controlPlane.validateTransaction.mockResolvedValue({
-      decision: { ok: true, reasonCodes: ['serializable_validation_passed'] },
+    controlPlane.getSourceStateSince.mockResolvedValue({
+      sourceState: { transactionId: 'txn-1', changedPaths: ['src/app.js'] },
     });
 
     const response = await GET(
@@ -175,9 +177,10 @@ describe('CodeSite catch-all route', () => {
 
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({
-      decision: { ok: true, reasonCodes: ['serializable_validation_passed'] },
+      sourceState: { transactionId: 'txn-1', changedPaths: ['src/app.js'] },
     });
-    expect(controlPlane.validateTransaction).toHaveBeenCalledWith('acme', 'txn-1');
+    expect(controlPlane.getSourceStateSince).toHaveBeenCalledWith('acme', 'txn-1');
+    expect(controlPlane.validateTransaction).not.toHaveBeenCalled();
   });
 
   it('streams project events as server-sent events', async () => {

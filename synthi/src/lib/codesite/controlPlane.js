@@ -730,16 +730,54 @@ export async function validateTransaction(workspaceSlug, transactionId) {
   return { decision, transaction: transactionProjection(updated) };
 }
 
-async function findStaleReadEvents(transaction, readSet) {
-  if (!readSet.length) return [];
-  const events = await prisma.codeSiteEvent.findMany({
+export async function getSourceStateSince(workspaceSlug, transactionId) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const readSet = parseJson(transaction.readSetJson, []);
+  const writeSet = parseJson(transaction.writeSetJson, []);
+  const observedReadSet = parseJson(transaction.observedReadSetJson, []);
+  const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
+  const events = await sourceStateEventsSince(transaction);
+  const externalEvents = events
+    .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
+    .filter(({ event, details }) => !eventBelongsToTransaction(event, details, transaction));
+  const changedPaths = [...new Set(externalEvents.flatMap(({ details }) => (
+    normalizePathList([details.path, ...asArray(details.writeSet || details.changedPaths || [])])
+  )))].sort();
+
+  return {
+    transaction: transactionProjection(transaction),
+    sourceState: {
+      transactionId: transaction.id,
+      openedAt: transaction.openedAt,
+      checkedAt: new Date().toISOString(),
+      readSet,
+      observedReadSet,
+      writeSet,
+      observedWriteSet,
+      changedPaths,
+      staleReads: staleReadEventsFrom(transaction, readSet, events),
+    },
+  };
+}
+
+async function sourceStateEventsSince(transaction) {
+  return prisma.codeSiteEvent.findMany({
     where: {
       projectId: transaction.projectId,
       createdAt: { gt: transaction.openedAt },
-      eventType: { in: ['write_allowed', 'transaction_committed'] },
+      eventType: { in: ['write_allowed', 'write_quarantined', 'transaction_committed'] },
     },
     orderBy: { createdAt: 'asc' },
   });
+}
+
+async function findStaleReadEvents(transaction, readSet) {
+  if (!readSet.length) return [];
+  const events = await sourceStateEventsSince(transaction);
+  return staleReadEventsFrom(transaction, readSet, events);
+}
+
+function staleReadEventsFrom(transaction, readSet, events = []) {
   return events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
     .filter(({ event, details }) => !eventBelongsToTransaction(event, details, transaction))
