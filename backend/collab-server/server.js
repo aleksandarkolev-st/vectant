@@ -39,8 +39,10 @@ const {
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
+  createCodeSiteQuarantineWorkspace,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
+  finalizeCodeSiteQuarantineWorkspace,
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
 } = require('./codesiteFs');
@@ -2510,6 +2512,18 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
       return;
     }
+    let codeSiteQuarantine = null;
+    if (codeSiteContext.active) {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, { operation: 'exec-pty' });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error('[ExecPTY] CodeSite quarantine preparation failed:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'CodeSite quarantine preparation failed', detail: err.message }));
+        return;
+      }
+    }
 
     console.log(`[ExecPTY] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
@@ -2554,10 +2568,20 @@ const server = http.createServer(async (req, res) => {
       try { child.kill('SIGTERM'); } catch (_) {}
     }, timeoutMs);
 
-    child.on('close', (exitCode) => {
+    child.on('close', async (exitCode) => {
       clearTimeout(timer);
 
       const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+      let quarantine = null;
+      if (codeSiteQuarantine) {
+        try {
+          quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine, {
+            tool: 'raw_terminal',
+          });
+        } catch (err) {
+          quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+        }
+      }
 
       // NOTE: Do NOT write output to the PTY via pty.write() — that sends INPUT
       // which PowerShell/bash interprets as commands, causing errors.
@@ -2573,6 +2597,7 @@ const server = http.createServer(async (req, res) => {
         timedOut,
         usedPty: Boolean(targetSession),
         codesite: codeSiteMetadata,
+        quarantine,
       }));
     });
 
@@ -2646,6 +2671,18 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
       return;
     }
+    let codeSiteQuarantine = null;
+    if (codeSiteContext.active) {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, { operation: 'exec' });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error('[Exec] CodeSite quarantine preparation failed:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'CodeSite quarantine preparation failed', detail: err.message }));
+        return;
+      }
+    }
 
     console.log(`[Exec] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
@@ -2678,11 +2715,21 @@ const server = http.createServer(async (req, res) => {
       try { child.kill('SIGTERM'); } catch (_) {}
     }, timeoutMs);
 
-    child.on('close', (exitCode) => {
+    child.on('close', async (exitCode) => {
       clearTimeout(timer);
+      let quarantine = null;
+      if (codeSiteQuarantine) {
+        try {
+          quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine, {
+            tool: 'raw_terminal',
+          });
+        } catch (err) {
+          quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+        }
+      }
       console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut, codesite: codeSiteMetadata }));
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut, codesite: codeSiteMetadata, quarantine }));
     });
 
     child.on('error', (err) => {

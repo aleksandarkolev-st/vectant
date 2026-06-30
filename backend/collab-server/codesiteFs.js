@@ -1,4 +1,8 @@
 const path = require('path');
+const crypto = require('crypto');
+const fs = require('fs');
+const fsp = fs.promises;
+const os = require('os');
 
 class CodeSiteFSDeniedError extends Error {
   constructor(event) {
@@ -325,6 +329,140 @@ async function completeCodeSiteCommitProof(context, data = {}, options = {}) {
   return body;
 }
 
+async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
+  if (!context?.active || !context.transactionId || !cwd) return null;
+  const root = path.join(
+    options.baseDir || path.join(os.tmpdir(), 'synthi-codesitefs-quarantine'),
+    safeSegment(context.workspaceSlug || 'workspace'),
+    safeSegment(context.transactionId),
+    `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+  );
+  await fsp.mkdir(root, { recursive: true });
+  await fsp.cp(cwd, root, {
+    recursive: true,
+    dereference: false,
+    filter: (src) => !shouldSkipQuarantinePath(src, cwd),
+  });
+  return {
+    cwd: root,
+    originalCwd: cwd,
+    root,
+    operation: options.operation || 'raw_terminal',
+    before: await snapshotTree(root),
+  };
+}
+
+async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options = {}) {
+  if (!context?.active || !quarantine?.root) return { changes: [], recorded: [] };
+  const after = await snapshotTree(quarantine.root);
+  const changes = diffSnapshots(quarantine.before || new Map(), after);
+  const recorded = [];
+  for (const change of changes) {
+    const result = {
+      ok: false,
+      path: change.path,
+      tool: options.tool || 'raw_terminal',
+      event: buildEvent(
+        context,
+        { kind: quarantine.operation || 'raw_terminal', tool: options.tool || 'raw_terminal' },
+        change.path,
+        'write_quarantined',
+        ['raw_terminal_quarantine'],
+        `Raw terminal ${change.kind} quarantined for ${change.path}`,
+      ),
+    };
+    result.event.details.quarantine_root = quarantine.root;
+    result.event.details.original_cwd = quarantine.originalCwd;
+    result.event.details.change_kind = change.kind;
+    try {
+      const response = await recordCodeSiteWriteAttempt(context, result, {
+        ...options,
+        acceptDenied: true,
+      });
+      recorded.push({ ...change, ok: true, response });
+    } catch (error) {
+      recorded.push({ ...change, ok: false, error: error?.message || 'record_failed' });
+    }
+  }
+  if (options.cleanup !== false) {
+    await fsp.rm(quarantine.root, { recursive: true, force: true }).catch(() => {});
+  }
+  return { changes, recorded };
+}
+
+function shouldSkipQuarantinePath(src, root) {
+  const rel = path.relative(root, src).replace(/\\/g, '/');
+  if (!rel) return false;
+  const parts = rel.split('/');
+  return parts.some((part) => [
+    '.git',
+    'node_modules',
+    '.next',
+    'dist',
+    'build',
+    'coverage',
+    '.synthi',
+  ].includes(part));
+}
+
+async function snapshotTree(root) {
+  const snapshot = new Map();
+  await walkSnapshot(root, root, snapshot);
+  return snapshot;
+}
+
+async function walkSnapshot(root, current, snapshot) {
+  let entries = [];
+  try {
+    entries = await fsp.readdir(current, { withFileTypes: true });
+  } catch (_) {
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(current, entry.name);
+    if (shouldSkipQuarantinePath(fullPath, root)) continue;
+    if (entry.isDirectory()) {
+      await walkSnapshot(root, fullPath, snapshot);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const rel = path.relative(root, fullPath).replace(/\\/g, '/');
+    try {
+      const stat = await fsp.stat(fullPath);
+      const content = stat.size <= 5 * 1024 * 1024
+        ? await fsp.readFile(fullPath)
+        : Buffer.from(`${stat.size}:${stat.mtimeMs}`);
+      snapshot.set(rel, {
+        size: stat.size,
+        digest: crypto.createHash('sha256').update(content).digest('hex'),
+      });
+    } catch (_) {
+      // File changed while snapshotting; ignore and let the next scan catch it.
+    }
+  }
+}
+
+function diffSnapshots(before, after) {
+  const changes = [];
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  for (const relPath of paths) {
+    const oldEntry = before.get(relPath);
+    const newEntry = after.get(relPath);
+    if (!oldEntry && newEntry) {
+      changes.push({ path: relPath, kind: 'created' });
+    } else if (oldEntry && !newEntry) {
+      changes.push({ path: relPath, kind: 'deleted' });
+    } else if (oldEntry.digest !== newEntry.digest || oldEntry.size !== newEntry.size) {
+      changes.push({ path: relPath, kind: 'modified' });
+    }
+  }
+  return changes.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function safeSegment(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'unknown';
+}
+
 function resolveControlPlaneBaseUrl(context) {
   const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
   if (explicit) {
@@ -455,9 +593,11 @@ module.exports = {
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
+  createCodeSiteQuarantineWorkspace,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   evaluateCodeSiteWrite,
+  finalizeCodeSiteQuarantineWorkspace,
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
   normalizeRepoRelativePath,

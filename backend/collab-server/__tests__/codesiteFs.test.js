@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {
   assertCodeSiteWriteAllowed,
   codeSiteCommitMessage,
@@ -8,8 +11,10 @@ const {
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
+  createCodeSiteQuarantineWorkspace,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
+  finalizeCodeSiteQuarantineWorkspace,
   normalizeRepoRelativePath,
 } = require('../codesiteFs');
 
@@ -315,4 +320,50 @@ test('blocks proof-carrying commits when transaction validation fails', async ()
     (error) => error.code === 'CODESITE_COMMIT_BLOCKED'
       && error.details.reasonCodes.includes('stale_read_detected'),
   );
+});
+
+test('quarantines raw terminal workspace changes and records them as evidence', async () => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-src-'));
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-quarantine-'));
+  await fs.mkdir(path.join(source, 'src'), { recursive: true });
+  await fs.writeFile(path.join(source, 'src', 'app.js'), 'before\n');
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({
+      ok: false,
+      quarantined: true,
+      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
+      baseDir,
+      operation: 'exec',
+    });
+    await fs.writeFile(path.join(quarantine.cwd, 'src', 'app.js'), 'after\n');
+    await fs.writeFile(path.join(quarantine.cwd, 'src', 'new.js'), 'new\n');
+
+    const result = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, { fetch });
+
+    assert.deepStrictEqual(result.changes.map((change) => change.path), ['src/app.js', 'src/new.js']);
+    assert.strictEqual(calls.length, 2);
+    const firstBody = JSON.parse(calls[0].options.body);
+    assert.strictEqual(firstBody.codesiteFsEvent.type, 'write_quarantined');
+    assert.deepStrictEqual(firstBody.codesiteFsEvent.details.reason_codes, ['raw_terminal_quarantine']);
+    assert.match(firstBody.codesiteFsEvent.details.quarantine_root, /codesite-quarantine/);
+    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
+  } finally {
+    await fs.rm(source, { recursive: true, force: true });
+    await fs.rm(baseDir, { recursive: true, force: true });
+  }
 });
