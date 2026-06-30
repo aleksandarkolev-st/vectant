@@ -155,7 +155,12 @@ describe('CodeSite catch-all route', () => {
 
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({ ok: false, policyDecision: { decision: 'block' } });
-    expect(controlPlane.recordTransactionWrite).toHaveBeenCalledWith('acme', 'txn-1', { path: 'api/auth/signup.ts' });
+    expect(controlPlane.recordTransactionWrite).toHaveBeenCalledWith(
+      'acme',
+      'txn-1',
+      { path: 'api/auth/signup.ts' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
   });
 
   it('previews dry-run patches without dispatching transaction write records', async () => {
@@ -174,7 +179,7 @@ describe('CodeSite catch-all route', () => {
     expect(controlPlane.dryRunTransactionWrites).toHaveBeenCalledWith('acme', 'txn-1', {
       files: [{ path: 'synthi/src/App.jsx' }],
       tool: 'dry_run_patch',
-    });
+    }, expect.objectContaining({ userId: 'user-1' }));
     expect(controlPlane.recordTransactionWrite).not.toHaveBeenCalled();
   });
 

@@ -11,6 +11,7 @@ import {
 const { prisma } = vi.hoisted(() => ({
   prisma: {
     codeSiteMutationTransaction: {
+      create: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
     },
@@ -27,6 +28,7 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteMutationLease: {
       create: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
     },
@@ -101,6 +103,7 @@ import {
   getIncidentReplay,
   getProofBundle,
   getSourceStateSince,
+  openTransaction,
   recordTransactionWrite,
   requestMutationLease,
   validateTransaction,
@@ -128,6 +131,12 @@ function transactionFixture() {
     proofBundleDigest: null,
     openedAt: new Date('2026-06-29T23:00:00.000Z'),
     closedAt: null,
+    agentSession: {
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+    },
     mutationLease: {
       id: 'lease-1',
       status: 'active',
@@ -313,6 +322,24 @@ describe('CodeSite control plane transaction validation', () => {
       revokedAt: null,
       ...data,
     }));
+    prisma.codeSiteMutationLease.findFirst.mockResolvedValue({
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'ATLAS-1',
+      },
+    });
     prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
     prisma.codeSiteMutationLease.update.mockImplementation(async ({ where, data }) => ({
       id: where.id,
@@ -1034,6 +1061,42 @@ describe('CodeSite control plane transaction validation', () => {
     });
     expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects transaction operations from a non-owner workspace actor', async () => {
+    await expect(recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    }, {
+      userId: 'user-2',
+      email: 'other@example.test',
+    })).rejects.toMatchObject({
+      code: 'transaction_actor_mismatch',
+      status: 403,
+      detail: expect.objectContaining({
+        transactionId: 'txn-1',
+        agentSessionId: 'agent-1',
+        actorUserId: 'user-2',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects transaction opening from a non-owner workspace actor', async () => {
+    await expect(openTransaction('acme', 'lease-1', {}, {
+      userId: 'user-2',
+      email: 'other@example.test',
+    })).rejects.toMatchObject({
+      code: 'mutation_lease_actor_mismatch',
+      status: 403,
+      detail: expect.objectContaining({
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        actorUserId: 'user-2',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
   });
 
   it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {

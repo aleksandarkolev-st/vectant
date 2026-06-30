@@ -107,19 +107,19 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route.length === 2) {
-      const transaction = await getTransaction(slug, route[1]);
+      const transaction = await getTransaction(slug, route[1], access.actor);
       if (!transaction) return errorJson(404, 'transaction_not_found');
       return okJson({ transaction });
     }
 
     if (route[0] === 'transactions' && route[2] === 'status') {
-      const transaction = await getTransaction(slug, route[1]);
+      const transaction = await getTransaction(slug, route[1], access.actor);
       if (!transaction) return errorJson(404, 'transaction_not_found');
       return okJson({ status: transaction.status, transaction });
     }
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
-      return okJson(await getSourceStateSince(slug, route[1]));
+      return okJson(await getSourceStateSince(slug, route[1], access.actor));
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] === 'stream') {
@@ -194,7 +194,7 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'transactions') {
-      return okJson({ transaction: await openTransaction(slug, route[1], body) }, { status: 201 });
+      return okJson({ transaction: await openTransaction(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'revoke') {
@@ -206,39 +206,39 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route[2] === 'record-read') {
-      return okJson({ transaction: await recordTransactionRead(slug, route[1], body) });
+      return okJson({ transaction: await recordTransactionRead(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'transactions' && route[2] === 'record-write') {
-      return okJson(await recordTransactionWrite(slug, route[1], body));
+      return okJson(await recordTransactionWrite(slug, route[1], body, access.actor));
     }
 
     if (route[0] === 'transactions' && route[2] === 'assumptions') {
-      return okJson({ assumption: await recordAssumption(slug, route[1], body) }, { status: 201 });
+      return okJson({ assumption: await recordAssumption(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'transactions' && route[2] === 'validate') {
-      return okJson(await validateTransaction(slug, route[1]));
+      return okJson(await validateTransaction(slug, route[1], access.actor));
     }
 
     if (route[0] === 'transactions' && route[2] === 'preview') {
-      return okJson(await validateTransaction(slug, route[1]));
+      return okJson(await validateTransaction(slug, route[1], access.actor));
     }
 
     if (route[0] === 'transactions' && route[2] === 'dry-run-patch') {
-      return okJson(await dryRunTransactionWrites(slug, route[1], { ...body, tool: body.tool || 'dry_run_patch' }));
+      return okJson(await dryRunTransactionWrites(slug, route[1], { ...body, tool: body.tool || 'dry_run_patch' }, access.actor));
     }
 
     if (route[0] === 'transactions' && route[2] === 'commit') {
-      return okJson(await commitTransaction(slug, route[1], body));
+      return okJson(await commitTransaction(slug, route[1], body, access.actor));
     }
 
     if (route[0] === 'transactions' && route[2] === 'abort') {
-      return okJson({ transaction: await abortTransaction(slug, route[1], body) });
+      return okJson({ transaction: await abortTransaction(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
-      return okJson(await getSourceStateSince(slug, route[1]));
+      return okJson(await getSourceStateSince(slug, route[1], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'collision-predict') {

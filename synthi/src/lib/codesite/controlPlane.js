@@ -845,8 +845,9 @@ export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body 
   return policyDecisionProjection(decision);
 }
 
-export async function openTransaction(workspaceSlug, mutationLeaseId, body = {}) {
+export async function openTransaction(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
+  requireLeaseActorAccess(lease, actor);
   if (lease.status !== 'active') {
     throw badRequest('clearance_not_active', { status: lease.status });
   }
@@ -888,17 +889,18 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {})
   return transactionProjection(transaction);
 }
 
-export async function getTransaction(workspaceSlug, transactionId) {
+export async function getTransaction(workspaceSlug, transactionId, actor = null) {
   const transaction = await prisma.codeSiteMutationTransaction.findFirst({
     where: { id: transactionId, project: { workspaceSlug } },
     include: { mutationLease: true, agentSession: true, proofBundles: true, lineProvenance: true },
   });
   if (!transaction) return null;
+  requireTransactionActorAccess(transaction, actor);
   return transactionProjection(transaction);
 }
 
-export async function recordTransactionRead(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
+export async function recordTransactionRead(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
   const observed = appendUnique(parseJson(transaction.observedReadSetJson, []), path);
@@ -921,8 +923,8 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
   return transactionProjection(updated);
 }
 
-export async function recordTransactionWrite(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
+export async function recordTransactionWrite(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
   const codesiteFsEvent = body.codesiteFsEvent || body.codesite_fs_event || null;
@@ -1112,8 +1114,8 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
 }
 
-export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
+export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const files = Array.isArray(body.files)
@@ -1372,8 +1374,8 @@ function semanticRefsConflict(assumptionRef, writeRef) {
   return writeRef.invalidates !== false;
 }
 
-export async function recordAssumption(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
+export async function recordAssumption(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const key = String(body.assumptionKey || body.assumption_id || body.key || '').trim();
   if (!key) throw badRequest('assumption_key_required');
   const assumption = await prisma.codeSiteAssumptionLease.create({
@@ -1403,8 +1405,8 @@ export async function recordAssumption(workspaceSlug, transactionId, body = {}) 
   return assumptionProjection(assumption);
 }
 
-export async function validateTransaction(workspaceSlug, transactionId) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+export async function validateTransaction(workspaceSlug, transactionId, actor = null) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const writeSet = parseJson(transaction.writeSetJson, []);
@@ -1459,8 +1461,8 @@ export async function validateTransaction(workspaceSlug, transactionId) {
   return { decision, transaction: transactionProjection(updated) };
 }
 
-export async function getSourceStateSince(workspaceSlug, transactionId) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+export async function getSourceStateSince(workspaceSlug, transactionId, actor = null) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
   const readSet = parseJson(transaction.readSetJson, []);
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedReadSet = parseJson(transaction.observedReadSetJson, []);
@@ -1573,10 +1575,10 @@ function eventBelongsToTransaction(event, details, transaction) {
   return details.transactionId === transaction.id || event.actorId === transaction.id;
 }
 
-export async function commitTransaction(workspaceSlug, transactionId, body = {}) {
-  const validation = await validateTransaction(workspaceSlug, transactionId);
+export async function commitTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
+  const validation = await validateTransaction(workspaceSlug, transactionId, actor);
   if (!validation.decision.ok) return validation;
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
   const inspectionDecision = await verifyLandingInspections(transaction);
   if (!inspectionDecision.ok) {
     const decision = {
@@ -1707,8 +1709,8 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
   return { transaction: transactionProjection(updated), proofBundle: proofBundleProjection(bundle) };
 }
 
-export async function abortTransaction(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+export async function abortTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
   const updated = await prisma.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
     data: {
@@ -3903,22 +3905,24 @@ async function requireAgentSession(projectId, agentSessionId) {
 async function requireLease(workspaceSlug, mutationLeaseId) {
   const lease = await prisma.codeSiteMutationLease.findFirst({
     where: { id: mutationLeaseId, project: { workspaceSlug } },
+    include: { agentSession: true },
   });
   if (!lease) throw notFound('mutation_lease_not_found');
   return lease;
 }
 
-async function requireTransaction(workspaceSlug, transactionId) {
+async function requireTransaction(workspaceSlug, transactionId, actor = null) {
   const transaction = await prisma.codeSiteMutationTransaction.findFirst({
     where: { id: transactionId, project: { workspaceSlug } },
     include: { mutationLease: true, agentSession: true },
   });
   if (!transaction) throw notFound('transaction_not_found');
+  requireTransactionActorAccess(transaction, actor);
   return transaction;
 }
 
-async function requireOpenTransaction(workspaceSlug, transactionId) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+async function requireOpenTransaction(workspaceSlug, transactionId, actor = null) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
   if (transaction.status !== 'open') {
     throw badRequest('transaction_not_open', {
       transactionId: transaction.id,
@@ -3926,6 +3930,30 @@ async function requireOpenTransaction(workspaceSlug, transactionId) {
     });
   }
   return transaction;
+}
+
+function requireTransactionActorAccess(transaction, actor = null) {
+  if (!actor || actor.bypass) return;
+  const ownerUserId = transaction.agentSession?.ownerUserId;
+  if (!actor.userId || !ownerUserId || ownerUserId !== actor.userId) {
+    throw forbidden('transaction_actor_mismatch', {
+      transactionId: transaction.id,
+      agentSessionId: transaction.agentSessionId,
+      actorUserId: actor.userId || null,
+    });
+  }
+}
+
+function requireLeaseActorAccess(lease, actor = null) {
+  if (!actor || actor.bypass) return;
+  const ownerUserId = lease.agentSession?.ownerUserId;
+  if (!actor.userId || !ownerUserId || ownerUserId !== actor.userId) {
+    throw forbidden('mutation_lease_actor_mismatch', {
+      mutationLeaseId: lease.id,
+      agentSessionId: lease.agentSessionId,
+      actorUserId: actor.userId || null,
+    });
+  }
 }
 
 function notFound(code) {
