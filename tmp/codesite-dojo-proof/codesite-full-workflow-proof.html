@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Full Workflow Proof</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#08090e;color:#f4f5f8}
+body{margin:0;padding:28px;background:#08090e}
+main{max-width:1180px;margin:0 auto}
+.hero{border:1px solid #2a3147;border-radius:8px;background:#11131d;padding:22px;margin-bottom:16px}
+.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
+h1{margin:0 0 8px;font-size:24px;letter-spacing:0}
+h2{font-size:18px;margin:22px 0 10px}
+p{color:#9ba2b8;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.card{border:1px solid #24283a;border-radius:8px;background:#10121b;padding:14px;min-height:70px}
+.label{color:#9ba2b8;font-size:12px}
+.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#05060a;padding:14px;color:#cbd1e3;font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<span class="pass">PASS</span>
+<h1>CodeSite Full Workflow Proof</h1>
+<p>Live Docker workflow: schema-first clearance, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
+</section>
+<section class="grid">
+<div class="card"><div class="label">Workspace</div><div class="value">codesite-full-workflow-proof-1782863201162</div></div>
+<div class="card"><div class="label">Project</div><div class="value">Full workflow proof</div></div>
+<div class="card"><div class="label">Schema clearance</div><div class="value">SCHEMA-01 active</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">cmr1aqy6c002hob4t4i4lc6p5 committed</div></div>
+<div class="card"><div class="label">Proof bundle</div><div class="value">cmr1arx8t003bob4tn8gkrceg sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc</div></div>
+<div class="card"><div class="label">CodeSiteFS</div><div class="value">write_denied, write_quarantined</div></div>
+<div class="card"><div class="label">Line provenance</div><div class="value">synthi/prisma/schema.prisma synthi/prisma/schema.prisma#L10-L15</div></div>
+</section>
+<h2>Assertions</h2>
+<pre>{
+  &quot;schemaClearanceActive&quot;: true,
+  &quot;dependentFlightHeld&quot;: true,
+  &quot;deniedWriteRecorded&quot;: true,
+  &quot;quarantinedWriteRecorded&quot;: true,
+  &quot;allowedWriteRecorded&quot;: true,
+  &quot;transactionCommitted&quot;: true,
+  &quot;proofBundleCreated&quot;: true,
+  &quot;commitTrailersPresent&quot;: true,
+  &quot;repoSnapshotRecorded&quot;: true,
+  &quot;repoStateCollectedFromRealRepo&quot;: true,
+  &quot;inspectionCommandsExecuted&quot;: true,
+  &quot;lineProvenanceSeeded&quot;: true,
+  &quot;artifactsExported&quot;: true,
+  &quot;exportedProofVerifies&quot;: true,
+  &quot;browserUiCaptured&quot;: true
+}</pre>
+<h2>Commit Trailers</h2>
+<pre>CodeSite-Project: cmr1aqkri0000ob4tk6g7lxo1
+CodeSite-Flight: SCHEMA-01
+CodeSite-Clearance: cmr1aqusi0029ob4t8ecj7dxl
+CodeSite-Landing: completed
+CodeSite-Transaction: cmr1aqy6c002hob4t4i4lc6p5
+CodeSite-Lease: cmr1aqusi0029ob4t8ecj7dxl
+CodeSite-Read-Set: sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a
+CodeSite-Write-Set: sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973
+CodeSite-Invariants: clearance.diff.inside_route
+CodeSite-Black-Box: sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc</pre>
+</main>
+</body>
+</html>

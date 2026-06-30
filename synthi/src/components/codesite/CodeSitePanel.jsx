@@ -926,7 +926,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         </div>
 	                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
 	                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
-	                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" />
+	                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" maxVisible={10} />
 	                        </div>
 	                        {bundle.repoState ? (
 	                          <div className="mt-1">
@@ -963,7 +963,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="mt-1 flex flex-wrap gap-1">
                           {asArray(run.inspectionSignals).slice(0, 3).map((signal, index) => (
                             <Pill key={`${run.id}-signal-${index}`} tone={signal.status || run.status}>
-                              {compact(signal.type || signal.kind, 'signal')}
+                              {compact(signal.key || signal.type || signal.kind, 'signal')}
                             </Pill>
                           ))}
                         </div>

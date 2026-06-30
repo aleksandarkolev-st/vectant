@@ -1697,6 +1697,71 @@ describe('CodeSite control plane transaction validation', () => {
     expect(project.inboxItems[0]).not.toHaveProperty('recipientUserId');
   });
 
+  it('keeps proof bundle commit trailers complete in project snapshots', async () => {
+    const transaction = transactionFixture();
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [transaction.mutationLease],
+      mutationTxns: [transaction],
+      assumptions: [],
+      policyDecisions: [],
+      events: [],
+      incidents: [],
+      inspectionRuns: [{
+        id: 'inspection-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'completed',
+        changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        inspectionSignalsJson: JSON.stringify([]),
+        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+        requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+        completedAt: new Date('2026-06-29T23:03:00.000Z'),
+      }],
+      proofBundles: [{
+        id: 'proof-1',
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        commitSha: null,
+        readSetDigest: 'sha256:read',
+        writeSetDigest: 'sha256:write',
+        invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+        dojoEvidenceRefsJson: JSON.stringify([]),
+        repoStateJson: JSON.stringify(repoStateFixture()),
+        incidentReplayDigest: 'sha256:incident',
+        bundleDigest: 'sha256:bundle',
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      }],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.proofBundles[0].trailers).toMatchObject({
+      'CodeSite-Project': 'project-1',
+      'CodeSite-Flight': 'ATLAS-1',
+      'CodeSite-Clearance': 'lease-1',
+      'CodeSite-Landing': 'completed',
+      'CodeSite-Transaction': 'txn-1',
+    });
+  });
+
   it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
     const result = await createDocument('acme', 'project-1', {
       kind: 'rfi',
@@ -2018,6 +2083,17 @@ describe('CodeSite control plane transaction validation', () => {
 
     expect(result.transaction.status).toBe('committed');
     expect(result.proofBundle.commitSha).toBe('abc123');
+    expect(result.proofBundle.trailers).toMatchObject({
+      'CodeSite-Project': 'project-1',
+      'CodeSite-Flight': 'ATLAS-1',
+      'CodeSite-Clearance': 'lease-1',
+      'CodeSite-Landing': 'completed',
+      'CodeSite-Transaction': 'txn-1',
+      'CodeSite-Lease': 'lease-1',
+      'CodeSite-Read-Set': expect.stringMatching(/^sha256:/),
+      'CodeSite-Write-Set': expect.stringMatching(/^sha256:/),
+      'CodeSite-Black-Box': expect.stringMatching(/^sha256:/),
+    });
     expect(evidenceRefs).toEqual(expect.arrayContaining([
       'runtime:event:inspection-1',
       'runtime:event:typecheck-1',

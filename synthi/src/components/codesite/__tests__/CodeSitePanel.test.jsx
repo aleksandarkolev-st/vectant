@@ -98,7 +98,13 @@ function radarState() {
         bundleDigest: 'digest-proof-1',
         readSetDigest: 'digest-read',
         evidenceRefs: ['test:checkout'],
-        trailers: { 'CodeSite-Transaction': 'txn-1' },
+        trailers: {
+          'CodeSite-Project': 'proj-1',
+          'CodeSite-Flight': 'ATLAS-1',
+          'CodeSite-Clearance': 'lease-1',
+          'CodeSite-Landing': 'completed',
+          'CodeSite-Transaction': 'txn-1',
+        },
       }],
       incidents: [{
         id: 'incident-1',
@@ -262,6 +268,7 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('passed');
     expect(laneNamed('API airspace').textContent).toContain('ATLAS-1');
     expect(laneNamed('Health API airspace').textContent).not.toContain('ATLAS-1');
+    expect(container.textContent).toContain('CodeSite-Clearance');
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');

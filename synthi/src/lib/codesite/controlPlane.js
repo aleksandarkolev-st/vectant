@@ -3,7 +3,7 @@ import path from 'path';
 import prisma from '@/lib/prisma';
 import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
-import { buildProofBundle as buildPortableProofBundle } from './proof';
+import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
 import {
   buildCodeSiteDojoProofInput,
   summarizeCodeSiteDojoProof,
@@ -1883,7 +1883,14 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   });
-  return { transaction: transactionProjection(updated), proofBundle: proofBundleProjection(bundle) };
+  return {
+    transaction: transactionProjection(updated),
+    proofBundle: proofBundleProjection(bundle, {
+      transaction,
+      mutationLease: transaction.mutationLease,
+      landingRuns: inspectionDecision.inspectionRuns,
+    }),
+  };
 }
 
 export async function abortTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
@@ -3928,7 +3935,11 @@ export async function getProofBundle(workspaceSlug, bundleId) {
     },
     orderBy: [{ completedAt: 'asc' }, { requestedAt: 'asc' }],
   });
-  const projection = proofBundleProjection(bundle);
+  const projection = proofBundleProjection(bundle, {
+    transaction: bundle.transaction,
+    mutationLease: bundle.transaction?.mutationLease,
+    landingRuns,
+  });
   return {
     ...projection,
     portableProofBundle: buildPortableProofBundle({
@@ -4235,20 +4246,32 @@ function projectSummary(project) {
 }
 
 function projectProjection(project) {
+  const mutationTxns = asArray(project.mutationTxns);
+  const mutationLeases = asArray(project.mutationLeases);
+  const inspectionRuns = asArray(project.inspectionRuns);
   return {
     ...projectSummary(project),
     zonePolicy: parseJson(project.zonePolicyJson, {}),
     controlPlan: parseJson(project.controlPlanJson, {}),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
-    mutationLeases: asArray(project.mutationLeases).map(mutationLeaseProjection),
-    mutationTxns: asArray(project.mutationTxns).map(transactionProjection),
+    mutationLeases: mutationLeases.map(mutationLeaseProjection),
+    mutationTxns: mutationTxns.map(transactionProjection),
     assumptions: asArray(project.assumptions).map(assumptionProjection),
     policyDecisions: asArray(project.policyDecisions).map(policyDecisionProjection),
     events: asArray(project.events).map(eventProjection),
     incidents: asArray(project.incidents).map(incidentProjection),
-    inspectionRuns: asArray(project.inspectionRuns).map(inspectionProjection),
-    proofBundles: asArray(project.proofBundles).map(proofBundleProjection),
+    inspectionRuns: inspectionRuns.map(inspectionProjection),
+    proofBundles: asArray(project.proofBundles).map((bundle) => {
+      const transaction = mutationTxns.find((item) => item.id === bundle.transactionId) || null;
+      const mutationLease = mutationLeases.find((item) => item.id === transaction?.mutationLeaseId) || null;
+      const landingRuns = inspectionRuns.filter((run) => (
+        mutationLease?.executionPlanId
+          ? run.executionPlanId === mutationLease.executionPlanId
+          : run.displayCallsign === mutationLease?.displayCallsign
+      ));
+      return proofBundleProjection(bundle, { transaction, mutationLease, landingRuns });
+    }),
     lineProvenance: asArray(project.lineProvenance).map(lineProvenanceProjection),
     documents: asArray(project.documents).map(documentSummaryProjection),
     counterfactualRuns: asArray(project.counterfactualRuns).map(counterfactualProjection),
@@ -4390,8 +4413,10 @@ function eventProjection(event) {
   };
 }
 
-function proofBundleProjection(bundle) {
-  return {
+function proofBundleProjection(bundle, context = {}) {
+  const transaction = context.transaction || bundle.transaction || null;
+  const mutationLease = context.mutationLease || transaction?.mutationLease || null;
+  const projection = {
     id: bundle.id,
     projectId: bundle.projectId,
     transactionId: bundle.transactionId,
@@ -4405,14 +4430,25 @@ function proofBundleProjection(bundle) {
     incidentReplayDigest: bundle.incidentReplayDigest,
     bundleDigest: bundle.bundleDigest,
     createdAt: bundle.createdAt,
-    trailers: {
-      'CodeSite-Project': bundle.projectId,
-      'CodeSite-Transaction': bundle.transactionId,
-      'CodeSite-Clearance': bundle.transaction?.mutationLeaseId || null,
-      'CodeSite-Read-Set': bundle.readSetDigest,
-      'CodeSite-Write-Set': bundle.writeSetDigest,
-      'CodeSite-Black-Box': bundle.incidentReplayDigest || bundle.bundleDigest,
-    },
+  };
+  const portable = buildPortableProofBundle({
+    project: bundle.project ? projectProjection(bundle.project) : { id: bundle.projectId },
+    transaction: transaction
+      ? transactionProjection(transaction)
+      : {
+        id: bundle.transactionId,
+        projectId: bundle.projectId,
+        mutationLeaseId: bundle.transaction?.mutationLeaseId || null,
+      },
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    proofBundle: projection,
+    landingRuns: asArray(context.landingRuns).map((run) => (
+      run?.changedPathsJson ? inspectionProjection(run) : run
+    )),
+  });
+  return {
+    ...projection,
+    trailers: proofCommitTrailers(portable),
   };
 }
 
