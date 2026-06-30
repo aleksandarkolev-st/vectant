@@ -19,7 +19,19 @@ test('maps path-scoped index actions to git_index attempts', () => {
 });
 
 test('maps repo-wide worktree actions to broad git_worktree attempts', () => {
-  for (const action of ['checkout', 'pull', 'merge-branch', 'stash-pop', 'interactive-rebase', 'cherry-pick', 'revert']) {
+  for (const action of [
+    'init',
+    'clone',
+    'checkout',
+    'pull',
+    'merge-branch',
+    'stash-pop',
+    'stash-apply',
+    'interactive-rebase',
+    'rebase-continue',
+    'cherry-pick',
+    'revert',
+  ]) {
     assert.deepEqual(codeSiteGitActionAttempts(action), [{
       path: '**',
       kind: action,
@@ -29,6 +41,11 @@ test('maps repo-wide worktree actions to broad git_worktree attempts', () => {
 });
 
 test('maps tags, stash refs, and remotes to ref/config attempts', () => {
+  assert.deepEqual(codeSiteGitActionAttempts('commit'), [{
+    path: '**',
+    kind: 'commit',
+    tool: 'git_refs',
+  }]);
   assert.deepEqual(codeSiteGitActionAttempts('create-tag'), [{
     path: '**',
     kind: 'create-tag',

@@ -17,6 +17,8 @@ const PATH_SCOPED_WORKTREE_ACTIONS = new Set([
 ]);
 
 const REPO_WORKTREE_ACTIONS = new Set([
+  'init',
+  'clone',
   'checkout',
   'pull',
   'merge-branch',
@@ -31,6 +33,7 @@ const REPO_WORKTREE_ACTIONS = new Set([
 ]);
 
 const GIT_REF_ACTIONS = new Set([
+  'commit',
   'create-tag',
   'delete-tag',
   'push-tag',
