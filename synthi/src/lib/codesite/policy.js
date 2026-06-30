@@ -121,6 +121,9 @@ export function normalizePathList(paths) {
 
 export function compileZonePolicy(overrides = {}) {
   const extraZones = Array.isArray(overrides?.zones) ? overrides.zones : [];
+  const repoSignals = normalizeRepoSignals(overrides?.repoSignals || overrides?.repo_signals || {});
+  const semanticGraph = buildSemanticGraph(repoSignals);
+  const repoZones = compileRepoSignalZones(repoSignals);
   const defaults = Object.entries(AIRSPACE_CLASSES).map(([klass, value]) => ({
     zoneKey: `class_${klass.toLowerCase()}`,
     label: value.label,
@@ -131,7 +134,7 @@ export function compileZonePolicy(overrides = {}) {
     source: 'compiled_default',
   }));
 
-  const zones = [...defaults, ...extraZones.map((zone, index) => ({
+  const customZones = extraZones.map((zone, index) => ({
     zoneKey: String(zone.zoneKey || zone.key || `custom_${index + 1}`),
     label: String(zone.label || zone.zoneKey || zone.key || `Custom zone ${index + 1}`),
     class: String(zone.class || zone.zoneClass || 'C').toUpperCase(),
@@ -139,21 +142,337 @@ export function compileZonePolicy(overrides = {}) {
     rules: asArray(zone.rules || zone.rulesJson),
     risk: String(zone.risk || 'medium'),
     source: zone.source || 'custom',
-  }))];
+  }));
+  const zones = dedupeZones([...defaults, ...repoZones, ...customZones]);
+  const noFlyZones = uniqueStrings([
+    ...normalizePatternList(repoSignals.secretPatterns),
+    ...normalizePatternList(overrides?.noFlyZones || overrides?.no_fly_zones || []),
+  ]);
 
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
     zones,
-    noFlyZones: normalizePatternList(overrides?.noFlyZones || overrides?.no_fly_zones || []),
+    noFlyZones,
     classRules: Object.fromEntries(Object.entries(AIRSPACE_CLASSES).map(([klass, value]) => [klass, value.rules])),
+    semanticGraph,
+    policySources: {
+      defaults: defaults.length,
+      repoSignals: repoZones.length,
+      custom: customZones.length,
+      codeowners: repoSignals.codeowners.length,
+      openapi: repoSignals.openapi.length,
+      prismaSchemas: repoSignals.prisma.schemas.length,
+      prismaMigrations: repoSignals.prisma.migrations.length,
+      packageExports: repoSignals.packageExports.length,
+      importEdges: semanticGraph.importEdges.length,
+      testOwnership: semanticGraph.testOwnership.length,
+      deployment: repoSignals.deployment.length,
+      pastIncidents: repoSignals.pastIncidents.length,
+      secretPatterns: noFlyZones.length,
+    },
   };
+}
+
+export function normalizeRepoSignals(input = {}) {
+  const files = normalizePathList(input.files || input.fileList || input.file_list || []);
+  const codeowners = normalizeCodeowners(input.codeowners || input.CODEOWNERS || []);
+  const openapi = normalizeSignalPaths(input.openapi || input.openApi || input.openapiDocuments || input.openapi_documents || []);
+  const prismaInput = input.prisma || {};
+  const prisma = {
+    schemas: normalizeSignalPaths(prismaInput.schemas || prismaInput.schemaFiles || input.prismaSchemas || input.prisma_schema_files || []),
+    migrations: normalizeSignalPaths(prismaInput.migrations || prismaInput.migrationDirs || input.prismaMigrations || input.prisma_migrations || []),
+  };
+  const packageExports = normalizePackageExports(input.packageExports || input.package_exports || []);
+  const importEdges = normalizeImportEdges(input.importGraph || input.importEdges || input.import_graph || []);
+  const testOwnership = normalizeTestOwnership(input.testGraph || input.testOwnership || input.test_graph || []);
+  const deployment = normalizeSignalPaths(input.deployment || input.deploymentConfig || input.deployment_config || []);
+  const generatedClients = normalizeSignalPaths(input.generatedClients || input.generated_clients || []);
+  const secretPatterns = normalizePatternList([
+    '**/.env',
+    '**/.env.*',
+    'secrets/**',
+    '**/*secret*',
+    '**/*.pem',
+    '**/*.key',
+    ...(input.secretPatterns || input.secret_patterns || []),
+  ]);
+  const pastIncidents = normalizePastIncidents(input.pastIncidents || input.past_incidents || []);
+
+  return {
+    files,
+    codeowners,
+    openapi,
+    prisma,
+    packageExports,
+    importEdges,
+    testOwnership,
+    deployment,
+    generatedClients,
+    secretPatterns,
+    pastIncidents,
+    repoRoot: input.repoRoot || input.repo_root || null,
+    source: input.source || 'repo_policy_signals',
+    digest: input.digest || digest({
+      files,
+      codeowners,
+      openapi,
+      prisma,
+      packageExports,
+      importEdges,
+      testOwnership,
+      deployment,
+      generatedClients,
+      secretPatterns,
+      pastIncidents,
+    }),
+  };
+}
+
+function buildSemanticGraph(repoSignals) {
+  const files = uniqueStrings(repoSignals.files);
+  const importEdges = repoSignals.importEdges.map((edge) => ({
+    from: edge.from,
+    imports: uniqueStrings(edge.imports),
+  }));
+  const testOwnership = repoSignals.testOwnership.map((item) => ({
+    testPath: item.testPath,
+    covers: uniqueStrings(item.covers),
+  }));
+  const packageExports = repoSignals.packageExports.map((entry) => ({
+    packageName: entry.packageName,
+    root: entry.root,
+    exports: uniqueStrings(entry.exports),
+  }));
+  return {
+    files,
+    importEdges,
+    testOwnership,
+    packageExports,
+    generatedClients: uniqueStrings(repoSignals.generatedClients.map((item) => item.path)),
+    migrationLocks: uniqueStrings(repoSignals.prisma.migrations.map((item) => item.path)),
+    deploymentConfig: uniqueStrings(repoSignals.deployment.map((item) => item.path)),
+    sourceDigest: repoSignals.digest,
+  };
+}
+
+function compileRepoSignalZones(repoSignals) {
+  const zones = [];
+
+  for (const [index, entry] of repoSignals.codeowners.entries()) {
+    const klass = classForPattern(entry.pattern);
+    zones.push({
+      zoneKey: `codeowners_${zoneKeySegment(entry.pattern, index)}`,
+      label: `Owned airspace: ${entry.pattern}`,
+      class: klass,
+      paths: [entry.pattern],
+      rules: uniqueStrings([...(AIRSPACE_CLASSES[klass]?.rules || []), 'owner_review_required']),
+      risk: riskForClass(klass),
+      source: 'repo_codeowners',
+      owners: entry.owners,
+    });
+  }
+
+  for (const [index, entry] of repoSignals.openapi.entries()) {
+    zones.push({
+      zoneKey: `openapi_contract_${zoneKeySegment(entry.path, index)}`,
+      label: `API contract: ${entry.path}`,
+      class: 'B',
+      paths: [entry.path],
+      rules: uniqueStrings([...AIRSPACE_CLASSES.B.rules, 'api_contract_radar_required']),
+      risk: 'high',
+      source: 'repo_openapi',
+    });
+  }
+
+  for (const [index, entry] of repoSignals.prisma.schemas.entries()) {
+    zones.push({
+      zoneKey: `prisma_schema_${zoneKeySegment(entry.path, index)}`,
+      label: `Prisma schema: ${entry.path}`,
+      class: 'B',
+      paths: [entry.path],
+      rules: uniqueStrings([...AIRSPACE_CLASSES.B.rules, 'migration_radar_required']),
+      risk: 'high',
+      source: 'repo_prisma_schema',
+    });
+  }
+
+  for (const [index, entry] of repoSignals.prisma.migrations.entries()) {
+    zones.push({
+      zoneKey: `migration_runway_${zoneKeySegment(entry.path, index)}`,
+      label: `Migration runway: ${entry.path}`,
+      class: 'A',
+      paths: [entry.path.endsWith('/**') ? entry.path : `${entry.path.replace(/\/+$/, '')}/**`],
+      rules: uniqueStrings([...AIRSPACE_CLASSES.A.rules, 'single_migration_runway_lock']),
+      risk: 'critical',
+      source: 'repo_prisma_migration',
+    });
+  }
+
+  for (const [index, entry] of repoSignals.packageExports.entries()) {
+    const paths = uniqueStrings([entry.root && `${entry.root.replace(/\/+$/, '')}/**`, ...entry.exports].filter(Boolean));
+    zones.push({
+      zoneKey: `package_exports_${zoneKeySegment(entry.root || entry.packageName, index)}`,
+      label: `Public package exports: ${entry.packageName || entry.root}`,
+      class: 'B',
+      paths,
+      rules: uniqueStrings([...AIRSPACE_CLASSES.B.rules, 'downstream_package_radar_required']),
+      risk: 'high',
+      source: 'repo_package_exports',
+    });
+  }
+
+  for (const [index, entry] of repoSignals.deployment.entries()) {
+    zones.push({
+      zoneKey: `deployment_${zoneKeySegment(entry.path, index)}`,
+      label: `Deployment config: ${entry.path}`,
+      class: 'A',
+      paths: [entry.path],
+      rules: uniqueStrings([...AIRSPACE_CLASSES.A.rules, 'runtime_radar_required']),
+      risk: 'critical',
+      source: 'repo_deployment_config',
+    });
+  }
+
+  for (const [index, incident] of repoSignals.pastIncidents.entries()) {
+    const affectedPaths = normalizePatternList(incident.affectedPaths || incident.paths || incident.affectedZones || []);
+    if (affectedPaths.length === 0) continue;
+    const klass = ['critical', 'high'].includes(incident.severity) ? 'A' : 'B';
+    zones.push({
+      zoneKey: `incident_hot_zone_${zoneKeySegment(affectedPaths[0], index)}`,
+      label: `Incident hot zone: ${incident.category || affectedPaths[0]}`,
+      class: klass,
+      paths: affectedPaths,
+      rules: uniqueStrings([...AIRSPACE_CLASSES[klass].rules, 'recurrent_incident_radar_required']),
+      risk: riskForClass(klass),
+      source: 'repo_past_incident',
+      incidentRefs: incident.refs,
+    });
+  }
+
+  return zones;
 }
 
 function normalizePatternList(patterns) {
   return asArray(patterns)
     .map((pattern) => String(pattern || '').replace(/\\/g, '/').replace(/^\/+/, '').trim())
     .filter(Boolean);
+}
+
+function normalizeSignalPaths(value) {
+  return asArray(value)
+    .map((item) => {
+      if (typeof item === 'string') return { path: normalizePath(item) || normalizePatternList([item])[0] };
+      const path = normalizePath(item?.path || item?.file || item?.pattern || item?.dir)
+        || normalizePatternList([item?.path || item?.file || item?.pattern || item?.dir])[0];
+      return path ? { ...item, path } : null;
+    })
+    .filter(Boolean);
+}
+
+function normalizeCodeowners(value) {
+  return asArray(value)
+    .map((entry, index) => {
+      if (typeof entry === 'string') {
+        const [pattern, ...owners] = entry.trim().split(/\s+/).filter(Boolean);
+        return pattern ? { pattern: normalizePatternList([pattern])[0], owners } : null;
+      }
+      const pattern = normalizePatternList([entry?.pattern || entry?.path || entry?.glob || `owned_${index}`])[0];
+      return pattern ? { pattern, owners: asArray(entry?.owners || entry?.owner).map(String).filter(Boolean) } : null;
+    })
+    .filter(Boolean);
+}
+
+function normalizePackageExports(value) {
+  return asArray(value)
+    .map((entry) => {
+      const root = normalizePath(entry?.root || entry?.packageRoot || entry?.dir || '') || '';
+      const packageName = String(entry?.packageName || entry?.name || root || 'package');
+      const exports = normalizePathList(entry?.exports || entry?.exportedFiles || entry?.files || []);
+      return root || exports.length ? { packageName, root, exports } : null;
+    })
+    .filter(Boolean);
+}
+
+function normalizeImportEdges(value) {
+  if (value && !Array.isArray(value) && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([from, imports]) => normalizeImportEdge({ from, imports }))
+      .filter(Boolean);
+  }
+  return asArray(value).map(normalizeImportEdge).filter(Boolean);
+}
+
+function normalizeImportEdge(edge) {
+  const from = normalizePath(edge?.from || edge?.source || edge?.file || '');
+  const imports = normalizePathList(edge?.imports || edge?.to || edge?.dependencies || []);
+  return from && imports.length ? { from, imports } : null;
+}
+
+function normalizeTestOwnership(value) {
+  if (value && !Array.isArray(value) && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([testPath, covers]) => normalizeTestOwner({ testPath, covers }))
+      .filter(Boolean);
+  }
+  return asArray(value).map(normalizeTestOwner).filter(Boolean);
+}
+
+function normalizeTestOwner(entry) {
+  const testPath = normalizePath(entry?.testPath || entry?.test || entry?.file || '');
+  const covers = normalizePathList(entry?.covers || entry?.coveredPaths || entry?.imports || []);
+  return testPath && covers.length ? { testPath, covers } : null;
+}
+
+function normalizePastIncidents(value) {
+  return asArray(value).map((incident) => ({
+    category: String(incident?.category || incident?.type || 'incident'),
+    severity: String(incident?.severity || incident?.risk || 'medium').toLowerCase(),
+    affectedPaths: normalizePatternList(incident?.affectedPaths || incident?.paths || incident?.affectedZones || []),
+    refs: asArray(incident?.refs || incident?.evidenceRefs || incident?.incidentRefs).map(String).filter(Boolean),
+  }));
+}
+
+function dedupeZones(zones) {
+  const byKey = new Map();
+  for (const zone of zones) {
+    if (!zone?.zoneKey) continue;
+    const previous = byKey.get(zone.zoneKey);
+    byKey.set(zone.zoneKey, previous
+      ? {
+          ...previous,
+          ...zone,
+          paths: uniqueStrings([...asArray(previous.paths), ...asArray(zone.paths)]),
+          rules: uniqueStrings([...asArray(previous.rules), ...asArray(zone.rules)]),
+        }
+      : zone);
+  }
+  return [...byKey.values()];
+}
+
+function uniqueStrings(values) {
+  return [...new Set(asArray(values).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function zoneKeySegment(value, index = 0) {
+  const segment = String(value || `zone_${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48);
+  return segment || `zone_${index + 1}`;
+}
+
+function classForPattern(pattern) {
+  const value = String(pattern || '').toLowerCase();
+  if (/(^|\/)(infra|deploy|deployment|k8s|helm|terraform|billing|auth|permissions|secrets?|\.env)/.test(value)) return 'A';
+  if (/(schema|openapi|api|prisma|package|exports?|generated|client)/.test(value)) return 'B';
+  if (/(docs?|tests?|fixtures?|examples?|\*.md|__tests__)/.test(value)) return 'D';
+  return 'C';
+}
+
+function riskForClass(klass) {
+  return { A: 'critical', B: 'high', C: 'medium', D: 'low' }[String(klass || 'C').toUpperCase()] || 'medium';
 }
 
 export function digest(value) {
@@ -298,6 +617,9 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   const plans = asArray(executionPlans);
   const activeLeases = asArray(leases).filter((lease) => lease.status === 'active');
   const risks = [];
+  const riskKeys = new Set();
+  const semanticGraph = zonePolicy?.semanticGraph || {};
+  const footprints = new Map(plans.map((plan) => [plan, semanticFootprint(plan, semanticGraph)]));
 
   for (let i = 0; i < plans.length; i += 1) {
     for (let j = i + 1; j < plans.length; j += 1) {
@@ -316,7 +638,7 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
           const zone = classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy);
           return ['A', 'B'].includes(String(zone?.class || '').toUpperCase());
         });
-        risks.push({
+        pushRisk(risks, riskKeys, {
           risk: restricted ? 'contract_collision' : 'file_collision',
           severity: restricted ? 'high' : 'medium',
           aircraft: [left.displayCallsign, right.displayCallsign].filter(Boolean),
@@ -327,6 +649,9 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
             : sequenceResolution(left, right),
         });
       }
+
+      const semanticRisk = semanticCollisionRisk(left, right, footprints.get(left), footprints.get(right), zonePolicy);
+      if (semanticRisk) pushRisk(risks, riskKeys, semanticRisk);
     }
   }
 
@@ -338,7 +663,7 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
       return ['A', 'B'].includes(String(zone?.class || '').toUpperCase());
     });
     if (restrictedPaths.length > 0) {
-      risks.push({
+      pushRisk(risks, riskKeys, {
         risk: 'restricted_airspace_occupancy',
         severity: 'medium',
         aircraft: [lease.displayCallsign],
@@ -355,6 +680,126 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
     riskLevel: risks.some((risk) => risk.severity === 'high') ? 'high' : (risks.length ? 'medium' : 'low'),
     risks,
   };
+}
+
+function semanticFootprint(plan, semanticGraph) {
+  const routes = pathsForRoute(plan?.route);
+  const files = asArray(semanticGraph.files).map(normalizePath).filter(Boolean);
+  const routeFiles = files.filter((file) => routes.some((route) => matchPathPattern(file, route) || patternsOverlap(file, route)));
+  const routePatterns = routeFiles.length ? routeFiles : routes;
+  const imports = [];
+  const importedBy = [];
+  for (const edge of asArray(semanticGraph.importEdges)) {
+    const from = normalizePath(edge.from);
+    const imported = normalizePathList(edge.imports);
+    if (!from) continue;
+    if (routePatterns.some((route) => matchPathPattern(from, route) || patternsOverlap(from, route))) {
+      imports.push(...imported);
+    }
+    if (imported.some((target) => routePatterns.some((route) => matchPathPattern(target, route) || patternsOverlap(target, route)))) {
+      importedBy.push(from);
+    }
+  }
+  const tests = asArray(semanticGraph.testOwnership)
+    .filter((item) => asArray(item.covers).some((covered) =>
+      [...routePatterns, ...imports, ...importedBy].some((route) => matchPathPattern(covered, route) || patternsOverlap(covered, route))))
+    .map((item) => item.testPath)
+    .filter(Boolean);
+  const migrationLocks = asArray(semanticGraph.migrationLocks)
+    .filter((lock) => routes.some((route) => matchPathPattern(lock, route) || patternsOverlap(lock, route)));
+
+  return {
+    routes,
+    routeFiles: uniqueStrings(routeFiles),
+    imports: uniqueStrings(imports),
+    importedBy: uniqueStrings(importedBy),
+    tests: uniqueStrings(tests),
+    migrationLocks: uniqueStrings(migrationLocks),
+  };
+}
+
+function semanticCollisionRisk(left, right, leftFootprint, rightFootprint, zonePolicy) {
+  const leftContracts = intersections(leftFootprint.imports, [...rightFootprint.routes, ...rightFootprint.routeFiles]);
+  const rightContracts = intersections(rightFootprint.imports, [...leftFootprint.routes, ...leftFootprint.routeFiles]);
+  const sharedImports = intersections(leftFootprint.imports, rightFootprint.imports);
+  const sharedTests = intersections(leftFootprint.tests, rightFootprint.tests);
+  const migrationLocks = intersections(leftFootprint.migrationLocks, rightFootprint.migrationLocks);
+
+  if (migrationLocks.length > 0) {
+    return {
+      risk: 'migration_collision',
+      severity: 'high',
+      aircraft: [left.displayCallsign, right.displayCallsign].filter(Boolean),
+      conflictZone: migrationLocks[0],
+      semanticSignals: { migrationLocks },
+      recommendedResolution: {
+        action: 'single_migration_runway_lock',
+        steps: [
+          'Ground one migration flight',
+          'Issue a single Class A migration clearance',
+          'Run migration rollback radar before any dependent flight lands',
+        ],
+      },
+    };
+  }
+
+  const contractSignals = uniqueStrings([...leftContracts, ...rightContracts, ...sharedImports])
+    .filter((path) => {
+      const zone = classifyPath(path, zonePolicy);
+      return ['A', 'B'].includes(String(zone?.class || '').toUpperCase());
+    });
+  if (contractSignals.length > 0) {
+    return {
+      risk: 'semantic_collision',
+      severity: 'high',
+      aircraft: [left.displayCallsign, right.displayCallsign].filter(Boolean),
+      conflictZone: contractSignals[0],
+      semanticSignals: {
+        leftImports: leftContracts,
+        rightImports: rightContracts,
+        sharedImports,
+      },
+      recommendedResolution: schemaFirstResolution(left, right),
+    };
+  }
+
+  if (sharedTests.length > 0) {
+    return {
+      risk: 'test_collision',
+      severity: 'medium',
+      aircraft: [left.displayCallsign, right.displayCallsign].filter(Boolean),
+      conflictZone: sharedTests[0],
+      semanticSignals: { sharedTests },
+      recommendedResolution: {
+        action: 'sequence_test_radar',
+        steps: [
+          'Sequence landings through the shared test owner',
+          'Refresh affected tests after first landing',
+          'Require second flight to rerun shared radar before commit',
+        ],
+      },
+    };
+  }
+
+  return null;
+}
+
+function intersections(leftValues, rightValues) {
+  const right = uniqueStrings(rightValues);
+  return uniqueStrings(leftValues).filter((left) =>
+    right.some((candidate) => left === candidate || patternsOverlap(left, candidate)));
+}
+
+function pushRisk(risks, riskKeys, risk) {
+  const key = [
+    risk.risk,
+    risk.severity,
+    risk.conflictZone,
+    ...asArray(risk.aircraft).sort(),
+  ].join('|');
+  if (riskKeys.has(key)) return;
+  riskKeys.add(key);
+  risks.push(risk);
 }
 
 function patternsOverlap(left, right) {

@@ -108,4 +108,114 @@ describe('CodeSite airspace policy', () => {
       },
     });
   });
+
+  it('compiles repo-derived airspace from ownership, contracts, migrations, exports, deploy config, secrets, and incidents', () => {
+    const policy = compileZonePolicy({
+      repoSignals: {
+        codeowners: [{ pattern: 'api/auth/**', owners: ['@security'] }],
+        openapi: ['openapi/auth.yaml'],
+        prisma: {
+          schemas: ['synthi/prisma/schema.prisma'],
+          migrations: ['synthi/prisma/migrations'],
+        },
+        packageExports: [{
+          packageName: '@acme/contracts',
+          root: 'packages/contracts',
+          exports: ['packages/contracts/src/index.ts'],
+        }],
+        deployment: ['infra/prod/kustomization.yaml'],
+        secretPatterns: ['private-secrets/**'],
+        pastIncidents: [{
+          severity: 'critical',
+          category: 'contract_drift',
+          affectedPaths: ['packages/schemas/auth/**'],
+          refs: ['incident:signup'],
+        }],
+      },
+    });
+
+    expect(policy.policySources).toMatchObject({
+      codeowners: 1,
+      openapi: 1,
+      prismaSchemas: 1,
+      prismaMigrations: 1,
+      packageExports: 1,
+      deployment: 1,
+      pastIncidents: 1,
+    });
+    expect(policy.noFlyZones).toEqual(expect.arrayContaining(['private-secrets/**', 'secrets/**']));
+    expect(policy.zones).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'repo_codeowners', class: 'A', paths: ['api/auth/**'] }),
+      expect.objectContaining({ source: 'repo_openapi', class: 'B', paths: ['openapi/auth.yaml'] }),
+      expect.objectContaining({ source: 'repo_prisma_migration', class: 'A', paths: ['synthi/prisma/migrations/**'] }),
+      expect.objectContaining({ source: 'repo_package_exports', class: 'B', paths: expect.arrayContaining(['packages/contracts/**']) }),
+      expect.objectContaining({ source: 'repo_deployment_config', class: 'A', paths: ['infra/prod/kustomization.yaml'] }),
+      expect.objectContaining({ source: 'repo_past_incident', class: 'A', paths: ['packages/schemas/auth/**'] }),
+    ]));
+  });
+
+  it('predicts semantic contract collisions from import and test graph signals without path overlap', () => {
+    const policy = compileZonePolicy({
+      repoSignals: {
+        files: [
+          'synthi/src/components/auth/SignupForm.tsx',
+          'synthi/src/components/auth/SignupForm.test.tsx',
+          'packages/schemas/auth/signup.ts',
+        ],
+        importGraph: [{
+          from: 'synthi/src/components/auth/SignupForm.tsx',
+          imports: ['packages/schemas/auth/signup.ts'],
+        }],
+        testGraph: [{
+          testPath: 'synthi/src/components/auth/SignupForm.test.tsx',
+          covers: ['synthi/src/components/auth/SignupForm.tsx', 'packages/schemas/auth/signup.ts'],
+        }],
+      },
+    });
+
+    const forecast = predictCollisions({
+      zonePolicy: policy,
+      leases: [],
+      executionPlans: [
+        { displayCallsign: 'CLAUDE-17', route: ['synthi/src/components/auth/**'] },
+        { displayCallsign: 'CODEX-04', route: ['packages/schemas/auth/**'] },
+      ],
+    });
+
+    expect(forecast.riskLevel).toBe('high');
+    expect(forecast.risks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'semantic_collision',
+        severity: 'high',
+        conflictZone: 'packages/schemas/auth/signup.ts',
+        recommendedResolution: expect.objectContaining({ action: 'schema_first' }),
+      }),
+    ]));
+  });
+
+  it('predicts a single runway lock for independent migration routes', () => {
+    const policy = compileZonePolicy({
+      repoSignals: {
+        prisma: {
+          migrations: ['synthi/prisma/migrations'],
+        },
+      },
+    });
+
+    const forecast = predictCollisions({
+      zonePolicy: policy,
+      leases: [],
+      executionPlans: [
+        { displayCallsign: 'DB-01', route: ['synthi/prisma/migrations/20260630_add_user/**'] },
+        { displayCallsign: 'DB-02', route: ['synthi/prisma/migrations/20260630_add_team/**'] },
+      ],
+    });
+
+    expect(forecast.risks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'migration_collision',
+        recommendedResolution: expect.objectContaining({ action: 'single_migration_runway_lock' }),
+      }),
+    ]));
+  });
 });

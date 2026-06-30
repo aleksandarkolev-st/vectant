@@ -14,6 +14,7 @@ import {
   pathsForRoute,
   predictCollisions,
 } from './policy';
+import { discoverRepoPolicySignals } from './repoPolicyCompiler';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 
@@ -53,7 +54,7 @@ export async function listProjects(workspaceSlug) {
 export async function createProject(workspaceSlug, actor, body = {}) {
   const title = String(body.title || body.request || 'CodeSite project').trim();
   const request = String(body.request || title).trim();
-  const zonePolicy = compileZonePolicy(body.zonePolicy || body.zone_policy || {});
+  const zonePolicy = compileProjectZonePolicy(body.zonePolicy || body.zone_policy || {}, body);
   const controlPlan = buildInitialControlPlan({ title, request, body, zonePolicy });
 
   const project = await prisma.codeSiteProject.create({
@@ -139,10 +140,10 @@ export async function getProject(workspaceSlug, projectId) {
 export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
   const previous = parseJson(project.zonePolicyJson, {});
-  const next = compileZonePolicy({
+  const next = compileProjectZonePolicy({
     ...previous,
     ...(body.zonePolicy || body.zone_policy || body),
-  });
+  }, body);
   await prisma.codeSiteProject.update({
     where: { id: project.id },
     data: { zonePolicyJson: stringifyJson(next) },
@@ -156,6 +157,33 @@ export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
     },
   });
   return getProject(workspaceSlug, project.id);
+}
+
+function compileProjectZonePolicy(input = {}, body = {}) {
+  const requested = input || {};
+  const repoSignals = requested.repoSignals
+    || requested.repo_signals
+    || body.repoSignals
+    || body.repo_signals
+    || (body.repoPolicyCompiler === false || body.repo_policy_compiler === false
+      ? null
+      : safeDiscoverRepoPolicySignals(body.repoRoot || body.repo_root || requested.repoRoot || requested.repo_root));
+  return compileZonePolicy({
+    ...requested,
+    ...(repoSignals ? { repoSignals } : {}),
+  });
+}
+
+function safeDiscoverRepoPolicySignals(root) {
+  try {
+    return discoverRepoPolicySignals({ root });
+  } catch (error) {
+    return {
+      source: 'repo_policy_compiler_error',
+      error: error?.message || String(error),
+      files: [],
+    };
+  }
 }
 
 export async function updateControlPlan(workspaceSlug, projectId, body = {}) {
