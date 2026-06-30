@@ -53,6 +53,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  dryRunTransactionWrites,
   getAgentInbox,
   getIncidentReplay,
   getProofBundle,
@@ -342,6 +343,32 @@ describe('CodeSite control plane transaction validation', () => {
       evidenceRefs: ['hunk:evidence'],
       promptSummary: 'Update schema field',
     })]);
+  });
+
+  it('previews transaction writes without mutating write sets, events, or policy decisions', async () => {
+    const result = await dryRunTransactionWrites('acme', 'txn-1', {
+      files: [
+        { path: 'synthi/prisma/schema.prisma' },
+        { path: 'secrets/prod.env' },
+      ],
+    });
+
+    expect(result.results).toEqual([
+      expect.objectContaining({
+        ok: true,
+        path: 'synthi/prisma/schema.prisma',
+        tool: 'file_write',
+      }),
+      expect.objectContaining({
+        ok: false,
+        path: 'secrets/prod.env',
+        reasonCodes: expect.arrayContaining(['entered_no_fly_zone']),
+        policyDecision: expect.objectContaining({ decision: 'block' }),
+      }),
+    ]);
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    expect(prisma.codeSitePolicyDecision.create).not.toHaveBeenCalled();
   });
 
   it('gates agent inbox reads and acknowledgements to the owning user session', async () => {

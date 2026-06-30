@@ -12,6 +12,7 @@ import {
   createInspectionRun,
   createPolicyDelta,
   createProject,
+  dryRunTransactionWrites,
   exportArtifacts,
   getAgentInbox,
   getAgentManifest,
@@ -224,12 +225,7 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route[2] === 'dry-run-patch') {
-      const writes = Array.isArray(body.files) ? body.files : [];
-      const results = [];
-      for (const file of writes) {
-        results.push(await recordTransactionWrite(slug, route[1], { path: file.path, tool: 'dry_run_patch' }));
-      }
-      return okJson({ results });
+      return okJson(await dryRunTransactionWrites(slug, route[1], { ...body, tool: body.tool || 'dry_run_patch' }));
     }
 
     if (route[0] === 'transactions' && route[2] === 'commit') {

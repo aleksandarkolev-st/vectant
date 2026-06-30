@@ -15,6 +15,7 @@ const {
     acknowledgeInboxItem: vi.fn(),
     listProjects: vi.fn(),
     createProject: vi.fn(),
+    dryRunTransactionWrites: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
     getAgentInbox: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'createInspectionRun',
     'createPolicyDelta',
     'createProject',
+    'dryRunTransactionWrites',
     'exportArtifacts',
     'getAgentInbox',
     'getAgentManifest',
@@ -148,6 +150,26 @@ describe('CodeSite catch-all route', () => {
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({ ok: false, policyDecision: { decision: 'block' } });
     expect(controlPlane.recordTransactionWrite).toHaveBeenCalledWith('acme', 'txn-1', { path: 'api/auth/signup.ts' });
+  });
+
+  it('previews dry-run patches without dispatching transaction write records', async () => {
+    controlPlane.dryRunTransactionWrites.mockResolvedValue({
+      results: [{ ok: true, path: 'synthi/src/App.jsx' }],
+    });
+    const request = new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/dry-run-patch', {
+      method: 'POST',
+      body: JSON.stringify({ files: [{ path: 'synthi/src/App.jsx' }] }),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'dry-run-patch']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({ results: [{ ok: true, path: 'synthi/src/App.jsx' }] });
+    expect(controlPlane.dryRunTransactionWrites).toHaveBeenCalledWith('acme', 'txn-1', {
+      files: [{ path: 'synthi/src/App.jsx' }],
+      tool: 'dry_run_patch',
+    });
+    expect(controlPlane.recordTransactionWrite).not.toHaveBeenCalled();
   });
 
   it('records explicit mutation-lease policy decisions', async () => {

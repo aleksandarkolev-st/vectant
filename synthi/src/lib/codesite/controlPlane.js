@@ -611,6 +611,45 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
 }
 
+export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const files = Array.isArray(body.files)
+    ? body.files
+    : asArray(body.writes || body.paths).map((path) => (typeof path === 'string' ? { path } : path));
+  const results = files.map((file) => {
+    const path = normalizePath(file?.path || file?.filePath || file?.file_path);
+    if (!path) throw badRequest('invalid_path');
+    const tool = file?.tool || body.tool || 'file_write';
+    const evaluation = evaluatePathMutation({
+      lease: transaction.mutationLease,
+      path,
+      tool,
+      zonePolicy,
+    });
+    return {
+      ok: evaluation.ok,
+      path,
+      tool,
+      zone: evaluation.zone,
+      reasonCodes: evaluation.reasonCodes,
+      ...(evaluation.ok ? {} : {
+        policyDecision: {
+          decision: 'block',
+          reasonCodes: evaluation.reasonCodes,
+          decisionBody: {
+            path,
+            zone: evaluation.zone,
+            towerInstruction: `Write denied for ${path}. File change order or request a new clearance.`,
+          },
+        },
+      }),
+    };
+  });
+  return { transaction: transactionProjection(transaction), results };
+}
+
 function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
   const lineProvenance = normalizeLineProvenanceInput(
     body.lineProvenance || body.line_provenance || body.hunks || body.lineAnchors || body.line_anchors,
