@@ -284,56 +284,96 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     requiredRadar: body.requiredRadar || body.required_radar || defaultRadarForRoute(executionPlan.route, zonePolicy),
     expiresAt: body.expiresAt || body.expires_at || null,
   };
-  const policy = evaluateLeaseRequest({ executionPlan, zonePolicy, requestedLease });
-  const lease = await prisma.codeSiteMutationLease.create({
-    data: {
+	  const policy = evaluateLeaseRequest({ executionPlan, zonePolicy, requestedLease });
+	  const dojoProof = dojoProofInput(body);
+	  const clearancePolicy = applyDojoClearanceGate(policy, dojoProof);
+	  const lease = await prisma.codeSiteMutationLease.create({
+	    data: {
       projectId: plan.projectId,
       executionPlanId: plan.id,
       agentSessionId: plan.agentSessionId,
       displayCallsign: plan.displayCallsign,
-      status: policy.status,
-      leaseJson: stringifyJson({
-        ...requestedLease,
-        issuedBy: 'codesite_policy_engine',
-        towerInstruction: policy.towerInstruction,
-        inspectedZones: policy.inspectedZones,
-      }),
-      dojoProofRef: body.dojoProofRef || body.dojo_proof_ref || null,
-      dojoLicenseRef: body.dojoLicenseRef || body.dojo_license_ref || null,
-      dojoEvidenceRefsJson: stringifyJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || []),
-      dojoLedgerCheckpointHash: body.dojoLedgerCheckpointHash || body.dojo_ledger_checkpoint_hash || null,
-      dojoDecisionDigest: body.dojoDecisionDigest || body.dojo_decision_digest || null,
-      implementationStatusJson: stringifyJson(body.implementationStatus || body.implementation_status || { executable: false, productionRuntime: false }),
-      expiresAt: requestedLease.expiresAt ? new Date(requestedLease.expiresAt) : null,
-    },
-  });
+	      status: clearancePolicy.status,
+	      leaseJson: stringifyJson({
+	        ...requestedLease,
+	        issuedBy: 'codesite_policy_engine',
+	        towerInstruction: clearancePolicy.towerInstruction,
+	        inspectedZones: clearancePolicy.inspectedZones,
+	      }),
+	      dojoProofRef: dojoProof.proofRef,
+	      dojoLicenseRef: dojoProof.licenseRef,
+	      dojoEvidenceRefsJson: stringifyJson(dojoProof.evidenceRefs),
+	      dojoLedgerCheckpointHash: dojoProof.ledgerCheckpointHash,
+	      dojoDecisionDigest: dojoProof.decisionDigest,
+	      implementationStatusJson: stringifyJson(dojoProof.implementationStatus),
+	      expiresAt: requestedLease.expiresAt ? new Date(requestedLease.expiresAt) : null,
+	    },
+	  });
   const decision = await createPolicyDecision(plan.projectId, {
     mutationLeaseId: lease.id,
     displayCallsign: lease.displayCallsign,
-    decision: policy.decision,
-    reasonCodes: policy.reasonCodes,
-    input: { executionPlan, requestedLease },
-    decisionJson: {
-      status: policy.status,
-      towerInstruction: policy.towerInstruction,
-      inspectedZones: policy.inspectedZones,
-    },
-  });
-  await recordEvent(plan.projectId, {
-    mutationLeaseId: lease.id,
-    eventType: policy.decision === 'block' ? 'holding_pattern' : 'clearance_issued',
-    displayCallsign: lease.displayCallsign,
+	    decision: clearancePolicy.decision,
+	    reasonCodes: clearancePolicy.reasonCodes,
+	    input: { executionPlan, requestedLease, dojoProof },
+	    decisionJson: {
+	      status: clearancePolicy.status,
+	      towerInstruction: clearancePolicy.towerInstruction,
+	      inspectedZones: clearancePolicy.inspectedZones,
+	      dojoProof,
+	    },
+	  });
+	  await recordEvent(plan.projectId, {
+	    mutationLeaseId: lease.id,
+	    eventType: clearancePolicy.decision === 'block' ? 'holding_pattern' : 'clearance_issued',
+	    displayCallsign: lease.displayCallsign,
     actorType: 'policy_engine',
     actorId: decision.id,
     details: {
-      mutationLeaseId: lease.id,
-      policyDecisionId: decision.id,
-      status: policy.status,
-      reasonCodes: policy.reasonCodes,
-      towerInstruction: policy.towerInstruction,
-    },
-  });
-  return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
+	      mutationLeaseId: lease.id,
+	      policyDecisionId: decision.id,
+	      status: clearancePolicy.status,
+	      reasonCodes: clearancePolicy.reasonCodes,
+	      towerInstruction: clearancePolicy.towerInstruction,
+	    },
+	  });
+	  return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
+	}
+
+function dojoProofInput(body = {}) {
+  return {
+    proofRef: body.dojoProofRef || body.dojo_proof_ref || null,
+    licenseRef: body.dojoLicenseRef || body.dojo_license_ref || null,
+    evidenceRefs: asArray(body.dojoEvidenceRefs || body.dojo_evidence_refs || []),
+    ledgerCheckpointHash: body.dojoLedgerCheckpointHash || body.dojo_ledger_checkpoint_hash || null,
+    decisionDigest: body.dojoDecisionDigest || body.dojo_decision_digest || null,
+    implementationStatus: body.implementationStatus || body.implementation_status || { executable: false, productionRuntime: false },
+  };
+}
+
+function applyDojoClearanceGate(policy, dojoProof = {}) {
+  const restrictedZones = asArray(policy.inspectedZones).filter((zone) => ['A', 'B'].includes(String(zone?.class || '').toUpperCase()));
+  if (restrictedZones.length === 0 || policy.decision === 'block') return policy;
+  const missing = [
+    ...(!dojoProof.proofRef ? ['dojo_proof_ref_required'] : []),
+    ...(!dojoProof.licenseRef ? ['dojo_license_ref_required'] : []),
+    ...(!dojoProof.ledgerCheckpointHash ? ['dojo_ledger_checkpoint_required'] : []),
+    ...(!dojoProof.decisionDigest ? ['dojo_decision_digest_required'] : []),
+    ...(dojoProof.evidenceRefs.length === 0 ? ['dojo_evidence_refs_required'] : []),
+    ...(dojoProof.implementationStatus?.executable !== true ? ['dojo_implementation_not_executable'] : []),
+  ];
+  if (!missing.length) {
+    return {
+      ...policy,
+      reasonCodes: unique([...policy.reasonCodes, 'dojo_clearance_proof_verified']),
+    };
+  }
+  return {
+    ...policy,
+    decision: 'block',
+    status: 'blocked',
+    reasonCodes: unique(['dojo_proof_required_for_restricted_airspace', ...missing]),
+    towerInstruction: `Hold position: ${restrictedZones.map((zone) => zone.zoneKey).join(', ')} requires executable Dojo proof before clearance.`,
+  };
 }
 
 function defaultInvariantsForRoute(route, zonePolicy) {

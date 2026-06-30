@@ -9,6 +9,12 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteProject: {
       findUnique: vi.fn(),
     },
+    codeSiteExecutionPlan: {
+      findFirst: vi.fn(),
+    },
+    codeSiteMutationLease: {
+      create: vi.fn(),
+    },
     codeSiteAgentSession: {
       findFirst: vi.fn(),
     },
@@ -59,6 +65,7 @@ import {
   getProofBundle,
   getSourceStateSince,
   recordTransactionWrite,
+  requestMutationLease,
   validateTransaction,
 } from '../controlPlane.js';
 
@@ -118,6 +125,42 @@ function repoStateFixture() {
   };
 }
 
+function executionPlanFixture(route = ['synthi/prisma/**']) {
+  return {
+    id: 'plan-1',
+    projectId: 'project-1',
+    agentSessionId: 'agent-1',
+    displayCallsign: 'ATLAS-1',
+    mission: 'Update schema',
+    domain: 'schema',
+    status: 'filed',
+    routeJson: JSON.stringify(route),
+    blockedZonesJson: JSON.stringify([]),
+    abortJson: JSON.stringify([]),
+    requestedToolsJson: JSON.stringify(['file_write']),
+    estimatedDurationMs: null,
+    filedAt: new Date('2026-06-29T22:59:00.000Z'),
+    closedAt: null,
+    project: {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'schema', class: 'B', label: 'Schema', paths: ['synthi/prisma/**'], rules: [], risk: 'high' },
+          { zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], rules: [], risk: 'low' },
+        ],
+        noFlyZones: ['secrets/**'],
+      }),
+    },
+    agentSession: {
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+    },
+  };
+}
+
 describe('CodeSite control plane transaction validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -136,6 +179,14 @@ describe('CodeSite control plane transaction validation', () => {
         noFlyZones: ['secrets/**'],
       }),
     });
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
+    prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
+      id: 'lease-created',
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      ...data,
+    }));
     prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
     prisma.codeSiteAgentSession.findFirst.mockResolvedValue({
       id: 'agent-1',
@@ -187,9 +238,59 @@ describe('CodeSite control plane transaction validation', () => {
       ...data,
     }));
     prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
+	  });
+
+  it('blocks restricted airspace clearances without executable Dojo proof', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+    });
+
+    expect(lease.status).toBe('blocked');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_proof_required_for_restricted_airspace',
+      'dojo_proof_ref_required',
+      'dojo_license_ref_required',
+      'dojo_evidence_refs_required',
+      'dojo_implementation_not_executable',
+    ]));
+    expect(prisma.codeSiteMutationLease.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: 'blocked',
+        dojoProofRef: null,
+        implementationStatusJson: expect.stringContaining('executable'),
+      }),
+    }));
   });
 
-  it('does not mark a transaction stale because of its own write event', async () => {
+  it('allows restricted airspace clearances with executable Dojo proof refs', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      dojoProofRef: 'pcap-auth-schema',
+      dojoLicenseRef: 'schema.level_2@2026-06-25',
+      dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
+      dojoLedgerCheckpointHash: 'sha256:ledger',
+      dojoDecisionDigest: 'sha256:decision',
+      implementationStatus: { executable: true, productionRuntime: false },
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.dojoProofRef).toBe('pcap-auth-schema');
+    expect(lease.policyDecision.reasonCodes).toContain('dojo_clearance_proof_verified');
+  });
+
+  it('allows low-risk clearances without Dojo proof', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture(['docs/**']));
+
+    const lease = await requestMutationLease('acme', 'plan-docs', {
+      allowedPaths: ['docs/**'],
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toContain('route_inside_clearance');
+    expect(lease.policyDecision.reasonCodes).not.toContain('dojo_proof_required_for_restricted_airspace');
+  });
+
+	  it('does not mark a transaction stale because of its own write event', async () => {
     prisma.codeSiteEvent.findMany.mockResolvedValue([
       {
         id: 'event-own-write',
