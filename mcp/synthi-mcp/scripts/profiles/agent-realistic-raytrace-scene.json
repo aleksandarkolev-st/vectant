@@ -9,7 +9,7 @@
       {
         "path": "src/main.cpp",
         "sourcePath": "sources/agent-realistic-raytrace-scene/main.cpp",
-        "contentHash": "sha256:057c83a0a2af53eea19ba3f189836978c804a0048dfd2436bb2cc41bc882662e"
+        "contentHash": "sha256:20f72849bfe5ac1328a3bec28c39501eb78fe48cff6ecd48a86af81129bce96e"
       },
       {
         "path": "src/scene_config.h",
@@ -50,7 +50,7 @@
       "metric": "oracle_region_delta"
     }
   },
-  "visualSceneManifestHash": "sha256:9374ac30362fe7e7ad801e946d5855fbf9325cc31f414dcb29aeb9343a9a6bcc",
+  "visualSceneManifestHash": "sha256:bf1393aa93f4df9c8fe350f7d33be2a95b29d2748c2d6013a02e0d047eabbdf2",
   "visualSceneManifest": {
     "schemaVersion": "synthi.gpu_hmr.visual_scene_manifest.v1",
     "sceneId": "realistic-faceted-diamond-tabletop",
@@ -72,10 +72,10 @@
       "lightingModel": "direct_shadow_reflection_refraction_environment"
     },
     "camera": {
-      "position": [0.0, 1.55, 5.2],
-      "target": [0.0, 0.35, 0.0],
+      "position": [-0.28, 0.92, 3.18],
+      "target": [0.04, 0.52, -0.30],
       "up": [0.0, 1.0, 0.0],
-      "fovDegrees": 46.0,
+      "fovDegrees": 50.0,
       "frozen": true
     },
     "rayPolicy": {

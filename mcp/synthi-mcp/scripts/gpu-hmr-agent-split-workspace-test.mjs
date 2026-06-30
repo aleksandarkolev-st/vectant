@@ -1985,22 +1985,22 @@ __device__ Vec3 shade(Vec3 ro, Vec3 rd, Hit hit, float sceneLight);
 __device__ Vec3 cameraRayColor(float px, float py, int width, int height, float sceneLight, float exposure) {
     float aspect = (float)width / (float)height;
     float rigIsWarm = sceneLight >= 0.0f ? 1.0f : 0.0f;
-    float rigExposure = sceneLight >= 0.0f ? (0.80f + 0.08f * clampf(sceneLight, 0.0f, 2.5f)) : 0.48f;
-    Vec3 rigColorGrade = mix3(make3(0.58f, 0.70f, 1.02f), make3(1.02f, 0.96f, 0.84f), rigIsWarm);
+    float rigExposure = sceneLight >= 0.0f ? (0.88f + 0.10f * clampf(sceneLight, 0.0f, 2.5f)) : 0.48f;
+    Vec3 rigColorGrade = mix3(make3(0.58f, 0.70f, 1.02f), make3(1.05f, 0.99f, 0.88f), rigIsWarm);
 
-    Vec3 eye = make3(-0.16f, 1.05f, 4.18f);
-    Vec3 target = make3(0.0f, 0.55f, -0.18f);
+    Vec3 eye = make3(-0.28f, 0.92f, 3.18f);
+    Vec3 target = make3(0.04f, 0.52f, -0.30f);
     Vec3 forward = normalize3(sub3(target, eye));
     Vec3 right = normalize3(cross3(forward, make3(0.0f, 1.0f, 0.0f)));
     Vec3 up = normalize3(cross3(right, forward));
-    float lens = tanf(35.0f * PI / 180.0f);
+    float lens = tanf(25.0f * PI / 180.0f);
     Vec3 rd = normalize3(add3(forward, add3(mul3(right, (px * 2.0f - 1.0f) * aspect * lens), mul3(up, (1.0f - py * 2.0f) * lens))));
 
     Hit hit;
     Vec3 color = environmentColor(rd);
     if (sceneHit(eye, rd, sceneLight, hit, true)) {
         color = shade(eye, rd, hit, sceneLight);
-        float fog = expf(-hit.t * 0.020f);
+        float fog = expf(-hit.t * 0.010f);
         color = mix3(make3(0.60f, 0.64f, 0.66f), color, fog);
     }
 
@@ -6274,7 +6274,17 @@ async function assertMcpScreenshot(
     const eligibleVisible = samples
       .filter(isVisibleFrame)
       .filter((sample) => !waitEvidence || sample.frameCaptureAfterEpochDispatch === true);
-    if (eligibleVisible.length >= minVisibleSamples) break;
+    const distinctEligibleSequences = new Set(
+      eligibleVisible
+        .map((sample) => sample.seq)
+        .filter((seq) => Number.isFinite(seq) && seq > 0),
+    );
+    if (
+      eligibleVisible.length >= minVisibleSamples
+      && distinctEligibleSequences.size >= Math.min(2, minVisibleSamples)
+    ) {
+      break;
+    }
     await sleep(sampleIntervalMs);
   }
   const visible = samples
