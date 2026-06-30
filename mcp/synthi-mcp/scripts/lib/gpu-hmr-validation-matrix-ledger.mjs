@@ -13787,12 +13787,21 @@ function runtimeBoundaryArtifactTransport(fields = {}, artifactHash = null) {
 
 function runtimeChainOverlayRecordFromAdapterResult(adapterResult = {}) {
   const facet = compactObject(adapterResult);
-  if (facet.present !== true || facet.accepted !== true) return {};
+  const acceptedAsBoundaryEvidence =
+    facet.acceptedAsBoundaryEvidence === true
+    || facet.accepted_as_boundary_evidence === true;
+  if (facet.present !== true || (facet.accepted !== true && acceptedAsBoundaryEvidence !== true)) {
+    return {};
+  }
   if (
     facet.acceptedForGpuHmr === true
+    || facet.accepted_for_gpu_hmr === true
     || facet.gpuHmrSuccess === true
+    || facet.gpu_hmr_success === true
     || facet.canSatisfyRuntimeProof === true
+    || facet.can_satisfy_runtime_proof === true
     || facet.canSatisfyDispatchProof === true
+    || facet.can_satisfy_dispatch_proof === true
   ) {
     return {};
   }

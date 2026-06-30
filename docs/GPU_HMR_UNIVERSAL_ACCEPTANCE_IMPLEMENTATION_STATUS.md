@@ -10,15 +10,19 @@ Real ROCm runtime-adapter stage events can now derive the required app-hook cont
 
 This is not a success shortcut. The derived contract can remove only the stale missing-contract configuration gap. Full-runtime acceptance still requires the normal strict runtime proof artifact, recomputed ledger success, runtime-chain closure, output-oracle closure, same-process proof, sidecar/firewall gates, and accepted row safety. Smoke coverage includes a strict positive fixture where stage events derive the app-hook contract, plus a serialized derived-contract forgery with the stage events removed; the forged row remains `unproven`.
 
+Runner final-support gating now also accepts the imported adapter-result manifest path without a direct `runtime_adapter_execution` facet only when the bridge is strict-proof accepted or boundary-import accepted, stage events are complete, target-process provenance is accepted, and declared result transport is accepted. A present but failed execution facet still blocks. This keeps external/profile-driven adapter result manifests usable for arbitrary projects without converting copied manifests or boundary logs into runtime authority.
+
+Validation-matrix runtime-chain overlay now mirrors that rule: support-only boundary-result facets with `acceptedAsBoundaryEvidence=true` can feed the runtime-chain overlay even when `accepted=false`, provided they do not claim GPU HMR/runtime/dispatch authority. Smoke coverage removes all adapter-execution facets from a boundary-only bridge fixture and verifies the overlay source is `runtime_profile_adapter_result`, not execution masking.
+
 Verification for this patch:
 
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed
-node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:792ae63922d717dc1c1c52a2e982530907d0ecbb2d9f3fc7d04f05e72b2b3100, rows=65
-npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke proof gpu-validation-matrix-ledger:sha256:2cd913b5ba80c6003356d288f36e11903d4ce7a3befc364f6601092eb1490790, retained matrix gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed, including bridge-only adapter-result final-support coverage
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:24f9bdfa6508199beb31d9fc684f93655c62ad938cc7bf5079d044c899b3709b, rows=65
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke proof gpu-validation-matrix-ledger:sha256:93a1875207bc37bbe7722fef3414a910ed63ff21a9044df8d5e1ac79ca88f1cd, retained matrix gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787
 npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed, gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787, json=mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json
 ```
 

@@ -3825,6 +3825,15 @@ function runtimeBoundaryTargetProcessProvenanceUsableForFinalSupport(provenance 
     && provenance.can_satisfy_runtime_proof !== true;
 }
 
+function runtimeAdapterExecutionDeclaredOrPresent(execution = {}) {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) return false;
+  return execution.declared === true
+    || execution.present === true
+    || typeof execution.status === 'string'
+    || typeof execution.executionStatus === 'string'
+    || typeof execution.execution_status === 'string';
+}
+
 function realRocmRuntimeAdapterFinalSupportGaps() {
   const bridge = report.real_rocm_runtime_profile_adapter_result;
   const execution = report.real_rocm_runtime_adapter_execution;
@@ -3846,20 +3855,35 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
     && report.runtime_proof_artifact?.gpuHmrSuccess === true
     && Array.isArray(report.runtime_proof_artifact_strict_gates)
     && report.runtime_proof_artifact_strict_gates.every((gate) => gate.status === 'pass');
+  const directExecutionPresent = runtimeAdapterExecutionDeclaredOrPresent(execution);
+  const directExecutionAccepted = runtimeAdapterExecutionUsableForRuntimeEvidence(execution);
+  const transportAccepted =
+    transport?.declared !== true
+    || runtimeAdapterTransportUsableForFinalSupport(transport);
+  const stageEventsAccepted = runtimeAdapterStageEventsUsableForFinalSupport(stageEvents);
+  const targetProcessProvenanceAccepted =
+    runtimeBoundaryTargetProcessProvenanceUsableForFinalSupport(targetProcessProvenance);
+  const bridgeCanSupportMissingExecution = bridgeStrictlyAccepted || bridgeBoundaryImportAccepted;
+  const boundaryImportCanStandInForMissingExecution =
+    !directExecutionPresent
+    && bridgeCanSupportMissingExecution
+    && transportAccepted
+    && stageEventsAccepted
+    && targetProcessProvenanceAccepted;
   return compactStringList([
     bridgeStrictlyAccepted || bridgeBoundaryImportAccepted
       ? null
       : 'real_rocm_runtime_profile_adapter_result_not_accepted',
-    runtimeAdapterExecutionUsableForRuntimeEvidence(execution)
+    directExecutionAccepted || boundaryImportCanStandInForMissingExecution
       ? null
       : 'real_rocm_runtime_adapter_execution_not_accepted',
-    transport?.declared === true && !runtimeAdapterTransportUsableForFinalSupport(transport)
+    transport?.declared === true && !transportAccepted
       ? 'real_rocm_runtime_adapter_result_transport_not_accepted'
       : null,
-    runtimeAdapterStageEventsUsableForFinalSupport(stageEvents)
+    stageEventsAccepted
       ? null
       : 'real_rocm_runtime_adapter_stage_events_not_accepted',
-    runtimeBoundaryTargetProcessProvenanceUsableForFinalSupport(targetProcessProvenance)
+    targetProcessProvenanceAccepted
       ? null
       : 'real_rocm_runtime_boundary_target_process_provenance_not_accepted',
   ]);
@@ -19206,6 +19230,27 @@ async function selfCheckRuntimeDispatchEvidence() {
       throw new Error(`runtime adapter final-support self-check rejected complete support facets ${stableJson({
         gaps: realRocmRuntimeAdapterFinalSupportGaps(),
       })}`);
+    }
+    const savedFinalSupportExecution = report.real_rocm_runtime_adapter_execution;
+    delete report.real_rocm_runtime_adapter_execution;
+    delete report.realRocmRuntimeAdapterExecution;
+    delete report.runtime_adapter_execution;
+    delete report.runtimeAdapterExecution;
+    if (report.evidence && typeof report.evidence === 'object') {
+      delete report.evidence.real_rocm_runtime_adapter_execution;
+    }
+    const bridgeOnlyFinalSupportGaps = realRocmRuntimeAdapterFinalSupportGaps();
+    if (bridgeOnlyFinalSupportGaps.length !== 0) {
+      throw new Error(`runtime adapter final-support self-check rejected bridge-only boundary support ${stableJson({
+        gaps: bridgeOnlyFinalSupportGaps,
+      })}`);
+    }
+    report.real_rocm_runtime_adapter_execution = savedFinalSupportExecution;
+    report.realRocmRuntimeAdapterExecution = savedFinalSupportExecution;
+    report.runtime_adapter_execution = savedFinalSupportExecution;
+    report.runtimeAdapterExecution = savedFinalSupportExecution;
+    if (report.evidence && typeof report.evidence === 'object') {
+      report.evidence.real_rocm_runtime_adapter_execution = savedFinalSupportExecution;
     }
     report.real_rocm_runtime_profile_adapter_result = forgedAdapterResult;
     const forgedFinalSupportGaps = realRocmRuntimeAdapterFinalSupportGaps();

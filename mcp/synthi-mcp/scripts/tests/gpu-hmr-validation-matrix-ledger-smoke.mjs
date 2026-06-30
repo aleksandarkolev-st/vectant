@@ -14890,6 +14890,83 @@ assert.ok(
   ),
 );
 
+const adapterBoundaryOnlyBridgeNoExecutionDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-only-bridge-no-execution',
+);
+await fs.mkdir(adapterBoundaryOnlyBridgeNoExecutionDir, { recursive: true });
+const adapterBoundaryOnlyBridgeNoExecutionReport =
+  JSON.parse(JSON.stringify(adapterBoundaryOnlyBridgeReport));
+adapterBoundaryOnlyBridgeNoExecutionReport.slug =
+  'gpu-real-rocm-adapter-boundary-only-bridge-no-execution-20260630';
+delete adapterBoundaryOnlyBridgeNoExecutionReport.real_rocm_runtime_adapter_execution;
+delete adapterBoundaryOnlyBridgeNoExecutionReport.realRocmRuntimeAdapterExecution;
+delete adapterBoundaryOnlyBridgeNoExecutionReport.runtime_adapter_execution;
+delete adapterBoundaryOnlyBridgeNoExecutionReport.runtimeAdapterExecution;
+if (
+  adapterBoundaryOnlyBridgeNoExecutionReport.evidence
+  && typeof adapterBoundaryOnlyBridgeNoExecutionReport.evidence === 'object'
+) {
+  delete adapterBoundaryOnlyBridgeNoExecutionReport.evidence
+    .real_rocm_runtime_adapter_execution;
+}
+delete adapterBoundaryOnlyBridgeNoExecutionReport.runtime_proof_artifact
+  .realRocmRuntimeAdapterExecution;
+delete adapterBoundaryOnlyBridgeNoExecutionReport.runtime_proof_artifact
+  .real_rocm_runtime_adapter_execution;
+await writeJson(
+  path.join(
+    adapterBoundaryOnlyBridgeNoExecutionDir,
+    'real-rocm-adapter-boundary-only-bridge-no-execution.json',
+  ),
+  adapterBoundaryOnlyBridgeNoExecutionReport,
+);
+const adapterBoundaryOnlyBridgeNoExecutionLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryOnlyBridgeNoExecutionDir],
+  generatedAt: '2026-06-30T00:00:02.265Z',
+  includeUnproven: true,
+});
+const adapterBoundaryOnlyBridgeNoExecutionRow =
+  adapterBoundaryOnlyBridgeNoExecutionLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(adapterBoundaryOnlyBridgeNoExecutionRow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(adapterBoundaryOnlyBridgeNoExecutionRow.acceptedForGpuHmr, true);
+assert.equal(
+  adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeProfileAdapterResult
+    .acceptedAsBoundaryEvidence,
+  true,
+);
+assert.equal(
+  adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeProfileAdapterResult.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeProfileAdapterResult.gpuHmrSuccess,
+  false,
+);
+assert.equal(adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeChain.accepted, true);
+assert.deepEqual(
+  adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeChain.adapterBoundaryOverlaySources,
+  ['runtime_profile_adapter_result'],
+);
+assert.equal(
+  adapterBoundaryOnlyBridgeNoExecutionRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted,
+  true,
+);
+assert.ok(
+  !adapterBoundaryOnlyBridgeNoExecutionRow.reasons.includes(
+    'real_rocm_runtime_adapter_execution_not_accepted',
+  ),
+);
+assert.ok(
+  !adapterBoundaryOnlyBridgeNoExecutionRow.openGaps.includes(
+    'real_rocm_runtime_adapter_execution_not_accepted',
+  ),
+);
+
 const adapterBoundaryOnlyPartialBridgeDir = path.join(
   logsRoot,
   'real-rocm-adapter-boundary-only-partial-bridge',
