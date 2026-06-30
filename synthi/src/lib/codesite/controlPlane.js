@@ -898,7 +898,7 @@ export async function getTransaction(workspaceSlug, transactionId) {
 }
 
 export async function recordTransactionRead(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
   const observed = appendUnique(parseJson(transaction.observedReadSetJson, []), path);
@@ -922,7 +922,7 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
 }
 
 export async function recordTransactionWrite(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
   const codesiteFsEvent = body.codesiteFsEvent || body.codesite_fs_event || null;
@@ -1113,7 +1113,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
 }
 
 export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const files = Array.isArray(body.files)
@@ -1373,7 +1373,7 @@ function semanticRefsConflict(assumptionRef, writeRef) {
 }
 
 export async function recordAssumption(workspaceSlug, transactionId, body = {}) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId);
   const key = String(body.assumptionKey || body.assumption_id || body.key || '').trim();
   if (!key) throw badRequest('assumption_key_required');
   const assumption = await prisma.codeSiteAssumptionLease.create({
@@ -3914,6 +3914,17 @@ async function requireTransaction(workspaceSlug, transactionId) {
     include: { mutationLease: true, agentSession: true },
   });
   if (!transaction) throw notFound('transaction_not_found');
+  return transaction;
+}
+
+async function requireOpenTransaction(workspaceSlug, transactionId) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId);
+  if (transaction.status !== 'open') {
+    throw badRequest('transaction_not_open', {
+      transactionId: transaction.id,
+      status: transaction.status,
+    });
+  }
   return transaction;
 }
 

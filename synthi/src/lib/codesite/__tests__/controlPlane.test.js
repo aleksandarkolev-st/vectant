@@ -1015,6 +1015,27 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('rejects write recording after a transaction is no longer open', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      status: 'validated',
+      closedAt: new Date('2026-06-29T23:04:00.000Z'),
+    });
+
+    await expect(recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    })).rejects.toMatchObject({
+      code: 'transaction_not_open',
+      status: 400,
+      detail: expect.objectContaining({
+        transactionId: 'txn-1',
+        status: 'validated',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
   it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-'));
     await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
