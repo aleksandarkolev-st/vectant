@@ -178,6 +178,15 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: JSON.stringify({
           transactionId: 'txn-1',
           path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
         }),
       },
     ]);
@@ -300,6 +309,41 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('records allowed write line provenance for the causal line inspector', async () => {
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      tool: 'file_write',
+      evidenceRefs: ['write:evidence'],
+      processAncestry: ['mcp:synthi_codesite_apply_patch'],
+      lineProvenance: [{
+        startLine: 7,
+        endLine: 9,
+        evidenceRefs: ['hunk:evidence'],
+        promptSummary: 'Update schema field',
+      }],
+    });
+    const allowedEvent = prisma.codeSiteEvent.create.mock.calls
+      .map((call) => call[0])
+      .find((call) => call.data.eventType === 'write_allowed');
+    const details = JSON.parse(allowedEvent.data.detailsJson);
+
+    expect(result.ok).toBe(true);
+    expect(details).toMatchObject({
+      transactionId: 'txn-1',
+      path: 'synthi/prisma/schema.prisma',
+      evidenceRefs: ['write:evidence'],
+      processAncestry: ['mcp:synthi_codesite_apply_patch'],
+    });
+    expect(details.lineProvenance).toEqual([expect.objectContaining({
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'synthi/prisma/schema.prisma#L7',
+      startLine: 7,
+      endLine: 9,
+      evidenceRefs: ['hunk:evidence'],
+      promptSummary: 'Update schema field',
+    })]);
+  });
+
   it('gates agent inbox reads and acknowledgements to the owning user session', async () => {
     await expect(getAgentInbox('acme', 'agent-1', { userId: 'user-2' })).rejects.toMatchObject({
       status: 403,
@@ -329,6 +373,15 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: JSON.stringify({
           transactionId: 'txn-1',
           path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
         }),
       },
     ]);
@@ -362,6 +415,15 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: JSON.stringify({
           transactionId: 'txn-1',
           path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
         }),
       },
     ]);
@@ -399,6 +461,10 @@ describe('CodeSite control plane transaction validation', () => {
       data: expect.objectContaining({
         proofBundleId: 'proof-created',
         filePath: 'synthi/prisma/schema.prisma',
+        lineAnchor: 'synthi/prisma/schema.prisma#L12',
+        evidenceRefsJson: expect.stringContaining('hunk:evidence'),
+        processAncestryJson: expect.stringContaining('mcp:synthi_codesite_apply_patch'),
+        promptSummary: 'Add auth schema field',
       }),
     }));
   });

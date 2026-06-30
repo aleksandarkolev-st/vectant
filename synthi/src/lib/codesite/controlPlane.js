@@ -484,6 +484,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   const codesiteFsEventType = ['write_denied', 'write_quarantined'].includes(codesiteFsEvent?.type)
     ? codesiteFsEvent.type
     : null;
+  const writeEvidence = writeEvidenceFromBody(body, path, codesiteFsEvent);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const evaluation = evaluatePathMutation({
@@ -505,6 +506,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       tool: body.tool || 'file_write',
       zone: evaluation.zone,
       codesiteFsEvent,
+      ...writeEvidence,
     },
   });
 
@@ -598,9 +600,67 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
-    details: { transactionId: transaction.id, path, zone: evaluation.zone, invalidatedAssumptions: invalidated },
+    details: {
+      transactionId: transaction.id,
+      path,
+      zone: evaluation.zone,
+      invalidatedAssumptions: invalidated,
+      ...writeEvidence,
+    },
   });
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
+}
+
+function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
+  const lineProvenance = normalizeLineProvenanceInput(
+    body.lineProvenance || body.line_provenance || body.hunks || body.lineAnchors || body.line_anchors,
+    path,
+  );
+  const evidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+    ...asArray(codesiteFsEvent?.evidence_refs || codesiteFsEvent?.evidenceRefs),
+  ].filter(Boolean));
+  const processAncestry = unique([
+    ...asArray(body.processAncestry || body.process_ancestry),
+    ...asArray(codesiteFsEvent?.details?.process_ancestry || codesiteFsEvent?.details?.processAncestry),
+  ].filter(Boolean));
+  return {
+    ...(lineProvenance.length ? { lineProvenance } : {}),
+    ...(evidenceRefs.length ? { evidenceRefs } : {}),
+    ...(processAncestry.length ? { processAncestry } : {}),
+  };
+}
+
+function normalizeLineProvenanceInput(value, defaultPath) {
+  return asArray(value).flatMap((item) => {
+    if (typeof item === 'number') {
+      const filePath = normalizePath(defaultPath);
+      return filePath ? [{ filePath, startLine: item, lineAnchor: `${filePath}#L${item}` }] : [];
+    }
+    if (typeof item === 'string') {
+      const filePath = normalizePath(defaultPath || item.split('#')[0]);
+      return filePath ? [{ filePath, lineAnchor: item }] : [];
+    }
+    if (!item || typeof item !== 'object') return [];
+    const filePath = normalizePath(item.filePath || item.file_path || item.path || defaultPath);
+    if (!filePath) return [];
+    const startLine = Number.isFinite(Number(item.startLine || item.start_line || item.line))
+      ? Math.max(1, Math.floor(Number(item.startLine || item.start_line || item.line)))
+      : null;
+    const endLine = Number.isFinite(Number(item.endLine || item.end_line))
+      ? Math.max(startLine || 1, Math.floor(Number(item.endLine || item.end_line)))
+      : null;
+    return [{
+      filePath,
+      lineAnchor: item.lineAnchor || item.line_anchor || (startLine ? `${filePath}#L${startLine}` : `${filePath}#codesite:hunk`),
+      startLine,
+      endLine,
+      reasonRef: item.reasonRef || item.reason_ref || null,
+      evidenceRefs: asArray(item.evidenceRefs || item.evidence_refs),
+      processAncestry: asArray(item.processAncestry || item.process_ancestry),
+      promptSummary: item.promptSummary || item.prompt_summary || null,
+    }];
+  });
 }
 
 function codeSiteFsReasonCodes(codesiteFsEvent, fallback = []) {
@@ -1079,7 +1139,14 @@ function normalizeInspectionSignal(value) {
 
 async function seedLineProvenance(transaction, bundle) {
   const paths = parseJson(transaction.writeSetJson, []);
+  const eventRows = await lineProvenanceRowsFromWriteEvents(transaction, bundle);
+  const coveredPaths = new Set();
+  for (const row of eventRows) {
+    coveredPaths.add(row.filePath);
+    await prisma.codeSiteLineProvenance.create({ data: row });
+  }
   for (const filePath of paths) {
+    if (coveredPaths.has(filePath)) continue;
     await prisma.codeSiteLineProvenance.create({
       data: {
         projectId: transaction.projectId,
@@ -1096,6 +1163,45 @@ async function seedLineProvenance(transaction, bundle) {
       },
     });
   }
+}
+
+async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
+  const events = await prisma.codeSiteEvent.findMany({
+    where: {
+      projectId: transaction.projectId,
+      eventType: 'write_allowed',
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  return events
+    .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
+    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
+    .flatMap(({ event, details }) => {
+      const defaultPath = normalizePath(details.path);
+      const rows = normalizeLineProvenanceInput(details.lineProvenance || details.line_provenance, defaultPath);
+      return rows.map((row) => ({
+        projectId: transaction.projectId,
+        transactionId: transaction.id,
+        filePath: row.filePath,
+        lineAnchor: row.lineAnchor,
+        displayCallsign: transaction.mutationLease.displayCallsign,
+        reasonRef: row.reasonRef || `event:${event.id}`,
+        evidenceRefsJson: stringifyJson(unique([
+          `proof:${bundle.id}`,
+          `transaction:${transaction.id}`,
+          `event:${event.id}`,
+          ...asArray(details.evidenceRefs || details.evidence_refs),
+          ...asArray(row.evidenceRefs),
+        ].filter(Boolean))),
+        dojoSourceRefsJson: stringifyJson([]),
+        proofBundleId: bundle.id,
+        processAncestryJson: stringifyJson(unique([
+          ...asArray(details.processAncestry || details.process_ancestry),
+          ...asArray(row.processAncestry),
+        ].filter(Boolean))),
+        promptSummary: row.promptSummary || details.promptSummary || details.prompt_summary || 'CodeSite write event',
+      }));
+    });
 }
 
 export async function createDocument(workspaceSlug, projectId, body = {}) {
