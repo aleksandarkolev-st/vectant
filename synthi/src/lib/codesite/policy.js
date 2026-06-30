@@ -620,6 +620,7 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   const riskKeys = new Set();
   const semanticGraph = zonePolicy?.semanticGraph || {};
   const footprints = new Map(plans.map((plan) => [plan, semanticFootprint(plan, semanticGraph)]));
+  const runwayOccupancy = buildRunwayOccupancy(activeLeases, plans, zonePolicy);
 
   for (let i = 0; i < plans.length; i += 1) {
     for (let j = i + 1; j < plans.length; j += 1) {
@@ -676,10 +677,218 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
     }
   }
 
+  const wakeTurbulence = [];
+  for (const risk of wakeTurbulenceRisks({ activeLeases, plans, zonePolicy, semanticGraph })) {
+    pushRisk(risks, riskKeys, risk);
+    wakeTurbulence.push(risk);
+  }
+  const riskLevel = risks.some((risk) => ['critical', 'high'].includes(risk.severity))
+    ? 'high'
+    : (risks.length ? 'medium' : 'low');
+
   return {
-    riskLevel: risks.some((risk) => risk.severity === 'high') ? 'high' : (risks.length ? 'medium' : 'low'),
+    riskLevel,
     risks,
+    runwayOccupancy,
+    wakeTurbulence,
   };
+}
+
+function buildRunwayOccupancy(activeLeases, plans, zonePolicy) {
+  return activeLeases.map((lease) => {
+    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
+    const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
+    const runway = route[0] || null;
+    const classes = uniqueStrings(route.map((path) =>
+      classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy)?.class || 'C'));
+    const pendingInspections = uniqueStrings(route.flatMap((path) =>
+      defaultRadarForWakePath(path, zonePolicy)));
+    const eligibleFlights = plans
+      .filter((plan) => {
+        const planRoutes = pathsForRoute(plan.route);
+        return planRoutes.length === 0 || !planRoutes.some((planRoute) =>
+          route.some((occupiedPath) => patternsOverlap(planRoute, occupiedPath)));
+      })
+      .map((plan) => plan.displayCallsign || plan.id)
+      .filter(Boolean);
+    return {
+      runway,
+      route,
+      occupiedBy: lease.displayCallsign || lease.agentSessionId || lease.id || null,
+      mutationLeaseId: lease.id || null,
+      runwayClass: classes.includes('A') ? 'A' : (classes.includes('B') ? 'B' : classes[0] || 'C'),
+      diffPaths: uniqueStrings(pathsForRoute(leaseJson?.writeSet || leaseJson?.observedWriteSet || leaseJson?.allowedPaths || [])),
+      pendingInspections,
+      eligibleFlights,
+    };
+  });
+}
+
+function wakeTurbulenceRisks({ activeLeases, plans, zonePolicy, semanticGraph }) {
+  const risks = [];
+  for (const lease of activeLeases) {
+    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
+    const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
+    if (route.length === 0) continue;
+    const profiles = wakeProfilesForRoute(route, zonePolicy, semanticGraph);
+    for (const profile of profiles) {
+      const affectedFlights = affectedFlightsForWake({ lease, route, plans, semanticGraph, profile });
+      risks.push({
+        risk: 'wake_turbulence',
+        severity: profile.severity,
+        aircraft: uniqueStrings([lease.displayCallsign, ...affectedFlights].filter(Boolean)),
+        conflictZone: profile.conflictZone || route[0],
+        wake: {
+          kind: profile.kind,
+          runway: route[0],
+          occupiedBy: lease.displayCallsign || lease.agentSessionId || lease.id || null,
+          affectedFlights,
+          requiredWaits: profile.requiredWaits,
+          downstreamSignals: profile.downstreamSignals,
+        },
+        recommendedResolution: {
+          action: 'hold_for_wake_turbulence',
+          steps: profile.steps,
+        },
+      });
+    }
+  }
+  return risks;
+}
+
+function wakeProfilesForRoute(route, zonePolicy, semanticGraph) {
+  const profiles = [];
+  const zones = route.map((path) => classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy)).filter(Boolean);
+  const rules = uniqueStrings(zones.flatMap((zone) => zone.rules || []));
+  const migrationLocks = asArray(semanticGraph.migrationLocks).filter((lock) =>
+    route.some((path) => patternsOverlap(path, lock) || matchPathPattern(path.replace(/\*\*?$/, 'index.ts'), lock)));
+  const schemaSignals = route.filter((path) => {
+    const normalized = normalizePath(path.replace(/\*\*?$/, 'index.ts')) || path;
+    return /(schema|prisma|openapi|packages\/schemas)/i.test(normalized);
+  });
+  const packageSignals = asArray(semanticGraph.packageExports)
+    .filter((entry) => {
+      const candidates = uniqueStrings([entry.root && `${entry.root.replace(/\/+$/, '')}/**`, ...asArray(entry.exports)].filter(Boolean));
+      return candidates.some((candidate) => route.some((path) => patternsOverlap(path, candidate)));
+    })
+    .map((entry) => entry.packageName || entry.root)
+    .filter(Boolean);
+  const generatedClients = asArray(semanticGraph.generatedClients)
+    .filter((client) => route.some((path) => patternsOverlap(path, client)) || schemaSignals.length > 0);
+
+  if (rules.includes('single_migration_runway_lock') || migrationLocks.length > 0) {
+    profiles.push({
+      kind: 'migration',
+      severity: 'high',
+      conflictZone: migrationLocks[0] || route[0],
+      requiredWaits: ['backend_test_wait', 'migration_rollback_radar', 'schema_client_refresh'],
+      downstreamSignals: { migrationLocks },
+      steps: [
+        'Hold backend and test flights until the migration runway lands',
+        'Run rollback and migration-order radar before dependent flights resume',
+        'Refresh generated clients and schema snapshots after landing',
+      ],
+    });
+  }
+
+  if (rules.includes('migration_radar_required') || rules.includes('api_contract_radar_required') || schemaSignals.length > 0) {
+    profiles.push({
+      kind: 'schema_or_contract',
+      severity: 'high',
+      conflictZone: schemaSignals[0] || route[0],
+      requiredWaits: ['generated_client_refresh', 'contract_radar', 'downstream_test_rerun'],
+      downstreamSignals: { schemaSignals, generatedClients },
+      steps: [
+        'Hold downstream feature flights until schema or contract radar completes',
+        'Refresh generated clients before dependent code lands',
+        'Rerun tests covering the changed contract surface',
+      ],
+    });
+  }
+
+  if (rules.includes('downstream_package_radar_required') || packageSignals.length > 0) {
+    profiles.push({
+      kind: 'package_export',
+      severity: 'medium',
+      conflictZone: route[0],
+      requiredWaits: ['downstream_package_radar', 'importer_refresh'],
+      downstreamSignals: { packageExports: packageSignals },
+      steps: [
+        'Hold importers until package export radar finishes',
+        'Refresh downstream route plans that import the changed public surface',
+        'Require dependent flights to refresh read sets before landing',
+      ],
+    });
+  }
+
+  if (rules.includes('runtime_radar_required')) {
+    profiles.push({
+      kind: 'runtime',
+      severity: 'medium',
+      conflictZone: route[0],
+      requiredWaits: ['runtime_inspector_wait', 'preview_restart_radar'],
+      downstreamSignals: {},
+      steps: [
+        'Hold preview/runtime flights until the runtime inspector lands',
+        'Restart affected previews before dependent tests run',
+      ],
+    });
+  }
+
+  return profiles;
+}
+
+function affectedFlightsForWake({ lease, route, plans, semanticGraph, profile }) {
+  const sourceCallsign = lease.displayCallsign || lease.agentSessionId || lease.id || '';
+  const downstreamFiles = downstreamFilesForRoute(route, semanticGraph, profile);
+  return uniqueStrings(plans
+    .filter((plan) => {
+      const callsign = plan.displayCallsign || plan.id || '';
+      if (callsign && callsign === sourceCallsign) return false;
+      const planRoutes = pathsForRoute(plan.route);
+      if (planRoutes.length === 0) return false;
+      return planRoutes.some((planRoute) =>
+        route.some((sourcePath) => patternsOverlap(planRoute, sourcePath))
+        || downstreamFiles.some((file) => matchPathPattern(file, planRoute) || patternsOverlap(file, planRoute)));
+    })
+    .map((plan) => plan.displayCallsign || plan.id)
+    .filter(Boolean));
+}
+
+function downstreamFilesForRoute(route, semanticGraph, profile) {
+  const downstream = [];
+  for (const edge of asArray(semanticGraph.importEdges)) {
+    if (asArray(edge.imports).some((imported) =>
+      route.some((path) => patternsOverlap(imported, path) || matchPathPattern(imported, path)))) {
+      downstream.push(edge.from);
+    }
+  }
+  for (const owner of asArray(semanticGraph.testOwnership)) {
+    if (asArray(owner.covers).some((covered) =>
+      route.some((path) => patternsOverlap(covered, path) || matchPathPattern(covered, path)))) {
+      downstream.push(owner.testPath);
+    }
+  }
+  downstream.push(...asArray(semanticGraph.generatedClients));
+  if (profile.kind === 'package_export') {
+    for (const entry of asArray(semanticGraph.packageExports)) {
+      downstream.push(...asArray(entry.exports), entry.root);
+    }
+  }
+  return uniqueStrings(downstream.filter(Boolean));
+}
+
+function defaultRadarForWakePath(path, zonePolicy) {
+  const zone = classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy);
+  const rules = asArray(zone?.rules);
+  return uniqueStrings([
+    ...(rules.includes('single_migration_runway_lock') ? ['migration_runway_lock'] : []),
+    ...(rules.includes('migration_radar_required') ? ['migration_radar'] : []),
+    ...(rules.includes('api_contract_radar_required') ? ['api_contract_radar'] : []),
+    ...(rules.includes('downstream_package_radar_required') ? ['downstream_package_radar'] : []),
+    ...(rules.includes('runtime_radar_required') ? ['runtime_radar'] : []),
+    ...(['A', 'B'].includes(String(zone?.class || '').toUpperCase()) ? ['landing_inspection'] : []),
+  ]);
 }
 
 function semanticFootprint(plan, semanticGraph) {

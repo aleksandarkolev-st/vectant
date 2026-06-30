@@ -218,4 +218,105 @@ describe('CodeSite airspace policy', () => {
       }),
     ]));
   });
+
+  it('models migration runway occupancy and wake turbulence for dependent test flights', () => {
+    const policy = compileZonePolicy({
+      repoSignals: {
+        prisma: {
+          migrations: ['synthi/prisma/migrations'],
+        },
+        testGraph: [{
+          testPath: 'tests/db/migration-order.test.ts',
+          covers: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+        }],
+        generatedClients: ['synthi/src/generated/prisma/client.ts'],
+      },
+    });
+
+    const forecast = predictCollisions({
+      zonePolicy: policy,
+      leases: [{
+        id: 'lease-db-1',
+        status: 'active',
+        displayCallsign: 'DB-01',
+        leaseJson: JSON.stringify({
+          allowedPaths: ['synthi/prisma/migrations/20260630_add_user/**'],
+        }),
+      }],
+      executionPlans: [
+        { displayCallsign: 'TEST-02', route: ['tests/db/**'] },
+        { displayCallsign: 'CLIENT-03', route: ['synthi/src/generated/prisma/**'] },
+      ],
+    });
+
+    expect(forecast.runwayOccupancy).toEqual([
+      expect.objectContaining({
+        runway: 'synthi/prisma/migrations/20260630_add_user/**',
+        occupiedBy: 'DB-01',
+        runwayClass: 'A',
+        pendingInspections: expect.arrayContaining(['migration_runway_lock', 'landing_inspection']),
+      }),
+    ]);
+    expect(forecast.wakeTurbulence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'wake_turbulence',
+        severity: 'high',
+        aircraft: expect.arrayContaining(['DB-01', 'TEST-02', 'CLIENT-03']),
+        wake: expect.objectContaining({
+          kind: 'migration',
+          requiredWaits: expect.arrayContaining(['backend_test_wait', 'migration_rollback_radar', 'schema_client_refresh']),
+        }),
+        recommendedResolution: expect.objectContaining({ action: 'hold_for_wake_turbulence' }),
+      }),
+    ]));
+  });
+
+  it('models package export wake turbulence for downstream importers', () => {
+    const policy = compileZonePolicy({
+      repoSignals: {
+        files: [
+          'packages/contracts/src/index.ts',
+          'synthi/src/app/checkout/page.tsx',
+        ],
+        packageExports: [{
+          packageName: '@acme/contracts',
+          root: 'packages/contracts',
+          exports: ['packages/contracts/src/index.ts'],
+        }],
+        importGraph: [{
+          from: 'synthi/src/app/checkout/page.tsx',
+          imports: ['packages/contracts/src/index.ts'],
+        }],
+      },
+    });
+
+    const forecast = predictCollisions({
+      zonePolicy: policy,
+      leases: [{
+        id: 'lease-contracts-1',
+        status: 'active',
+        displayCallsign: 'PKG-01',
+        leaseJson: JSON.stringify({
+          allowedPaths: ['packages/contracts/src/index.ts'],
+        }),
+      }],
+      executionPlans: [
+        { displayCallsign: 'WEB-02', route: ['synthi/src/app/checkout/**'] },
+      ],
+    });
+
+    expect(forecast.wakeTurbulence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'wake_turbulence',
+        severity: 'medium',
+        aircraft: expect.arrayContaining(['PKG-01', 'WEB-02']),
+        wake: expect.objectContaining({
+          kind: 'package_export',
+          affectedFlights: ['WEB-02'],
+          requiredWaits: expect.arrayContaining(['downstream_package_radar', 'importer_refresh']),
+          downstreamSignals: expect.objectContaining({ packageExports: ['@acme/contracts'] }),
+        }),
+      }),
+    ]));
+  });
 });
