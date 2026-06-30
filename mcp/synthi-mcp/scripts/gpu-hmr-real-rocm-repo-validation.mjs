@@ -3594,7 +3594,107 @@ function runtimeProfileAdapterStrictSummary(result = {}) {
   };
 }
 
+const REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_event.v1';
+const REAL_ROCM_RUNTIME_BOUNDARY_EVENT_KIND_TOKENS = Object.freeze({
+  artifact_transport: 'artifact_transport',
+  epoch_publication: 'dispatcher_epoch',
+  dispatcher_epoch: 'dispatcher_epoch',
+  dispatch_trace: 'synthi_gpu_launch',
+  synthi_gpu_launch: 'synthi_gpu_launch',
+  native_runtime_dispatch: 'native_runtime_dispatch',
+  host_identity: 'host_identity',
+  output_oracle: 'output_oracle',
+});
+const REAL_ROCM_RUNTIME_BOUNDARY_EVENT_RESERVED_KEYS = new Set([
+  'schemaVersion',
+  'schema_version',
+  'event',
+  'eventKind',
+  'event_kind',
+  'kind',
+  'stage',
+  'stageKind',
+  'stage_kind',
+  'fields',
+  'boundaryFields',
+  'boundary_fields',
+  'line',
+  'runtimeBoundaryLine',
+  'runtime_boundary_line',
+  'acceptedForGpuHmr',
+  'accepted_for_gpu_hmr',
+  'gpuHmrSuccess',
+  'gpu_hmr_success',
+  'canSatisfyRuntimeProof',
+  'can_satisfy_runtime_proof',
+  'canSatisfyDispatchProof',
+  'can_satisfy_dispatch_proof',
+  'proofAuthority',
+  'proof_authority',
+]);
+
+function runtimeBoundaryStructuredEventKind(entry = {}) {
+  const rawKind = stringField(entry, [
+    'eventKind',
+    'event_kind',
+    'event',
+    'kind',
+    'stageKind',
+    'stage_kind',
+    'stage',
+  ]);
+  return rawKind
+    ? rawKind.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    : '';
+}
+
+function runtimeBoundaryStructuredEventFields(entry = {}) {
+  const explicitFields = entry.fields ?? entry.boundaryFields ?? entry.boundary_fields;
+  if (explicitFields && typeof explicitFields === 'object' && !Array.isArray(explicitFields)) {
+    return explicitFields;
+  }
+  const fallback = {};
+  for (const [key, value] of Object.entries(entry ?? {})) {
+    if (REAL_ROCM_RUNTIME_BOUNDARY_EVENT_RESERVED_KEYS.has(key)) continue;
+    fallback[key] = value;
+  }
+  return fallback;
+}
+
+function runtimeBoundaryStructuredEventLine(entry = {}) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return '';
+  const schemaVersion = stringField(entry, ['schemaVersion', 'schema_version']);
+  if (schemaVersion && schemaVersion !== REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION) {
+    return '';
+  }
+  const kind = runtimeBoundaryStructuredEventKind(entry);
+  const token = REAL_ROCM_RUNTIME_BOUNDARY_EVENT_KIND_TOKENS[kind];
+  if (!token) return '';
+  const fields = runtimeBoundaryStructuredEventFields(entry);
+  const parts = [];
+  for (const [rawKey, rawValue] of Object.entries(fields)) {
+    const key = String(rawKey ?? '').trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (rawValue === undefined || rawValue === null) continue;
+    if (!['string', 'number', 'boolean'].includes(typeof rawValue)) continue;
+    const value = String(rawValue).trim();
+    if (!value || /\s/.test(value)) continue;
+    parts.push(`${key}=${value}`);
+  }
+  if (parts.length === 0) return '';
+  return `[gpu-runtime-boundary] ${token} ${parts.join(' ')}`;
+}
+
 function runtimeProfileAdapterBoundaryLines(result = {}) {
+  const structuredEvents = [
+    ...(Array.isArray(result.runtimeBoundaryEvents) ? result.runtimeBoundaryEvents : []),
+    ...(Array.isArray(result.runtime_boundary_events) ? result.runtime_boundary_events : []),
+    ...(Array.isArray(result.adapterRuntimeBoundaryEvents) ? result.adapterRuntimeBoundaryEvents : []),
+    ...(Array.isArray(result.adapter_runtime_boundary_events) ? result.adapter_runtime_boundary_events : []),
+    ...(Array.isArray(result.runtimeEvents) ? result.runtimeEvents : []),
+    ...(Array.isArray(result.runtime_events) ? result.runtime_events : []),
+  ];
   const rawLines = [
     ...(Array.isArray(result.runtimeBoundaryLines) ? result.runtimeBoundaryLines : []),
     ...(Array.isArray(result.runtime_boundary_lines) ? result.runtime_boundary_lines : []),
@@ -3602,6 +3702,7 @@ function runtimeProfileAdapterBoundaryLines(result = {}) {
     ...(Array.isArray(result.adapter_runtime_boundary_lines) ? result.adapter_runtime_boundary_lines : []),
     ...(Array.isArray(result.runtimeEvents) ? result.runtimeEvents : []),
     ...(Array.isArray(result.runtime_events) ? result.runtime_events : []),
+    ...structuredEvents.map((entry) => runtimeBoundaryStructuredEventLine(entry)),
   ];
   return compactStringList(rawLines.map((entry) => {
     if (typeof entry === 'string') return entry;
@@ -17073,6 +17174,28 @@ async function selfCheckRuntimeDispatchEvidence() {
     '[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3 aux=3 generation=2 runtime_session=pid123-self-check process_id=pid:123 context_id=context:0 queue_id=stream:0',
     `[gpu-runtime-boundary] output_oracle id=oracle:self-check kind=buffer_checksum expected=sha256:${'b'.repeat(64)} actual=sha256:${'b'.repeat(64)} passed=true runtime_session=pid123-self-check process_id=pid:123 artifact_id=artifact:sha256:${'a'.repeat(64)} epoch=epoch:2 generation=generation:2 output_target_id=output-target:self-check after_dispatch_id=dispatch:self-check readback_timestamp=4000 readback_bytes=4 readback_sample_sha256=sha256:${'b'.repeat(64)}`,
   ];
+  const structuredAdapterRuntimeBoundaryEvents = completeAdapterRuntimeBoundaryLines.map((line) => {
+    const eventKind = /\bartifact_transport\b/i.test(line)
+      ? 'artifact_transport'
+      : /\bdispatcher_epoch\b/i.test(line)
+        ? 'epoch_publication'
+        : /\bsynthi_gpu_launch\b/i.test(line)
+          ? 'dispatch_trace'
+          : /\bhost_identity\b/i.test(line)
+            ? 'host_identity'
+            : 'output_oracle';
+    const fields = {};
+    for (const match of String(line).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)/g)) {
+      fields[match[1]] = match[2];
+    }
+    return {
+      schemaVersion: REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      schema_version: REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind,
+      event_kind: eventKind,
+      fields,
+    };
+  });
   const adapterResultSelfCheck = {
     schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
     profileId: 'self-check-runtime-profile',
@@ -17154,6 +17277,43 @@ async function selfCheckRuntimeDispatchEvidence() {
       || importedAdapterResult.blockingGaps.length !== 0
     ) {
       throw new Error('runtime profile adapter result bridge self-check failed');
+    }
+    await writeFile(
+      adapterResultSelfCheckPath,
+      `${JSON.stringify({
+        ...adapterResultSelfCheck,
+        runtimeBoundaryLines: [],
+        runtime_boundary_lines: [],
+        adapterRuntimeBoundaryLines: [],
+        adapter_runtime_boundary_lines: [],
+        runtimeBoundaryEvents: structuredAdapterRuntimeBoundaryEvents,
+        runtime_boundary_events: structuredAdapterRuntimeBoundaryEvents,
+      }, null, 2)}\n`,
+    );
+    const structuredAdapterResult = await collectRuntimeProfileAdapterResultBridge({
+      profileId: 'self-check-runtime-profile',
+    });
+    if (
+      structuredAdapterResult.status !== 'runtime_profile_adapter_result_imported'
+      || structuredAdapterResult.adapterRuntimeBoundaryLineCount
+        !== completeAdapterRuntimeBoundaryLines.length
+      || structuredAdapterResult.adapterRuntimeBoundaryLines[0]
+        !== completeAdapterRuntimeBoundaryLines[0]
+      || structuredAdapterResult.adapterBoundaryCoverage?.missingEventKinds?.length !== 0
+      || structuredAdapterResult.adapterBoundaryCoverage?.dispatchEventObserved !== true
+      || structuredAdapterResult.adapterBoundaryCoverage?.outputEventObserved !== true
+      || !structuredAdapterResult.adapterRuntimeBoundaryLineHashes.includes(
+        sha256Text(completeAdapterRuntimeBoundaryLines.at(-1)),
+      )
+      || structuredAdapterResult.acceptedForGpuHmr !== false
+      || structuredAdapterResult.canSatisfyRuntimeProof !== false
+    ) {
+      throw new Error(`structured runtime boundary event materialization self-check failed ${stableJson({
+        status: structuredAdapterResult.status,
+        lineCount: structuredAdapterResult.adapterRuntimeBoundaryLineCount,
+        missingEventKinds: structuredAdapterResult.adapterBoundaryCoverage?.missingEventKinds,
+        coverage: structuredAdapterResult.adapterBoundaryCoverage,
+      })}`);
     }
     await writeFile(
       adapterResultSelfCheckPath,

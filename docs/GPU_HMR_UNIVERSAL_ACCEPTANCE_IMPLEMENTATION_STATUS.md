@@ -4,6 +4,22 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Structured Runtime-Adapter Event Materialization
+
+Runtime-profile adapter result manifests can now emit typed `synthi.gpu_hmr.runtime_boundary_event.v1` objects through `runtimeBoundaryEvents`, `runtime_boundary_events`, `adapterRuntimeBoundaryEvents`, or `adapter_runtime_boundary_events`. The real ROCm runner materializes recognized event kinds into canonical `[gpu-runtime-boundary]` lines and then sends those lines through the existing artifact-transport, epoch-publication, dispatch, host-identity, output-oracle, stage-events, adapter-result bridge, and validation-matrix parsers.
+
+This is a structured JSON input path for arbitrary project adapters, not a new proof authority. Materialized events use only scalar no-whitespace key/value fields, unrecognized schemas or event kinds are ignored, and all GPU HMR success fields remain controlled by the strict runtime proof artifact, proof ledger, runtime-chain, output oracle, host identity, firewall, and matrix acceptance gates.
+
+The runner self-check now writes an adapter result manifest with no prebuilt boundary lines and a full set of structured event objects, then verifies the bridge imports the materialized lines, sees all five app-hook event families, and records the expected boundary hashes. The validation matrix self-check still reports 56 rows, 14 accepted scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed with structured runtime-boundary event materialization imported through the adapter result bridge
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke ledger rows=65 and current matrix summary remained 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Runtime-Adapter Stage Events And Overlay Closure
 
 The real ROCm runtime-adapter path now emits a generic support-only `synthi.real_rocm.runtime_adapter_stage_events.v1` facet from adapter `[gpu-runtime-boundary]` output. The runner normalizes boundary lines into the five app-hook stages `artifact_transport`, `epoch_publication`, `dispatch_trace`, `host_identity`, and `output_oracle`, records per-stage boundary hashes, evidence refs, field checks, missing proof kinds, and a content-addressed facet hash, and preserves the facet in retained reports and runtime evidence.
