@@ -14,12 +14,17 @@ The latest bounded MIOpen rerun, `gpu-real-rocm-MIOpen-20260630171112`, exercise
 
 The validation plan now also has an explicit random large-project cold-path lane. Sampled projects must record selection seed, repo URL, immutable commit, size signals, cold source-tree intake, build metadata discovery, runtime-boundary classification, and fail-closed gaps. Acceptance for any sampled project still requires the normal same-process loader, epoch, dispatch, host-identity, output-oracle, firewall, and strict ledger gates; otherwise the correct outcome is a precise refusal, not a generalized success claim.
 
+That lane is now backed by `mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs`. The sampler selects serious real-project profiles by deterministic seed, records `synthi.gpu_hmr.random_large_project_cold_path.v1` manifests with evidence-only authority `random_large_project_cold_path_selection_only_not_gpu_hmr_success`, and can either dry-run selection or invoke the normal real ROCm runner with cold checkout settings (`SYNTHI_REAL_ROCM_REUSE_WORKER_REPO=0`, `SYNTHI_REAL_ROCM_CLEAN_BUILD=1`). The manifest always starts with `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`; selected projects still need their own strict runtime ledger closure before any acceptance claim.
+
 Verification for this patch:
 
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including run-id lifecycle status recovery and metadata snapshot checks
 npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen with SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000 -> failed closed, gpu-real-rocm-MIOpen-20260630171112
+node --check mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:random-large-project:cold:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:random-large-project:cold:dry-run -> passed, selected real-rocm-hipblaslt-gelu-aux-bias-large-ml, manifest sha256:5c39ad857d6d9a333ab3de8d0d5b983ae2fa84a5599c97a3fdb6d41f1fcd67c1
 ```
 
 ## 2026-06-30 Source-First Compile-Proof Gate And Default Visual Rerun
