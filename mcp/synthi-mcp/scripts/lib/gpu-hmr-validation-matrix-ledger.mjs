@@ -12614,6 +12614,260 @@ async function openClRuntimeRow(json, filePath, context) {
   });
 }
 
+async function vulkanRuntimeRow(json, filePath, context) {
+  const ledger = ledgerFacet(json);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
+  const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
+  const vulkanContract = compactObject(contract.vulkan_contract ?? contract.vulkanContract);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    json.runtimeProofArtifact,
+    json.runtime_proof_artifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
+  const nativeApiEvidence = compactObject(json.nativeVulkanApiEvidence ?? json.native_vulkan_api_evidence);
+  const nativeCounts = compactObject(nativeApiEvidence.counts);
+  const negativeLayoutRefusal = compactObject(json.negativeLayoutRefusal ?? json.negative_layout_refusal);
+  const executableStaticCheck = compactObject(
+    negativeLayoutRefusal.executableStaticCheck ?? negativeLayoutRefusal.executable_static_check,
+  );
+  const visualArtifacts = compactObject(
+    json.visualOracleArtifacts
+    ?? json.visual_oracle_artifacts
+    ?? ledgerRecord.oracle_artifacts?.visual_oracle_artifacts
+    ?? ledgerRecord.oracleArtifacts?.visualOracleArtifacts,
+  );
+  const visual = await visualArtifactEvidence(
+    visualArtifacts,
+    context.repoRoot,
+    path.dirname(filePath),
+    {
+      changedPixelRatio: visualArtifacts.changed_pixel_ratio,
+      changed_pixel_ratio: visualArtifacts.changed_pixel_ratio,
+      meanAbsDelta8bit:
+        visualArtifacts.visual_pixel_verification?.mean_abs_delta_8bit
+        ?? visualArtifacts.mean_abs_delta_8bit,
+      visiblePixelCount: visualArtifacts.visible_pixel_count,
+      visible_pixel_count: visualArtifacts.visible_pixel_count,
+      visualProofThresholds: {
+        minChangedPixelRatio: 0.001,
+        minMeanAbsDelta8bit: 0.1,
+        minVisiblePixelCount: 1,
+      },
+    },
+    runtimeVisualOracleEvidenceRequirements(),
+  );
+  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
+    json.deterministicVisualMode
+    ?? json.deterministic_visual_mode
+    ?? runtimeProofArtifact.deterministicVisualMode
+    ?? runtimeProofArtifact.deterministic_visual_mode
+    ?? ledgerRecord.deterministicVisualMode
+    ?? ledgerRecord.deterministic_visual_mode,
+  );
+  const supportedPipelineScope = firstText(
+    vulkanContract.supported_pipeline_scope,
+    vulkanContract.supportedPipelineScope,
+    contract.artifact_identity?.supported_pipeline_scope,
+    contract.artifactIdentity?.supportedPipelineScope,
+    json.profile?.validationScope,
+    json.profile?.validation_scope,
+  );
+  const declaredScopeEvidence = declaredScopeEvidenceFacet({
+    supportedPipelineScope,
+    contract,
+    backendContract: vulkanContract,
+    profile: json.profile,
+  });
+  const artifactAfterHash = firstText(
+    json.compiler?.afterShaderModuleHash,
+    json.compiler?.after_shader_module_hash,
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    ledgerRecord.artifact_after_hash,
+    ledgerRecord.artifactAfterHash,
+  );
+  const loaderEvent = compactObject(ledgerRecord.loader_event ?? ledgerRecord.loaderEvent);
+  const epochPublishEvent = compactObject(ledgerRecord.epoch_publish_event ?? ledgerRecord.epochPublishEvent);
+  const dispatchEvent = compactObject(ledgerRecord.dispatch_event ?? ledgerRecord.dispatchEvent);
+  const outputEvent = compactObject(ledgerRecord.output_event ?? ledgerRecord.outputEvent);
+  const retirementEvent = compactObject(ledgerRecord.retirement_event ?? ledgerRecord.retirementEvent);
+  const runtimeTimestamps = {
+    loader: eventTimestampNs(loaderEvent),
+    epochPublish: eventTimestampNs(epochPublishEvent),
+    dispatch: eventTimestampNs(dispatchEvent),
+    output: eventTimestampNs(outputEvent),
+    retirement: eventTimestampNs(retirementEvent),
+  };
+  const runtimeTimestampProofAccepted =
+    runtimeTimestamps.loader !== null
+    && runtimeTimestamps.epochPublish !== null
+    && runtimeTimestamps.dispatch !== null
+    && runtimeTimestamps.output !== null
+    && runtimeTimestamps.retirement !== null
+    && runtimeTimestamps.loader <= runtimeTimestamps.epochPublish
+    && runtimeTimestamps.epochPublish <= runtimeTimestamps.dispatch
+    && runtimeTimestamps.dispatch <= runtimeTimestamps.output
+    && runtimeTimestamps.output <= runtimeTimestamps.retirement;
+  const epoch2ArtifactHashes = [
+    loaderEvent.artifact_hash,
+    loaderEvent.artifactHash,
+    epochPublishEvent.artifact_hash,
+    epochPublishEvent.artifactHash,
+    dispatchEvent.artifact_hash,
+    dispatchEvent.artifactHash,
+    outputEvent.artifact_hash,
+    outputEvent.artifactHash,
+  ].map(text).filter(Boolean);
+  const epoch2ArtifactHashProofAccepted =
+    Boolean(artifactAfterHash)
+    && epoch2ArtifactHashes.length >= 4
+    && epoch2ArtifactHashes.every((hash) => hash === artifactAfterHash);
+  const negativeLayoutRefusalAccepted =
+    negativeLayoutRefusal.refusalProven === true
+    && negativeLayoutRefusal.gpuHmrSuccess === false
+    && negativeLayoutRefusal.abiCompatibilityClass === 'layout_changed'
+    && executableStaticCheck.accepted === true
+    && executableStaticCheck.layoutChanged === true
+    && executableStaticCheck.pipelineLayoutChanged === true
+    && executableStaticCheck.negativeShaderFound === true
+    && Boolean(firstText(executableStaticCheck.sourceAfterHash, executableStaticCheck.source_after_hash))
+    && Boolean(firstText(executableStaticCheck.acceptedLayoutHash, executableStaticCheck.accepted_layout_hash))
+    && Boolean(firstText(executableStaticCheck.negativeLayoutHash, executableStaticCheck.negative_layout_hash));
+  const nativeVulkanApiAccepted =
+    nativeApiEvidence.accepted === true
+    && Number(nativeCounts.vkCreateShaderModule ?? 0) >= 2
+    && Number(nativeCounts.vkCreatePipelineLayout ?? 0) >= 2
+    && Number(nativeCounts.vkCreateComputePipelines ?? 0) >= 2
+    && Number(nativeCounts.vkAllocateCommandBuffers ?? 0) >= 2
+    && Number(nativeCounts.vkBeginCommandBuffer ?? 0) >= 2
+    && Number(nativeCounts.vkCmdBindPipeline ?? 0) >= 2
+    && Number(nativeCounts.vkCmdDispatch ?? 0) >= 2
+    && Number(nativeCounts.vkQueueSubmit ?? 0) >= 2
+    && Number(nativeCounts.vkWaitForFences ?? 0) >= 2;
+  const accepted =
+    json.gpuHmrSuccess === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && visual.accepted === true
+    && nativeVulkanApiAccepted
+    && declaredScopeEvidence.accepted === true
+    && negativeLayoutRefusalAccepted
+    && runtimeTimestampProofAccepted
+    && epoch2ArtifactHashProofAccepted
+    && deterministicVisualModeEvaluation.accepted === true
+    && runtimeProofArtifactGate.accepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
+  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  return finalizeRow({
+    artifactSchema: json.schema,
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: 'vulkan',
+    targetId: profileId,
+    profileId,
+    proofMode: 'vulkan_runtime_pipeline_visual',
+    evidenceKind: 'visual_oracle',
+    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
+    acceptanceClass: accepted ? 'scoped_vulkan_runtime_hmr' : 'vulkan_runtime_rejected',
+    acceptanceScope: accepted ? 'vulkan_declared_pipeline_visual' : null,
+    acceptance_scope: accepted ? 'vulkan_declared_pipeline_visual' : null,
+    acceptedForGpuHmr: accepted,
+    gpuHmrSuccess: accepted,
+    refusalProven: false,
+    proofChainAccepted: accepted,
+    proofChain: accepted ? 'vulkan_ledger_native_api_visual_frame_chain' : 'vulkan_runtime_chain_rejected',
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifact),
+    ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
+    visual,
+    supportedPipelineScope,
+    supported_pipeline_scope: supportedPipelineScope,
+    declaredScopeEvidence,
+    declared_scope_evidence: declaredScopeEvidence,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    nativeVulkanApiEvidence: nativeApiEvidence,
+    native_vulkan_api_evidence: nativeApiEvidence,
+    nativeVulkanApiAccepted,
+    native_vulkan_api_accepted: nativeVulkanApiAccepted,
+    negativeLayoutRefusal,
+    negative_layout_refusal: negativeLayoutRefusal,
+    negativeLayoutRefusalAccepted,
+    negative_layout_refusal_accepted: negativeLayoutRefusalAccepted,
+    runtimeTimestampProof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    runtime_timestamp_proof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    epoch2ArtifactHashProof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifactAfterHash,
+      observedArtifactHashes: epoch2ArtifactHashes,
+    },
+    epoch2_artifact_hash_proof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifact_after_hash: artifactAfterHash,
+      observed_artifact_hashes: epoch2ArtifactHashes,
+    },
+    runMode: timingEvidence(
+      ledgerRecord,
+      json.timingMetrics,
+      json.timing_metrics,
+      json.timings,
+    ),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+    timings: {
+      totalValidatorWallTimeNs: finiteNumber(json.timings?.total_validator_wall_time),
+      triggerToVisibleTimeNs: finiteNumber(json.timings?.trigger_to_visible_time),
+      oracleAnalysisTimeNs: finiteNumber(json.timings?.oracle_analysis_time),
+    },
+    reasons: accepted ? [] : compactStringList([
+      ...ledger.failedInvariants.map((failure) => failure.code),
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
+      visual.accepted ? null : 'visual_artifacts_not_readable',
+      nativeVulkanApiAccepted ? null : 'native_vulkan_api_not_accepted',
+      declaredScopeEvidence.accepted === true
+        ? null
+        : 'vulkan_declared_scope_not_evidence_backed',
+      negativeLayoutRefusalAccepted ? null : 'vulkan_negative_layout_refusal_not_executable',
+      runtimeTimestampProofAccepted ? null : 'vulkan_runtime_event_timestamps_not_observed',
+      epoch2ArtifactHashProofAccepted ? null : 'vulkan_epoch2_artifact_hash_chain_not_proven',
+      deterministicVisualModeEvaluation.accepted === true ? null : 'deterministic_visual_mode_not_accepted',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
+      ...declaredScopeEvidence.failedGates,
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
+    openGaps: accepted ? [] : compactStringList([
+      'vulkan_runtime_pipeline_visual_proof_not_accepted',
+      ...declaredScopeEvidence.failedGates,
+      ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
+  });
+}
+
 async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
   const externalProjectContract = externalProjectContractEvidence(json);
@@ -18520,6 +18774,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema.includes('opencl_runtime_proof') || proofId.startsWith('opencl-runtime-proof:')) {
     return openClRuntimeRow(json, filePath, context);
+  }
+  if (schema.includes('vulkan_runtime_proof') || proofId.startsWith('vulkan-runtime-proof:')) {
+    return vulkanRuntimeRow(json, filePath, context);
   }
   if (
     schema.includes('oidn_preflight')
