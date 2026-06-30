@@ -70,7 +70,7 @@ export default function StoreView({
               <FileInput className="w-3.5 h-3.5" /> Install from manifest
             </button>
             <button type="button" data-testid="publish-program" onClick={onPublish} style={action} className="inline-flex items-center gap-1.5">
-              <UploadCloud className="w-3.5 h-3.5" /> Publish
+              <UploadCloud className="w-3.5 h-3.5" /> Submit for review
             </button>
           </div>
         ) : null}

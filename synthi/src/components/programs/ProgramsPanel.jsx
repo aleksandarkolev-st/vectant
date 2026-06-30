@@ -11,7 +11,9 @@ import {
   fetchInstalledPrograms,
   installWorkspaceProgram,
   launchInstalledProgram,
-  publishWorkspaceProgram,
+  submitForReview,
+  fetchMySubmissions,
+  unpublishProgram,
   fetchMarketplace,
   installPublishedProgram,
   scaffoldProgram,
@@ -35,7 +37,12 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { PROGRAM_STYLE } from './programTokens';
 import LibraryView from './library/LibraryView';
 import StoreView from './store/StoreView';
+import MyAppsView from './myapps/MyAppsView';
+import FirstPublishTutorial from './FirstPublishTutorial';
 import ConfirmDialog from './ConfirmDialog';
+
+/** Non-terminal review states — while any app is here, the My Apps tab polls. */
+const IN_FLIGHT_STATES = ['submitted', 'scanning', 'ai_review', 'approved', 'rehosting'];
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -91,6 +98,8 @@ export default function ProgramsPanel() {
   const [marketplace, setMarketplace] = useState([]);
   const [marketQuery, setMarketQuery] = useState('');
   const [detected, setDetected] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
+  const [showTutorial, setShowTutorial] = useState(false);
   const [loading, setLoading] = useState(true);
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
@@ -105,22 +114,25 @@ export default function ProgramsPanel() {
       setSessions([]);
       setInstalls([]);
       setMarketplace([]);
+      setSubmissions([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     try {
-      const [nextSessions, nextInstalls, nextMarket, nextDetected] = await Promise.all([
+      const [nextSessions, nextInstalls, nextMarket, nextDetected, nextSubmissions] = await Promise.all([
         fetchProgramSessions(workspaceSlug),
         fetchInstalledPrograms(workspaceSlug).catch(() => []),
         fetchMarketplace(workspaceSlug, marketQuery).catch(() => []),
         fetchDetectedProgram(workspaceSlug).catch(() => null),
+        fetchMySubmissions(workspaceSlug).catch(() => []),
       ]);
       setSessions(nextSessions);
       setInstalls(nextInstalls);
       setMarketplace(Array.isArray(nextMarket) ? nextMarket : []);
       setDetected(nextDetected || null);
+      setSubmissions(Array.isArray(nextSubmissions) ? nextSubmissions : []);
     } catch (error) {
       toast.error(error.message || 'Failed to load programs');
     } finally {
@@ -131,6 +143,15 @@ export default function ProgramsPanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // While the My Apps tab is open and an app is mid-pipeline, poll for status so
+  // the autonomous pipeline's progress shows live without a manual refresh.
+  useEffect(() => {
+    if (view !== 'myapps') return undefined;
+    if (!submissions.some((s) => IN_FLIGHT_STATES.includes(s.reviewState))) return undefined;
+    const id = setInterval(() => { load(); }, 4000);
+    return () => clearInterval(id);
+  }, [view, submissions, load]);
 
   const openProgramSession = useCallback((session, { label = null, command = null } = {}) => {
     if (!session?.id) return;
@@ -282,14 +303,39 @@ export default function ProgramsPanel() {
 
   const handlePublish = useCallback(async () => {
     if (!workspaceSlug) return;
+    // Container/GUI apps publish a pre-built image; web/CLI apps need none. Collect
+    // the optional image ref; a blank entry submits with no image, a cancel aborts.
+    let sourceImageRef;
     try {
-      const { program } = await publishWorkspaceProgram(workspaceSlug);
-      toast.success(`Published ${program?.packageId || 'program'}`);
+      const ref = window.prompt('Container/GUI apps: paste the image reference to publish (leave blank for web/CLI apps).', '');
+      if (ref === null) return;
+      sourceImageRef = ref.trim() || undefined;
+    } catch { sourceImageRef = undefined; }
+    try {
+      const { submission } = await submitForReview(workspaceSlug, { sourceImageRef });
+      toast.success(submission?.reviewState === 'submitted' ? 'Submitted for review' : `Submission: ${submission?.reviewState || 'received'}`);
+      setView('myapps');
       await load();
     } catch (error) {
       if (error?.status === 422) toast.error(error.body?.message || 'Invalid manifest');
       else if (error?.status === 404) toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
-      else toast.error(error.body?.message || error.message || 'Failed to publish');
+      else if (error?.status === 403) toast.error('You are not allowed to publish.');
+      else toast.error(error.body?.message || error.message || 'Failed to submit');
+    }
+  }, [load, workspaceSlug]);
+
+  // My Apps: "Submit update" sends the publisher back to the Store submit flow;
+  // "Unpublish" takes a live app down (confirmed).
+  const handleSubmitUpdate = useCallback(() => { setView('store'); }, []);
+  const handleUnpublish = useCallback(async (packageId) => {
+    if (!workspaceSlug || !packageId) return;
+    if (!window.confirm(`Unpublish ${packageId}? It will be removed from the marketplace.`)) return;
+    try {
+      await unpublishProgram(workspaceSlug, packageId);
+      toast.success('Unpublished');
+      await load();
+    } catch (error) {
+      toast.error(error.body?.message || error.message || 'Failed to unpublish');
     }
   }, [load, workspaceSlug]);
 
@@ -341,8 +387,25 @@ export default function ProgramsPanel() {
     ? (consent.published || { packageId: '__manifest__', displayName: 'Workspace program', latestVersion: '', verified: false })
     : null;
 
+  const tabBtn = (id, label) => (
+    <button
+      type="button"
+      data-testid={`tab-${id}`}
+      onClick={() => { setView(id); if (id === 'store') setShowTutorial(true); }}
+      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', color: view === id ? 'var(--text-primary)' : 'var(--text-secondary)', background: view === id ? 'var(--bg-elevated, #16161c)' : 'transparent' }}
+    >{label}</button>
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0" style={{ ...PROGRAM_STYLE.panelShell, borderRadius: '0' }}>
+      {canManage ? (
+        <div data-testid="programs-tabs" className="flex items-center gap-1" style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+          {tabBtn('library', 'Library')}
+          {tabBtn('store', 'Store')}
+          {tabBtn('myapps', 'My Apps')}
+        </div>
+      ) : null}
+
       {view === 'library' ? (
         <LibraryView
           canManage={canManage}
@@ -362,6 +425,13 @@ export default function ProgramsPanel() {
           onScaffold={handleScaffold}
           onLaunchDetected={handleLaunchDetected}
         />
+      ) : view === 'myapps' ? (
+        <MyAppsView
+          submissions={submissions}
+          onSubmitUpdate={handleSubmitUpdate}
+          onUnpublish={handleUnpublish}
+          onRefresh={load}
+        />
       ) : (
         <StoreView
           canManage={canManage}
@@ -378,6 +448,8 @@ export default function ProgramsPanel() {
           onApprove={onApprove}
         />
       )}
+
+      <FirstPublishTutorial userId={workspaceSlug || 'anon'} open={showTutorial} onClose={() => setShowTutorial(false)} />
 
       {removeTarget ? (
         <ConfirmDialog

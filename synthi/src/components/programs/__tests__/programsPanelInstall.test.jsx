@@ -18,6 +18,9 @@ const h = vi.hoisted(() => ({
   restartProgramSession: vi.fn(),
   deleteProgramSession: vi.fn(),
   publishWorkspaceProgram: vi.fn(),
+  submitForReview: vi.fn(),
+  fetchMySubmissions: vi.fn(),
+  unpublishProgram: vi.fn(),
   fetchMarketplace: vi.fn(),
   installPublishedProgram: vi.fn(),
   toastSuccess: vi.fn(),
@@ -42,6 +45,9 @@ vi.mock('../programsClient', () => ({
   restartProgramSession: h.restartProgramSession,
   deleteProgramSession: h.deleteProgramSession,
   publishWorkspaceProgram: h.publishWorkspaceProgram,
+  submitForReview: h.submitForReview,
+  fetchMySubmissions: h.fetchMySubmissions,
+  unpublishProgram: h.unpublishProgram,
   fetchMarketplace: h.fetchMarketplace,
   installPublishedProgram: h.installPublishedProgram,
   scaffoldProgram: h.scaffoldProgram,
@@ -100,6 +106,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchInstalledPrograms.mockResolvedValue([]);
     h.fetchMarketplace.mockResolvedValue([]);
     h.fetchDetectedProgram.mockResolvedValue(null);
+    h.fetchMySubmissions.mockResolvedValue([]);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -196,13 +203,19 @@ describe('ProgramsPanel install / launch-from-install', () => {
     expect(byTestId(container, 'install-from-manifest')).toBeNull();
   });
 
-  it('publishes the workspace program when an owner clicks Publish', async () => {
-    h.publishWorkspaceProgram.mockResolvedValue({ program: { packageId: '@team/web', publisher: 'team' } });
-    await render();
-    await openStore(container);
-    await act(async () => { byTestId(container, 'publish-program').click(); });
-    await flush();
-    expect(h.publishWorkspaceProgram).toHaveBeenCalledWith('team');
+  it('submits for review when an owner clicks Submit for review', async () => {
+    const origPrompt = window.prompt;
+    window.prompt = () => '';
+    try {
+      h.submitForReview.mockResolvedValue({ submission: { versionId: 'ver1', reviewState: 'submitted' } });
+      await render();
+      await openStore(container);
+      await act(async () => { byTestId(container, 'publish-program').click(); });
+      await flush();
+      expect(h.submitForReview).toHaveBeenCalledWith('team', { sourceImageRef: undefined });
+    } finally {
+      window.prompt = origPrompt;
+    }
   });
 
   it('lists the published catalog and installs a published program', async () => {
