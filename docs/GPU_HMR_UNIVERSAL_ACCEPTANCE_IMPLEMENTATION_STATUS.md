@@ -1,6 +1,6 @@
 # GPU HMR Universal Acceptance Implementation Status
 
-Status date: 2026-06-30
+Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
@@ -46,7 +46,7 @@ Random large-project cold-path manifests are now first-class validation-matrix r
 
 Broad library-agnostic readiness now also requires the matrix to contain at least one support-only random large arbitrary-project cold-path refusal with accepted source-tree intake, build metadata evidence, and a validated cold runtime-boundary event template. Random cold-path rows are counted as their own required evidence class and no longer inflate the adversarial-refusal minimum. The broad proof stays closed with `broad_acceptance_requires_random_large_project_cold_path` when strict full-runtime rows exist but the arbitrary cold-path lane is absent; the full retained matrix still accepts broad readiness because retained random cold-path rows satisfy that separate gate.
 
-That broad-readiness cold-path gate now requires real user-style arbitrary intake, not merely a packaged large-project profile. Qualifying rows must carry `profileMode=unprofiled_arbitrary_project_cold_intake`, immutable source identity from a URL or local repo path plus commit, accepted source-tree intake, accepted build metadata evidence, and validated support-only event-template evidence. A profile-backed real-ROCm cold attempt can still be useful refusal evidence, but it cannot satisfy the arbitrary cold-path requirement by itself.
+That broad-readiness cold-path gate now requires direct user-style arbitrary intake, not merely a packaged large-project profile or an internally configured sample-pool candidate. Qualifying rows must carry `profileMode=unprofiled_arbitrary_project_cold_intake`, `candidateSource=direct_source_url_commit` or `candidateSource=direct_local_git_repo_path`, immutable source identity from a URL or local repo path plus commit, accepted source-tree intake, accepted build metadata evidence, and validated support-only event-template evidence. A profile-backed real-ROCm cold attempt and a configured-pool unprofiled sample can still be useful refusal evidence, but neither can satisfy the arbitrary cold-path requirement by itself.
 
 Verification for this patch:
 
@@ -58,8 +58,8 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs -
 npm --prefix mcp/synthi-mcp run proof:random-large-project:cold:self-check -> passed, including default unprofiled arbitrary candidate coverage
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including random cold-path matrix rows, broad-readiness random cold-path requirement, profiled cold-path insufficiency, cold runtime-boundary event-template adversarial cases, and forged populated-runtime-event refusal, proofId gpu-validation-matrix-ledger:sha256:f549fa28145c9ddc6db84c391f9f9e8a55e8f2b32633fc9fe9f2160f8d6dc63a
-node mcp/synthi-mcp/scripts/gpu-hmr-validation-matrix-ledger.mjs --self-check -> passed, proofId gpu-validation-matrix-ledger:sha256:edd442b65c513ac54a21cc4d4c7b66118da4e1eb7aef7292acd93040b048e202, broad proof gpu-hmr-broad-library-agnostic-proof:sha256:742d529dc0a1d44fab319f10e44591060eb6d4d94b747786ffcfac2236070d70, rows=96
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including random cold-path matrix rows, broad-readiness random cold-path requirement, profiled cold-path insufficiency, configured-pool unprofiled insufficiency, cold runtime-boundary event-template adversarial cases, and forged populated-runtime-event refusal, proofId gpu-validation-matrix-ledger:sha256:ec2c11ff1e3d8f624aaddb471c6821c277828044ea46e485c976277d45dcd016
+node mcp/synthi-mcp/scripts/gpu-hmr-validation-matrix-ledger.mjs --self-check -> passed, proofId gpu-validation-matrix-ledger:sha256:edd442b65c513ac54a21cc4d4c7b66118da4e1eb7aef7292acd93040b048e202, broad proof gpu-hmr-broad-library-agnostic-proof:sha256:742d529dc0a1d44fab319f10e44591060eb6d4d94b747786ffcfac2236070d70, rows=96, direct random cold-path readiness targets local-user-project and direct-wgpu-materialized-event-template
 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --dry-run --source-url https://example.invalid/user/project.git --commit 1111111111111111111111111111111111111111 --source-id direct-user-project -> passed, selected direct-user-project, manifest sha256:896d0e4dc1097f9a1e69d860a313eda596d7053f3f31a38a395cd1e71a1da178
 SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE=0 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --source-url https://example.invalid/user/project.git --commit 1111111111111111111111111111111111111111 --source-id direct-user-project -> passed as fail-closed direct arbitrary-project refusal, manifest sha256:7b19a1e689b26ff13b43402edecc434fcd1bc44430c5976355697f82e4fd922b
 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --source-url https://github.com/gfx-rs/wgpu.git --commit 22c6cb18d4b73254b0d62511e6a9d68e06dea70f --source-id direct-wgpu-user-path -> passed as fail-closed direct arbitrary-project intake with accepted source listing, manifest sha256:0c43d180417d4d8f25ba52f6de87b67d7f6c5a91ec4738269526bdf6d0578303
