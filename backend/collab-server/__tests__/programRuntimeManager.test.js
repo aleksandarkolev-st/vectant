@@ -291,6 +291,12 @@ test('launchManagedSession scrubs env, tracks output, and captures ports', async
     workspaceSlug: 'team',
     userId: 'user-1',
     command: 'npm run dev',
+    codesiteContext: {
+      active: true,
+      transactionId: 'txn-1',
+      controlPlaneUrl: 'http://app.test/api/workspace/team/codesite',
+      authToken: 'secret-token',
+    },
     env: {
       SAFE_FLAG: '1',
       DATABASE_URL: 'postgres://secret',
@@ -303,6 +309,8 @@ test('launchManagedSession scrubs env, tracks output, and captures ports', async
   assert.equal(session.state, 'starting');
   assert.equal(launches.length, 1);
   assert.equal(launches[0].env.SAFE_FLAG, '1');
+  assert.equal(launches[0].codesiteContext.transactionId, 'txn-1');
+  assert.equal(session.codesiteContext, undefined);
   assert.equal('DATABASE_URL' in launches[0].env, false);
   assert.equal('DOCKER_HOST' in launches[0].env, false);
   assert.equal('CUSTOM_SOCKET' in launches[0].env, false);

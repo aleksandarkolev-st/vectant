@@ -4,6 +4,10 @@ const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 
+const MAX_INLINE_SNAPSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_TEXT_DIFF_BYTES = 64 * 1024;
+const MAX_TEXT_DIFF_LINES = 160;
+
 class CodeSiteFSDeniedError extends Error {
   constructor(event) {
     super(event.details?.reason || 'codesite_write_denied');
@@ -358,6 +362,9 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
   const changes = diffSnapshots(quarantine.before || new Map(), after);
   const recorded = [];
   for (const change of changes) {
+    const beforeEntry = (quarantine.before || new Map()).get(change.path) || null;
+    const afterEntry = after.get(change.path) || null;
+    const quarantineEvidence = buildQuarantineChangeEvidence(change, beforeEntry, afterEntry);
     const result = {
       ok: false,
       path: change.path,
@@ -374,6 +381,13 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
     result.event.details.quarantine_root = quarantine.root;
     result.event.details.original_cwd = quarantine.originalCwd;
     result.event.details.change_kind = change.kind;
+    result.event.details.quarantine_evidence = quarantineEvidence;
+    if (quarantineEvidence.evidenceRef) {
+      result.event.evidence_refs = [...new Set([
+        ...(Array.isArray(result.event.evidence_refs) ? result.event.evidence_refs : []),
+        quarantineEvidence.evidenceRef,
+      ])];
+    }
     try {
       const response = await recordCodeSiteWriteAttempt(context, result, {
         ...options,
@@ -386,6 +400,9 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
   }
   if (options.cleanup !== false) {
     await fsp.rm(quarantine.root, { recursive: true, force: true }).catch(() => {});
+  }
+  if (options.resetBaseline === true && options.cleanup === false) {
+    quarantine.before = after;
   }
   return { changes, recorded };
 }
@@ -429,17 +446,52 @@ async function walkSnapshot(root, current, snapshot) {
     const rel = path.relative(root, fullPath).replace(/\\/g, '/');
     try {
       const stat = await fsp.stat(fullPath);
-      const content = stat.size <= 5 * 1024 * 1024
+      const content = stat.size <= MAX_INLINE_SNAPSHOT_BYTES
         ? await fsp.readFile(fullPath)
-        : Buffer.from(`${stat.size}:${stat.mtimeMs}`);
+        : null;
       snapshot.set(rel, {
         size: stat.size,
-        digest: crypto.createHash('sha256').update(content).digest('hex'),
+        digest: content ? digestBuffer(content) : await digestFile(fullPath),
+        text: content && stat.size <= MAX_TEXT_DIFF_BYTES && isLikelyText(content)
+          ? content.toString('utf8')
+          : undefined,
       });
     } catch (_) {
       // File changed while snapshotting; ignore and let the next scan catch it.
     }
   }
+}
+
+function digestBuffer(buffer) {
+  return `sha256:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function digestJson(value) {
+  return digestBuffer(Buffer.from(JSON.stringify(value)));
+}
+
+async function digestFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(`sha256:${hash.digest('hex')}`));
+  });
+}
+
+function isLikelyText(buffer) {
+  if (!buffer || buffer.length === 0) return true;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (sample.includes(0)) return false;
+  let suspicious = 0;
+  for (const byte of sample) {
+    if (byte === 9 || byte === 10 || byte === 13) continue;
+    if (byte >= 32 && byte <= 126) continue;
+    if (byte >= 128) continue;
+    suspicious += 1;
+  }
+  return suspicious / sample.length < 0.05;
 }
 
 function diffSnapshots(before, after) {
@@ -449,14 +501,101 @@ function diffSnapshots(before, after) {
     const oldEntry = before.get(relPath);
     const newEntry = after.get(relPath);
     if (!oldEntry && newEntry) {
-      changes.push({ path: relPath, kind: 'created' });
+      changes.push(enrichQuarantineChange(relPath, 'created', oldEntry, newEntry));
     } else if (oldEntry && !newEntry) {
-      changes.push({ path: relPath, kind: 'deleted' });
+      changes.push(enrichQuarantineChange(relPath, 'deleted', oldEntry, newEntry));
     } else if (oldEntry.digest !== newEntry.digest || oldEntry.size !== newEntry.size) {
-      changes.push({ path: relPath, kind: 'modified' });
+      changes.push(enrichQuarantineChange(relPath, 'modified', oldEntry, newEntry));
     }
   }
   return changes.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function enrichQuarantineChange(relPath, kind, beforeEntry, afterEntry) {
+  return {
+    path: relPath,
+    kind,
+    beforeDigest: beforeEntry?.digest || null,
+    afterDigest: afterEntry?.digest || null,
+    beforeSize: beforeEntry?.size ?? null,
+    afterSize: afterEntry?.size ?? null,
+    evidenceDigest: digestJson({
+      path: relPath,
+      kind,
+      beforeDigest: beforeEntry?.digest || null,
+      afterDigest: afterEntry?.digest || null,
+      beforeSize: beforeEntry?.size ?? null,
+      afterSize: afterEntry?.size ?? null,
+    }),
+  };
+}
+
+function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
+  const evidence = {
+    path: change.path,
+    kind: change.kind,
+    beforeDigest: change.beforeDigest || beforeEntry?.digest || null,
+    afterDigest: change.afterDigest || afterEntry?.digest || null,
+    beforeSize: change.beforeSize ?? beforeEntry?.size ?? null,
+    afterSize: change.afterSize ?? afterEntry?.size ?? null,
+  };
+  const textDiff = buildSmallTextDiff(beforeEntry?.text, afterEntry?.text);
+  if (textDiff) {
+    evidence.textDiff = textDiff;
+  }
+  evidence.digest = digestJson(evidence);
+  evidence.evidenceRef = `codesitefs:quarantine:${evidence.digest}`;
+  return evidence;
+}
+
+function buildSmallTextDiff(beforeText, afterText) {
+  if (typeof beforeText !== 'string' && typeof afterText !== 'string') return null;
+  const before = typeof beforeText === 'string' ? beforeText : '';
+  const after = typeof afterText === 'string' ? afterText : '';
+  if (Buffer.byteLength(before) + Buffer.byteLength(after) > MAX_TEXT_DIFF_BYTES) return null;
+
+  const beforeLines = before.split(/\r?\n/);
+  const afterLines = after.split(/\r?\n/);
+  let prefix = 0;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) {
+    prefix += 1;
+  }
+  let beforeSuffix = beforeLines.length - 1;
+  let afterSuffix = afterLines.length - 1;
+  while (
+    beforeSuffix >= prefix
+    && afterSuffix >= prefix
+    && beforeLines[beforeSuffix] === afterLines[afterSuffix]
+  ) {
+    beforeSuffix -= 1;
+    afterSuffix -= 1;
+  }
+
+  const contextStart = Math.max(0, prefix - 3);
+  const contextEndBefore = Math.min(beforeLines.length - 1, beforeSuffix + 3);
+  const contextEndAfter = Math.min(afterLines.length - 1, afterSuffix + 3);
+  const lines = [];
+  for (const line of beforeLines.slice(contextStart, prefix)) {
+    lines.push(` ${line}`);
+  }
+  for (const line of beforeLines.slice(prefix, beforeSuffix + 1)) {
+    lines.push(`-${line}`);
+  }
+  for (const line of afterLines.slice(prefix, afterSuffix + 1)) {
+    lines.push(`+${line}`);
+  }
+  for (const line of afterLines.slice(afterSuffix + 1, contextEndAfter + 1)) {
+    lines.push(` ${line}`);
+  }
+  const truncated = lines.length > MAX_TEXT_DIFF_LINES;
+  return {
+    format: 'line-window-v1',
+    startLine: contextStart + 1,
+    beforeLineCount: Math.max(0, contextEndBefore - contextStart + 1),
+    afterLineCount: Math.max(0, contextEndAfter - contextStart + 1),
+    truncated,
+    lines: truncated ? lines.slice(0, MAX_TEXT_DIFF_LINES) : lines,
+  };
 }
 
 function safeSegment(value) {

@@ -361,7 +361,75 @@ test('quarantines raw terminal workspace changes and records them as evidence', 
     assert.strictEqual(firstBody.codesiteFsEvent.type, 'write_quarantined');
     assert.deepStrictEqual(firstBody.codesiteFsEvent.details.reason_codes, ['raw_terminal_quarantine']);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_root, /codesite-quarantine/);
+    assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.beforeDigest, /^sha256:/);
+    assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.afterDigest, /^sha256:/);
+    assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
+    assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '-before'));
+    assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '+after'));
     assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
+  } finally {
+    await fs.rm(source, { recursive: true, force: true });
+    await fs.rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('can record headless terminal quarantine evidence without closing the overlay', async () => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-src-'));
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-quarantine-'));
+  await fs.mkdir(path.join(source, 'src'), { recursive: true });
+  await fs.writeFile(path.join(source, 'src', 'app.js'), 'before\n');
+  const recordedBodies = [];
+  const fetch = async (_url, options) => {
+    recordedBodies.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      ok: false,
+      quarantined: true,
+      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-headless',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
+      baseDir,
+      operation: 'exec-terminal',
+    });
+    await fs.writeFile(path.join(quarantine.cwd, 'src', 'app.js'), 'after-one\n');
+
+    const first = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, {
+      fetch,
+      cleanup: false,
+      resetBaseline: true,
+    });
+
+    assert.deepStrictEqual(first.changes.map((change) => change.path), ['src/app.js']);
+    assert.ok(await fs.stat(quarantine.cwd), 'quarantine cwd remains available for terminal reattachment');
+
+    const second = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, {
+      fetch,
+      cleanup: false,
+      resetBaseline: true,
+    });
+    assert.deepStrictEqual(second.changes, [], 'unchanged overlay is not reported twice');
+
+    await fs.writeFile(path.join(quarantine.cwd, 'src', 'later.js'), 'later\n');
+    const third = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, {
+      fetch,
+      cleanup: true,
+    });
+    assert.deepStrictEqual(third.changes.map((change) => change.path), ['src/later.js']);
+    assert.deepStrictEqual(recordedBodies.map((body) => body.path), ['src/app.js', 'src/later.js']);
+    assert.match(recordedBodies[0].codesiteFsEvent.details.quarantine_evidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
+    assert.match(first.changes[0].beforeDigest, /^sha256:/);
+    assert.match(first.changes[0].afterDigest, /^sha256:/);
+    await assert.rejects(() => fs.stat(quarantine.cwd));
   } finally {
     await fs.rm(source, { recursive: true, force: true });
     await fs.rm(baseDir, { recursive: true, force: true });

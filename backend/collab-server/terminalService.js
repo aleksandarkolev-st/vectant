@@ -43,8 +43,10 @@ const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 const {
   codeSiteContextFromRequest,
+  createCodeSiteQuarantineWorkspace,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  finalizeCodeSiteQuarantineWorkspace,
 } = require('./codesiteFs');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
@@ -1413,13 +1415,24 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // pod/runtime-scope plumbing nor the program's declared env is lost.
   const extraEnv = options.env && typeof options.env === 'object' ? options.env : {};
   const shellType = options.shellType || null;
+  const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
+    ? options.codesiteContext
+    : null;
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
     runtimeScope,
     reason: 'headless_terminal',
   });
-  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  let cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const originalCwd = cwd;
+  let codeSiteQuarantine = null;
+  if (codeSiteContext?.active && !shouldUseRuntimePodTerminal(runtimeScope)) {
+    codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+      operation: 'exec-terminal',
+    });
+    if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+  }
   const runtimeLaunch = await buildRuntimeLaunch({
     runtimeScope,
     workspaceSlug: slug,
@@ -1442,6 +1455,9 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     }));
   } catch (err) {
     runtimeLaunch.releasePort();
+    if (codeSiteQuarantine) {
+      await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+    }
     throw err;
   }
 
@@ -1474,12 +1490,20 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // closed before reconnect), the PTY and its 100k buffer would live until
   // process exit. Kill it after HEADLESS_TTL_MS.
   const HEADLESS_TTL_MS = 5 * 60 * 1000;
-  const orphanTimer = setTimeout(() => {
+  const orphanTimer = setTimeout(async () => {
     const session = activeSessions.get(sessionId);
     if (!session || !session.headless) return; // WS attached in the meantime
     console.warn(`[Terminal] Headless session ${sessionId} orphaned for ${HEADLESS_TTL_MS}ms — killing PTY`);
     try { bufferDisposable.dispose?.(); } catch (_) {}
     try { ptyProcess.kill(); } catch (_) {}
+    if (codeSiteQuarantine) {
+      await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch((err) => {
+        console.warn(`[Terminal] CodeSite headless quarantine finalize failed for ${sessionId}: ${err?.message || err}`);
+      });
+      codeSiteQuarantine = null;
+      const current = activeSessions.get(sessionId);
+      if (current) current.codesiteQuarantine = null;
+    }
     runtimeLaunch.releasePort();
     activeSessions.delete(sessionId);
   }, HEADLESS_TTL_MS);
@@ -1496,6 +1520,9 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     userId,
     filesystemUserId,
     codesite: options.codesite || null,
+    codesiteContext: codeSiteContext,
+    codesiteQuarantine: codeSiteQuarantine || null,
+    codesiteOriginalCwd: originalCwd,
     releasePort: runtimeLaunch.releasePort,
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
@@ -1509,6 +1536,15 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   });
 
   ptyProcess.onExit(() => {
+    if (codeSiteQuarantine) {
+      const quarantine = codeSiteQuarantine;
+      codeSiteQuarantine = null;
+      const current = activeSessions.get(sessionId);
+      if (current?.codesiteQuarantine === quarantine) current.codesiteQuarantine = null;
+      finalizeCodeSiteQuarantineWorkspace(codeSiteContext, quarantine).catch((err) => {
+        console.warn(`[Terminal] CodeSite headless quarantine finalize failed for ${sessionId}: ${err?.message || err}`);
+      });
+    }
     runtimeLaunch.releasePort();
   });
 

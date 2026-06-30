@@ -201,7 +201,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
-  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata }) => {
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext }) => {
     // Slice 1 (real programs): `container` programs route into the per-workspace
     // Sysbox runtime POD when the backend is on (its own validated, isolated
     // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
@@ -235,6 +235,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
     const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, {
       env,
       codesite: metadata?.codesite || null,
+      codesiteContext,
     });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
     return {
@@ -2041,6 +2042,7 @@ const server = http.createServer(async (req, res) => {
             codesite: codeSiteMetadata,
           }
           : null,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
       // Container/webGui programs read /workspace from disk for their whole
       // lifetime — keep the editor's content flushed there while this session runs.
@@ -2315,6 +2317,7 @@ const server = http.createServer(async (req, res) => {
         runtimeScope,
         filesystemUserId,
         metadata: codeSiteMetadata ? { codesite: codeSiteMetadata } : null,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
 
       const terminalSession = terminalSessions.get(sessionId);
@@ -2391,7 +2394,7 @@ const server = http.createServer(async (req, res) => {
       }, timeoutMs);
 
       let responded = false;
-      function respond() {
+      async function respond() {
         if (responded) return;
         responded = true;
 
@@ -2423,6 +2426,20 @@ const server = http.createServer(async (req, res) => {
           logger.warn({ err: portErr, sessionId }, 'Failed to refresh managed session ports');
         });
 
+        let quarantine = null;
+        const proofSession = terminalSessions.get(sessionId);
+        if (proofSession?.codesiteQuarantine) {
+          try {
+            quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, proofSession.codesiteQuarantine, {
+              tool: 'raw_terminal',
+              cleanup: false,
+              resetBaseline: true,
+            });
+          } catch (err) {
+            quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+          }
+        }
+
         console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -2434,6 +2451,7 @@ const server = http.createServer(async (req, res) => {
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
           timedOut,
+          quarantine,
         }));
       }
 

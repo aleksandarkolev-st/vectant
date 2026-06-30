@@ -80,6 +80,7 @@ function toPublicManagedSession(record) {
     runtimeDataDisposable,
     runtimeExitDisposable,
     launchRequest,
+    codesiteContext,
     kasmAuth, // per-session KasmVNC secret — never expose to the API/browser
     ...publicRecord
   } = record;
@@ -491,6 +492,7 @@ function createProgramRuntimeManager(options = {}) {
     webGui = false,
     title = null,
     metadata = null,
+    codesiteContext = null,
     ports = [],
     health = null,
   } = {}) {
@@ -541,6 +543,7 @@ function createProgramRuntimeManager(options = {}) {
       runtimeType,
       title,
       metadata,
+      codesiteContext,
     });
 
     const record = {
@@ -566,6 +569,7 @@ function createProgramRuntimeManager(options = {}) {
       exitCode: null,
       stopReason: null,
       metadata,
+      codesiteContext,
       commandPreview: trimmedCommand,
       events: [],
       launchRequest: {
@@ -578,6 +582,7 @@ function createProgramRuntimeManager(options = {}) {
         webGui: webGui === true,
         title,
         metadata,
+        codesiteContext,
         ports: declaredPorts,
         health: health && typeof health === 'object' ? health : null,
       },
@@ -608,7 +613,7 @@ function createProgramRuntimeManager(options = {}) {
    * Launch a managed session from a NormalizedProgramConfig recipe: compose the
    * install + launch commands, carry declared env (scrubbed) + declared ports.
    */
-  async function launchManagedProgram({ sessionId, workspaceSlug, userId = '', config, title = null, metadata = null } = {}) {
+  async function launchManagedProgram({ sessionId, workspaceSlug, userId = '', config, title = null, metadata = null, codesiteContext = null } = {}) {
     if (!config || typeof config !== 'object') {
       throw new TypeError('config is required');
     }
@@ -629,6 +634,7 @@ function createProgramRuntimeManager(options = {}) {
         version: config.version || null,
         source: config.source || null,
       },
+      codesiteContext,
     });
   }
 
