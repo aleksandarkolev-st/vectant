@@ -97,6 +97,27 @@ function transactionFixture() {
   };
 }
 
+function repoStateFixture() {
+  return {
+    schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    baseSnapshot: 'base',
+    gitHead: 'abc123',
+    stagedDiffDigest: 'sha256:staged',
+    worktreeDiffDigest: 'sha256:worktree',
+    writeFileDigests: [{
+      path: 'synthi/prisma/schema.prisma',
+      digest: 'sha256:file',
+      size: 120,
+      exists: true,
+    }],
+    generatedAt: '2026-06-29T23:02:30.000Z',
+    source: 'collab-server',
+    evidenceDigest: 'sha256:repo-state',
+  };
+}
+
 describe('CodeSite control plane transaction validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -470,7 +491,7 @@ describe('CodeSite control plane transaction validation', () => {
       completedAt: new Date('2026-06-29T23:03:00.000Z'),
     }]);
 
-    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123' });
+    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
     const proofCreate = prisma.codeSiteProofBundle.create.mock.calls.at(-1)[0];
     const evidenceRefs = JSON.parse(proofCreate.data.evidenceRefsJson);
 
@@ -481,9 +502,14 @@ describe('CodeSite control plane transaction validation', () => {
       'typecheck:pass',
       'tests:pass',
       'codesite:inspection:inspection-1',
+      'codesite:repo-state:sha256:repo-state',
       'codesite:transaction:txn-1',
       'codesite:lease:lease-1',
     ]));
+    expect(JSON.parse(proofCreate.data.repoStateJson)).toMatchObject({
+      evidenceDigest: 'sha256:repo-state',
+      writeFileDigests: [expect.objectContaining({ path: 'synthi/prisma/schema.prisma' })],
+    });
     expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         proofBundleId: 'proof-created',
@@ -494,6 +520,31 @@ describe('CodeSite control plane transaction validation', () => {
         promptSummary: 'Add auth schema field',
       }),
     }));
+  });
+
+  it('blocks proof-carrying commits when passed inspections lack repo-state evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:pass'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['tests:pass'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_state_evidence_required');
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
   });
 
   it('returns portable proof material with proof bundle lookups', async () => {
@@ -508,6 +559,7 @@ describe('CodeSite control plane transaction validation', () => {
       invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
       evidenceRefsJson: JSON.stringify(['test:pass']),
       dojoEvidenceRefsJson: JSON.stringify(['dojo:proof']),
+      repoStateJson: JSON.stringify(repoStateFixture()),
       incidentReplayDigest: 'sha256:incident',
       bundleDigest: 'sha256:bundle',
       createdAt: new Date('2026-06-29T23:10:00.000Z'),
@@ -554,6 +606,7 @@ describe('CodeSite control plane transaction validation', () => {
       mutationLeaseId: 'lease-1',
       readSetDigest: 'sha256:read',
       writeSetDigest: 'sha256:write',
+      repoState: expect.objectContaining({ evidenceDigest: 'sha256:repo-state' }),
     });
     expect(proof.portableProofBundle.portableDigest).toMatch(/^sha256:/);
   });

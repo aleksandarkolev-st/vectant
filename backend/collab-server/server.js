@@ -4321,8 +4321,10 @@ const server = http.createServer(async (req, res) => {
                 case 'fetch':
                     result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                     break;
-                case 'commit':
-                    const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data);
+	                case 'commit':
+	                    const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
+	                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+	                    });
                     const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
                       ? {
                         ...data,

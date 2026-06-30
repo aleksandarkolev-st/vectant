@@ -25,7 +25,7 @@ function projectFixture() {
     assumptions: [{ id: 'asm-1', ownerSessionId: 'ags-1', status: 'active', assumptionKey: 'auth.signup.v2' }],
     events: [{ id: 'evt-1', eventType: 'clearance_issued', details: { mutationLeaseId: 'lease-1' } }],
     incidents: [{ id: 'inc-1', category: 'near_miss', severity: 'medium', replayDigest: 'sha256:replay', incidentReplay: { events: ['evt-1'] } }],
-    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], bundleDigest: 'sha256:bundle' }],
+	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' }],
     lineProvenance: [{ filePath: 'packages/schemas/auth/signup.ts', lineAnchor: 'L1', displayCallsign: 'CODEX-04', proofBundleId: 'proof-1' }],
     policyDecisions: [],
     inspectionRuns: [{
@@ -69,8 +69,9 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
     expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
-    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
-    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt');
+	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
+	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
+	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt');
     expect(paths).toContain('projects/site_signup_email_verification/handover.md');
   });
 
@@ -82,8 +83,9 @@ describe('CodeSite artifact projection', () => {
     });
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
-    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
-  });
+	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
+	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
+	  });
 
   it('writes the repo-local artifact tree when an artifact root is available', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-'));
@@ -101,10 +103,11 @@ describe('CodeSite proof utilities', () => {
       project: { id: 'project-1', workspaceSlug: 'acme' },
       transaction: { id: 'txn-1', projectId: 'project-1', mutationLeaseId: 'lease-1', readSet: ['a.ts'], writeSet: ['b.ts'], invariants: ['typecheck:pass'] },
       mutationLease: { id: 'lease-1', displayCallsign: 'CODEX-04' },
-      proofBundle: { id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['typecheck:pass'], evidenceRefs: ['ev-1'], bundleDigest: 'sha256:bundle' },
-    });
+	      proofBundle: { id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['typecheck:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' },
+	    });
 
-    expect(verifyProofBundle(bundle)).toMatchObject({ ok: true });
+	    expect(verifyProofBundle(bundle)).toMatchObject({ ok: true });
+	    expect(bundle.repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Transaction: txn-1');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Lease: lease-1');
   });

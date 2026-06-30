@@ -3,6 +3,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 
 const MAX_INLINE_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_DIFF_BYTES = 64 * 1024;
@@ -354,12 +358,26 @@ async function completeCodeSiteCommitProof(context, data = {}, options = {}) {
   if (token) headers.authorization = `Bearer ${token}`;
   if (cookie) headers.cookie = cookie;
   const codesite = data.codesite || data.codeSite || {};
+  const repoState = value(
+    data.repoState,
+    data.repo_state,
+    codesite.repoState,
+    codesite.repo_state,
+    options.repoState,
+    options.repo_state,
+  ) || await collectRepoStateForCommit(context, {
+    fetch: fetchImpl,
+    baseUrl,
+    headers,
+    repoRoot: options.repoRoot,
+  });
   const response = await fetchImpl(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       evidenceRefs: value(data.evidenceRefs, data.evidence_refs, codesite.evidenceRefs, codesite.evidence_refs, []),
       dojoEvidenceRefs: value(data.dojoEvidenceRefs, data.dojo_evidence_refs, codesite.dojoEvidenceRefs, codesite.dojo_evidence_refs, []),
+      repoState,
       incidentReplayDigest: value(data.incidentReplayDigest, data.incident_replay_digest, codesite.incidentReplayDigest, codesite.incident_replay_digest),
       commitSha: value(data.commitSha, data.commit_sha, codesite.commitSha, codesite.commit_sha),
     }),
@@ -378,6 +396,98 @@ async function completeCodeSiteCommitProof(context, data = {}, options = {}) {
     throw new CodeSiteCommitBlockedError('codesite_proof_bundle_missing', body);
   }
   return body;
+}
+
+async function collectRepoStateForCommit(context, options = {}) {
+  if (!options.repoRoot) return null;
+  const transaction = await loadCodeSiteTransaction(context, options);
+  const writePaths = [
+    ...asArray(transaction?.writeSet),
+    ...asArray(transaction?.observedWriteSet),
+  ];
+  return collectCodeSiteRepoState(options.repoRoot, {
+    workspaceSlug: context.workspaceSlug,
+    transactionId: context.transactionId,
+    baseSnapshot: transaction?.baseSnapshot || null,
+    writePaths,
+  });
+}
+
+async function loadCodeSiteTransaction(context, options = {}) {
+  if (!context?.transactionId || !options.baseUrl || typeof options.fetch !== 'function') return null;
+  const response = await options.fetch(`${options.baseUrl}/transactions/${encodeURIComponent(context.transactionId)}`, {
+    method: 'GET',
+    headers: options.headers || { accept: 'application/json' },
+  });
+  if (!response.ok) return null;
+  const body = await readJsonBody(response);
+  return body?.transaction || null;
+}
+
+async function collectCodeSiteRepoState(repoRoot, input = {}) {
+  const root = path.resolve(repoRoot);
+  const writePaths = [...new Set(asArray(input.writePaths).map(cleanPattern).filter(Boolean))];
+  const exactPaths = writePaths.filter((item) => !item.includes('*'));
+  const [gitHead, stagedDiff, worktreeDiff, writeFileDigests] = await Promise.all([
+    gitOutput(root, ['rev-parse', 'HEAD']),
+    gitOutput(root, ['diff', '--cached', '--binary', '--', ...exactPaths]),
+    gitOutput(root, ['diff', '--binary', '--', ...exactPaths]),
+    Promise.all(exactPaths.map((relPath) => fileDigestForRepoPath(root, relPath))),
+  ]);
+  const evidence = {
+    schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
+    workspaceSlug: input.workspaceSlug || null,
+    transactionId: input.transactionId || null,
+    baseSnapshot: input.baseSnapshot || null,
+    gitHead: gitHead || null,
+    stagedDiffDigest: digestBuffer(Buffer.from(stagedDiff || '')),
+    worktreeDiffDigest: digestBuffer(Buffer.from(worktreeDiff || '')),
+    writeFileDigests,
+    generatedAt: new Date().toISOString(),
+    source: 'collab-server',
+  };
+  evidence.evidenceDigest = digestJson(evidence);
+  return evidence;
+}
+
+async function gitOutput(repoRoot, args) {
+  try {
+    const result = await execFileAsync('git', ['-C', repoRoot, ...args], {
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return String(result.stdout || '').trimEnd();
+  } catch (_) {
+    return '';
+  }
+}
+
+async function fileDigestForRepoPath(repoRoot, relPath) {
+  const normalized = normalizeRepoRelativePath(relPath);
+  const fullPath = path.resolve(repoRoot, normalized);
+  const rel = path.relative(repoRoot, fullPath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('codesite_repo_state_path_escape');
+  }
+  try {
+    const stat = await fsp.stat(fullPath);
+    return {
+      path: normalized,
+      digest: await digestFile(fullPath),
+      size: stat.size,
+      exists: true,
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        path: normalized,
+        digest: null,
+        size: null,
+        exists: false,
+      };
+    }
+    throw error;
+  }
 }
 
 async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
@@ -778,6 +888,7 @@ module.exports = {
   codeSiteContextFromRequest,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteQuarantineWorkspace,
   enforceCodeSiteWriteAllowed,

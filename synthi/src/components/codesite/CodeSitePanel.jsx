@@ -617,12 +617,26 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             <CheckCircle2 className="h-4 w-4" style={{ color: 'color-mix(in srgb, #4ade80 70%, var(--text-primary))' }} />
                           </div>
                         </div>
-                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
-                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" />
-                        </div>
-                      </div>
-                    ))}
+	                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+	                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
+	                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" />
+	                        </div>
+	                        {bundle.repoState ? (
+	                          <div className="mt-1">
+	                            <PathList
+	                              paths={[
+	                                bundle.repoState.evidenceDigest && `repo-state:${bundle.repoState.evidenceDigest}`,
+	                                bundle.repoState.gitHead && `git-head:${bundle.repoState.gitHead}`,
+	                                bundle.repoState.worktreeDiffDigest && `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
+	                                ...asArray(bundle.repoState.writeFileDigests).map((file) => `${file.path}:${file.digest || 'missing'}`),
+	                              ].filter(Boolean)}
+	                              empty="no repo-state evidence"
+	                              maxVisible={6}
+	                            />
+	                          </div>
+	                        ) : null}
+	                      </div>
+	                    ))}
                   </div>
                 )}
               </Section>

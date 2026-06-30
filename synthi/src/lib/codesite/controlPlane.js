@@ -964,10 +964,43 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
     return { decision, transaction: transactionProjection(updated) };
   }
 
+  const repoStateDecision = verifyRepoStateEvidence(transaction, body);
+  if (!repoStateDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: repoStateDecision.reasonCodes,
+      missingRepoStatePaths: repoStateDecision.missingPaths,
+      repoState: repoStateDecision.repoState,
+      validatedAt: new Date().toISOString(),
+    };
+    const updated = await prisma.codeSiteMutationTransaction.update({
+      where: { id: transaction.id },
+      data: {
+        status: 'blocked',
+        commitDecisionJson: stringifyJson(decision),
+      },
+    });
+    await recordEvent(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      eventType: 'transaction_validated',
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      actorType: 'transaction',
+      actorId: transaction.id,
+      details: {
+        transactionId: transaction.id,
+        decision,
+        towerInstruction: 'Repo-state evidence is required before a proof-carrying commit can land.',
+      },
+    });
+    return { decision, transaction: transactionProjection(updated) };
+  }
+
   const bundle = await createProofBundleForTransaction(transaction, {
     ...body,
     inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
+    repoState: repoStateDecision.repoState,
   });
   const updated = await prisma.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
@@ -989,6 +1022,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
       proofBundleId: bundle.id,
       proofBundleDigest: bundle.bundleDigest,
       writeSet: parseJson(transaction.writeSetJson, []),
+      repoStateDigest: repoStateDecision.repoState?.evidenceDigest || null,
       inspectionRunIds: inspectionDecision.inspectionRuns.map((run) => run.id),
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
@@ -1021,10 +1055,12 @@ async function createProofBundleForTransaction(transaction, body = {}) {
   const readSet = parseJson(transaction.readSetJson, []);
   const writeSet = parseJson(transaction.writeSetJson, []);
   const invariants = parseJson(transaction.invariantsJson, []);
+  const repoState = normalizeRepoStateEvidence(body.repoState || body.repo_state);
   const evidenceRefs = unique([
     ...asArray(body.evidenceRefs || body.evidence_refs || []),
     ...asArray(body.inspectionEvidenceRefs || body.inspection_evidence_refs || []),
     ...asArray(body.inspectionRunRefs || body.inspection_run_refs || []).map((id) => `codesite:inspection:${id}`),
+    ...(repoState?.evidenceDigest ? [`codesite:repo-state:${repoState.evidenceDigest}`] : []),
     `codesite:transaction:${transaction.id}`,
     `codesite:lease:${transaction.mutationLeaseId}`,
   ]);
@@ -1035,6 +1071,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
     writeSet,
     invariants,
     evidenceRefs,
+    repoState,
   });
   return prisma.codeSiteProofBundle.create({
     data: {
@@ -1046,10 +1083,72 @@ async function createProofBundleForTransaction(transaction, body = {}) {
       invariantsJson: stringifyJson(invariants),
       evidenceRefsJson: stringifyJson(evidenceRefs),
       dojoEvidenceRefsJson: stringifyJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || []),
+      repoStateJson: stringifyJson(repoState),
       incidentReplayDigest: body.incidentReplayDigest || body.incident_replay_digest || null,
       bundleDigest,
     },
   });
+}
+
+function verifyRepoStateEvidence(transaction, body = {}) {
+  const changedPaths = unique([
+    ...parseJson(transaction.writeSetJson, []),
+    ...parseJson(transaction.observedWriteSetJson, []),
+  ]);
+  if (changedPaths.length === 0) {
+    return { ok: true, reasonCodes: ['no_write_set_no_repo_state_required'], missingPaths: [], repoState: null };
+  }
+  const repoState = normalizeRepoStateEvidence(body.repoState || body.repo_state);
+  if (!repoState) {
+    return { ok: false, reasonCodes: ['repo_state_evidence_required'], missingPaths: changedPaths, repoState: null };
+  }
+  const fileDigests = asArray(repoState.writeFileDigests || repoState.fileDigests || repoState.files);
+  const coveredPaths = new Set(fileDigests.map((item) => normalizePath(item?.path)).filter(Boolean));
+  const missingPaths = changedPaths.filter((changedPath) => (
+    !coveredPaths.has(changedPath)
+    && !fileDigests.some((item) => matchPathPattern(changedPath, item?.pathPattern || item?.pattern))
+  ));
+  const reasonCodes = [
+    ...(!repoState.evidenceDigest ? ['repo_state_digest_required'] : []),
+    ...(!repoState.worktreeDiffDigest && !repoState.stagedDiffDigest ? ['repo_state_diff_digest_required'] : []),
+    ...(missingPaths.length ? ['repo_state_write_path_coverage_required'] : []),
+  ];
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes: reasonCodes.length ? reasonCodes : ['repo_state_evidence_verified'],
+    missingPaths,
+    repoState,
+  };
+}
+
+function normalizeRepoStateEvidence(input) {
+  if (!input || typeof input !== 'object') return null;
+  const evidenceDigest = input.evidenceDigest || input.evidence_digest || input.digest;
+  const normalized = {
+    schemaVersion: input.schemaVersion || input.schema_version || 'synthi.codesite.repoStateEvidence.v1',
+    workspaceSlug: input.workspaceSlug || input.workspace_slug || null,
+    transactionId: input.transactionId || input.transaction_id || null,
+    baseSnapshot: input.baseSnapshot || input.base_snapshot || null,
+    gitHead: input.gitHead || input.git_head || null,
+    stagedDiffDigest: input.stagedDiffDigest || input.staged_diff_digest || null,
+    worktreeDiffDigest: input.worktreeDiffDigest || input.worktree_diff_digest || null,
+    writeFileDigests: normalizeRepoStateFiles(input.writeFileDigests || input.write_file_digests || input.fileDigests || input.files),
+    generatedAt: input.generatedAt || input.generated_at || null,
+    source: input.source || 'collab-server',
+  };
+  normalized.evidenceDigest = evidenceDigest || digest(normalized);
+  return normalized;
+}
+
+function normalizeRepoStateFiles(files) {
+  return asArray(files)
+    .map((item) => ({
+      path: normalizePath(item?.path || item?.filePath || item?.file_path),
+      digest: item?.digest || item?.contentDigest || item?.content_digest || null,
+      size: Number.isFinite(item?.size) ? item.size : null,
+      exists: item?.exists !== false,
+    }))
+    .filter((item) => item.path);
 }
 
 async function verifyLandingInspections(transaction) {
@@ -2047,6 +2146,7 @@ function proofBundleProjection(bundle) {
     invariants: parseJson(bundle.invariantsJson, []),
     evidenceRefs: parseJson(bundle.evidenceRefsJson, []),
     dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
+    repoState: parseJson(bundle.repoStateJson, null),
     incidentReplayDigest: bundle.incidentReplayDigest,
     bundleDigest: bundle.bundleDigest,
     createdAt: bundle.createdAt,

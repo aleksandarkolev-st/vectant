@@ -21,6 +21,7 @@ export function buildProofBundle({
     invariants: proofBundle?.invariants || transaction?.invariants || [],
     evidenceRefs: proofBundle?.evidenceRefs || [],
     dojoEvidenceRefs: proofBundle?.dojoEvidenceRefs || [],
+    repoState: proofBundle?.repoState || null,
     incidentReplayDigest: proofBundle?.incidentReplayDigest || null,
     bundleDigest: proofBundle?.bundleDigest || null,
     incidents: incidents.map((incident) => ({

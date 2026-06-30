@@ -137,6 +137,7 @@ export function codesiteSchemas() {
       readSetDigest: { type: 'string' },
       writeSetDigest: { type: 'string' },
       invariants: { type: 'array' },
+      repoState: { type: ['object', 'null'] },
       portableDigest: { type: 'string' },
     }, ['transactionId', 'readSetDigest', 'writeSetDigest', 'portableDigest']),
     'line-provenance.schema.json': schema('LineProvenance', {

@@ -10,6 +10,7 @@ const {
   codeSiteContextFromRequest,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteQuarantineWorkspace,
   enforceCodeSiteWriteAllowed,
@@ -380,6 +381,31 @@ test('blocks proof-carrying commits when transaction validation fails', async ()
     (error) => error.code === 'CODESITE_COMMIT_BLOCKED'
       && error.details.reasonCodes.includes('stale_read_detected'),
   );
+});
+
+test('collects repo-state evidence from actual workspace files', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-repo-state-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'app.js'), 'actual file content\n');
+
+  const evidence = await collectCodeSiteRepoState(repo, {
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    baseSnapshot: 'repo@sha256:base',
+    writePaths: ['src/app.js'],
+  });
+
+  assert.strictEqual(evidence.schemaVersion, 'synthi.codesite.repoStateEvidence.v1');
+  assert.strictEqual(evidence.workspaceSlug, 'acme');
+  assert.strictEqual(evidence.transactionId, 'txn-1');
+  assert.match(evidence.worktreeDiffDigest, /^sha256:/);
+  assert.match(evidence.evidenceDigest, /^sha256:/);
+  assert.deepStrictEqual(evidence.writeFileDigests, [{
+    path: 'src/app.js',
+    digest: 'sha256:ffc765b812e82586d3f41c451b45cb4f600d70ab1490f869133f094aaecda448',
+    size: 20,
+    exists: true,
+  }]);
 });
 
 test('quarantines raw terminal workspace changes and records them as evidence', async () => {

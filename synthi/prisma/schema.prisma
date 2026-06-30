@@ -488,6 +488,7 @@ model CodeSiteProofBundle {
   invariantsJson        String
   evidenceRefsJson      String
   dojoEvidenceRefsJson  String?
+  repoStateJson         String?
   incidentReplayDigest  String?
   bundleDigest          String
   createdAt             DateTime @default(now())
