@@ -18108,6 +18108,154 @@ function rowAttemptCompletenessScore(row) {
   ) ?? 0;
 }
 
+function boundedSupportCount(value, max = 20) {
+  if (Array.isArray(value)) return Math.min(value.length, max);
+  const numeric = finiteNumber(value);
+  return Number.isFinite(numeric) ? Math.min(Math.max(0, numeric), max) : 0;
+}
+
+function runtimeBoundarySupportAuthorityNeutral(facet = {}) {
+  return firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) !== true
+    && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) !== true
+    && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) !== true
+    && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) !== true;
+}
+
+function runtimeBoundaryCoverageDiagnosticAccepted(facet = {}) {
+  const coverage = compactObject(
+    facet.adapterBoundaryCoverage
+    ?? facet.adapter_boundary_coverage,
+  );
+  return firstBool(
+    coverage.acceptedAsDiagnosticEvidence,
+    coverage.accepted_as_diagnostic_evidence,
+  ) === true
+    && runtimeBoundarySupportAuthorityNeutral(coverage);
+}
+
+function rowRuntimeBoundarySupportScore(row) {
+  const adapterResult = compactObject(
+    row.realRocmRuntimeProfileAdapterResult
+    ?? row.real_rocm_runtime_profile_adapter_result,
+  );
+  const adapterExecution = compactObject(
+    row.realRocmRuntimeAdapterExecution
+    ?? row.real_rocm_runtime_adapter_execution
+    ?? row.runtimeAdapterExecution
+    ?? row.runtime_adapter_execution,
+  );
+  const adapterStageEvents = compactObject(
+    row.realRocmRuntimeAdapterStageEvents
+    ?? row.real_rocm_runtime_adapter_stage_events
+    ?? row.runtimeAdapterStageEvents
+    ?? row.runtime_adapter_stage_events,
+  );
+  const targetEnvironment = compactObject(
+    row.realRocmRuntimeBoundaryTargetEnvironment
+    ?? row.real_rocm_runtime_boundary_target_environment,
+  );
+  const targetProcessProvenance = compactObject(
+    row.realRocmRuntimeBoundaryTargetProcessProvenance
+    ?? row.real_rocm_runtime_boundary_target_process_provenance,
+  );
+
+  let score = 0;
+  if (
+    firstBool(
+      adapterResult.acceptedAsBoundaryEvidence,
+      adapterResult.accepted_as_boundary_evidence,
+    ) === true
+  ) {
+    score += 40;
+    score += boundedSupportCount(
+      adapterResult.adapterRuntimeBoundaryLineCount
+      ?? adapterResult.adapter_runtime_boundary_line_count
+      ?? adapterResult.adapterRuntimeBoundaryLines
+      ?? adapterResult.adapter_runtime_boundary_lines,
+    );
+  }
+  if (
+    firstText(adapterResult.proofAuthority, adapterResult.proof_authority)
+      === REAL_ROCM_RUNTIME_PROFILE_ADAPTER_RESULT_BRIDGE_AUTHORITY
+    && runtimeBoundarySupportAuthorityNeutral(adapterResult)
+    && runtimeBoundaryCoverageDiagnosticAccepted(adapterResult)
+    && boundedSupportCount(
+      adapterResult.adapterRuntimeBoundaryLines
+      ?? adapterResult.adapter_runtime_boundary_lines,
+    ) > 0
+  ) {
+    score += 8;
+    score += boundedSupportCount(
+      adapterResult.adapterRuntimeBoundaryLines
+      ?? adapterResult.adapter_runtime_boundary_lines,
+      10,
+    );
+  }
+
+  if (
+    adapterExecution.present === true
+    && adapterExecution.accepted === true
+    && firstText(adapterExecution.status) === 'runtime_adapter_executed'
+    && boundedSupportCount(
+      adapterExecution.runtimeBoundaryLines
+      ?? adapterExecution.runtime_boundary_lines,
+    ) > 0
+  ) {
+    score += 40;
+    score += boundedSupportCount(
+      adapterExecution.runtimeBoundaryLineCount
+      ?? adapterExecution.runtime_boundary_line_count
+      ?? adapterExecution.runtimeBoundaryLines
+      ?? adapterExecution.runtime_boundary_lines,
+    );
+  }
+  if (
+    adapterExecution.present === true
+    && adapterExecution.accepted !== true
+    && firstText(adapterExecution.proofAuthority, adapterExecution.proof_authority)
+      === REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY
+    && firstText(adapterExecution.status) === 'runtime_adapter_executed'
+    && runtimeBoundarySupportAuthorityNeutral(adapterExecution)
+    && runtimeBoundaryCoverageDiagnosticAccepted(adapterExecution)
+    && boundedSupportCount(
+      adapterExecution.runtimeBoundaryLines
+      ?? adapterExecution.runtime_boundary_lines,
+    ) > 0
+  ) {
+    score += 8;
+    score += boundedSupportCount(
+      adapterExecution.runtimeBoundaryLines
+      ?? adapterExecution.runtime_boundary_lines,
+      10,
+    );
+  }
+
+  if (
+    adapterStageEvents.present === true
+    && adapterStageEvents.accepted === true
+    && firstBool(
+      adapterStageEvents.acceptedAsSupportEvidence,
+      adapterStageEvents.accepted_as_support_evidence,
+    ) === true
+  ) {
+    score += 40;
+    if (firstBool(adapterStageEvents.complete) === true) score += 10;
+    score += boundedSupportCount(
+      adapterStageEvents.boundaryLineCount
+      ?? adapterStageEvents.boundary_line_count
+      ?? adapterStageEvents.boundaryLineHashes
+      ?? adapterStageEvents.boundary_line_hashes,
+    );
+  }
+
+  if (targetEnvironment.present === true && targetEnvironment.accepted === true) score += 10;
+  if (targetProcessProvenance.present === true && targetProcessProvenance.accepted === true) {
+    score += 20;
+  }
+
+  return score;
+}
+
 function rowUpdatedAtMs(row) {
   const parsed = Date.parse(String(row.updatedAt ?? ''));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -18124,6 +18272,8 @@ function selectBestRows(rows) {
     }
     const priorityDelta = rowPriority(row) - rowPriority(existing);
     const completenessDelta = rowAttemptCompletenessScore(row) - rowAttemptCompletenessScore(existing);
+    const runtimeBoundarySupportDelta =
+      rowRuntimeBoundarySupportScore(row) - rowRuntimeBoundarySupportScore(existing);
     const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
     if (
       priorityDelta > 0
@@ -18134,10 +18284,16 @@ function selectBestRows(rows) {
           || (
             completenessDelta === 0
             && (
-              updatedDelta > 0
+              runtimeBoundarySupportDelta > 0
               || (
-                updatedDelta === 0
-                && String(row.artifactPath) > String(existing.artifactPath)
+                runtimeBoundarySupportDelta === 0
+                && (
+                  updatedDelta > 0
+                  || (
+                    updatedDelta === 0
+                    && String(row.artifactPath) > String(existing.artifactPath)
+                  )
+                )
               )
             )
           )
@@ -18195,6 +18351,8 @@ function attemptHistoryRowRef(row) {
     matrix_outcome: row.matrixOutcome,
     attemptCompletenessScore: rowAttemptCompletenessScore(row),
     attempt_completeness_score: rowAttemptCompletenessScore(row),
+    runtimeBoundarySupportScore: rowRuntimeBoundarySupportScore(row),
+    runtime_boundary_support_score: rowRuntimeBoundarySupportScore(row),
     openGaps: row.openGaps,
     open_gaps: row.openGaps,
     reasons: row.reasons,
@@ -18233,8 +18391,10 @@ function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
     schema_version: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
     enabled,
     authority: enabled ? 'collector_file_mtime' : 'disabled_without_unproven_rows',
-    selectionPolicy: 'priority_then_attempt_completeness_then_updated_at_then_artifact_path',
-    selection_policy: 'priority_then_attempt_completeness_then_updated_at_then_artifact_path',
+    selectionPolicy:
+      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
+    selection_policy:
+      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
     latestPolicy: 'updated_at_then_artifact_path',
     latest_policy: 'updated_at_then_artifact_path',
     attemptCount: attempts.length,

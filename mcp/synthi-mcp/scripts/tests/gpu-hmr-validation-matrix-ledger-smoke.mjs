@@ -17328,6 +17328,226 @@ assert.equal(
   1,
 );
 
+const runtimeBoundarySupportSelectionDir = path.join(
+  logsRoot,
+  'real-rocm-runtime-boundary-support-selection',
+);
+const olderBoundarySupportPath = path.join(
+  runtimeBoundarySupportSelectionDir,
+  'real-rocm-boundary-support-refusal.json',
+);
+const newerBoundaryThinPath = path.join(
+  runtimeBoundarySupportSelectionDir,
+  'real-rocm-boundary-thin-refusal.json',
+);
+const boundarySupportScope = 'runtime-boundary-support-selection';
+const boundarySupportMaterials = realRocmRuntimeProofMaterials('hot_delta_1', {
+  projectId: 'real-rocm-runtime-boundary-support-selection',
+  visualRoot: runtimeBoundarySupportSelectionDir,
+});
+const completeBoundarySupportExecution = runtimeAdapterExecutionFixture(
+  boundarySupportScope,
+  boundarySupportMaterials,
+);
+const diagnosticBoundarySupportLines = completeBoundarySupportExecution.runtimeBoundaryLines
+  .filter((line) => !/\boutput_oracle\b/i.test(line));
+const boundarySupportExecution = runtimeAdapterExecutionFixture(
+  boundarySupportScope,
+  boundarySupportMaterials,
+  {
+    runtimeBoundaryLines: diagnosticBoundarySupportLines,
+    runtime_boundary_lines: diagnosticBoundarySupportLines,
+    runtimeBoundaryLineCount: diagnosticBoundarySupportLines.length,
+    runtime_boundary_line_count: diagnosticBoundarySupportLines.length,
+  },
+);
+const boundarySupportStageEvents = runtimeAdapterStageEventsFixture(
+  boundarySupportExecution.runtimeBoundaryLines,
+);
+const runtimeBoundarySupportBaseArtifact = {
+  real_rocm_profile: { id: 'real-rocm-runtime-boundary-support-selection' },
+  source_url: 'https://example.invalid/rocm/runtime-boundary-support.git',
+  repo_commit: '1234567890abcdef1234567890abcdef12345678',
+  entry_file: 'src/kernels/runtime_boundary_entry.hip',
+  delta_file: 'src/kernels/runtime_boundary_delta.h',
+  target_name: 'RuntimeBoundarySupportDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  strict_proof_gates: {
+    accepted: false,
+    failures: ['runtime_full_proof_not_proven'],
+  },
+  upstream_lifecycle_failure: {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    accepted_as_refusal_evidence: true,
+    reasons: ['runtime_proof_not_closed'],
+  },
+  checks: [
+    {
+      name: 'strict real ROCm runtime proof artifact acceptance',
+      status: 'fail',
+      detail: 'failures=runtime_full_proof_not_proven',
+    },
+  ],
+};
+await writeJson(olderBoundarySupportPath, {
+  ...runtimeBoundarySupportBaseArtifact,
+  slug: 'gpu-real-rocm-runtime-boundary-support-older-rich-refusal',
+  real_rocm_runtime_adapter_execution: boundarySupportExecution,
+  realRocmRuntimeAdapterExecution: boundarySupportExecution,
+  real_rocm_runtime_adapter_stage_events: boundarySupportStageEvents,
+  realRocmRuntimeAdapterStageEvents: boundarySupportStageEvents,
+});
+await writeJson(newerBoundaryThinPath, {
+  ...runtimeBoundarySupportBaseArtifact,
+  slug: 'gpu-real-rocm-runtime-boundary-support-newer-thin-refusal',
+  real_rocm_runtime_adapter_execution: {
+    schemaVersion: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    schema_version: 'synthi.real_rocm.runtime_adapter_execution.v1',
+    proofAuthority: 'adapter_execution_evidence_only_not_runtime_authority',
+    proof_authority: 'adapter_execution_evidence_only_not_runtime_authority',
+    declared: false,
+    enabled: false,
+    status: 'runtime_adapter_not_declared',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeBoundaryLines: [],
+    runtime_boundary_lines: [],
+  },
+});
+await fs.utimes(
+  olderBoundarySupportPath,
+  new Date('2026-06-29T01:00:00.000Z'),
+  new Date('2026-06-29T01:00:00.000Z'),
+);
+await fs.utimes(
+  newerBoundaryThinPath,
+  new Date('2026-06-29T01:05:00.000Z'),
+  new Date('2026-06-29T01:05:00.000Z'),
+);
+const runtimeBoundarySupportSelectionLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [runtimeBoundarySupportSelectionDir],
+  generatedAt: '2026-06-29T01:05:01.000Z',
+  includeUnproven: true,
+});
+const runtimeBoundarySupportSelectionRow =
+  runtimeBoundarySupportSelectionLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.ok(
+  runtimeBoundarySupportSelectionRow?.artifactPath.endsWith(
+    'real-rocm-boundary-support-refusal.json',
+  ),
+);
+assert.equal(runtimeBoundarySupportSelectionRow.matrixOutcome, 'refusal_proven');
+assert.equal(runtimeBoundarySupportSelectionRow.acceptedForGpuHmr, false);
+assert.equal(runtimeBoundarySupportSelectionRow.attemptCompleteness.score, 80);
+assert.equal(runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterExecution.accepted, false);
+assert.equal(
+  runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterExecution.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.acceptedAsDiagnosticEvidence,
+  true,
+);
+assert.ok(
+  runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterExecution.failedGates.includes(
+    'real_rocm_runtime_adapter_execution_boundary_coverage_incomplete',
+  ),
+);
+const runtimeBoundarySupportAttempt =
+  runtimeBoundarySupportSelectionLedger.attemptHistory.attempts.find(
+    (attempt) =>
+      attempt.selected?.artifactPath?.endsWith('real-rocm-boundary-support-refusal.json'),
+  );
+assert.ok(runtimeBoundarySupportAttempt);
+assert.equal(runtimeBoundarySupportAttempt.selectedIsLatest, false);
+assert.equal(runtimeBoundarySupportAttempt.latestAttemptIsUnselected, true);
+assert.ok(
+  runtimeBoundarySupportAttempt.selected.runtimeBoundarySupportScore
+    > runtimeBoundarySupportAttempt.latest.runtimeBoundarySupportScore,
+);
+
+const forgedRuntimeBoundarySupportSelectionDir = path.join(
+  logsRoot,
+  'real-rocm-forged-runtime-boundary-support-selection',
+);
+const olderForgedBoundarySupportPath = path.join(
+  forgedRuntimeBoundarySupportSelectionDir,
+  'real-rocm-forged-boundary-support-refusal.json',
+);
+const newerForgedBoundaryThinPath = path.join(
+  forgedRuntimeBoundarySupportSelectionDir,
+  'real-rocm-forged-boundary-thin-refusal.json',
+);
+const forgedBoundarySupportExecution = runtimeAdapterExecutionFixture(
+  'forged-runtime-boundary-support-selection',
+  boundarySupportMaterials,
+  {
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+  },
+);
+const forgedRuntimeBoundarySupportBaseArtifact = {
+  ...runtimeBoundarySupportBaseArtifact,
+  real_rocm_profile: { id: 'real-rocm-forged-runtime-boundary-support-selection' },
+};
+await writeJson(olderForgedBoundarySupportPath, {
+  ...forgedRuntimeBoundarySupportBaseArtifact,
+  slug: 'gpu-real-rocm-forged-runtime-boundary-support-older-rich-refusal',
+  real_rocm_runtime_adapter_execution: forgedBoundarySupportExecution,
+  realRocmRuntimeAdapterExecution: forgedBoundarySupportExecution,
+});
+await writeJson(newerForgedBoundaryThinPath, {
+  ...forgedRuntimeBoundarySupportBaseArtifact,
+  slug: 'gpu-real-rocm-forged-runtime-boundary-support-newer-thin-refusal',
+});
+await fs.utimes(
+  olderForgedBoundarySupportPath,
+  new Date('2026-06-29T02:00:00.000Z'),
+  new Date('2026-06-29T02:00:00.000Z'),
+);
+await fs.utimes(
+  newerForgedBoundaryThinPath,
+  new Date('2026-06-29T02:05:00.000Z'),
+  new Date('2026-06-29T02:05:00.000Z'),
+);
+const forgedRuntimeBoundarySupportSelectionLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedRuntimeBoundarySupportSelectionDir],
+    generatedAt: '2026-06-29T02:05:01.000Z',
+    includeUnproven: true,
+  });
+const forgedRuntimeBoundarySupportSelectionRow =
+  forgedRuntimeBoundarySupportSelectionLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.ok(
+  forgedRuntimeBoundarySupportSelectionRow?.artifactPath.endsWith(
+    'real-rocm-forged-boundary-thin-refusal.json',
+  ),
+);
+const forgedRuntimeBoundarySupportAttempt =
+  forgedRuntimeBoundarySupportSelectionLedger.attemptHistory.attempts.find(
+    (attempt) =>
+      attempt.latest?.artifactPath?.endsWith('real-rocm-forged-boundary-thin-refusal.json'),
+  );
+assert.ok(forgedRuntimeBoundarySupportAttempt);
+assert.equal(forgedRuntimeBoundarySupportAttempt.selectedIsLatest, true);
+assert.equal(forgedRuntimeBoundarySupportAttempt.selected.runtimeBoundarySupportScore, 0);
+
 const workerTransferRefusalDir = path.join(logsRoot, 'real-rocm-worker-transfer-refusal');
 await writeJson(path.join(workerTransferRefusalDir, 'real-rocm-worker-transfer-refusal.json'), {
   slug: 'gpu-real-rocm-worker-transfer-refusal-20260625',
