@@ -372,6 +372,11 @@ export type TherapeuticProbeAdapter = (input: {
   trace: TherapeuticTrace;
   probe_input: Record<string, unknown>;
 }) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export type TherapeuticProbeHttpTransport = (input: {
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+}) => Promise<{ status: number; body: unknown }> | { status: number; body: unknown };
 
 export interface TherapeuticTemporaryGrant {
   grant_id: string;
@@ -521,6 +526,35 @@ export type TherapeuticCheckrideKind =
   | "adversarial_probe_output"
   | "source_drift"
   | "emergency_escalation";
+
+export type TherapeuticChaosControlKind =
+  | "stale_proof"
+  | "revoked_proof"
+  | "replayed_proof"
+  | "leaky_probe"
+  | "unavailable_evidence_store"
+  | "failed_revocation"
+  | "failed_postcondition"
+  | "emergency_under_escalation";
+
+export interface TherapeuticChaosControlResult {
+  control_id: string;
+  kind: TherapeuticChaosControlKind;
+  status: "passed" | "failed";
+  finding: string;
+  blocked_by: string[];
+  evidence_refs: string[];
+}
+
+export interface TherapeuticChaosControlReport {
+  schema_version: "synthi.dojo.therapeuticChaosControlReport.v1";
+  report_id: string;
+  task_id: string;
+  generated_at: string;
+  results: TherapeuticChaosControlResult[];
+  passed_count: number;
+  failed_count: number;
+}
 
 export interface TherapeuticCheckrideResult {
   checkride_id: string;
@@ -856,8 +890,160 @@ const THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES: TherapeuticProbeContract[] = [
   },
 ];
 
+export const THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES: TherapeuticProbeContract[] = [
+  {
+    name: "workflow_step_latency_summary",
+    purpose: "Summarize per-step workflow latency deltas without raw run logs.",
+    task_class: "workflow_debugging",
+    required_authority_dose: 1,
+    required_data_classes: ["aggregate_workflow_metrics"],
+    forbidden_data_classes: ["raw_prod_logs", "customer_identifiers", "secrets"],
+    input_schema: { workflow_name: "string", time_window: "string" },
+    allowed_output_shape: ["workflow_name", "slowest_step", "latency_delta_ms", "confidence", "time_window"],
+    allowed_output_schema: {
+      workflow_name: "string",
+      slowest_step: "string",
+      latency_delta_ms: "number",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["raw_run_logs", "customer_identifiers", "payloads", "tokens"],
+    privacy_cost: 1,
+    expected_information_gain: 7,
+    sensitivity_level: "low",
+    failure_modes: ["workflow_metrics_missing", "step_cardinality_too_high"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "dependency_error_rate_summary",
+    purpose: "Compare aggregate dependency error rates for scoped workflow dependencies.",
+    task_class: "workflow_debugging",
+    required_authority_dose: 2,
+    required_data_classes: ["aggregate_dependency_metrics"],
+    forbidden_data_classes: ["raw_prod_logs", "request_bodies", "customer_identifiers"],
+    input_schema: { workflow_name: "string", dependency_name: "string", time_window: "string" },
+    allowed_output_shape: ["dependency_name", "error_rate_delta", "top_error_class", "confidence", "time_window"],
+    allowed_output_schema: {
+      dependency_name: "string",
+      error_rate_delta: "number",
+      top_error_class: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["raw_errors", "request_bodies", "customer_identifiers", "tokens"],
+    privacy_cost: 1,
+    expected_information_gain: 7,
+    sensitivity_level: "low",
+    failure_modes: ["dependency_not_scoped", "metrics_window_missing"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "scoped_runbook_diff",
+    purpose: "Read a schema-limited diff for the implicated workflow runbook or automation config.",
+    task_class: "workflow_debugging",
+    required_authority_dose: 4,
+    required_data_classes: ["scoped_runbook_diff"],
+    forbidden_data_classes: ["secrets", "admin_privileges", "full_production_config"],
+    input_schema: { workflow_name: "string", time_window: "string" },
+    allowed_output_shape: ["workflow_name", "changed_step", "change_summary", "risk_level", "confidence"],
+    allowed_output_schema: {
+      workflow_name: "string",
+      changed_step: "string",
+      change_summary: "string",
+      risk_level: "string",
+      confidence: "number",
+    },
+    forbidden_outputs: ["secret_values", "tokens", "full_config_dump", "customer_identifiers"],
+    privacy_cost: 2,
+    expected_information_gain: 8,
+    sensitivity_level: "medium",
+    failure_modes: ["runbook_history_missing", "workflow_not_scoped"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+];
+
+export const THERAPEUTIC_INCIDENT_RESPONSE_PROBES: TherapeuticProbeContract[] = [
+  {
+    name: "service_health_rollup",
+    purpose: "Summarize aggregate service health signals without raw traces or request payloads.",
+    task_class: "incident_response",
+    required_authority_dose: 1,
+    required_data_classes: ["aggregate_service_health"],
+    forbidden_data_classes: ["raw_prod_logs", "request_bodies", "customer_identifiers"],
+    input_schema: { service_name: "string", time_window: "string" },
+    allowed_output_shape: ["service_name", "health_delta", "primary_symptom", "confidence", "time_window"],
+    allowed_output_schema: {
+      service_name: "string",
+      health_delta: "number",
+      primary_symptom: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["raw_traces", "raw_prod_logs", "request_bodies", "customer_identifiers"],
+    privacy_cost: 1,
+    expected_information_gain: 8,
+    sensitivity_level: "low",
+    failure_modes: ["service_metrics_missing", "window_not_indexed"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "blast_radius_summary",
+    purpose: "Estimate affected aggregate slices without customer-level records.",
+    task_class: "incident_response",
+    required_authority_dose: 2,
+    required_data_classes: ["aggregate_impact_slices"],
+    forbidden_data_classes: ["customer_identifiers", "full_database", "raw_prod_logs"],
+    input_schema: { service_name: "string", time_window: "string" },
+    allowed_output_shape: ["affected_slice", "estimated_impact_pct", "severity", "confidence", "time_window"],
+    allowed_output_schema: {
+      affected_slice: "string",
+      estimated_impact_pct: "number",
+      severity: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["customer_identifiers", "account_ids", "raw_records", "full_database_rows"],
+    privacy_cost: 2,
+    expected_information_gain: 8,
+    sensitivity_level: "medium",
+    failure_modes: ["impact_slices_missing", "slice_too_small"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "rollback_candidate_readiness",
+    purpose: "Read rollback readiness metadata for a scoped service change without mutation authority.",
+    task_class: "incident_response",
+    required_authority_dose: 4,
+    required_data_classes: ["rollback_metadata"],
+    forbidden_data_classes: ["admin_privileges", "write_access", "secrets"],
+    input_schema: { service_name: "string", change_id: "string" },
+    allowed_output_shape: ["service_name", "change_id", "rollback_ready", "postcondition_available", "confidence"],
+    allowed_output_schema: {
+      service_name: "string",
+      change_id: "string",
+      rollback_ready: "boolean",
+      postcondition_available: "boolean",
+      confidence: "number",
+    },
+    forbidden_outputs: ["secret_values", "tokens", "write_credentials", "admin_privileges"],
+    privacy_cost: 2,
+    expected_information_gain: 7,
+    sensitivity_level: "medium",
+    failure_modes: ["rollback_metadata_missing", "change_not_scoped"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+];
+
 export function therapeuticProbeContractsForTaskClass(taskClass: string): TherapeuticProbeContract[] {
   if (taskClass === "ml_quality_drop") return THERAPEUTIC_ML_QUALITY_DROP_PROBES;
+  if (taskClass === "workflow_debugging") return THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES;
+  if (taskClass === "incident_response") return THERAPEUTIC_INCIDENT_RESPONSE_PROBES;
   return THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES.map((probe) => ({
     ...probe,
     task_class: taskClass,
@@ -881,6 +1067,8 @@ export const THERAPEUTIC_DEFAULT_POLICY: TherapeuticPolicy = {
   forbidden_data_classes: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges"],
   allowed_projection_probes: uniqueStrings([
     ...THERAPEUTIC_ML_QUALITY_DROP_PROBES.map((probe) => probe.name),
+    ...THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES.map((probe) => probe.name),
+    ...THERAPEUTIC_INCIDENT_RESPONSE_PROBES.map((probe) => probe.name),
     ...THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES.map((probe) => probe.name),
   ]),
   mutation_allowed: false,
@@ -1858,6 +2046,36 @@ export function runTherapeuticTomographyCheckrides(input: {
   return report;
 }
 
+export function runTherapeuticChaosControls(input: {
+  trace: TherapeuticTrace;
+  store?: TherapeuticRuntimeStore;
+  now?: string;
+}): TherapeuticChaosControlReport {
+  const now = input.now ?? new Date().toISOString();
+  const evidenceRefs = therapeuticTraceEvidenceRefs(input.trace, input.store);
+  const results = [
+    staleProofChaosControl(input.trace, input.store, evidenceRefs, now),
+    revokedProofChaosControl(input.trace, input.store, evidenceRefs),
+    replayedProofChaosControl(input.trace, input.store, evidenceRefs),
+    leakyProbeChaosControl(input.trace, evidenceRefs),
+    unavailableEvidenceStoreChaosControl(input.store, evidenceRefs),
+    failedRevocationChaosControl(input.trace, input.store, evidenceRefs),
+    failedPostconditionChaosControl(input.trace, input.store, evidenceRefs),
+    emergencyUnderEscalationChaosControl(input.trace, evidenceRefs),
+  ];
+  const report: TherapeuticChaosControlReport = {
+    schema_version: "synthi.dojo.therapeuticChaosControlReport.v1",
+    report_id: therapeuticId("therapeutic_chaos", [input.trace.task_id, now, results.map((result) => `${result.kind}:${result.status}`).join("|")]),
+    task_id: input.trace.task_id,
+    generated_at: now,
+    results,
+    passed_count: results.filter((result) => result.status === "passed").length,
+    failed_count: results.filter((result) => result.status === "failed").length,
+  };
+  appendTherapeuticEvidence(input.store, input.trace.task_id, "checkride", now, { chaos_control_report: report });
+  return report;
+}
+
 export function learnTherapeuticPolicyPatterns(input: {
   traces: TherapeuticTrace[];
   store?: TherapeuticRuntimeStore;
@@ -2447,7 +2665,89 @@ export const THERAPEUTIC_DEFAULT_PROBE_ADAPTERS: Record<string, TherapeuticProbe
     confidence: numberFromInput(probe_input, "confidence", 0.78),
     time_window: stringFromInput(probe_input, "time_window", "last_24h"),
   }),
+  workflow_step_latency_summary: ({ probe_input }) => ({
+    workflow_name: stringFromInput(probe_input, "workflow_name", "billing-workflow"),
+    slowest_step: stringFromInput(probe_input, "slowest_step", "charge_authorization"),
+    latency_delta_ms: numberFromInput(probe_input, "latency_delta_ms", 420),
+    confidence: numberFromInput(probe_input, "confidence", 0.82),
+    time_window: stringFromInput(probe_input, "time_window", "last_2h"),
+  }),
+  dependency_error_rate_summary: ({ probe_input }) => ({
+    dependency_name: stringFromInput(probe_input, "dependency_name", "payments-api"),
+    error_rate_delta: numberFromInput(probe_input, "error_rate_delta", 0.11),
+    top_error_class: stringFromInput(probe_input, "top_error_class", "timeout"),
+    confidence: numberFromInput(probe_input, "confidence", 0.8),
+    time_window: stringFromInput(probe_input, "time_window", "last_2h"),
+  }),
+  scoped_runbook_diff: ({ probe_input }) => ({
+    workflow_name: stringFromInput(probe_input, "workflow_name", "billing-workflow"),
+    changed_step: stringFromInput(probe_input, "changed_step", "retry_policy"),
+    change_summary: stringFromInput(probe_input, "change_summary", "Retry policy changed for payments-api calls."),
+    risk_level: stringFromInput(probe_input, "risk_level", "medium"),
+    confidence: numberFromInput(probe_input, "confidence", 0.84),
+  }),
+  service_health_rollup: ({ probe_input }) => ({
+    service_name: stringFromInput(probe_input, "service_name", "checkout-api"),
+    health_delta: numberFromInput(probe_input, "health_delta", -0.18),
+    primary_symptom: stringFromInput(probe_input, "primary_symptom", "elevated_error_rate"),
+    confidence: numberFromInput(probe_input, "confidence", 0.86),
+    time_window: stringFromInput(probe_input, "time_window", "last_30m"),
+  }),
+  blast_radius_summary: ({ probe_input }) => ({
+    affected_slice: stringFromInput(probe_input, "affected_slice", "us-east checkout traffic"),
+    estimated_impact_pct: numberFromInput(probe_input, "estimated_impact_pct", 12),
+    severity: stringFromInput(probe_input, "severity", "high"),
+    confidence: numberFromInput(probe_input, "confidence", 0.83),
+    time_window: stringFromInput(probe_input, "time_window", "last_30m"),
+  }),
+  rollback_candidate_readiness: ({ probe_input }) => ({
+    service_name: stringFromInput(probe_input, "service_name", "checkout-api"),
+    change_id: stringFromInput(probe_input, "change_id", "deploy-20260629-1700"),
+    rollback_ready: boolFromInput(probe_input, "rollback_ready", true),
+    postcondition_available: boolFromInput(probe_input, "postcondition_available", true),
+    confidence: numberFromInput(probe_input, "confidence", 0.81),
+  }),
 };
+
+export function createHttpTherapeuticProbeAdapter(input: {
+  endpoint_url: string;
+  headers?: Record<string, string>;
+  allow_loopback?: boolean;
+  transport?: TherapeuticProbeHttpTransport;
+}): TherapeuticProbeAdapter {
+  const endpoint = new URL(input.endpoint_url);
+  if (endpoint.protocol !== "https:" && input.allow_loopback !== true) {
+    throw new Error("therapeutic_probe_http_adapter_https_required");
+  }
+  if (isLoopbackHostname(endpoint.hostname) && input.allow_loopback !== true) {
+    throw new Error("therapeutic_probe_http_adapter_loopback_forbidden");
+  }
+  const transport = input.transport ?? defaultTherapeuticProbeHttpTransport;
+  return async ({ contract, trace, probe_input }) => {
+    const response = await transport({
+      url: endpoint.toString(),
+      headers: {
+        "Content-Type": "application/json",
+        ...(input.headers ?? {}),
+      },
+      body: {
+        schema_version: "synthi.dojo.therapeuticProbeRequest.v1",
+        task_id: trace.task_id,
+        task_class: trace.task_class,
+        probe_name: contract.name,
+        probe_input,
+        allowed_output_shape: contract.allowed_output_shape,
+      },
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`therapeutic_probe_http_adapter_failed:${response.status}`);
+    }
+    if (!response.body || typeof response.body !== "object" || Array.isArray(response.body)) {
+      throw new Error("therapeutic_probe_http_adapter_response_invalid");
+    }
+    return response.body as Record<string, unknown>;
+  };
+}
 
 function verifyMachineClaims(input: {
   trace: TherapeuticTrace;
@@ -2521,6 +2821,8 @@ export function inferSupportedScopeValues(trace: TherapeuticTrace): string[] {
       if (key === "top_feature" || key === "feature_name") scopes.add(`feature:${normalized}`);
       if (key === "affected_segment" || key === "segment") scopes.add(`segment:${normalized}`);
       if (key === "service_name") scopes.add(`service:${normalized}`);
+      if (key === "workflow_name") scopes.add(`workflow:${normalized}`);
+      if (key === "dependency_name") scopes.add(`dependency:${normalized}`);
       if (key === "route_name" || key === "model_route") scopes.add(`route:${normalized}`);
     }
   }
@@ -2559,6 +2861,43 @@ function valueMatchesSchemaType(value: unknown, type: TherapeuticProbeOutputSche
   if (type === "number") return typeof value === "number" && Number.isFinite(value);
   if (type === "object") return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   return typeof value === type;
+}
+
+function defaultValueForProbeSchema(type: TherapeuticProbeOutputSchemaType | undefined): unknown {
+  if (type === "number") return 1;
+  if (type === "boolean") return true;
+  if (type === "object") return { summary: "shape-valid placeholder" };
+  return "shape-valid-placeholder";
+}
+
+async function defaultTherapeuticProbeHttpTransport(input: {
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+}): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(input.url, {
+    method: "POST",
+    headers: input.headers,
+    body: JSON.stringify(input.body),
+  });
+  const text = await response.text();
+  let body: unknown = text;
+  if (text.trim().length > 0) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  return {
+    status: response.status,
+    body,
+  };
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
 }
 
 function containsForbiddenOutputMarker(value: unknown, marker: string): boolean {
@@ -3219,6 +3558,183 @@ function emergencyEscalationCheckride(
     deltaKind: "emergency_escalation_review",
     rule: "Critical blocked uncertainty must trigger human emergency escalation review without granting automatic broad access.",
   });
+}
+
+function staleProofChaosControl(
+  trace: TherapeuticTrace,
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[],
+  now: string
+): TherapeuticChaosControlResult {
+  const capsule = trace.proof_capsules[0];
+  if (!capsule) return chaosControlResult(trace, "stale_proof", "failed", "No proof capsule exists to stale-test.", ["proof_capsule_missing"], evidenceRefs);
+  const request = {
+    ...capsule.requested_access,
+    expiration: "1m",
+  };
+  const staleCapsule = {
+    ...capsule,
+    requested_access: request,
+    timestamp: "2000-01-01T00:00:00.000Z",
+  };
+  const blockedBy = proofLifecycleBlockedBy(staleCapsule, {
+    ...(store ?? createTherapeuticRuntimeStore()),
+    proof_statuses: { [staleCapsule.id]: "issued" },
+  });
+  return chaosControlResult(
+    trace,
+    "stale_proof",
+    blockedBy.includes("proof_capsule_stale") ? "passed" : "failed",
+    blockedBy.includes("proof_capsule_stale") ? "Stale proof capsule is denied before grant minting." : "Stale proof capsule was not denied.",
+    blockedBy.includes("proof_capsule_stale") ? [] : ["stale_proof_not_blocked"],
+    evidenceRefs.length > 0 ? evidenceRefs : [`proof:${capsule.id}`, `time:${now}`]
+  );
+}
+
+function revokedProofChaosControl(
+  trace: TherapeuticTrace,
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  const capsule = trace.proof_capsules[0];
+  if (!capsule) return chaosControlResult(trace, "revoked_proof", "failed", "No proof capsule exists to revoke-test.", ["proof_capsule_missing"], evidenceRefs);
+  const blockedBy = proofLifecycleBlockedBy(capsule, {
+    ...(store ?? createTherapeuticRuntimeStore()),
+    proof_statuses: { [capsule.id]: "revoked" },
+  });
+  return chaosControlResult(
+    trace,
+    "revoked_proof",
+    blockedBy.includes("proof_capsule_revoked") ? "passed" : "failed",
+    blockedBy.includes("proof_capsule_revoked") ? "Revoked proof capsule is denied." : "Revoked proof capsule was not denied.",
+    blockedBy.includes("proof_capsule_revoked") ? [] : ["revoked_proof_not_blocked"],
+    evidenceRefs
+  );
+}
+
+function replayedProofChaosControl(
+  trace: TherapeuticTrace,
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  const capsule = trace.proof_capsules[0];
+  if (!capsule) return chaosControlResult(trace, "replayed_proof", "failed", "No proof capsule exists to replay-test.", ["proof_capsule_missing"], evidenceRefs);
+  const blockedBy = proofLifecycleBlockedBy(capsule, {
+    ...(store ?? createTherapeuticRuntimeStore()),
+    proof_statuses: { [capsule.id]: "used" },
+  });
+  return chaosControlResult(
+    trace,
+    "replayed_proof",
+    blockedBy.includes("proof_capsule_replay") ? "passed" : "failed",
+    blockedBy.includes("proof_capsule_replay") ? "Replayed proof capsule is denied." : "Replayed proof capsule was not denied.",
+    blockedBy.includes("proof_capsule_replay") ? [] : ["replayed_proof_not_blocked"],
+    evidenceRefs
+  );
+}
+
+function leakyProbeChaosControl(trace: TherapeuticTrace, evidenceRefs: string[]): TherapeuticChaosControlResult {
+  const contract = therapeuticProbeContractsForTaskClass(trace.task_class)[0] ?? THERAPEUTIC_ML_QUALITY_DROP_PROBES[0];
+  if (!contract) return chaosControlResult(trace, "leaky_probe", "failed", "No probe contract exists to leak-test.", ["probe_contract_missing"], evidenceRefs);
+  const leakyOutput = Object.fromEntries(contract.allowed_output_shape.map((key) => [key, defaultValueForProbeSchema(contract.allowed_output_schema[key])]));
+  leakyOutput[contract.forbidden_outputs[0] ?? "raw_prod_logs"] = [{ id: "leak" }];
+  const blocked = !probeOutputShapeValid(contract, leakyOutput);
+  return chaosControlResult(
+    trace,
+    "leaky_probe",
+    blocked ? "passed" : "failed",
+    blocked ? "Leaky probe output fails closed under contract validation." : "Leaky probe output passed validation.",
+    blocked ? [] : ["leaky_probe_not_blocked"],
+    evidenceRefs
+  );
+}
+
+function unavailableEvidenceStoreChaosControl(
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  const durable = store?.persistence?.durable === true && Boolean(store.persistence.path);
+  return {
+    control_id: therapeuticId("therapeutic_chaos_case", ["unavailable_evidence_store", String(durable), evidenceRefs.join("|")]),
+    kind: "unavailable_evidence_store",
+    status: durable ? "passed" : "failed",
+    finding: durable
+      ? "Durable evidence store metadata is present for audit reconstruction."
+      : "Durable evidence store metadata is missing or unavailable.",
+    blocked_by: durable ? [] : ["durable_evidence_store_unavailable"],
+    evidence_refs: evidenceRefs,
+  };
+}
+
+function failedRevocationChaosControl(
+  trace: TherapeuticTrace,
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  const failed = store?.audit_records.some((record) => record.event_type === "grant_revoke_failed" && record.task_id === trace.task_id) === true
+    || store?.grants.some((grant) => grant.task_id === trace.task_id && grant.revocation_status === "failure") === true;
+  return chaosControlResult(
+    trace,
+    "failed_revocation",
+    failed ? "passed" : "failed",
+    failed ? "Failed revocation is captured as audit evidence." : "No failed revocation control evidence is present.",
+    failed ? [] : ["failed_revocation_control_missing"],
+    evidenceRefs
+  );
+}
+
+function failedPostconditionChaosControl(
+  trace: TherapeuticTrace,
+  store: TherapeuticRuntimeStore | undefined,
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  const failed = store?.remediation_verifications.some((verification) =>
+    verification.task_id === trace.task_id && verification.status === "failed"
+  ) === true || trace.under_escalation_flags.includes("remediation_postcondition_failed");
+  return chaosControlResult(
+    trace,
+    "failed_postcondition",
+    failed ? "passed" : "failed",
+    failed ? "Failed postcondition blocks the trace and remains auditable." : "No failed postcondition control evidence is present.",
+    failed ? [] : ["failed_postcondition_control_missing"],
+    evidenceRefs
+  );
+}
+
+function emergencyUnderEscalationChaosControl(trace: TherapeuticTrace, evidenceRefs: string[]): TherapeuticChaosControlResult {
+  const criticalBlocked = trace.uncertainties.some((uncertainty) =>
+    uncertainty.severity === "critical" && uncertainty.blocking_status === "blocked"
+  );
+  const signaled = trace.under_escalation_flags.includes("critical_blocked_uncertainty_without_emergency_review")
+    || trace.human_overrides.length > 0;
+  return chaosControlResult(
+    trace,
+    "emergency_under_escalation",
+    !criticalBlocked || signaled ? "passed" : "failed",
+    !criticalBlocked || signaled
+      ? "Emergency under-escalation is absent or explicitly signaled for review."
+      : "Critical blocked uncertainty lacks an emergency review signal.",
+    !criticalBlocked || signaled ? [] : ["emergency_under_escalation_not_signaled"],
+    evidenceRefs
+  );
+}
+
+function chaosControlResult(
+  trace: TherapeuticTrace,
+  kind: TherapeuticChaosControlKind,
+  status: TherapeuticChaosControlResult["status"],
+  finding: string,
+  blockedBy: string[],
+  evidenceRefs: string[]
+): TherapeuticChaosControlResult {
+  return {
+    control_id: therapeuticId("therapeutic_chaos_case", [trace.task_id, kind, finding]),
+    kind,
+    status,
+    finding,
+    blocked_by: uniqueStrings(blockedBy),
+    evidence_refs: evidenceRefs.length > 0 ? evidenceRefs : [`trace:${trace.task_id}`],
+  };
 }
 
 function checkrideResult(input: {

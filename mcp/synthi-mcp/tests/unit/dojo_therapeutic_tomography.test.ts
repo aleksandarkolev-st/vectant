@@ -11,6 +11,7 @@ import {
   buildStrictProofCapsule,
   classifyTherapeuticProofRoute,
   createDurableTherapeuticRuntimeStore,
+  createHttpTherapeuticProbeAdapter,
   createTherapeuticRuntimeStore,
   dispatchProtectedTherapeuticTool,
   emptyTherapeuticTrace,
@@ -26,6 +27,7 @@ import {
   reviewTherapeuticAccessRequest,
   revokeTherapeuticGrant,
   revokeTherapeuticTaskGrants,
+  runTherapeuticChaosControls,
   runTherapeuticTomographyCheckrides,
   persistTherapeuticRuntimeState,
   scoreTherapeuticAction,
@@ -34,7 +36,9 @@ import {
   summarizeProofMetrics,
   summarizeTherapeuticOutcomeMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
+  THERAPEUTIC_INCIDENT_RESPONSE_PROBES,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+  THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES,
   verifySignedTherapeuticProofCapsule,
   verifyTherapeuticRemediationPostconditions,
   type TherapeuticAccessRequest,
@@ -279,6 +283,100 @@ describe("Dojo therapeutic tomography", () => {
     expect(trace.projection_probes.find((probe) => probe.id === leaky.probe?.id)?.status).toBe("failed");
     expect(store.evidence_records.map((record) => record.kind)).toContain("probe_result");
     expect(store.audit_records.map((record) => record.event_type)).toContain("probe_blocked");
+  });
+
+  it("executes a non-demo HTTP probe adapter path while preserving output-shape enforcement", async () => {
+    const trace = emptyTherapeuticTrace({
+      task_id: "task-http-probe",
+      task_class: "incident_response",
+      user_goal: "Diagnose a production incident through hosted aggregate probes.",
+      current_authority_dose: 1,
+    });
+    const store = createTherapeuticRuntimeStore();
+    const contract = THERAPEUTIC_INCIDENT_RESPONSE_PROBES.find((probe) => probe.name === "service_health_rollup")!;
+    const seenRequests: any[] = [];
+    const adapter = createHttpTherapeuticProbeAdapter({
+      endpoint_url: "https://probe.example.test/therapeutic/service-health",
+      headers: { Authorization: "Bearer redacted-test-token" },
+      transport: (request) => {
+        seenRequests.push(request);
+        return {
+          status: 200,
+          body: {
+            service_name: "checkout-api",
+            health_delta: -0.21,
+            primary_symptom: "elevated_error_rate",
+            confidence: 0.87,
+            time_window: "last_30m",
+          },
+        };
+      },
+    });
+
+    const result = await executeTherapeuticProbe({
+      trace,
+      store,
+      contract,
+      adapter,
+      probe_input: { service_name: "checkout-api", time_window: "last_30m" },
+      now: "2026-06-29T17:00:00.000Z",
+    });
+
+    expect(result.decision).toBe("completed");
+    expect(result.probe?.result_summary.primary_symptom).toBe("elevated_error_rate");
+    expect(seenRequests[0].url).toBe("https://probe.example.test/therapeutic/service-health");
+    expect(seenRequests[0].body).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.therapeuticProbeRequest.v1",
+      probe_name: "service_health_rollup",
+      allowed_output_shape: contract.allowed_output_shape,
+    }));
+    expect(() => createHttpTherapeuticProbeAdapter({ endpoint_url: "http://127.0.0.1:8080/probe" }))
+      .toThrow("therapeutic_probe_http_adapter_https_required");
+  });
+
+  it("uses contract-bound non-generic probe catalogs for workflow debugging and incident response", async () => {
+    const workflowTrace = emptyTherapeuticTrace({
+      task_id: "task-workflow-catalog",
+      task_class: "workflow_debugging",
+      user_goal: "Diagnose workflow latency.",
+      current_authority_dose: 1,
+    });
+    const incidentTrace = emptyTherapeuticTrace({
+      task_id: "task-incident-catalog",
+      task_class: "incident_response",
+      user_goal: "Diagnose incident blast radius.",
+      current_authority_dose: 1,
+    });
+
+    const workflowProbe = await executeTherapeuticProbe({
+      trace: workflowTrace,
+      contract: THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES.find((probe) => probe.name === "workflow_step_latency_summary")!,
+      probe_input: {
+        workflow_name: "billing-workflow",
+        slowest_step: "charge_authorization",
+        latency_delta_ms: 530,
+        confidence: 0.84,
+        time_window: "last_2h",
+      },
+    });
+    const incidentProbe = await executeTherapeuticProbe({
+      trace: incidentTrace,
+      contract: THERAPEUTIC_INCIDENT_RESPONSE_PROBES.find((probe) => probe.name === "blast_radius_summary")!,
+      probe_input: {
+        affected_slice: "eu checkout traffic",
+        estimated_impact_pct: 9,
+        severity: "high",
+        confidence: 0.82,
+        time_window: "last_30m",
+      },
+    });
+
+    expect(workflowProbe.decision).toBe("completed");
+    expect(workflowTrace.projection_probes[0].name).toBe("workflow_step_latency_summary");
+    expect(incidentProbe.decision).toBe("completed");
+    expect(incidentTrace.projection_probes[0].name).toBe("blast_radius_summary");
+    expect(THERAPEUTIC_WORKFLOW_DEBUGGING_PROBES.map((probe) => probe.name)).not.toContain("task_evidence_summary");
+    expect(THERAPEUTIC_INCIDENT_RESPONSE_PROBES.every((probe) => probe.allowed_output_shape.length > 0)).toBe(true);
   });
 
   it("persists therapeutic runtime state in tenant-scoped durable files without cross-tenant bleed", async () => {
@@ -850,6 +948,71 @@ describe("Dojo therapeutic tomography", () => {
     expect(revoked.broker_decision.blocked_by).toContain("proof_capsule_revoked");
     expect(stale.decision).toBe("denied");
     expect(stale.broker_decision.blocked_by).toContain("proof_capsule_stale");
+  });
+
+  it("runs explicit chaos controls for stale, revoked, replayed, leaky, store, revocation, postcondition, and emergency failures", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const grant = enforceTherapeuticAccessRequest({
+      trace,
+      store,
+      request: trace.proof_capsules[0]!.requested_access,
+      proof_capsule: trace.proof_capsules[0],
+      now: "2026-06-29T18:00:00.000Z",
+    });
+    revokeTherapeuticGrant({
+      trace,
+      store,
+      grant_id: "missing-grant",
+      reason: "chaos_missing_grant",
+      now: "2026-06-29T18:01:00.000Z",
+    });
+    verifyTherapeuticRemediationPostconditions({
+      trace,
+      store,
+      remediation_id: "chaos-remediation",
+      postcondition_results: [{
+        check: "quality recovers",
+        status: "failed",
+        evidence_ref: "metric:quality_still_degraded",
+        observed: "quality remained below baseline",
+      }],
+      now: "2026-06-29T18:02:00.000Z",
+    });
+    trace.uncertainties.push({
+      id: "critical-stuck",
+      description: "Critical incident still blocked.",
+      current_confidence: 0.2,
+      possible_causes: ["unknown"],
+      useful_probes: ["service_health_rollup"],
+      blocking_status: "blocked",
+      severity: "critical",
+    });
+    trace.under_escalation_flags.push("critical_blocked_uncertainty_without_emergency_review");
+    store.persistence = { kind: "file", durable: true, path: join(tmpdir(), "therapeutic-chaos.json") };
+    store.tenant_scope = { tenant_id: "tenant-chaos", workspace_id: "workspace-chaos" };
+
+    const report = runTherapeuticChaosControls({
+      trace,
+      store,
+      now: "2026-06-29T18:03:00.000Z",
+    });
+
+    expect(grant.decision).toBe("approved");
+    expect(report.schema_version).toBe("synthi.dojo.therapeuticChaosControlReport.v1");
+    expect(report.results.map((result) => result.kind)).toEqual([
+      "stale_proof",
+      "revoked_proof",
+      "replayed_proof",
+      "leaky_probe",
+      "unavailable_evidence_store",
+      "failed_revocation",
+      "failed_postcondition",
+      "emergency_under_escalation",
+    ]);
+    expect(report.failed_count).toBe(0);
+    expect(report.passed_count).toBe(8);
+    expect(store.evidence_records.map((record) => record.kind)).toContain("checkride");
   });
 
   it("denies diagnosis writes but approves scoped remediation through separate gates and revokes task grants", () => {
@@ -1554,23 +1717,25 @@ describe("Dojo therapeutic tomography", () => {
     }));
     const summaryProbe = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
       task_id: taskId,
-      probe_name: "task_evidence_summary",
+      probe_name: "workflow_step_latency_summary",
       probe_input: {
-        summary: "Workflow failures increased after the billing-worker deploy.",
-        confidence: 0.73,
+        workflow_name: "billing-workflow",
+        slowest_step: "charge_authorization",
+        latency_delta_ms: 530,
+        confidence: 0.84,
         time_window: "last_2h",
       },
       now: "2026-06-29T15:01:00.000Z",
     }));
     const configProbe = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
       task_id: taskId,
-      probe_name: "scoped_config_summary",
+      probe_name: "scoped_runbook_diff",
       probe_input: {
-        service_name: "billing-worker",
-        changed_keys: { retry_policy: "changed" },
+        workflow_name: "billing-workflow",
+        changed_step: "retry_policy",
+        change_summary: "Retry policy changed for billing-worker calls.",
         risk_level: "medium",
         confidence: 0.82,
-        time_window: "last_2h",
       },
       now: "2026-06-29T15:02:00.000Z",
     }));
@@ -1578,24 +1743,24 @@ describe("Dojo therapeutic tomography", () => {
       task_id: taskId,
       build_proof: true,
       request: {
-        id: "generic-scoped-config",
+        id: "workflow-scoped-runbook",
         authority_dose: 4,
-        scope: "service:billing-worker",
+        scope: "workflow:billing-workflow",
         mode: "read_only",
-        data_classes: ["scoped_config_summary"],
-        tools: ["scoped_config_summary"],
+        data_classes: ["scoped_runbook_diff"],
+        tools: ["scoped_runbook_diff"],
         expiration: "end_of_task",
         revocable: true,
-        purpose: "Read the scoped config summary for the implicated service.",
+        purpose: "Read the scoped runbook diff for the implicated workflow.",
       },
       now: "2026-06-29T15:03:00.000Z",
     }));
     const dispatch = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
       task_id: taskId,
-      tool_name: "scoped_config_summary",
-      data_classes: ["scoped_config_summary"],
+      tool_name: "scoped_runbook_diff",
+      data_classes: ["scoped_runbook_diff"],
       mode: "read_only",
-      scope: "service:billing-worker",
+      scope: "workflow:billing-workflow",
       now: "2026-06-29T15:04:00.000Z",
     }));
     const accessGrantStatusBeforeRevoke = access.result.grant.status;
@@ -1610,9 +1775,9 @@ describe("Dojo therapeutic tomography", () => {
 
     expect(init.ok).toBe(true);
     expect(init.trace.uncertainties[0].useful_probes).toEqual(expect.arrayContaining([
-      "task_evidence_summary",
-      "redacted_state_diff",
-      "scoped_config_summary",
+      "workflow_step_latency_summary",
+      "dependency_error_rate_summary",
+      "scoped_runbook_diff",
     ]));
     expect(broad.ok).toBe(false);
     expect(broad.result.broker_decision.blocked_by).toEqual(expect.arrayContaining([
@@ -1620,7 +1785,7 @@ describe("Dojo therapeutic tomography", () => {
       "forbidden_data_requested",
       "lower_risk_probe_available",
     ]));
-    expect(broad.result.broker_decision.suggested_alternatives).toEqual(expect.arrayContaining(["task_evidence_summary"]));
+    expect(broad.result.broker_decision.suggested_alternatives).toEqual(expect.arrayContaining(["workflow_step_latency_summary"]));
     expect(summaryProbe.ok).toBe(true);
     expect(configProbe.ok).toBe(true);
     expect(configProbe.result.probe.task_class).toBe("workflow_debugging");
