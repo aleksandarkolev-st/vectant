@@ -687,6 +687,7 @@ export async function validateTransaction(workspaceSlug, transactionId) {
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
   const readSet = parseJson(transaction.readSetJson, []);
+  const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
   const lease = transaction.mutationLease;
   const blockedWrites = [...new Set([...writeSet, ...observedWriteSet])]
     .map((path) => ({ path, evaluation: evaluatePathMutation({ lease, path, zonePolicy }) }))
@@ -697,7 +698,7 @@ export async function validateTransaction(workspaceSlug, transactionId) {
       status: 'invalidated',
     },
   });
-  const staleReads = await findStaleReadEvents(transaction, readSet);
+  const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]));
   const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0;
   const decision = {
     ok,
@@ -737,6 +738,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId) {
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedReadSet = parseJson(transaction.observedReadSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
+  const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
   const events = await sourceStateEventsSince(transaction);
   const externalEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
@@ -755,8 +757,9 @@ export async function getSourceStateSince(workspaceSlug, transactionId) {
       observedReadSet,
       writeSet,
       observedWriteSet,
+      semanticDependencyRefs,
       changedPaths,
-      staleReads: staleReadEventsFrom(transaction, readSet, events),
+      staleReads: staleReadEventsFrom(transaction, unique([...readSet, ...semanticDependencyRefs]), events),
     },
   };
 }
@@ -779,12 +782,14 @@ async function findStaleReadEvents(transaction, readSet) {
 }
 
 function staleReadEventsFrom(transaction, readSet, events = []) {
+  const readPaths = normalizePathList(readSet);
+  if (!readPaths.length) return [];
   return events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
     .filter(({ event, details }) => !eventBelongsToTransaction(event, details, transaction))
     .filter(({ details }) => {
       const paths = normalizePathList([details.path, ...asArray(details.writeSet || details.changedPaths || [])]);
-      return readSet.some((readPath) => paths.includes(readPath));
+      return readPaths.some((readPath) => paths.some((writePath) => sourcePathsOverlap(readPath, writePath)));
     })
     .map(({ event, details }) => ({
       eventId: event.id,
@@ -793,6 +798,30 @@ function staleReadEventsFrom(transaction, readSet, events = []) {
       displayCallsign: event.displayCallsign,
       createdAt: event.createdAt,
     }));
+}
+
+function dependencyPathRefs(refs) {
+  return normalizePathList(asArray(refs).flatMap((ref) => {
+    if (typeof ref === 'string') return ref;
+    return [
+      ref?.path,
+      ref?.pattern,
+      ref?.sourcePath,
+      ref?.source_path,
+      ref?.dependencyPath,
+      ref?.dependency_path,
+    ];
+  }));
+}
+
+function sourcePathsOverlap(readPath, writePath) {
+  if (!readPath || !writePath) return false;
+  if (readPath === writePath) return true;
+  if (matchPathPattern(writePath, readPath) || matchPathPattern(readPath, writePath)) return true;
+  const readRoot = String(readPath).split('*')[0].replace(/\/+$/, '');
+  const writeRoot = String(writePath).split('*')[0].replace(/\/+$/, '');
+  if (!readRoot || !writeRoot) return true;
+  return readRoot.startsWith(writeRoot) || writeRoot.startsWith(readRoot);
 }
 
 function eventBelongsToTransaction(event, details, transaction) {

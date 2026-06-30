@@ -147,6 +147,52 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('detects stale reads through route overlap and semantic dependency refs', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['packages/schemas/**']),
+      observedReadSetJson: JSON.stringify(['packages/schemas/auth/signup.ts']),
+      semanticDependencyRefsJson: JSON.stringify([{ path: 'openapi/**' }]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-schema-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-other',
+        displayCallsign: 'BETA-2',
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-other',
+          path: 'packages/schemas/auth/signup.ts',
+        }),
+      },
+      {
+        id: 'event-openapi-commit',
+        eventType: 'transaction_committed',
+        actorId: 'txn-openapi',
+        displayCallsign: 'GAMMA-3',
+        createdAt: new Date('2026-06-29T23:03:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-openapi',
+          writeSet: ['openapi/auth.yaml'],
+        }),
+      },
+    ]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('stale_read_detected');
+    expect(result.decision.staleReads).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventId: 'event-schema-write' }),
+      expect.objectContaining({ eventId: 'event-openapi-commit' }),
+    ]));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
   it('returns source-state since a transaction without mutating validation state', async () => {
     prisma.codeSiteEvent.findMany.mockResolvedValue([
       {
