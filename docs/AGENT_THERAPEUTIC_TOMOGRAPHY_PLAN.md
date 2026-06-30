@@ -2,7 +2,23 @@
 
 ## Status
 
-Improved product and architecture plan.
+Production-readiness implementation is now repo-local executable, with an explicit deployment boundary.
+
+Implemented in the repo:
+
+- tenant-scoped durable runtime snapshots for traces, proof decisions, grants, reviews, remediation proposals, postcondition checks, case law, and policy-learning records
+- therapeutic MCP tool production gates for tenant/RBAC context, hosted-runtime authorization, durable stores, protected dispatch, and proof signing
+- strict proof capsules with deterministic proof routing, replay/stale/revoked checks, and signing/verification hooks compatible with the existing Dojo proof signer interface
+- contract-bound probe catalogs for ML quality drop, workflow debugging, and incident response, plus a pluggable HTTPS probe adapter
+- operational UI actions for pending-review approval/denial, grant revocation, runtime refresh, evidence records, audit records, remediation state, and postcondition status
+- chaos controls for stale proof, revoked proof, replayed proof, leaky probes, unavailable durable store, failed revocation, failed postcondition, and emergency under-escalation
+- release evidence generation for a non-demo incident-response trace that exercises brokered read-only access, scoped grant, protected dispatch, revocation, durable audit reconstruction, signed proof verification, and unauthorized protected-tool bypass denial
+
+Deployment boundary:
+
+- The release evidence is generated from repo-local deterministic execution with non-loopback hosted/probe URLs and a durable file store.
+- True production-runtime proof still requires running the same gates against the deployed hosted runtime, configured production tenant/RBAC provider, production durable evidence store, and managed-key/KMS proof signer.
+- Narrative-only proof still cannot grant broad access, raw logs, model weights, admin privileges, production writes, or diagnostic mutation. Remediation write access remains gated by diagnosis, rollback, postcondition, human approval, and revocation checks.
 
 This version makes **Proof Capsules stricter** by separating:
 
