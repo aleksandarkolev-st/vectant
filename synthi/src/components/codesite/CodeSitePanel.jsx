@@ -332,7 +332,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               data-testid="codesite-project-select"
               value={radarState.selectedProjectId || ''}
               onChange={(event) => setSelectedProjectId(event.target.value || null)}
-              className="h-8 min-w-[160px] flex-1 rounded border px-2 text-xs outline-none"
+              className="h-8 min-w-0 basis-full truncate rounded border px-2 text-xs outline-none sm:min-w-[220px] sm:basis-0 sm:flex-1"
               style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
             >
               {radarState.projects.map((project) => (
