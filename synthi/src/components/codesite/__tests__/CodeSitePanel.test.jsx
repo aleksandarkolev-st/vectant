@@ -117,6 +117,17 @@ function radarState() {
         reasonRef: 'rfi:checkout',
         evidenceRefs: ['proof-1'],
       }],
+      inboxItems: [{
+        id: 'inbox-1',
+        agentSessionId: 'agent-1',
+        recipientUserId: 'user-1',
+        eventId: 'event-1',
+        documentId: 'doc-1',
+        kind: 'rfi',
+        requiresResponse: true,
+        status: 'pending',
+        redactedPayload: { title: 'Need schema owner', documentId: 'doc-1' },
+      }],
     },
     controlState: {
       projectId: 'proj-1',
@@ -154,6 +165,9 @@ function radarState() {
       id: 'event-1',
       eventType: 'flight_plan_filed',
       displayCallsign: 'ATLAS-1',
+      logicalTime: 7,
+      details: { executionPlanId: 'plan-1', mission: 'Checkout API' },
+      evidenceRefs: ['event:evidence'],
       createdAt: '2026-06-29T23:31:00.000Z',
     }],
     artifactPreview: { files: [{ path: 'projects/proj-1/control-state.json', bytes: 1200, contentPreview: '{\\n  \"towerState\": \"holding\"\\n}\\n' }] },
@@ -207,6 +221,10 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');
+    expect(container.textContent).toContain('Agent Inbox');
+    expect(container.textContent).toContain('Need schema owner');
+    expect(container.textContent).toContain('logicalTime');
+    expect(container.textContent).toContain('event:evidence');
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
     expect(container.textContent).toContain('towerState');
     expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');

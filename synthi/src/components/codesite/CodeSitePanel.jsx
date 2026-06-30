@@ -39,6 +39,10 @@ function compact(value, fallback = 'none') {
   return String(value);
 }
 
+function hasEntries(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
+}
+
 function formatTime(value) {
   const time = Date.parse(value || '');
   if (!Number.isFinite(time)) return '';
@@ -388,6 +392,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
+  const inboxItems = asArray(currentProject?.inboxItems);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-8).reverse();
   const zones = asArray(currentProject?.zonePolicy?.zones);
@@ -699,10 +704,25 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 ) : (
                   <div className="space-y-1">
                     {events.map((event) => (
-                      <div key={event.id} className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
-                        <span className="min-w-0 truncate">{event.eventType}</span>
-                        <span className="max-w-[96px] truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{event.displayCallsign || event.actorType || ''}</span>
+                      <div key={event.id} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                        <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
+                          <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
+                          <span className="min-w-0 truncate">{event.eventType}</span>
+                          <span className="max-w-[96px] truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{event.displayCallsign || event.actorType || ''}</span>
+                        </div>
+                        {hasEntries(event.details) || asArray(event.evidenceRefs).length ? (
+                          <div className="mt-1">
+                            <JsonPreview
+                              value={{
+                                eventId: event.id,
+                                logicalTime: event.logicalTime,
+                                details: event.details || {},
+                                evidenceRefs: event.evidenceRefs || [],
+                              }}
+                              maxLines={12}
+                            />
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -717,6 +737,36 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     {controlState.requiredActions.map((action) => (
                       <div key={action} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         {action}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Section>
+
+              <Section title="Agent Inbox" icon={Inbox} right={<Pill tone={inboxItems.some((item) => item.status === 'pending') ? 'holding' : 'active'}>{inboxItems.length}</Pill>}>
+                {inboxItems.length === 0 ? (
+                  <EmptyLine>No routed inbox items</EmptyLine>
+                ) : (
+                  <div className="space-y-1">
+                    {inboxItems.slice(-5).reverse().map((item) => (
+                      <div key={item.id || item.eventId} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{compact(item.kind, 'inbox')}</div>
+                            <div className="truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                              {compact(item.agentSessionId, 'session')} / {compact(item.eventId, 'event')}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            {item.requiresResponse ? <Pill tone="holding">response</Pill> : null}
+                            <Pill tone={item.status}>{compact(item.status, 'pending')}</Pill>
+                          </div>
+                        </div>
+                        {hasEntries(item.redactedPayload) ? (
+                          <div className="mt-1">
+                            <JsonPreview value={item.redactedPayload} maxLines={6} />
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
