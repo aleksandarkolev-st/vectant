@@ -14715,6 +14715,153 @@ assert.deepEqual(
 assert.equal(derivedAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
 assert.equal(derivedAdapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, true);
 
+const derivedSameProcessAdapterBoundaryBridgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-derived-same-process',
+);
+await fs.mkdir(derivedSameProcessAdapterBoundaryBridgeDir, { recursive: true });
+const derivedSameProcessAdapterBoundaryBridgeReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+derivedSameProcessAdapterBoundaryBridgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-derived-same-process-20260630';
+delete derivedSameProcessAdapterBoundaryBridgeReport.real_rocm_same_process_runtime_oracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.realRocmSameProcessRuntimeOracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.same_process_runtime_oracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.sameProcessRuntimeOracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .realRocmSameProcessRuntimeOracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .real_rocm_same_process_runtime_oracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .sameProcessRuntimeOracle;
+delete derivedSameProcessAdapterBoundaryBridgeReport.runtime_proof_artifact
+  .same_process_runtime_oracle;
+await writeJson(
+  path.join(
+    derivedSameProcessAdapterBoundaryBridgeDir,
+    'real-rocm-adapter-boundary-derived-same-process.json',
+  ),
+  derivedSameProcessAdapterBoundaryBridgeReport,
+);
+const derivedSameProcessAdapterBoundaryBridgeLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [derivedSameProcessAdapterBoundaryBridgeDir],
+    generatedAt: '2026-06-30T00:00:03.264Z',
+    includeUnproven: true,
+  });
+const derivedSameProcessAdapterBoundaryBridgeRow =
+  derivedSameProcessAdapterBoundaryBridgeLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow?.matrixOutcome,
+  'full_runtime_gpu_hmr',
+);
+assert.equal(derivedSameProcessAdapterBoundaryBridgeRow.acceptedForGpuHmr, true);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted,
+  true,
+);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracle.contractSource,
+  'matrix_runtime_chain_derivation',
+);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracle
+    .derivedFromRuntimeChain,
+  true,
+);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate
+    .proofClosureChecks.runtimeChainAccepted,
+  true,
+);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate
+    .proofClosureChecks.outputOracleFacetAccepted,
+  true,
+);
+assert.equal(
+  derivedSameProcessAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate
+    .proofClosureChecks.firewallEvidenceAccepted,
+  true,
+);
+assert.equal(derivedSameProcessAdapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, true);
+assert.equal(derivedSameProcessAdapterBoundaryBridgeRow.outputOracleFacet.accepted, true);
+
+const forgedDerivedSameProcessOutputTargetDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-forged-derived-same-process-output-target',
+);
+await fs.mkdir(forgedDerivedSameProcessOutputTargetDir, { recursive: true });
+const forgedDerivedSameProcessOutputTargetReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+forgedDerivedSameProcessOutputTargetReport.slug =
+  'gpu-real-rocm-adapter-boundary-forged-derived-same-process-output-target-20260630';
+delete forgedDerivedSameProcessOutputTargetReport.real_rocm_same_process_runtime_oracle;
+delete forgedDerivedSameProcessOutputTargetReport.realRocmSameProcessRuntimeOracle;
+delete forgedDerivedSameProcessOutputTargetReport.same_process_runtime_oracle;
+delete forgedDerivedSameProcessOutputTargetReport.sameProcessRuntimeOracle;
+delete forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact
+  .realRocmSameProcessRuntimeOracle;
+delete forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact
+  .real_rocm_same_process_runtime_oracle;
+delete forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact
+  .sameProcessRuntimeOracle;
+delete forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact
+  .same_process_runtime_oracle;
+for (const ledgerLike of [
+  forgedDerivedSameProcessOutputTargetReport.proofLedger,
+  forgedDerivedSameProcessOutputTargetReport.proof_ledger,
+  forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact?.proofLedger,
+  forgedDerivedSameProcessOutputTargetReport.runtime_proof_artifact?.proof_ledger,
+]) {
+  const record = ledgerLike?.records?.[0];
+  if (!record) continue;
+  if (record.outputEvent) record.outputEvent.output_target_id = 'output-target:forged-derived-mismatch';
+  if (record.outputEvent) record.outputEvent.outputTargetId = 'output-target:forged-derived-mismatch';
+  if (record.output_event) record.output_event.output_target_id = 'output-target:forged-derived-mismatch';
+  if (record.output_event) record.output_event.outputTargetId = 'output-target:forged-derived-mismatch';
+}
+await writeJson(
+  path.join(
+    forgedDerivedSameProcessOutputTargetDir,
+    'real-rocm-adapter-boundary-forged-derived-same-process-output-target.json',
+  ),
+  forgedDerivedSameProcessOutputTargetReport,
+);
+const forgedDerivedSameProcessOutputTargetLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedDerivedSameProcessOutputTargetDir],
+    generatedAt: '2026-06-30T00:00:04.264Z',
+    includeUnproven: true,
+  });
+const forgedDerivedSameProcessOutputTargetRow =
+  forgedDerivedSameProcessOutputTargetLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(forgedDerivedSameProcessOutputTargetRow?.matrixOutcome, 'unproven');
+assert.equal(forgedDerivedSameProcessOutputTargetRow.acceptedForGpuHmr, false);
+assert.equal(
+  forgedDerivedSameProcessOutputTargetRow.realRocmSameProcessRuntimeOracleGate.accepted,
+  false,
+);
+assert.ok(
+  forgedDerivedSameProcessOutputTargetRow.openGaps.includes(
+    'real_rocm_same_process_runtime_oracle:same_process_runtime_oracle_output_target_mismatch',
+  ),
+);
+assert.ok(
+  forgedDerivedSameProcessOutputTargetRow.openGaps.some((gap) =>
+    gap.includes('output_target_mismatch')
+    && gap.startsWith('real_rocm_runtime_chain')
+  ),
+);
+
 const forgedDerivedAdapterBoundaryBridgeDir = path.join(
   logsRoot,
   'real-rocm-adapter-boundary-forged-derived-app-hook',

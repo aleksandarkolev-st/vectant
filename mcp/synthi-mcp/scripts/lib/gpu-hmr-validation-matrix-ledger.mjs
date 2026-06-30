@@ -6073,6 +6073,307 @@ function realRocmSameProcessRuntimeOracleGate({
   };
 }
 
+function realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
+  serialized = {},
+  realRocmAppHookContractGate: appHookGate = {},
+  runtimeProofArtifactGate = {},
+  ledger = {},
+  proofLedger = {},
+  realRocmRuntimeChain = {},
+  outputOracleFacet = {},
+  realRocmFirewall = {},
+  realRocmRuntimeAdapterStageEvents = {},
+  realRocmRuntimeBoundaryTargetProcessProvenance = {},
+} = {}) {
+  if (Object.keys(compactObject(serialized)).length > 0) return {};
+  const derivationEvidencePresent =
+    realRocmRuntimeAdapterStageEvents.present === true
+    || realRocmRuntimeBoundaryTargetProcessProvenance.present === true;
+  if (!derivationEvidencePresent) return {};
+  const runtimeProofId = firstText(runtimeProofArtifactGate.proofId, runtimeProofArtifactGate.proof_id);
+  const ledgerRecord = compactObject(ledger.record ?? proofLedger.records?.[0] ?? proofLedger.record);
+  const chainArtifactHash = firstText(realRocmRuntimeChain.artifactHash, realRocmRuntimeChain.artifact_hash);
+  const chainEpoch = firstText(realRocmRuntimeChain.epoch);
+  const chainDispatchId = firstText(realRocmRuntimeChain.dispatchId, realRocmRuntimeChain.dispatch_id);
+  const chainOutputTargetId = firstText(
+    realRocmRuntimeChain.outputTargetId,
+    realRocmRuntimeChain.output_target_id,
+  );
+  const chainRuntimeSessionId = firstText(
+    realRocmRuntimeChain.runtimeSessionId,
+    realRocmRuntimeChain.runtime_session_id,
+    ...(Array.isArray(realRocmRuntimeChain.runtimeSessionIds)
+      ? realRocmRuntimeChain.runtimeSessionIds
+      : []),
+    ...(Array.isArray(realRocmRuntimeChain.runtime_session_ids)
+      ? realRocmRuntimeChain.runtime_session_ids
+      : []),
+  );
+  const chainProcessId = firstText(
+    realRocmRuntimeChain.processId,
+    realRocmRuntimeChain.process_id,
+    ...(Array.isArray(realRocmRuntimeChain.processIds)
+      ? realRocmRuntimeChain.processIds
+      : []),
+    ...(Array.isArray(realRocmRuntimeChain.process_ids)
+      ? realRocmRuntimeChain.process_ids
+      : []),
+  );
+  const proofClosureAccepted =
+    runtimeProofArtifactGate.accepted === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && Array.isArray(ledger.failedInvariants)
+    && ledger.failedInvariants.length === 0;
+  const appHookAccepted = appHookGate.accepted === true;
+  const runtimeChainAccepted = realRocmRuntimeChain.accepted === true;
+  const outputOracleAccepted = outputOracleFacet.accepted === true;
+  const outputBinding = compactObject(outputOracleFacet.outputBinding ?? outputOracleFacet.output_binding);
+  const outputBindingAccepted = outputBinding.accepted === true;
+  const oracleOutputTargetId = firstText(
+    outputBinding.outputTargetId,
+    outputBinding.output_target_id,
+    outputBinding.oracleOutputTargetId,
+    outputBinding.oracle_output_target_id,
+  );
+  const oracleDispatchId = firstText(outputBinding.dispatchId, outputBinding.dispatch_id);
+  const oracleAfterDispatchId = firstText(
+    outputBinding.afterDispatchId,
+    outputBinding.after_dispatch_id,
+  );
+  const outputBindingTargetMatchesChain =
+    outputBindingAccepted
+    && firstBool(outputBinding.outputTargetMatched, outputBinding.output_target_matched) === true
+    && Boolean(chainOutputTargetId)
+    && oracleOutputTargetId === chainOutputTargetId;
+  const outputBindingDispatchMatchesChain =
+    outputBindingAccepted
+    && firstBool(
+      outputBinding.outputAfterDispatchMatched,
+      outputBinding.output_after_dispatch_matched,
+    ) === true
+    && Boolean(chainDispatchId)
+    && oracleDispatchId === chainDispatchId
+    && oracleAfterDispatchId === chainDispatchId;
+  const outputOracleChainBound =
+    outputOracleAccepted
+    && outputBindingAccepted
+    && outputBindingTargetMatchesChain
+    && outputBindingDispatchMatchesChain;
+  const firewallAccepted = realRocmFirewall.accepted === true;
+  const adapterStageEventsAccepted =
+    realRocmRuntimeAdapterStageEvents.present === true
+    && realRocmRuntimeAdapterStageEvents.accepted === true;
+  const targetProcessAccepted =
+    realRocmRuntimeBoundaryTargetProcessProvenance.present === true
+    && realRocmRuntimeBoundaryTargetProcessProvenance.accepted === true;
+  const targetProcessRuntimeSessions = compactStringList([
+    ...(Array.isArray(realRocmRuntimeBoundaryTargetProcessProvenance.runtimeSessions)
+      ? realRocmRuntimeBoundaryTargetProcessProvenance.runtimeSessions
+      : []),
+    ...(Array.isArray(realRocmRuntimeBoundaryTargetProcessProvenance.runtime_sessions)
+      ? realRocmRuntimeBoundaryTargetProcessProvenance.runtime_sessions
+      : []),
+  ]);
+  const targetProcessIds = compactStringList([
+    ...(Array.isArray(realRocmRuntimeBoundaryTargetProcessProvenance.processIds)
+      ? realRocmRuntimeBoundaryTargetProcessProvenance.processIds
+      : []),
+    ...(Array.isArray(realRocmRuntimeBoundaryTargetProcessProvenance.process_ids)
+      ? realRocmRuntimeBoundaryTargetProcessProvenance.process_ids
+      : []),
+  ]);
+  const targetProcessMatchesChain =
+    targetProcessAccepted
+    && (!chainRuntimeSessionId || targetProcessRuntimeSessions.includes(chainRuntimeSessionId))
+    && (!chainProcessId || targetProcessIds.includes(chainProcessId));
+  const runtimeChainHasClosure =
+    Boolean(chainArtifactHash)
+    && Boolean(chainEpoch)
+    && Boolean(chainDispatchId)
+    && Boolean(chainOutputTargetId)
+    && Boolean(chainRuntimeSessionId)
+    && Boolean(chainProcessId);
+  const blockingGaps = compactStringList([
+    proofClosureAccepted ? null : 'same_process_runtime_oracle_strict_runtime_proof_missing',
+    appHookAccepted ? null : 'same_process_runtime_oracle_app_hook_contract_unproven',
+    adapterStageEventsAccepted ? null : 'same_process_runtime_oracle_stage_events_missing',
+    runtimeChainAccepted ? null : 'same_process_runtime_oracle_runtime_chain_closure_missing',
+    runtimeChainHasClosure ? null : 'same_process_runtime_oracle_runtime_chain_identity_missing',
+    targetProcessAccepted ? null : 'same_process_runtime_oracle_target_process_provenance_missing',
+    targetProcessMatchesChain ? null : 'same_process_runtime_oracle_target_process_chain_mismatch',
+    outputOracleAccepted ? null : 'same_process_runtime_oracle_output_oracle_closure_missing',
+    outputBindingAccepted ? null : 'same_process_runtime_oracle_output_oracle_binding_missing',
+    outputBindingTargetMatchesChain ? null : 'same_process_runtime_oracle_output_target_mismatch',
+    outputBindingDispatchMatchesChain ? null : 'same_process_runtime_oracle_after_dispatch_mismatch',
+    firewallAccepted ? null : 'same_process_runtime_oracle_firewall_closure_missing',
+  ]);
+  const accepted = blockingGaps.length === 0;
+  const evidenceRefs = compactStringList([
+    runtimeProofId,
+    firstText(ledger.proofId, ledger.proof_id, ledgerRecord.proofId, ledgerRecord.proof_id),
+    chainArtifactHash,
+    chainEpoch,
+    chainDispatchId,
+    chainOutputTargetId,
+    ...evidenceRefsFromValue(appHookGate),
+    ...evidenceRefsFromValue(realRocmRuntimeAdapterStageEvents),
+    ...evidenceRefsFromValue(realRocmRuntimeBoundaryTargetProcessProvenance),
+    ...evidenceRefsFromValue(outputOracleFacet),
+    ...evidenceRefsFromValue(outputBinding),
+    ...evidenceRefsFromValue(realRocmFirewall),
+  ]);
+  const stageResults = {
+    artifact_transport: {
+      observed: runtimeChainAccepted && Boolean(chainArtifactHash),
+      requiredProofKinds: ['artifact_transport'],
+      required_proof_kinds: ['artifact_transport'],
+      missingProofKinds: runtimeChainAccepted && Boolean(chainArtifactHash) ? [] : ['artifact_transport'],
+      missing_proof_kinds: runtimeChainAccepted && Boolean(chainArtifactHash) ? [] : ['artifact_transport'],
+    },
+    epoch_publication: {
+      observed: runtimeChainAccepted && Boolean(chainEpoch),
+      requiredProofKinds: ['epoch_publication'],
+      required_proof_kinds: ['epoch_publication'],
+      missingProofKinds: runtimeChainAccepted && Boolean(chainEpoch) ? [] : ['epoch_publication'],
+      missing_proof_kinds: runtimeChainAccepted && Boolean(chainEpoch) ? [] : ['epoch_publication'],
+    },
+    dispatch_trace: {
+      observed: runtimeChainAccepted && Boolean(chainDispatchId),
+      requiredProofKinds: ['dispatch_trace'],
+      required_proof_kinds: ['dispatch_trace'],
+      missingProofKinds: accepted ? [] : ['dispatch_trace'],
+      missing_proof_kinds: accepted ? [] : ['dispatch_trace'],
+      dispatchUsedPublishedEpoch: accepted,
+      dispatch_used_published_epoch: accepted,
+    },
+    host_identity: {
+      observed: targetProcessAccepted && Boolean(chainRuntimeSessionId) && Boolean(chainProcessId),
+      requiredProofKinds: ['host_identity'],
+      required_proof_kinds: ['host_identity'],
+      missingProofKinds: targetProcessMatchesChain ? [] : ['host_identity'],
+      missing_proof_kinds: targetProcessMatchesChain ? [] : ['host_identity'],
+      sameProcessIdentityObserved: targetProcessMatchesChain,
+      same_process_identity_observed: targetProcessMatchesChain,
+    },
+    output_oracle: {
+      observed: outputOracleChainBound,
+      requiredProofKinds: ['output_oracle'],
+      required_proof_kinds: ['output_oracle'],
+      missingProofKinds: accepted ? [] : ['output_oracle'],
+      missing_proof_kinds: accepted ? [] : ['output_oracle'],
+      outputTargetObserved: Boolean(chainOutputTargetId) && Boolean(oracleOutputTargetId),
+      output_target_observed: Boolean(chainOutputTargetId) && Boolean(oracleOutputTargetId),
+      outputTargetMatched: outputBindingTargetMatchesChain,
+      output_target_matched: outputBindingTargetMatchesChain,
+      outputAfterDispatchObserved: outputBindingDispatchMatchesChain,
+      output_after_dispatch_observed: outputBindingDispatchMatchesChain,
+      dispatchOutputTarget: chainOutputTargetId ?? null,
+      dispatch_output_target: chainOutputTargetId ?? null,
+      oracleOutputTarget: oracleOutputTargetId ?? null,
+      oracle_output_target: oracleOutputTargetId ?? null,
+      dispatchId: chainDispatchId ?? null,
+      dispatch_id: chainDispatchId ?? null,
+      oracleDispatchId: oracleDispatchId ?? null,
+      oracle_dispatch_id: oracleDispatchId ?? null,
+      oracleAfterDispatchId: oracleAfterDispatchId ?? null,
+      oracle_after_dispatch_id: oracleAfterDispatchId ?? null,
+    },
+  };
+  return {
+    schemaVersion: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    schema_version: 'synthi.gpu_hmr.same_process_runtime_oracle_contract.v1',
+    declared: false,
+    required: appHookGate.required === true,
+    status: accepted
+      ? 'same_process_runtime_oracle_contract_proven'
+      : 'same_process_runtime_oracle_contract_unproven',
+    proofAuthority: 'matrix_runtime_chain_derivation_not_serialized_claim',
+    proof_authority: 'matrix_runtime_chain_derivation_not_serialized_claim',
+    source: 'matrix_runtime_chain_derivation',
+    contractSource: 'matrix_runtime_chain_derivation',
+    contract_source: 'matrix_runtime_chain_derivation',
+    derivedFromRuntimeChain: true,
+    derived_from_runtime_chain: true,
+    accepted,
+    canSatisfyRuntimeProof: accepted,
+    can_satisfy_runtime_proof: accepted,
+    canSatisfyDispatchProof: accepted,
+    can_satisfy_dispatch_proof: accepted,
+    appHookContractAccepted: appHookAccepted,
+    app_hook_contract_accepted: appHookAccepted,
+    nativeRuntimeBridgeAccepted: false,
+    native_runtime_bridge_accepted: false,
+    runtimeProofBridgeAccepted: appHookAccepted,
+    runtime_proof_bridge_accepted: appHookAccepted,
+    artifactTransportObserved: runtimeChainAccepted && Boolean(chainArtifactHash),
+    artifact_transport_observed: runtimeChainAccepted && Boolean(chainArtifactHash),
+    epochPublicationObserved: runtimeChainAccepted && Boolean(chainEpoch),
+    epoch_publication_observed: runtimeChainAccepted && Boolean(chainEpoch),
+    dispatchTraceObserved: runtimeChainAccepted && Boolean(chainDispatchId),
+    dispatch_trace_observed: runtimeChainAccepted && Boolean(chainDispatchId),
+    dispatchUsedPublishedEpoch: accepted,
+    dispatch_used_published_epoch: accepted,
+    sameProcessIdentityObserved: targetProcessMatchesChain,
+    same_process_identity_observed: targetProcessMatchesChain,
+    outputOracleObserved: outputOracleChainBound,
+    output_oracle_observed: outputOracleChainBound,
+    outputTargetObserved: Boolean(chainOutputTargetId) && Boolean(oracleOutputTargetId),
+    output_target_observed: Boolean(chainOutputTargetId) && Boolean(oracleOutputTargetId),
+    outputTargetMatched: outputBindingTargetMatchesChain,
+    output_target_matched: outputBindingTargetMatchesChain,
+    outputAfterDispatchObserved: outputBindingDispatchMatchesChain,
+    output_after_dispatch_observed: outputBindingDispatchMatchesChain,
+    artifactEpochMatched: runtimeChainAccepted && Boolean(chainArtifactHash) && Boolean(chainEpoch),
+    artifact_epoch_matched: runtimeChainAccepted && Boolean(chainArtifactHash) && Boolean(chainEpoch),
+    firewallAccepted,
+    firewall_accepted: firewallAccepted,
+    cpuHmrUsed: realRocmFirewall.cpuHmrUsed ?? realRocmFirewall.cpu_hmr_used ?? null,
+    cpu_hmr_used: realRocmFirewall.cpu_hmr_used ?? realRocmFirewall.cpuHmrUsed ?? null,
+    fullRebuildUsed: realRocmFirewall.fullRebuildUsed ?? realRocmFirewall.full_rebuild_used ?? null,
+    full_rebuild_used: realRocmFirewall.full_rebuild_used ?? realRocmFirewall.fullRebuildUsed ?? null,
+    processRestarted: realRocmFirewall.processRestarted ?? realRocmFirewall.process_restarted ?? null,
+    process_restarted: realRocmFirewall.process_restarted ?? realRocmFirewall.processRestarted ?? null,
+    stageResults,
+    stage_results: stageResults,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    contractHash: `sha256:${sha256Hex(stableJson({
+      source: 'matrix_runtime_chain_derivation',
+      runtimeProofId,
+      ledgerProofId: firstText(ledger.proofId, ledger.proof_id, ledgerRecord.proofId, ledgerRecord.proof_id),
+      chainArtifactHash,
+      chainEpoch,
+      chainDispatchId,
+      chainOutputTargetId,
+      oracleOutputTargetId,
+      oracleDispatchId,
+      oracleAfterDispatchId,
+      chainRuntimeSessionId,
+      chainProcessId,
+      stageResults,
+    }))}`,
+    contract_hash: `sha256:${sha256Hex(stableJson({
+      source: 'matrix_runtime_chain_derivation',
+      runtimeProofId,
+      ledgerProofId: firstText(ledger.proofId, ledger.proof_id, ledgerRecord.proofId, ledgerRecord.proof_id),
+      chainArtifactHash,
+      chainEpoch,
+      chainDispatchId,
+      chainOutputTargetId,
+      oracleOutputTargetId,
+      oracleDispatchId,
+      oracleAfterDispatchId,
+      chainRuntimeSessionId,
+      chainProcessId,
+      stageResults,
+    }))}`,
+  };
+}
+
 function realRocmSidecarRuntimeConsistencyGate(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -14858,16 +15159,105 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
   };
 }
 
+function ledgerOutputOracleBindingEvidence(proofLedger) {
+  const records = ledgerRecordsFromValue(proofLedger);
+  const dispatchTargetEvidence = [];
+  const oracleTargetEvidence = [];
+  const dispatchIdEvidence = [];
+  const afterDispatchEvidence = [];
+  const evidenceRefs = [];
+  for (const record of records) {
+    const dispatchEvent = compactObject(record.dispatchEvent ?? record.dispatch_event);
+    const outputEvent = compactObject(record.outputEvent ?? record.output_event);
+    const dispatchId = firstText(dispatchEvent.id, dispatchEvent.dispatch_id, dispatchEvent.dispatchId);
+    const afterDispatchId = firstText(
+      outputEvent.after_dispatch_id,
+      outputEvent.afterDispatchId,
+      outputEvent.dispatch_id,
+      outputEvent.dispatchId,
+    );
+    const dispatchTarget = eventOutputTargetId(dispatchEvent);
+    const oracleTarget = eventOutputTargetId(outputEvent);
+    dispatchIdEvidence.push(dispatchId);
+    afterDispatchEvidence.push(afterDispatchId);
+    dispatchTargetEvidence.push(dispatchTarget);
+    oracleTargetEvidence.push(oracleTarget);
+    evidenceRefs.push(dispatchId, afterDispatchId, dispatchTarget, oracleTarget);
+  }
+  const dispatchIds = compactStringList(dispatchIdEvidence);
+  const afterDispatchIds = compactStringList(afterDispatchEvidence);
+  const dispatchOutputTargets = compactStringList(dispatchTargetEvidence);
+  const oracleOutputTargets = compactStringList(oracleTargetEvidence);
+  const outputTargetIds = compactStringList([
+    ...dispatchOutputTargets,
+    ...oracleOutputTargets,
+  ]);
+  const dispatchAfterBindingValues = compactStringList([
+    ...dispatchIds,
+    ...afterDispatchIds,
+  ]);
+  const outputTargetMatched =
+    dispatchOutputTargets.length > 0
+    && oracleOutputTargets.length > 0
+    && outputTargetIds.length === 1;
+  const outputAfterDispatchMatched =
+    dispatchIds.length > 0
+    && afterDispatchIds.length > 0
+    && dispatchAfterBindingValues.length === 1;
+  const failedGates = compactStringList([
+    records.length > 0 ? null : 'output_oracle_binding_record_missing',
+    dispatchIds.length > 0 ? null : 'output_oracle_binding_dispatch_id_missing',
+    afterDispatchIds.length > 0 ? null : 'output_oracle_binding_after_dispatch_id_missing',
+    dispatchOutputTargets.length > 0 ? null : 'output_oracle_binding_dispatch_target_missing',
+    oracleOutputTargets.length > 0 ? null : 'output_oracle_binding_oracle_target_missing',
+    outputTargetMatched ? null : 'output_oracle_binding_target_mismatch',
+    outputAfterDispatchMatched ? null : 'output_oracle_binding_after_dispatch_mismatch',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.output_oracle_binding.v1',
+    schema_version: 'synthi.gpu_hmr.output_oracle_binding.v1',
+    present: records.length > 0,
+    accepted: failedGates.length === 0,
+    outputTargetMatched,
+    output_target_matched: outputTargetMatched,
+    outputAfterDispatchMatched,
+    output_after_dispatch_matched: outputAfterDispatchMatched,
+    outputTargetId: outputTargetIds[0] ?? null,
+    output_target_id: outputTargetIds[0] ?? null,
+    dispatchOutputTargetId: dispatchOutputTargets[0] ?? null,
+    dispatch_output_target_id: dispatchOutputTargets[0] ?? null,
+    oracleOutputTargetId: oracleOutputTargets[0] ?? null,
+    oracle_output_target_id: oracleOutputTargets[0] ?? null,
+    dispatchId: dispatchIds[0] ?? null,
+    dispatch_id: dispatchIds[0] ?? null,
+    afterDispatchId: afterDispatchIds[0] ?? null,
+    after_dispatch_id: afterDispatchIds[0] ?? null,
+    outputTargetIds,
+    output_target_ids: outputTargetIds,
+    dispatchIds,
+    dispatch_ids: dispatchIds,
+    afterDispatchIds,
+    after_dispatch_ids: afterDispatchIds,
+    evidenceRefs: compactStringList(evidenceRefs),
+    evidence_refs: compactStringList(evidenceRefs),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, baseDir) {
   const ledgerAccepted = ledger.present === true
     && ledger.source === 'recomputed_ledger'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0;
+  const outputBinding = ledgerOutputOracleBindingEvidence(proofLedger);
   if (!ledgerAccepted) {
     return {
       accepted: false,
       kind: 'ledger_rejected',
       compute: null,
+      outputBinding,
+      output_binding: outputBinding,
       failedGates: [{ code: 'proof_ledger_success_required' }],
     };
   }
@@ -14877,6 +15267,10 @@ async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repo
       accepted: visual.present === true && visual.accepted === true,
       kind: 'visual_oracle',
       compute: null,
+      outputBinding,
+      output_binding: outputBinding,
+      evidenceRefs: outputBinding.evidenceRefs,
+      evidence_refs: outputBinding.evidence_refs,
       failedGates: visual.present === true && visual.accepted === true
         ? []
         : [{ code: 'visual_oracle_artifacts_not_accepted' }],
@@ -14887,6 +15281,10 @@ async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repo
     accepted: compute.accepted === true,
     kind: 'compute_oracle',
     compute,
+    outputBinding,
+    output_binding: outputBinding,
+    evidenceRefs: outputBinding.evidenceRefs,
+    evidence_refs: outputBinding.evidence_refs,
     failedGates: compute.failedGates,
   };
 }
@@ -15851,7 +16249,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     Object.keys(serializedRealRocmAppHookContract).length > 0
       ? serializedRealRocmAppHookContract
       : derivedRealRocmAppHookContract;
-  const realRocmSameProcessRuntimeOracle = compactObject(
+  const serializedRealRocmSameProcessRuntimeOracle = compactObject(
     json.real_rocm_same_process_runtime_oracle
     ?? json.realRocmSameProcessRuntimeOracle
     ?? json.same_process_runtime_oracle
@@ -15865,6 +16263,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.same_process_runtime_oracle
     ?? runtimeProofArtifact.sameProcessRuntimeOracle,
   );
+  let realRocmSameProcessRuntimeOracle = serializedRealRocmSameProcessRuntimeOracle;
   const realRocmProfileProofObligations = realRocmProfileProofObligationsMatrixFacet({
     profile,
     targetProgression,
@@ -16013,7 +16412,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmAppHookContract.blockingGaps) ? realRocmAppHookContract.blockingGaps : []),
     ...(Array.isArray(realRocmAppHookContract.blocking_gaps) ? realRocmAppHookContract.blocking_gaps : []),
   ]);
-  const realRocmSameProcessRuntimeOracleGaps = compactStringList([
+  let realRocmSameProcessRuntimeOracleGaps = compactStringList([
     ...(Array.isArray(realRocmSameProcessRuntimeOracle.blockingGaps)
       ? realRocmSameProcessRuntimeOracle.blockingGaps
       : []),
@@ -16303,7 +16702,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     Object.keys(realRocmAppHookContract).length > 0
       ? firstText(realRocmAppHookContract.status, realRocmAppHookContract.reason)
       : null;
-  const realRocmSameProcessRuntimeOracleReason =
+  let realRocmSameProcessRuntimeOracleReason =
     Object.keys(realRocmSameProcessRuntimeOracle).length > 0
       ? firstText(realRocmSameProcessRuntimeOracle.status, realRocmSameProcessRuntimeOracle.reason)
       : null;
@@ -16451,6 +16850,36 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmProfile: profile,
   });
   const appHookContractAccepted = appHookContractGate.accepted === true;
+  if (Object.keys(serializedRealRocmSameProcessRuntimeOracle).length === 0) {
+    const derivedRealRocmSameProcessRuntimeOracle =
+      realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
+        serialized: serializedRealRocmSameProcessRuntimeOracle,
+        realRocmAppHookContractGate: appHookContractGate,
+        runtimeProofArtifactGate,
+        ledger,
+        proofLedger,
+        realRocmRuntimeChain,
+        outputOracleFacet,
+        realRocmFirewall,
+        realRocmRuntimeAdapterStageEvents,
+        realRocmRuntimeBoundaryTargetProcessProvenance,
+      });
+    if (Object.keys(derivedRealRocmSameProcessRuntimeOracle).length > 0) {
+      realRocmSameProcessRuntimeOracle = derivedRealRocmSameProcessRuntimeOracle;
+      realRocmSameProcessRuntimeOracleGaps = compactStringList([
+        ...(Array.isArray(realRocmSameProcessRuntimeOracle.blockingGaps)
+          ? realRocmSameProcessRuntimeOracle.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmSameProcessRuntimeOracle.blocking_gaps)
+          ? realRocmSameProcessRuntimeOracle.blocking_gaps
+          : []),
+      ]);
+      realRocmSameProcessRuntimeOracleReason = firstText(
+        realRocmSameProcessRuntimeOracle.status,
+        realRocmSameProcessRuntimeOracle.reason,
+      );
+    }
+  }
   const sameProcessRuntimeOracleGate = realRocmSameProcessRuntimeOracleGate({
     realRocmSameProcessRuntimeOracle,
     realRocmAppHookContractGate: appHookContractGate,
