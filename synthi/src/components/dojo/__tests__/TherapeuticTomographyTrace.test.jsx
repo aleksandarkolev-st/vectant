@@ -81,6 +81,7 @@ describe('TherapeuticTomographyTrace', () => {
     expect(text).toContain('Policy learning');
     expect(text).toContain('broader access auto-grant: false');
     expect(text).toContain('prefer probe sequence');
+    expect(text).toContain('revalidation: current until 2026-09-27T13:30:00.000Z');
     expect(text).toContain('Proof latency p95');
     expect(text).toContain('Deterministic');
     expect(text).toContain('feature:customer_plan');
@@ -235,6 +236,9 @@ function traceFixture() {
       case_law_records: [{
         case_id: 'case_source_drift',
         status: 'proposed',
+        confidence: 0.9,
+        expires_at: '2026-09-27T13:30:00.000Z',
+        revalidation_status: 'current',
         auto_grants_broader_access: false,
       }],
       results: [
@@ -271,6 +275,8 @@ function traceFixture() {
         learning_kind: 'prefer_probe_sequence',
         recommendation: 'Prefer eval_slice_compare -> feature_drift_summary before requesting scoped authority for ml_quality_drop.',
         confidence: 1,
+        expires_at: '2026-09-27T13:30:00.000Z',
+        revalidation_status: 'current',
         supporting_evidence_refs: ['trace:quality_drop_demo_001'],
         source_trace_ids: ['quality_drop_demo_001'],
         source_checkride_report_ids: ['therapeutic_checkride_demo_001'],

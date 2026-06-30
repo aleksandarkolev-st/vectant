@@ -1438,7 +1438,15 @@ function normalizeTomographyCheckrideReport(item = {}) {
     failedCount: Number(item.failed_count ?? item.failedCount ?? results.filter((result) => result.status === 'failed').length),
     blockedCount: Number(item.blocked_count ?? item.blockedCount ?? results.filter((result) => result.status === 'blocked').length),
     policyDeltaRecords: asArray(item.policy_delta_records || item.policyDeltaRecords),
-    caseLawRecords: asArray(item.case_law_records || item.caseLawRecords),
+    caseLawRecords: asArray(item.case_law_records || item.caseLawRecords).map((record) => ({
+      caseId: record.case_id || record.caseId || '',
+      status: record.status || '',
+      finding: record.finding || '',
+      confidence: Number(record.confidence ?? 0),
+      expiresAt: record.expires_at || record.expiresAt || '',
+      revalidationStatus: record.revalidation_status || record.revalidationStatus || '',
+      autoGrantsBroaderAccess: Boolean(record.auto_grants_broader_access ?? record.autoGrantsBroaderAccess),
+    })),
     autoGrantsBroaderFutureAccess: Boolean(item.auto_grants_broader_future_access ?? item.autoGrantsBroaderFutureAccess),
   };
 }
@@ -1488,6 +1496,8 @@ function normalizeTomographyTrace(state, dojo) {
     learningKind: record.learning_kind || record.learningKind || '',
     recommendation: record.recommendation || '',
     confidence: Number(record.confidence ?? 0),
+    expiresAt: record.expires_at || record.expiresAt || '',
+    revalidationStatus: record.revalidation_status || record.revalidationStatus || '',
     supportingEvidenceRefs: compactStrings(record.supporting_evidence_refs || record.supportingEvidenceRefs),
     sourceTraceIds: compactStrings(record.source_trace_ids || record.sourceTraceIds),
     sourceCheckrideReportIds: compactStrings(record.source_checkride_report_ids || record.sourceCheckrideReportIds),

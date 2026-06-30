@@ -822,9 +822,47 @@ describe("Dojo therapeutic tomography", () => {
     expect(report.auto_grants_broader_future_access).toBe(false);
     expect(report.policy_delta_records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
     expect(report.case_law_records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
+    expect(report.case_law_records.every((record) => record.confidence > 0 && record.expires_at && record.revalidation_status === "current")).toBe(true);
     expect(report.results.find((result) => result.kind === "adversarial_probe_output")?.status).toBe("passed");
     expect(store.checkride_reports).toHaveLength(1);
     expect(store.evidence_records.map((record) => record.kind)).toContain("checkride");
+  });
+
+  it("blocks source-drift checkrides when prior therapeutic case law has expired", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    runTherapeuticTomographyCheckrides({
+      trace,
+      store,
+      now: "2026-06-29T13:30:00.000Z",
+    });
+    const expiredCaseLaw = [{
+      schema_version: "synthi.dojo.therapeuticCaseLaw.v1" as const,
+      case_id: "case-expired-source-drift",
+      status: "proposed" as const,
+      task_class: trace.task_class,
+      finding: "Old minimal-access path must be revalidated after source drift.",
+      rule_created: "Revalidate therapeutic case law before using it as proof context.",
+      confidence: 0.7,
+      evidence_refs: ["trace:quality_drop_demo_001"],
+      created_at: "2026-01-01T00:00:00.000Z",
+      expires_at: "2026-06-29T13:31:00.000Z",
+      revalidation_status: "expired" as const,
+      auto_grants_broader_access: false as const,
+    }];
+
+    const revalidationReport = runTherapeuticTomographyCheckrides({
+      trace,
+      store,
+      existing_case_law_records: expiredCaseLaw,
+      now: "2026-06-29T13:32:00.000Z",
+    });
+
+    expect(revalidationReport.results.find((result) => result.kind === "source_drift")).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: expect.arrayContaining(["expired_case_law"]),
+    }));
+    expect(revalidationReport.case_law_records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
   });
 
   it("learns conservative policy patterns without granting broader future access", () => {
@@ -850,6 +888,7 @@ describe("Dojo therapeutic tomography", () => {
     expect(records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
     expect(records.find((record) => record.learning_kind === "prefer_probe_sequence")?.recommendation).toContain("eval_slice_compare");
     expect(records.find((record) => record.learning_kind === "avoid_unnecessary_access")?.recommendation).toContain("raw_prod_logs");
+    expect(records.every((record) => record.expires_at && record.revalidation_status === "current")).toBe(true);
     expect(store.policy_learning_records.length).toBe(records.length);
     expect(store.evidence_records.map((record) => record.kind)).toContain("policy_learning");
   });

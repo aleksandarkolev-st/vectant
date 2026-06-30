@@ -487,8 +487,11 @@ export interface TherapeuticCaseLawRecord {
   task_class: string;
   finding: string;
   rule_created: string;
+  confidence: number;
   evidence_refs: string[];
   created_at: string;
+  expires_at: string;
+  revalidation_status: "current" | "expired";
   auto_grants_broader_access: false;
 }
 
@@ -542,6 +545,8 @@ export interface TherapeuticPolicyLearningRecord {
   source_trace_ids: string[];
   source_checkride_report_ids: string[];
   created_at: string;
+  expires_at: string;
+  revalidation_status: "current" | "expired";
   auto_grants_broader_access: false;
 }
 
@@ -1527,17 +1532,21 @@ export function runTherapeuticTomographyCheckrides(input: {
   store?: TherapeuticRuntimeStore;
   policy?: TherapeuticPolicy;
   available_requests?: TherapeuticAccessRequest[];
+  existing_case_law_records?: TherapeuticCaseLawRecord[];
   now?: string;
 }): TherapeuticCheckrideReport {
   const now = input.now ?? new Date().toISOString();
   const policy = input.policy ?? THERAPEUTIC_DEFAULT_POLICY;
+  const existingCaseLawRecords = input.existing_case_law_records
+    ?? input.store?.checkride_reports.flatMap((report) => report.case_law_records)
+    ?? [];
   const evidenceRefs = therapeuticTraceEvidenceRefs(input.trace, input.store);
   const results: TherapeuticCheckrideResult[] = [
     overEscalationCheckride(input.trace, policy, evidenceRefs, now),
     underEscalationCheckride(input.trace, input.available_requests ?? [], policy, evidenceRefs, now),
     strictProofCapsuleCheckride(input.trace, evidenceRefs, now),
     adversarialProbeOutputCheckride(input.trace, evidenceRefs, now),
-    sourceDriftCheckride(input.trace, evidenceRefs, now),
+    sourceDriftCheckride(input.trace, evidenceRefs, now, existingCaseLawRecords),
     emergencyEscalationCheckride(input.trace, evidenceRefs, now),
   ];
   const policyDeltaRecords = results.flatMap((result) => result.policy_delta ? [result.policy_delta] : []);
@@ -2748,28 +2757,31 @@ function adversarialProbeOutputCheckride(
 function sourceDriftCheckride(
   trace: TherapeuticTrace,
   evidenceRefs: string[],
-  now: string
+  now: string,
+  existingCaseLawRecords: TherapeuticCaseLawRecord[] = []
 ): TherapeuticCheckrideResult {
   const staleCapsules = trace.proof_capsules.filter((capsule) =>
     Date.parse(capsule.timestamp) > 0 && Date.parse(capsule.timestamp) < Date.parse(now) - 7 * 24 * 60 * 60 * 1000
   );
+  const expiredCaseLaw = existingCaseLawRecords.filter((record) => Date.parse(record.expires_at) <= Date.parse(now));
   const hasEvidenceLinks = trace.proof_capsules.every((capsule) => capsule.evidence_links.length > 0);
-  const passed = staleCapsules.length === 0 && hasEvidenceLinks;
+  const passed = staleCapsules.length === 0 && hasEvidenceLinks && expiredCaseLaw.length === 0;
   return checkrideResult({
     trace,
     kind: "source_drift",
     status: passed ? "passed" : "blocked",
     finding: passed
-      ? "Proof capsules are recent enough for this checkride and retain evidence links."
-      : "Proof capsules need source-drift recertification or evidence-link refresh.",
+      ? "Proof capsules and case-law records are current enough for this checkride and retain evidence links."
+      : "Proof capsules or case-law records need source-drift recertification or evidence-link refresh.",
     evidenceRefs,
     blockedBy: [
       ...(staleCapsules.length > 0 ? ["stale_proof_capsule"] : []),
       ...(hasEvidenceLinks ? [] : ["proof_capsule_evidence_links_missing"]),
+      ...(expiredCaseLaw.length > 0 ? ["expired_case_law"] : []),
     ],
     now,
     deltaKind: "add_guardrail",
-    rule: "Revalidate therapeutic proof capsules when source evidence drifts or evidence links are missing.",
+    rule: "Revalidate therapeutic proof capsules and case law when source evidence drifts, expires, or evidence links are missing.",
   });
 }
 
@@ -2863,8 +2875,11 @@ function therapeuticCaseLaw(
     task_class: trace.task_class,
     finding,
     rule_created: rule,
+    confidence: therapeuticCaseLawConfidence(trace),
     evidence_refs: uniqueStrings(evidenceRefs),
     created_at: now,
+    expires_at: addDaysIso(now, 90),
+    revalidation_status: "current",
     auto_grants_broader_access: false,
   };
 }
@@ -2931,6 +2946,21 @@ function therapeuticLearningRecord(input: {
     source_trace_ids: traceIds,
     source_checkride_report_ids: reportIds,
     created_at: input.now,
+    expires_at: addDaysIso(input.now, 90),
+    revalidation_status: "current",
     auto_grants_broader_access: false,
   };
+}
+
+function therapeuticCaseLawConfidence(trace: TherapeuticTrace): number {
+  const approvedProofRatio = percent(trace.proof_capsules, (capsule) => capsule.approved) / 100;
+  const validProbeRatio = percent(trace.projection_probes, (probe) => probe.status === "completed" && probe.allowed_output_shape_valid) / 100;
+  const evidenceScore = trace.proof_capsules.some((capsule) => capsule.evidence_links.length > 0) ? 0.1 : 0;
+  return Math.max(0.1, Math.min(1, Number(((approvedProofRatio * 0.45) + (validProbeRatio * 0.45) + evidenceScore).toFixed(2))));
+}
+
+function addDaysIso(now: string, days: number): string {
+  const parsed = Date.parse(now);
+  const base = Number.isFinite(parsed) ? parsed : Date.now();
+  return new Date(base + days * 24 * 60 * 60 * 1000).toISOString();
 }

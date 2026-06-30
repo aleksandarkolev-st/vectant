@@ -221,6 +221,9 @@ function EvaluationPanel({ report, learningRecords = [], proofMetrics = {} }) {
                 <p className="mt-2 text-[11px]" style={{ color: 'var(--text-muted)', marginBottom: 0 }}>
                   broader access auto-grant: {record.autoGrantsBroaderAccess ? 'true' : 'false'}
                 </p>
+                <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)', marginBottom: 0 }}>
+                  revalidation: {record.revalidationStatus || 'current'}{record.expiresAt ? ` until ${record.expiresAt}` : ''}
+                </p>
               </article>
             ))}
           </div>
