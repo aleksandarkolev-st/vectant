@@ -982,6 +982,31 @@ async function runCodeSiteMutationBoundary(context, operation, applyFn, options 
   return codesiteFs.run(operation, applyFn, options);
 }
 
+const CODE_SITE_GIT_BOUNDARY_ACTIONS = new Set([
+  'abort-merge',
+  'checkout',
+  'discard',
+  'discard-all',
+  'discard-lines',
+  'mark-resolved',
+  'merge-branch',
+  'pull',
+  'resolve-ours',
+  'resolve-theirs',
+]);
+
+function shouldRunCodeSiteGitBoundary(action) {
+  return CODE_SITE_GIT_BOUNDARY_ACTIONS.has(String(action || ''));
+}
+
+async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn, options = {}) {
+  return runCodeSiteMutationBoundary(context, {
+    operation: `git:${action}`,
+    tool: attempts?.[0]?.tool || 'git_worktree',
+    attempts,
+  }, applyFn, options);
+}
+
 function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   return codeSiteContextFromRequest(req, parsed, {
     workspaceSlug: extra.workspaceSlug,
@@ -4402,7 +4427,18 @@ const server = http.createServer(async (req, res) => {
             }
 
             const codeSiteGitAttempts = codeSiteGitActionAttempts(action, data);
-            if (codeSiteGitAttempts.length) {
+            const codeSiteGitRepoRoot = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+            const runGitBoundary = (applyFn) => runCodeSiteGitMutationBoundary(
+              codeSiteContext,
+              action,
+              codeSiteGitAttempts,
+              applyFn,
+              {
+                ...codeSiteEnforcement,
+                repoRoot: codeSiteGitRepoRoot,
+              },
+            );
+            if (codeSiteGitAttempts.length && !shouldRunCodeSiteGitBoundary(action)) {
               await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts, codeSiteEnforcement);
             }
 
@@ -4529,7 +4565,10 @@ const server = http.createServer(async (req, res) => {
                 case 'checkout':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4597,7 +4636,12 @@ const server = http.createServer(async (req, res) => {
                 case 'discard-lines':
                     acquireStagingLock(slug, data.filePath);
                     await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     releaseStagingLock(slug, data.filePath);
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
@@ -4627,7 +4671,10 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity)),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4639,12 +4686,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'discard':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'discard',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardChange(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
@@ -4655,14 +4702,12 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: '**',
-                      kind: 'discard-all',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.discardAll(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4675,44 +4720,44 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'resolve-ours',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'resolve-theirs':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'resolve-theirs',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'mark-resolved':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'mark-resolved',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.markResolved(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'abort-merge':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: '**',
-                      kind: 'abort-merge',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.abortMerge(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.abortMerge(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4720,7 +4765,10 @@ const server = http.createServer(async (req, res) => {
                 case 'merge-branch':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);

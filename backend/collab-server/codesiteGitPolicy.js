@@ -13,13 +13,19 @@ const REPO_INDEX_ACTIONS = new Set([
 ]);
 
 const PATH_SCOPED_WORKTREE_ACTIONS = new Set([
+  'discard',
   'discard-lines',
+  'mark-resolved',
+  'resolve-ours',
+  'resolve-theirs',
 ]);
 
 const REPO_WORKTREE_ACTIONS = new Set([
+  'abort-merge',
   'init',
   'clone',
   'checkout',
+  'discard-all',
   'pull',
   'merge-branch',
   'stash-push',
