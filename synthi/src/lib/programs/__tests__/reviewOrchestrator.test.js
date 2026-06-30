@@ -22,6 +22,9 @@ beforeEach(() => {
     reHost: vi.fn().mockResolvedValue({ ref: 'ar.host/p/community/team/tool@sha256:dead', digest: 'sha256:dead' }),
     target: vi.fn().mockReturnValue('ar.host/p/community/team/tool'),
     pin: vi.fn().mockImplementation((cfg) => ({ ...cfg, launch: 'docker run ar.host/p/community/team/tool@sha256:dead' })),
+    aiReview: vi.fn().mockResolvedValue({ riskScore: 0.1, flags: [], rationale: 'fine' }),
+    aiDecide: vi.fn().mockReturnValue('auto_approve'),
+    aiEnabled: false,
   };
 });
 
@@ -100,5 +103,48 @@ describe('rejectSubmission', () => {
     const res = await rejectSubmission({ versionId: 'ver1', adminUserId: 'admin1', notes: 'spammy' }, deps);
     expect(res.reviewState).toBe('rejected');
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'pending_review', toState: 'rejected', actorUserId: 'admin1', patch: { reviewNotes: 'spammy' } }));
+  });
+});
+
+describe('submitForReview — Phase 2 AI layer', () => {
+  const base = { workspaceSlug: 'team', config: containerConfig, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' };
+
+  it('flag OFF → pending_review, AI not called (Phase-1 behavior preserved)', async () => {
+    deps.aiEnabled = false;
+    const res = await submitForReview(base, deps);
+    expect(res.reviewState).toBe('pending_review');
+    expect(deps.aiReview).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + auto_approve → ai_review → published (reuses re-host + publish)', async () => {
+    deps.aiEnabled = true;
+    deps.aiDecide.mockReturnValue('auto_approve');
+    deps.store.getReviewVersionById.mockResolvedValue({
+      id: 'ver1', version: '1.0.0', reviewState: 'rehosting', submittedByUserId: 'u1', sourceImageRef: 'reg.io/me/tool:1',
+      manifestJson: JSON.stringify(containerConfig), program: { id: 'prog1', publisher: 'team', packageId: '@team/tool' },
+    });
+    const res = await submitForReview(base, deps);
+    expect(res.reviewState).toBe('published');
+    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'ai_review' }));
+    expect(deps.reHost).toHaveBeenCalled();
+    expect(deps.store.publishApprovedVersion).toHaveBeenCalled();
+  });
+
+  it('flag ON + manual decision → pending_review (stores aiRiskJson)', async () => {
+    deps.aiEnabled = true;
+    deps.aiDecide.mockReturnValue('manual');
+    const res = await submitForReview(base, deps);
+    expect(res.reviewState).toBe('pending_review');
+    expect(deps.reHost).not.toHaveBeenCalled();
+    const aiTransition = deps.store.transitionReview.mock.calls.find((c) => c[1].toState === 'pending_review');
+    expect(aiTransition[1].patch.aiRiskJson).toContain('riskScore');
+  });
+
+  it('flag ON + AI fails closed (high risk) → manual', async () => {
+    deps.aiEnabled = true;
+    deps.aiReview.mockResolvedValue({ riskScore: 1, flags: ['ai_unavailable'], rationale: 'down' });
+    deps.aiDecide.mockReturnValue('manual');
+    const res = await submitForReview(base, deps);
+    expect(res.reviewState).toBe('pending_review');
   });
 });
