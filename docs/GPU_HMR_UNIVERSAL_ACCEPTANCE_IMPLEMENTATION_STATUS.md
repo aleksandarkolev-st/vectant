@@ -10,6 +10,8 @@ The real ROCm upstream lifecycle classifier now treats timeout-fallback `unknown
 
 This closes a serious-project refusal fidelity gap without adding any project branch. A run that configured successfully and then timed out or was terminated in build now classifies as `upstream_build_failed` / `upstream_run_not_started_after_build_failure`, not as a configure failure just because fallback timing text had `configure_ms=failed`. Post-configure failures now have explicit `upstream_post_configure_failed`, build-blocked, and run-blocked reasons. The resulting proof-scheduling signals remain refusal-only and cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, app-hook closure, output oracle, firewall, strict runtime proof, or proof-ledger success.
 
+Validation-matrix ingestion now repeats that lifecycle-status recompute from retained timing text and configure/build/run log tails when they exist. This prevents a stale serialized lifecycle facet from preserving a false configure-failure reason after wrapper-owned logs prove configure succeeded and build timed out. The matrix smoke suite covers both stale-facet repair and project-log status spoof refusal.
+
 The follow-up bounded MIOpen verification attempt after this code change timed out before producing a retained result, and the marked worker-side lifecycle process was cleaned up. No new MIOpen success or new retained MIOpen proof artifact is claimed from that timed attempt; the latest retained serious-project evidence remains the fail-closed `gpu-real-rocm-MIOpen-20260630132711` artifact described below.
 
 Verification for this patch:
@@ -17,7 +19,7 @@ Verification for this patch:
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including timeout-build, post-configure, and project-log status-spoof lifecycle classifier checks
-npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; self-check proof gpu-validation-matrix-ledger:sha256:9be661cda537f20d1d54d74c1ee6803ad7245483381e1bb1943a881a57b846d4
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; self-check proof gpu-validation-matrix-ledger:sha256:8c6464d679ea7fe27738d1994489b34139a5f872d3868d634786335ff09c9c7a
 ```
 
 ## 2026-06-30 Vulkan Host Runtime And Broad Matrix Refresh

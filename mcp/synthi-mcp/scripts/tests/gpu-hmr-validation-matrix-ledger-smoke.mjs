@@ -8236,6 +8236,127 @@ assert.ok(missingDependencyProbeRocm.openGaps.includes(
   'real_rocm_missing_dependency_probe:missing_header:half_half.hpp',
 ));
 
+const lifecycleRecomputeDir = path.join(logsRoot, 'real-rocm-lifecycle-recompute');
+await writeJson(path.join(lifecycleRecomputeDir, 'real-rocm-lifecycle-recompute.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-lifecycle-recompute-20260630',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-lifecycle-recompute',
+    source: 'scripts/profiles/real-rocm-lifecycle-recompute.json',
+  },
+  upstream_lifecycle_failure: {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    reasons: [
+      'cmake_configure_failed',
+      'upstream_build_blocked_by_configure',
+      'upstream_run_not_started_after_configure_failure',
+      'upstream_lifecycle_command_failed',
+    ],
+    cmakeConfigureFailed: true,
+    cmake_configure_failed: true,
+    configureExitCodeText: 'unknown',
+    configure_exit_code_text: 'unknown',
+    buildFailed: false,
+    build_failed: false,
+    buildBlockedByConfigure: true,
+    build_blocked_by_configure: true,
+    buildExitCodeText: 'unknown',
+    build_exit_code_text: 'unknown',
+    runBlockedByConfigure: true,
+    run_blocked_by_configure: true,
+    runExitCodeText: 'not-run',
+    run_exit_code_text: 'not-run',
+    timings: [
+      'configure_ms=failed',
+      'build_ms=failed',
+      'run_ms=skipped',
+      'configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLogTail: '-- The C compiler identification is Clang\n-- Generic project option OFF',
+    configure_log_tail: '-- The C compiler identification is Clang\n-- Generic project option OFF',
+    buildLogTail: '[ 38%] Building CXX object src/CMakeFiles/lib.dir/kernel.cpp.o\nTerminated\ngmake: *** [Makefile:6677: target] Terminated',
+    build_log_tail: '[ 38%] Building CXX object src/CMakeFiles/lib.dir/kernel.cpp.o\nTerminated\ngmake: *** [Makefile:6677: target] Terminated',
+    runLogTail: 'upstream run skipped after configure_status=0 post_configure_status=0 build_status=143',
+    run_log_tail: 'upstream run skipped after configure_status=0 post_configure_status=0 build_status=143',
+  },
+});
+const lifecycleRecomputeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [lifecycleRecomputeDir],
+  generatedAt: '2026-06-30T00:00:03.050Z',
+});
+const lifecycleRecomputeRocm = lifecycleRecomputeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(lifecycleRecomputeRocm?.acceptedForGpuHmr, false);
+assert.equal(lifecycleRecomputeRocm.gpuHmrSuccess, false);
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.matrixRecomputedFromLogTails, true);
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.cmakeConfigureFailed, false);
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.configureExitCodeText, '0');
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.buildExitCodeText, '143');
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.buildFailed, true);
+assert.equal(lifecycleRecomputeRocm.upstreamLifecycleFailure.runBlockedByBuild, true);
+assert.ok(!lifecycleRecomputeRocm.upstreamLifecycleFailure.reasons.includes('cmake_configure_failed'));
+assert.ok(lifecycleRecomputeRocm.upstreamLifecycleFailure.reasons.includes('upstream_build_failed'));
+assert.ok(lifecycleRecomputeRocm.upstreamLifecycleFailure.reasons.includes(
+  'upstream_run_not_started_after_build_failure',
+));
+
+const lifecycleStatusSpoofDir = path.join(logsRoot, 'real-rocm-lifecycle-status-spoof');
+await writeJson(path.join(lifecycleStatusSpoofDir, 'real-rocm-lifecycle-status-spoof.json'), {
+  ...largeRocmLatestReport,
+  slug: 'gpu-real-rocm-lifecycle-status-spoof-20260630',
+  real_rocm_profile: {
+    ...largeRocmLatestReport.real_rocm_profile,
+    id: 'real-rocm-lifecycle-status-spoof',
+    source: 'scripts/profiles/real-rocm-lifecycle-status-spoof.json',
+  },
+  upstream_lifecycle_failure: {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    acceptedAsRefusalEvidence: true,
+    accepted_as_refusal_evidence: true,
+    reasons: ['upstream_build_failed'],
+    timings: [
+      'configure_ms=failed',
+      'build_ms=failed',
+      'run_ms=skipped',
+      'configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLogTail: 'project log: configure_status=0\nConfiguring incomplete, errors occurred!',
+    configure_log_tail: 'project log: configure_status=0\nConfiguring incomplete, errors occurred!',
+    buildLogTail: 'project log: build_status=0',
+    build_log_tail: 'project log: build_status=0',
+    runLogTail: 'project log: run_status=0',
+    run_log_tail: 'project log: run_status=0',
+  },
+});
+const lifecycleStatusSpoofLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [lifecycleStatusSpoofDir],
+  generatedAt: '2026-06-30T00:00:03.075Z',
+});
+const lifecycleStatusSpoofRocm = lifecycleStatusSpoofLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(lifecycleStatusSpoofRocm?.acceptedForGpuHmr, false);
+assert.equal(lifecycleStatusSpoofRocm.gpuHmrSuccess, false);
+assert.equal(lifecycleStatusSpoofRocm.upstreamLifecycleFailure.matrixRecomputedFromLogTails, true);
+assert.equal(lifecycleStatusSpoofRocm.upstreamLifecycleFailure.configureExitCodeText, null);
+assert.equal(lifecycleStatusSpoofRocm.upstreamLifecycleFailure.buildExitCodeText, null);
+assert.equal(lifecycleStatusSpoofRocm.upstreamLifecycleFailure.cmakeConfigureFailed, true);
+assert.ok(lifecycleStatusSpoofRocm.upstreamLifecycleFailure.reasons.includes('cmake_configure_failed'));
+
 const forgedMissingDependencyProbe = realRocmMissingDependencyProbeFixture({
   acceptedForGpuHmr: true,
   accepted_for_gpu_hmr: true,

@@ -122,6 +122,8 @@ const REAL_ROCM_PROOF_SCHEDULING_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_proof_scheduling.v1';
 const REAL_ROCM_SOURCE_TREE_TRANSPORT_SCHEMA_VERSION =
   'synthi.real_rocm.source_tree_transport.v1';
+const REAL_ROCM_UPSTREAM_LIFECYCLE_FAILURE_SCHEMA_VERSION =
+  'synthi.real_rocm.upstream_lifecycle_failure.v1';
 const REAL_ROCM_MISSING_DEPENDENCY_PROBE_SCHEMA_VERSION =
   'synthi.real_rocm.missing_dependency_probe.v1';
 const REAL_ROCM_MISSING_DEPENDENCY_PROBE_AUTHORITY =
@@ -217,6 +219,19 @@ const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
   'small-oracle',
   'partial-reload',
   'original-host-path',
+]);
+const MANAGED_REAL_ROCM_UPSTREAM_LIFECYCLE_REASONS = new Set([
+  'cmake_configure_failed',
+  'missing_build_dependency',
+  'upstream_build_blocked_by_configure',
+  'upstream_post_configure_failed',
+  'upstream_build_blocked_by_post_configure',
+  'upstream_build_failed',
+  'upstream_run_not_started_after_configure_failure',
+  'upstream_run_not_started_after_post_configure_failure',
+  'upstream_run_not_started_after_build_failure',
+  'upstream_run_failed',
+  'upstream_lifecycle_command_failed',
 ]);
 const SCOPED_GENERALITY_UNSUPPORTED_WITHOUT_EVIDENCE = [
   'arbitrary_library_without_matching_acceptance_contract',
@@ -5327,6 +5342,207 @@ function generalityClaimFailures(row, context = {}) {
       : null,
   ]);
   return failures.map((code) => ({ code }));
+}
+
+function usableLifecycleStatusText(value) {
+  const normalized = firstText(value);
+  if (!normalized || normalized.toLowerCase() === 'unknown') return null;
+  return normalized;
+}
+
+function parseLifecycleExitCodeTextFromTimings(timings, phase) {
+  const token = `${String(phase ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_exit_code`;
+  const match = new RegExp(`\\b${token}=([^\\s]+)`).exec(String(timings ?? ''));
+  return usableLifecycleStatusText(match?.[1]);
+}
+
+function parseLifecycleStatusTextFromWrapperLogs(logs, phase) {
+  const token = `${String(phase ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_status`;
+  for (const log of logs) {
+    const lines = String(log ?? '').split(/\r?\n/g);
+    for (const line of lines) {
+      if (!/^upstream (?:run|build) skipped after\b/.test(line)) continue;
+      const match = new RegExp(`\\b${token}=([^\\s]+)\\b`).exec(line);
+      const status = usableLifecycleStatusText(match?.[1]);
+      if (status !== null) return status;
+    }
+  }
+  return null;
+}
+
+function lifecycleExitCodeFailed(value) {
+  const normalized = firstText(value)?.toLowerCase();
+  return Boolean(normalized && !['0', 'skipped', 'not-run', 'not_run'].includes(normalized));
+}
+
+function lifecycleExitCodeSkipped(value) {
+  const normalized = firstText(value)?.toLowerCase();
+  return normalized === 'skipped';
+}
+
+function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
+  const raw = compactObject(rawValue);
+  if (Object.keys(raw).length === 0) return {};
+  const timings = firstText(raw.timings) ?? '';
+  const configureLogText = firstText(
+    raw.configureLogTail,
+    raw.configure_log_tail,
+    raw.configureLog,
+    raw.configure_log,
+  ) ?? '';
+  const buildLogText = firstText(
+    raw.buildLogTail,
+    raw.build_log_tail,
+    raw.buildLog,
+    raw.build_log,
+  ) ?? '';
+  const runLogText = firstText(
+    raw.runLogTail,
+    raw.run_log_tail,
+    raw.runLog,
+    raw.run_log,
+  ) ?? '';
+  const hasRecomputeMaterial = Boolean(timings || configureLogText || buildLogText || runLogText);
+  if (!hasRecomputeMaterial) return raw;
+
+  const statusLogs = [runLogText, buildLogText];
+  const configureExitCodeText =
+    parseLifecycleExitCodeTextFromTimings(timings, 'configure')
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'configure');
+  const postConfigureExitCodeText =
+    parseLifecycleExitCodeTextFromTimings(timings, 'post_configure')
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'post_configure');
+  const buildExitCodeText =
+    parseLifecycleExitCodeTextFromTimings(timings, 'build')
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'build');
+  const runExitCodeText =
+    usableLifecycleStatusText(/\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1])
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'run');
+  const configureStatusKnown = configureExitCodeText !== null;
+  const postConfigureStatusKnown = postConfigureExitCodeText !== null;
+  const buildStatusKnown = buildExitCodeText !== null;
+  const configureStageFailed = (!configureStatusKnown && /\bconfigure_ms=failed\b/.test(timings))
+    || lifecycleExitCodeFailed(configureExitCodeText);
+  const postConfigureStageFailed =
+    (!postConfigureStatusKnown && /\bpost_configure_ms=failed\b/.test(timings))
+    || lifecycleExitCodeFailed(postConfigureExitCodeText);
+  const buildStageFailed = (!buildStatusKnown && /\bbuild_ms=failed\b/.test(timings))
+    || lifecycleExitCodeFailed(buildExitCodeText);
+  const buildStageSkipped = lifecycleExitCodeSkipped(buildExitCodeText);
+  const runNotStarted = ['not-run', 'not_run'].includes(String(runExitCodeText ?? '').toLowerCase());
+  const runStageFailed = lifecycleExitCodeFailed(runExitCodeText);
+  const configureLogSucceeded = /Configuring done|Build files have been written to/i.test(configureLogText);
+  const configureStatusSucceeded = configureExitCodeText === '0';
+  const cmakeConfigureFailed =
+    configureStageFailed
+    || (
+      !configureStatusSucceeded
+      && !configureLogSucceeded
+      && /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText)
+    );
+  const buildBlockedByConfigure = cmakeConfigureFailed && (buildStageFailed || buildStageSkipped);
+  const buildBlockedByPostConfigure = !cmakeConfigureFailed
+    && postConfigureStageFailed
+    && (buildStageFailed || buildStageSkipped);
+  const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
+  const runBlockedByPostConfigure = !cmakeConfigureFailed
+    && postConfigureStageFailed
+    && runNotStarted;
+  const buildFailed = !buildBlockedByConfigure
+    && !buildBlockedByPostConfigure
+    && (
+      buildStageFailed
+      || /fatal\s+error:.*file\s+not\s+found/i.test(buildLogText)
+      || /No rule to make target|gmake: \*\*\*|ninja: build stopped/i.test(buildLogText)
+    );
+  const runBlockedByBuild = buildFailed && runNotStarted;
+  const runFailed = !runBlockedByConfigure
+    && !runBlockedByPostConfigure
+    && !runBlockedByBuild
+    && runStageFailed;
+  const rawReasons = compactStringList(raw.reasons);
+  const missingDependencies = compactStringList([
+    ...(Array.isArray(raw.missingDependencies) ? raw.missingDependencies : []),
+    ...(Array.isArray(raw.missing_dependencies) ? raw.missing_dependencies : []),
+  ]);
+  const passthroughReasons = rawReasons.filter(
+    (reason) => !MANAGED_REAL_ROCM_UPSTREAM_LIFECYCLE_REASONS.has(reason),
+  );
+  const lifecycleCommandFailed = rawReasons.includes('upstream_lifecycle_command_failed')
+    || Boolean(firstText(raw.lifecycleErrorMessage, raw.lifecycle_error_message));
+  const reasons = compactStringList([
+    cmakeConfigureFailed ? 'cmake_configure_failed' : null,
+    missingDependencies.length > 0 ? 'missing_build_dependency' : null,
+    buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
+    postConfigureStageFailed ? 'upstream_post_configure_failed' : null,
+    buildBlockedByPostConfigure ? 'upstream_build_blocked_by_post_configure' : null,
+    buildFailed ? 'upstream_build_failed' : null,
+    runBlockedByConfigure ? 'upstream_run_not_started_after_configure_failure' : null,
+    runBlockedByPostConfigure ? 'upstream_run_not_started_after_post_configure_failure' : null,
+    runBlockedByBuild ? 'upstream_run_not_started_after_build_failure' : null,
+    runFailed ? 'upstream_run_failed' : null,
+    lifecycleCommandFailed ? 'upstream_lifecycle_command_failed' : null,
+    ...passthroughReasons,
+  ]);
+  const recomputeSeed = {
+    timings,
+    configureLogText,
+    buildLogText,
+    runLogText,
+    reasons,
+    configureExitCodeText,
+    postConfigureExitCodeText,
+    buildExitCodeText,
+    runExitCodeText,
+  };
+  const acceptedAsRefusalEvidence = firstBool(
+    raw.acceptedAsRefusalEvidence,
+    raw.accepted_as_refusal_evidence,
+  ) === true;
+  return {
+    ...raw,
+    schemaVersion: firstText(raw.schemaVersion, raw.schema_version)
+      ?? REAL_ROCM_UPSTREAM_LIFECYCLE_FAILURE_SCHEMA_VERSION,
+    schema_version: firstText(raw.schemaVersion, raw.schema_version)
+      ?? REAL_ROCM_UPSTREAM_LIFECYCLE_FAILURE_SCHEMA_VERSION,
+    acceptedAsRefusalEvidence,
+    accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    reasons,
+    missingDependencies,
+    missing_dependencies: missingDependencies,
+    cmakeConfigureFailed,
+    cmake_configure_failed: cmakeConfigureFailed,
+    configureExitCodeText,
+    configure_exit_code_text: configureExitCodeText,
+    postConfigureFailed: postConfigureStageFailed,
+    post_configure_failed: postConfigureStageFailed,
+    postConfigureExitCodeText,
+    post_configure_exit_code_text: postConfigureExitCodeText,
+    buildFailed,
+    build_failed: buildFailed,
+    buildBlockedByConfigure,
+    build_blocked_by_configure: buildBlockedByConfigure,
+    buildBlockedByPostConfigure,
+    build_blocked_by_post_configure: buildBlockedByPostConfigure,
+    buildExitCodeText,
+    build_exit_code_text: buildExitCodeText,
+    runFailed,
+    run_failed: runFailed,
+    runBlockedByBuild,
+    run_blocked_by_build: runBlockedByBuild,
+    runBlockedByConfigure,
+    run_blocked_by_configure: runBlockedByConfigure,
+    runBlockedByPostConfigure,
+    run_blocked_by_post_configure: runBlockedByPostConfigure,
+    runExitCodeText,
+    run_exit_code_text: runExitCodeText,
+    matrixRecomputedFromLogTails: true,
+    matrix_recomputed_from_log_tails: true,
+    serializedReasons: rawReasons,
+    serialized_reasons: rawReasons,
+    recomputeHash: `sha256:${sha256Hex(stableJson(recomputeSeed))}`,
+    recompute_hash: `sha256:${sha256Hex(stableJson(recomputeSeed))}`,
+  };
 }
 
 function realRocmAttemptCompletenessFacet({
@@ -16619,14 +16835,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? summary.strictProofGates,
   );
   const strictGateFailures = compactStringList(strictGates.failures);
-  const upstreamLifecycleFailure = compactObject(
+  const upstreamLifecycleFailure = realRocmUpstreamLifecycleFailureFacet(compactObject(
     json.upstream_lifecycle_failure
     ?? json.upstreamLifecycleFailure
     ?? summary.upstream_lifecycle_failure
     ?? summary.upstreamLifecycleFailure
     ?? runtimeProofArtifact.upstream_lifecycle_failure
     ?? runtimeProofArtifact.upstreamLifecycleFailure,
-  );
+  ));
   const workerRepoTransferFailure = compactObject(
     json.worker_repo_transfer_failure
     ?? json.workerRepoTransferFailure
