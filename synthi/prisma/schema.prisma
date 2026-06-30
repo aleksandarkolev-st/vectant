@@ -409,6 +409,7 @@ model CodeSiteMutationTransaction {
   mutationLeaseId            String
   agentSessionId             String
   baseSnapshot               String
+  baseSnapshotEvidenceJson   String?
   isolation                  String
   status                     String
   readSetJson                String

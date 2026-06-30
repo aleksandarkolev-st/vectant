@@ -78,6 +78,7 @@ export function codesiteSchemas() {
     'mutation-transaction.schema.json': schema('MutationTransaction', {
       mutationLeaseId: { type: 'string' },
       baseSnapshot: { type: 'string' },
+      baseSnapshotEvidence: { type: ['object', 'null'] },
       isolation: { type: 'string' },
       status: { type: 'string' },
       readSet: { type: 'array', items: { type: 'string' } },

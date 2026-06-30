@@ -1,3 +1,6 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { prisma } = vi.hoisted(() => ({
@@ -83,6 +86,7 @@ import {
   requestMutationLease,
   validateTransaction,
 } from '../controlPlane.js';
+import { buildReadSnapshotEvidence } from '../repoSnapshot.js';
 
 function transactionFixture() {
   return {
@@ -91,6 +95,7 @@ function transactionFixture() {
     mutationLeaseId: 'lease-1',
     agentSessionId: 'agent-1',
     baseSnapshot: 'base',
+    baseSnapshotEvidenceJson: null,
     isolation: 'serializable',
     status: 'open',
     readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
@@ -546,6 +551,45 @@ describe('CodeSite control plane transaction validation', () => {
       expect.objectContaining({ eventId: 'event-schema-write' }),
       expect.objectContaining({ eventId: 'event-openapi-commit' }),
     ]));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], { repoRoot: root });
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      writeSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedWriteSetJson: JSON.stringify([]),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['components/auth/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['typecheck', 'tests'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 2;\n', 'utf8');
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_drift_detected');
+    expect(result.decision.repoSnapshot.driftedPaths).toEqual([
+      expect.objectContaining({ path: 'packages/schemas/auth.ts' }),
+    ]);
     expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'blocked' }),

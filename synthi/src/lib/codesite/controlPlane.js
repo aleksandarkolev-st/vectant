@@ -15,6 +15,7 @@ import {
   predictCollisions,
 } from './policy';
 import { discoverRepoPolicySignals } from './repoPolicyCompiler';
+import { buildReadSnapshotEvidence, normalizeReadSnapshotEvidence, validateReadSnapshotEvidence } from './repoSnapshot';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 
@@ -481,15 +482,18 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {})
     throw badRequest('clearance_not_active', { status: lease.status });
   }
   const leaseJson = parseJson(lease.leaseJson, {});
+  const readSet = normalizePathList(body.readSet || body.read_set || []);
+  const baseSnapshotEvidence = await buildTransactionSnapshotEvidence(readSet, body);
   const transaction = await prisma.codeSiteMutationTransaction.create({
     data: {
       projectId: lease.projectId,
       mutationLeaseId: lease.id,
       agentSessionId: lease.agentSessionId,
-      baseSnapshot: body.baseSnapshot || body.base_snapshot || digest({ workspaceSlug, mutationLeaseId, openedAt: Date.now() }),
+      baseSnapshot: body.baseSnapshot || body.base_snapshot || baseSnapshotEvidence?.snapshotDigest || digest({ workspaceSlug, mutationLeaseId, openedAt: Date.now() }),
+      baseSnapshotEvidenceJson: stringifyJson(baseSnapshotEvidence),
       isolation: body.isolation || 'serializable',
       status: 'open',
-      readSetJson: stringifyJson(normalizePathList(body.readSet || body.read_set || [])),
+      readSetJson: stringifyJson(readSet),
       writeSetJson: stringifyJson(normalizePathList(body.writeSet || body.write_set || [])),
       observedReadSetJson: stringifyJson([]),
       observedWriteSetJson: stringifyJson([]),
@@ -507,6 +511,8 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {})
     details: {
       transactionId: transaction.id,
       baseSnapshot: transaction.baseSnapshot,
+      baseSnapshotEvidenceDigest: baseSnapshotEvidence?.evidenceDigest || null,
+      baseSnapshotStatus: baseSnapshotEvidence?.status || null,
       isolation: transaction.isolation,
     },
   });
@@ -874,7 +880,8 @@ export async function validateTransaction(workspaceSlug, transactionId) {
     },
   });
   const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]));
-  const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0;
+  const repoSnapshot = await validateTransactionSnapshot(transaction);
+  const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0 && repoSnapshot.ok;
   const decision = {
     ok,
     isolation: transaction.isolation,
@@ -882,11 +889,14 @@ export async function validateTransaction(workspaceSlug, transactionId) {
       ...(blockedWrites.length ? ['write_outside_clearance'] : []),
       ...(invalidAssumptions.length ? ['assumption_invalidated'] : []),
       ...(staleReads.length ? ['stale_read_detected'] : []),
+      ...(!repoSnapshot.ok ? repoSnapshot.reasonCodes : []),
+      ...(repoSnapshot.ok && repoSnapshot.reasonCodes.includes('repo_snapshot_stable') ? ['repo_snapshot_stable'] : []),
       ...(ok ? ['serializable_validation_passed'] : []),
     ],
     blockedWrites,
     invalidAssumptions: invalidAssumptions.map(assumptionProjection),
     staleReads,
+    repoSnapshot,
     validatedAt: new Date().toISOString(),
   };
   const updated = await prisma.codeSiteMutationTransaction.update({
@@ -933,6 +943,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId) {
       writeSet,
       observedWriteSet,
       semanticDependencyRefs,
+      repoSnapshot: await validateTransactionSnapshot(transaction),
       changedPaths,
       staleReads: staleReadEventsFrom(transaction, unique([...readSet, ...semanticDependencyRefs]), events),
     },
@@ -954,6 +965,23 @@ async function findStaleReadEvents(transaction, readSet) {
   if (!readSet.length) return [];
   const events = await sourceStateEventsSince(transaction);
   return staleReadEventsFrom(transaction, readSet, events);
+}
+
+async function buildTransactionSnapshotEvidence(readSet, body = {}) {
+  const explicitEvidence = body.baseSnapshotEvidence || body.base_snapshot_evidence;
+  if (explicitEvidence) return normalizeReadSnapshotEvidence(explicitEvidence);
+  if (body.repoSnapshot === false || body.repo_snapshot === false || body.skipRepoSnapshot === true || body.skip_repo_snapshot === true) {
+    return null;
+  }
+  return buildReadSnapshotEvidence(readSet, {
+    repoRoot: body.repoRoot || body.repo_root,
+    source: 'codesite_control_plane',
+  });
+}
+
+async function validateTransactionSnapshot(transaction) {
+  const evidence = parseJson(transaction.baseSnapshotEvidenceJson, null);
+  return validateReadSnapshotEvidence(evidence);
 }
 
 function staleReadEventsFrom(transaction, readSet, events = []) {
@@ -2727,6 +2755,7 @@ function transactionProjection(transaction) {
     mutationLeaseId: transaction.mutationLeaseId,
     agentSessionId: transaction.agentSessionId,
     baseSnapshot: transaction.baseSnapshot,
+    baseSnapshotEvidence: parseJson(transaction.baseSnapshotEvidenceJson, null),
     isolation: transaction.isolation,
     status: transaction.status,
     readSet: parseJson(transaction.readSetJson, []),
