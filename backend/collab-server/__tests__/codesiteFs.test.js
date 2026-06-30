@@ -69,6 +69,55 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
   }
 });
 
+test('managed agent attribution without CodeSite headers still fails closed', async () => {
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-agent-session-id': 'agent-session-omitted-codesite',
+      'x-agent-provider': 'codex',
+      'x-agent-runtime': 'codex-cli',
+    },
+  }, {}, { workspaceSlug: 'acme', actorUserId: 'agent-owner-1' });
+
+  assert.strictEqual(context.active, true);
+  assert.strictEqual(context.managedAgent, true);
+  assert.strictEqual(context.agentSessionId, 'agent-session-omitted-codesite');
+  assert.strictEqual(context.agentProvider, 'codex');
+  assert.strictEqual(context.agentRuntime, 'codex-cli');
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch: async () => new Response('{}') }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('codesite_transaction_required')
+      && error.event.details.reason_codes.includes('codesite_authoritative_context_required'),
+  );
+});
+
+test('ordinary runtime routing headers do not force CodeSite managed-agent mode', () => {
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-runtime-scope': 'ws-demo-user-demo',
+      'x-runtime-kind': 'workspace',
+      'x-runtime-fs-user-id': 'user-1',
+    },
+  }, {}, { workspaceSlug: 'acme', actorUserId: 'user-1' });
+
+  assert.strictEqual(context.active, false);
+  assert.strictEqual(context.managedAgent, false);
+});
+
+test('generic process ancestry marks MCP and workflow writes as managed', () => {
+  const context = codeSiteContextFromRequest({ headers: {} }, {
+    processAncestry: ['mcp:synthi_apply_patch'],
+  }, { workspaceSlug: 'acme' });
+
+  assert.strictEqual(context.active, true);
+  assert.strictEqual(context.managedAgent, true);
+  assert.deepStrictEqual(context.processAncestry, ['mcp:synthi_apply_patch']);
+});
+
 test('trusted managed write scopes fail closed when CodeSite context is missing', async () => {
   await assert.rejects(
     () => enforceCodeSiteWriteAllowed(null, {

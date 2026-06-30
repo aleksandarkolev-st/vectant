@@ -1610,6 +1610,16 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     const codeSiteEnv = codeSiteRuntimeEnv(codeSiteContext, {
       processAncestry: ['collab-server', 'terminal-ws'],
     });
+    if (codeSiteContext?.managedAgent && !codeSiteContext.transactionId) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'codesite_managed_context_required',
+        message: 'Managed agent terminal sessions require an active CodeSite transaction before they can execute against a workspace.',
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite managed context required');
+      return;
+    }
 
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);

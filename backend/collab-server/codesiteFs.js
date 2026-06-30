@@ -65,15 +65,69 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     header('x-codesite-required'),
     header('x-codesite-active'),
   ));
-  const managedAgent = truthy(value(
+  const agentSessionId = value(
+    payload.agentSessionId,
+    payload.agent_session_id,
+    data.agentSessionId,
+    data.agent_session_id,
+    data.synthiAgentSessionId,
+    data.synthi_agent_session_id,
+    header('x-codesite-agent-session-id'),
+    header('x-agent-session-id'),
+    header('x-synthi-agent-session-id'),
+  );
+  const agentProvider = value(
+    payload.agentProvider,
+    payload.agent_provider,
+    data.agentProvider,
+    data.agent_provider,
+    data.synthiAgentProvider,
+    data.synthi_agent_provider,
+    header('x-codesite-agent-provider'),
+    header('x-agent-provider'),
+    header('x-synthi-agent-provider'),
+  );
+  const agentRuntime = value(
+    payload.agentRuntime,
+    payload.agent_runtime,
+    data.agentRuntime,
+    data.agent_runtime,
+    data.synthiAgentRuntime,
+    data.synthi_agent_runtime,
+    header('x-codesite-agent-runtime'),
+    header('x-agent-runtime'),
+    header('x-synthi-agent-runtime'),
+  );
+  const processAncestry = parsePatternList(value(
+    payload.processAncestry,
+    payload.process_ancestry,
+    data.processAncestry,
+    data.process_ancestry,
+    header('x-codesite-process-ancestry'),
+    header('x-process-ancestry'),
+    header('x-synthi-process-ancestry'),
+  ));
+  const explicitManagedAgent = truthy(value(
     payload.managedAgent,
     payload.managed_agent,
     data.managedAgent,
     data.managed_agent,
     data.codesiteManagedAgent,
     data.codeSiteManagedAgent,
+    extra.managedAgent,
+    extra.forceManagedAgent,
     header('x-codesite-managed-agent'),
+    header('x-managed-agent'),
+    header('x-synthi-managed-agent'),
   ));
+  const managedAgent = explicitManagedAgent || hasManagedAgentSignal({
+    agentSessionId,
+    agentProvider,
+    agentRuntime,
+    processAncestry,
+    data,
+    header,
+  });
   const context = {
     active: false,
     required,
@@ -82,9 +136,9 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     workspaceSlug: extra.workspaceSlug || data.workspaceSlug || data.slug || null,
     actorUserId: extra.actorUserId || data.userId || data.actorUserId || header('x-user-id') || null,
     effectiveUserId: extra.effectiveUserId || null,
-    agentSessionId: value(payload.agentSessionId, payload.agent_session_id, data.agentSessionId, data.agent_session_id, header('x-codesite-agent-session-id')),
-    agentProvider: value(payload.agentProvider, payload.agent_provider, data.agentProvider, data.agent_provider, header('x-codesite-agent-provider')),
-    agentRuntime: value(payload.agentRuntime, payload.agent_runtime, data.agentRuntime, data.agent_runtime, header('x-codesite-agent-runtime')),
+    agentSessionId,
+    agentProvider,
+    agentRuntime,
     displayCallsign: value(payload.displayCallsign, payload.callsign, header('x-codesite-callsign')),
     mutationLeaseId: value(payload.mutationLeaseId, payload.leaseId, header('x-codesite-lease-id')),
     transactionId: value(payload.transactionId, header('x-codesite-transaction-id')),
@@ -92,7 +146,7 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     blockedPaths: parsePatternList(value(payload.blockedPaths, payload.noFlyZones, header('x-codesite-blocked-paths'))),
     allowedTools: parsePatternList(value(payload.allowedTools, header('x-codesite-allowed-tools'))),
     evidenceRefs: parsePatternList(value(payload.evidenceRefs, header('x-codesite-evidence-refs'))),
-    processAncestry: parsePatternList(value(payload.processAncestry, header('x-codesite-process-ancestry'))),
+    processAncestry,
     controlPlaneUrl: value(payload.controlPlaneUrl, payload.control_plane_url, header('x-codesite-control-plane-url')),
     authToken: value(payload.authToken, payload.auth_token, header('x-codesite-token')),
     cookie: value(payload.cookie, header('cookie')),
@@ -110,6 +164,24 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     Object.keys(payload).length > 0,
   );
   return context;
+}
+
+function hasManagedAgentSignal({ agentSessionId, agentProvider, agentRuntime, processAncestry, data = {}, header = () => undefined }) {
+  if (agentSessionId || agentProvider || agentRuntime) return true;
+  if (value(data.agentId, data.agent_id, data.synthiAgentId, data.synthi_agent_id, header('x-agent-id'), header('x-synthi-agent-id'))) {
+    return true;
+  }
+  if (value(data.workflowAgentId, data.workflow_agent_id, header('x-synthi-workflow-agent-id'))) {
+    return true;
+  }
+  return asArray(processAncestry).some((entry) => {
+    const item = String(entry || '').toLowerCase();
+    return item.includes('agent')
+      || item.includes('codex')
+      || item.includes('browser-workflow')
+      || item.includes('synthi_codesite')
+      || item.startsWith('mcp:');
+  });
 }
 
 function codeSiteCommitMessage(message, data = {}) {

@@ -1030,6 +1030,20 @@ function writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, surface) {
   }));
 }
 
+function writeCodeSiteManagedContextRequired(res, codeSiteMetadata, surface) {
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_managed_context_required',
+    message: 'Managed agent runtime requests require an active CodeSite transaction before they can execute against a workspace.',
+    surface,
+    codesite: codeSiteMetadata,
+  }));
+}
+
+function requiresCodeSiteManagedRuntimeContext(context) {
+  return Boolean(context?.managedAgent && !context.transactionId);
+}
+
 /**
  * Force-flush any in-memory Yjs document content for a specific file to disk.
  * Called before selective staging (git apply) so the patch always matches the
@@ -2164,6 +2178,10 @@ const server = http.createServer(async (req, res) => {
         effectiveUserId: parsed.filesystemUserId || actorUserId,
       });
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:launch-program');
+        return;
+      }
       const launchConfig = codeSiteMetadata
         ? {
           ...config,
@@ -2253,6 +2271,10 @@ const server = http.createServer(async (req, res) => {
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:exec');
+        return;
+      }
       if (codeSiteContext.active) {
         writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:exec');
         return;
@@ -2495,6 +2517,10 @@ const server = http.createServer(async (req, res) => {
         effectiveUserId: filesystemUserId,
       });
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-terminal');
+        return;
+      }
 
       await managedProgramRuntime.launchManagedSession({
         sessionId,
@@ -2707,6 +2733,10 @@ const server = http.createServer(async (req, res) => {
       effectiveUserId: filesystemUserId,
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
+      return;
+    }
     let cwd;
     try {
       await ensureRuntimeFilesystem({
@@ -2866,6 +2896,10 @@ const server = http.createServer(async (req, res) => {
       effectiveUserId: filesystemUserId,
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
+      return;
+    }
     let cwd;
     try {
       await ensureRuntimeFilesystem({
