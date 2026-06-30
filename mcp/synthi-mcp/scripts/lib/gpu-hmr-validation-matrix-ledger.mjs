@@ -20852,9 +20852,62 @@ function rowHasAcceptedComputeEvidence(row) {
     || row.compute_card_only_proof_accepted === true;
 }
 
+function randomColdPathRowsForBroadReadiness(rows) {
+  return rows.filter((row) => {
+    if (row.proofMode !== 'random_large_project_cold_path') return false;
+    if (row.matrixOutcome !== 'refusal_proven') return false;
+    const facet = compactObject(
+      row.randomLargeProjectColdPath
+      ?? row.random_large_project_cold_path,
+    );
+    const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+    const template = compactObject(
+      row.coldRuntimeBoundaryEventManifestTemplate
+      ?? row.cold_runtime_boundary_event_manifest_template,
+    );
+    const authority = firstText(facet.proofAuthority, facet.proof_authority);
+    const sourceAccepted = firstBool(
+      row.sourceTreeIntakeAccepted,
+      row.source_tree_intake_accepted,
+      intake.accepted,
+      intake.acceptedAsIntakeEvidence,
+      intake.accepted_as_intake_evidence,
+    ) === true;
+    const buildMetadataAccepted = firstBool(
+      row.buildMetadataDiscoveryAccepted,
+      row.build_metadata_discovery_accepted,
+      intake.buildMetadataDiscoveryAccepted,
+      intake.build_metadata_discovery_accepted,
+      intake.buildMetadataContentAccepted,
+      intake.build_metadata_content_accepted,
+    ) === true;
+    const templateAccepted = firstBool(
+      row.runtimeBoundaryEventManifestTemplateAccepted,
+      row.runtime_boundary_event_manifest_template_accepted,
+      template.acceptedAsSupportEvidence,
+      template.accepted_as_support_evidence,
+    ) === true;
+    const forbiddenAuthority = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      || firstBool(template.acceptedForGpuHmr, template.accepted_for_gpu_hmr) === true
+      || firstBool(template.gpuHmrSuccess, template.gpu_hmr_success) === true
+      || firstBool(template.canSatisfyRuntimeProof, template.can_satisfy_runtime_proof) === true;
+    return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
+      && sourceAccepted
+      && buildMetadataAccepted
+      && templateAccepted
+      && !forbiddenAuthority;
+  });
+}
+
 function computeBroadLibraryAgnosticProof(rows) {
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
-  const refusalRowsForReadiness = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
+  const refusalRowsForReadiness = rows.filter((row) =>
+    row.matrixOutcome === 'refusal_proven'
+      && row.proofMode !== 'random_large_project_cold_path'
+  );
+  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
@@ -20865,6 +20918,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
+  const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
+  const randomColdPathRowIds = compactStringList(randomColdPathRows.map((row) => row.rowId));
   const openGaps = compactStringList([
     fullRuntimeRows.length > 0 ? null : 'broad_runtime_rows_missing',
     backends.length >= BROAD_LIBRARY_MIN_BACKEND_COUNT
@@ -20878,6 +20933,9 @@ function computeBroadLibraryAgnosticProof(rows) {
     refusalRowsForReadiness.length >= BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT
       ? null
       : 'broad_acceptance_requires_adversarial_refusals',
+    randomColdPathRows.length > 0
+      ? null
+      : 'broad_acceptance_requires_random_large_project_cold_path',
   ]);
   const accepted = openGaps.length === 0;
   const broadRuntimeRows = accepted ? fullRuntimeRows : [];
@@ -20889,6 +20947,7 @@ function computeBroadLibraryAgnosticProof(rows) {
     ...broadRuntimeRowIds,
     ...compactStringList(broadRuntimeRows.flatMap((row) => row.proofIds ?? row.proof_ids)),
     ...compactStringList(refusalRowsForReadiness.map((row) => row.rowId)),
+    ...randomColdPathRowIds,
   ]);
   const proofId = proofIdFor('gpu-hmr-broad-library-agnostic-proof', {
     schemaVersion: BROAD_LIBRARY_AGNOSTIC_PROOF_SCHEMA_VERSION,
@@ -20900,6 +20959,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     visualTargets,
     computeTargets,
     refusalTargets,
+    randomColdPathTargets,
+    randomColdPathRowIds,
     openGaps,
   });
   return {
@@ -20930,6 +20991,12 @@ function computeBroadLibraryAgnosticProof(rows) {
     compute_targets: computeTargets,
     refusalTargets,
     refusal_targets: refusalTargets,
+    randomColdPathRows: randomColdPathRows.length,
+    random_cold_path_rows: randomColdPathRows.length,
+    randomColdPathRowIds,
+    random_cold_path_row_ids: randomColdPathRowIds,
+    randomColdPathTargets,
+    random_cold_path_targets: randomColdPathTargets,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     minimumBackendCount: BROAD_LIBRARY_MIN_BACKEND_COUNT,
@@ -20938,6 +21005,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     minimum_acceptance_scope_count: BROAD_LIBRARY_MIN_ACCEPTANCE_SCOPE_COUNT,
     minimumAdversarialRefusalCount: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
     minimum_adversarial_refusal_count: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
+    minimumRandomColdPathCount: 1,
+    minimum_random_cold_path_count: 1,
     openGaps,
     open_gaps: openGaps,
   };
@@ -20947,7 +21016,11 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
   const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
-  const refusalRowsForReadiness = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
+  const refusalRowsForReadiness = rows.filter((row) =>
+    row.matrixOutcome === 'refusal_proven'
+      && row.proofMode !== 'random_large_project_cold_path'
+  );
+  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
@@ -20958,6 +21031,7 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
+  const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
   const broadRuntimeRowsComputed = true;
   const broadRuntimeRowsMissing = broadRuntimeRows.length === 0;
   const openGaps = broadProof.accepted === true
@@ -20989,12 +21063,16 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     visualOracleTargetCount: visualTargets.length,
     computeOracleTargetCount: computeTargets.length,
     refusalTargetCount: refusalTargets.length,
+    randomColdPathRowCount: randomColdPathRows.length,
+    random_cold_path_row_count: randomColdPathRows.length,
     backends,
     acceptanceScopes,
     proofModes,
     visualTargets,
     computeTargets,
     refusalTargets,
+    randomColdPathTargets,
+    random_cold_path_targets: randomColdPathTargets,
     openGaps,
   };
 }

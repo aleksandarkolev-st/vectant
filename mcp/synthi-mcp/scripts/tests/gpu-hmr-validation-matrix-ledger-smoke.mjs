@@ -7292,6 +7292,135 @@ function refusalMatrixRow(targetId, backend = 'hip') {
   });
 }
 
+function randomColdReadinessMatrixRow(targetId = 'random-cold-readiness-user-project') {
+  return withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
+    backend: 'webgpu',
+    targetId,
+    target_id: targetId,
+    profileId: 'unprofiled_arbitrary_project_cold_intake',
+    profile_id: 'unprofiled_arbitrary_project_cold_intake',
+    proofMode: 'random_large_project_cold_path',
+    proof_mode: 'random_large_project_cold_path',
+    matrixOutcome: 'refusal_proven',
+    matrix_outcome: 'refusal_proven',
+    acceptanceClass: 'runtime_proof_rejected',
+    acceptance_class: 'runtime_proof_rejected',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    refusalProven: true,
+    refusal_proven: true,
+    proofChainAccepted: false,
+    proof_chain_accepted: false,
+    proofChain: 'random_large_project_cold_path_refusal_only',
+    proof_chain: 'random_large_project_cold_path_refusal_only',
+    randomLargeProjectColdPath: {
+      present: true,
+      proofAuthority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+      proof_authority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      candidateId: targetId,
+      candidate_id: targetId,
+      resultStatus: 'unprofiled_arbitrary_project_cold_intake_refused',
+      result_status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      failedGates: [],
+      failed_gates: [],
+    },
+    random_large_project_cold_path: {
+      present: true,
+      proofAuthority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+      proof_authority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      candidateId: targetId,
+      candidate_id: targetId,
+      resultStatus: 'unprofiled_arbitrary_project_cold_intake_refused',
+      result_status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      failedGates: [],
+      failed_gates: [],
+    },
+    coldSourceTreeIntake: {
+      present: true,
+      accepted: true,
+      acceptedAsIntakeEvidence: true,
+      accepted_as_intake_evidence: true,
+      buildMetadataDiscoveryAccepted: true,
+      build_metadata_discovery_accepted: true,
+      buildMetadataContentAccepted: true,
+      build_metadata_content_accepted: true,
+      backendCandidates: ['vulkan', 'webgpu_wgsl'],
+      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      detectedBuildSystems: ['cargo', 'npm_or_node'],
+      detected_build_systems: ['cargo', 'npm_or_node'],
+    },
+    cold_source_tree_intake: {
+      present: true,
+      accepted: true,
+      acceptedAsIntakeEvidence: true,
+      accepted_as_intake_evidence: true,
+      buildMetadataDiscoveryAccepted: true,
+      build_metadata_discovery_accepted: true,
+      buildMetadataContentAccepted: true,
+      build_metadata_content_accepted: true,
+      backendCandidates: ['vulkan', 'webgpu_wgsl'],
+      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      detectedBuildSystems: ['cargo', 'npm_or_node'],
+      detected_build_systems: ['cargo', 'npm_or_node'],
+    },
+    coldRuntimeBoundaryEventManifestTemplate: {
+      present: true,
+      validated: true,
+      acceptedAsSupportEvidence: true,
+      accepted_as_support_evidence: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    },
+    cold_runtime_boundary_event_manifest_template: {
+      present: true,
+      validated: true,
+      acceptedAsSupportEvidence: true,
+      accepted_as_support_evidence: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    },
+    sourceTreeIntakeAccepted: true,
+    source_tree_intake_accepted: true,
+    buildMetadataDiscoveryAccepted: true,
+    build_metadata_discovery_accepted: true,
+    buildMetadataContentAccepted: true,
+    build_metadata_content_accepted: true,
+    runtimeBoundaryEventManifestTemplateAccepted: true,
+    runtime_boundary_event_manifest_template_accepted: true,
+    reasons: ['strict_runtime_ledger_missing'],
+    openGaps: ['strict_runtime_ledger_missing'],
+    open_gaps: ['strict_runtime_ledger_missing'],
+  });
+}
+
 function withQueryRecomputedRowId(row) {
   const probe = {
     ...JSON.parse(JSON.stringify(row)),
@@ -7740,9 +7869,31 @@ const broadReadinessRows = [
     refusalMatrixRow(`broad-readiness-adversarial-refusal-${index + 1}`)
   ),
 ];
-const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
+const broadReadinessWithoutRandomColdQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRows,
+});
+assert.equal(broadReadinessWithoutRandomColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithoutRandomColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithoutRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithoutRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_random_large_project_cold_path',
+  ),
+);
+const broadReadinessRowsWithRandomCold = [
+  ...broadReadinessRows,
+  randomColdReadinessMatrixRow(),
+];
+const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: broadReadinessRowsWithRandomCold,
 });
 assert.equal(broadReadinessQuery.accepted, true);
 assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
@@ -7771,6 +7922,20 @@ assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .broadRuntimeRows,
   4,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathRows,
+  1,
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathTargets,
+  ['random-cold-readiness-user-project'],
 );
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
