@@ -16,7 +16,7 @@ const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRunti
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
-const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntimeTarget, codeSiteProgramRuntimeLaunchMode, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -887,6 +887,16 @@ function runtimeCodeSiteEnv(context, processAncestry) {
   return codeSiteRuntimeEnv(context, { processAncestry });
 }
 
+function writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, surface) {
+  res.writeHead(409, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_runtime_quarantine_unavailable',
+    message: 'CodeSite runtime blocked: container/sysbox execution cannot mount a quarantine workspace yet.',
+    surface,
+    codesite: codeSiteMetadata,
+  }));
+}
+
 /**
  * Force-flush any in-memory Yjs document content for a specific file to disk.
  * Called before selective staging (git apply) so the patch always matches the
@@ -939,7 +949,7 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
  * currently-open docs need flushing; closed docs were already written on save.
  * @returns {Promise<number>} number of docs flushed
  */
-async function flushWorkspaceDocsToDisk(slug, userId) {
+async function flushWorkspaceDocsToDisk(slug, userId, scope = {}) {
   if (!slug || !userId) return 0;
   const prefix = `workspace:${slug}:user:${encodeURIComponent(String(userId))}:`;
   const docNames = require('./yjsWsServer').listRoomNames().filter((n) => n.startsWith(prefix));
@@ -948,7 +958,7 @@ async function flushWorkspaceDocsToDisk(slug, userId) {
     const filePath = docName.slice(prefix.length);
     try { validateFilePath(filePath); } catch { continue; } // skip unsafe paths
     try {
-      await flushYjsDocForFile(slug, filePath, { userId });
+      await flushYjsDocForFile(slug, filePath, { userId, codesiteContext: scope.codesiteContext });
       flushed += 1;
     } catch (e) {
       logger.warn('workspace_doc_flush_failed', { slug, filePath }, e);
@@ -2022,11 +2032,21 @@ const server = http.createServer(async (req, res) => {
           },
         }
         : config;
+      const launchMode = codeSiteProgramRuntimeLaunchMode({
+        codeSiteContext,
+        runtimeType: launchConfig.runtimeType || 'cli',
+        sysboxEnabled: isSysboxRuntimeEnabled(),
+        hasHybrid: Boolean(workspaceRuntime),
+      });
+      if (launchMode === 'block-runtime') {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:launch-program');
+        return;
+      }
       // Reconcile the working tree from Y-Sweet first: a program's install/launch
       // (docker build ., npm install) reads files from disk, but unsaved editor
       // content lives only in Y-Sweet until flushed. Without this the build sees
       // stale/empty files (e.g. an unsaved Dockerfile or package.json).
-      await flushWorkspaceDocsToDisk(slug, actorUserId).catch((e) =>
+      await flushWorkspaceDocsToDisk(slug, actorUserId, { codesiteContext }).catch((e) =>
         logger.warn('workspace_flush_before_launch_failed', { slug }, e));
       const session = await managedProgramRuntime.launchManagedProgram({
         sessionId,
@@ -2086,6 +2106,10 @@ const server = http.createServer(async (req, res) => {
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
+      if (codeSiteContext.active) {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:exec');
+        return;
+      }
       const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
         ? await spawner.listActiveRuntimeSessions()
         : [];

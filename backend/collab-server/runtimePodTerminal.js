@@ -72,6 +72,12 @@ function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
   return { target: 'unavailable' };
 }
 
+function codeSiteProgramRuntimeLaunchMode({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid } = {}) {
+  if (!codeSiteContext?.active) return 'normal';
+  const { target } = programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid });
+  return target === 'headless' ? 'quarantine' : 'block-runtime';
+}
+
 /**
  * Resolve a workspace's runtime scope (= its collab session id) from its slug,
  * among the active runtime sessions ([{slug, runtimeScope}]). The program-launch
@@ -389,6 +395,7 @@ module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
   programRuntimeTarget,
+  codeSiteProgramRuntimeLaunchMode,
   pickRuntimeScopeForSlug,
   buildRuntimeShellScript,
   createRuntimePodPty,

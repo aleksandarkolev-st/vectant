@@ -2,7 +2,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalService');
-const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript, pickRuntimeScopeForSlug } = require('../runtimePodTerminal');
+const {
+  runtimeTerminalTarget,
+  programRuntimeTarget,
+  codeSiteProgramRuntimeLaunchMode,
+  buildRuntimeShellScript,
+  pickRuntimeScopeForSlug,
+} = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
   const rt = {};
@@ -61,6 +67,33 @@ test('programRuntimeTarget: container + hybrid only → hybrid', () => {
 });
 test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
+});
+
+test('CodeSite program runtime mode permits headless quarantine and blocks container targets', () => {
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: null,
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }), 'normal');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'web',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }), 'quarantine');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: false,
+    hasHybrid: true,
+  }), 'block-runtime');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: false,
+  }), 'block-runtime');
 });
 
 // Slice-1 — the shared runtime shell-script builder runs the program command in
