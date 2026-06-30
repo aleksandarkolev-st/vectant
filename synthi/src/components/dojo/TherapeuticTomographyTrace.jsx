@@ -72,6 +72,7 @@ export default function TherapeuticTomographyTrace({
   const approvedDose = trace?.authorityDoses?.find((dose) => dose.decision === 'approved') || trace?.authorityDoses?.[0] || null;
   const latestCheckride = [...(tomography.checkrideReports || [])].reverse()[0] || null;
   const reviewRequests = tomography.reviewRequests || [];
+  const latestRemediationVerification = [...(tomography.remediationVerifications || [])].reverse()[0] || null;
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const sequence = useMemo(() => buildSequence(trace, blocked, approvedDose), [trace, blocked, approvedDose]);
 
@@ -114,7 +115,7 @@ export default function TherapeuticTomographyTrace({
               <Metric label="Pending reviews" value={tomography.metrics.pendingReviewCount || 0} />
             </section>
 
-            <OperationalControlPanel trace={trace} proof={proof} blocked={blocked} approvedDose={approvedDose} reviewRequests={reviewRequests} />
+            <OperationalControlPanel trace={trace} proof={proof} blocked={blocked} approvedDose={approvedDose} reviewRequests={reviewRequests} remediationVerification={latestRemediationVerification} />
             <EvaluationPanel report={latestCheckride} learningRecords={tomography.policyLearningRecords || []} proofMetrics={tomography.proofMetrics || {}} />
 
             <section className="rounded-md border p-4" style={panelStyle} data-testid="tomography-sequence">
@@ -243,7 +244,7 @@ function formatCheckrideKind(kind) {
   return String(kind || 'checkride').replaceAll('_', ' ');
 }
 
-function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRequests = [] }) {
+function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRequests = [], remediationVerification = null }) {
   const uncertainty = trace.uncertainties?.[0] || null;
   const requestedAccess = proof?.requestedAccess?.id ? proof.requestedAccess : blocked?.requestedAccess || null;
   const selectedProbe = [...(trace.projectionProbes || [])].reverse().find((probe) => probe.status === 'completed') || trace.projectionProbes?.[0] || null;
@@ -309,6 +310,18 @@ function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRe
         <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-secondary)', marginBottom: 0 }}>
           {trace.remediationPlan || 'Diagnostic proof never authorizes mutation; write access requires a separate remediation proposal, rollback, postcondition checks, human approval, and revocation.'}
         </p>
+        <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-secondary)', marginBottom: 0 }}>
+          Postcondition status: {remediationVerification?.status || 'not verified'}
+        </p>
+        {remediationVerification?.postconditionResults?.length ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {remediationVerification.postconditionResults.map((result) => (
+              <span key={`${result.check}-${result.status}`} className="inline-flex min-h-8 items-center rounded-md border px-3 text-xs" style={panelStyle}>
+                {result.check}: {result.status}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
     </section>
   );

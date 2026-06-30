@@ -127,6 +127,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_therapeutic_review_access: proofGatedDispatch("Resolves pending Tier 2/Tier 3 therapeutic reviews, adding human judgment claims before broker enforcement can mint scoped grants."),
   synthi_dojo_therapeutic_record_diagnosis: proofGatedDispatch("Records a verified therapeutic diagnosis from probe/proof evidence while preserving the no-mutation diagnostic boundary."),
   synthi_dojo_therapeutic_propose_remediation: proofGatedDispatch("Runs the separate therapeutic remediation proposal gate for scoped write access with diagnosis proof, rollback, postconditions, human approval, and revocation-ready grants."),
+  synthi_dojo_therapeutic_verify_remediation: proofGatedDispatch("Records remediation postcondition verification evidence before final revocation/learning and blocks failed remediation traces."),
   synthi_dojo_therapeutic_get_runtime: proofGatedDispatch("Returns reconstructable therapeutic trace, grant, proof-status, audit, and evidence state for operational review."),
 };
 

@@ -147,6 +147,7 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       checkrideReports: [],
       policyLearningRecords: [],
       reviewRequests: [],
+      remediationVerifications: [],
       proofMetrics: {},
       metrics: {
         probeCount: 0,
@@ -1456,6 +1457,7 @@ function normalizeTomographyTrace(state, dojo) {
       checkrideReports: [],
       policyLearningRecords: [],
       reviewRequests: [],
+      remediationVerifications: [],
       proofMetrics: {},
       metrics: {
         probeCount: 0,
@@ -1512,6 +1514,24 @@ function normalizeTomographyTrace(state, dojo) {
     autoGrantsBroaderAccess: Boolean(review.auto_grants_broader_access ?? review.autoGrantsBroaderAccess),
     request: normalizeTomographyAccessRequest(review.request || {}),
   })).filter((review) => review.reviewId || review.request.id);
+  const rawRemediationVerifications = raw.remediation_verifications
+    || raw.remediationVerifications
+    || raw.runtime?.remediation_verifications
+    || raw.runtime?.remediationVerifications
+    || [];
+  const remediationVerifications = asArray(rawRemediationVerifications).map((verification) => ({
+    verificationId: verification.verification_id || verification.verificationId || '',
+    remediationId: verification.remediation_id || verification.remediationId || '',
+    status: verification.status || '',
+    verifiedAt: verification.verified_at || verification.verifiedAt || '',
+    blockedBy: compactStrings(verification.blocked_by || verification.blockedBy),
+    postconditionResults: asArray(verification.postcondition_results || verification.postconditionResults).map((result) => ({
+      check: result.check || '',
+      status: result.status || '',
+      evidenceRef: result.evidence_ref || result.evidenceRef || '',
+      observed: result.observed || '',
+    })).filter((result) => result.check),
+  })).filter((verification) => verification.verificationId || verification.remediationId);
   const rawProofMetrics = raw.proof_metrics || raw.proofMetrics || raw.runtime?.proof_metrics || raw.runtime?.proofMetrics || {};
   const proofMetrics = {
     proofVerificationLatencyP50: Number(rawProofMetrics.proof_verification_latency_p50 ?? rawProofMetrics.proofVerificationLatencyP50 ?? 0),
@@ -1609,6 +1629,7 @@ function normalizeTomographyTrace(state, dojo) {
     checkrideReports,
     policyLearningRecords,
     reviewRequests,
+    remediationVerifications,
     proofMetrics,
     metrics: {
       probeCount: projectionProbes.length,

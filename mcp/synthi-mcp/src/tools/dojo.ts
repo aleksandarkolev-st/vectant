@@ -158,10 +158,12 @@ import {
   summarizeProofMetrics,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   THERAPEUTIC_DEFAULT_POLICY,
+  verifyTherapeuticRemediationPostconditions,
   type TherapeuticAccessMode,
   type TherapeuticAccessRequest,
   type TherapeuticAuthorityLevel,
   type TherapeuticHumanReviewedClaim,
+  type TherapeuticPostconditionCheckResult,
   type TherapeuticRemediationProposal,
   type TherapeuticRiskLevel,
   type TherapeuticRuntimeStore,
@@ -285,6 +287,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_therapeutic_review_access",
   "synthi_dojo_therapeutic_record_diagnosis",
   "synthi_dojo_therapeutic_propose_remediation",
+  "synthi_dojo_therapeutic_verify_remediation",
   "synthi_dojo_therapeutic_get_runtime",
 ] as const;
 
@@ -2252,6 +2255,21 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_therapeutic_verify_remediation",
+    description:
+      "Record postcondition verification evidence for a therapeutic remediation before final revocation/learning. Failed postconditions block the trace and are auditable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        remediation_id: { type: "string" },
+        postcondition_results: { type: "array", items: { type: "object" } },
+        now: { type: "string" },
+      },
+      required: ["task_id", "remediation_id", "postcondition_results"],
+    },
+  },
+  {
     name: "synthi_dojo_therapeutic_get_runtime",
     description:
       "Return the current therapeutic tomography trace plus runtime audit/evidence/grant state so the full access path can be reconstructed.",
@@ -2470,6 +2488,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_therapeutic_propose_remediation":
         response = dojoTherapeuticProposeRemediationTool(args);
+        break;
+      case "synthi_dojo_therapeutic_verify_remediation":
+        response = dojoTherapeuticVerifyRemediationTool(args);
         break;
       case "synthi_dojo_therapeutic_get_runtime":
         response = dojoTherapeuticGetRuntimeTool(args);
@@ -2835,6 +2856,33 @@ function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoTherapeuticVerifyRemediationTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const remediationId = stringOpt(a["remediation_id"]);
+  const postconditionResults = therapeuticPostconditionResultsOpt(a["postcondition_results"]);
+  if (!taskId || !remediationId || postconditionResults.length === 0) {
+    return errorResponse("dojo_therapeutic_verify_remediation_invalid", {
+      ok: false,
+      blocked_by: ["task_id_remediation_id_postcondition_results_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const result = verifyTherapeuticRemediationPostconditions({
+    trace: session.trace,
+    store: session.store,
+    remediation_id: remediationId,
+    postcondition_results: postconditionResults,
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: result.verification.status === "passed",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
 function dojoTherapeuticGetRuntimeTool(args: unknown): ToolResponse {
   const taskId = stringOpt(obj(args)["task_id"]);
   if (!taskId) {
@@ -2888,6 +2936,7 @@ function therapeuticRuntimeView(session: DojoTherapeuticRuntimeSession): Record<
     checkride_reports: session.store.checkride_reports,
     policy_learning_records: session.store.policy_learning_records,
     review_requests: session.store.review_requests,
+    remediation_verifications: session.store.remediation_verifications,
     reconstructable: session.store.evidence_records.length + session.store.audit_records.length > 0,
   };
 }
@@ -2942,6 +2991,24 @@ function therapeuticRemediationProposalOpt(value: unknown, fallbackTaskId: strin
     postcondition_checks: postconditionChecks,
     human_approval: humanApproval,
   };
+}
+
+function therapeuticPostconditionResultsOpt(value: unknown): TherapeuticPostconditionCheckResult[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const record = obj(entry);
+    const check = stringOpt(record["check"]);
+    const status = record["status"];
+    const evidenceRef = stringOpt(record["evidence_ref"]);
+    const observed = stringOpt(record["observed"]);
+    if (!check || (status !== "passed" && status !== "failed") || !evidenceRef || !observed) return null;
+    return {
+      check,
+      status,
+      evidence_ref: evidenceRef,
+      observed,
+    };
+  }).filter((result): result is TherapeuticPostconditionCheckResult => result !== null);
 }
 
 function therapeuticAuthorityLevelOpt(value: unknown): TherapeuticAuthorityLevel | undefined {

@@ -27,6 +27,7 @@ import {
   summarizeProofMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+  verifyTherapeuticRemediationPostconditions,
   type TherapeuticAccessRequest,
   type TherapeuticProbeContract,
 } from "../../src/dojo/tomography/index.js";
@@ -770,6 +771,16 @@ describe("Dojo therapeutic tomography", () => {
       },
       now: "2026-06-29T13:01:00.000Z",
     });
+    const verification = verifyTherapeuticRemediationPostconditions({
+      trace,
+      store,
+      remediation_id: "remediation-runtime",
+      postcondition_results: [
+        { check: "quality recovers", status: "passed", evidence_ref: "metric:quality_recovery", observed: "quality recovered" },
+        { check: "skew hash check passes", status: "passed", evidence_ref: "hash:serving_training_match", observed: "hashes match" },
+      ],
+      now: "2026-06-29T13:01:30.000Z",
+    });
     const revoked = revokeTherapeuticTaskGrants({
       trace,
       store,
@@ -784,9 +795,11 @@ describe("Dojo therapeutic tomography", () => {
     ]));
     expect(remediation.decision).toBe("approved");
     expect(remediation.grant?.access_request.mode).toBe("write");
+    expect(verification.verification.status).toBe("passed");
     expect(trace.final_outcome).toBe("remediated");
     expect(revoked.some((grant) => grant.access_request.mode === "write")).toBe(true);
     expect(store.audit_records.map((record) => record.event_type)).toContain("remediation_approved");
+    expect(store.audit_records.map((record) => record.event_type)).toContain("postcondition_verified");
   });
 
   it("runs therapeutic Dojo/Vivarium checkrides without auto-granting broader future access", () => {
@@ -1043,6 +1056,25 @@ describe("Dojo therapeutic tomography", () => {
       scope: "feature:billing_country",
       now: "2026-06-29T14:05:50.000Z",
     }));
+    const remediationVerification = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_verify_remediation", {
+      task_id: taskId,
+      remediation_id: "tool-runtime-remediation",
+      postcondition_results: [
+        {
+          check: "quality recovers",
+          status: "passed",
+          evidence_ref: "metric:trial_accounts_quality_recovered",
+          observed: "quality returned to baseline",
+        },
+        {
+          check: "serving config diff matches training hash",
+          status: "passed",
+          evidence_ref: "diff:serving_training_hash_match",
+          observed: "config diff matches expected transform hash",
+        },
+      ],
+      now: "2026-06-29T14:05:52.000Z",
+    }));
     const revokeRemediation = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_revoke_grants", {
       task_id: taskId,
       reason: "remediation_complete",
@@ -1084,6 +1116,8 @@ describe("Dojo therapeutic tomography", () => {
     expect(remediation.ok).toBe(true);
     expect(remediation.result.grant.access_request.mode).toBe("write");
     expect(writeDispatch.ok).toBe(true);
+    expect(remediationVerification.ok).toBe(true);
+    expect(remediationVerification.result.verification.status).toBe("passed");
     expect(revokeRemediation.ok).toBe(true);
     expect(checkrides.report.results.map((result: { kind: string }) => result.kind)).toEqual(expect.arrayContaining([
       "over_escalation",
@@ -1098,6 +1132,7 @@ describe("Dojo therapeutic tomography", () => {
     expect(runtime.runtime.reconstructable).toBe(true);
     expect(runtime.runtime.checkride_reports).toHaveLength(1);
     expect(runtime.runtime.policy_learning_records.length).toBeGreaterThan(0);
+    expect(runtime.runtime.remediation_verifications).toHaveLength(1);
     expect(runtime.runtime.proof_decision_records.length).toBeGreaterThan(0);
     expect(runtime.runtime.proof_metrics).toEqual(expect.objectContaining({
       percent_decisions_deterministic: expect.any(Number),
@@ -1111,6 +1146,7 @@ describe("Dojo therapeutic tomography", () => {
       "grant_revoked",
       "diagnosis_recorded",
       "remediation_approved",
+      "postcondition_verified",
     ]));
     expect(runtime.runtime.evidence_records.map((record: { kind: string }) => record.kind)).toEqual(expect.arrayContaining([
       "probe_result",
@@ -1119,6 +1155,7 @@ describe("Dojo therapeutic tomography", () => {
       "revocation",
       "diagnosis",
       "remediation",
+      "postcondition_verification",
       "checkride",
       "policy_learning",
     ]));

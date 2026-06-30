@@ -308,6 +308,30 @@ export interface TherapeuticRemediationGateDecision {
   required_gates: string[];
 }
 
+export interface TherapeuticPostconditionCheckResult {
+  check: string;
+  status: "passed" | "failed";
+  evidence_ref: string;
+  observed: string;
+}
+
+export interface TherapeuticRemediationVerification {
+  verification_id: string;
+  task_id: string;
+  remediation_id: string;
+  status: "passed" | "failed";
+  postcondition_results: TherapeuticPostconditionCheckResult[];
+  verified_at: string;
+  blocked_by: string[];
+}
+
+export interface TherapeuticRemediationVerificationResult {
+  verification: TherapeuticRemediationVerification;
+  trace: TherapeuticTrace;
+  evidence_refs: string[];
+  audit_refs: string[];
+}
+
 export type TherapeuticGrantStatus = "active" | "expired" | "revoked";
 export type TherapeuticProbeAdapter = (input: {
   contract: TherapeuticProbeContract;
@@ -343,7 +367,8 @@ export interface TherapeuticEvidenceRecord {
     | "policy_learning"
     | "review_request"
     | "review_decision"
-    | "diagnosis";
+    | "diagnosis"
+    | "postcondition_verification";
   created_at: string;
   payload: Record<string, unknown>;
 }
@@ -365,7 +390,9 @@ export interface TherapeuticAuditRecord {
     | "review_requested"
     | "review_approved"
     | "review_denied"
-    | "diagnosis_recorded";
+    | "diagnosis_recorded"
+    | "postcondition_verified"
+    | "postcondition_failed";
   created_at: string;
   details: Record<string, unknown>;
 }
@@ -379,6 +406,7 @@ export interface TherapeuticRuntimeStore {
   checkride_reports: TherapeuticCheckrideReport[];
   policy_learning_records: TherapeuticPolicyLearningRecord[];
   review_requests: TherapeuticReviewRequest[];
+  remediation_verifications: TherapeuticRemediationVerification[];
 }
 
 export interface TherapeuticRuntimeAccessResult {
@@ -920,6 +948,7 @@ export function createTherapeuticRuntimeStore(): TherapeuticRuntimeStore {
     checkride_reports: [],
     policy_learning_records: [],
     review_requests: [],
+    remediation_verifications: [],
   };
 }
 
@@ -1438,6 +1467,59 @@ export function executeTherapeuticRemediation(input: {
     input.trace.remediation_plan = input.proposal.proposed_change;
   }
   return result;
+}
+
+export function verifyTherapeuticRemediationPostconditions(input: {
+  trace: TherapeuticTrace;
+  store?: TherapeuticRuntimeStore;
+  remediation_id: string;
+  postcondition_results: TherapeuticPostconditionCheckResult[];
+  now?: string;
+}): TherapeuticRemediationVerificationResult {
+  const now = input.now ?? new Date().toISOString();
+  const blockedBy = input.postcondition_results.length === 0
+    ? ["postcondition_results_missing"]
+    : input.postcondition_results
+        .filter((result) => result.status !== "passed")
+        .map((result) => `postcondition_failed:${result.check}`);
+  const verification: TherapeuticRemediationVerification = {
+    verification_id: therapeuticId("remediation_verification", [input.trace.task_id, input.remediation_id, now]),
+    task_id: input.trace.task_id,
+    remediation_id: input.remediation_id,
+    status: blockedBy.length === 0 ? "passed" : "failed",
+    postcondition_results: input.postcondition_results.map((result) => cloneJson(result)),
+    verified_at: now,
+    blocked_by: uniqueStrings(blockedBy),
+  };
+  input.store?.remediation_verifications.push(verification);
+  const evidence = appendTherapeuticEvidence(input.store, input.trace.task_id, "postcondition_verification", now, {
+    verification,
+  });
+  const audit = appendTherapeuticAudit(
+    input.store,
+    input.trace.task_id,
+    verification.status === "passed" ? "postcondition_verified" : "postcondition_failed",
+    now,
+    {
+      verification_id: verification.verification_id,
+      remediation_id: input.remediation_id,
+      blocked_by: verification.blocked_by,
+      evidence_id: evidence?.evidence_id,
+    }
+  );
+  if (verification.status === "failed") {
+    input.trace.final_outcome = "blocked";
+    input.trace.under_escalation_flags = uniqueStrings([
+      ...input.trace.under_escalation_flags,
+      "remediation_postcondition_failed",
+    ]);
+  }
+  return {
+    verification,
+    trace: input.trace,
+    evidence_refs: evidence ? [`evidence:${evidence.evidence_id}`] : [],
+    audit_refs: audit ? [`audit:${audit.audit_id}`] : [],
+  };
 }
 
 export function runTherapeuticTomographyCheckrides(input: {

@@ -71,6 +71,8 @@ describe('TherapeuticTomographyTrace', () => {
     expect(text).toContain('Selected probe');
     expect(text).toContain('Revocation status');
     expect(text).toContain('Remediation boundary');
+    expect(text).toContain('Postcondition status: passed');
+    expect(text).toContain('quality recovers: passed');
     expect(text).toContain('Pending reviews');
     expect(text).toContain('Pending human_or_llm_review review');
     expect(text).toContain('Dojo/Vivarium Evaluation');
@@ -300,6 +302,23 @@ function traceFixture() {
           expiration: 'end_of_task',
           revocable: true,
         },
+      },
+    ],
+    remediation_verifications: [
+      {
+        verification_id: 'verification_remediation_001',
+        remediation_id: 'remediation_001',
+        status: 'passed',
+        verified_at: '2026-06-29T14:05:52.000Z',
+        blocked_by: [],
+        postcondition_results: [
+          {
+            check: 'quality recovers',
+            status: 'passed',
+            evidence_ref: 'metric:quality_recovered',
+            observed: 'quality returned to baseline',
+          },
+        ],
       },
     ],
     proof_metrics: {

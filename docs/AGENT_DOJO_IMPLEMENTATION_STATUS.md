@@ -162,6 +162,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_therapeutic_review_access` | `executable` |
 | `synthi_dojo_therapeutic_record_diagnosis` | `executable` |
 | `synthi_dojo_therapeutic_propose_remediation` | `executable` |
+| `synthi_dojo_therapeutic_verify_remediation` | `executable` |
 | `synthi_dojo_therapeutic_get_runtime` | `executable` |
 
 ## Current Report Classification
