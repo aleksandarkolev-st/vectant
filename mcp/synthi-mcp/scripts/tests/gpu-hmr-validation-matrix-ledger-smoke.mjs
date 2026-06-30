@@ -7943,6 +7943,33 @@ assert.ok(
     'broad_acceptance_requires_random_large_project_cold_path',
   ),
 );
+const broadReadinessWithConfiguredUnprofiledColdOnlyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    randomColdReadinessMatrixRow({
+      targetId: 'configured-unprofiled-cold-readiness-user-project',
+      candidateSource: 'configured_candidate_pool',
+      resultStatus: 'unprofiled_candidate_pool_cold_intake_refused',
+      sourceUrl: 'https://example.invalid/configured-pool/project.git',
+    }),
+  ],
+});
+assert.equal(broadReadinessWithConfiguredUnprofiledColdOnlyQuery.accepted, true);
+assert.equal(
+  broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   randomColdReadinessMatrixRow(),

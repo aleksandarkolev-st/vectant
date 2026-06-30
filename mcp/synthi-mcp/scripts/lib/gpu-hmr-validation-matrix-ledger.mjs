@@ -20876,13 +20876,22 @@ function randomColdPathRowsForBroadReadiness(rows) {
     );
     const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
     const repoPath = firstText(facet.repoPath, facet.repo_path, row.repoPath, row.repo_path);
+    const candidateSource = firstText(
+      facet.candidateSource,
+      facet.candidate_source,
+      row.candidateSource,
+      row.candidate_source,
+    );
     const immutableCommit = firstText(
       facet.immutableCommit,
       facet.immutable_commit,
       row.immutableCommit,
       row.immutable_commit,
     );
+    const directUserColdInput = candidateSource === 'direct_source_url_commit'
+      || candidateSource === 'direct_local_git_repo_path';
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
+      && directUserColdInput
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
     const sourceAccepted = firstBool(
