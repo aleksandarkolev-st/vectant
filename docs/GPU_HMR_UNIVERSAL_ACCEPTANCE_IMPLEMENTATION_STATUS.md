@@ -4,6 +4,22 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Native Runtime Trace Facet
+
+The real ROCm runner now derives a support-only `synthi.real_rocm.native_runtime_trace.v1` facet from observed native launch, artifact transport, and output-oracle runtime evidence. Native launch observations can now be represented as canonical dispatch-boundary events in `runtime_trace`, and validation-matrix ingestion passes that row-level facet through the existing native runtime trace gate.
+
+This does not authorize GPU HMR. The facet is emitted with `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. A native dispatch-boundary diagnostic still refuses when loader/artifact transport or output boundaries are missing, and full-runtime authority still requires accepted strict runtime proof, recomputed ledger success, runtime-chain closure, same-process identity, output oracle, CPU/full-rebuild/restart firewall proof, and app-hook/stage closure where required.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; native launch observation now derives a dispatch-boundary runtime trace while loader/output boundaries remain explicit refusal gaps
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; POSIX template execution self-checks skipped fail-closed on this host
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; smoke ledger `gpu-validation-matrix-ledger:sha256:91a95ee4630bf3f63ea82c294dc4abd907abaca0b9759531f78d3c6d7505110d`, retained matrix `gpu-validation-matrix-ledger:sha256:ff79cf4569ec473daea685e3884c2a6c9f5bce7d37dd6c36e7c3a3db5349d897`, 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Native Observer Host-Identity Breadcrumbs
 
 The real ROCm native launch observer now emits generic support-only `host_identity` boundary breadcrumbs around observer-ready, native launch attempt, and native launch observed events. The emitted fields include explicit `process_id=pid:<pid>` plus runner-process and stream-context identities, so arbitrary target runs no longer depend on runtime-session string shape for basic process/stream diagnostics.

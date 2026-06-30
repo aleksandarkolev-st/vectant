@@ -14120,6 +14120,186 @@ function runtimeDispatchEvidence(workerEvidence) {
   };
 }
 
+function runtimeTraceFromRuntimeEvidence({
+  runtimeDispatch = {},
+  nativeObservation = {},
+  runtimeArtifactTransport = {},
+  runtimeOutputOracle = {},
+} = {}) {
+  const nativeRecords = Array.isArray(nativeObservation.records) ? nativeObservation.records : [];
+  const nativeAttemptRecords = Array.isArray(nativeObservation.attempt_records)
+    ? nativeObservation.attempt_records
+    : [];
+  const nativeRecord = nativeRecords.at(-1) ?? nativeAttemptRecords.at(-1) ?? null;
+  const nativeBridgeRecords = Array.isArray(runtimeDispatch.native_bridge_success_records)
+    ? runtimeDispatch.native_bridge_success_records
+    : [];
+  const nativeBridgeRecord = nativeBridgeRecords.at(-1) ?? null;
+  const dispatchSource = nativeBridgeRecord ? 'native_runtime_bridge' : 'native_launch_observer';
+  const dispatchEvent = nativeBridgeRecord || nativeRecord
+    ? compactRecord({
+        source: dispatchSource,
+        command: nativeBridgeRecord ? 'native_runtime_dispatch' : 'native_launch_observed',
+        launch_api: nativeBridgeRecord ? 'native_runtime_dispatch' : nativeRecord?.api,
+        launchApi: nativeBridgeRecord ? 'native_runtime_dispatch' : nativeRecord?.api,
+        kernel: nativeBridgeRecord?.kernelName ?? nativeRecord?.kernelSymbol,
+        kernel_symbol: nativeBridgeRecord?.kernelName ?? nativeRecord?.kernelSymbol,
+        runtime_session: nativeBridgeRecord?.runtimeSession ?? nativeRecord?.runtimeSession,
+        runtimeSession: nativeBridgeRecord?.runtimeSession ?? nativeRecord?.runtimeSession,
+        dispatch_id: nativeBridgeRecord?.dispatchId ?? null,
+        dispatchId: nativeBridgeRecord?.dispatchId ?? null,
+        artifact_id: nativeBridgeRecord?.artifactId ?? null,
+        artifactId: nativeBridgeRecord?.artifactId ?? null,
+        epoch: nativeBridgeRecord?.epoch ?? nativeRecord?.epoch,
+        generation: nativeBridgeRecord?.generation ?? nativeRecord?.generation,
+        stream: nativeBridgeRecord?.streamId ?? nativeRecord?.streamId,
+        grid: nativeBridgeRecord?.gridDimensions ?? nativeRecord?.gridDimensions,
+        block: nativeBridgeRecord?.blockDimensions ?? nativeRecord?.blockDimensions,
+        shared_bytes: nativeBridgeRecord?.sharedMemoryBytes ?? nativeRecord?.sharedMemoryBytes,
+        sharedBytes: nativeBridgeRecord?.sharedMemoryBytes ?? nativeRecord?.sharedMemoryBytes,
+        dispatch_table_entry_id:
+          nativeBridgeRecord?.dispatchTableEntryId ?? nativeRecord?.dispatchTableEntryId,
+        dispatchTableEntryId:
+          nativeBridgeRecord?.dispatchTableEntryId ?? nativeRecord?.dispatchTableEntryId,
+        dispatch_timestamp: nativeBridgeRecord?.dispatchTimestamp ?? nativeRecord?.dispatchTimestamp,
+        dispatchTimestamp: nativeBridgeRecord?.dispatchTimestamp ?? nativeRecord?.dispatchTimestamp,
+        proof_bridge: nativeBridgeRecord?.proofBridge ?? 'observe_only',
+        proofBridge: nativeBridgeRecord?.proofBridge ?? 'observe_only',
+        attachment_provenance:
+          nativeBridgeRecord?.attachmentProvenance ?? 'native_runtime_intercept',
+        attachmentProvenance:
+          nativeBridgeRecord?.attachmentProvenance ?? 'native_runtime_intercept',
+        evidence_refs: compactStringList([
+          nativeBridgeRecord?.runtimeSession && nativeBridgeRecord?.kernelName
+            ? `worker-log:native_runtime_dispatch:${evidenceRefPart(nativeBridgeRecord.runtimeSession, 'session')}:${evidenceRefPart(nativeBridgeRecord.kernelName, 'kernel')}`
+            : null,
+          nativeRecord?.runtimeSession && nativeRecord?.kernelSymbol
+            ? `worker-log:native_launch_observed:${evidenceRefPart(nativeRecord.runtimeSession, 'session')}:${evidenceRefPart(nativeRecord.kernelSymbol, 'kernel')}:${evidenceRefPart(nativeRecord.sequence, 'sequence')}`
+            : null,
+        ]),
+      })
+    : {};
+  const loaderEvent = Number(runtimeArtifactTransport.total_count ?? 0) > 0
+    ? compactRecord({
+        source: 'runtime_artifact_transport',
+        command: 'artifact_transport',
+        loader_api:
+          runtimeArtifactTransport.loader_api
+          ?? runtimeArtifactTransport.loaderApi
+          ?? runtimeArtifactTransport.selected_loader_transport
+          ?? runtimeArtifactTransport.selectedLoaderTransport,
+        loaderApi:
+          runtimeArtifactTransport.loaderApi
+          ?? runtimeArtifactTransport.loader_api
+          ?? runtimeArtifactTransport.selectedLoaderTransport
+          ?? runtimeArtifactTransport.selected_loader_transport,
+        artifact_hash: runtimeArtifactTransport.artifact_hash,
+        artifactHash: runtimeArtifactTransport.artifact_hash,
+        artifact_id:
+          runtimeArtifactTransport.artifact_id
+          ?? runtimeArtifactTransport.selected_artifact_id,
+        artifactId:
+          runtimeArtifactTransport.artifact_id
+          ?? runtimeArtifactTransport.selected_artifact_id,
+        runtime_session:
+          runtimeArtifactTransport.runtime_session
+          ?? runtimeArtifactTransport.runtimeSession,
+        runtimeSession:
+          runtimeArtifactTransport.runtimeSession
+          ?? runtimeArtifactTransport.runtime_session,
+        evidence_refs: compactStringList(runtimeArtifactTransport.evidence_refs),
+      })
+    : {};
+  const outputEvent = Number(runtimeOutputOracle.total_count ?? 0) > 0
+    ? compactRecord({
+        source: 'runtime_output_oracle',
+        command: 'output_oracle',
+        output_target_id:
+          runtimeOutputOracle.output_target_id
+          ?? runtimeOutputOracle.latest?.output_target_id
+          ?? runtimeOutputOracle.output_oracle?.output_target_id,
+        outputTargetId:
+          runtimeOutputOracle.output_target_id
+          ?? runtimeOutputOracle.latest?.output_target_id
+          ?? runtimeOutputOracle.output_oracle?.output_target_id,
+        after_dispatch_id:
+          runtimeOutputOracle.after_dispatch_id
+          ?? runtimeOutputOracle.latest?.after_dispatch_id
+          ?? runtimeOutputOracle.output_oracle?.after_dispatch_id,
+        afterDispatchId:
+          runtimeOutputOracle.after_dispatch_id
+          ?? runtimeOutputOracle.latest?.after_dispatch_id
+          ?? runtimeOutputOracle.output_oracle?.after_dispatch_id,
+        artifact_id:
+          runtimeOutputOracle.artifact_id
+          ?? runtimeOutputOracle.latest?.artifact_id
+          ?? runtimeOutputOracle.output_oracle?.artifact_id,
+        artifactId:
+          runtimeOutputOracle.artifact_id
+          ?? runtimeOutputOracle.latest?.artifact_id
+          ?? runtimeOutputOracle.output_oracle?.artifact_id,
+        epoch:
+          runtimeOutputOracle.epoch
+          ?? runtimeOutputOracle.latest?.epoch
+          ?? runtimeOutputOracle.output_oracle?.epoch,
+        runtime_session:
+          runtimeOutputOracle.runtime_session
+          ?? runtimeOutputOracle.latest?.runtime_session
+          ?? runtimeOutputOracle.output_oracle?.runtime_session,
+        runtimeSession:
+          runtimeOutputOracle.runtime_session
+          ?? runtimeOutputOracle.latest?.runtime_session
+          ?? runtimeOutputOracle.output_oracle?.runtime_session,
+        evidence_refs: compactStringList(runtimeOutputOracle.evidence_refs),
+      })
+    : {};
+  const dispatchEvents = Object.keys(dispatchEvent).length > 0 ? [dispatchEvent] : [];
+  const loaderEvents = Object.keys(loaderEvent).length > 0 ? [loaderEvent] : [];
+  const outputEvents = Object.keys(outputEvent).length > 0 ? [outputEvent] : [];
+  if (dispatchEvents.length === 0 && loaderEvents.length === 0 && outputEvents.length === 0) {
+    return {};
+  }
+  const evidenceRefs = compactStringList([
+    ...dispatchEvents.flatMap((event) => event.evidence_refs ?? []),
+    ...loaderEvents.flatMap((event) => event.evidence_refs ?? []),
+    ...outputEvents.flatMap((event) => event.evidence_refs ?? []),
+  ]);
+  const blockingGaps = compactStringList([
+    dispatchEvents.length > 0 ? null : 'native_runtime_dispatch_boundary_missing',
+    loaderEvents.length > 0 ? null : 'native_runtime_loader_boundary_missing',
+    outputEvents.length > 0 ? null : 'native_runtime_output_boundary_missing',
+    evidenceRefs.length > 0 ? null : 'native_runtime_trace_evidence_refs_missing',
+  ]);
+  return {
+    schemaVersion: 'synthi.real_rocm.native_runtime_trace.v1',
+    schema_version: 'synthi.real_rocm.native_runtime_trace.v1',
+    proofAuthority: 'derived_native_runtime_trace_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'derived_native_runtime_trace_evidence_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    dispatchBoundaryPresent: dispatchEvents.length > 0,
+    dispatch_boundary_present: dispatchEvents.length > 0,
+    loaderBoundaryPresent: loaderEvents.length > 0,
+    loader_boundary_present: loaderEvents.length > 0,
+    outputBoundaryPresent: outputEvents.length > 0,
+    output_boundary_present: outputEvents.length > 0,
+    dispatchEvents,
+    dispatch_events: dispatchEvents,
+    loaderEvents,
+    loader_events: loaderEvents,
+    outputEvents,
+    output_events: outputEvents,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function runtimeNativeLaunchObservationEvidence(workerEvidence) {
   const readyLines = workerEvidence.filter((line) =>
     /\bgpu-runtime-boundary\b.*\bnative_launch_observer_ready\b/i.test(line)
@@ -19517,6 +19697,12 @@ async function selfCheckRuntimeDispatchEvidence() {
     runtimeStageObligations: nativeOnlyStageObligations,
     runtimeEligibility: nativeOnlyEligibility,
   });
+  const nativeOnlyRuntimeTrace = runtimeTraceFromRuntimeEvidence({
+    runtimeDispatch: nativeOnlyDispatch,
+    nativeObservation: nativeOnlyObservation,
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeOutputOracle: { total_count: 0 },
+  });
   const nativeHostIdentityLines = [
     '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session process_id=pid:42 pid=42 mode=observe_only apis=genericLaunch function_resolution_apis=genericGetFunction texture_object_apis=genericTextureCreate array_allocation_apis=genericArrayAlloc attachment_provenance=native_runtime_intercept',
     '[gpu-runtime-boundary] host_identity event=native_observer_ready role=runner_process runtime_session=native-session process_id=pid:42 pid=42 generation=0 ptr=0x2a aux=0 attachment_provenance=native_runtime_intercept',
@@ -19875,6 +20061,14 @@ async function selfCheckRuntimeDispatchEvidence() {
     || nativeOnlyOriginalHost.evidence.native_launch_records[0]?.kernel_symbol !== 'kernel'
     || nativeOnlyObservation.observe_only_count !== 1
     || nativeOnlyDispatch.success_count !== 0
+    || nativeOnlyRuntimeTrace.dispatch_boundary_present !== true
+    || nativeOnlyRuntimeTrace.loader_boundary_present !== false
+    || nativeOnlyRuntimeTrace.output_boundary_present !== false
+    || nativeOnlyRuntimeTrace.dispatch_events?.[0]?.command !== 'native_launch_observed'
+    || nativeOnlyRuntimeTrace.dispatch_events?.[0]?.proof_bridge !== 'observe_only'
+    || nativeOnlyRuntimeTrace.accepted_for_gpu_hmr !== false
+    || !nativeOnlyRuntimeTrace.blocking_gaps?.includes('native_runtime_loader_boundary_missing')
+    || !nativeOnlyRuntimeTrace.blocking_gaps?.includes('native_runtime_output_boundary_missing')
     || !nativeOnlyBoundary.observed
     || nativeOnlyBoundary.status !== 'refusal_evidence'
     || nativeOnlyBoundary.can_satisfy_dispatch_proof
@@ -23318,7 +23512,13 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     nativeLaunchObserverEnabled: CFG.nativeLaunchObserver,
     upstreamRunAttempted: CFG.runUpstream,
     upstreamRunExitCode,
-    runtimeCapabilityPreflight: report.runtime_capability_preflight,
+      runtimeCapabilityPreflight: report.runtime_capability_preflight,
+  });
+  const runtimeTrace = runtimeTraceFromRuntimeEvidence({
+    runtimeDispatch,
+    nativeObservation: runtimeNativeLaunchObservation,
+    runtimeArtifactTransport,
+    runtimeOutputOracle,
   });
   report.evidence = {
     real_rocm_profile_proof_obligations: report.real_rocm_profile_proof_obligations,
@@ -23395,6 +23595,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     runtime_epoch_swap: runtimeEpochSwap.evidence,
     runtime_output_oracle: runtimeOutputOracle,
     runtime_host_identity: runtimeHostPreservation.evidence,
+    runtime_trace: runtimeTrace,
     runtime_adapter_stage_events: runtimeAdapterStageEvents,
     runtime_boundary_target_process_provenance: runtimeBoundaryTargetProcessProvenance,
     runtime_original_host_path: runtimeOriginalHostPath.evidence,
@@ -23404,6 +23605,8 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   report.realRocmRuntimeAdapterStageEvents = runtimeAdapterStageEvents;
   report.runtime_adapter_stage_events = runtimeAdapterStageEvents;
   report.runtimeAdapterStageEvents = runtimeAdapterStageEvents;
+  report.runtime_trace = runtimeTrace;
+  report.runtimeTrace = runtimeTrace;
   report.real_rocm_runtime_boundary_target_process_provenance =
     runtimeBoundaryTargetProcessProvenance;
   report.realRocmRuntimeBoundaryTargetProcessProvenance =

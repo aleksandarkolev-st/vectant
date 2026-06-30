@@ -16292,6 +16292,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     strictGateFailures,
     ledger,
   });
+  const runtimeTrace = compactObject(
+    json.runtimeTrace
+    ?? json.runtime_trace
+    ?? summary.runtimeTrace
+    ?? summary.runtime_trace
+    ?? runtimeProofArtifact.runtimeTrace
+    ?? runtimeProofArtifact.runtime_trace,
+  );
   const matrixOutcome = accepted
     ? 'full_runtime_gpu_hmr'
     : targetProgressionEvidence
@@ -16383,6 +16391,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ),
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
