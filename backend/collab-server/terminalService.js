@@ -39,8 +39,16 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('./terminalRouting');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
+const {
+  codeSiteContextFromRequest,
+  createCodeSiteQuarantineWorkspace,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
+  finalizeCodeSiteQuarantineWorkspace,
+} = require('./codesiteFs');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -109,6 +117,16 @@ function clearSessionTimers(session) {
   if (session.orphanTimer) clearTimeout(session.orphanTimer);
 }
 
+function finalizeSessionCodeSiteQuarantine(sessionId, session, reason = 'disposed') {
+  const quarantine = session?.codesiteQuarantine;
+  const context = session?.codesiteContext;
+  if (!quarantine || !context?.active) return;
+  session.codesiteQuarantine = null;
+  finalizeCodeSiteQuarantineWorkspace(context, quarantine).catch((err) => {
+    console.warn(`[Terminal] CodeSite quarantine finalize failed for ${sessionId} (${reason}): ${err?.message || err}`);
+  });
+}
+
 function disposeTerminalSession(sessionId, reason = 'disposed') {
   const session = activeSessions.get(sessionId);
   if (!session) return;
@@ -119,6 +137,7 @@ function disposeTerminalSession(sessionId, reason = 'disposed') {
   try { session.unwatchFs?.(); } catch (_) {}
   try { session.pty?.kill?.(); } catch (_) {}
   try { session.releasePort?.(); } catch (_) {}
+  finalizeSessionCodeSiteQuarantine(sessionId, session, reason);
   activeSessions.delete(sessionId);
   console.log(`[Terminal] Session ${sessionId} disposed (${reason})`);
 }
@@ -326,6 +345,33 @@ function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemU
     env.VITE_HOST = bindHost;
   }
   return env;
+}
+
+function codeSitePayloadFromSearch(searchParams) {
+  return {
+    mode: searchParams.get('codesiteMode') || searchParams.get('codeSiteMode'),
+    displayCallsign: searchParams.get('codesiteCallsign') || searchParams.get('codeSiteCallsign'),
+    transactionId: searchParams.get('codesiteTransactionId') || searchParams.get('codeSiteTransactionId') || searchParams.get('transactionId'),
+    leaseId: searchParams.get('codesiteLeaseId') || searchParams.get('codeSiteLeaseId') || searchParams.get('mutationLeaseId'),
+    allowedPaths: searchParams.get('codesiteAllowedPaths') || searchParams.get('codeSiteAllowedPaths'),
+    blockedPaths: searchParams.get('codesiteBlockedPaths') || searchParams.get('codeSiteBlockedPaths'),
+    allowedTools: searchParams.get('codesiteAllowedTools') || searchParams.get('codeSiteAllowedTools'),
+    evidenceRefs: searchParams.get('codesiteEvidenceRefs') || searchParams.get('codeSiteEvidenceRefs'),
+    processAncestry: searchParams.get('codesiteProcessAncestry') || searchParams.get('codeSiteProcessAncestry'),
+    controlPlaneUrl: searchParams.get('codesiteControlPlaneUrl') || searchParams.get('codeSiteControlPlaneUrl'),
+  };
+}
+
+function terminalCodeSiteContext(req, searchParams, { workspaceSlug, actorUserId, filesystemUserId }) {
+  return codeSiteContextFromRequest(req, {
+    codesite: codeSitePayloadFromSearch(searchParams),
+    userId: actorUserId,
+    filesystemUserId,
+  }, {
+    workspaceSlug,
+    actorUserId,
+    effectiveUserId: filesystemUserId,
+  });
 }
 
 async function createTerminalProcess({
@@ -1381,13 +1427,24 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // pod/runtime-scope plumbing nor the program's declared env is lost.
   const extraEnv = options.env && typeof options.env === 'object' ? options.env : {};
   const shellType = options.shellType || null;
+  const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
+    ? options.codesiteContext
+    : null;
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
     runtimeScope,
     reason: 'headless_terminal',
   });
-  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  let cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const originalCwd = cwd;
+  let codeSiteQuarantine = null;
+  if (codeSiteContext?.active && !shouldUseRuntimePodTerminal(runtimeScope)) {
+    codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+      operation: 'exec-terminal',
+    });
+    if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+  }
   const runtimeLaunch = await buildRuntimeLaunch({
     runtimeScope,
     workspaceSlug: slug,
@@ -1410,6 +1467,9 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     }));
   } catch (err) {
     runtimeLaunch.releasePort();
+    if (codeSiteQuarantine) {
+      await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+    }
     throw err;
   }
 
@@ -1442,12 +1502,20 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // closed before reconnect), the PTY and its 100k buffer would live until
   // process exit. Kill it after HEADLESS_TTL_MS.
   const HEADLESS_TTL_MS = 5 * 60 * 1000;
-  const orphanTimer = setTimeout(() => {
+  const orphanTimer = setTimeout(async () => {
     const session = activeSessions.get(sessionId);
     if (!session || !session.headless) return; // WS attached in the meantime
     console.warn(`[Terminal] Headless session ${sessionId} orphaned for ${HEADLESS_TTL_MS}ms — killing PTY`);
     try { bufferDisposable.dispose?.(); } catch (_) {}
     try { ptyProcess.kill(); } catch (_) {}
+    if (codeSiteQuarantine) {
+      await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch((err) => {
+        console.warn(`[Terminal] CodeSite headless quarantine finalize failed for ${sessionId}: ${err?.message || err}`);
+      });
+      codeSiteQuarantine = null;
+      const current = activeSessions.get(sessionId);
+      if (current) current.codesiteQuarantine = null;
+    }
     runtimeLaunch.releasePort();
     activeSessions.delete(sessionId);
   }, HEADLESS_TTL_MS);
@@ -1463,6 +1531,10 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     workspaceSlug: slug,
     userId,
     filesystemUserId,
+    codesite: options.codesite || null,
+    codesiteContext: codeSiteContext,
+    codesiteQuarantine: codeSiteQuarantine || null,
+    codesiteOriginalCwd: originalCwd,
     releasePort: runtimeLaunch.releasePort,
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
@@ -1476,22 +1548,20 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   });
 
   ptyProcess.onExit(() => {
+    if (codeSiteQuarantine) {
+      const quarantine = codeSiteQuarantine;
+      codeSiteQuarantine = null;
+      const current = activeSessions.get(sessionId);
+      if (current?.codesiteQuarantine === quarantine) current.codesiteQuarantine = null;
+      finalizeCodeSiteQuarantineWorkspace(codeSiteContext, quarantine).catch((err) => {
+        console.warn(`[Terminal] CodeSite headless quarantine finalize failed for ${sessionId}: ${err?.message || err}`);
+      });
+    }
     runtimeLaunch.releasePort();
   });
 
   console.log(`[Terminal] Headless session ${sessionId} created | runtimeScope=${runtimeScope || 'legacy'} | fsUser=${filesystemUserId || 'none'} | cwd=${cwd} | shell=${shell}`);
   return { ptyProcess, shell, cwd, sessionId };
-}
-
-/**
- * Decide whether a terminal session should run inside the per-workspace rootless
- * Docker runtime container (the local-dev / self-host path; production K8s uses
- * the pod-exec path instead). Requires the flag, a constructed runtime manager,
- * and a slug. Pure for testability. Mutually exclusive with the pod path, which
- * only fires when SYNTHI_TERMINAL_BACKEND=k8s-exec + spawner.mode=k8s.
- */
-function shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug }) {
-  return Boolean(enableContainerRuntime && workspaceRuntime && workspaceSlug);
 }
 
 function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
@@ -1531,6 +1601,25 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
+    const codeSiteContext = terminalCodeSiteContext(req, parsedUrl.searchParams, {
+      workspaceSlug,
+      actorUserId: requestedUserId,
+      filesystemUserId: requestedFilesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    const codeSiteEnv = codeSiteRuntimeEnv(codeSiteContext, {
+      processAncestry: ['collab-server', 'terminal-ws'],
+    });
+    if (codeSiteContext?.managedAgent && !codeSiteContext.transactionId) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'codesite_managed_context_required',
+        message: 'Managed agent terminal sessions require an active CodeSite transaction before they can execute against a workspace.',
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite managed context required');
+      return;
+    }
 
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
@@ -1575,6 +1664,10 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         workspaceSlug: existingSession.workspaceSlug || workspaceSlug,
         userId: existingSession.userId || requestedUserId,
         filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
+        codesite: existingSession.codesite || codeSiteMetadata,
+        codesiteContext: existingSession.codesiteContext || codeSiteContext,
+        codesiteQuarantine: existingSession.codesiteQuarantine || null,
+        codesiteOriginalCwd: existingSession.codesiteOriginalCwd || null,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
         dataDisposable: null,
@@ -1596,6 +1689,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         shell: path.basename(shell),
         cwd,
         pid: ptyProcess.pid,
+        codesite: existingSession.codesite || codeSiteMetadata,
       }));
 
       // Replay buffered output so the user sees what already happened
@@ -1682,6 +1776,8 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
     let cwd;
+    let codeSiteQuarantine = null;
+    let codeSiteOriginalCwd = null;
     try {
       await ensureRuntimeFilesystem({
         workspaceSlug,
@@ -1695,6 +1791,37 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
       ws.close(1011, 'Workspace filesystem preparation failed');
       return;
+    }
+    codeSiteOriginalCwd = cwd;
+    const launchMode = codeSiteTerminalLaunchMode({
+      codeSiteContext,
+      usesRuntimePodTerminal: shouldUseRuntimePodTerminal(runtimeScope),
+      enableContainerRuntime,
+      workspaceRuntime,
+      workspaceSlug,
+    });
+    if (launchMode === 'block-runtime') {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'codesite_terminal_quarantine_unavailable',
+        message: 'CodeSite terminal blocked: runtime-container/sysbox terminals cannot mount a quarantine workspace yet.',
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite terminal quarantine unavailable');
+      return;
+    }
+    if (launchMode === 'quarantine') {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'terminal-ws',
+        });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error(`[Terminal] Failed to prepare CodeSite quarantine for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite quarantine: ' + err.message }));
+        ws.close(1011, 'CodeSite quarantine preparation failed');
+        return;
+      }
     }
 
     console.log(`[Terminal] New session ${sessionId} | runtimeScope=${runtimeScope || 'legacy'} | workspace=${workspaceSlug} | userId=${requestedUserId} | fsUser=${requestedFilesystemUserId || 'none'} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
@@ -1720,7 +1847,9 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId);
         await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId);
         const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
-          cols: initialCols, rows: initialRows,
+          cols: initialCols,
+          rows: initialRows,
+          env: codeSiteEnv,
         });
         ptyProcess = handle.ptyProcess;
         shell = 'bash';
@@ -1743,7 +1872,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
           cwd,
           cols: initialCols,
           rows: initialRows,
-          env: runtimeLaunch.env,
+          env: { ...runtimeLaunch.env, ...codeSiteEnv },
           shellType: requestedShellType,
           workspaceName,
           workspaceSlug,
@@ -1753,6 +1882,10 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         }));
       } catch (err) {
         try { runtimeLaunch?.releasePort?.(); } catch (_) {}
+        if (codeSiteQuarantine) {
+          await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+          codeSiteQuarantine = null;
+        }
         console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
         ws.close(1011, 'PTY spawn failed');
@@ -1779,6 +1912,10 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
+      codesite: codeSiteMetadata,
+      codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      codesiteQuarantine: codeSiteQuarantine || null,
+      codesiteOriginalCwd,
       releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,
       dataDisposable: null,
@@ -1796,6 +1933,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       shell: path.basename(shell),
       cwd,
       pid: ptyProcess.pid,
+      codesite: codeSiteMetadata,
     }));
 
     // ── PTY → WebSocket (output hot path) ───────────────────────────────
@@ -1911,6 +2049,7 @@ function broadcastToAll(message) {
 module.exports = {
   createTerminalWSS,
   shouldUseContainerTerminal,
+  codeSiteTerminalLaunchMode,
   createHeadlessSession,
   activeSessions,
   broadcastToAll,

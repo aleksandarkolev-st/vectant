@@ -14,7 +14,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function makeFlush() {
   const calls = [];
-  const fn = (slug, userId) => { calls.push([slug, userId]); };
+  const fn = (slug, userId, scope) => { calls.push([slug, userId, scope]); };
   return { calls, fn };
 }
 
@@ -46,7 +46,7 @@ test('notifySave flushes the active session\'s slug+userId (debounced)', async (
     svc.notifySave('repo-a'); // rapid second save → debounce coalesces to one flush
     assert.equal(calls.length, 0, 'flush is debounced, not synchronous');
     await delay(50);
-    assert.deepEqual(calls, [['repo-a', 'user-42']]);
+    assert.deepEqual(calls.map(([slug, userId]) => [slug, userId]), [['repo-a', 'user-42']]);
   } finally {
     svc.stop();
   }
@@ -78,6 +78,29 @@ test('the periodic flush runs while a session is active and stops after unregist
     const after = calls.length;
     await delay(75);
     assert.equal(calls.length, after, 'no flush after the last session is unregistered');
+  } finally {
+    svc.stop();
+  }
+});
+
+test('continuous flush carries CodeSite context to periodic and save-triggered flushes', async () => {
+  const { calls, fn } = makeFlush();
+  const svc = createContinuousFlushService({ flushFn: fn, intervalMs: 20, debounceMs: 15 });
+  const codesiteContext = { active: true, transactionId: 'txn-1' };
+  try {
+    svc.registerSession({
+      sessionId: 's1',
+      slug: 'repo',
+      userId: 'u1',
+      config: { runtimeType: 'container' },
+      codesiteContext,
+    });
+    await delay(30);
+    svc.notifySave('repo');
+    await delay(50);
+
+    assert.ok(calls.length >= 2, 'periodic and save-triggered flushes should both run');
+    assert.ok(calls.every(([, , scope]) => scope.codesiteContext?.transactionId === 'txn-1'));
   } finally {
     svc.stop();
   }

@@ -9,9 +9,20 @@
  *
  * @returns {Promise<{status:number, body:object}>}
  */
-async function handleEnsureRuntime({ workspaceRuntime, slug, userId }) {
+async function handleEnsureRuntime({ workspaceRuntime, slug, userId, codesiteContext = null, codesiteMetadata = null }) {
   if (!workspaceRuntime) return { status: 200, body: { enabled: false } };
   if (!slug) return { status: 400, body: { error: 'missing slug' } };
+  if (codesiteContext?.active) {
+    return {
+      status: 409,
+      body: {
+        error: 'codesite_runtime_quarantine_unavailable',
+        message: 'CodeSite runtime prewarm blocked: active CodeSite sessions require a transaction quarantine mount.',
+        surface: 'program-runtime:ensure-runtime',
+        codesite: codesiteMetadata || null,
+      },
+    };
+  }
   await workspaceRuntime.ensureRuntimeContainer(slug, userId || '');
   // Warm the daemon in the background; the terminal path also waits for ready,
   // so a slow warm here just means the first terminal shows "starting runtime…".

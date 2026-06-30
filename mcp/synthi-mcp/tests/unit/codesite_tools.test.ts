@@ -1,0 +1,240 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
+import { CODESITE_TOOL_NAMES, CODESITE_TOOLS, dispatchCodeSiteTool } from "../../src/tools/codesite.js";
+
+const originalEnv = { ...process.env };
+
+function mockJsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+describe("CodeSite MCP tool surface", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => mockJsonResponse({ ok: true })));
+    process.env.SYNTHI_CODESITE_WORKSPACE = "workspace-env";
+    process.env.SYNTHI_CODESITE_PROJECT_ID = "project-env";
+    process.env.SYNTHI_CODESITE_BASE_URL = "http://codesite.test";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...originalEnv };
+  });
+
+  it("advertises every CodeSite tool in the capability registry", () => {
+    for (const name of CODESITE_TOOL_NAMES) {
+      expect(ADVERTISED_TOOLS).toContain(name);
+      expect(CODESITE_TOOLS.some((tool) => tool.name === name)).toBe(true);
+    }
+  });
+
+  it("returns null for non-CodeSite tool dispatch", async () => {
+    expect(await dispatchCodeSiteTool("synthi_health", {})).toBeNull();
+  });
+
+  it("reads radar state from the configured control-plane API", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      projectId: "project-env",
+      towerState: "holding",
+      collisionForecast: { riskLevel: "high" },
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_radar", {});
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/projects/project-env/control-state"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_get_radar",
+      response: expect.objectContaining({ towerState: "holding" }),
+    }));
+  });
+
+  it("records write paths with product-language arguments", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      ok: true,
+      transaction: { id: "txn-1", status: "open" },
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_record_write", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      transaction_id: "txn-1",
+      file_path: "synthi/prisma/schema.prisma",
+      tool: "apply_patch",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/transactions/txn-1/record-write"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ tool: "apply_patch", path: "synthi/prisma/schema.prisma" }),
+      }),
+    );
+  });
+
+  it("applies patches through collab-server only after CodeSite dry-run approval", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({
+        results: [{ ok: true, transaction: { id: "txn-1" } }],
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        success: true,
+        written: ["synthi/src/app/page.jsx"],
+      }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_apply_patch", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      collab_base_url: "http://collab.test/",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "user-1",
+      files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+      allowedPaths: ["synthi/src/**"],
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/transactions/txn-1/dry-run-patch"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://collab.test/git/acme/write-files-batch"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-codesite-transaction-id": "txn-1",
+          "x-codesite-control-plane-url": "http://localhost:3100/api/workspace/acme/codesite",
+          "x-user-id": "user-1",
+        }),
+      }),
+    );
+    const collabBody = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body));
+    expect(collabBody).toMatchObject({
+      files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+      userId: "user-1",
+      codesite: {
+        enforce: true,
+        transactionId: "txn-1",
+        mutationLeaseId: "lease-1",
+        controlPlaneUrl: "http://localhost:3100/api/workspace/acme/codesite",
+        allowedPaths: ["synthi/src/**"],
+        processAncestry: ["mcp:synthi_codesite_apply_patch"],
+      },
+    });
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_apply_patch",
+      apply: expect.objectContaining({ success: true }),
+    }));
+  });
+
+  it("does not apply patches when CodeSite dry-run rejects a write", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      results: [{ ok: false, policyDecision: { decision: "block", reasonCodes: ["outside_clearance_route"] } }],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_apply_patch", {
+      transaction_id: "txn-1",
+      files: [{ path: "secrets/.env", content: "TOKEN=bad" }],
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_patch_policy_denied",
+      transaction_id: "txn-1",
+    }));
+  });
+
+  it("polls per-agent inbox items separately from project events", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      inbox: [
+        { id: "item-acked", eventId: "evt-1", acknowledgedAt: "2026-06-30T00:00:00.000Z" },
+        { id: "item-open", eventId: "evt-2", acknowledgedAt: null },
+      ],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_inbox", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      agent_session_id: "agent-1",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/agent-sessions/agent-1/inbox"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_get_inbox",
+      next_inbox_item: expect.objectContaining({ id: "item-open" }),
+      inbox_count: 2,
+    }));
+  });
+
+  it("maps RFI and mayday tools to structured document and incident routes", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ document: { kind: "rfi" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ incident: { category: "mayday" } }));
+
+    const rfi = await dispatchCodeSiteTool("synthi_codesite_file_rfi", {
+      title: "Need schema owner",
+      body: { question: "Who owns signup schema?" },
+    });
+    const mayday = await dispatchCodeSiteTool("synthi_codesite_declare_mayday", {
+      severity: "critical",
+      summary: "Destructive migration detected",
+    });
+
+    expect(rfi?.isError).toBeUndefined();
+    expect(mayday?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/projects/project-env/documents"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "Need schema owner", question: "Who owns signup schema?", kind: "rfi" }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/projects/project-env/incidents"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ severity: "critical", summary: "Destructive migration detected", category: "mayday" }),
+      }),
+    );
+  });
+
+  it("surfaces control-plane failures as MCP errors", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ error: "transaction_not_found" }, 404));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_transaction_status", {
+      transaction_id: "txn-missing",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_control_plane_request_failed",
+      status: 404,
+      response: { error: "transaction_not_found" },
+    }));
+  });
+});

@@ -17,6 +17,7 @@ export const IDE_PANEL = Object.freeze({
   TERMINAL:   'terminal',
   CHAT:       'chat',
   AGENT_WORKFLOWS: 'agent-workflows',
+  CODESITE:   'codesite',
   PROBLEMS:   'problems',
   OUTPUT:     'output',
   PREVIEW:    'preview',
