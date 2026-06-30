@@ -7959,6 +7959,40 @@ function parseUpstreamRunExitCode(timings) {
   return match ? Number(match[1]) : null;
 }
 
+function parseLifecycleStatusFields(text) {
+  const fields = {};
+  for (const line of String(text ?? '').split(/\r?\n/g)) {
+    const match = /^([A-Za-z0-9_.-]+)=(.*)$/.exec(line.trim());
+    if (match) fields[match[1]] = match[2];
+  }
+  return fields;
+}
+
+function lifecycleTimingTextFromStatusFields(fields = {}) {
+  const ordered = [
+    'configure_ms',
+    'build_ms',
+    'run_ms',
+    'configure_exit_code',
+    'post_configure_exit_code',
+    'build_exit_code',
+    'run_exit_code',
+    'metadata_snapshot_status',
+    'metadata_snapshot_file_count',
+    'metadata_snapshot_path',
+  ];
+  return ordered
+    .map((key) => `${key}=${fields[key] ?? (
+      key.endsWith('_ms') ? 'failed'
+        : key === 'run_exit_code' ? 'not-run'
+          : key === 'metadata_snapshot_file_count' ? '0'
+            : key === 'metadata_snapshot_status' ? 'unknown'
+              : key === 'metadata_snapshot_path' ? ''
+                : 'unknown'
+    )}`)
+    .join('\n');
+}
+
 function parseLifecycleExitCodeText(timings, phase) {
   const escapedPhase = String(phase ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`\\b${escapedPhase}_exit_code=([^\\s]+)\\b`).exec(String(timings ?? ''));
@@ -8027,6 +8061,10 @@ function classifyUpstreamLifecycleFailure({
   const buildStatusKnown = buildExitCodeText !== null;
   const configureStageFailed = (!configureStatusKnown && /\bconfigure_ms=failed\b/.test(String(timings ?? '')))
     || lifecycleExitCodeFailed(configureExitCodeText);
+  const configureStatusIncompleteAfterLifecycleFailure =
+    Boolean(lifecycleError)
+    && !configureStatusKnown
+    && /\bconfigure_exit_code=unknown\b/.test(String(timings ?? ''));
   const postConfigureStageFailed = (!postConfigureStatusKnown && /\bpost_configure_ms=failed\b/.test(String(timings ?? '')))
     || lifecycleExitCodeFailed(postConfigureExitCodeText);
   const buildStageFailed = (!buildStatusKnown && /\bbuild_ms=failed\b/.test(String(timings ?? '')))
@@ -8063,6 +8101,7 @@ function classifyUpstreamLifecycleFailure({
     && runExitCodeText !== '0'
     && runExitCodeText !== 'not-run';
   const reasons = compactStringList([
+    configureStatusIncompleteAfterLifecycleFailure ? 'upstream_configure_status_incomplete_after_lifecycle_failure' : null,
     cmakeConfigureFailed ? 'cmake_configure_failed' : null,
     missingDependencies.length > 0 ? 'missing_build_dependency' : null,
     buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
@@ -8085,6 +8124,8 @@ function classifyUpstreamLifecycleFailure({
     missing_dependencies: missingDependencies,
     cmakeConfigureFailed,
     cmake_configure_failed: cmakeConfigureFailed,
+    configureStatusIncompleteAfterLifecycleFailure,
+    configure_status_incomplete_after_lifecycle_failure: configureStatusIncompleteAfterLifecycleFailure,
     configureExitCodeText,
     configure_exit_code_text: configureExitCodeText,
     postConfigureFailed: postConfigureStageFailed,
@@ -9308,6 +9349,8 @@ async function prepareUpstreamBuild() {
     mountResolution: report.source_tree_shared_mount_plan ?? null,
   });
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
+  const metadataSnapshotPath = `${CFG.workerTempDir.replace(/\/+$/, '')}/cmake-metadata-snapshot`;
+  const lifecycleStatusPath = `${CFG.workerTempDir.replace(/\/+$/, '')}/lifecycle-status.env`;
   report.runtime_capability_preflight = await runRocmArrayAllocationPreflight();
   if (report.runtime_capability_preflight?.skipped) {
     record(
@@ -9427,6 +9470,13 @@ async function prepareUpstreamBuild() {
   const command = `
 set -e
 export SYNTHI_REAL_ROCM_LIFECYCLE_RUN_ID=${shQuote(lifecycleRunId)}
+mkdir -p ${shQuote(CFG.workerTempDir)}
+: > ${shQuote(`${CFG.workerTempDir}/configure.log`)}
+: > ${shQuote(`${CFG.workerTempDir}/build.log`)}
+printf 'upstream run not reached lifecycle_run_id=%s\\n' ${shQuote(lifecycleRunId)} > ${shQuote(`${CFG.workerTempDir}/run.log`)}
+rm -rf ${shQuote(metadataSnapshotPath)}
+status_file=${shQuote(lifecycleStatusPath)}
+printf 'lifecycle_run_id=%s\\nworker_repo_path=%s\\nbuild_path=%s\\nconfigure_exit_code=unknown\\npost_configure_exit_code=unknown\\nbuild_exit_code=unknown\\nrun_exit_code=not-run\\nmetadata_snapshot_status=unknown\\nmetadata_snapshot_file_count=0\\nmetadata_snapshot_path=%s\\n' ${shQuote(lifecycleRunId)} ${shQuote(CFG.workerRepoPath)} ${shQuote(buildPath)} ${shQuote(metadataSnapshotPath)} > "$status_file"
 cd ${shQuote(`${CFG.workerRepoPath}/${CFG.buildSubdir}`)}
 ${cleanBuildCommand}
 mkdir -p build/.cmake/api/v1/query
@@ -9436,11 +9486,36 @@ set +e
 cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=${shQuote(CFG.rocmPrefix)} -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)}${cmakeExtraArgs} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configure_status=$?
 configured=$(date +%s%3N)
+printf 'configure_ms=%s\\nconfigure_exit_code=%s\\n' "$((configured-start))" "$configure_status" >> "$status_file"
+metadata_snapshot_dir=${shQuote(metadataSnapshotPath)}
+metadata_snapshot_status=skipped
+metadata_snapshot_file_count=0
+if [ "$configure_status" -eq 0 ]; then
+  rm -rf "$metadata_snapshot_dir"
+  mkdir -p "$metadata_snapshot_dir/reply" "$metadata_snapshot_dir/build-dependencies"
+  if [ -f build/compile_commands.json ]; then cp build/compile_commands.json "$metadata_snapshot_dir/compile_commands.json"; fi
+  if [ -d build/.cmake/api/v1/reply ]; then cp -R build/.cmake/api/v1/reply/. "$metadata_snapshot_dir/reply/" 2>/dev/null || true; fi
+  if [ -f build/CMakeFiles/Makefile.cmake ]; then cp build/CMakeFiles/Makefile.cmake "$metadata_snapshot_dir/build-dependencies/Makefile.cmake"; fi
+  dep_i=0
+  find build \\( -path ${shQuote(`*CMakeFiles/${CFG.targetName}.dir/build.make`)} -o -path ${shQuote(`*CMakeFiles/${CFG.targetName}.dir/DependInfo.cmake`)} \\) -type f -print 2>/dev/null | while IFS= read -r dep_file; do
+    dep_i=$((dep_i + 1))
+    dep_base=$(basename "$dep_file")
+    cp "$dep_file" "$metadata_snapshot_dir/build-dependencies/$dep_i-$dep_base" 2>/dev/null || true
+  done
+  metadata_snapshot_file_count=$(find "$metadata_snapshot_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [ -f "$metadata_snapshot_dir/compile_commands.json" ] && [ -d "$metadata_snapshot_dir/reply" ] && [ "$metadata_snapshot_file_count" -gt 1 ]; then
+    metadata_snapshot_status=ready
+  else
+    metadata_snapshot_status=missing
+  fi
+fi
+printf 'metadata_snapshot_status=%s\\nmetadata_snapshot_file_count=%s\\nmetadata_snapshot_path=%s\\n' "$metadata_snapshot_status" "$metadata_snapshot_file_count" "$metadata_snapshot_dir" >> "$status_file"
 post_configure_status=skipped
 if [ "$configure_status" -eq 0 ]; then
   ${hiprtPostConfigureAdaptationCommand}
   post_configure_status=$?
 fi
+printf 'post_configure_exit_code=%s\\n' "$post_configure_status" >> "$status_file"
 if [ "$configure_status" -eq 0 ] && [ "$post_configure_status" = "0" ] && [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
   cmake --build build -j2 --target ${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
   build_status=$?
@@ -9452,6 +9527,7 @@ else
   build_status=skipped
 fi
 built=$(date +%s%3N)
+printf 'build_ms=%s\\nbuild_exit_code=%s\\n' "$((built-configured))" "$build_status" >> "$status_file"
 run_status=not-run
 if [ "$configure_status" -eq 0 ] && [ "$post_configure_status" = "0" ] && [ "$build_status" = "0" ] && [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
   ${nativeLaunchObserverSetup}
@@ -9465,7 +9541,8 @@ else
   printf 'upstream run skipped after configure_status=%s post_configure_status=%s build_status=%s\\n' "$configure_status" "$post_configure_status" "$build_status" > ${shQuote(`${CFG.workerTempDir}/run.log`)}
 fi
 ran=$(date +%s%3N)
-printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nconfigure_exit_code=%s\\npost_configure_exit_code=%s\\nbuild_exit_code=%s\\nrun_exit_code=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$configure_status" "$post_configure_status" "$build_status" "$run_status"
+printf 'run_ms=%s\\nrun_exit_code=%s\\n' "$((ran-built))" "$run_status" >> "$status_file"
+printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\nconfigure_exit_code=%s\\npost_configure_exit_code=%s\\nbuild_exit_code=%s\\nrun_exit_code=%s\\nmetadata_snapshot_status=%s\\nmetadata_snapshot_file_count=%s\\nmetadata_snapshot_path=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))" "$configure_status" "$post_configure_status" "$build_status" "$run_status" "$metadata_snapshot_status" "$metadata_snapshot_file_count" "$metadata_snapshot_dir"
 if [ "$configure_status" -ne 0 ]; then exit "$configure_status"; fi
 if [ "$post_configure_status" != "0" ] && [ "$post_configure_status" != "skipped" ]; then exit "$post_configure_status"; fi
 if [ "$build_status" != "0" ] && [ "$build_status" != "skipped" ]; then exit "$build_status"; fi
@@ -9503,6 +9580,7 @@ exit 0
   report.evidence.upstream_lifecycle_timeout_control = report.upstream_lifecycle_timeout_control;
   let timings;
   let lifecycleError = null;
+  let lifecycleStatusRecovery = null;
   let lifecycleCanContinueWithCachedMetadata = false;
   try {
     timings = await execText(
@@ -9523,8 +9601,44 @@ exit 0
       usesCachedMetadata: lifecyclePlan.usesCachedMetadata,
       cachedMetadataAvailable: Boolean(cachedMetadata),
     });
-    timings = String(err.output ?? '').trim()
-      || 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nconfigure_exit_code=unknown\nbuild_exit_code=unknown\nrun_exit_code=not-run';
+    lifecycleStatusRecovery = await readWorkerLifecycleStatus({
+      statusPath: lifecycleStatusPath,
+      expectedRunId: lifecycleRunId,
+    }).catch((statusErr) => ({
+      schemaVersion: 'synthi.real_rocm.worker_lifecycle_status_recovery.v1',
+      schema_version: 'synthi.real_rocm.worker_lifecycle_status_recovery.v1',
+      statusPath: lifecycleStatusPath,
+      status_path: lifecycleStatusPath,
+      expectedRunId: lifecycleRunId,
+      expected_run_id: lifecycleRunId,
+      observedRunId: null,
+      observed_run_id: null,
+      accepted: false,
+      proofAuthority: 'worker_lifecycle_status_recovery_only_not_gpu_hmr_success',
+      proof_authority: 'worker_lifecycle_status_recovery_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      fields: {},
+      timings: '',
+      rawOutput: '',
+      raw_output: '',
+      blockingGaps: ['worker_lifecycle_status_read_failed'],
+      blocking_gaps: ['worker_lifecycle_status_read_failed'],
+      error: statusErr?.message ?? String(statusErr),
+    }));
+    report.upstream_lifecycle_status_recovery = lifecycleStatusRecovery;
+    report.upstreamLifecycleStatusRecovery = lifecycleStatusRecovery;
+    report.evidence.upstream_lifecycle_status_recovery = lifecycleStatusRecovery;
+    timings = lifecycleStatusRecovery?.accepted
+      ? lifecycleStatusRecovery.timings
+      : (
+          String(err.output ?? '').trim()
+          || 'configure_ms=failed\nbuild_ms=failed\nrun_ms=skipped\nconfigure_exit_code=unknown\npost_configure_exit_code=unknown\nbuild_exit_code=unknown\nrun_exit_code=not-run'
+        );
   }
   if (CFG.hiprtRuntimeProbe) {
     const postConfigureRecords = parseHiprtRuntimeProbeAdaptationOutput(timings);
@@ -9579,6 +9693,7 @@ exit 0
           output: String(lifecycleError.output ?? '').slice(-2000),
         }
       : null,
+    lifecycle_status_recovery: lifecycleStatusRecovery,
     upstream_lifecycle_failure: upstreamLifecycleFailure,
     real_rocm_missing_dependency_probe: report.real_rocm_missing_dependency_probe,
     upstream_run_environment: upstreamRunLaunch,
@@ -9595,48 +9710,103 @@ exit 0
   );
   let recoveredBuildMetadata = null;
   if (lifecycleError && !lifecycleCanContinueWithCachedMetadata) {
-    try {
-      recoveredBuildMetadata = await collectBuildMetadataFromWorker(buildPath);
-      report.upstream_lifecycle_metadata_recovery = {
-        schemaVersion: 'synthi.real_rocm.upstream_lifecycle_metadata_recovery.v1',
-        attempted: true,
-        accepted: true,
+    const recoveryAttempts = [];
+    const recoverySources = [
+      {
+        source: 'worker_configure_metadata_snapshot_after_lifecycle_failure',
+        collect: () => collectBuildMetadataSnapshotFromWorker(metadataSnapshotPath),
+      },
+      {
         source: 'worker_cmake_file_api_after_lifecycle_failure',
-        compileCommandSourceCount: recoveredBuildMetadata.compileCommandSourcePaths.length,
-        compile_command_source_count: recoveredBuildMetadata.compileCommandSourcePaths.length,
-        cmakeReplyFileCount: recoveredBuildMetadata.cmakeReplyFiles.length,
-        cmake_reply_file_count: recoveredBuildMetadata.cmakeReplyFiles.length,
-        matchedTargetFileCount: recoveredBuildMetadata.matchedTargetFiles.length,
-        matched_target_file_count: recoveredBuildMetadata.matchedTargetFiles.length,
-        targetSourceCount: recoveredBuildMetadata.targetSourcePaths.length,
-        target_source_count: recoveredBuildMetadata.targetSourcePaths.length,
-      };
-      report.evidence.upstream_lifecycle_metadata_recovery = report.upstream_lifecycle_metadata_recovery;
-      if (upstreamLifecycleFailure) {
-        const refreshedMissingDependencyProbe =
-          await recordRealRocmMissingDependencyProbe(upstreamLifecycleFailure, recoveredBuildMetadata);
-        if (refreshedMissingDependencyProbe) {
-          phase.real_rocm_missing_dependency_probe = refreshedMissingDependencyProbe;
+        collect: () => collectBuildMetadataFromWorker(buildPath),
+      },
+    ];
+    for (const recovery of recoverySources) {
+      try {
+        const candidate = await recovery.collect();
+        recoveredBuildMetadata = candidate;
+        recoveryAttempts.push({
+          source: recovery.source,
+          accepted: true,
+          compileCommandSourceCount: candidate.compileCommandSourcePaths.length,
+          compile_command_source_count: candidate.compileCommandSourcePaths.length,
+          cmakeReplyFileCount: candidate.cmakeReplyFiles.length,
+          cmake_reply_file_count: candidate.cmakeReplyFiles.length,
+          matchedTargetFileCount: candidate.matchedTargetFiles.length,
+          matched_target_file_count: candidate.matchedTargetFiles.length,
+          targetSourceCount: candidate.targetSourcePaths.length,
+          target_source_count: candidate.targetSourcePaths.length,
+        });
+        report.upstream_lifecycle_metadata_recovery = {
+          schemaVersion: 'synthi.real_rocm.upstream_lifecycle_metadata_recovery.v1',
+          attempted: true,
+          accepted: true,
+          source: recovery.source,
+          proofAuthority: 'configure_metadata_recovery_only_not_gpu_hmr_success',
+          proof_authority: 'configure_metadata_recovery_only_not_gpu_hmr_success',
+          acceptedForGpuHmr: false,
+          accepted_for_gpu_hmr: false,
+          gpuHmrSuccess: false,
+          gpu_hmr_success: false,
+          canSatisfyRuntimeProof: false,
+          can_satisfy_runtime_proof: false,
+          compileCommandSourceCount: candidate.compileCommandSourcePaths.length,
+          compile_command_source_count: candidate.compileCommandSourcePaths.length,
+          cmakeReplyFileCount: candidate.cmakeReplyFiles.length,
+          cmake_reply_file_count: candidate.cmakeReplyFiles.length,
+          matchedTargetFileCount: candidate.matchedTargetFiles.length,
+          matched_target_file_count: candidate.matchedTargetFiles.length,
+          targetSourceCount: candidate.targetSourcePaths.length,
+          target_source_count: candidate.targetSourcePaths.length,
+          attempts: recoveryAttempts,
+        };
+        report.evidence.upstream_lifecycle_metadata_recovery =
+          report.upstream_lifecycle_metadata_recovery;
+        if (upstreamLifecycleFailure) {
+          const refreshedMissingDependencyProbe =
+            await recordRealRocmMissingDependencyProbe(upstreamLifecycleFailure, recoveredBuildMetadata);
+          if (refreshedMissingDependencyProbe) {
+            phase.real_rocm_missing_dependency_probe = refreshedMissingDependencyProbe;
+          }
         }
+        record(
+          'upstream lifecycle metadata recovery',
+          'warn',
+          `accepted source=${recovery.source} compile_sources=${candidate.compileCommandSourcePaths.length} target_sources=${candidate.targetSourcePaths.length} matched_targets=${candidate.matchedTargetFiles.length}`,
+        );
+        break;
+      } catch (err) {
+        recoveryAttempts.push({
+          source: recovery.source,
+          accepted: false,
+          error: err.message,
+        });
       }
-      record(
-        'upstream lifecycle metadata recovery',
-        'warn',
-        `accepted compile_sources=${recoveredBuildMetadata.compileCommandSourcePaths.length} target_sources=${recoveredBuildMetadata.targetSourcePaths.length} matched_targets=${recoveredBuildMetadata.matchedTargetFiles.length}`,
-      );
-    } catch (err) {
+    }
+    if (!recoveredBuildMetadata) {
+      const lastAttempt = recoveryAttempts.at(-1);
       report.upstream_lifecycle_metadata_recovery = {
         schemaVersion: 'synthi.real_rocm.upstream_lifecycle_metadata_recovery.v1',
         attempted: true,
         accepted: false,
-        source: 'worker_cmake_file_api_after_lifecycle_failure',
-        error: err.message,
+        source: 'metadata_recovery_attempts_failed',
+        proofAuthority: 'configure_metadata_recovery_only_not_gpu_hmr_success',
+        proof_authority: 'configure_metadata_recovery_only_not_gpu_hmr_success',
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        attempts: recoveryAttempts,
+        error: lastAttempt?.error ?? 'metadata recovery failed',
       };
-      report.evidence.upstream_lifecycle_metadata_recovery = report.upstream_lifecycle_metadata_recovery;
+      report.evidence.upstream_lifecycle_metadata_recovery =
+        report.upstream_lifecycle_metadata_recovery;
       record(
         'upstream lifecycle metadata recovery',
         'warn',
-        `rejected error=${err.message}`,
+        `rejected attempts=${recoveryAttempts.map((attempt) => `${attempt.source}:${attempt.accepted ? 'accepted' : 'rejected'}`).join(',') || 'none'} error=${lastAttempt?.error ?? 'unknown'}`,
       );
     }
   }
@@ -9782,6 +9952,45 @@ async function collectBuildMetadataFromWorker(buildPath) {
     buildDependencySourcePaths: [...projectionHints.build_dependency_source_paths].sort(),
     matchedTargetFiles: projectionHints.matched_target_files.sort(),
   };
+}
+
+async function collectBuildMetadataSnapshotFromWorker(snapshotPath) {
+  const metadataDir = await mkdtemp(path.join(path.resolve(REPO_ROOT, 'tmp'), 'real-rocm-build-metadata-snapshot-'));
+  const compileHostPath = path.join(metadataDir, 'compile_commands.json');
+  const replyHostPath = path.join(metadataDir, 'reply');
+  await execText(
+    'docker',
+    ['cp', `${CFG.workerContainer}:${snapshotPath}/compile_commands.json`, compileHostPath],
+    30000,
+    true,
+  );
+  await execText(
+    'docker',
+    ['cp', `${CFG.workerContainer}:${snapshotPath}/reply`, replyHostPath],
+    30000,
+    true,
+  );
+  const dependencyDirAvailable = (await execText(
+    'docker',
+    [
+      'exec',
+      CFG.workerContainer,
+      'sh',
+      '-lc',
+      `[ -d ${shQuote(`${snapshotPath}/build-dependencies`)} ] && printf 1 || printf 0`,
+    ],
+    30000,
+    true,
+  )).trim() === '1';
+  if (dependencyDirAvailable) {
+    await execText(
+      'docker',
+      ['cp', `${CFG.workerContainer}:${snapshotPath}/build-dependencies`, path.join(metadataDir, 'build-dependencies')],
+      30000,
+      true,
+    );
+  }
+  return collectBuildMetadataFromHost(metadataDir);
 }
 
 function collectProjectionHintsFromCmakeReply(name, content, projectionHints) {
@@ -10087,6 +10296,51 @@ async function cleanupWorkerLifecycleRun({ runId, reason }) {
   report.upstreamLifecycleTimeoutControl = report.upstream_lifecycle_timeout_control;
   report.evidence.upstream_lifecycle_timeout_control = report.upstream_lifecycle_timeout_control;
   return cleanup;
+}
+
+async function readWorkerLifecycleStatus({ statusPath, expectedRunId }) {
+  const output = await execText(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(statusPath)} 2>/dev/null || true`],
+    30000,
+    false,
+  );
+  const raw = String(output ?? '');
+  const fields = parseLifecycleStatusFields(raw);
+  const accepted = Boolean(raw.trim())
+    && String(fields.lifecycle_run_id ?? '') === String(expectedRunId ?? '');
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.worker_lifecycle_status_recovery.v1',
+    schema_version: 'synthi.real_rocm.worker_lifecycle_status_recovery.v1',
+    statusPath,
+    status_path: statusPath,
+    expectedRunId,
+    expected_run_id: expectedRunId,
+    observedRunId: fields.lifecycle_run_id ?? null,
+    observed_run_id: fields.lifecycle_run_id ?? null,
+    accepted,
+    proofAuthority: 'worker_lifecycle_status_recovery_only_not_gpu_hmr_success',
+    proof_authority: 'worker_lifecycle_status_recovery_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    fields,
+    timings: lifecycleTimingTextFromStatusFields(fields),
+    rawOutput: raw,
+    raw_output: raw,
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+  if (!raw.trim()) {
+    facet.blockingGaps.push('worker_lifecycle_status_file_missing');
+  } else if (!accepted) {
+    facet.blockingGaps.push('worker_lifecycle_status_run_id_mismatch');
+  }
+  facet.blocking_gaps = facet.blockingGaps;
+  return facet;
 }
 
 async function collectRepoFiles(buildMetadata) {
@@ -23795,6 +24049,38 @@ int main()
   ) {
     throw new Error('upstream lifecycle timeout-build classifier self-check failed');
   }
+  const lifecycleStatusFields = parseLifecycleStatusFields([
+    'lifecycle_run_id=self-check-run',
+    'configure_ms=100',
+    'build_ms=failed',
+    'run_ms=0',
+    'configure_exit_code=0',
+    'post_configure_exit_code=0',
+    'build_exit_code=143',
+    'run_exit_code=not-run',
+    'metadata_snapshot_status=missing',
+    'metadata_snapshot_file_count=1',
+    'metadata_snapshot_path=/tmp/self-check-snapshot',
+  ].join('\n'));
+  const lifecycleStatusTimings = lifecycleTimingTextFromStatusFields(lifecycleStatusFields);
+  const staleWrapperLogClassification = classifyUpstreamLifecycleFailure({
+    timings: lifecycleStatusTimings,
+    configureLog: 'Configuring done\nBuild files have been written to: /tmp/build',
+    buildLog: 'Terminated\ngmake: *** [Makefile:1: target] Terminated',
+    runLog: 'upstream run skipped after configure_status=1 build_status=2 run_status=not-run',
+    lifecycleError: new Error('worker-side lifecycle timeout terminated build'),
+  });
+  if (
+    lifecycleStatusFields.lifecycle_run_id !== 'self-check-run'
+    || !lifecycleStatusTimings.includes('metadata_snapshot_status=missing')
+    || staleWrapperLogClassification.configureExitCodeText !== '0'
+    || staleWrapperLogClassification.buildExitCodeText !== '143'
+    || staleWrapperLogClassification.runExitCodeText !== 'not-run'
+    || staleWrapperLogClassification.cmakeConfigureFailed
+    || !staleWrapperLogClassification.buildFailed
+  ) {
+    throw new Error('run-id lifecycle status recovery self-check failed');
+  }
   const postConfigureFailureClassification = classifyUpstreamLifecycleFailure({
     timings: [
       'configure_ms=100',
@@ -23843,6 +24129,8 @@ int main()
     projectLogStatusSpoofClassification.configureExitCodeText !== null
     || projectLogStatusSpoofClassification.buildExitCodeText !== null
     || !projectLogStatusSpoofClassification.cmakeConfigureFailed
+    || !projectLogStatusSpoofClassification.configureStatusIncompleteAfterLifecycleFailure
+    || !projectLogStatusSpoofClassification.reasons.includes('upstream_configure_status_incomplete_after_lifecycle_failure')
     || !projectLogStatusSpoofClassification.reasons.includes('cmake_configure_failed')
   ) {
     throw new Error('upstream lifecycle wrapper-only status parser self-check failed');
@@ -23960,6 +24248,41 @@ int main()
     buildDependencySourcePaths: ['src/generated.cl'],
   })) {
     throw new Error('CMake metadata coverage self-check should reject unrelated sources');
+  }
+  const metadataSnapshotSelfCheckDir = await mkdtemp(path.join(LOG_DIR, 'build-metadata-snapshot-self-check-'));
+  await mkdir(path.join(metadataSnapshotSelfCheckDir, 'reply'), { recursive: true });
+  await mkdir(path.join(metadataSnapshotSelfCheckDir, 'build-dependencies'), { recursive: true });
+  await writeFile(
+    path.join(metadataSnapshotSelfCheckDir, 'compile_commands.json'),
+    `${JSON.stringify([{
+      directory: CFG.workspaceRoot,
+      command: 'hipcc -c self-check.cpp',
+      file: `${CFG.workspaceRoot}/${CFG.entryFile}`,
+    }])}\n`,
+  );
+  await writeFile(
+    path.join(metadataSnapshotSelfCheckDir, 'reply', `target-${CFG.targetName}-self-check.json`),
+    `${JSON.stringify({
+      kind: 'target',
+      name: CFG.targetName,
+      type: CFG.cmakeTargetType || 'EXECUTABLE',
+      sources: [{ path: `${CFG.workspaceRoot}/${CFG.entryFile}` }],
+      compileGroups: [{ includes: [{ path: `${CFG.workspaceRoot}/include` }] }],
+    })}\n`,
+  );
+  await writeFile(
+    path.join(metadataSnapshotSelfCheckDir, 'build-dependencies', 'Makefile.cmake'),
+    `${CFG.workspaceRoot}/${CFG.entryFile}\n${CFG.workspaceRoot}/generated/self-check-kernel.cl\n`,
+  );
+  const metadataSnapshotSelfCheck = await collectBuildMetadataFromHost(metadataSnapshotSelfCheckDir);
+  if (
+    !metadataSnapshotSelfCheck.compileCommandSourcePaths.includes(CFG.entryFile.replace(/\\/g, '/'))
+    || !metadataSnapshotSelfCheck.targetSourcePaths.includes(CFG.entryFile.replace(/\\/g, '/'))
+    || !metadataSnapshotSelfCheck.targetIncludeDirs.includes('include')
+    || !metadataSnapshotSelfCheck.buildDependencySourcePaths.includes('generated/self-check-kernel.cl')
+    || metadataSnapshotSelfCheck.matchedTargetFiles.length !== 1
+  ) {
+    throw new Error('CMake configure metadata snapshot self-check failed');
   }
   const includeCoverage = buildSourceCoverageForFocus(
     [
