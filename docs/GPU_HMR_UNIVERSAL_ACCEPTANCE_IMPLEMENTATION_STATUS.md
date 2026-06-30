@@ -10,14 +10,21 @@ Real ROCm upstream target runs now receive generic runtime-boundary environment 
 
 This is project-neutral plumbing for arbitrary upstream processes to write structured runtime-boundary event manifests. It is not proof authority: the facet stays `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`; undeclared adapters export nothing; disabled upstream runs remain a support gap; and strict acceptance still requires observed artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime-chain closure, and an accepted strict proof ledger.
 
+The validation matrix and runtime proof artifact builder now consume this facet explicitly instead of treating it as inert report metadata. Matrix ingestion normalizes the facet from reports, summaries, runtime proof artifacts, and evidence blocks; accepted real-ROCm rows fail safety if the facet has the wrong schema/authority, claims GPU HMR/runtime/dispatch authority, exports adapter env without a declared/enabled adapter, omits required event/result aliases, or carries blocking gaps. Runtime proof artifacts snapshot the same support-only facet and emit a strict limitation for forged authority even when the embedded proof ledger invariants are otherwise successful.
+
 Verification for this patch:
 
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/real-rocm-upstream-lifecycle.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-proof-artifact.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; includes exported target-environment support, undeclared-adapter no-export refusal, disabled-upstream support gap, and existing adapter bridge/manifest checks
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed; 65-row smoke ledger, includes support-only target-environment fixture, forged target-environment authority refusal, and runtime-proof-artifact limitation when a forged facet claims runtime/dispatch authority
 npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke ledger rows=65, retained matrix remains 56 rows, 14 scoped full-runtime rows, 0 broad rows
+npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed; live matrix remains 56 rows, 14 scoped full-runtime rows, 0 broad rows
 ```
 
 ## 2026-06-30 Runtime-Adapter Result Bridge Hardening

@@ -5020,6 +5020,83 @@ function runtimeAdapterResultTransportFixture(scope, overrides = {}) {
   };
 }
 
+function runtimeBoundaryTargetEnvironmentFixture(scope, overrides = {}) {
+  const environmentHash = hashValue(`runtime-boundary-target-environment:${scope}`);
+  const exportedVariableNames = [
+    'SYNTHI_GPU_HMR_RUNTIME_BOUNDARY',
+    'SYNTHI_REAL_ROCM_RUNTIME_SESSION',
+    'SYNTHI_GPU_HMR_RUNTIME_SESSION',
+    'SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH',
+    'SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH',
+    'SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH',
+    'SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH',
+    'SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH',
+    'SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH',
+  ];
+  return {
+    schemaVersion: 'synthi.real_rocm.runtime_boundary_target_environment.v1',
+    schema_version: 'synthi.real_rocm.runtime_boundary_target_environment.v1',
+    proofAuthority: 'target_environment_exposure_only_not_gpu_hmr_success',
+    proof_authority: 'target_environment_exposure_only_not_gpu_hmr_success',
+    adapterDeclared: true,
+    adapter_declared: true,
+    adapterEnabled: true,
+    adapter_enabled: true,
+    upstreamRunEnabled: true,
+    upstream_run_enabled: true,
+    status: 'runtime_boundary_target_environment_exported',
+    eventManifestRequested: true,
+    event_manifest_requested: true,
+    resultPathRequested: true,
+    result_path_requested: true,
+    declaredEventManifestPath:
+      `.gpu-hmr-test-logs/real-rocm-runtime-adapter-events/${scope}.json`,
+    declared_event_manifest_path:
+      `.gpu-hmr-test-logs/real-rocm-runtime-adapter-events/${scope}.json`,
+    workerEventManifestPath:
+      `/var/lib/synthi/runtime-adapter-events/${scope}.json`,
+    worker_event_manifest_path:
+      `/var/lib/synthi/runtime-adapter-events/${scope}.json`,
+    declaredResultPath:
+      `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    declared_result_path:
+      `.gpu-hmr-test-logs/real-rocm-runtime-adapter-results/${scope}.json`,
+    workerResultPath:
+      `/var/lib/synthi/runtime-adapter-results/${scope}.json`,
+    worker_result_path:
+      `/var/lib/synthi/runtime-adapter-results/${scope}.json`,
+    exportedToUpstreamRun: true,
+    exported_to_upstream_run: true,
+    exportedVariableNames,
+    exported_variable_names: exportedVariableNames,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    environmentHash,
+    environment_hash: environmentHash,
+    evidenceRefs: [
+      environmentHash,
+      `runtime-boundary-target-environment:${scope}`,
+    ],
+    evidence_refs: [
+      environmentHash,
+      `runtime-boundary-target-environment:${scope}`,
+    ],
+    blockingGaps: [],
+    blocking_gaps: [],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+}
+
 function realRocmSourceTreeTransportFixture(scope, overrides = {}) {
   const sourceTreeManifest = {
     schemaVersion: 'synthi.real_rocm.source_tree_manifest.v1',
@@ -11845,6 +11922,39 @@ assert.equal(missingDependencyRuntimeArtifact.gpuHmrSuccess, false);
 assert.ok(missingDependencyRuntimeArtifact.limitations.some(
   (limitation) => limitation.stageId === 'real-rocm-missing-dependency-probe',
 ));
+const forgedRuntimeBoundaryTargetEnvironment =
+  runtimeBoundaryTargetEnvironmentFixture('runtime-artifact-forged-authority', {
+    proofAuthority: 'runtime_proof',
+    proof_authority: 'runtime_proof',
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+  });
+const forgedRuntimeBoundaryTargetEnvironmentArtifact =
+  buildValidationRuntimeProofArtifact({
+    ...acceptedRuntimeArtifactInput,
+    realRocmRuntimeBoundaryTargetEnvironment:
+      forgedRuntimeBoundaryTargetEnvironment,
+    real_rocm_runtime_boundary_target_environment:
+      forgedRuntimeBoundaryTargetEnvironment,
+  });
+assert.equal(
+  forgedRuntimeBoundaryTargetEnvironmentArtifact.proofLedgerQuery.gpuHmrSuccess,
+  true,
+);
+assert.equal(forgedRuntimeBoundaryTargetEnvironmentArtifact.gpuHmrSuccess, false);
+assert.ok(forgedRuntimeBoundaryTargetEnvironmentArtifact.limitations.some(
+  (limitation) =>
+    limitation.stageId === 'real-rocm-runtime-boundary-target-environment'
+    && limitation.blockingGaps.includes(
+      'real_rocm_runtime_boundary_target_environment_claimed_runtime_authority',
+    ),
+));
 const missingDependencyRuntimeSummary = buildGpuHmrValidationProofSummary({
   workspaceSlug: 'real-rocm-missing-dependency-runtime-summary-smoke',
   fullRuntimeProof: acceptedRuntimeArtifactInput.fullRuntimeProof,
@@ -13802,6 +13912,8 @@ const completeAdapterBoundaryRuntimeAdapterStageEvents =
   runtimeAdapterStageEventsFixture(completeAdapterBoundaryExecutionSynthiLaunchLines);
 const completeAdapterBoundaryRuntimeAdapterResultTransport =
   runtimeAdapterResultTransportFixture(completeAdapterBoundaryBridgeScope);
+const completeAdapterBoundaryRuntimeBoundaryTargetEnvironment =
+  runtimeBoundaryTargetEnvironmentFixture(completeAdapterBoundaryBridgeScope);
 const completeAdapterBoundaryReport = {
   slug: 'gpu-real-rocm-adapter-boundary-bridge-complete-20260629',
   real_rocm_profile: largeRocmMlProfile('real-rocm-adapter-boundary-bridge-complete'),
@@ -13901,6 +14013,8 @@ const completeAdapterBoundaryReport = {
   real_rocm_runtime_adapter_stage_events: completeAdapterBoundaryRuntimeAdapterStageEvents,
   real_rocm_runtime_adapter_result_transport:
     completeAdapterBoundaryRuntimeAdapterResultTransport,
+  real_rocm_runtime_boundary_target_environment:
+    completeAdapterBoundaryRuntimeBoundaryTargetEnvironment,
   ...completeAdapterBoundaryMaterials,
   runtime_proof_artifact: {
     ...completeAdapterBoundaryMaterials.runtime_proof_artifact,
@@ -13940,6 +14054,10 @@ const completeAdapterBoundaryReport = {
       completeAdapterBoundaryRuntimeAdapterResultTransport,
     real_rocm_runtime_adapter_result_transport:
       completeAdapterBoundaryRuntimeAdapterResultTransport,
+    realRocmRuntimeBoundaryTargetEnvironment:
+      completeAdapterBoundaryRuntimeBoundaryTargetEnvironment,
+    real_rocm_runtime_boundary_target_environment:
+      completeAdapterBoundaryRuntimeBoundaryTargetEnvironment,
   },
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
@@ -14080,6 +14198,37 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterResultTransport.adapterCommandHash,
   hashValue(`runtime-adapter-command:${completeAdapterBoundaryBridgeScope}`),
 );
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment.accepted,
+  true,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment
+    .acceptedAsSupportEvidence,
+  true,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment
+    .canSatisfyRuntimeProof,
+  false,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment
+    .canSatisfyDispatchProof,
+  false,
+);
+assert.ok(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeBoundaryTargetEnvironment
+    .exportedVariableNames.includes('SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH'),
+);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookContractGate.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmAppHookMaterializationGate.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
@@ -14164,6 +14313,80 @@ assert.ok(
 assert.ok(
   adapterStageEventsForgedAuthorityRow.reasons.includes(
     'real_rocm_runtime_adapter_stage_events:real_rocm_runtime_adapter_stage_events_claimed_runtime_authority',
+  ),
+);
+
+const runtimeBoundaryTargetEnvironmentForgedAuthorityDir = path.join(
+  logsRoot,
+  'real-rocm-runtime-boundary-target-environment-forged-authority',
+);
+await fs.mkdir(runtimeBoundaryTargetEnvironmentForgedAuthorityDir, { recursive: true });
+const runtimeBoundaryTargetEnvironmentForgedAuthorityReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const runtimeBoundaryTargetEnvironmentForgedAuthorityFacet = {
+  ...runtimeBoundaryTargetEnvironmentForgedAuthorityReport
+    .real_rocm_runtime_boundary_target_environment,
+  proofAuthority: 'runtime_proof',
+  proof_authority: 'runtime_proof',
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+};
+runtimeBoundaryTargetEnvironmentForgedAuthorityReport.slug =
+  'gpu-real-rocm-runtime-boundary-target-environment-forged-authority-20260630';
+runtimeBoundaryTargetEnvironmentForgedAuthorityReport
+  .real_rocm_runtime_boundary_target_environment =
+    runtimeBoundaryTargetEnvironmentForgedAuthorityFacet;
+runtimeBoundaryTargetEnvironmentForgedAuthorityReport
+  .runtime_proof_artifact.realRocmRuntimeBoundaryTargetEnvironment =
+    runtimeBoundaryTargetEnvironmentForgedAuthorityFacet;
+runtimeBoundaryTargetEnvironmentForgedAuthorityReport
+  .runtime_proof_artifact.real_rocm_runtime_boundary_target_environment =
+    runtimeBoundaryTargetEnvironmentForgedAuthorityFacet;
+await writeJson(
+  path.join(
+    runtimeBoundaryTargetEnvironmentForgedAuthorityDir,
+    'real-rocm-runtime-boundary-target-environment-forged-authority.json',
+  ),
+  runtimeBoundaryTargetEnvironmentForgedAuthorityReport,
+);
+const runtimeBoundaryTargetEnvironmentForgedAuthorityLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [runtimeBoundaryTargetEnvironmentForgedAuthorityDir],
+    generatedAt: '2026-06-30T00:00:02.2655Z',
+    includeUnproven: true,
+  });
+const runtimeBoundaryTargetEnvironmentForgedAuthorityRow =
+  runtimeBoundaryTargetEnvironmentForgedAuthorityLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(runtimeBoundaryTargetEnvironmentForgedAuthorityRow?.matrixOutcome, 'unproven');
+assert.equal(runtimeBoundaryTargetEnvironmentForgedAuthorityRow.acceptedForGpuHmr, false);
+assert.equal(
+  runtimeBoundaryTargetEnvironmentForgedAuthorityRow
+    .realRocmRuntimeBoundaryTargetEnvironment.accepted,
+  false,
+);
+assert.ok(
+  runtimeBoundaryTargetEnvironmentForgedAuthorityRow.reasons.includes(
+    'real_rocm_runtime_boundary_target_environment:real_rocm_runtime_boundary_target_environment_claimed_gpu_hmr_acceptance',
+  ),
+);
+assert.ok(
+  runtimeBoundaryTargetEnvironmentForgedAuthorityRow.reasons.includes(
+    'real_rocm_runtime_boundary_target_environment:real_rocm_runtime_boundary_target_environment_claimed_runtime_authority',
+  ),
+);
+assert.ok(
+  runtimeBoundaryTargetEnvironmentForgedAuthorityRow.openGaps.includes(
+    'real_rocm_runtime_boundary_target_environment:real_rocm_runtime_boundary_target_environment_claimed_dispatch_authority',
   ),
 );
 

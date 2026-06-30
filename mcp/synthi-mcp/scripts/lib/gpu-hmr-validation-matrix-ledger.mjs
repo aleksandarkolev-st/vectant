@@ -141,6 +141,10 @@ const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_result_transport.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_RESULT_TRANSPORT_AUTHORITY =
   'runtime_adapter_result_transport_only_not_gpu_hmr_success';
+const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_SCHEMA_VERSION =
+  'synthi.real_rocm.runtime_boundary_target_environment.v1';
+const REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_AUTHORITY =
+  'target_environment_exposure_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_boundary_coverage.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY =
@@ -7676,6 +7680,200 @@ function realRocmRuntimeAdapterResultTransportFacet(input = {}) {
   };
 }
 
+function realRocmRuntimeBoundaryTargetEnvironmentFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+      evidenceRefs: [],
+      evidence_refs: [],
+      exportedVariableNames: [],
+      exported_variable_names: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const status = firstText(facet.status, facet.reason);
+  const adapterDeclared = firstBool(facet.adapterDeclared, facet.adapter_declared) === true;
+  const adapterEnabled = firstBool(facet.adapterEnabled, facet.adapter_enabled) === true;
+  const upstreamRunEnabled = firstBool(
+    facet.upstreamRunEnabled,
+    facet.upstream_run_enabled,
+  ) === true;
+  const eventManifestRequested = firstBool(
+    facet.eventManifestRequested,
+    facet.event_manifest_requested,
+  ) === true;
+  const acceptedAsSupportEvidence = firstBool(
+    facet.acceptedAsSupportEvidence,
+    facet.accepted_as_support_evidence,
+  ) === true;
+  const exportedToUpstreamRun = firstBool(
+    facet.exportedToUpstreamRun,
+    facet.exported_to_upstream_run,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(
+    facet.acceptedForGpuHmr,
+    facet.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const exportedVariableNames = compactStringList([
+    ...(Array.isArray(facet.exportedVariableNames) ? facet.exportedVariableNames : []),
+    ...(Array.isArray(facet.exported_variable_names) ? facet.exported_variable_names : []),
+  ]).sort();
+  const workerEventManifestPath = firstText(
+    facet.workerEventManifestPath,
+    facet.worker_event_manifest_path,
+  );
+  const workerResultPath = firstText(facet.workerResultPath, facet.worker_result_path);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(facet.evidenceRefs) ? facet.evidenceRefs : []),
+    ...(Array.isArray(facet.evidence_refs) ? facet.evidence_refs : []),
+    facet.environmentHash,
+    facet.environment_hash,
+  ]);
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const exportedEnvPresent = exportedVariableNames.length > 0 || exportedToUpstreamRun;
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'real_rocm_runtime_boundary_target_environment_schema_missing',
+    schemaVersion
+      && schemaVersion !== REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_SCHEMA_VERSION
+      ? 'real_rocm_runtime_boundary_target_environment_schema_unknown'
+      : null,
+    proofAuthority === REAL_ROCM_RUNTIME_BOUNDARY_TARGET_ENVIRONMENT_AUTHORITY
+      ? null
+      : 'real_rocm_runtime_boundary_target_environment_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'real_rocm_runtime_boundary_target_environment_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'real_rocm_runtime_boundary_target_environment_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'real_rocm_runtime_boundary_target_environment_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'real_rocm_runtime_boundary_target_environment_claimed_dispatch_authority'
+      : null,
+    adapterDeclared && adapterEnabled && !status
+      ? 'real_rocm_runtime_boundary_target_environment_status_missing'
+      : null,
+    !adapterDeclared && exportedEnvPresent
+      ? 'real_rocm_runtime_boundary_target_environment_exported_without_declared_adapter'
+      : null,
+    adapterDeclared && !adapterEnabled && exportedEnvPresent
+      ? 'real_rocm_runtime_boundary_target_environment_exported_for_disabled_adapter'
+      : null,
+    acceptedAsSupportEvidence && (!adapterDeclared || !adapterEnabled)
+      ? 'real_rocm_runtime_boundary_target_environment_support_claim_without_enabled_adapter'
+      : null,
+    acceptedAsSupportEvidence && blockingGaps.length > 0
+      ? 'real_rocm_runtime_boundary_target_environment_support_claim_has_blocking_gaps'
+      : null,
+    eventManifestRequested && adapterDeclared && adapterEnabled && !workerEventManifestPath
+      ? 'real_rocm_runtime_boundary_target_environment_event_manifest_path_missing'
+      : null,
+    eventManifestRequested
+      && adapterDeclared
+      && adapterEnabled
+      && upstreamRunEnabled
+      && !exportedToUpstreamRun
+      ? 'real_rocm_runtime_boundary_target_environment_not_exported_to_upstream_run'
+      : null,
+    eventManifestRequested
+      && adapterDeclared
+      && adapterEnabled
+      && !exportedVariableNames.includes('SYNTHI_REAL_ROCM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH')
+      ? 'real_rocm_runtime_boundary_target_environment_real_rocm_boundary_alias_missing'
+      : null,
+    eventManifestRequested
+      && adapterDeclared
+      && adapterEnabled
+      && !exportedVariableNames.includes('SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH')
+      ? 'real_rocm_runtime_boundary_target_environment_gpu_hmr_boundary_alias_missing'
+      : null,
+    workerResultPath
+      && !exportedVariableNames.includes('SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH')
+      ? 'real_rocm_runtime_boundary_target_environment_result_path_alias_missing'
+      : null,
+    ...serializedFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0 && blockingGaps.length === 0,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    status,
+    adapterDeclared,
+    adapter_declared: adapterDeclared,
+    adapterEnabled,
+    adapter_enabled: adapterEnabled,
+    upstreamRunEnabled,
+    upstream_run_enabled: upstreamRunEnabled,
+    eventManifestRequested,
+    event_manifest_requested: eventManifestRequested,
+    workerEventManifestPath: workerEventManifestPath ?? null,
+    worker_event_manifest_path: workerEventManifestPath ?? null,
+    workerResultPath: workerResultPath ?? null,
+    worker_result_path: workerResultPath ?? null,
+    exportedToUpstreamRun,
+    exported_to_upstream_run: exportedToUpstreamRun,
+    exportedVariableNames,
+    exported_variable_names: exportedVariableNames,
+    acceptedAsSupportEvidence:
+      acceptedAsSupportEvidence && failedGates.length === 0 && blockingGaps.length === 0,
+    accepted_as_support_evidence:
+      acceptedAsSupportEvidence && failedGates.length === 0 && blockingGaps.length === 0,
+    acceptedForGpuHmr: acceptedForGpuHmr === true,
+    accepted_for_gpu_hmr: acceptedForGpuHmr === true,
+    gpuHmrSuccess: gpuHmrSuccess === true,
+    gpu_hmr_success: gpuHmrSuccess === true,
+    canSatisfyRuntimeProof: canSatisfyRuntimeProof === true,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof === true,
+    canSatisfyDispatchProof: canSatisfyDispatchProof === true,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function realRocmEvidenceOnlyFacet(input = {}, {
   id,
   schemaVersion: expectedSchemaVersion,
@@ -8917,6 +9115,21 @@ function rowSafetyFailures(row) {
         code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_adapter_result_transport',
       });
       failures.push(...runtimeAdapterResultTransport.failedGates.map((code) => ({ code })));
+    }
+    const runtimeBoundaryTargetEnvironment = realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
+      row.realRocmRuntimeBoundaryTargetEnvironment
+      ?? row.real_rocm_runtime_boundary_target_environment
+      ?? row.runtimeBoundaryTargetEnvironment
+      ?? row.runtime_boundary_target_environment,
+    ));
+    if (
+      runtimeBoundaryTargetEnvironment.present === true
+      && runtimeBoundaryTargetEnvironment.accepted !== true
+    ) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_boundary_target_environment',
+      });
+      failures.push(...runtimeBoundaryTargetEnvironment.failedGates.map((code) => ({ code })));
     }
     const storedOperationalEvidence = compactObject(
       row.realRocmOperationalEvidence
@@ -14704,6 +14917,25 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ?? evidence.runtime_adapter_result_transport
       ?? evidence.runtimeAdapterResultTransport,
     ));
+  const realRocmRuntimeBoundaryTargetEnvironment =
+    realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
+      json.real_rocm_runtime_boundary_target_environment
+      ?? json.realRocmRuntimeBoundaryTargetEnvironment
+      ?? json.runtime_boundary_target_environment
+      ?? json.runtimeBoundaryTargetEnvironment
+      ?? summary.real_rocm_runtime_boundary_target_environment
+      ?? summary.realRocmRuntimeBoundaryTargetEnvironment
+      ?? summary.runtime_boundary_target_environment
+      ?? summary.runtimeBoundaryTargetEnvironment
+      ?? runtimeProofArtifact.real_rocm_runtime_boundary_target_environment
+      ?? runtimeProofArtifact.realRocmRuntimeBoundaryTargetEnvironment
+      ?? runtimeProofArtifact.runtime_boundary_target_environment
+      ?? runtimeProofArtifact.runtimeBoundaryTargetEnvironment
+      ?? evidence.real_rocm_runtime_boundary_target_environment
+      ?? evidence.realRocmRuntimeBoundaryTargetEnvironment
+      ?? evidence.runtime_boundary_target_environment
+      ?? evidence.runtimeBoundaryTargetEnvironment,
+    ));
   const realRocmOperationalEvidence = realRocmOperationalEvidenceFacet({
     timeoutControl: compactObject(
       json.upstream_lifecycle_timeout_control
@@ -15191,6 +15423,23 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           : []),
       ])
       : [];
+  const realRocmRuntimeBoundaryTargetEnvironmentGaps =
+    realRocmRuntimeBoundaryTargetEnvironment.present === true
+      ? compactStringList([
+        ...(Array.isArray(realRocmRuntimeBoundaryTargetEnvironment.blockingGaps)
+          ? realRocmRuntimeBoundaryTargetEnvironment.blockingGaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeBoundaryTargetEnvironment.blocking_gaps)
+          ? realRocmRuntimeBoundaryTargetEnvironment.blocking_gaps
+          : []),
+        ...(Array.isArray(realRocmRuntimeBoundaryTargetEnvironment.failedGates)
+          ? realRocmRuntimeBoundaryTargetEnvironment.failedGates
+          : []),
+        ...(Array.isArray(realRocmRuntimeBoundaryTargetEnvironment.failed_gates)
+          ? realRocmRuntimeBoundaryTargetEnvironment.failed_gates
+          : []),
+      ])
+      : [];
   const realRocmOperationalEvidenceGaps =
     realRocmOperationalEvidence.present === true
       ? compactStringList([
@@ -15336,6 +15585,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
         realRocmRuntimeAdapterResultTransport.reason,
       )
       : null;
+  const realRocmRuntimeBoundaryTargetEnvironmentReason =
+    realRocmRuntimeBoundaryTargetEnvironment.present === true
+      ? firstText(
+        realRocmRuntimeBoundaryTargetEnvironment.status,
+        realRocmRuntimeBoundaryTargetEnvironment.reason,
+      )
+      : null;
   const realRocmOperationalEvidenceReason =
     realRocmOperationalEvidence.present === true
       ? firstText(
@@ -15456,6 +15712,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const runtimeAdapterResultTransportAccepted =
     realRocmRuntimeAdapterResultTransport.present !== true
     || realRocmRuntimeAdapterResultTransport.accepted === true;
+  const runtimeBoundaryTargetEnvironmentAccepted =
+    realRocmRuntimeBoundaryTargetEnvironment.present !== true
+    || realRocmRuntimeBoundaryTargetEnvironment.accepted === true;
   const realRocmOperationalEvidenceAccepted =
     realRocmOperationalEvidence.present !== true
     || realRocmOperationalEvidence.accepted === true;
@@ -15549,6 +15808,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeAdapterExecutionAccepted === true
     && runtimeAdapterStageEventsAccepted === true
     && runtimeAdapterResultTransportAccepted === true
+    && runtimeBoundaryTargetEnvironmentAccepted === true
     && realRocmOperationalEvidenceAccepted === true
     && externalHeaderPrerequisitesAccepted === true
     && missingDependencyBlockerPresent !== true
@@ -15791,6 +16051,11 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
     runtimeAdapterResultTransport: realRocmRuntimeAdapterResultTransport,
     runtime_adapter_result_transport: realRocmRuntimeAdapterResultTransport,
+    realRocmRuntimeBoundaryTargetEnvironment,
+    real_rocm_runtime_boundary_target_environment:
+      realRocmRuntimeBoundaryTargetEnvironment,
+    runtimeBoundaryTargetEnvironment: realRocmRuntimeBoundaryTargetEnvironment,
+    runtime_boundary_target_environment: realRocmRuntimeBoundaryTargetEnvironment,
     realRocmOperationalEvidence,
     real_rocm_operational_evidence: realRocmOperationalEvidence,
     operationalEvidence: realRocmOperationalEvidence,
@@ -15890,6 +16155,15 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterResultTransportAccepted
         ? null
         : 'real_rocm_runtime_adapter_result_transport_not_accepted',
+      realRocmRuntimeBoundaryTargetEnvironmentReason
+        ? `real_rocm_runtime_boundary_target_environment:${realRocmRuntimeBoundaryTargetEnvironmentReason}`
+        : null,
+      ...realRocmRuntimeBoundaryTargetEnvironmentGaps.map((gap) =>
+        `real_rocm_runtime_boundary_target_environment:${gap}`
+      ),
+      runtimeBoundaryTargetEnvironmentAccepted
+        ? null
+        : 'real_rocm_runtime_boundary_target_environment_not_accepted',
       realRocmOperationalEvidenceReason
         ? `real_rocm_operational_evidence:${realRocmOperationalEvidenceReason}`
         : null,
@@ -16031,6 +16305,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       runtimeAdapterResultTransportAccepted
         ? null
         : 'real_rocm_runtime_adapter_result_transport_required',
+      ...realRocmRuntimeBoundaryTargetEnvironmentGaps.map((gap) =>
+        `real_rocm_runtime_boundary_target_environment:${gap}`
+      ),
+      runtimeBoundaryTargetEnvironmentAccepted
+        ? null
+        : 'real_rocm_runtime_boundary_target_environment_required',
       ...realRocmOperationalEvidenceGaps.map((gap) =>
         `real_rocm_operational_evidence:${gap}`
       ),
