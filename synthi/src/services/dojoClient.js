@@ -148,6 +148,9 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       policyLearningRecords: [],
       reviewRequests: [],
       remediationVerifications: [],
+      grants: [],
+      evidenceRecords: [],
+      auditRecords: [],
       proofMetrics: {},
       outcomeMetrics: {},
       metrics: {
@@ -159,6 +162,8 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         checkrideCount: 0,
         policyLearningCount: 0,
         pendingReviewCount: 0,
+        activeGrantCount: 0,
+        evidenceRecordCount: 0,
       },
     },
     bridgeStatus: 'unknown',
@@ -1467,6 +1472,9 @@ function normalizeTomographyTrace(state, dojo) {
       policyLearningRecords: [],
       reviewRequests: [],
       remediationVerifications: [],
+      grants: [],
+      evidenceRecords: [],
+      auditRecords: [],
       proofMetrics: {},
       outcomeMetrics: {},
       metrics: {
@@ -1478,6 +1486,8 @@ function normalizeTomographyTrace(state, dojo) {
         checkrideCount: 0,
         policyLearningCount: 0,
         pendingReviewCount: 0,
+        activeGrantCount: 0,
+        evidenceRecordCount: 0,
       },
     };
   }
@@ -1544,6 +1554,34 @@ function normalizeTomographyTrace(state, dojo) {
       observed: result.observed || '',
     })).filter((result) => result.check),
   })).filter((verification) => verification.verificationId || verification.remediationId);
+  const rawGrants = raw.grants || raw.runtime?.grants || [];
+  const grants = asArray(rawGrants).map((grant) => ({
+    grantId: grant.grant_id || grant.grantId || '',
+    taskId: grant.task_id || grant.taskId || '',
+    status: grant.status || '',
+    approvedAt: grant.approved_at || grant.approvedAt || '',
+    expiresAt: grant.expires_at || grant.expiresAt || '',
+    revokedAt: grant.revoked_at || grant.revokedAt || '',
+    revokedBy: grant.revoked_by || grant.revokedBy || '',
+    revocationStatus: grant.revocation_status || grant.revocationStatus || '',
+    revocationReason: grant.revocation_reason || grant.revocationReason || '',
+    proofCapsuleId: grant.proof_capsule_id || grant.proofCapsuleId || '',
+    accessRequest: normalizeTomographyAccessRequest(grant.access_request || grant.accessRequest || {}),
+  })).filter((grant) => grant.grantId);
+  const evidenceRecords = asArray(raw.evidence_records || raw.evidenceRecords || raw.runtime?.evidence_records || raw.runtime?.evidenceRecords).map((record) => ({
+    evidenceId: record.evidence_id || record.evidenceId || '',
+    taskId: record.task_id || record.taskId || '',
+    kind: record.kind || '',
+    createdAt: record.created_at || record.createdAt || '',
+    payload: record.payload || {},
+  })).filter((record) => record.evidenceId || record.kind);
+  const auditRecords = asArray(raw.audit_records || raw.auditRecords || raw.runtime?.audit_records || raw.runtime?.auditRecords).map((record) => ({
+    auditId: record.audit_id || record.auditId || '',
+    taskId: record.task_id || record.taskId || '',
+    eventType: record.event_type || record.eventType || '',
+    createdAt: record.created_at || record.createdAt || '',
+    details: record.details || {},
+  })).filter((record) => record.auditId || record.eventType);
   const rawProofMetrics = raw.proof_metrics || raw.proofMetrics || raw.runtime?.proof_metrics || raw.runtime?.proofMetrics || {};
   const proofMetrics = {
     proofVerificationLatencyP50: Number(rawProofMetrics.proof_verification_latency_p50 ?? rawProofMetrics.proofVerificationLatencyP50 ?? 0),
@@ -1658,6 +1696,9 @@ function normalizeTomographyTrace(state, dojo) {
     policyLearningRecords,
     reviewRequests,
     remediationVerifications,
+    grants,
+    evidenceRecords,
+    auditRecords,
     proofMetrics,
     outcomeMetrics,
     metrics: {
@@ -1669,6 +1710,8 @@ function normalizeTomographyTrace(state, dojo) {
       checkrideCount: checkrideReports.reduce((sum, report) => sum + report.results.length, 0),
       policyLearningCount: policyLearningRecords.length,
       pendingReviewCount: reviewRequests.filter((review) => review.status === 'pending').length,
+      activeGrantCount: grants.filter((grant) => grant.status === 'active').length,
+      evidenceRecordCount: evidenceRecords.length,
     },
   };
 }
@@ -1757,6 +1800,150 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
 export async function getDojoWorkspaceSummary({ workspaceSlug = '', signal, url, token } = {}) {
   const state = await getAgentWorkflowState({ signal, url, token });
   return normalizeDojoWorkspaceSummary(state, workspaceSlug);
+}
+
+function summaryFromTherapeuticRuntimeBody(body, workspaceSlug) {
+  const runtime = body?.runtime || body?.result?.runtime || body?.result || {};
+  const trace = runtime.trace || body?.trace || body?.result?.trace || null;
+  if (!trace) return summaryFromToolBody(body, workspaceSlug);
+  return normalizeDojoWorkspaceSummary({
+    dojo: {
+      therapeuticTomography: {
+        ...trace,
+        runtime,
+        checkride_reports: runtime.checkride_reports,
+        policy_learning_records: runtime.policy_learning_records,
+        review_requests: runtime.review_requests,
+        remediation_verifications: runtime.remediation_verifications,
+        grants: runtime.grants,
+        evidence_records: runtime.evidence_records,
+        audit_records: runtime.audit_records,
+        proof_metrics: runtime.proof_metrics,
+        outcome_metrics: runtime.outcome_metrics,
+      },
+    },
+  }, workspaceSlug);
+}
+
+export async function reviewTherapeuticAccess({
+  review,
+  decision,
+  workspaceSlug = '',
+  reviewerRole = 'human_reviewer',
+  rationale = '',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  const reviewId = review?.reviewId || review?.review_id || '';
+  const taskId = review?.taskId || review?.task_id || review?.request?.taskId || review?.request?.task_id || '';
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  if (!reviewId) throw new Error('dojo_therapeutic_review_id_required');
+  if (decision !== 'approved' && decision !== 'denied') throw new Error('dojo_therapeutic_review_decision_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: reviewId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_review_access',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+      review_id: reviewId,
+      status: decision,
+      reviewer_role: reviewerRole,
+      rationale: rationale || `UI ${decision} review ${reviewId}`,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_review_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Review ${decision}: ${reviewId}`,
+  };
+}
+
+export async function revokeTherapeuticGrants({
+  trace,
+  grant,
+  workspaceSlug = '',
+  reason = 'ui_revocation',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  const taskId = trace?.taskId || trace?.task_id || grant?.taskId || grant?.task_id || '';
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: grant?.grantId || grant?.grant_id || taskId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_revoke_grants',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+      ...(grant?.grantId || grant?.grant_id ? { grant_id: grant.grantId || grant.grant_id } : {}),
+      reason,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_revoke_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Grant revoked: ${grant?.grantId || grant?.grant_id || taskId}`,
+  };
+}
+
+export async function getTherapeuticRuntime({
+  taskId,
+  workspaceSlug = '',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: taskId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_get_runtime',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_get_runtime_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Runtime loaded: ${taskId}`,
+  };
 }
 
 function bridgeToolActionError(body, fallbackCode) {

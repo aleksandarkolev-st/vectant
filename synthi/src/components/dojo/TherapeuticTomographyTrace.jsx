@@ -1,8 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Ban, CheckCircle2, GitBranch, Microscope, ShieldCheck, UserCheck, XCircle } from 'lucide-react';
-import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
+import { ArrowLeft, Ban, CheckCircle2, GitBranch, Microscope, RefreshCw, ShieldCheck, Trash2, UserCheck, XCircle } from 'lucide-react';
+import {
+  createEmptyDojoSummary,
+  getDojoWorkspaceSummary,
+  getTherapeuticRuntime,
+  reviewTherapeuticAccess,
+  revokeTherapeuticGrants,
+} from '@/services/dojoClient';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
@@ -40,11 +46,15 @@ export default function TherapeuticTomographyTrace({
   workspaceSlug = '',
   initialSummary,
   loadSummary = getDojoWorkspaceSummary,
+  reviewAccessAction = reviewTherapeuticAccess,
+  revokeGrantsAction = revokeTherapeuticGrants,
+  loadRuntimeAction = getTherapeuticRuntime,
   autoLoad = true,
 }) {
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
   const [error, setError] = useState('');
+  const [actionState, setActionState] = useState({ key: '', message: '', error: '' });
 
   useEffect(() => {
     if (!autoLoad) return undefined;
@@ -72,9 +82,41 @@ export default function TherapeuticTomographyTrace({
   const approvedDose = trace?.authorityDoses?.find((dose) => dose.decision === 'approved') || trace?.authorityDoses?.[0] || null;
   const latestCheckride = [...(tomography.checkrideReports || [])].reverse()[0] || null;
   const reviewRequests = tomography.reviewRequests || [];
+  const grants = tomography.grants || [];
+  const evidenceRecords = tomography.evidenceRecords || [];
+  const auditRecords = tomography.auditRecords || [];
   const latestRemediationVerification = [...(tomography.remediationVerifications || [])].reverse()[0] || null;
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const sequence = useMemo(() => buildSequence(trace, blocked, approvedDose), [trace, blocked, approvedDose]);
+  const applyActionResult = (result) => {
+    if (result?.summary) setSummary(result.summary);
+    setActionState({ key: '', message: result?.message || 'Action complete', error: '' });
+  };
+  const runAction = async (key, action) => {
+    setActionState({ key, message: '', error: '' });
+    try {
+      applyActionResult(await action());
+    } catch (err) {
+      setActionState({ key: '', message: '', error: err?.message || 'dojo_tomography_action_failed' });
+    }
+  };
+  const handleReview = (review, decision) => runAction(`review-${decision}`, () => reviewAccessAction({
+    review,
+    decision,
+    workspaceSlug,
+    reviewerRole: 'ml_engineer',
+    rationale: `UI ${decision} for ${review?.reviewId || review?.request?.id || 'therapeutic review'}`,
+  }));
+  const handleRevoke = (grant) => runAction('revoke', () => revokeGrantsAction({
+    trace,
+    grant,
+    workspaceSlug,
+    reason: 'ui_operator_revocation',
+  }));
+  const handleRefreshRuntime = () => runAction('refresh', () => loadRuntimeAction({
+    taskId: trace?.taskId,
+    workspaceSlug,
+  }));
 
   return (
     <main className="min-h-screen px-5 py-5 text-sm" style={pageStyle} data-testid="therapeutic-tomography-trace">
@@ -113,9 +155,35 @@ export default function TherapeuticTomographyTrace({
               <Metric label="Checkrides" value={tomography.metrics.checkrideCount || 0} />
               <Metric label="Learning" value={tomography.metrics.policyLearningCount || 0} />
               <Metric label="Pending reviews" value={tomography.metrics.pendingReviewCount || 0} />
+              <Metric label="Active grants" value={tomography.metrics.activeGrantCount || 0} />
             </section>
 
-            <OperationalControlPanel trace={trace} proof={proof} blocked={blocked} approvedDose={approvedDose} reviewRequests={reviewRequests} remediationVerification={latestRemediationVerification} />
+            {actionState.error ? (
+              <section className="rounded-md border p-3 text-xs" style={{ ...panelStyle, color: 'var(--accent-warning)' }} role="status">
+                {actionState.error}
+              </section>
+            ) : null}
+            {actionState.message ? (
+              <section className="rounded-md border p-3 text-xs" style={{ ...panelStyle, color: 'var(--accent-success)' }} role="status">
+                {actionState.message}
+              </section>
+            ) : null}
+
+            <OperationalControlPanel
+              trace={trace}
+              proof={proof}
+              blocked={blocked}
+              approvedDose={approvedDose}
+              reviewRequests={reviewRequests}
+              grants={grants}
+              evidenceRecords={evidenceRecords}
+              auditRecords={auditRecords}
+              remediationVerification={latestRemediationVerification}
+              actionState={actionState}
+              onReview={handleReview}
+              onRevoke={handleRevoke}
+              onRefreshRuntime={handleRefreshRuntime}
+            />
             <EvaluationPanel report={latestCheckride} learningRecords={tomography.policyLearningRecords || []} proofMetrics={tomography.proofMetrics || {}} outcomeMetrics={tomography.outcomeMetrics || {}} />
 
             <section className="rounded-md border p-4" style={panelStyle} data-testid="tomography-sequence">
@@ -253,16 +321,32 @@ function formatCheckrideKind(kind) {
   return String(kind || 'checkride').replaceAll('_', ' ');
 }
 
-function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRequests = [], remediationVerification = null }) {
+function OperationalControlPanel({
+  trace,
+  proof,
+  blocked,
+  approvedDose,
+  reviewRequests = [],
+  grants = [],
+  evidenceRecords = [],
+  auditRecords = [],
+  remediationVerification = null,
+  actionState = {},
+  onReview,
+  onRevoke,
+  onRefreshRuntime,
+}) {
   const uncertainty = trace.uncertainties?.[0] || null;
   const requestedAccess = proof?.requestedAccess?.id ? proof.requestedAccess : blocked?.requestedAccess || null;
   const selectedProbe = [...(trace.projectionProbes || [])].reverse().find((probe) => probe.status === 'completed') || trace.projectionProbes?.[0] || null;
   const proofTier = proofRouteTier(requestedAccess);
   const pendingReview = reviewRequests.find((review) => review.status === 'pending');
   const reviewRequired = Boolean(pendingReview);
+  const activeGrant = grants.find((grant) => grant.status === 'active') || null;
   const lowerRiskProbes = trace.suggestedLowerRiskAlternatives?.length
     ? trace.suggestedLowerRiskAlternatives
     : uncertainty?.usefulProbes || [];
+  const busy = Boolean(actionState.key);
 
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="tomography-operational-controls">
@@ -271,7 +355,20 @@ function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRe
           <h2 className="text-sm font-semibold" style={{ margin: 0 }}>Operational Control Surface</h2>
           <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)', marginBottom: 0 }}>Brokered authority, proof routing, and revocation state</p>
         </div>
-        <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{proofTier}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={busy || !trace?.taskId}
+            onClick={onRefreshRuntime}
+            className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs"
+            style={panelStyle}
+            data-testid="tomography-refresh-runtime"
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            Refresh
+          </button>
+          <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{proofTier}</span>
+        </div>
       </div>
       <div className="mt-4 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))' }}>
         <InfoCard label="Live authority dose" value={`Dose ${trace.currentAuthorityDose}`} detail={approvedDose?.scope || 'Task description only'} />
@@ -279,7 +376,7 @@ function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRe
         <InfoCard label="Requested access" value={requestedAccess?.scope || 'None'} detail={(requestedAccess?.dataClasses || []).join(', ') || 'No protected data requested'} />
         <InfoCard label="Selected probe" value={selectedProbe?.name || 'None'} detail={selectedProbe ? probeResultText(selectedProbe) : 'No probe has run'} />
         <InfoCard label="Claim categories" value={`${proof?.machineClaims?.length || pendingReview?.deterministicClaimResults?.length || 0}/${proof?.humanClaims?.length || pendingReview?.judgmentClaims?.length || 0}/${proof?.narrativeClaims?.length || pendingReview?.narrativeClaims?.length || 0}`} detail="machine / human / narrative" />
-        <InfoCard label="Revocation status" value={approvedDose?.expirationCondition || requestedAccess?.expiration || 'Not granted'} detail={approvedDose?.revokePlan || (requestedAccess?.revocable ? 'revocable request' : 'no active grant')} />
+        <InfoCard label="Revocation status" value={activeGrant?.status || approvedDose?.expirationCondition || requestedAccess?.expiration || 'Not granted'} detail={activeGrant ? `${activeGrant.grantId} expires ${activeGrant.expiresAt || 'end of task'}` : approvedDose?.revokePlan || (requestedAccess?.revocable ? 'revocable request' : 'no active grant')} />
       </div>
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,320px)]">
         <div className="min-w-0">
@@ -298,21 +395,52 @@ function OperationalControlPanel({ trace, proof, blocked, approvedDose, reviewRe
         <div className="rounded-md border p-3" style={panelStyle}>
           <h3 className="text-xs font-semibold" style={{ margin: 0, color: 'var(--text-muted)' }}>Review actions</h3>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" disabled={!reviewRequired} className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
+            <button
+              type="button"
+              disabled={!reviewRequired || busy}
+              onClick={() => onReview?.(pendingReview, 'approved')}
+              className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs"
+              style={panelStyle}
+              data-testid="tomography-review-approve"
+            >
               <UserCheck size={13} aria-hidden="true" />
               Approve
             </button>
-            <button type="button" disabled={!reviewRequired} className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
+            <button
+              type="button"
+              disabled={!reviewRequired || busy}
+              onClick={() => onReview?.(pendingReview, 'denied')}
+              className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs"
+              style={panelStyle}
+              data-testid="tomography-review-deny"
+            >
               <XCircle size={13} aria-hidden="true" />
               Deny
+            </button>
+            <button
+              type="button"
+              disabled={!activeGrant || busy}
+              onClick={() => onRevoke?.(activeGrant)}
+              className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs"
+              style={panelStyle}
+              data-testid="tomography-revoke-grant"
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              Revoke
             </button>
           </div>
           <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)', marginBottom: 0 }}>
             {reviewRequired
               ? `Pending ${pendingReview.decisionMechanism || proofTier} review: ${pendingReview.reviewId || pendingReview.request?.id}`
-              : 'No human review pending.'}
+              : activeGrant
+                ? `Active grant: ${activeGrant.grantId}`
+                : 'No human review pending.'}
           </p>
         </div>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <RuntimeRecordList title="Evidence records" records={evidenceRecords} idKey="evidenceId" typeKey="kind" empty="No evidence records loaded" />
+        <RuntimeRecordList title="Audit records" records={auditRecords} idKey="auditId" typeKey="eventType" empty="No audit records loaded" />
       </div>
       <div className="mt-4 rounded-md border p-3" style={panelStyle}>
         <h3 className="text-xs font-semibold" style={{ margin: 0, color: 'var(--text-muted)' }}>Remediation boundary</h3>
@@ -343,6 +471,30 @@ function InfoCard({ label, value, detail }) {
       <div className="mt-1 text-sm font-semibold" style={{ overflowWrap: 'anywhere' }}>{value}</div>
       <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-secondary)', marginBottom: 0, overflowWrap: 'anywhere' }}>{detail}</p>
     </article>
+  );
+}
+
+function RuntimeRecordList({ title, records = [], idKey, typeKey, empty }) {
+  const visible = records.slice(0, 4);
+  return (
+    <div className="rounded-md border p-3" style={panelStyle}>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold" style={{ margin: 0, color: 'var(--text-muted)' }}>{title}</h3>
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{records.length}</span>
+      </div>
+      {visible.length ? (
+        <div className="mt-3 grid gap-2">
+          {visible.map((record, index) => (
+            <article key={record[idKey] || `${title}-${index}`} className="rounded-md border p-2 text-xs" style={panelStyle}>
+              <div className="font-semibold" style={{ overflowWrap: 'anywhere' }}>{record[typeKey] || 'record'}</div>
+              <div className="mt-1" style={{ color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{record[idKey] || record.createdAt || 'unidentified'}</div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-secondary)', marginBottom: 0 }}>{empty}</p>
+      )}
+    </div>
   );
 }
 

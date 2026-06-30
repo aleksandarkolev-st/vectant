@@ -74,7 +74,12 @@ describe('TherapeuticTomographyTrace', () => {
     expect(text).toContain('Postcondition status: passed');
     expect(text).toContain('quality recovers: passed');
     expect(text).toContain('Pending reviews');
+    expect(text).toContain('Active grants');
     expect(text).toContain('Pending human_or_llm_review review');
+    expect(text).toContain('Evidence records');
+    expect(text).toContain('Audit records');
+    expect(text).toContain('evidence_probe_001');
+    expect(text).toContain('audit_access_001');
     expect(text).toContain('Dojo/Vivarium Evaluation');
     expect(text).toContain('auto grants: false');
     expect(text).toContain('adversarial probe output');
@@ -117,6 +122,82 @@ describe('TherapeuticTomographyTrace', () => {
     expect(loadSummary).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'workspace-a' }));
     expect(container.textContent).toContain('Therapeutic Tomography');
     expect(container.textContent).toContain('customer_plan');
+  });
+
+  it('runs review, revoke, and runtime refresh actions through injected client calls', async () => {
+    const baseSummary = normalizeDojoWorkspaceSummary({
+      runtime: { status: 'ready' },
+      dojo: {
+        skillId: 'skill-quality-drop',
+        label: 'Quality drop diagnosis',
+        status: 'licensed',
+        therapeuticTomography: traceFixture(),
+      },
+    }, 'workspace-a');
+    const approvedSummary = normalizeDojoWorkspaceSummary({
+      dojo: {
+        therapeuticTomography: {
+          ...traceFixture(),
+          review_requests: [],
+        },
+      },
+    }, 'workspace-a');
+    const revoked = {
+      ...traceFixture(),
+      grants: [{
+        grant_id: 'grant_lineage_001',
+        task_id: 'quality_drop_demo_001',
+        status: 'revoked',
+        access_request: {
+          id: 'access_lineage_customer_plan_001',
+          task_id: 'quality_drop_demo_001',
+          scope: 'feature:customer_plan',
+          mode: 'read_only',
+          data_classes: ['feature_lineage_hash'],
+          tools: ['feature_lineage_hash'],
+        },
+      }],
+    };
+    const revokedSummary = normalizeDojoWorkspaceSummary({ dojo: { therapeuticTomography: revoked } }, 'workspace-a');
+    const reviewAccessAction = vi.fn(async () => ({ summary: approvedSummary, message: 'Review approved: review_tier2_001' }));
+    const revokeGrantsAction = vi.fn(async () => ({ summary: revokedSummary, message: 'Grant revoked: grant_lineage_001' }));
+    const loadRuntimeAction = vi.fn(async () => ({ summary: baseSummary, message: 'Runtime loaded: quality_drop_demo_001' }));
+
+    const view = renderTrace({
+      workspaceSlug: 'workspace-a',
+      initialSummary: baseSummary,
+      reviewAccessAction,
+      revokeGrantsAction,
+      loadRuntimeAction,
+    });
+
+    await act(async () => {
+      view.querySelector('[data-testid="tomography-review-approve"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(reviewAccessAction).toHaveBeenCalledWith(expect.objectContaining({
+      decision: 'approved',
+      workspaceSlug: 'workspace-a',
+      review: expect.objectContaining({ reviewId: 'review_tier2_001' }),
+    }));
+    expect(view.textContent).toContain('Review approved: review_tier2_001');
+
+    await act(async () => {
+      view.querySelector('[data-testid="tomography-revoke-grant"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(revokeGrantsAction).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceSlug: 'workspace-a',
+      reason: 'ui_operator_revocation',
+      grant: expect.objectContaining({ grantId: 'grant_lineage_001' }),
+    }));
+    expect(view.textContent).toContain('Grant revoked: grant_lineage_001');
+
+    await act(async () => {
+      view.querySelector('[data-testid="tomography-refresh-runtime"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(loadRuntimeAction).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'quality_drop_demo_001',
+      workspaceSlug: 'workspace-a',
+    }));
   });
 });
 
@@ -328,6 +409,52 @@ function traceFixture() {
             observed: 'quality returned to baseline',
           },
         ],
+      },
+    ],
+    grants: [
+      {
+        grant_id: 'grant_lineage_001',
+        task_id: 'quality_drop_demo_001',
+        status: 'active',
+        approved_at: '2026-06-29T14:03:00.000Z',
+        expires_at: '9999-12-31T23:59:59.999Z',
+        proof_capsule_id: 'proof_001',
+        access_request: {
+          id: 'access_lineage_customer_plan_001',
+          task_id: 'quality_drop_demo_001',
+          authority_dose: 5,
+          scope: 'feature:customer_plan',
+          mode: 'read_only',
+          data_classes: ['feature_lineage_hash'],
+          tools: ['feature_lineage_hash'],
+          expiration: 'end_of_task',
+          revocable: true,
+        },
+      },
+    ],
+    evidence_records: [
+      {
+        evidence_id: 'evidence_probe_001',
+        task_id: 'quality_drop_demo_001',
+        kind: 'probe_result',
+        created_at: '2026-06-29T14:01:00.000Z',
+        payload: { probe_name: 'eval_slice_compare' },
+      },
+      {
+        evidence_id: 'evidence_grant_001',
+        task_id: 'quality_drop_demo_001',
+        kind: 'temporary_grant',
+        created_at: '2026-06-29T14:03:00.000Z',
+        payload: { grant_id: 'grant_lineage_001' },
+      },
+    ],
+    audit_records: [
+      {
+        audit_id: 'audit_access_001',
+        task_id: 'quality_drop_demo_001',
+        event_type: 'access_approved',
+        created_at: '2026-06-29T14:03:00.000Z',
+        details: { grant_id: 'grant_lineage_001' },
       },
     ],
     proof_metrics: {
