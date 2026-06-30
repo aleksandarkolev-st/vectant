@@ -1,11 +1,16 @@
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
+import { createLocalHmacDojoProofSigner } from "../../src/dojo/proof/signing.js";
 import {
   buildMlQualityDropTherapeuticDemoTrace,
   buildProjectionProbe,
   buildSafeProbeBundle,
   buildStrictProofCapsule,
   classifyTherapeuticProofRoute,
+  createDurableTherapeuticRuntimeStore,
   createTherapeuticRuntimeStore,
   dispatchProtectedTherapeuticTool,
   emptyTherapeuticTrace,
@@ -22,12 +27,15 @@ import {
   revokeTherapeuticGrant,
   revokeTherapeuticTaskGrants,
   runTherapeuticTomographyCheckrides,
+  persistTherapeuticRuntimeState,
   scoreTherapeuticAction,
   selectLowestRiskProbe,
+  signTherapeuticProofCapsule,
   summarizeProofMetrics,
   summarizeTherapeuticOutcomeMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+  verifySignedTherapeuticProofCapsule,
   verifyTherapeuticRemediationPostconditions,
   type TherapeuticAccessRequest,
   type TherapeuticProbeContract,
@@ -36,6 +44,37 @@ import {
 function toolJson(response: Awaited<ReturnType<typeof dispatchDojoTool>>): any {
   expect(response).not.toBeNull();
   return response!.structuredContent ?? JSON.parse(response!.content[0]?.type === "text" ? response!.content[0].text : "{}");
+}
+
+function tenantArgs(roles: string[]) {
+  return {
+    tenant_id: "tenant-prod",
+    organization_id: "org-prod",
+    workspace_id: "workspace-prod",
+    actor_id: "agent-prod",
+    actor_type: "agent",
+    roles,
+    request_id: `request-${roles.join("-")}`,
+    correlation_id: `correlation-${roles.join("-")}`,
+  };
+}
+
+async function withEnv<T>(updates: Record<string, string | undefined>, run: () => Promise<T> | T): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(updates)) {
+    previous.set(key, process.env[key]);
+    const value = updates[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 describe("Dojo therapeutic tomography", () => {
@@ -240,6 +279,90 @@ describe("Dojo therapeutic tomography", () => {
     expect(trace.projection_probes.find((probe) => probe.id === leaky.probe?.id)?.status).toBe("failed");
     expect(store.evidence_records.map((record) => record.kind)).toContain("probe_result");
     expect(store.audit_records.map((record) => record.event_type)).toContain("probe_blocked");
+  });
+
+  it("persists therapeutic runtime state in tenant-scoped durable files without cross-tenant bleed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "therapeutic-runtime-"));
+    const taskId = "tenant-shared-task";
+    const traceA = emptyTherapeuticTrace({
+      task_id: taskId,
+      task_class: "ml_quality_drop",
+      user_goal: "Tenant A diagnosis.",
+      current_authority_dose: 2,
+    });
+    const durableA = createDurableTherapeuticRuntimeStore({
+      tenant_scope: { tenant_id: "tenant-a", workspace_id: "workspace-a", actor_id: "agent-a" },
+      task_id: taskId,
+      root_dir: root,
+      trace: traceA,
+      now: "2026-06-29T12:00:00.000Z",
+    });
+    await executeTherapeuticProbe({
+      trace: traceA,
+      store: durableA.store,
+      contract: THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "eval_slice_compare")!,
+      probe_input: {
+        affected_segment: "tenant_a_segment",
+        quality_delta: -0.05,
+        confidence: 0.8,
+        time_window: "last_1h",
+      },
+      now: "2026-06-29T12:01:00.000Z",
+    });
+    const stateA = persistTherapeuticRuntimeState({
+      trace: traceA,
+      store: durableA.store,
+      now: "2026-06-29T12:02:00.000Z",
+    });
+    const traceB = emptyTherapeuticTrace({
+      task_id: taskId,
+      task_class: "workflow_debugging",
+      user_goal: "Tenant B diagnosis.",
+      current_authority_dose: 0,
+    });
+    const durableB = createDurableTherapeuticRuntimeStore({
+      tenant_scope: { tenant_id: "tenant-b", workspace_id: "workspace-b", actor_id: "agent-b" },
+      task_id: taskId,
+      root_dir: root,
+      trace: traceB,
+      now: "2026-06-29T12:03:00.000Z",
+    });
+    const reloadedA = createDurableTherapeuticRuntimeStore({
+      tenant_scope: { tenant_id: "tenant-a", workspace_id: "workspace-a", actor_id: "agent-a" },
+      task_id: taskId,
+      root_dir: root,
+    });
+
+    expect(stateA?.schema_version).toBe("synthi.dojo.therapeuticRuntimeState.v1");
+    expect(existsSync(durableA.state_path)).toBe(true);
+    expect(existsSync(durableB.state_path)).toBe(true);
+    expect(durableA.state_path).not.toBe(durableB.state_path);
+    expect(reloadedA.loaded).toBe(true);
+    expect(reloadedA.trace?.user_goal).toBe("Tenant A diagnosis.");
+    expect(reloadedA.trace?.projection_probes[0]?.result_summary.affected_segment).toBe("tenant_a_segment");
+    expect(JSON.parse(readFileSync(durableB.state_path, "utf8")).trace.user_goal).toBe("Tenant B diagnosis.");
+  });
+
+  it("signs and verifies therapeutic proof capsules with existing Dojo proof signer primitives", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const capsule = trace.proof_capsules[0]!;
+    const signer = createLocalHmacDojoProofSigner({ key: "therapeutic-proof-secret", key_id: "therapeutic-key" });
+    const signed = signTherapeuticProofCapsule({
+      capsule,
+      signer,
+      now: "2026-06-29T12:10:00.000Z",
+    });
+    const verified = verifySignedTherapeuticProofCapsule({ capsule: signed, verifier: signer });
+    const tampered = verifySignedTherapeuticProofCapsule({
+      capsule: { ...signed, requested_access: { ...signed.requested_access, scope: "feature:other" } },
+      verifier: signer,
+    });
+
+    expect(signed.signature_algorithm).toBe("hmac-sha256");
+    expect(signed.signature_key_id).toBe("therapeutic-key");
+    expect(verified).toEqual({ ok: true, signature_verified: true, blocked_by: [] });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.blocked_by).toContain("therapeutic_proof_signature_invalid");
   });
 
   it("builds strict proof capsules that separate machine, human, and narrative claims", () => {
@@ -1237,6 +1360,171 @@ describe("Dojo therapeutic tomography", () => {
       "checkride",
       "policy_learning",
     ]));
+  });
+
+  it("enforces production tenant RBAC, durable runtime state, proof signing, and hosted-runtime dispatch gates", async () => {
+    await withEnv({
+      SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
+      SYNTHI_DOJO_REQUIRE_DURABLE_STORE: "1",
+      SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "0",
+      SYNTHI_DOJO_THERAPEUTIC_STORE_DIR: undefined,
+    }, async () => {
+      const root = mkdtempSync(join(tmpdir(), "therapeutic-mcp-prod-"));
+      const taskId = "prod-therapeutic-runtime";
+      const missingTenant = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_init_trace", {
+        task_id: taskId,
+        task_class: "ml_quality_drop",
+        user_goal: "Production trace missing tenant.",
+      }));
+      const missingDurable = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_init_trace", {
+        ...tenantArgs(["dojo:practice:run"]),
+        task_id: taskId,
+        task_class: "ml_quality_drop",
+        user_goal: "Production trace missing durable store.",
+      }));
+      const init = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_init_trace", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        task_class: "ml_quality_drop",
+        user_goal: "Production trace with durable tenant state.",
+        current_authority_dose: 2,
+        now: "2026-06-29T16:00:00.000Z",
+      }));
+      const rbacDenied = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        request: {
+          id: "prod-lineage-rbac-denied",
+          authority_dose: 5,
+          scope: "feature:billing_country",
+          mode: "read_only",
+          data_classes: ["feature_lineage_hash"],
+          tools: ["feature_lineage_hash"],
+          expiration: "end_of_task",
+          revocable: true,
+          purpose: "RBAC should require proof issue role.",
+        },
+      }));
+
+      await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        probe_name: "eval_slice_compare",
+        probe_input: {
+          affected_segment: "trial_accounts",
+          quality_delta: -0.07,
+          confidence: 0.81,
+          time_window: "last_6h",
+        },
+        now: "2026-06-29T16:01:00.000Z",
+      });
+      await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        probe_name: "feature_drift_summary",
+        probe_input: {
+          top_feature: "billing_country",
+          drift_score: 0.83,
+          affected_segment: "trial_accounts",
+          confidence: 0.86,
+          time_window: "last_6h",
+        },
+        now: "2026-06-29T16:02:00.000Z",
+      });
+      const access = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+        ...tenantArgs(["dojo:proof:issue"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        build_proof: true,
+        sign_proof: true,
+        proof_signing_key: "prod-therapeutic-proof-secret",
+        proof_signing_key_id: "prod-therapeutic-key",
+        human_reviewed_claims: [{
+          claim: "lineage_access_is_reasonable_next_step",
+          reviewer_role: "ml_engineer",
+          status: "approved",
+          rationale: "Aggregate probes isolated billing_country.",
+        }],
+        request: {
+          id: "prod-lineage",
+          authority_dose: 5,
+          scope: "feature:billing_country",
+          mode: "read_only",
+          data_classes: ["feature_lineage_hash"],
+          tools: ["feature_lineage_hash"],
+          expiration: "end_of_task",
+          revocable: true,
+          purpose: "Verify scoped feature lineage.",
+        },
+        now: "2026-06-29T16:03:00.000Z",
+      }));
+      const dispatchMissingHostedRuntime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+      }));
+      const dispatchLoopbackHostedRuntime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        hosted_runtime_session_id: "hosted-prod-session",
+        hosted_runtime_authorized: true,
+        hosted_runtime_url: "http://127.0.0.1:9222",
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+      }));
+      const dispatchHostedRuntime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+        ...tenantArgs(["dojo:practice:run"]),
+        durable_store_dir: root,
+        task_id: taskId,
+        hosted_runtime_session_id: "hosted-prod-session",
+        hosted_runtime_authorized: true,
+        hosted_runtime_url: "https://runtime.example.test/session/hosted-prod-session",
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+        now: "2026-06-29T16:04:00.000Z",
+      }));
+      const runtime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_get_runtime", {
+        ...tenantArgs(["dojo:governance:view"]),
+        durable_store_dir: root,
+        task_id: taskId,
+      }));
+
+      expect(missingTenant.ok).toBe(false);
+      expect(missingTenant.blocked_by).toContain("tenant_context_tenant_id_missing");
+      expect(missingDurable.ok).toBe(false);
+      expect(missingDurable.blocked_by).toContain("therapeutic_durable_store_required");
+      expect(init.ok).toBe(true);
+      expect(init.runtime.durable).toBe(true);
+      expect(existsSync(init.runtime.persistence.path)).toBe(true);
+      expect(rbacDenied.ok).toBe(false);
+      expect(rbacDenied.blocked_by).toEqual(expect.arrayContaining(["governance_role_required:dojo:proof:issue"]));
+      expect(access.ok).toBe(true);
+      expect(access.result.broker_decision.proof_capsule.signature_algorithm).toBe("hmac-sha256");
+      expect(access.result.broker_decision.proof_capsule.signature_key_id).toBe("prod-therapeutic-key");
+      expect(dispatchMissingHostedRuntime.ok).toBe(false);
+      expect(dispatchMissingHostedRuntime.blocked_by).toContain("hosted_runtime_authorization_required");
+      expect(dispatchLoopbackHostedRuntime.ok).toBe(false);
+      expect(dispatchLoopbackHostedRuntime.blocked_by).toContain("hosted_runtime_loopback_forbidden");
+      expect(dispatchHostedRuntime.ok).toBe(true);
+      expect(runtime.runtime.tenant_scope).toEqual(expect.objectContaining({
+        tenant_id: "tenant-prod",
+        workspace_id: "workspace-prod",
+      }));
+      expect(JSON.parse(readFileSync(runtime.runtime.persistence.path, "utf8")).store.grants[0].status).toBe("active");
+    });
   });
 
   it("plans and enforces executable lower-risk probes for non-ML task classes", async () => {

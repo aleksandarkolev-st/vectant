@@ -1,3 +1,15 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  canonicalDojoProofPayload,
+  parseDojoProofSignatureEnvelope,
+  type DojoProofSigner,
+  type DojoProofSigningAlgorithm,
+  type DojoProofSigningProvider,
+  type DojoProofVerifier,
+  type DojoProofKeyCustody,
+} from "../proof/signing.js";
+
 export type TherapeuticAuthorityLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 export type TherapeuticDecision = "approved" | "denied" | "needs_human_approval";
@@ -139,6 +151,12 @@ export interface TherapeuticStrictProofCapsule {
   approved: boolean;
   reviewer: string;
   timestamp: string;
+  signature_algorithm?: DojoProofSigningAlgorithm;
+  signature_key_id?: string;
+  signature?: string;
+  signing_provider?: DojoProofSigningProvider;
+  key_custody?: DojoProofKeyCustody;
+  signed_at?: string;
 }
 
 export interface TherapeuticEscalationJustification {
@@ -424,6 +442,36 @@ export interface TherapeuticRuntimeStore {
   policy_learning_records: TherapeuticPolicyLearningRecord[];
   review_requests: TherapeuticReviewRequest[];
   remediation_verifications: TherapeuticRemediationVerification[];
+  tenant_scope?: TherapeuticTenantScope;
+  persistence?: TherapeuticRuntimePersistence;
+}
+
+export interface TherapeuticTenantScope {
+  tenant_id: string;
+  workspace_id: string;
+  actor_id?: string;
+  data_region?: string;
+}
+
+export interface TherapeuticRuntimePersistence {
+  kind: "file";
+  path: string;
+  durable: true;
+  last_persisted_at?: string;
+}
+
+export interface TherapeuticDurableRuntimeState {
+  schema_version: "synthi.dojo.therapeuticRuntimeState.v1";
+  tenant_scope: TherapeuticTenantScope;
+  trace: TherapeuticTrace;
+  store: TherapeuticRuntimeStore;
+  persisted_at: string;
+}
+
+export interface TherapeuticSignedProofVerification {
+  ok: boolean;
+  signature_verified: boolean;
+  blocked_by: string[];
 }
 
 export interface TherapeuticRuntimeAccessResult {
@@ -1065,6 +1113,125 @@ export function createTherapeuticRuntimeStore(): TherapeuticRuntimeStore {
     policy_learning_records: [],
     review_requests: [],
     remediation_verifications: [],
+  };
+}
+
+export function createDurableTherapeuticRuntimeStore(input: {
+  tenant_scope: TherapeuticTenantScope;
+  task_id: string;
+  root_dir: string;
+  trace?: TherapeuticTrace;
+  now?: string;
+}): { trace?: TherapeuticTrace; store: TherapeuticRuntimeStore; state_path: string; loaded: boolean } {
+  const statePath = therapeuticRuntimeStatePath(input.root_dir, input.tenant_scope, input.task_id);
+  const existing = readTherapeuticRuntimeState(statePath);
+  if (existing) {
+    if (
+      existing.tenant_scope.tenant_id !== input.tenant_scope.tenant_id
+      || existing.tenant_scope.workspace_id !== input.tenant_scope.workspace_id
+      || existing.trace.task_id !== input.task_id
+    ) {
+      throw new Error("therapeutic_runtime_state_scope_mismatch");
+    }
+    const store = withTherapeuticPersistence(existing.store, input.tenant_scope, statePath);
+    return { trace: existing.trace, store, state_path: statePath, loaded: true };
+  }
+  const store = withTherapeuticPersistence(createTherapeuticRuntimeStore(), input.tenant_scope, statePath);
+  if (input.trace) {
+    persistTherapeuticRuntimeState({
+      trace: input.trace,
+      store,
+      now: input.now,
+    });
+  }
+  return { trace: input.trace, store, state_path: statePath, loaded: false };
+}
+
+export function persistTherapeuticRuntimeState(input: {
+  trace: TherapeuticTrace;
+  store: TherapeuticRuntimeStore;
+  now?: string;
+}): TherapeuticDurableRuntimeState | null {
+  if (!input.store.persistence || !input.store.tenant_scope) return null;
+  const persistedAt = input.now ?? new Date().toISOString();
+  const persistence = {
+    ...input.store.persistence,
+    last_persisted_at: persistedAt,
+  };
+  input.store.persistence = persistence;
+  const state: TherapeuticDurableRuntimeState = {
+    schema_version: "synthi.dojo.therapeuticRuntimeState.v1",
+    tenant_scope: cloneJson(input.store.tenant_scope),
+    trace: cloneJson(input.trace),
+    store: cloneJson({
+      ...input.store,
+      persistence,
+    }),
+    persisted_at: persistedAt,
+  };
+  mkdirSync(dirname(input.store.persistence.path), { recursive: true });
+  writeFileSync(input.store.persistence.path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  return state;
+}
+
+export function signTherapeuticProofCapsule(input: {
+  capsule: TherapeuticStrictProofCapsule;
+  signer: DojoProofSigner;
+  now?: string;
+}): TherapeuticStrictProofCapsule {
+  const signedAt = input.now ?? new Date().toISOString();
+  const unsigned = unsignedTherapeuticProofCapsule(input.capsule);
+  const envelope = input.signer.sign(canonicalDojoProofPayload({
+    ...unsigned,
+    signed_at: signedAt,
+  }));
+  return {
+    ...cloneJson(input.capsule),
+    signature_algorithm: envelope.algorithm,
+    signature_key_id: envelope.key_id,
+    signature: envelope.signature,
+    signing_provider: input.signer.provider,
+    key_custody: input.signer.key_custody,
+    signed_at: signedAt,
+  };
+}
+
+export function verifySignedTherapeuticProofCapsule(input: {
+  capsule: TherapeuticStrictProofCapsule;
+  verifier: DojoProofVerifier;
+}): TherapeuticSignedProofVerification {
+  const blockedBy: string[] = [];
+  if (!input.capsule.signature_algorithm) blockedBy.push("therapeutic_proof_signature_algorithm_missing");
+  if (!input.capsule.signature_key_id) blockedBy.push("therapeutic_proof_signature_key_missing");
+  if (!input.capsule.signature) blockedBy.push("therapeutic_proof_signature_missing");
+  if (!input.capsule.signed_at) blockedBy.push("therapeutic_proof_signed_at_missing");
+  if (input.capsule.signature_algorithm && input.capsule.signature_algorithm !== input.verifier.algorithm) {
+    blockedBy.push("therapeutic_proof_signature_algorithm_mismatch");
+  }
+  if (input.capsule.signature_key_id && input.capsule.signature_key_id !== input.verifier.key_id) {
+    blockedBy.push("therapeutic_proof_signature_key_mismatch");
+  }
+  let signatureVerified = false;
+  if (blockedBy.length === 0) {
+    try {
+      const envelope = parseDojoProofSignatureEnvelope({
+        algorithm: input.capsule.signature_algorithm!,
+        key_id: input.capsule.signature_key_id!,
+        signature: input.capsule.signature!,
+      });
+      signatureVerified = input.verifier.verify(canonicalDojoProofPayload({
+        ...unsignedTherapeuticProofCapsule(input.capsule),
+        signed_at: input.capsule.signed_at,
+      }), envelope);
+    } catch {
+      signatureVerified = false;
+    }
+    if (!signatureVerified) blockedBy.push("therapeutic_proof_signature_invalid");
+  }
+  return {
+    ok: blockedBy.length === 0,
+    signature_verified: signatureVerified,
+    blocked_by: uniqueStrings(blockedBy),
   };
 }
 
@@ -2759,6 +2926,63 @@ function grantExpiresAt(request: TherapeuticAccessRequest, now: string): string 
   }
   const parsed = new Date(request.expiration);
   return Number.isNaN(parsed.getTime()) ? "9999-12-31T23:59:59.999Z" : parsed.toISOString();
+}
+
+function withTherapeuticPersistence(
+  store: TherapeuticRuntimeStore,
+  tenantScope: TherapeuticTenantScope,
+  statePath: string
+): TherapeuticRuntimeStore {
+  return {
+    ...store,
+    tenant_scope: cloneJson(tenantScope),
+    persistence: {
+      kind: "file",
+      path: statePath,
+      durable: true,
+      last_persisted_at: store.persistence?.last_persisted_at,
+    },
+  };
+}
+
+function therapeuticRuntimeStatePath(rootDir: string, tenantScope: TherapeuticTenantScope, taskId: string): string {
+  return join(
+    rootDir,
+    safePathPart(tenantScope.tenant_id),
+    safePathPart(tenantScope.workspace_id),
+    `${safePathPart(taskId)}.therapeutic-runtime.json`
+  );
+}
+
+function readTherapeuticRuntimeState(path: string): TherapeuticDurableRuntimeState | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as TherapeuticDurableRuntimeState;
+    if (parsed?.schema_version !== "synthi.dojo.therapeuticRuntimeState.v1") return null;
+    if (!parsed.trace || !parsed.store || !parsed.tenant_scope) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function unsignedTherapeuticProofCapsule(capsule: TherapeuticStrictProofCapsule): Omit<
+  TherapeuticStrictProofCapsule,
+  "signature_algorithm" | "signature_key_id" | "signature" | "signing_provider" | "key_custody" | "signed_at"
+> {
+  const {
+    signature_algorithm: _signatureAlgorithm,
+    signature_key_id: _signatureKeyId,
+    signature: _signature,
+    signing_provider: _signingProvider,
+    key_custody: _keyCustody,
+    signed_at: _signedAt,
+    ...unsigned
+  } = capsule;
+  return cloneJson(unsigned);
+}
+
+function safePathPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "unknown";
 }
 
 function authorityDoseForGrant(

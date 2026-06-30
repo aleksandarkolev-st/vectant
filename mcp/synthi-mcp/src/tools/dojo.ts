@@ -68,7 +68,12 @@ import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types
 import { normalizeDojoGuardrailPredicate } from "../dojo/graph/guardrail_predicates.js";
 import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../dojo/graph/runtime.js";
 import {
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
+  DOJO_PROOF_SIGNING_KEY_ENV,
+  DOJO_PROOF_SIGNING_KEY_ID_ENV,
   DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
+  DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   resolveDojoControlPlaneStoreConfig,
@@ -90,7 +95,15 @@ import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { buildDojoProofKeyRecord, type DojoProofKeyRecord } from "../dojo/proof/key_registry.js";
 import { buildDojoProofPublicVerificationBundle } from "../dojo/proof/public_verification_export.js";
-import type { DojoProofVerifier } from "../dojo/proof/signing.js";
+import {
+  assertExternalDojoProofSigner,
+  createEd25519DojoProofSigner,
+  createExternalCommandDojoProofSigner,
+  createLocalHmacDojoProofSigner,
+  createManagedKeyServiceDojoProofSigner,
+  type DojoProofSigner,
+  type DojoProofVerifier,
+} from "../dojo/proof/signing.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
   type DojoHostedRuntimeActionDecision,
@@ -143,6 +156,7 @@ import {
 import {
   buildMlQualityDropTherapeuticDemoTrace,
   buildStrictProofCapsule,
+  createDurableTherapeuticRuntimeStore,
   createTherapeuticRuntimeStore,
   dispatchProtectedTherapeuticTool,
   emptyTherapeuticTrace,
@@ -151,10 +165,12 @@ import {
   executeTherapeuticRemediation,
   learnTherapeuticPolicyPatterns,
   recordTherapeuticDiagnosis,
+  persistTherapeuticRuntimeState,
   reviewTherapeuticAccessRequest,
   revokeTherapeuticGrant,
   revokeTherapeuticTaskGrants,
   runTherapeuticTomographyCheckrides,
+  signTherapeuticProofCapsule,
   summarizeProofMetrics,
   summarizeTherapeuticOutcomeMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
@@ -169,6 +185,7 @@ import {
   type TherapeuticRemediationProposal,
   type TherapeuticRiskLevel,
   type TherapeuticRuntimeStore,
+  type TherapeuticTenantScope,
   type TherapeuticTrace,
 } from "../dojo/tomography/index.js";
 import {
@@ -2528,12 +2545,16 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
 interface DojoTherapeuticRuntimeSession {
   trace: TherapeuticTrace;
   store: TherapeuticRuntimeStore;
+  tenant?: DojoTenantContext;
+  durable: boolean;
 }
 
 const dojoTherapeuticRuntimeSessions = new Map<string, DojoTherapeuticRuntimeSession>();
 
 function dojoTherapeuticInitTraceTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "practice_run", "synthi_dojo_therapeutic_init_trace");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   const userGoal = stringOpt(a["user_goal"]);
   if (!taskId || !userGoal) {
@@ -2566,12 +2587,27 @@ function dojoTherapeuticInitTraceTool(args: unknown): ToolResponse {
       severity: therapeuticRiskLevelOpt(a["severity"]) ?? "medium",
     });
   }
-  const store = createTherapeuticRuntimeStore();
-  dojoTherapeuticRuntimeSessions.set(taskId, { trace, store });
+  const durableDir = therapeuticDurableStoreDir(args);
+  const tenantScope = gate.tenant ? therapeuticTenantScope(gate.tenant) : undefined;
+  const durableRuntime = durableDir && tenantScope
+    ? createDurableTherapeuticRuntimeStore({
+        tenant_scope: tenantScope,
+        task_id: taskId,
+        root_dir: durableDir,
+        trace,
+        now,
+      })
+    : undefined;
+  const store = durableRuntime?.store ?? createTherapeuticRuntimeStore();
+  const activeTrace = durableRuntime?.trace ?? trace;
+  const session = { trace: activeTrace, store, tenant: gate.tenant, durable: Boolean(durableRuntime) };
+  dojoTherapeuticRuntimeSessions.set(dojoTherapeuticSessionKey(taskId, gate.tenant), session);
+  if (!gate.tenant) dojoTherapeuticRuntimeSessions.set(taskId, session);
+  persistTherapeuticRuntimeState({ trace: activeTrace, store, now });
   return jsonResponse({
     ok: true,
-    trace,
-    runtime: therapeuticRuntimeView({ trace, store }),
+    trace: activeTrace,
+    runtime: therapeuticRuntimeView(session),
   });
 }
 
@@ -2579,13 +2615,15 @@ async function dojoTherapeuticRunProbeTool(args: unknown): Promise<ToolResponse>
   const a = obj(args);
   const taskId = stringOpt(a["task_id"]);
   const probeName = stringOpt(a["probe_name"]);
+  const gate = requireDojoTherapeuticProductionGate(args, "practice_run", "synthi_dojo_therapeutic_run_probe");
+  if (!gate.ok) return gate.error;
   if (!taskId || !probeName) {
     return errorResponse("dojo_therapeutic_run_probe_invalid", {
       ok: false,
       blocked_by: ["task_id_required", "probe_name_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const contract = therapeuticProbeContractsForTaskClass(session.trace.task_class).find((probe) => probe.name === probeName);
   if (!contract) {
@@ -2605,6 +2643,7 @@ async function dojoTherapeuticRunProbeTool(args: unknown): Promise<ToolResponse>
     ...(Object.keys(mockOutput).length > 0 ? { adapter: () => mockOutput } : {}),
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: result.decision === "completed",
     result,
@@ -2614,6 +2653,8 @@ async function dojoTherapeuticRunProbeTool(args: unknown): Promise<ToolResponse>
 
 function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "proof_capsule_issue", "synthi_dojo_therapeutic_request_access");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_request_access_invalid", {
@@ -2621,7 +2662,7 @@ function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const request = therapeuticAccessRequestOpt(a["request"], taskId);
   if (!request) {
@@ -2632,7 +2673,7 @@ function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
-  const proofCapsule = boolOpt(a["build_proof"])
+  const unsignedProofCapsule = boolOpt(a["build_proof"])
     ? buildStrictProofCapsule({
         id: `proof_${request.id}`,
         task_id: taskId,
@@ -2644,6 +2685,13 @@ function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
         timestamp: now,
       })
     : undefined;
+  const proofCapsule = unsignedProofCapsule && (boolOpt(a["sign_proof"]) || resolveDojoEnforcementConfig().require_external_signing)
+    ? signTherapeuticProofCapsule({
+        capsule: unsignedProofCapsule,
+        signer: dojoTherapeuticProofSignerFromArgs(args),
+        now,
+      })
+    : unsignedProofCapsule;
   const result = enforceTherapeuticAccessRequest({
     trace: session.trace,
     store: session.store,
@@ -2651,6 +2699,7 @@ function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
     proof_capsule: proofCapsule,
     now,
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now });
   return jsonResponse({
     ok: result.decision === "approved",
     result,
@@ -2660,6 +2709,10 @@ function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticDispatchProtectedTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "practice_run", "synthi_dojo_therapeutic_dispatch_protected_tool", {
+    hosted_runtime_required: true,
+  });
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   const toolName = stringOpt(a["tool_name"]);
   const mode = therapeuticAccessModeOpt(a["mode"]);
@@ -2671,7 +2724,7 @@ function dojoTherapeuticDispatchProtectedTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_tool_name_data_classes_mode_scope_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const result = dispatchProtectedTherapeuticTool({
     trace: session.trace,
@@ -2684,6 +2737,7 @@ function dojoTherapeuticDispatchProtectedTool(args: unknown): ToolResponse {
     },
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: result.decision === "approved",
     result,
@@ -2693,6 +2747,8 @@ function dojoTherapeuticDispatchProtectedTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticRevokeGrantsTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "proof_capsule_revoke", "synthi_dojo_therapeutic_revoke_grants");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_revoke_invalid", {
@@ -2700,7 +2756,7 @@ function dojoTherapeuticRevokeGrantsTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const grantId = stringOpt(a["grant_id"]);
   const reason = stringOpt(a["reason"]) ?? "task_end";
@@ -2708,6 +2764,7 @@ function dojoTherapeuticRevokeGrantsTool(args: unknown): ToolResponse {
   const revoked = grantId
     ? [revokeTherapeuticGrant({ trace: session.trace, store: session.store, grant_id: grantId, reason, now })].filter((grant) => grant !== null)
     : revokeTherapeuticTaskGrants({ trace: session.trace, store: session.store, reason, now });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now });
   return jsonResponse({
     ok: revoked.length > 0,
     revoked,
@@ -2717,6 +2774,8 @@ function dojoTherapeuticRevokeGrantsTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticRunCheckridesTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "checkride_run", "synthi_dojo_therapeutic_run_checkrides");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_run_checkrides_invalid", {
@@ -2724,7 +2783,7 @@ function dojoTherapeuticRunCheckridesTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const availableRequests = (Array.isArray(a["available_requests"]) ? a["available_requests"] : [])
     .map((value) => therapeuticAccessRequestOpt(value, taskId))
@@ -2735,6 +2794,7 @@ function dojoTherapeuticRunCheckridesTool(args: unknown): ToolResponse {
     available_requests: availableRequests,
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: report.failed_count === 0,
     report,
@@ -2744,6 +2804,8 @@ function dojoTherapeuticRunCheckridesTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticLearnPolicyTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "governance_view", "synthi_dojo_therapeutic_learn_policy");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_learn_policy_invalid", {
@@ -2751,13 +2813,14 @@ function dojoTherapeuticLearnPolicyTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const records = learnTherapeuticPolicyPatterns({
     traces: [session.trace],
     store: session.store,
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: true,
     records,
@@ -2767,6 +2830,8 @@ function dojoTherapeuticLearnPolicyTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticReviewAccessTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "permission_upgrade_review", "synthi_dojo_therapeutic_review_access");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   const reviewId = stringOpt(a["review_id"]);
   const status = stringOpt(a["status"]);
@@ -2778,7 +2843,7 @@ function dojoTherapeuticReviewAccessTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_review_id_status_reviewer_role_rationale_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const result = reviewTherapeuticAccessRequest({
     trace: session.trace,
@@ -2789,6 +2854,7 @@ function dojoTherapeuticReviewAccessTool(args: unknown): ToolResponse {
     rationale,
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: result.decision === "approved",
     result,
@@ -2798,6 +2864,8 @@ function dojoTherapeuticReviewAccessTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticRecordDiagnosisTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "practice_run", "synthi_dojo_therapeutic_record_diagnosis");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   const diagnosis = stringOpt(a["diagnosis"]);
   if (!taskId || !diagnosis) {
@@ -2806,7 +2874,7 @@ function dojoTherapeuticRecordDiagnosisTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_diagnosis_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const result = recordTherapeuticDiagnosis({
     trace: session.trace,
@@ -2816,6 +2884,7 @@ function dojoTherapeuticRecordDiagnosisTool(args: unknown): ToolResponse {
     evidence_refs: stringArrayOpt(a["evidence_refs"]),
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: true,
     result,
@@ -2825,6 +2894,8 @@ function dojoTherapeuticRecordDiagnosisTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "permission_upgrade_review", "synthi_dojo_therapeutic_propose_remediation");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_remediation_invalid", {
@@ -2832,7 +2903,7 @@ function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const proposal = therapeuticRemediationProposalOpt(a["proposal"], taskId);
   if (!proposal) {
@@ -2849,6 +2920,7 @@ function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
     policy: { ...THERAPEUTIC_DEFAULT_POLICY, mutation_allowed: true },
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: result.decision === "approved",
     result,
@@ -2858,6 +2930,8 @@ function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
 
 function dojoTherapeuticVerifyRemediationTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const gate = requireDojoTherapeuticProductionGate(args, "practice_run", "synthi_dojo_therapeutic_verify_remediation");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(a["task_id"]);
   const remediationId = stringOpt(a["remediation_id"]);
   const postconditionResults = therapeuticPostconditionResultsOpt(a["postcondition_results"]);
@@ -2867,7 +2941,7 @@ function dojoTherapeuticVerifyRemediationTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_remediation_id_postcondition_results_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   const result = verifyTherapeuticRemediationPostconditions({
     trace: session.trace,
@@ -2876,6 +2950,7 @@ function dojoTherapeuticVerifyRemediationTool(args: unknown): ToolResponse {
     postcondition_results: postconditionResults,
     now: stringOpt(a["now"]),
   });
+  persistTherapeuticRuntimeState({ trace: session.trace, store: session.store, now: stringOpt(a["now"]) });
   return jsonResponse({
     ok: result.verification.status === "passed",
     result,
@@ -2884,6 +2959,8 @@ function dojoTherapeuticVerifyRemediationTool(args: unknown): ToolResponse {
 }
 
 function dojoTherapeuticGetRuntimeTool(args: unknown): ToolResponse {
+  const gate = requireDojoTherapeuticProductionGate(args, "governance_view", "synthi_dojo_therapeutic_get_runtime");
+  if (!gate.ok) return gate.error;
   const taskId = stringOpt(obj(args)["task_id"]);
   if (!taskId) {
     return errorResponse("dojo_therapeutic_get_runtime_invalid", {
@@ -2891,7 +2968,7 @@ function dojoTherapeuticGetRuntimeTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required"],
     });
   }
-  const session = dojoTherapeuticSession(taskId);
+  const session = dojoTherapeuticSession(taskId, gate.tenant);
   if (!session) return therapeuticRuntimeMissing(taskId);
   return jsonResponse({
     ok: true,
@@ -2899,8 +2976,13 @@ function dojoTherapeuticGetRuntimeTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoTherapeuticSession(taskId: string): DojoTherapeuticRuntimeSession | undefined {
-  return dojoTherapeuticRuntimeSessions.get(taskId);
+function dojoTherapeuticSession(taskId: string, tenant?: DojoTenantContext): DojoTherapeuticRuntimeSession | undefined {
+  return dojoTherapeuticRuntimeSessions.get(dojoTherapeuticSessionKey(taskId, tenant))
+    ?? (!tenant ? dojoTherapeuticRuntimeSessions.get(taskId) : undefined);
+}
+
+function dojoTherapeuticSessionKey(taskId: string, tenant?: DojoTenantContext): string {
+  return tenant ? `${tenant.tenant_id}\0${tenant.workspace_id}\0${taskId}` : taskId;
 }
 
 function therapeuticRuntimeMissing(taskId: string): ToolResponse {
@@ -2914,6 +2996,9 @@ function therapeuticRuntimeMissing(taskId: string): ToolResponse {
 function therapeuticRuntimeView(session: DojoTherapeuticRuntimeSession): Record<string, unknown> {
   return {
     trace: session.trace,
+    tenant_scope: session.store.tenant_scope ?? (session.tenant ? therapeuticTenantScope(session.tenant) : null),
+    durable: session.durable,
+    persistence: session.store.persistence ?? null,
     evidence_records: session.store.evidence_records,
     audit_records: session.store.audit_records,
     grants: session.store.grants,
@@ -2943,6 +3028,129 @@ function therapeuticRuntimeView(session: DojoTherapeuticRuntimeSession): Record<
     remediation_verifications: session.store.remediation_verifications,
     reconstructable: session.store.evidence_records.length + session.store.audit_records.length > 0,
   };
+}
+
+function requireDojoTherapeuticProductionGate(
+  args: unknown,
+  action: DojoGovernanceRbacAction,
+  operation: string,
+  options: { hosted_runtime_required?: boolean } = {}
+): { ok: true; tenant?: DojoTenantContext } | { ok: false; error: ToolResponse } {
+  const enforcement = resolveDojoEnforcementConfig();
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext;
+  if (!enforcement.production_enforcement) return { ok: true, tenant: tenantContext.tenant };
+
+  const rbac = requireDojoProductionGovernanceRbac({
+    tenant: tenantContext.tenant,
+    action,
+    error: "dojo_therapeutic_production_rbac_denied",
+    details: { operation },
+  });
+  if (!rbac.ok) return rbac;
+
+  if (enforcement.require_durable_store && !therapeuticDurableStoreDir(args)) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_therapeutic_durable_store_required", {
+        ok: false,
+        operation,
+        enforcement_mode: enforcement.enforcement_mode,
+        required_env: ["SYNTHI_DOJO_THERAPEUTIC_STORE_DIR"],
+        blocked_by: ["therapeutic_durable_store_required"],
+      }),
+    };
+  }
+
+  if (options.hosted_runtime_required) {
+    const a = obj(args);
+    const hostedRuntimeSessionId = stringOpt(a["hosted_runtime_session_id"]);
+    const hostedRuntimeAuthorized = boolOpt(a["hosted_runtime_authorized"]);
+    const hostedRuntimeUrl = stringOpt(a["hosted_runtime_url"]);
+    const blockedBy = [
+      ...(!hostedRuntimeSessionId || !hostedRuntimeAuthorized ? ["hosted_runtime_authorization_required"] : []),
+      ...(hostedRuntimeUrl && isLoopbackUrl(hostedRuntimeUrl) ? ["hosted_runtime_loopback_forbidden"] : []),
+    ];
+    if (blockedBy.length > 0) {
+      return {
+        ok: false,
+        error: errorResponse("dojo_therapeutic_hosted_runtime_required", {
+          ok: false,
+          operation,
+          hosted_runtime_session_id: hostedRuntimeSessionId ?? null,
+          blocked_by: blockedBy,
+        }),
+      };
+    }
+  }
+
+  return { ok: true, tenant: tenantContext.tenant };
+}
+
+function therapeuticDurableStoreDir(args: unknown): string | undefined {
+  return stringOpt(obj(args)["durable_store_dir"]) ?? stringOpt(process.env.SYNTHI_DOJO_THERAPEUTIC_STORE_DIR);
+}
+
+function therapeuticTenantScope(tenant: DojoTenantContext): TherapeuticTenantScope {
+  return {
+    tenant_id: tenant.tenant_id,
+    workspace_id: tenant.workspace_id,
+    actor_id: tenant.actor_id,
+    ...(tenant.data_region ? { data_region: tenant.data_region } : {}),
+  };
+}
+
+function dojoTherapeuticProofSignerFromArgs(args: unknown): DojoProofSigner {
+  const a = obj(args);
+  const provider = stringOpt(a["proof_signing_provider"]) ?? process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV];
+  const keyId = stringOpt(a["proof_signing_key_id"]) ?? process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV] ?? "therapeutic-proof-key";
+  let signer: DojoProofSigner;
+  if (provider === "managed-key-service") {
+    signer = createManagedKeyServiceDojoProofSigner({
+      key_id: keyId,
+      key_uri: stringOpt(a["proof_signing_managed_key_uri"]) ?? process.env[DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV] ?? "",
+      command: stringOpt(a["proof_signing_command"]) ?? process.env[DOJO_PROOF_SIGNING_COMMAND_ENV] ?? "",
+      args: proofSigningCommandArgs(a["proof_signing_command_args"] ?? process.env[DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV]),
+    });
+  } else if (provider === "external-command") {
+    signer = createExternalCommandDojoProofSigner({
+      key_id: keyId,
+      command: stringOpt(a["proof_signing_command"]) ?? process.env[DOJO_PROOF_SIGNING_COMMAND_ENV] ?? "",
+      args: proofSigningCommandArgs(a["proof_signing_command_args"] ?? process.env[DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV]),
+    });
+  } else if (provider === "ed25519-local") {
+    signer = createEd25519DojoProofSigner({
+      key_id: keyId,
+      private_key_pem: stringOpt(a["proof_signing_private_key_pem"]) ?? process.env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV] ?? "",
+    });
+  } else {
+    signer = createLocalHmacDojoProofSigner({
+      key: stringOpt(a["proof_signing_key"]) ?? process.env[DOJO_PROOF_SIGNING_KEY_ENV],
+      key_id: keyId,
+    });
+  }
+  if (resolveDojoEnforcementConfig().require_external_signing) assertExternalDojoProofSigner(signer);
+  return signer;
+}
+
+function proofSigningCommandArgs(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return value.split(/\s+/).filter(Boolean);
+  }
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+  } catch {
+    return true;
+  }
 }
 
 function therapeuticAccessRequestOpt(value: unknown, fallbackTaskId: string): TherapeuticAccessRequest | undefined {
