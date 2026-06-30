@@ -115,7 +115,9 @@ function radarState() {
         lineAnchor: 'L42',
         displayCallsign: 'ATLAS-1',
         reasonRef: 'rfi:checkout',
-        evidenceRefs: ['proof-1'],
+        evidenceRefs: ['proof-1', 'hunk:checkout'],
+        processAncestry: ['mcp:synthi_codesite_apply_patch'],
+        promptSummary: 'Add checkout route',
       }],
       inboxItems: [{
         id: 'inbox-1',
@@ -221,6 +223,9 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');
+    expect(container.textContent).toContain('hunk:checkout');
+    expect(container.textContent).toContain('mcp:synthi_codesite_apply_patch');
+    expect(container.textContent).toContain('Add checkout route');
     expect(container.textContent).toContain('Agent Inbox');
     expect(container.textContent).toContain('Need schema owner');
     expect(container.textContent).toContain('logicalTime');

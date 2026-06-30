@@ -145,9 +145,9 @@ function Metric({ label, value, tone = null, testId }) {
   );
 }
 
-function PathList({ paths, empty = 'none' }) {
+function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   const list = asArray(paths);
-  const visible = list.slice(0, 4);
+  const visible = list.slice(0, maxVisible);
   if (visible.length === 0) {
     return <span style={{ color: 'var(--text-muted)' }}>{empty}</span>;
   }
@@ -394,7 +394,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const incidents = asArray(currentProject?.incidents);
   const inboxItems = asArray(currentProject?.inboxItems);
   const artifacts = asArray(radarState.artifactPreview?.files);
-  const events = asArray(radarState.events).slice(-8).reverse();
+  const events = asArray(radarState.events).slice(-12).reverse();
   const zones = asArray(currentProject?.zonePolicy?.zones);
   const noFlyZones = asArray(currentProject?.zonePolicy?.noFlyZones || currentProject?.zonePolicy?.noFly)
     .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
@@ -795,8 +795,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         </div>
                         <div className="mt-1 grid gap-1 sm:grid-cols-2">
                           <PathList paths={[row.lineAnchor, row.reasonRef].filter(Boolean)} empty="no anchor" />
-                          <PathList paths={row.evidenceRefs || []} empty="no evidence refs" />
+                          <PathList paths={[...asArray(row.evidenceRefs), ...asArray(row.processAncestry)]} empty="no evidence refs" maxVisible={8} />
                         </div>
+                        {row.promptSummary ? (
+                          <div className="mt-1 truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{row.promptSummary}</div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
