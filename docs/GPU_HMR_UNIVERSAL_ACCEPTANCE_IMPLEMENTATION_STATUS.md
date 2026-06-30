@@ -40,6 +40,8 @@ Accepted cold source intake now also derives a generic runtime-boundary expectat
 
 That expectation is now actionable through a support-only runtime-boundary event-manifest template facet. `synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1` derives five `synthi.gpu_hmr.runtime_boundary_event.v1` event object templates for `artifact_transport`, `epoch_publication`, `dispatch_trace`, `host_identity`, and `output_oracle`, plus backend-specific field hints for HIP/ROCm, OpenCL, Vulkan, WebGPU, Metal, CUDA, and SYCL. The template deliberately does not emit a populated `runtimeBoundaryEvents` array, so it cannot be replayed as observed runtime proof. The materialized wgpu run retained manifest `sha256:152be8457623c5ca7b1e3a07b25c54c64d7e1e084b93360719ca426ccef136f8`, accepted source intake, accepted runtime-boundary expectation, accepted the event-manifest template with template hash `sha256:f49030222a1390e3cc972c78bf66b170d4da0b1e53932f7400e03ceeb8981aa5`, and still recorded `gpuHmrSuccess=false` and `canSatisfyRuntimeProof=false`.
 
+Validation-matrix code now has an independent `coldRuntimeBoundaryEventManifestTemplateFacet` verifier for that cold template. It recomputes the top-level template hash, recomputes every per-event template hash, requires the five app-hook event kinds, rejects any GPU HMR/runtime/dispatch authority claim, and refuses templates that smuggle populated `runtimeBoundaryEvents` into a support artifact. The matrix smoke suite covers the accepted support-only template plus forged success, populated-runtime-events, missing output-oracle, bad per-event hash, and bad top-level hash cases.
+
 Verification for this patch:
 
 ```text
@@ -48,6 +50,10 @@ npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including 
 npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen with SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000 -> failed closed, gpu-real-rocm-MIOpen-20260630171112
 node --check mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs -> passed
 npm --prefix mcp/synthi-mcp run proof:random-large-project:cold:self-check -> passed, including default unprofiled arbitrary candidate coverage
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including cold runtime-boundary event-template adversarial cases, proofId gpu-validation-matrix-ledger:sha256:bf5619260d1f5ec9f068f3991071203695e1c23284ea0e648a207ccdb02b1587
+node mcp/synthi-mcp/scripts/gpu-hmr-validation-matrix-ledger.mjs --self-check -> passed, proofId gpu-validation-matrix-ledger:sha256:97ee5dcb3e4e4a7193db7d76ae4dcbc0810ade929206cacae40032b58db693be
 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --dry-run --source-url https://example.invalid/user/project.git --commit 1111111111111111111111111111111111111111 --source-id direct-user-project -> passed, selected direct-user-project, manifest sha256:896d0e4dc1097f9a1e69d860a313eda596d7053f3f31a38a395cd1e71a1da178
 SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE=0 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --source-url https://example.invalid/user/project.git --commit 1111111111111111111111111111111111111111 --source-id direct-user-project -> passed as fail-closed direct arbitrary-project refusal, manifest sha256:7b19a1e689b26ff13b43402edecc434fcd1bc44430c5976355697f82e4fd922b
 node mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs --source-url https://github.com/gfx-rs/wgpu.git --commit 22c6cb18d4b73254b0d62511e6a9d68e06dea70f --source-id direct-wgpu-user-path -> passed as fail-closed direct arbitrary-project intake with accepted source listing, manifest sha256:0c43d180417d4d8f25ba52f6de87b67d7f6c5a91ec4738269526bdf6d0578303
