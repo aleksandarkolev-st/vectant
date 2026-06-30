@@ -2183,6 +2183,10 @@ export async function getControlState(workspaceSlug, projectId) {
   });
   if (!project) throw notFound('project_not_found');
   const projection = projectProjection(project);
+  return buildControlState(workspaceSlug, projection);
+}
+
+function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
   const requiredActions = [
     ...projection.assumptions
@@ -2193,10 +2197,10 @@ export async function getControlState(workspaceSlug, projectId) {
       .map((item) => `ack_event:${item.eventId || item.id}`),
   ];
   return {
-    projectId: project.id,
+    projectId: projection.id,
     workspaceSlug,
     towerState: requiredActions.length ? 'holding' : 'active',
-    status: project.status,
+    status: projection.status,
     activeFlights: projection.executionPlans.filter((plan) => ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding'].includes(plan.status)),
     activeMutationLeases: activeLeases,
     activeTransactions: projection.mutationTxns.filter((txn) => ['open', 'validated', 'blocked'].includes(txn.status)),
@@ -2475,7 +2479,7 @@ async function recordEvent(projectId, input) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
     try {
-      return await prisma.codeSiteEvent.create({
+      const event = await prisma.codeSiteEvent.create({
         data: {
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
@@ -2488,11 +2492,46 @@ async function recordEvent(projectId, input) {
           logicalTime: logicalTime + 1,
         },
       });
+      await syncArtifactsAfterEvent(projectId, event);
+      return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;
     }
   }
   throw new Error('codesite_event_logical_time_conflict');
+}
+
+async function syncArtifactsAfterEvent(projectId, event) {
+  if (!autoArtifactSyncEnabled()) return null;
+  try {
+    const project = await prisma.codeSiteProject.findUnique({
+      where: { id: projectId },
+      include: PROJECT_INCLUDE,
+    });
+    if (!project) return null;
+    const projection = projectProjection(project);
+    const controlState = buildControlState(project.workspaceSlug, projection);
+    const result = await writeArtifactProjection(projection, controlState);
+    return {
+      eventId: event?.id || null,
+      ...result,
+    };
+  } catch (error) {
+    console.warn('[CodeSite] artifact auto-sync failed', {
+      projectId,
+      eventId: event?.id || null,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
+function autoArtifactSyncEnabled() {
+  const configured = process.env.SYNTHI_CODESITE_AUTO_ARTIFACT_SYNC;
+  if (/^(0|false|off|no)$/i.test(String(configured || ''))) return false;
+  if (/^(1|true|on|yes)$/i.test(String(configured || ''))) return true;
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST_WORKER_ID) return false;
+  return true;
 }
 
 function isLogicalTimeConflict(error) {
