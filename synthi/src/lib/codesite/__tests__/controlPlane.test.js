@@ -108,6 +108,7 @@ import {
   getProofBundle,
   getSourceStateSince,
   openTransaction,
+  preflightCodeSiteFsWrite,
   recordTransactionWrite,
   requestMutationLease,
   validateTransaction,
@@ -1305,6 +1306,99 @@ describe('CodeSite control plane transaction validation', () => {
         eventType: 'write_denied',
         actorType: 'codesitefs',
         detailsJson: expect.stringContaining('outside_clearance_route'),
+      }),
+    }));
+  });
+
+  it('blocks unmanaged CodeSiteFS preflight writes when no active clearance covers the path', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+
+    const result = await preflightCodeSiteFsWrite('acme', 'project-1', {
+      path: 'backend/collab-server/permissionMiddleware.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+      processAncestry: ['runtime-pod', 'bash'],
+      evidenceRefs: ['runtime:event:terminal-write-1'],
+    }, { userId: 'user-1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      disposition: 'write_denied',
+      path: 'backend/collab-server/permissionMiddleware.js',
+      reasonCodes: ['active_clearance_required'],
+      matchedLease: null,
+      policyDecision: {
+        decision: 'block',
+        reasonCodes: ['active_clearance_required'],
+      },
+    });
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: null,
+        decision: 'block',
+        inputDigest: expect.any(String),
+        decisionJson: expect.stringContaining('runtime_pod_terminal'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_denied',
+        actorType: 'codesitefs',
+        evidenceRefsJson: JSON.stringify(['runtime:event:terminal-write-1']),
+        detailsJson: expect.stringContaining('active_clearance_required'),
+      }),
+    }));
+  });
+
+  it('allows CodeSiteFS preflight writes when an active lease matches path and tool', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([{
+      id: 'lease-terminal-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'RUNTIME-1',
+      status: 'active',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['backend/collab-server/**'],
+        allowedTools: ['terminal_exec'],
+      }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'RUNTIME-1',
+      },
+    }]);
+
+    const result = await preflightCodeSiteFsWrite('acme', 'project-1', {
+      path: 'backend/collab-server/terminalService.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+    }, { userId: 'user-1' });
+
+    expect(result).toMatchObject({
+      ok: true,
+      disposition: 'write_allowed',
+      path: 'backend/collab-server/terminalService.js',
+      reasonCodes: ['inside_clearance_route'],
+      matchedLease: {
+        id: 'lease-terminal-1',
+        displayCallsign: 'RUNTIME-1',
+      },
+      policyDecision: {
+        decision: 'allow',
+        mutationLeaseId: 'lease-terminal-1',
+      },
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-terminal-1',
+        eventType: 'write_allowed',
+        actorType: 'codesitefs',
+        detailsJson: expect.stringContaining('inside_clearance_route'),
       }),
     }));
   });

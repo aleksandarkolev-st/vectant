@@ -28,6 +28,7 @@ import {
   getTransaction,
   listProjects,
   openTransaction,
+  preflightCodeSiteFsWrite,
   recordPolicyDecision,
   recordAssumption,
   recordTransactionRead,
@@ -247,6 +248,10 @@ export async function POST(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'shadow-merge-simulate') {
       return okJson(await shadowMergeSimulate(slug, route[1], body));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'codesitefs-events') {
+      return okJson(await preflightCodeSiteFsWrite(slug, route[1], body, access.actor), { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'documents') {

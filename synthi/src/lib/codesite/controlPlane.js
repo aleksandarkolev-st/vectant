@@ -1153,6 +1153,132 @@ export async function dryRunTransactionWrites(workspaceSlug, transactionId, body
   return { transaction: transactionProjection(transaction), results };
 }
 
+export async function preflightCodeSiteFsWrite(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId);
+  const path = normalizePath(body.path || body.filePath || body.file_path);
+  if (!path) throw badRequest('invalid_path');
+  const tool = body.tool || body.operation || body.source || 'file_write';
+  const source = body.source || body.adapter || body.runtime || 'codesitefs';
+  const requestedDisposition = body.disposition || body.type || body.eventType || body.event_type || null;
+  const codesiteFsEvent = {
+    type: requestedDisposition,
+    source,
+    operation: body.operation || 'write',
+    path,
+    details: body.details || {},
+    evidence_refs: body.evidenceRefs || body.evidence_refs || [],
+  };
+  const writeEvidence = writeEvidenceFromBody(body, path, codesiteFsEvent);
+  const evidenceRefs = asArray(writeEvidence.evidenceRefs);
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const activeLeases = await prisma.codeSiteMutationLease.findMany({
+    where: { projectId: project.id, status: 'active' },
+    include: { agentSession: true },
+    orderBy: { issuedAt: 'desc' },
+  });
+  const requestedLeaseId = body.mutationLeaseId || body.mutation_lease_id || null;
+  const candidateLeases = requestedLeaseId
+    ? [requireActiveCodeSiteFsLease(activeLeases, requestedLeaseId, actor)]
+    : activeLeases.filter((lease) => actorCanUseLease(lease, actor));
+  const evaluations = candidateLeases.map((lease) => ({
+    lease,
+    evaluation: evaluatePathMutation({ lease, path, tool, zonePolicy }),
+  }));
+  const match = evaluations.find((item) => item.evaluation.ok);
+  const strongestBlock = chooseCodeSiteFsBlock(evaluations, path, zonePolicy);
+  const forcedQuarantine = requestedDisposition === 'write_quarantined' || body.quarantine === true;
+  const allowed = Boolean(match) && !forcedQuarantine && requestedDisposition !== 'write_denied';
+  const disposition = allowed ? 'write_allowed' : (forcedQuarantine ? 'write_quarantined' : 'write_denied');
+  const decision = await createPolicyDecision(project.id, {
+    mutationLeaseId: match?.lease?.id || null,
+    displayCallsign: match?.lease?.displayCallsign || body.displayCallsign || body.display_callsign || null,
+    decision: allowed ? 'allow' : (disposition === 'write_quarantined' ? 'quarantine' : 'block'),
+    reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+    input: {
+      projectId,
+      path,
+      tool,
+      source,
+      requestedDisposition,
+      activeLeaseIds: candidateLeases.map((lease) => lease.id),
+    },
+    decisionJson: {
+      path,
+      tool,
+      source,
+      zone: allowed ? match.evaluation.zone : strongestBlock.zone,
+      matchedLeaseId: match?.lease?.id || null,
+      inspectedLeases: evaluations.map((item) => ({
+        mutationLeaseId: item.lease.id,
+        displayCallsign: item.lease.displayCallsign,
+        ok: item.evaluation.ok,
+        reasonCodes: item.evaluation.reasonCodes,
+      })),
+      towerInstruction: allowed
+        ? `Write preflight allowed for ${path}. Apply through the active transaction-aware adapter.`
+        : `Write preflight blocked for ${path}. Request clearance or quarantine outside the real repo.`,
+    },
+  });
+  await recordEvent(project.id, {
+    mutationLeaseId: match?.lease?.id || null,
+    eventType: disposition,
+    displayCallsign: match?.lease?.displayCallsign || body.displayCallsign || body.display_callsign || null,
+    actorType: 'codesitefs',
+    actorId: decision.id,
+    evidenceRefs,
+    details: {
+      projectId,
+      path,
+      tool,
+      source,
+      disposition,
+      prevented: disposition !== 'write_allowed',
+      reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+      policyDecisionId: decision.id,
+      matchedLeaseId: match?.lease?.id || null,
+      zone: allowed ? match.evaluation.zone : strongestBlock.zone,
+      codesiteFsEvent,
+      ...writeEvidence,
+    },
+  });
+  return {
+    ok: allowed,
+    disposition,
+    path,
+    source,
+    tool,
+    matchedLease: match ? mutationLeaseProjection(match.lease) : null,
+    policyDecision: policyDecisionProjection(decision),
+    reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+  };
+}
+
+function requireActiveCodeSiteFsLease(activeLeases, requestedLeaseId, actor) {
+  const lease = activeLeases.find((item) => item.id === requestedLeaseId);
+  if (!lease) throw badRequest('mutation_lease_not_active', { mutationLeaseId: requestedLeaseId });
+  requireLeaseActorAccess(lease, actor);
+  return lease;
+}
+
+function actorCanUseLease(lease, actor = null) {
+  if (!actor || actor.bypass) return true;
+  return Boolean(actor.userId && lease.agentSession?.ownerUserId === actor.userId);
+}
+
+function chooseCodeSiteFsBlock(evaluations, path, zonePolicy) {
+  if (!evaluations.length) {
+    return {
+      reasonCodes: ['active_clearance_required'],
+      zone: classifyPath(path, zonePolicy),
+    };
+  }
+  const noFly = evaluations.find((item) => item.evaluation.reasonCodes.includes('entered_no_fly_zone'));
+  if (noFly) return noFly.evaluation;
+  const outside = evaluations.find((item) => item.evaluation.reasonCodes.includes('outside_clearance_route'));
+  if (outside) return outside.evaluation;
+  return evaluations[0].evaluation;
+}
+
 function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
   const lineProvenance = normalizeLineProvenanceInput(
     body.lineProvenance

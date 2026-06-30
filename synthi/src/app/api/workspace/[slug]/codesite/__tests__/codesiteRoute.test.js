@@ -24,6 +24,7 @@ const {
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getSourceStateSince: vi.fn(),
+    preflightCodeSiteFsWrite: vi.fn(),
     validateTransaction: vi.fn(),
   },
 }));
@@ -76,6 +77,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getTransaction',
     'listProjects',
     'openTransaction',
+    'preflightCodeSiteFsWrite',
     'recordPolicyDecision',
     'recordAssumption',
     'recordTransactionRead',
@@ -159,6 +161,38 @@ describe('CodeSite catch-all route', () => {
       'acme',
       'txn-1',
       { path: 'api/auth/signup.ts' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('dispatches CodeSiteFS preflight events before external adapters mutate files', async () => {
+    controlPlane.preflightCodeSiteFsWrite.mockResolvedValue({
+      ok: false,
+      disposition: 'write_denied',
+      reasonCodes: ['active_clearance_required'],
+    });
+    const body = {
+      path: 'backend/collab-server/terminalService.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+    };
+    const request = new Request('http://test/api/workspace/acme/codesite/projects/proj-1/codesitefs-events', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const response = await POST(request, params(['projects', 'proj-1', 'codesitefs-events']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      ok: false,
+      disposition: 'write_denied',
+      reasonCodes: ['active_clearance_required'],
+    });
+    expect(controlPlane.preflightCodeSiteFsWrite).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      body,
       expect.objectContaining({ userId: 'user-1' }),
     );
   });
