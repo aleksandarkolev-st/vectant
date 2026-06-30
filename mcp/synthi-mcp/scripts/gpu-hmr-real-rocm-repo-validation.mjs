@@ -3700,6 +3700,20 @@ function runtimeProfileAdapterResultBridgeBlockingGaps(bridge = {}) {
 }
 
 function runtimeProfileAdapterResultBridgeBoundaryImportGaps(bridge = {}) {
+  const explicitBoundaryGaps = compactStringList([
+    ...(Array.isArray(bridge?.boundaryImportBlockingGaps)
+      ? bridge.boundaryImportBlockingGaps
+      : []),
+    ...(Array.isArray(bridge?.boundary_import_blocking_gaps)
+      ? bridge.boundary_import_blocking_gaps
+      : []),
+  ]);
+  if (
+    Object.prototype.hasOwnProperty.call(bridge ?? {}, 'boundaryImportBlockingGaps')
+    || Object.prototype.hasOwnProperty.call(bridge ?? {}, 'boundary_import_blocking_gaps')
+  ) {
+    return explicitBoundaryGaps;
+  }
   return runtimeProfileAdapterResultBridgeBlockingGaps(bridge)
     .filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted');
 }
@@ -3806,6 +3820,25 @@ function runtimeAdapterTransportUsableForFinalSupport(transport = {}) {
     && transport.can_satisfy_runtime_proof !== true;
 }
 
+function runtimeAdapterEventManifestTransportUsableForFinalSupport(transport = {}) {
+  if (!transport || typeof transport !== 'object' || Array.isArray(transport)) return false;
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(transport.blockingGaps) ? transport.blockingGaps : []),
+    ...(Array.isArray(transport.blocking_gaps) ? transport.blocking_gaps : []),
+  ]);
+  const proofAuthority = stringField(transport, ['proofAuthority', 'proof_authority']);
+  return transport.declared === true
+    && transport.copied === true
+    && proofAuthority === 'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success'
+    && blockingGaps.length === 0
+    && transport.acceptedForGpuHmr !== true
+    && transport.accepted_for_gpu_hmr !== true
+    && transport.gpuHmrSuccess !== true
+    && transport.gpu_hmr_success !== true
+    && transport.canSatisfyRuntimeProof !== true
+    && transport.can_satisfy_runtime_proof !== true;
+}
+
 function runtimeAdapterStageEventsUsableForFinalSupport(stageEvents = {}) {
   if (!stageEvents || typeof stageEvents !== 'object' || Array.isArray(stageEvents)) return false;
   const proofAuthority = stringField(stageEvents, ['proofAuthority', 'proof_authority']);
@@ -3868,6 +3901,7 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
   const bridge = report.real_rocm_runtime_profile_adapter_result;
   const execution = report.real_rocm_runtime_adapter_execution;
   const transport = report.real_rocm_runtime_adapter_result_transport;
+  const eventManifestTransport = report.real_rocm_runtime_adapter_event_manifest_transport;
   const stageEvents = report.real_rocm_runtime_adapter_stage_events;
   const targetProcessProvenance =
     report.real_rocm_runtime_boundary_target_process_provenance;
@@ -3890,6 +3924,11 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
   const transportAccepted =
     transport?.declared !== true
     || runtimeAdapterTransportUsableForFinalSupport(transport);
+  const eventManifestTransportAccepted =
+    eventManifestTransport?.declared !== true
+    || runtimeAdapterEventManifestTransportUsableForFinalSupport(eventManifestTransport);
+  const boundaryTransportAccepted =
+    transportAccepted || eventManifestTransportAccepted;
   const stageEventsAccepted = runtimeAdapterStageEventsUsableForFinalSupport(stageEvents);
   const targetProcessProvenanceAccepted =
     runtimeBoundaryTargetProcessProvenanceUsableForFinalSupport(targetProcessProvenance);
@@ -3897,7 +3936,7 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
   const boundaryImportCanStandInForMissingExecution =
     !directExecutionPresent
     && bridgeCanSupportMissingExecution
-    && transportAccepted
+    && boundaryTransportAccepted
     && stageEventsAccepted
     && targetProcessProvenanceAccepted;
   return compactStringList([
@@ -3907,8 +3946,13 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
     directExecutionAccepted || boundaryImportCanStandInForMissingExecution
       ? null
       : 'real_rocm_runtime_adapter_execution_not_accepted',
-    transport?.declared === true && !transportAccepted
+    transport?.declared === true && !transportAccepted && !eventManifestTransportAccepted
       ? 'real_rocm_runtime_adapter_result_transport_not_accepted'
+      : null,
+    eventManifestTransport?.declared === true
+      && !eventManifestTransportAccepted
+      && !transportAccepted
+      ? 'real_rocm_runtime_adapter_event_manifest_transport_not_accepted'
       : null,
     stageEventsAccepted
       ? null
@@ -4187,6 +4231,7 @@ function runtimeBoundaryTargetProcessProvenanceFacet({
   adapterResultBridge = null,
   adapterExecutionFacet = null,
   adapterResultTransport = null,
+  adapterEventManifestTransport = null,
 } = {}) {
   const normalizedBoundaryLines = compactStringList(boundaryLines)
     .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
@@ -4237,6 +4282,17 @@ function runtimeBoundaryTargetProcessProvenanceFacet({
     !resultTransportDeclared
     || adapterResultTransport?.copied === true
     || adapterResultTransport?.status === 'runtime_adapter_result_transport_copied';
+  const eventManifestTransportDeclared =
+    adapterEventManifestTransport?.declared === true
+    || adapterEventManifestTransport?.present === true
+    || Boolean(adapterEventManifestTransport?.status);
+  const eventManifestTransportCopied =
+    !eventManifestTransportDeclared
+    || runtimeAdapterEventManifestTransportUsableForFinalSupport(
+      adapterEventManifestTransport,
+    );
+  const boundarySourceTransportCopied =
+    resultTransportCopied || eventManifestTransportCopied;
   const adapterSourceObserved =
     normalizedBoundaryLines.length > 0
     && (
@@ -4264,7 +4320,7 @@ function runtimeBoundaryTargetProcessProvenanceFacet({
     targetEnvironmentSessionMatched
       ? null
       : 'runtime_boundary_target_environment_session_mismatch',
-    resultTransportCopied ? null : 'runtime_boundary_target_result_transport_not_copied',
+    boundarySourceTransportCopied ? null : 'runtime_boundary_target_result_transport_not_copied',
   ]);
   const acceptedAsSupportEvidence =
     normalizedBoundaryLines.length > 0
@@ -4308,6 +4364,10 @@ function runtimeBoundaryTargetProcessProvenanceFacet({
     target_environment_session_matched: targetEnvironmentSessionMatched,
     resultTransportCopied,
     result_transport_copied: resultTransportCopied,
+    eventManifestTransportCopied,
+    event_manifest_transport_copied: eventManifestTransportCopied,
+    boundarySourceTransportCopied,
+    boundary_source_transport_copied: boundarySourceTransportCopied,
     adapterSourceObserved,
     adapter_source_observed: adapterSourceObserved,
     missingProcessLineHashes,
@@ -4805,7 +4865,7 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   const declaredPath = CFG.runtimeProfileAdapterResultPath || CFG.runtimeAdapter?.resultPath || '';
   const declaredEventManifestPath = runtimeAdapterDeclaredEventManifestPath(CFG.runtimeAdapter);
   const eventManifestPathSource = runtimeAdapterEventManifestPathSource(CFG.runtimeAdapter);
-  const declared = Boolean(declaredPath);
+  const declared = Boolean(declaredPath || declaredEventManifestPath);
   const runtimeProfileId = stringField(runtimeProfile, ['profileId', 'profile_id', 'id']);
   const base = {
     schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
@@ -4860,7 +4920,12 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   let eventManifestByteLength = 0;
   let readError = null;
   let eventManifestReadError = null;
-  if (!resolvedPath) {
+  let resultReadMissing = false;
+  if (!declaredPath) {
+    if (!declaredEventManifestPath) {
+      blockingGaps.push('runtime_profile_adapter_result_not_declared');
+    }
+  } else if (!resolvedPath) {
     blockingGaps.push('runtime_profile_adapter_result_path_outside_repo');
   } else {
     try {
@@ -4870,6 +4935,7 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
       parsed = JSON.parse(text);
     } catch (err) {
       readError = err?.message ?? String(err);
+      resultReadMissing = Boolean(err?.code && ['ENOENT', 'ENOTDIR'].includes(err.code));
       blockingGaps.push('runtime_profile_adapter_result_unreadable');
     }
   }
@@ -4913,6 +4979,10 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   const parsedProfileId = parsed
     ? stringField(parsed, ['profileId', 'profile_id', 'id'])
     : '';
+  const eventManifestProfileId = eventManifestParsed
+    ? stringField(eventManifestParsed, ['profileId', 'profile_id', 'id'])
+    : '';
+  const effectiveAdapterProfileId = parsedProfileId || eventManifestProfileId;
   const adapterResultBoundaryLines = runtimeProfileAdapterBoundaryLines(parsed ?? {});
   const eventManifestBoundaryLines = runtimeProfileAdapterBoundaryLines(
     runtimeProfileAdapterEventManifestBoundaryInput(eventManifestParsed),
@@ -4941,6 +5011,13 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
       blockingGaps.push('runtime_profile_adapter_result_profile_id_mismatch');
     }
   }
+  if (!parsed && eventManifestParsed && runtimeProfileId) {
+    if (!eventManifestProfileId) {
+      eventManifestBlockingGaps.push('runtime_profile_adapter_event_manifest_profile_id_missing');
+    } else if (eventManifestProfileId !== runtimeProfileId) {
+      eventManifestBlockingGaps.push('runtime_profile_adapter_event_manifest_profile_id_mismatch');
+    }
+  }
   if (parsed && (
     parsed.acceptedForGpuHmr === true
     || parsed.accepted_for_gpu_hmr === true
@@ -4951,11 +5028,22 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   )) {
     blockingGaps.push('runtime_profile_adapter_result_claimed_runtime_authority');
   }
+  const boundaryImportResultGaps = blockingGaps.filter((gap) => {
+    if (gap === 'runtime_profile_adapter_strict_runtime_proof_not_accepted') return false;
+    if (
+      gap === 'runtime_profile_adapter_result_unreadable'
+      && resultReadMissing
+      && eventManifestBoundaryLines.length > 0
+    ) {
+      return false;
+    }
+    return true;
+  });
   boundaryImportBlockingGaps.push(
-    ...blockingGaps.filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted'),
+    ...boundaryImportResultGaps,
     ...eventManifestBlockingGaps,
   );
-  if (parsed && adapterRuntimeBoundaryLines.length === 0) {
+  if ((parsed || eventManifestParsed) && adapterRuntimeBoundaryLines.length === 0) {
     boundaryImportBlockingGaps.push('runtime_profile_adapter_boundary_lines_missing');
   }
   const evidenceRefs = compactStringList([
@@ -4975,14 +5063,20 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     status: blockingGaps.length === 0
       ? 'runtime_profile_adapter_result_imported'
       : 'runtime_profile_adapter_result_refusal_evidence',
-    present: parsed !== null,
-    adapterProfileId: parsedProfileId || null,
-    adapter_profile_id: parsedProfileId || null,
+    present: parsed !== null || eventManifestParsed !== null,
+    resultPresent: parsed !== null,
+    result_present: parsed !== null,
+    adapterProfileId: effectiveAdapterProfileId || null,
+    adapter_profile_id: effectiveAdapterProfileId || null,
+    resultAdapterProfileId: parsedProfileId || null,
+    result_adapter_profile_id: parsedProfileId || null,
+    eventManifestProfileId: eventManifestProfileId || null,
+    event_manifest_profile_id: eventManifestProfileId || null,
     adapterProfileIdMatches: runtimeProfileId
-      ? parsedProfileId === runtimeProfileId
+      ? effectiveAdapterProfileId === runtimeProfileId
       : null,
     adapter_profile_id_matches: runtimeProfileId
-      ? parsedProfileId === runtimeProfileId
+      ? effectiveAdapterProfileId === runtimeProfileId
       : null,
     resultPath: resolvedPath ? path.relative(REPO_ROOT, resolvedPath).replace(/\\/g, '/') : null,
     result_path: resolvedPath ? path.relative(REPO_ROOT, resolvedPath).replace(/\\/g, '/') : null,
@@ -5026,11 +5120,11 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     adapterBoundaryCoverage,
     adapter_boundary_coverage: adapterBoundaryCoverage,
     acceptedAsBoundaryEvidence:
-      parsed !== null
+      (parsed !== null || eventManifestParsed !== null)
       && adapterRuntimeBoundaryLines.length > 0
       && boundaryImportBlockingGaps.length === 0,
     accepted_as_boundary_evidence:
-      parsed !== null
+      (parsed !== null || eventManifestParsed !== null)
       && adapterRuntimeBoundaryLines.length > 0
       && boundaryImportBlockingGaps.length === 0,
     boundaryImportBlockingGaps,
@@ -18833,6 +18927,10 @@ async function selfCheckRuntimeDispatchEvidence() {
     report.real_rocm_runtime_boundary_target_process_provenance;
   const savedRuntimeBoundaryTargetProcessProvenanceEvidence =
     report.evidence?.runtime_boundary_target_process_provenance;
+  const savedFullRuntimeProof = report.full_runtime_proof;
+  const savedRuntimeProofArtifact = report.runtime_proof_artifact;
+  const savedRuntimeProofArtifactStrictGates =
+    report.runtime_proof_artifact_strict_gates;
   try {
     await mkdir(adapterResultSelfCheckDir, { recursive: true });
     await writeFile(
@@ -19954,6 +20052,139 @@ async function selfCheckRuntimeDispatchEvidence() {
         gpuHmrSuccess: logHarvestManifestBridge.gpuHmrSuccess,
       })}`);
     }
+    await rm(logHarvestResultPath, { force: true });
+    const eventManifestOnlyBridge = await collectRuntimeProfileAdapterResultBridge({
+      profileId: 'log-harvest-event-manifest-self-check',
+    });
+    const eventManifestOnlyStageEvents = runtimeAdapterStageEventsFacet({
+      boundaryLines: eventManifestOnlyBridge.adapterRuntimeBoundaryLines,
+    });
+    const eventManifestOnlyTargetProcessProvenance =
+      runtimeBoundaryTargetProcessProvenanceFacet({
+        boundaryLines: eventManifestOnlyBridge.adapterRuntimeBoundaryLines,
+        targetEnvironment: completeAdapterTargetEnvironment,
+        adapterResultBridge: eventManifestOnlyBridge,
+        adapterEventManifestTransport: {
+          schemaVersion: 'synthi.real_rocm.runtime_adapter_event_manifest_transport.v1',
+          proofAuthority: 'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success',
+          declared: true,
+          copied: true,
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+          blockingGaps: [],
+        },
+        adapterResultTransport: {
+          schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+          proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+          declared: true,
+          copied: false,
+          acceptedForGpuHmr: false,
+          gpuHmrSuccess: false,
+          canSatisfyRuntimeProof: false,
+          blockingGaps: ['runtime_adapter_result_transport_worker_file_missing'],
+        },
+      });
+    if (
+      eventManifestOnlyBridge.status !== 'runtime_profile_adapter_result_refusal_evidence'
+      || eventManifestOnlyBridge.resultPresent !== false
+      || eventManifestOnlyBridge.eventManifestPresent !== true
+      || eventManifestOnlyBridge.adapterProfileId
+        !== 'log-harvest-event-manifest-self-check'
+      || eventManifestOnlyBridge.acceptedAsBoundaryEvidence !== true
+      || !eventManifestOnlyBridge.blockingGaps.includes(
+        'runtime_profile_adapter_result_unreadable',
+      )
+      || eventManifestOnlyBridge.boundaryImportBlockingGaps.includes(
+        'runtime_profile_adapter_result_unreadable',
+      )
+      || eventManifestOnlyBridge.acceptedForGpuHmr !== false
+      || eventManifestOnlyBridge.gpuHmrSuccess !== false
+      || eventManifestOnlyBridge.canSatisfyRuntimeProof !== false
+      || eventManifestOnlyStageEvents.complete !== true
+      || eventManifestOnlyTargetProcessProvenance.acceptedAsSupportEvidence !== true
+      || eventManifestOnlyTargetProcessProvenance.resultTransportCopied !== false
+      || eventManifestOnlyTargetProcessProvenance.eventManifestTransportCopied !== true
+      || eventManifestOnlyTargetProcessProvenance.boundarySourceTransportCopied !== true
+    ) {
+      throw new Error(`event-manifest-only adapter boundary bridge self-check failed ${stableJson({
+        bridgeStatus: eventManifestOnlyBridge.status,
+        resultPresent: eventManifestOnlyBridge.resultPresent,
+        eventManifestPresent: eventManifestOnlyBridge.eventManifestPresent,
+        adapterProfileId: eventManifestOnlyBridge.adapterProfileId,
+        acceptedAsBoundaryEvidence: eventManifestOnlyBridge.acceptedAsBoundaryEvidence,
+        blockingGaps: eventManifestOnlyBridge.blockingGaps,
+        boundaryImportBlockingGaps: eventManifestOnlyBridge.boundaryImportBlockingGaps,
+        stageComplete: eventManifestOnlyStageEvents.complete,
+        provenance: {
+          accepted: eventManifestOnlyTargetProcessProvenance.acceptedAsSupportEvidence,
+          gaps: eventManifestOnlyTargetProcessProvenance.blockingGaps,
+          resultTransportCopied:
+            eventManifestOnlyTargetProcessProvenance.resultTransportCopied,
+          eventManifestTransportCopied:
+            eventManifestOnlyTargetProcessProvenance.eventManifestTransportCopied,
+        },
+      })}`);
+    }
+    report.real_rocm_runtime_profile_adapter_result = eventManifestOnlyBridge;
+    report.realRocmRuntimeProfileAdapterResult = eventManifestOnlyBridge;
+    report.runtime_profile_adapter_result = eventManifestOnlyBridge;
+    report.runtimeProfileAdapterResult = eventManifestOnlyBridge;
+    delete report.real_rocm_runtime_adapter_execution;
+    delete report.realRocmRuntimeAdapterExecution;
+    delete report.runtime_adapter_execution;
+    delete report.runtimeAdapterExecution;
+    report.real_rocm_runtime_adapter_result_transport = {
+      schemaVersion: 'synthi.real_rocm.runtime_adapter_result_transport.v1',
+      proofAuthority: 'runtime_adapter_result_transport_only_not_gpu_hmr_success',
+      declared: true,
+      copied: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      blockingGaps: ['runtime_adapter_result_transport_worker_file_missing'],
+    };
+    report.real_rocm_runtime_adapter_event_manifest_transport = {
+      schemaVersion: 'synthi.real_rocm.runtime_adapter_event_manifest_transport.v1',
+      proofAuthority: 'runtime_adapter_event_manifest_transport_only_not_gpu_hmr_success',
+      declared: true,
+      copied: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      blockingGaps: [],
+    };
+    report.real_rocm_runtime_adapter_stage_events = eventManifestOnlyStageEvents;
+    report.real_rocm_runtime_boundary_target_process_provenance =
+      eventManifestOnlyTargetProcessProvenance;
+    report.full_runtime_proof = { fullRuntimeProven: true };
+    report.runtime_proof_artifact = { gpuHmrSuccess: true };
+    report.runtime_proof_artifact_strict_gates = [{ status: 'pass' }];
+    const eventManifestOnlyFinalSupportGaps = realRocmRuntimeAdapterFinalSupportGaps();
+    if (eventManifestOnlyFinalSupportGaps.length !== 0) {
+      throw new Error(`runtime adapter final-support self-check rejected event-manifest-only boundary support ${stableJson({
+        gaps: eventManifestOnlyFinalSupportGaps,
+      })}`);
+    }
+    await writeFile(logHarvestResultPath, `${JSON.stringify({
+      schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
+      profileId: 'log-harvest-event-manifest-self-check',
+      profile_id: 'log-harvest-event-manifest-self-check',
+      adapterTemplate: 'runtime_boundary_log_harvest_v1',
+      adapter_template: 'runtime_boundary_log_harvest_v1',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      strictRuntimeProofAccepted: false,
+      strict_runtime_proof_accepted: false,
+      runtimeBoundaryLines: [],
+      runtime_boundary_lines: [],
+      blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+      blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+    }, null, 2)}\n`);
     await writeFile(logHarvestEventManifestPath, `${JSON.stringify({
       schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
       runtimeBoundaryEvents: structuredAdapterRuntimeBoundaryEvents,
@@ -20059,6 +20290,14 @@ async function selfCheckRuntimeDispatchEvidence() {
       savedRuntimeBoundaryTargetProcessProvenance;
     report.runtimeBoundaryTargetProcessProvenance =
       savedRuntimeBoundaryTargetProcessProvenance;
+    report.full_runtime_proof = savedFullRuntimeProof;
+    report.fullRuntimeProof = savedFullRuntimeProof;
+    report.runtime_proof_artifact = savedRuntimeProofArtifact;
+    report.runtimeProofArtifact = savedRuntimeProofArtifact;
+    report.runtime_proof_artifact_strict_gates =
+      savedRuntimeProofArtifactStrictGates;
+    report.runtimeProofArtifactStrictGates =
+      savedRuntimeProofArtifactStrictGates;
     if (report.evidence) {
       report.evidence.real_rocm_runtime_profile_adapter_result =
         savedRuntimeProfileAdapterResultEvidence;
@@ -24256,6 +24495,14 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     upstreamRunLog: report.logs.upstream_run,
     slug: CFG.slug,
   });
+  if (CFG.runtimeAdapter?.declared === true && CFG.runtimeAdapter?.enabled === true) {
+    await transportRuntimeAdapterResultFromWorker(workerAccess);
+    await transportRuntimeAdapterEventManifestFromWorker(workerAccess);
+    const collectedAdapterBridge = await collectRuntimeProfileAdapterResultBridge(
+      objectField(report.output_oracle_runtime_profile),
+    );
+    refreshRuntimeAdapterExecutionFromResultBridge(collectedAdapterBridge);
+  }
   const adapterResultBridge = report.real_rocm_runtime_profile_adapter_result;
   const adapterExecutionFacet = report.real_rocm_runtime_adapter_execution;
   const adapterResultBoundaryLines =
@@ -24351,6 +24598,8 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
       adapterResultBridge,
       adapterExecutionFacet,
       adapterResultTransport: report.real_rocm_runtime_adapter_result_transport,
+      adapterEventManifestTransport:
+        report.real_rocm_runtime_adapter_event_manifest_transport,
     });
   const runtimeSourceFiles = Array.isArray(context?.files) ? context.files : [];
   const runtimeBuildMetadata =
