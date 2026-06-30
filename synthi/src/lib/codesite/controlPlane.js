@@ -3436,13 +3436,14 @@ async function recordInspectionExecutionEvents(projectId, run, signals) {
 
 export async function createCounterfactualRun(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
+  const arbiterVerdict = body.arbiterVerdict || body.arbiter_verdict || null;
   const run = await prisma.codeSiteCounterfactualRun.create({
     data: {
       projectId: project.id,
       shadowJobRef: body.shadowJobRef || body.shadow_job_ref || null,
       baseSnapshot: body.baseSnapshot || body.base_snapshot || digest({ projectId, at: Date.now() }),
       universesJson: stringifyJson(body.universes || []),
-      arbiterVerdictJson: stringifyJson(body.arbiterVerdict || body.arbiter_verdict || null),
+      arbiterVerdictJson: stringifyJson(arbiterVerdict),
       userChoiceJson: stringifyJson(body.userChoice || body.user_choice || null),
       laterManualEditsJson: stringifyJson(body.laterManualEdits || body.later_manual_edits || []),
       validityStrength: body.validityStrength || body.validity_strength || 'weak',
@@ -3455,6 +3456,21 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
     actorId: run.id,
     details: { counterfactualRunId: run.id, shadowJobRef: run.shadowJobRef, validityStrength: run.validityStrength },
   });
+  if (arbiterVerdict) {
+    await recordEvent(project.id, {
+      eventType: 'arbiter_verdict',
+      actorType: 'counterfactual',
+      actorId: run.id,
+      evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+      details: {
+        counterfactualRunId: run.id,
+        shadowJobRef: run.shadowJobRef,
+        arbiterVerdict,
+        selected: arbiterVerdict.selected || arbiterVerdict.winner || arbiterVerdict.verdict || null,
+        validityStrength: run.validityStrength,
+      },
+    });
+  }
   return counterfactualProjection(run);
 }
 

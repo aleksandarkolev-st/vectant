@@ -80,6 +80,9 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteDocument: {
       create: vi.fn(),
     },
+    codeSiteCounterfactualRun: {
+      create: vi.fn(),
+    },
     codeSiteMutationZone: {
       upsert: vi.fn(),
     },
@@ -93,6 +96,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  createCounterfactualRun,
   createProject,
   createIncident,
   createDocument,
@@ -1873,6 +1877,59 @@ describe('CodeSite control plane transaction validation', () => {
       repoState: expect.objectContaining({ evidenceDigest: 'sha256:repo-state' }),
     });
     expect(proof.portableProofBundle.portableDigest).toMatch(/^sha256:/);
+  });
+
+  it('records arbiter verdict events for counterfactual runs', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Counterfactual project',
+      request: 'Choose safest route',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteCounterfactualRun.create.mockResolvedValue({
+      id: 'cfr-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universesJson: JSON.stringify([{ strategy: 'schema-first' }]),
+      arbiterVerdictJson: JSON.stringify({ selected: 'schema-first' }),
+      userChoiceJson: JSON.stringify(null),
+      laterManualEditsJson: JSON.stringify([]),
+      validityStrength: 'simulated',
+      evidenceRefsJson: JSON.stringify(['shadow:job:shadow-job-1']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+    });
+    prisma.codeSiteEvent.count.mockResolvedValue(7);
+
+    const result = await createCounterfactualRun('acme', 'project-1', {
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universes: [{ strategy: 'schema-first' }],
+      arbiterVerdict: { selected: 'schema-first' },
+      validityStrength: 'simulated',
+      evidenceRefs: ['shadow:job:shadow-job-1'],
+    });
+
+    expect(result.id).toBe('cfr-1');
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'shadow_run',
+        actorId: 'cfr-1',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'arbiter_verdict',
+        actorId: 'cfr-1',
+        evidenceRefsJson: JSON.stringify(['shadow:job:shadow-job-1']),
+        detailsJson: expect.stringContaining('schema-first'),
+      }),
+    }));
   });
 
   it('builds incident replay timelines from referenced events', async () => {
