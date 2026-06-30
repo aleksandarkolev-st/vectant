@@ -171,6 +171,30 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   );
 }
 
+function TagList({ items, empty = null, maxVisible = 5 }) {
+  const list = asArray(items).filter(Boolean);
+  const visible = list.slice(0, maxVisible);
+  if (visible.length === 0) return empty ? <span style={{ color: 'var(--text-muted)' }}>{empty}</span> : null;
+
+  return (
+    <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+      {visible.map((item) => (
+        <code
+          key={item}
+          className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
+          title={item}
+        >
+          {item}
+        </code>
+      ))}
+      {list.length > visible.length ? (
+        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{list.length - visible.length}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function Row({ children, testId }) {
   return (
     <div
@@ -576,9 +600,19 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <div className="truncate font-medium">{compact(lease.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(lease.expiresAt) || 'open'}</div>
                         </div>
-                        <div className="min-w-0">
-                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
-                        </div>
+	                        <div className="min-w-0">
+	                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
+                            <TagList
+                              items={[
+                                lease.dojoProofRef,
+                                lease.dojoLicenseRef,
+                                ...asArray(lease.dojoEvidenceRefs),
+                                lease.dojoLedgerCheckpointHash,
+                                lease.dojoDecisionDigest,
+                              ]}
+                              empty=""
+                            />
+	                        </div>
                         <div className="justify-self-end"><Pill tone={lease.status}>{lease.status}</Pill></div>
                       </Row>
                     ))}

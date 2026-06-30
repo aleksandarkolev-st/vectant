@@ -145,10 +145,15 @@ function radarState() {
       activeMutationLeases: [{
         id: 'lease-1',
         displayCallsign: 'ATLAS-1',
-        status: 'active',
-        lease: { allowedPaths: ['api/checkout/**'] },
-        expiresAt: '2026-06-29T23:59:00.000Z',
-      }],
+	        status: 'active',
+	        lease: { allowedPaths: ['api/checkout/**'] },
+	        dojoProofRef: 'pcap-checkout-schema',
+	        dojoLicenseRef: 'schema.level_2@2026-06-25',
+	        dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
+	        dojoLedgerCheckpointHash: 'sha256:ledger',
+	        dojoDecisionDigest: 'sha256:dojo-decision',
+	        expiresAt: '2026-06-29T23:59:00.000Z',
+	      }],
       activeTransactions: [{
         id: 'txn-1',
         status: 'open',
@@ -216,8 +221,11 @@ describe('CodeSitePanel', () => {
 
     expect(container.querySelector('[data-testid="codesite-panel"]')).toBeTruthy();
     expect(container.textContent).toContain('Checkout coordination');
-    expect(container.textContent).toContain('ATLAS-1');
-    expect(container.textContent).toContain('Airspace Map');
+	    expect(container.textContent).toContain('ATLAS-1');
+	    expect(container.textContent).toContain('pcap-checkout-schema');
+	    expect(container.textContent).toContain('schema.level_2@2026-06-25');
+	    expect(container.textContent).toContain('dojo:evidence:checkride-1');
+	    expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
     expect(container.textContent).toContain('CodeSite-Transaction');
