@@ -58,6 +58,47 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
   return context;
 }
 
+function codeSiteCommitMessage(message, data = {}) {
+  const payload = data.codesite || data.codeSite || data;
+  const trailers = codeSiteCommitTrailers(payload);
+  if (!trailers.length) return String(message || '');
+  const base = String(message || '').trimEnd();
+  const existing = new Set(
+    base
+      .split(/\r?\n/)
+      .map((line) => line.match(/^(CodeSite-[A-Za-z-]+):/)?.[1])
+      .filter(Boolean)
+  );
+  const nextTrailers = trailers.filter(([key]) => !existing.has(key));
+  if (!nextTrailers.length) return base;
+  return `${base}\n\n${nextTrailers.map(([key, trailerValue]) => `${key}: ${trailerValue}`).join('\n')}`;
+}
+
+function codeSiteCommitTrailers(payload = {}) {
+  const proof = payload.proofBundle || payload.proof_bundle || {};
+  const invariants = value(payload.invariants, proof.invariants);
+  const blackBox = value(
+    payload.blackBoxDigest,
+    payload.black_box_digest,
+    payload.blackBox,
+    payload.black_box,
+    proof.incidentReplayDigest,
+    proof.bundleDigest,
+    proof.portableDigest,
+  );
+  return [
+    ['CodeSite-Project', value(payload.projectId, payload.project_id, proof.projectId)],
+    ['CodeSite-Flight', value(payload.displayCallsign, payload.callsign, payload.flight, proof.displayCallsign)],
+    ['CodeSite-Transaction', value(payload.transactionId, payload.transaction_id, proof.transactionId)],
+    ['CodeSite-Lease', value(payload.mutationLeaseId, payload.mutation_lease_id, payload.leaseId, payload.clearance, proof.mutationLeaseId)],
+    ['CodeSite-Read-Set', value(payload.readSetDigest, payload.read_set_digest, proof.readSetDigest)],
+    ['CodeSite-Write-Set', value(payload.writeSetDigest, payload.write_set_digest, proof.writeSetDigest)],
+    ['CodeSite-Invariants', Array.isArray(invariants) ? invariants.join(',') : invariants],
+    ['CodeSite-Landing', value(payload.landingStatus, payload.landing_status, payload.landing)],
+    ['CodeSite-Black-Box', blackBox],
+  ].filter(([, trailerValue]) => trailerValue !== undefined && trailerValue !== null && trailerValue !== '');
+}
+
 function value(...values) {
   return values.find((item) => item !== undefined && item !== null && item !== '');
 }
@@ -281,6 +322,8 @@ module.exports = {
   CodeSiteFSDeniedError,
   assertCodeSiteWriteAllowed,
   assertCodeSiteWritesAllowed,
+  codeSiteCommitMessage,
+  codeSiteCommitTrailers,
   codeSiteContextFromRequest,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,

@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   assertCodeSiteWriteAllowed,
+  codeSiteCommitMessage,
+  codeSiteCommitTrailers,
   codeSiteContextFromRequest,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
@@ -125,4 +127,47 @@ test('enforcement fails closed when persisted transaction policy rejects the wri
       && error.event.details.reason_codes.includes('control_plane_denied_write')
       && error.event.details.reason_codes.includes('outside_clearance_route'),
   );
+});
+
+test('formats proof-carrying CodeSite commit trailers', () => {
+  const message = codeSiteCommitMessage('Implement checkout', {
+    codesite: {
+      projectId: 'site-checkout',
+      callsign: 'ATLAS-1',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariants: ['typecheck:pass', 'visual:pass'],
+      landingStatus: 'landed',
+      blackBoxDigest: 'sha256:blackbox',
+    },
+  });
+
+  assert.match(message, /Implement checkout\n\nCodeSite-Project: site-checkout/);
+  assert.match(message, /CodeSite-Flight: ATLAS-1/);
+  assert.match(message, /CodeSite-Transaction: txn-1/);
+  assert.match(message, /CodeSite-Lease: lease-1/);
+  assert.match(message, /CodeSite-Invariants: typecheck:pass,visual:pass/);
+  assert.match(message, /CodeSite-Black-Box: sha256:blackbox/);
+});
+
+test('does not duplicate existing CodeSite trailers', () => {
+  const trailers = codeSiteCommitTrailers({
+    proofBundle: {
+      transactionId: 'txn-2',
+      mutationLeaseId: 'lease-2',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      bundleDigest: 'sha256:bundle',
+    },
+  });
+  assert.ok(trailers.some(([key]) => key === 'CodeSite-Transaction'));
+
+  const message = codeSiteCommitMessage('Patch\n\nCodeSite-Transaction: txn-existing', {
+    transactionId: 'txn-2',
+    mutationLeaseId: 'lease-2',
+  });
+  assert.strictEqual((message.match(/CodeSite-Transaction:/g) || []).length, 1);
+  assert.match(message, /CodeSite-Lease: lease-2/);
 });

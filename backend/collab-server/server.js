@@ -34,6 +34,7 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
+  codeSiteCommitMessage,
   codeSiteContextFromRequest,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
@@ -4136,7 +4137,13 @@ const server = http.createServer(async (req, res) => {
                     result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                     break;
                 case 'commit':
-                    result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend, commitIdentity));
+                    result = await withTelemetry('git:commit', () => gitService.commit(
+                      slug,
+                      codeSiteCommitMessage(data.message, data),
+                      effectiveUserId,
+                      data.amend,
+                      commitIdentity,
+                    ));
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
