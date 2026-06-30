@@ -5211,6 +5211,247 @@ function runtimeAdapterWorkerEventManifestPath(adapter = CFG.runtimeAdapter) {
   return `${CFG.workerRepoPath}/${normalized}`;
 }
 
+function runtimeBoundaryLinesFromRunLog(runLog = '') {
+  return compactStringList(
+    evidenceLines(runLog, /\[gpu-runtime-boundary\]/i)
+      .filter((line) => /\[gpu-runtime-boundary\]/i.test(line)),
+  );
+}
+
+function runtimeBoundaryEventManifestFromRunLog({
+  runLog = '',
+  adapter = CFG.runtimeAdapter,
+  profileId = CFG.realRocmProfile.id,
+} = {}) {
+  const runtimeBoundaryLines = runtimeBoundaryLinesFromRunLog(runLog);
+  const coverage = runtimeAdapterBoundaryCoverage(runtimeBoundaryLines);
+  const missingStageGaps = coverage.missingEventKinds
+    .map((kind) => `runtime_boundary_event_manifest_${proofSchedulingGapToken(kind)}_missing`);
+  const blockingGaps = compactStringList([
+    runtimeBoundaryLines.length === 0
+      ? 'runtime_boundary_event_manifest_boundary_lines_missing'
+      : null,
+    ...missingStageGaps,
+    'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+  ]);
+  const manifest = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+    proofAuthority:
+      'observed_runtime_boundary_run_log_materialization_only_not_gpu_hmr_success',
+    proof_authority:
+      'observed_runtime_boundary_run_log_materialization_only_not_gpu_hmr_success',
+    profileId,
+    profile_id: profileId,
+    adapterTemplate: adapter?.template ?? null,
+    adapter_template: adapter?.template ?? null,
+    adapterCommandHash: adapter?.commandHash ?? null,
+    adapter_command_hash: adapter?.commandHash ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    strictRuntimeProofAccepted: false,
+    strict_runtime_proof_accepted: false,
+    strictRuntimeProofArtifactPresent: false,
+    strict_runtime_proof_artifact_present: false,
+    proofLedgerPresent: false,
+    proof_ledger_present: false,
+    materializedFromRunLog: true,
+    materialized_from_run_log: true,
+    runtimeBoundaryLineCount: runtimeBoundaryLines.length,
+    runtime_boundary_line_count: runtimeBoundaryLines.length,
+    runtimeBoundaryLines,
+    runtime_boundary_lines: runtimeBoundaryLines,
+    adapterRuntimeBoundaryLines: runtimeBoundaryLines,
+    adapter_runtime_boundary_lines: runtimeBoundaryLines,
+    runtimeBoundaryLineHashes: runtimeBoundaryLineHashes(runtimeBoundaryLines),
+    runtime_boundary_line_hashes: runtimeBoundaryLineHashes(runtimeBoundaryLines),
+    adapterBoundaryCoverage: coverage,
+    adapter_boundary_coverage: coverage,
+    acceptedAsSupportEvidence:
+      runtimeBoundaryLines.length > 0 && coverage.missingEventKinds.length === 0,
+    accepted_as_support_evidence:
+      runtimeBoundaryLines.length > 0 && coverage.missingEventKinds.length === 0,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      coverage.coverageHash,
+      ...runtimeBoundaryLineEvidenceRefs(runtimeBoundaryLines, 'runtime-boundary-run-log-line'),
+      adapter?.template ? `runtime-adapter-template:${adapter.template}` : null,
+      adapter?.commandHash ? `runtime-adapter-command:${adapter.commandHash}` : null,
+    ]),
+  };
+  manifest.evidence_refs = manifest.evidenceRefs;
+  manifest.manifestHash = `sha256:${createHash('sha256').update(stableJson({
+    ...manifest,
+    manifestHash: undefined,
+    manifest_hash: undefined,
+  })).digest('hex')}`;
+  manifest.manifest_hash = manifest.manifestHash;
+  return manifest;
+}
+
+async function materializeRuntimeBoundaryEventManifestFromRunLog({
+  access = runtimeWorkerContainerAccess(),
+  runLog = report.logs?.upstream_run ?? '',
+} = {}) {
+  if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
+    report.evidence = {};
+  }
+  const adapter = CFG.runtimeAdapter ?? normalizeRealRocmRuntimeAdapter(null);
+  const declaredPath = runtimeAdapterDeclaredEventManifestPath(adapter);
+  const workerPath = runtimeAdapterWorkerEventManifestPath(adapter);
+  const facet = {
+    schemaVersion: 'synthi.real_rocm.runtime_boundary_event_manifest_materialization.v1',
+    schema_version: 'synthi.real_rocm.runtime_boundary_event_manifest_materialization.v1',
+    proofAuthority:
+      'observed_runtime_boundary_run_log_materialization_only_not_gpu_hmr_success',
+    proof_authority:
+      'observed_runtime_boundary_run_log_materialization_only_not_gpu_hmr_success',
+    declared: Boolean(declaredPath),
+    adapterDeclared: adapter?.declared === true,
+    adapter_declared: adapter?.declared === true,
+    adapterEnabled: adapter?.enabled === true,
+    adapter_enabled: adapter?.enabled === true,
+    adapterTemplate: adapter?.template ?? null,
+    adapter_template: adapter?.template ?? null,
+    adapterCommandHash: adapter?.commandHash ?? null,
+    adapter_command_hash: adapter?.commandHash ?? null,
+    declaredPath: declaredPath || null,
+    declared_path: declaredPath || null,
+    workerPath: workerPath || null,
+    worker_path: workerPath || null,
+    materialized: false,
+    existingWorkerManifestPreserved: false,
+    existing_worker_manifest_preserved: false,
+    runtimeBoundaryLineCount: 0,
+    runtime_boundary_line_count: 0,
+    runtimeBoundaryLineHashes: [],
+    runtime_boundary_line_hashes: [],
+    acceptedAsSupportEvidence: false,
+    accepted_as_support_evidence: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    rawSha256: null,
+    raw_sha256: null,
+    byteLength: 0,
+    byte_length: 0,
+    blockingGaps: [],
+    blocking_gaps: [],
+    evidenceRefs: [],
+    evidence_refs: [],
+  };
+  if (adapter?.declared !== true || adapter.enabled !== true) {
+    facet.status = 'runtime_boundary_event_manifest_materialization_not_declared';
+  } else if (!declaredPath) {
+    facet.status = 'runtime_boundary_event_manifest_materialization_not_declared';
+  } else if (!workerPath) {
+    facet.status = 'runtime_boundary_event_manifest_materialization_refused';
+    facet.blockingGaps.push('runtime_boundary_event_manifest_worker_path_invalid');
+  } else if (!access?.available || !access.workerContainer) {
+    facet.status = 'runtime_boundary_event_manifest_materialization_refused';
+    facet.blockingGaps.push('runtime_boundary_event_manifest_worker_unavailable');
+  } else {
+    const existing = (await execText(
+      'docker',
+      ['exec', access.workerContainer, 'sh', '-lc', `[ -s ${shQuote(workerPath)} ] && printf 1 || printf 0`],
+      30000,
+      false,
+    ) ?? '').trim() === '1';
+    if (existing) {
+      facet.status = 'runtime_boundary_event_manifest_existing_worker_manifest_preserved';
+      facet.existingWorkerManifestPreserved = true;
+      facet.existing_worker_manifest_preserved = true;
+      facet.acceptedAsSupportEvidence = true;
+      facet.accepted_as_support_evidence = true;
+    } else {
+      let effectiveRunLog = String(runLog ?? '');
+      if (!effectiveRunLog.trim()) {
+        effectiveRunLog = await execText(
+          'docker',
+          ['exec', access.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>/dev/null || true`],
+          30000,
+          false,
+        ) ?? '';
+      }
+      const manifest = runtimeBoundaryEventManifestFromRunLog({
+        runLog: effectiveRunLog,
+        adapter,
+      });
+      facet.runtimeBoundaryLineCount = manifest.runtimeBoundaryLineCount;
+      facet.runtime_boundary_line_count = manifest.runtimeBoundaryLineCount;
+      facet.runtimeBoundaryLineHashes = manifest.runtimeBoundaryLineHashes;
+      facet.runtime_boundary_line_hashes = manifest.runtimeBoundaryLineHashes;
+      facet.adapterBoundaryCoverage = manifest.adapterBoundaryCoverage;
+      facet.adapter_boundary_coverage = manifest.adapterBoundaryCoverage;
+      facet.evidenceRefs.push(...manifest.evidenceRefs, manifest.manifestHash);
+      facet.evidence_refs.push(...manifest.evidenceRefs, manifest.manifestHash);
+      if (manifest.runtimeBoundaryLineCount === 0) {
+        facet.status = 'runtime_boundary_event_manifest_materialization_no_boundary_lines';
+        facet.blockingGaps.push('runtime_boundary_event_manifest_boundary_lines_missing');
+      } else {
+        const payload = `${JSON.stringify(manifest, null, 2)}\n`;
+        const encoded = Buffer.from(payload, 'utf8').toString('base64');
+        await execText(
+          'docker',
+          [
+            'exec',
+            access.workerContainer,
+            'sh',
+            '-lc',
+            `mkdir -p "$(dirname ${shQuote(workerPath)})" && printf '%s' ${shQuote(encoded)} | base64 -d > ${shQuote(workerPath)}`,
+          ],
+          30000,
+          true,
+        );
+        const rawSha256 = `sha256:${createHash('sha256').update(payload).digest('hex')}`;
+        facet.status = manifest.adapterBoundaryCoverage.missingEventKinds.length === 0
+          ? 'runtime_boundary_event_manifest_materialized'
+          : 'runtime_boundary_event_manifest_materialized_partial';
+        facet.materialized = true;
+        facet.byteLength = Buffer.byteLength(payload, 'utf8');
+        facet.byte_length = facet.byteLength;
+        facet.rawSha256 = rawSha256;
+        facet.raw_sha256 = rawSha256;
+        facet.acceptedAsSupportEvidence =
+          manifest.adapterBoundaryCoverage.missingEventKinds.length === 0;
+        facet.accepted_as_support_evidence = facet.acceptedAsSupportEvidence;
+        facet.evidenceRefs.push(rawSha256);
+        facet.evidence_refs.push(rawSha256);
+        facet.blockingGaps.push(
+          ...manifest.adapterBoundaryCoverage.missingEventKinds
+            .map((kind) => `runtime_boundary_event_manifest_${proofSchedulingGapToken(kind)}_missing`),
+        );
+      }
+    }
+  }
+  facet.blocking_gaps = facet.blockingGaps;
+  facet.evidence_refs = compactStringList(facet.evidenceRefs);
+  facet.evidenceRefs = facet.evidence_refs;
+  report.real_rocm_runtime_boundary_event_manifest_materialization = facet;
+  report.realRocmRuntimeBoundaryEventManifestMaterialization = facet;
+  report.runtime_boundary_event_manifest_materialization = facet;
+  report.runtimeBoundaryEventManifestMaterialization = facet;
+  report.evidence.real_rocm_runtime_boundary_event_manifest_materialization = facet;
+  record(
+    'real ROCm runtime boundary event manifest materialization',
+    facet.materialized || facet.existingWorkerManifestPreserved ? 'pass' : 'warn',
+    `status=${facet.status} lines=${facet.runtimeBoundaryLineCount} gaps=${facet.blockingGaps.join(',') || 'none'}`,
+  );
+  return facet;
+}
+
 function runtimeBoundaryTargetEnvironmentFacet({
   lifecycleRunId = '',
   upstreamRunEnabled = CFG.runUpstream,
@@ -5995,6 +6236,10 @@ exit 0
     runLog: report.logs.upstream_run,
   });
   await transportRuntimeAdapterResultFromWorker(access);
+  await materializeRuntimeBoundaryEventManifestFromRunLog({
+    access,
+    runLog: report.logs.upstream_run,
+  });
   await transportRuntimeAdapterEventManifestFromWorker(access);
   record(
     'real ROCm runtime adapter execution',
@@ -19889,6 +20134,70 @@ async function selfCheckRuntimeDispatchEvidence() {
     }
     report.real_rocm_runtime_adapter_execution = savedRuntimeAdapterExecution;
     CFG.runtimeAdapter = eventManifestRuntimeAdapter;
+    const materializedCompleteRunLogManifest = runtimeBoundaryEventManifestFromRunLog({
+      runLog: [
+        'ordinary upstream output line',
+        ...completeAdapterRuntimeBoundaryLines,
+        completeAdapterRuntimeBoundaryLines[0],
+      ].join('\n'),
+      adapter: logHarvestEventManifestRuntimeAdapter,
+      profileId: 'log-harvest-event-manifest-self-check',
+    });
+    const materializedPartialRunLogManifest = runtimeBoundaryEventManifestFromRunLog({
+      runLog: completeAdapterRuntimeBoundaryLines.slice(0, 2).join('\n'),
+      adapter: logHarvestEventManifestRuntimeAdapter,
+      profileId: 'log-harvest-event-manifest-self-check',
+    });
+    const materializedEmptyRunLogManifest = runtimeBoundaryEventManifestFromRunLog({
+      runLog: 'ordinary upstream output line without boundary evidence',
+      adapter: logHarvestEventManifestRuntimeAdapter,
+      profileId: 'log-harvest-event-manifest-self-check',
+    });
+    if (
+      materializedCompleteRunLogManifest.schemaVersion
+        !== 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1'
+      || materializedCompleteRunLogManifest.proofAuthority
+        !== 'observed_runtime_boundary_run_log_materialization_only_not_gpu_hmr_success'
+      || materializedCompleteRunLogManifest.runtimeBoundaryLineCount
+        !== completeAdapterRuntimeBoundaryLines.length
+      || materializedCompleteRunLogManifest.runtimeBoundaryLines[0]
+        !== completeAdapterRuntimeBoundaryLines[0]
+      || materializedCompleteRunLogManifest.adapterRuntimeBoundaryLines.at(-1)
+        !== completeAdapterRuntimeBoundaryLines.at(-1)
+      || materializedCompleteRunLogManifest.adapterBoundaryCoverage.missingEventKinds.length !== 0
+      || materializedCompleteRunLogManifest.acceptedAsSupportEvidence !== true
+      || materializedCompleteRunLogManifest.acceptedForGpuHmr !== false
+      || materializedCompleteRunLogManifest.gpuHmrSuccess !== false
+      || materializedCompleteRunLogManifest.canSatisfyRuntimeProof !== false
+      || materializedCompleteRunLogManifest.canSatisfyDispatchProof !== false
+    ) {
+      throw new Error('runtime boundary event manifest materializer self-check failed complete run log');
+    }
+    if (
+      materializedPartialRunLogManifest.runtimeBoundaryLineCount !== 2
+      || materializedPartialRunLogManifest.acceptedAsSupportEvidence !== false
+      || !materializedPartialRunLogManifest.adapterBoundaryCoverage.missingEventKinds.includes(
+        'output_oracle',
+      )
+      || !materializedPartialRunLogManifest.blockingGaps.includes(
+        'runtime_boundary_event_manifest_output_oracle_missing',
+      )
+      || materializedPartialRunLogManifest.acceptedForGpuHmr !== false
+      || materializedPartialRunLogManifest.gpuHmrSuccess !== false
+    ) {
+      throw new Error('runtime boundary event manifest materializer self-check accepted partial run log');
+    }
+    if (
+      materializedEmptyRunLogManifest.runtimeBoundaryLineCount !== 0
+      || !materializedEmptyRunLogManifest.blockingGaps.includes(
+        'runtime_boundary_event_manifest_boundary_lines_missing',
+      )
+      || materializedEmptyRunLogManifest.acceptedAsSupportEvidence !== false
+      || materializedEmptyRunLogManifest.acceptedForGpuHmr !== false
+      || materializedEmptyRunLogManifest.gpuHmrSuccess !== false
+    ) {
+      throw new Error('runtime boundary event manifest materializer self-check accepted empty run log');
+    }
     const templateExecutionDir = path.join(LOG_DIR, 'runtime-adapter-template-self-check');
     await rm(templateExecutionDir, { recursive: true, force: true });
     await mkdir(templateExecutionDir, { recursive: true });
@@ -20032,20 +20341,10 @@ async function selfCheckRuntimeDispatchEvidence() {
       blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
       blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
     }, null, 2)}\n`);
-    await writeFile(logHarvestEventManifestPath, `${JSON.stringify({
-      schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
-      schema_version: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
-      profileId: 'log-harvest-event-manifest-self-check',
-      profile_id: 'log-harvest-event-manifest-self-check',
-      runtimeBoundaryEvents: structuredAdapterRuntimeBoundaryEvents,
-      runtime_boundary_events: structuredAdapterRuntimeBoundaryEvents,
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      canSatisfyRuntimeProof: false,
-      can_satisfy_runtime_proof: false,
-    }, null, 2)}\n`);
+    await writeFile(
+      logHarvestEventManifestPath,
+      `${JSON.stringify(materializedCompleteRunLogManifest, null, 2)}\n`,
+    );
     CFG.runtimeProfileAdapterResultPath =
       path.relative(REPO_ROOT, logHarvestResultPath).replace(/\\/g, '/');
     CFG.runtimeAdapter = logHarvestEventManifestRuntimeAdapter;
@@ -24537,6 +24836,10 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     slug: CFG.slug,
   });
   if (CFG.runtimeAdapter?.declared === true && CFG.runtimeAdapter?.enabled === true) {
+    await materializeRuntimeBoundaryEventManifestFromRunLog({
+      access: workerAccess,
+      runLog: report.logs.upstream_run,
+    });
     await transportRuntimeAdapterResultFromWorker(workerAccess);
     await transportRuntimeAdapterEventManifestFromWorker(workerAccess);
     const collectedAdapterBridge = await collectRuntimeProfileAdapterResultBridge(

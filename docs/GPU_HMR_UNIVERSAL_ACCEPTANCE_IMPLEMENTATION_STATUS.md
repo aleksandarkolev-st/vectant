@@ -39,6 +39,23 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> pas
 npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including lifecycle-finalizer eligibility checks; POSIX template execution self-checks remain skipped fail-closed on this Windows host with EPERM
 ```
 
+## 2026-06-30 Runtime-Boundary Event-Manifest Materializer
+
+The real ROCm runner now has a generic producer for declared runtime-boundary event manifests when the upstream target emits actual `[gpu-runtime-boundary]` lines only into the run log. The materializer runs only for declared/enabled adapters with a safe repo-relative event-manifest path, preserves exact observed lines, records line hashes plus five-stage coverage, and writes a support-only `synthi.gpu_hmr.runtime_boundary_event_manifest.v1` manifest. It does not synthesize boundary events from profile declarations, repository names, target names, or adapter success.
+
+Partial coverage is still refusal/support evidence: missing stages are recorded as `runtime_boundary_event_manifest_<stage>_missing`, and the validation matrix/bridge must still recompute stage events, target-process provenance, output oracle, firewall, runtime chain, strict proof artifact, and proof-ledger closure. When no boundary lines are observed, no manifest is fabricated and the existing `runtime_adapter_event_manifest_transport_worker_file_missing` gap remains.
+
+Fresh bounded MIOpen check: the sandboxed run failed at Docker preflight with `spawn EPERM`; the approved unsandboxed rerun `gpu-real-rocm-MIOpen-20260630132711` reached Docker, source-tree CAS staging, external header prerequisite evidence, and target-environment export, then failed closed during configure/build metadata collection. The runtime-adapter finalizer executed, copied the adapter result, and exercised the materializer. Because the run log contained zero real boundary lines, materialization stayed `runtime_boundary_event_manifest_materialization_no_boundary_lines`, event-manifest transport stayed `runtime_adapter_event_manifest_transport_missing`, and strict runtime proof `gpu-runtime-proof:sha256:fc7ae97d93b58e06f034a97b7d8f44037d1da8ed16f22bed499a3e249b25e02a` was rejected. `gpuHmrSuccess=false` and `fullRuntimeProven=false`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including complete, partial, and empty run-log materializer checks; POSIX template execution self-checks remain skipped fail-closed on this Windows host with EPERM
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, retained matrix gpu-validation-matrix-ledger:sha256:1ab2a6d4968c89ff3109ebf14395c9c1cd899345cd916f6903f70885e309c502
+npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen with SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS=120000 -> failed closed, gpu-real-rocm-MIOpen-20260630132711, materialization_status=runtime_boundary_event_manifest_materialization_no_boundary_lines
+```
+
 ## 2026-06-30 OpenCL Host Runtime And Matrix Refresh
 
 OpenCL now has scoped live full-runtime compute/readback proof on this Windows host through a generic host-local OpenCL transport. The runtime proof still first attempts the worker-container path; when that path is structurally unavailable because the container has no usable OpenCL ICD/platform, the runner can execute a temporary PowerShell `Add-Type` probe that binds `OpenCL.dll`, builds before/after OpenCL C programs, dispatches `synthi_opencl_epoch_kernel` through `clEnqueueNDRangeKernel`, reads raw output bytes through `clEnqueueReadBuffer`, and emits the same runtime trace/readback artifacts used by the existing strict proof ledger.
