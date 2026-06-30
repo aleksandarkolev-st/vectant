@@ -16,6 +16,7 @@ const {
     createProject: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
+    recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     validateTransaction: vi.fn(),
   },
@@ -66,6 +67,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getTransaction',
     'listProjects',
     'openTransaction',
+    'recordPolicyDecision',
     'recordAssumption',
     'recordTransactionRead',
     'recordTransactionWrite',
@@ -142,6 +144,23 @@ describe('CodeSite catch-all route', () => {
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({ ok: false, policyDecision: { decision: 'block' } });
     expect(controlPlane.recordTransactionWrite).toHaveBeenCalledWith('acme', 'txn-1', { path: 'api/auth/signup.ts' });
+  });
+
+  it('records explicit mutation-lease policy decisions', async () => {
+    controlPlane.recordPolicyDecision.mockResolvedValue({ id: 'pd-1', decision: 'hold' });
+    const request = new Request('http://test/api/workspace/acme/codesite/mutation-leases/lease-1/policy-decisions', {
+      method: 'POST',
+      body: JSON.stringify({ decision: 'hold', reasonCodes: ['schema_first'] }),
+    });
+
+    const response = await POST(request, params(['mutation-leases', 'lease-1', 'policy-decisions']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({ policyDecision: { id: 'pd-1', decision: 'hold' } });
+    expect(controlPlane.recordPolicyDecision).toHaveBeenCalledWith('acme', 'lease-1', {
+      decision: 'hold',
+      reasonCodes: ['schema_first'],
+    });
   });
 
   it('serves source-state-since through the documented read endpoint', async () => {

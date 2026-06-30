@@ -379,6 +379,31 @@ export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body =
   return mutationLeaseProjection(updated);
 }
 
+export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body = {}) {
+  const lease = await requireLease(workspaceSlug, mutationLeaseId);
+  const decision = await createPolicyDecision(lease.projectId, {
+    mutationLeaseId: lease.id,
+    displayCallsign: lease.displayCallsign,
+    decision: body.decision || 'tower_instruction',
+    reasonCodes: asArray(body.reasonCodes || body.reason_codes || []),
+    input: body.input || { mutationLeaseId, body },
+    decisionJson: body.decisionBody || body.decision_body || body,
+  });
+  await recordEvent(lease.projectId, {
+    mutationLeaseId: lease.id,
+    eventType: 'tower_instruction',
+    displayCallsign: lease.displayCallsign,
+    actorType: 'policy_engine',
+    actorId: decision.id,
+    details: {
+      policyDecisionId: decision.id,
+      decision: decision.decision,
+      reasonCodes: parseJson(decision.reasonCodesJson, []),
+    },
+  });
+  return policyDecisionProjection(decision);
+}
+
 export async function openTransaction(workspaceSlug, mutationLeaseId, body = {}) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
   if (lease.status !== 'active') {

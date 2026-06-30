@@ -25,6 +25,7 @@ import {
   getTransaction,
   listProjects,
   openTransaction,
+  recordPolicyDecision,
   recordAssumption,
   recordTransactionRead,
   recordTransactionWrite,
@@ -195,6 +196,10 @@ export async function POST(request, { params }) {
 
     if (route[0] === 'mutation-leases' && route[2] === 'revoke') {
       return okJson({ mutationLease: await revokeMutationLease(slug, route[1], body) });
+    }
+
+    if (route[0] === 'mutation-leases' && route[2] === 'policy-decisions') {
+      return okJson({ policyDecision: await recordPolicyDecision(slug, route[1], body) }, { status: 201 });
     }
 
     if (route[0] === 'transactions' && route[2] === 'record-read') {
