@@ -1239,6 +1239,124 @@ describe("Dojo therapeutic tomography", () => {
     ]));
   });
 
+  it("plans and enforces executable lower-risk probes for non-ML task classes", async () => {
+    const taskId = "task-generic-runtime";
+    const init = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_init_trace", {
+      task_id: taskId,
+      task_class: "workflow_debugging",
+      user_goal: "Diagnose a workflow regression through low-risk evidence.",
+      current_authority_dose: 0,
+      severity: "high",
+      now: "2026-06-29T15:00:00.000Z",
+    }));
+    const broad = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+      task_id: taskId,
+      request: {
+        id: "generic-broad-prod",
+        authority_dose: 8,
+        scope: "production",
+        mode: "read_only",
+        data_classes: ["full_database"],
+        tools: ["database_dump"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Inspect everything to find the regression.",
+      },
+      now: "2026-06-29T15:00:30.000Z",
+    }));
+    const summaryProbe = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+      task_id: taskId,
+      probe_name: "task_evidence_summary",
+      probe_input: {
+        summary: "Workflow failures increased after the billing-worker deploy.",
+        confidence: 0.73,
+        time_window: "last_2h",
+      },
+      now: "2026-06-29T15:01:00.000Z",
+    }));
+    const configProbe = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+      task_id: taskId,
+      probe_name: "scoped_config_summary",
+      probe_input: {
+        service_name: "billing-worker",
+        changed_keys: { retry_policy: "changed" },
+        risk_level: "medium",
+        confidence: 0.82,
+        time_window: "last_2h",
+      },
+      now: "2026-06-29T15:02:00.000Z",
+    }));
+    const access = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+      task_id: taskId,
+      build_proof: true,
+      request: {
+        id: "generic-scoped-config",
+        authority_dose: 4,
+        scope: "service:billing-worker",
+        mode: "read_only",
+        data_classes: ["scoped_config_summary"],
+        tools: ["scoped_config_summary"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Read the scoped config summary for the implicated service.",
+      },
+      now: "2026-06-29T15:03:00.000Z",
+    }));
+    const dispatch = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+      task_id: taskId,
+      tool_name: "scoped_config_summary",
+      data_classes: ["scoped_config_summary"],
+      mode: "read_only",
+      scope: "service:billing-worker",
+      now: "2026-06-29T15:04:00.000Z",
+    }));
+    const accessGrantStatusBeforeRevoke = access.result.grant.status;
+    const revoke = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_revoke_grants", {
+      task_id: taskId,
+      reason: "task_end",
+      now: "2026-06-29T15:05:00.000Z",
+    }));
+    const runtime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_get_runtime", {
+      task_id: taskId,
+    }));
+
+    expect(init.ok).toBe(true);
+    expect(init.trace.uncertainties[0].useful_probes).toEqual(expect.arrayContaining([
+      "task_evidence_summary",
+      "redacted_state_diff",
+      "scoped_config_summary",
+    ]));
+    expect(broad.ok).toBe(false);
+    expect(broad.result.broker_decision.blocked_by).toEqual(expect.arrayContaining([
+      "authority_dose_exceeds_policy",
+      "forbidden_data_requested",
+      "lower_risk_probe_available",
+    ]));
+    expect(broad.result.broker_decision.suggested_alternatives).toEqual(expect.arrayContaining(["task_evidence_summary"]));
+    expect(summaryProbe.ok).toBe(true);
+    expect(configProbe.ok).toBe(true);
+    expect(configProbe.result.probe.task_class).toBe("workflow_debugging");
+    expect(access.ok).toBe(true);
+    expect(access.result.broker_decision.proof_capsule.approved).toBe(true);
+    expect(accessGrantStatusBeforeRevoke).toBe("active");
+    expect(dispatch.ok).toBe(true);
+    expect(revoke.ok).toBe(true);
+    expect(runtime.runtime.grants[0].status).toBe("revoked");
+    expect(runtime.runtime.reconstructable).toBe(true);
+    expect(runtime.runtime.evidence_records.map((record: { kind: string }) => record.kind)).toEqual(expect.arrayContaining([
+      "probe_result",
+      "access_decision",
+      "temporary_grant",
+      "revocation",
+    ]));
+    expect(runtime.runtime.audit_records.map((record: { event_type: string }) => record.event_type)).toEqual(expect.arrayContaining([
+      "access_denied",
+      "probe_completed",
+      "access_approved",
+      "grant_revoked",
+    ]));
+  });
+
   it("derives supported scopes from probe evidence without scenario-specific feature names", () => {
     const trace = emptyTherapeuticTrace({
       task_id: "task-generic-feature",

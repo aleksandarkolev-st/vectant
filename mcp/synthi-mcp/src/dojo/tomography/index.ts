@@ -735,11 +735,105 @@ export const THERAPEUTIC_ML_QUALITY_DROP_PROBES: TherapeuticProbeContract[] = [
   },
 ];
 
+const THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES: TherapeuticProbeContract[] = [
+  {
+    name: "task_evidence_summary",
+    purpose: "Summarize task-scoped evidence without raw records or identifiers.",
+    task_class: "generic_task",
+    required_authority_dose: 1,
+    required_data_classes: ["task_metadata", "aggregate_task_events"],
+    forbidden_data_classes: ["raw_prod_logs", "full_database", "customer_identifiers"],
+    input_schema: { time_window: "string" },
+    allowed_output_shape: ["summary", "confidence", "time_window"],
+    allowed_output_schema: {
+      summary: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["raw_records", "full_database_rows", "customer_identifiers", "prompts"],
+    privacy_cost: 1,
+    expected_information_gain: 5,
+    sensitivity_level: "low",
+    failure_modes: ["task_evidence_missing", "window_not_indexed"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "redacted_state_diff",
+    purpose: "Compare redacted state snapshots for a scoped component.",
+    task_class: "generic_task",
+    required_authority_dose: 2,
+    required_data_classes: ["redacted_state_snapshot"],
+    forbidden_data_classes: ["raw_prod_logs", "secrets", "customer_identifiers"],
+    input_schema: { component: "string", time_window: "string" },
+    allowed_output_shape: ["changed_component", "change_summary", "confidence", "time_window"],
+    allowed_output_schema: {
+      changed_component: "string",
+      change_summary: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["secret_values", "raw_state_dump", "customer_identifiers", "tokens"],
+    privacy_cost: 1,
+    expected_information_gain: 6,
+    sensitivity_level: "low",
+    failure_modes: ["component_not_scoped", "snapshot_missing"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+  {
+    name: "scoped_config_summary",
+    purpose: "Read a schema-limited summary of scoped configuration changes.",
+    task_class: "generic_task",
+    required_authority_dose: 3,
+    required_data_classes: ["scoped_config_summary"],
+    forbidden_data_classes: ["secrets", "admin_privileges", "full_production_config"],
+    input_schema: { service_name: "string", time_window: "string" },
+    allowed_output_shape: ["service_name", "changed_keys", "risk_level", "confidence", "time_window"],
+    allowed_output_schema: {
+      service_name: "string",
+      changed_keys: "object",
+      risk_level: "string",
+      confidence: "number",
+      time_window: "string",
+    },
+    forbidden_outputs: ["secrets", "tokens", "full_config_dump", "customer_identifiers"],
+    privacy_cost: 2,
+    expected_information_gain: 6,
+    sensitivity_level: "medium",
+    failure_modes: ["service_not_scoped", "config_history_missing"],
+    verifier: "schema_and_shape",
+    cache_policy: "per_task",
+  },
+];
+
+export function therapeuticProbeContractsForTaskClass(taskClass: string): TherapeuticProbeContract[] {
+  if (taskClass === "ml_quality_drop") return THERAPEUTIC_ML_QUALITY_DROP_PROBES;
+  return THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES.map((probe) => ({
+    ...probe,
+    task_class: taskClass,
+    required_data_classes: [...probe.required_data_classes],
+    forbidden_data_classes: [...probe.forbidden_data_classes],
+    input_schema: { ...probe.input_schema },
+    allowed_output_shape: [...probe.allowed_output_shape],
+    allowed_output_schema: { ...probe.allowed_output_schema },
+    forbidden_outputs: [...probe.forbidden_outputs],
+    failure_modes: [...probe.failure_modes],
+  }));
+}
+
+export function therapeuticUsefulProbeNamesForTaskClass(taskClass: string): string[] {
+  return therapeuticProbeContractsForTaskClass(taskClass).map((probe) => probe.name);
+}
+
 export const THERAPEUTIC_DEFAULT_POLICY: TherapeuticPolicy = {
   policy_id: "therapeutic_tomography_default_v1",
   max_authority_dose: 7,
   forbidden_data_classes: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges"],
-  allowed_projection_probes: THERAPEUTIC_ML_QUALITY_DROP_PROBES.map((probe) => probe.name),
+  allowed_projection_probes: uniqueStrings([
+    ...THERAPEUTIC_ML_QUALITY_DROP_PROBES.map((probe) => probe.name),
+    ...THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES.map((probe) => probe.name),
+  ]),
   mutation_allowed: false,
   sensitive_data_classes: ["raw_prod_logs", "full_database", "model_weights", "customer_identifiers", "admin_privileges"],
   broad_data_classes: ["raw_prod_logs", "full_database", "model_weights", "admin_privileges"],
@@ -2157,6 +2251,24 @@ export const THERAPEUTIC_DEFAULT_PROBE_ADAPTERS: Record<string, TherapeuticProbe
     confidence: numberFromInput(probe_input, "confidence", 0.79),
     time_window: stringFromInput(probe_input, "time_window", "last_24h"),
   }),
+  task_evidence_summary: ({ probe_input, trace }) => ({
+    summary: stringFromInput(probe_input, "summary", `Task evidence summary for ${trace.task_class}.`),
+    confidence: numberFromInput(probe_input, "confidence", 0.72),
+    time_window: stringFromInput(probe_input, "time_window", "last_24h"),
+  }),
+  redacted_state_diff: ({ probe_input }) => ({
+    changed_component: stringFromInput(probe_input, "changed_component", stringFromInput(probe_input, "component", "primary_component")),
+    change_summary: stringFromInput(probe_input, "change_summary", "Redacted scoped state changed within the requested window."),
+    confidence: numberFromInput(probe_input, "confidence", 0.76),
+    time_window: stringFromInput(probe_input, "time_window", "last_24h"),
+  }),
+  scoped_config_summary: ({ probe_input }) => ({
+    service_name: stringFromInput(probe_input, "service_name", "task-service"),
+    changed_keys: objectFromInput(probe_input, "changed_keys", { scoped_setting: "changed" }),
+    risk_level: stringFromInput(probe_input, "risk_level", "medium"),
+    confidence: numberFromInput(probe_input, "confidence", 0.78),
+    time_window: stringFromInput(probe_input, "time_window", "last_24h"),
+  }),
 };
 
 function verifyMachineClaims(input: {
@@ -2307,7 +2419,10 @@ function isAmbiguousScopedRequest(request: TherapeuticAccessRequest): boolean {
 
 function lowerRiskAlternatives(trace: TherapeuticTrace, policy: TherapeuticPolicy): string[] {
   const attempted = new Set(completedProbeNames(trace));
-  return policy.allowed_projection_probes.filter((probeName) => !attempted.has(probeName)).slice(0, 3);
+  return therapeuticProbeContractsForTaskClass(trace.task_class)
+    .map((probe) => probe.name)
+    .filter((probeName) => policy.allowed_projection_probes.includes(probeName) && !attempted.has(probeName))
+    .slice(0, 3);
 }
 
 function completedProbeNames(trace: TherapeuticTrace): string[] {
@@ -2445,7 +2560,10 @@ function probeExecutionBlockedBy(
 ): string[] {
   const blockedBy: string[] = [];
   if (trace.task_class !== contract.task_class) blockedBy.push("probe_task_class_mismatch");
-  if (!THERAPEUTIC_DEFAULT_POLICY.allowed_projection_probes.includes(contract.name)) blockedBy.push("probe_not_allowed_by_policy");
+  const taskProbeNames = therapeuticProbeContractsForTaskClass(trace.task_class).map((probe) => probe.name);
+  if (!THERAPEUTIC_DEFAULT_POLICY.allowed_projection_probes.includes(contract.name) || !taskProbeNames.includes(contract.name)) {
+    blockedBy.push("probe_not_allowed_by_policy");
+  }
   if (contract.required_data_classes.some((dataClass) => THERAPEUTIC_DEFAULT_POLICY.forbidden_data_classes.includes(dataClass))) {
     blockedBy.push("probe_requires_forbidden_data");
   }

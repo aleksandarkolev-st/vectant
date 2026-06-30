@@ -157,8 +157,9 @@ import {
   runTherapeuticTomographyCheckrides,
   summarizeProofMetrics,
   summarizeTherapeuticOutcomeMetrics,
-  THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   THERAPEUTIC_DEFAULT_POLICY,
+  therapeuticProbeContractsForTaskClass,
+  therapeuticUsefulProbeNamesForTaskClass,
   verifyTherapeuticRemediationPostconditions,
   type TherapeuticAccessMode,
   type TherapeuticAccessRequest,
@@ -2560,9 +2561,7 @@ function dojoTherapeuticInitTraceTool(args: unknown): ToolResponse {
       description: `Identify the lowest-risk evidence that can progress ${taskClass}.`,
       current_confidence: 0.1,
       possible_causes: ["data_drift", "routing_change", "configuration_change", "unknown"],
-      useful_probes: THERAPEUTIC_ML_QUALITY_DROP_PROBES
-        .filter((probe) => probe.task_class === taskClass)
-        .map((probe) => probe.name),
+      useful_probes: therapeuticUsefulProbeNamesForTaskClass(taskClass),
       blocking_status: "open",
       severity: therapeuticRiskLevelOpt(a["severity"]) ?? "medium",
     });
@@ -2588,7 +2587,7 @@ async function dojoTherapeuticRunProbeTool(args: unknown): Promise<ToolResponse>
   }
   const session = dojoTherapeuticSession(taskId);
   if (!session) return therapeuticRuntimeMissing(taskId);
-  const contract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === probeName);
+  const contract = therapeuticProbeContractsForTaskClass(session.trace.task_class).find((probe) => probe.name === probeName);
   if (!contract) {
     return errorResponse("dojo_therapeutic_probe_contract_missing", {
       ok: false,
