@@ -141,6 +141,33 @@ import {
   type DojoNetworkTraceEndpointInput,
 } from "../dojo/api/endpoint_inference.js";
 import {
+  buildMlQualityDropTherapeuticDemoTrace,
+  buildStrictProofCapsule,
+  createTherapeuticRuntimeStore,
+  dispatchProtectedTherapeuticTool,
+  emptyTherapeuticTrace,
+  enforceTherapeuticAccessRequest,
+  executeTherapeuticProbe,
+  executeTherapeuticRemediation,
+  learnTherapeuticPolicyPatterns,
+  recordTherapeuticDiagnosis,
+  reviewTherapeuticAccessRequest,
+  revokeTherapeuticGrant,
+  revokeTherapeuticTaskGrants,
+  runTherapeuticTomographyCheckrides,
+  summarizeProofMetrics,
+  THERAPEUTIC_ML_QUALITY_DROP_PROBES,
+  THERAPEUTIC_DEFAULT_POLICY,
+  type TherapeuticAccessMode,
+  type TherapeuticAccessRequest,
+  type TherapeuticAuthorityLevel,
+  type TherapeuticHumanReviewedClaim,
+  type TherapeuticRemediationProposal,
+  type TherapeuticRiskLevel,
+  type TherapeuticRuntimeStore,
+  type TherapeuticTrace,
+} from "../dojo/tomography/index.js";
+import {
   compileDojoApiBackedMcpTool,
   executeDojoApiBackedToolInvocation,
   validateDojoApiBackedToolInvocation,
@@ -248,6 +275,17 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_revoke_proof_capsule",
   "synthi_dojo_create_hosted_runtime_session",
   "synthi_dojo_run_with_proof_capsule",
+  "synthi_dojo_therapeutic_init_trace",
+  "synthi_dojo_therapeutic_run_probe",
+  "synthi_dojo_therapeutic_request_access",
+  "synthi_dojo_therapeutic_dispatch_protected_tool",
+  "synthi_dojo_therapeutic_revoke_grants",
+  "synthi_dojo_therapeutic_run_checkrides",
+  "synthi_dojo_therapeutic_learn_policy",
+  "synthi_dojo_therapeutic_review_access",
+  "synthi_dojo_therapeutic_record_diagnosis",
+  "synthi_dojo_therapeutic_propose_remediation",
+  "synthi_dojo_therapeutic_get_runtime",
 ] as const;
 
 const dojoHostedRuntimeAuditStore: DojoAuditStore = {
@@ -2056,6 +2094,175 @@ export const DOJO_TOOLS = [
       required: ["proof_capsule"],
     },
   },
+  {
+    name: "synthi_dojo_therapeutic_init_trace",
+    description:
+      "Initialize a stateful therapeutic tomography runtime trace for a task class. Use demo_fixture=true to load the golden ML quality-drop path; otherwise starts a non-demo trace with uncertainty/probe planning.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        task_class: { type: "string", default: "ml_quality_drop" },
+        user_goal: { type: "string" },
+        current_authority_dose: { type: "number" },
+        demo_fixture: { type: "boolean" },
+        severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        now: { type: "string" },
+      },
+      required: ["task_id", "user_goal"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_run_probe",
+    description:
+      "Run an executable therapeutic probe adapter by contract name, enforce required access and allowed output schema, fail closed on leaky output, and append probe evidence/audit records.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        probe_name: { type: "string" },
+        probe_input: { type: "object" },
+        mock_output: { type: "object" },
+        now: { type: "string" },
+      },
+      required: ["task_id", "probe_name"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_request_access",
+    description:
+      "Route an agent access request through the therapeutic Authority Broker, optionally build strict proof from trace evidence, persist the decision, and mint a temporary grant only when approved.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        request: { type: "object" },
+        build_proof: { type: "boolean" },
+        human_reviewed_claims: { type: "array", items: { type: "object" } },
+        narrative_claims: { type: "array", items: { type: "object" } },
+        now: { type: "string" },
+      },
+      required: ["task_id", "request"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_dispatch_protected_tool",
+    description:
+      "Attempt to dispatch a protected tool/data class through the therapeutic runtime. Calls without an active scoped broker grant are blocked and audited as bypass attempts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        tool_name: { type: "string" },
+        data_classes: { type: "array", items: { type: "string" } },
+        mode: { type: "string", enum: ["read_only", "write"] },
+        scope: { type: "string" },
+        now: { type: "string" },
+      },
+      required: ["task_id", "tool_name", "data_classes", "mode", "scope"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_revoke_grants",
+    description:
+      "Revoke one therapeutic temporary grant or all active grants for a task, recording revocation success/failure in runtime audit/evidence.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        grant_id: { type: "string" },
+        reason: { type: "string" },
+        now: { type: "string" },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_run_checkrides",
+    description:
+      "Run therapeutic tomography Dojo/Vivarium checkrides for over-escalation, under-escalation, strict proof, adversarial probe output, source drift, and emergency escalation; records policy-delta and case-law hypotheses without granting broader access.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        available_requests: { type: "array", items: { type: "object" } },
+        now: { type: "string" },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_learn_policy",
+    description:
+      "Derive conservative therapeutic policy-learning records from completed traces and checkrides. Records recommend safer defaults and proof patterns but explicitly cannot grant broader future access.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        now: { type: "string" },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_review_access",
+    description:
+      "Resolve a pending Tier 2/Tier 3 therapeutic access review. Approval adds a human judgment claim and re-enters broker enforcement without rejudging deterministic claims.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        review_id: { type: "string" },
+        status: { type: "string", enum: ["approved", "denied"] },
+        reviewer_role: { type: "string" },
+        rationale: { type: "string" },
+        now: { type: "string" },
+      },
+      required: ["task_id", "review_id", "status", "reviewer_role", "rationale"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_record_diagnosis",
+    description:
+      "Record a verified therapeutic diagnosis from probe/proof evidence. This closes diagnosis without granting mutation; remediation still requires a separate proposal gate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        diagnosis: { type: "string" },
+        remediation_plan: { type: "string" },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        now: { type: "string" },
+      },
+      required: ["task_id", "diagnosis"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_propose_remediation",
+    description:
+      "Submit a scoped remediation proposal for write access. Diagnosis proof alone cannot authorize mutation; this gate requires verified diagnosis, blast radius, rollback, postcondition checks, human approval, execution approval, verification, and later revocation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        proposal: { type: "object" },
+        now: { type: "string" },
+      },
+      required: ["task_id", "proposal"],
+    },
+  },
+  {
+    name: "synthi_dojo_therapeutic_get_runtime",
+    description:
+      "Return the current therapeutic tomography trace plus runtime audit/evidence/grant state so the full access path can be reconstructed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+      },
+      required: ["task_id"],
+    },
+  },
 ] as const;
 
 export async function dispatchDojoTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
@@ -2234,6 +2441,39 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_run_with_proof_capsule":
         response = await dojoRunWithProofCapsuleTool(args);
         break;
+      case "synthi_dojo_therapeutic_init_trace":
+        response = dojoTherapeuticInitTraceTool(args);
+        break;
+      case "synthi_dojo_therapeutic_run_probe":
+        response = await dojoTherapeuticRunProbeTool(args);
+        break;
+      case "synthi_dojo_therapeutic_request_access":
+        response = dojoTherapeuticRequestAccessTool(args);
+        break;
+      case "synthi_dojo_therapeutic_dispatch_protected_tool":
+        response = dojoTherapeuticDispatchProtectedTool(args);
+        break;
+      case "synthi_dojo_therapeutic_revoke_grants":
+        response = dojoTherapeuticRevokeGrantsTool(args);
+        break;
+      case "synthi_dojo_therapeutic_run_checkrides":
+        response = dojoTherapeuticRunCheckridesTool(args);
+        break;
+      case "synthi_dojo_therapeutic_learn_policy":
+        response = dojoTherapeuticLearnPolicyTool(args);
+        break;
+      case "synthi_dojo_therapeutic_review_access":
+        response = dojoTherapeuticReviewAccessTool(args);
+        break;
+      case "synthi_dojo_therapeutic_record_diagnosis":
+        response = dojoTherapeuticRecordDiagnosisTool(args);
+        break;
+      case "synthi_dojo_therapeutic_propose_remediation":
+        response = dojoTherapeuticProposeRemediationTool(args);
+        break;
+      case "synthi_dojo_therapeutic_get_runtime":
+        response = dojoTherapeuticGetRuntimeTool(args);
+        break;
       default:
         return null;
     }
@@ -2260,6 +2500,492 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
     structuredContent,
     content: response.content.map((block) => block.type === "text" ? { ...block, text: JSON.stringify(structuredContent) } : block),
   };
+}
+
+interface DojoTherapeuticRuntimeSession {
+  trace: TherapeuticTrace;
+  store: TherapeuticRuntimeStore;
+}
+
+const dojoTherapeuticRuntimeSessions = new Map<string, DojoTherapeuticRuntimeSession>();
+
+function dojoTherapeuticInitTraceTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const userGoal = stringOpt(a["user_goal"]);
+  if (!taskId || !userGoal) {
+    return errorResponse("dojo_therapeutic_init_trace_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required", "user_goal_required"],
+    });
+  }
+  const taskClass = stringOpt(a["task_class"]) ?? "ml_quality_drop";
+  const currentDose = therapeuticAuthorityLevelOpt(a["current_authority_dose"]) ?? 0;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const trace = boolOpt(a["demo_fixture"])
+    ? buildMlQualityDropTherapeuticDemoTrace(now)
+    : emptyTherapeuticTrace({
+        task_id: taskId,
+        task_class: taskClass,
+        user_goal: userGoal,
+        current_authority_dose: currentDose,
+      });
+  trace.task_id = taskId;
+  trace.user_goal = userGoal;
+  if (!boolOpt(a["demo_fixture"]) && trace.uncertainties.length === 0) {
+    trace.uncertainties.push({
+      id: "task_uncertainty",
+      description: `Identify the lowest-risk evidence that can progress ${taskClass}.`,
+      current_confidence: 0.1,
+      possible_causes: ["data_drift", "routing_change", "configuration_change", "unknown"],
+      useful_probes: THERAPEUTIC_ML_QUALITY_DROP_PROBES
+        .filter((probe) => probe.task_class === taskClass)
+        .map((probe) => probe.name),
+      blocking_status: "open",
+      severity: therapeuticRiskLevelOpt(a["severity"]) ?? "medium",
+    });
+  }
+  const store = createTherapeuticRuntimeStore();
+  dojoTherapeuticRuntimeSessions.set(taskId, { trace, store });
+  return jsonResponse({
+    ok: true,
+    trace,
+    runtime: therapeuticRuntimeView({ trace, store }),
+  });
+}
+
+async function dojoTherapeuticRunProbeTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const probeName = stringOpt(a["probe_name"]);
+  if (!taskId || !probeName) {
+    return errorResponse("dojo_therapeutic_run_probe_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required", "probe_name_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const contract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === probeName);
+  if (!contract) {
+    return errorResponse("dojo_therapeutic_probe_contract_missing", {
+      ok: false,
+      task_id: taskId,
+      probe_name: probeName,
+      blocked_by: ["probe_contract_missing"],
+    });
+  }
+  const mockOutput = obj(a["mock_output"]);
+  const result = await executeTherapeuticProbe({
+    trace: session.trace,
+    store: session.store,
+    contract,
+    probe_input: obj(a["probe_input"]),
+    ...(Object.keys(mockOutput).length > 0 ? { adapter: () => mockOutput } : {}),
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: result.decision === "completed",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticRequestAccessTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_request_access_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const request = therapeuticAccessRequestOpt(a["request"], taskId);
+  if (!request) {
+    return errorResponse("dojo_therapeutic_access_request_invalid", {
+      ok: false,
+      task_id: taskId,
+      blocked_by: ["access_request_invalid"],
+    });
+  }
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const proofCapsule = boolOpt(a["build_proof"])
+    ? buildStrictProofCapsule({
+        id: `proof_${request.id}`,
+        task_id: taskId,
+        trace: session.trace,
+        request,
+        current_authority_dose: session.trace.current_authority_dose,
+        human_reviewed_claims: therapeuticHumanClaimsOpt(a["human_reviewed_claims"]),
+        unverifiable_narrative_claims: therapeuticNarrativeClaimsOpt(a["narrative_claims"]),
+        timestamp: now,
+      })
+    : undefined;
+  const result = enforceTherapeuticAccessRequest({
+    trace: session.trace,
+    store: session.store,
+    request,
+    proof_capsule: proofCapsule,
+    now,
+  });
+  return jsonResponse({
+    ok: result.decision === "approved",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticDispatchProtectedTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const toolName = stringOpt(a["tool_name"]);
+  const mode = therapeuticAccessModeOpt(a["mode"]);
+  const scope = stringOpt(a["scope"]);
+  const dataClasses = stringArrayOpt(a["data_classes"]);
+  if (!taskId || !toolName || !mode || !scope || dataClasses.length === 0) {
+    return errorResponse("dojo_therapeutic_dispatch_invalid", {
+      ok: false,
+      blocked_by: ["task_id_tool_name_data_classes_mode_scope_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const result = dispatchProtectedTherapeuticTool({
+    trace: session.trace,
+    store: session.store,
+    tool: {
+      tool_name: toolName,
+      data_classes: dataClasses,
+      mode,
+      scope,
+    },
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: result.decision === "approved",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticRevokeGrantsTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_revoke_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const grantId = stringOpt(a["grant_id"]);
+  const reason = stringOpt(a["reason"]) ?? "task_end";
+  const now = stringOpt(a["now"]);
+  const revoked = grantId
+    ? [revokeTherapeuticGrant({ trace: session.trace, store: session.store, grant_id: grantId, reason, now })].filter((grant) => grant !== null)
+    : revokeTherapeuticTaskGrants({ trace: session.trace, store: session.store, reason, now });
+  return jsonResponse({
+    ok: revoked.length > 0,
+    revoked,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticRunCheckridesTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_run_checkrides_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const availableRequests = (Array.isArray(a["available_requests"]) ? a["available_requests"] : [])
+    .map((value) => therapeuticAccessRequestOpt(value, taskId))
+    .filter((value): value is TherapeuticAccessRequest => value !== undefined);
+  const report = runTherapeuticTomographyCheckrides({
+    trace: session.trace,
+    store: session.store,
+    available_requests: availableRequests,
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: report.failed_count === 0,
+    report,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticLearnPolicyTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_learn_policy_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const records = learnTherapeuticPolicyPatterns({
+    traces: [session.trace],
+    store: session.store,
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: true,
+    records,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticReviewAccessTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const reviewId = stringOpt(a["review_id"]);
+  const status = stringOpt(a["status"]);
+  const reviewerRole = stringOpt(a["reviewer_role"]);
+  const rationale = stringOpt(a["rationale"]);
+  if (!taskId || !reviewId || (status !== "approved" && status !== "denied") || !reviewerRole || !rationale) {
+    return errorResponse("dojo_therapeutic_review_access_invalid", {
+      ok: false,
+      blocked_by: ["task_id_review_id_status_reviewer_role_rationale_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const result = reviewTherapeuticAccessRequest({
+    trace: session.trace,
+    store: session.store,
+    review_id: reviewId,
+    status,
+    reviewer_role: reviewerRole,
+    rationale,
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: result.decision === "approved",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticRecordDiagnosisTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  const diagnosis = stringOpt(a["diagnosis"]);
+  if (!taskId || !diagnosis) {
+    return errorResponse("dojo_therapeutic_record_diagnosis_invalid", {
+      ok: false,
+      blocked_by: ["task_id_diagnosis_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const result = recordTherapeuticDiagnosis({
+    trace: session.trace,
+    store: session.store,
+    diagnosis,
+    remediation_plan: stringOpt(a["remediation_plan"]),
+    evidence_refs: stringArrayOpt(a["evidence_refs"]),
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: true,
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticProposeRemediationTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const taskId = stringOpt(a["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_remediation_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  const proposal = therapeuticRemediationProposalOpt(a["proposal"], taskId);
+  if (!proposal) {
+    return errorResponse("dojo_therapeutic_remediation_proposal_invalid", {
+      ok: false,
+      task_id: taskId,
+      blocked_by: ["remediation_proposal_invalid"],
+    });
+  }
+  const result = executeTherapeuticRemediation({
+    trace: session.trace,
+    store: session.store,
+    proposal,
+    policy: { ...THERAPEUTIC_DEFAULT_POLICY, mutation_allowed: true },
+    now: stringOpt(a["now"]),
+  });
+  return jsonResponse({
+    ok: result.decision === "approved",
+    result,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticGetRuntimeTool(args: unknown): ToolResponse {
+  const taskId = stringOpt(obj(args)["task_id"]);
+  if (!taskId) {
+    return errorResponse("dojo_therapeutic_get_runtime_invalid", {
+      ok: false,
+      blocked_by: ["task_id_required"],
+    });
+  }
+  const session = dojoTherapeuticSession(taskId);
+  if (!session) return therapeuticRuntimeMissing(taskId);
+  return jsonResponse({
+    ok: true,
+    runtime: therapeuticRuntimeView(session),
+  });
+}
+
+function dojoTherapeuticSession(taskId: string): DojoTherapeuticRuntimeSession | undefined {
+  return dojoTherapeuticRuntimeSessions.get(taskId);
+}
+
+function therapeuticRuntimeMissing(taskId: string): ToolResponse {
+  return errorResponse("dojo_therapeutic_runtime_missing", {
+    ok: false,
+    task_id: taskId,
+    blocked_by: ["therapeutic_runtime_not_initialized"],
+  });
+}
+
+function therapeuticRuntimeView(session: DojoTherapeuticRuntimeSession): Record<string, unknown> {
+  return {
+    trace: session.trace,
+    evidence_records: session.store.evidence_records,
+    audit_records: session.store.audit_records,
+    grants: session.store.grants,
+    proof_statuses: session.store.proof_statuses,
+    proof_decision_records: session.store.proof_decision_records,
+    proof_metrics: summarizeProofMetrics({
+      decisions: session.store.proof_decision_records.map((record) => ({
+        decision: record.decision,
+        tier: record.tier,
+        blocked_by: record.blocked_by,
+        suggested_alternatives: [],
+        verification_latency_ms: record.verification_latency_ms,
+        llm_reviewed: record.llm_reviewed,
+        human_reviewed: record.human_reviewed,
+        token_count: record.token_count,
+        cache_hit: record.cache_hit,
+        probe_bundle_success: record.probe_bundle_success,
+      })),
+    }),
+    checkride_reports: session.store.checkride_reports,
+    policy_learning_records: session.store.policy_learning_records,
+    review_requests: session.store.review_requests,
+    reconstructable: session.store.evidence_records.length + session.store.audit_records.length > 0,
+  };
+}
+
+function therapeuticAccessRequestOpt(value: unknown, fallbackTaskId: string): TherapeuticAccessRequest | undefined {
+  const record = obj(value);
+  const id = stringOpt(record["id"]);
+  const authorityDose = therapeuticAuthorityLevelOpt(record["authority_dose"]);
+  const scope = stringOpt(record["scope"]);
+  const mode = therapeuticAccessModeOpt(record["mode"]);
+  const dataClasses = stringArrayOpt(record["data_classes"]);
+  const tools = stringArrayOpt(record["tools"]);
+  const expiration = stringOpt(record["expiration"]);
+  const purpose = stringOpt(record["purpose"]);
+  if (!id || authorityDose === undefined || !scope || !mode || dataClasses.length === 0 || tools.length === 0 || !expiration || !purpose) {
+    return undefined;
+  }
+  return {
+    id,
+    task_id: stringOpt(record["task_id"]) ?? fallbackTaskId,
+    authority_dose: authorityDose,
+    scope,
+    mode,
+    data_classes: dataClasses,
+    tools,
+    expiration,
+    revocable: record["revocable"] !== false,
+    purpose,
+  };
+}
+
+function therapeuticRemediationProposalOpt(value: unknown, fallbackTaskId: string): TherapeuticRemediationProposal | undefined {
+  const record = obj(value);
+  const id = stringOpt(record["id"]);
+  const proposedChange = stringOpt(record["proposed_change"]);
+  const requestedAccess = therapeuticAccessRequestOpt(record["requested_access"], fallbackTaskId);
+  const blastRadius = stringOpt(record["blast_radius"]);
+  const rollbackPlan = stringOpt(record["rollback_plan"]);
+  const postconditionChecks = stringArrayOpt(record["postcondition_checks"]);
+  const humanApproval = therapeuticHumanClaimsOpt([record["human_approval"]])[0] ?? null;
+  if (!id || !proposedChange || !requestedAccess || !blastRadius || !rollbackPlan || postconditionChecks.length === 0) {
+    return undefined;
+  }
+  return {
+    id,
+    task_id: stringOpt(record["task_id"]) ?? fallbackTaskId,
+    diagnosis_verified: record["diagnosis_verified"] === true,
+    proposed_change: proposedChange,
+    requested_access: requestedAccess,
+    blast_radius: blastRadius,
+    rollback_plan: rollbackPlan,
+    postcondition_checks: postconditionChecks,
+    human_approval: humanApproval,
+  };
+}
+
+function therapeuticAuthorityLevelOpt(value: unknown): TherapeuticAuthorityLevel | undefined {
+  const numberValue = numberOpt(value);
+  if (numberValue === undefined) return undefined;
+  const integer = Math.trunc(numberValue);
+  return integer >= 0 && integer <= 8 ? integer as TherapeuticAuthorityLevel : undefined;
+}
+
+function therapeuticAccessModeOpt(value: unknown): TherapeuticAccessMode | undefined {
+  return value === "read_only" || value === "write" ? value : undefined;
+}
+
+function therapeuticRiskLevelOpt(value: unknown): TherapeuticRiskLevel | undefined {
+  return value === "low" || value === "medium" || value === "high" || value === "critical" ? value : undefined;
+}
+
+function therapeuticHumanClaimsOpt(value: unknown): TherapeuticHumanReviewedClaim[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const record = obj(entry);
+    const claim = stringOpt(record["claim"]);
+    const reviewerRole = stringOpt(record["reviewer_role"]);
+    const status = record["status"];
+    const rationale = stringOpt(record["rationale"]);
+    if (!claim || !reviewerRole || !rationale || (status !== "approved" && status !== "rejected" && status !== "pending")) {
+      return null;
+    }
+    return {
+      claim,
+      reviewer_role: reviewerRole,
+      status,
+      rationale,
+    };
+  }).filter((claim): claim is TherapeuticHumanReviewedClaim => claim !== null);
+}
+
+function therapeuticNarrativeClaimsOpt(value: unknown): Array<{ claim: string; status: "context_only" }> {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const record = obj(entry);
+    const claim = stringOpt(record["claim"]);
+    return claim ? { claim, status: "context_only" as const } : null;
+  }).filter((claim): claim is { claim: string; status: "context_only" } => claim !== null);
 }
 
 async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {

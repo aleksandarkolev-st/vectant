@@ -1,16 +1,27 @@
 import { describe, expect, it } from "vitest";
+import { dispatchDojoTool } from "../../src/tools/dojo.js";
 import {
   buildMlQualityDropTherapeuticDemoTrace,
   buildProjectionProbe,
   buildSafeProbeBundle,
   buildStrictProofCapsule,
   classifyTherapeuticProofRoute,
+  createTherapeuticRuntimeStore,
+  dispatchProtectedTherapeuticTool,
   emptyTherapeuticTrace,
+  enforceTherapeuticAccessRequest,
   evaluateAuthorityBroker,
   evaluateProofCache,
   evaluateRemediationGate,
   evaluateUnderEscalation,
+  executeTherapeuticProbe,
+  executeTherapeuticRemediation,
   inferSupportedScopeValues,
+  learnTherapeuticPolicyPatterns,
+  reviewTherapeuticAccessRequest,
+  revokeTherapeuticGrant,
+  revokeTherapeuticTaskGrants,
+  runTherapeuticTomographyCheckrides,
   scoreTherapeuticAction,
   selectLowestRiskProbe,
   summarizeProofMetrics,
@@ -19,6 +30,11 @@ import {
   type TherapeuticAccessRequest,
   type TherapeuticProbeContract,
 } from "../../src/dojo/tomography/index.js";
+
+function toolJson(response: Awaited<ReturnType<typeof dispatchDojoTool>>): any {
+  expect(response).not.toBeNull();
+  return response!.structuredContent ?? JSON.parse(response!.content[0]?.type === "text" ? response!.content[0].text : "{}");
+}
 
 describe("Dojo therapeutic tomography", () => {
   it("blocks broad sensitive access before lower-risk probes and suggests deterministic alternatives", () => {
@@ -166,6 +182,62 @@ describe("Dojo therapeutic tomography", () => {
     expect(missingRequired.allowed_output_shape_valid).toBe(false);
     expect(wrongType.allowed_output_shape_valid).toBe(false);
     expect(nestedLeak.allowed_output_shape_valid).toBe(false);
+  });
+
+  it("executes pluggable probes and fails closed when an adapter returns leaky output", async () => {
+    const trace = emptyTherapeuticTrace({
+      task_id: "task-probe-runtime",
+      task_class: "ml_quality_drop",
+      user_goal: "Diagnose a non-demo quality drop.",
+      current_authority_dose: 2,
+    });
+    trace.uncertainties.push({
+      id: "cause",
+      description: "Find the cause.",
+      current_confidence: 0.1,
+      possible_causes: ["data_drift"],
+      useful_probes: ["eval_slice_compare", "feature_drift_summary"],
+      blocking_status: "open",
+      severity: "high",
+    });
+    const store = createTherapeuticRuntimeStore();
+    const evalContract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "eval_slice_compare")!;
+    const driftContract = THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary")!;
+
+    const completed = await executeTherapeuticProbe({
+      trace,
+      contract: evalContract,
+      store,
+      probe_input: {
+        affected_segment: "trial_accounts",
+        quality_delta: -0.07,
+        confidence: 0.82,
+        time_window: "last_6h",
+      },
+      now: "2026-06-29T10:00:00.000Z",
+    });
+    const leaky = await executeTherapeuticProbe({
+      trace,
+      contract: driftContract,
+      store,
+      adapter: () => ({
+        top_feature: "billing_country",
+        drift_score: 0.83,
+        affected_segment: "trial_accounts",
+        confidence: 0.86,
+        time_window: "last_6h",
+        raw_training_rows: [{ customer_id: "leak" }],
+      }),
+      now: "2026-06-29T10:01:00.000Z",
+    });
+
+    expect(completed.decision).toBe("completed");
+    expect(completed.probe?.result_summary.affected_segment).toBe("trial_accounts");
+    expect(leaky.decision).toBe("blocked");
+    expect(leaky.blocked_by).toContain("probe_output_shape_invalid");
+    expect(trace.projection_probes.find((probe) => probe.id === leaky.probe?.id)?.status).toBe("failed");
+    expect(store.evidence_records.map((record) => record.kind)).toContain("probe_result");
+    expect(store.audit_records.map((record) => record.event_type)).toContain("probe_blocked");
   });
 
   it("builds strict proof capsules that separate machine, human, and narrative claims", () => {
@@ -452,6 +524,604 @@ describe("Dojo therapeutic tomography", () => {
         "postcondition_verification_gate",
       ],
     });
+  });
+
+  it("prevents protected tool bypass, grants scoped access through proof, records evidence, and revokes", async () => {
+    const trace = emptyTherapeuticTrace({
+      task_id: "task-runtime-non-demo",
+      task_class: "ml_quality_drop",
+      user_goal: "Diagnose a quality drop for trial accounts.",
+      current_authority_dose: 2,
+    });
+    trace.uncertainties.push({
+      id: "cause",
+      description: "Cause remains unknown.",
+      current_confidence: 0.2,
+      possible_causes: ["train_serve_skew", "data_drift"],
+      useful_probes: ["eval_slice_compare", "feature_drift_summary"],
+      blocking_status: "open",
+      severity: "high",
+    });
+    const store = createTherapeuticRuntimeStore();
+    const bypass = dispatchProtectedTherapeuticTool({
+      trace,
+      store,
+      tool: {
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+      },
+      now: "2026-06-29T11:00:00.000Z",
+    });
+
+    await executeTherapeuticProbe({
+      trace,
+      contract: THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "eval_slice_compare")!,
+      store,
+      probe_input: {
+        affected_segment: "trial_accounts",
+        quality_delta: -0.07,
+        confidence: 0.81,
+        time_window: "last_6h",
+      },
+      now: "2026-06-29T11:01:00.000Z",
+    });
+    await executeTherapeuticProbe({
+      trace,
+      contract: THERAPEUTIC_ML_QUALITY_DROP_PROBES.find((probe) => probe.name === "feature_drift_summary")!,
+      store,
+      probe_input: {
+        top_feature: "billing_country",
+        drift_score: 0.83,
+        affected_segment: "trial_accounts",
+        confidence: 0.86,
+        time_window: "last_6h",
+      },
+      now: "2026-06-29T11:02:00.000Z",
+    });
+    const request: TherapeuticAccessRequest = {
+      id: "lineage-billing-country-runtime",
+      task_id: trace.task_id,
+      authority_dose: 5,
+      scope: "feature:billing_country",
+      mode: "read_only",
+      data_classes: ["feature_lineage_hash"],
+      tools: ["feature_lineage_hash"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "verify scoped feature lineage hash",
+    };
+    const capsule = buildStrictProofCapsule({
+      id: "proof-runtime-lineage",
+      task_id: trace.task_id,
+      trace,
+      request,
+      current_authority_dose: 4,
+      human_reviewed_claims: [{
+        claim: "lineage_access_is_reasonable_next_step",
+        reviewer_role: "ml_engineer",
+        status: "approved",
+        rationale: "Aggregate drift identified billing_country.",
+      }],
+      timestamp: "2026-06-29T11:03:00.000Z",
+    });
+    const access = enforceTherapeuticAccessRequest({
+      trace,
+      request,
+      proof_capsule: capsule,
+      store,
+      now: "2026-06-29T11:03:00.000Z",
+    });
+    const dispatch = dispatchProtectedTherapeuticTool({
+      trace,
+      store,
+      tool: {
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+      },
+      now: "2026-06-29T11:04:00.000Z",
+    });
+    const grantStatusBeforeRevoke = access.grant?.status;
+    const revoked = revokeTherapeuticGrant({
+      trace,
+      store,
+      grant_id: access.grant!.grant_id,
+      reason: "task_end",
+      now: "2026-06-29T11:05:00.000Z",
+    });
+    const afterRevoke = dispatchProtectedTherapeuticTool({
+      trace,
+      store,
+      tool: {
+        tool_name: "feature_lineage_hash",
+        data_classes: ["feature_lineage_hash"],
+        mode: "read_only",
+        scope: "feature:billing_country",
+      },
+      now: "2026-06-29T11:06:00.000Z",
+    });
+
+    expect(bypass.decision).toBe("denied");
+    expect(bypass.blocked_by).toEqual(expect.arrayContaining(["broker_required", "active_scoped_grant_missing"]));
+    expect(access.decision).toBe("approved");
+    expect(grantStatusBeforeRevoke).toBe("active");
+    expect(dispatch.decision).toBe("approved");
+    expect(revoked?.status).toBe("revoked");
+    expect(afterRevoke.decision).toBe("denied");
+    expect(store.proof_decision_records.map((record) => record.request_id)).toContain(request.id);
+    expect(store.proof_decision_records.some((record) => record.decision === "approved" && record.tier === 1)).toBe(true);
+    expect(store.evidence_records.map((record) => record.kind)).toEqual(expect.arrayContaining([
+      "access_decision",
+      "temporary_grant",
+      "revocation",
+    ]));
+    expect(store.audit_records.map((record) => record.event_type)).toEqual(expect.arrayContaining([
+      "tool_bypass_blocked",
+      "access_approved",
+      "grant_revoked",
+    ]));
+    expect(trace.authority_doses[0]).toEqual(expect.objectContaining({
+      scope: "feature:billing_country",
+      decision: "approved",
+    }));
+  });
+
+  it("rejects replayed, revoked, and stale proof capsules in runtime enforcement", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const capsule = trace.proof_capsules[0]!;
+    const first = enforceTherapeuticAccessRequest({
+      trace,
+      request: capsule.requested_access,
+      proof_capsule: capsule,
+      store,
+      now: "2026-06-29T12:00:00.000Z",
+    });
+    const replay = enforceTherapeuticAccessRequest({
+      trace,
+      request: capsule.requested_access,
+      proof_capsule: capsule,
+      store,
+      now: "2026-06-29T12:01:00.000Z",
+    });
+    const revokedCapsule = { ...capsule, id: "proof-revoked-runtime" };
+    store.proof_statuses[revokedCapsule.id] = "revoked";
+    const revoked = enforceTherapeuticAccessRequest({
+      trace,
+      request: revokedCapsule.requested_access,
+      proof_capsule: revokedCapsule,
+      store,
+      now: "2026-06-29T12:02:00.000Z",
+    });
+    const staleRequest: TherapeuticAccessRequest = {
+      ...capsule.requested_access,
+      id: "stale-runtime-request",
+      expiration: "2026-06-28T12:00:00.000Z",
+    };
+    const staleCapsule = buildStrictProofCapsule({
+      id: "proof-stale-runtime",
+      task_id: trace.task_id,
+      trace,
+      request: staleRequest,
+      current_authority_dose: 4,
+      human_reviewed_claims: capsule.human_reviewed_claims,
+      timestamp: "2026-06-28T11:00:00.000Z",
+    });
+    const stale = enforceTherapeuticAccessRequest({
+      trace,
+      request: staleRequest,
+      proof_capsule: staleCapsule,
+      store,
+      now: "2026-06-29T12:03:00.000Z",
+    });
+
+    expect(first.decision).toBe("approved");
+    expect(replay.decision).toBe("denied");
+    expect(replay.broker_decision.blocked_by).toContain("proof_capsule_replay");
+    expect(revoked.decision).toBe("denied");
+    expect(revoked.broker_decision.blocked_by).toContain("proof_capsule_revoked");
+    expect(stale.decision).toBe("denied");
+    expect(stale.broker_decision.blocked_by).toContain("proof_capsule_stale");
+  });
+
+  it("denies diagnosis writes but approves scoped remediation through separate gates and revokes task grants", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const writeRequest: TherapeuticAccessRequest = {
+      id: "diagnosis-write-runtime",
+      task_id: trace.task_id,
+      authority_dose: 7,
+      scope: "feature:customer_plan",
+      mode: "write",
+      data_classes: ["serving_config_patch"],
+      tools: ["serving_config_patch"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "write during diagnosis",
+    };
+    const diagnosisWrite = enforceTherapeuticAccessRequest({
+      trace,
+      request: writeRequest,
+      store,
+      now: "2026-06-29T13:00:00.000Z",
+    });
+    const remediation = executeTherapeuticRemediation({
+      trace,
+      store,
+      policy: { ...THERAPEUTIC_DEFAULT_POLICY, mutation_allowed: true },
+      proposal: {
+        id: "remediation-runtime",
+        task_id: trace.task_id,
+        diagnosis_verified: true,
+        proposed_change: "Align serving customer_plan transform with training transform.",
+        requested_access: writeRequest,
+        blast_radius: "single feature transform",
+        rollback_plan: "restore previous serving transform hash",
+        postcondition_checks: ["quality recovers", "skew hash check passes"],
+        human_approval: {
+          claim: "remediation_is_operationally_reasonable",
+          reviewer_role: "incident_commander",
+          status: "approved",
+          rationale: "Scoped write with rollback.",
+        },
+      },
+      now: "2026-06-29T13:01:00.000Z",
+    });
+    const revoked = revokeTherapeuticTaskGrants({
+      trace,
+      store,
+      now: "2026-06-29T13:02:00.000Z",
+    });
+
+    expect(diagnosisWrite.decision).toBe("denied");
+    expect(diagnosisWrite.broker_decision.blocked_by).toEqual(expect.arrayContaining([
+      "mutation_not_allowed_by_policy",
+      "strict_proof_capsule_required",
+      "human_approval_required",
+    ]));
+    expect(remediation.decision).toBe("approved");
+    expect(remediation.grant?.access_request.mode).toBe("write");
+    expect(trace.final_outcome).toBe("remediated");
+    expect(revoked.some((grant) => grant.access_request.mode === "write")).toBe(true);
+    expect(store.audit_records.map((record) => record.event_type)).toContain("remediation_approved");
+  });
+
+  it("runs therapeutic Dojo/Vivarium checkrides without auto-granting broader future access", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const report = runTherapeuticTomographyCheckrides({
+      trace,
+      store,
+      now: "2026-06-29T13:30:00.000Z",
+    });
+
+    expect(report.results.map((result) => result.kind)).toEqual(expect.arrayContaining([
+      "over_escalation",
+      "under_escalation",
+      "strict_proof_capsule",
+      "adversarial_probe_output",
+      "source_drift",
+      "emergency_escalation",
+    ]));
+    expect(report.auto_grants_broader_future_access).toBe(false);
+    expect(report.policy_delta_records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
+    expect(report.case_law_records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
+    expect(report.results.find((result) => result.kind === "adversarial_probe_output")?.status).toBe("passed");
+    expect(store.checkride_reports).toHaveLength(1);
+    expect(store.evidence_records.map((record) => record.kind)).toContain("checkride");
+  });
+
+  it("learns conservative policy patterns without granting broader future access", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const report = runTherapeuticTomographyCheckrides({
+      trace,
+      store,
+      now: "2026-06-29T13:30:00.000Z",
+    });
+    const records = learnTherapeuticPolicyPatterns({
+      traces: [trace],
+      store,
+      checkride_reports: [report],
+      now: "2026-06-29T13:31:00.000Z",
+    });
+
+    expect(records.map((record) => record.learning_kind)).toEqual(expect.arrayContaining([
+      "prefer_probe_sequence",
+      "avoid_unnecessary_access",
+      "proof_claim_pattern",
+    ]));
+    expect(records.every((record) => record.auto_grants_broader_access === false)).toBe(true);
+    expect(records.find((record) => record.learning_kind === "prefer_probe_sequence")?.recommendation).toContain("eval_slice_compare");
+    expect(records.find((record) => record.learning_kind === "avoid_unnecessary_access")?.recommendation).toContain("raw_prod_logs");
+    expect(store.policy_learning_records.length).toBe(records.length);
+    expect(store.evidence_records.map((record) => record.kind)).toContain("policy_learning");
+  });
+
+  it("creates a reviewable Tier 2 proof-router record and approves only after human judgment", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const request: TherapeuticAccessRequest = {
+      id: "multi-feature-lineage-review",
+      task_id: trace.task_id,
+      authority_dose: 5,
+      scope: "feature:customer_plan,feature:billing_country",
+      mode: "read_only",
+      data_classes: ["feature_lineage_hash"],
+      tools: ["feature_lineage_hash", "feature_lineage_compare"],
+      expiration: "end_of_task",
+      revocable: true,
+      purpose: "Compare two plausible feature lineage hashes.",
+    };
+    const capsule = buildStrictProofCapsule({
+      id: "proof-tier2-review",
+      task_id: trace.task_id,
+      trace,
+      request,
+      current_authority_dose: 5,
+      supported_scope_values: ["feature:customer_plan,feature:billing_country"],
+    });
+    const pending = enforceTherapeuticAccessRequest({
+      trace,
+      store,
+      request,
+      proof_capsule: capsule,
+      now: "2026-06-29T13:40:00.000Z",
+    });
+
+    expect(pending.decision).toBe("needs_human_approval");
+    expect(pending.review_request).toEqual(expect.objectContaining({
+      status: "pending",
+      tier: 2,
+      decision_mechanism: "human_or_llm_review",
+      auto_grants_broader_access: false,
+    }));
+    expect(pending.review_request?.deterministic_claim_results.length).toBeGreaterThan(0);
+    expect(store.review_requests).toHaveLength(1);
+
+    const approved = reviewTherapeuticAccessRequest({
+      trace,
+      store,
+      review_id: pending.review_request!.review_id,
+      status: "approved",
+      reviewer_role: "ml_engineer",
+      rationale: "Two-feature comparison is justified by current drift evidence.",
+      now: "2026-06-29T13:41:00.000Z",
+    });
+
+    expect(approved.decision).toBe("approved");
+    expect(approved.grant?.access_request.id).toBe(request.id);
+    expect(store.review_requests[0]?.status).toBe("approved");
+    expect(store.audit_records.map((record) => record.event_type)).toEqual(expect.arrayContaining([
+      "review_requested",
+      "review_approved",
+      "access_approved",
+    ]));
+    expect(store.evidence_records.map((record) => record.kind)).toEqual(expect.arrayContaining([
+      "review_request",
+      "review_decision",
+      "temporary_grant",
+    ]));
+  });
+
+  it("exposes a Dojo tool path for non-demo brokered tomography enforcement", async () => {
+    const taskId = "task-dojo-tool-runtime";
+    const init = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_init_trace", {
+      task_id: taskId,
+      task_class: "ml_quality_drop",
+      user_goal: "Diagnose quality drop through MCP tools.",
+      current_authority_dose: 2,
+      severity: "high",
+      now: "2026-06-29T14:00:00.000Z",
+    }));
+    const bypass = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+      task_id: taskId,
+      tool_name: "feature_lineage_hash",
+      data_classes: ["feature_lineage_hash"],
+      mode: "read_only",
+      scope: "feature:billing_country",
+      now: "2026-06-29T14:00:30.000Z",
+    }));
+    await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+      task_id: taskId,
+      probe_name: "eval_slice_compare",
+      probe_input: {
+        affected_segment: "trial_accounts",
+        quality_delta: -0.07,
+        confidence: 0.81,
+        time_window: "last_6h",
+      },
+      now: "2026-06-29T14:01:00.000Z",
+    });
+    await dispatchDojoTool("synthi_dojo_therapeutic_run_probe", {
+      task_id: taskId,
+      probe_name: "feature_drift_summary",
+      probe_input: {
+        top_feature: "billing_country",
+        drift_score: 0.83,
+        affected_segment: "trial_accounts",
+        confidence: 0.86,
+        time_window: "last_6h",
+      },
+      now: "2026-06-29T14:02:00.000Z",
+    });
+    const access = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+      task_id: taskId,
+      build_proof: true,
+      human_reviewed_claims: [{
+        claim: "lineage_access_is_reasonable_next_step",
+        reviewer_role: "ml_engineer",
+        status: "approved",
+        rationale: "Aggregate probes isolated billing_country.",
+      }],
+      request: {
+        id: "tool-runtime-lineage",
+        authority_dose: 5,
+        scope: "feature:billing_country",
+        mode: "read_only",
+        data_classes: ["feature_lineage_hash"],
+        tools: ["feature_lineage_hash"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Verify feature lineage hash.",
+      },
+      now: "2026-06-29T14:03:00.000Z",
+    }));
+    const dispatch = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+      task_id: taskId,
+      tool_name: "feature_lineage_hash",
+      data_classes: ["feature_lineage_hash"],
+      mode: "read_only",
+      scope: "feature:billing_country",
+      now: "2026-06-29T14:04:00.000Z",
+    }));
+    const accessGrantStatusBeforeRevoke = access.result.grant.status;
+    const revoke = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_revoke_grants", {
+      task_id: taskId,
+      reason: "task_end",
+      now: "2026-06-29T14:05:00.000Z",
+    }));
+    const diagnosisWrite = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_request_access", {
+      task_id: taskId,
+      request: {
+        id: "tool-runtime-diagnosis-write",
+        authority_dose: 7,
+        scope: "feature:billing_country",
+        mode: "write",
+        data_classes: ["serving_config_patch"],
+        tools: ["serving_config_patch"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Patch config during diagnosis.",
+      },
+      now: "2026-06-29T14:05:30.000Z",
+    }));
+    const diagnosis = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_record_diagnosis", {
+      task_id: taskId,
+      diagnosis: "train_serve_skew in billing_country transformation",
+      remediation_plan: "Prepare scoped serving config patch with rollback and postconditions.",
+      evidence_refs: ["probe:eval_slice_compare", "probe:feature_drift_summary", "proof:tool-runtime-lineage"],
+      now: "2026-06-29T14:05:40.000Z",
+    }));
+    const remediation = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_propose_remediation", {
+      task_id: taskId,
+      proposal: {
+        id: "tool-runtime-remediation",
+        diagnosis_verified: true,
+        proposed_change: "Align serving billing_country transform with the training transform.",
+        requested_access: {
+          id: "tool-runtime-remediation-write",
+          authority_dose: 7,
+          scope: "feature:billing_country",
+          mode: "write",
+          data_classes: ["serving_config_patch"],
+          tools: ["serving_config_patch"],
+          expiration: "end_of_task",
+          revocable: true,
+          purpose: "Apply scoped serving config patch.",
+        },
+        blast_radius: "single feature transform",
+        rollback_plan: "restore previous serving config hash",
+        postcondition_checks: ["quality recovers", "serving config diff matches training hash"],
+        human_approval: {
+          claim: "remediation_is_operationally_reasonable",
+          reviewer_role: "incident_commander",
+          status: "approved",
+          rationale: "Scoped write with rollback and postconditions.",
+        },
+      },
+      now: "2026-06-29T14:05:45.000Z",
+    }));
+    const writeDispatch = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_dispatch_protected_tool", {
+      task_id: taskId,
+      tool_name: "serving_config_patch",
+      data_classes: ["serving_config_patch"],
+      mode: "write",
+      scope: "feature:billing_country",
+      now: "2026-06-29T14:05:50.000Z",
+    }));
+    const revokeRemediation = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_revoke_grants", {
+      task_id: taskId,
+      reason: "remediation_complete",
+      now: "2026-06-29T14:05:55.000Z",
+    }));
+    const checkrides = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_run_checkrides", {
+      task_id: taskId,
+      available_requests: [{
+        id: "available-read-lineage",
+        authority_dose: 5,
+        scope: "feature:billing_country",
+        mode: "read_only",
+        data_classes: ["feature_lineage_hash"],
+        tools: ["feature_lineage_hash"],
+        expiration: "end_of_task",
+        revocable: true,
+        purpose: "Verify lineage if uncertainty remains.",
+      }],
+      now: "2026-06-29T14:06:00.000Z",
+    }));
+    const learning = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_learn_policy", {
+      task_id: taskId,
+      now: "2026-06-29T14:07:00.000Z",
+    }));
+    const runtime = toolJson(await dispatchDojoTool("synthi_dojo_therapeutic_get_runtime", {
+      task_id: taskId,
+    }));
+
+    expect(init.ok).toBe(true);
+    expect(bypass.ok).toBe(false);
+    expect(bypass.result.blocked_by).toEqual(expect.arrayContaining(["broker_required"]));
+    expect(access.ok).toBe(true);
+    expect(accessGrantStatusBeforeRevoke).toBe("active");
+    expect(dispatch.ok).toBe(true);
+    expect(revoke.ok).toBe(true);
+    expect(diagnosisWrite.ok).toBe(false);
+    expect(diagnosisWrite.result.broker_decision.blocked_by).toEqual(expect.arrayContaining(["mutation_not_allowed_by_policy"]));
+    expect(diagnosis.ok).toBe(true);
+    expect(remediation.ok).toBe(true);
+    expect(remediation.result.grant.access_request.mode).toBe("write");
+    expect(writeDispatch.ok).toBe(true);
+    expect(revokeRemediation.ok).toBe(true);
+    expect(checkrides.report.results.map((result: { kind: string }) => result.kind)).toEqual(expect.arrayContaining([
+      "over_escalation",
+      "under_escalation",
+      "strict_proof_capsule",
+      "adversarial_probe_output",
+      "source_drift",
+      "emergency_escalation",
+    ]));
+    expect(checkrides.report.auto_grants_broader_future_access).toBe(false);
+    expect(learning.records.every((record: { auto_grants_broader_access: boolean }) => record.auto_grants_broader_access === false)).toBe(true);
+    expect(runtime.runtime.reconstructable).toBe(true);
+    expect(runtime.runtime.checkride_reports).toHaveLength(1);
+    expect(runtime.runtime.policy_learning_records.length).toBeGreaterThan(0);
+    expect(runtime.runtime.proof_decision_records.length).toBeGreaterThan(0);
+    expect(runtime.runtime.proof_metrics).toEqual(expect.objectContaining({
+      percent_decisions_deterministic: expect.any(Number),
+      percent_decisions_human_reviewed: expect.any(Number),
+      cached_proof_hit_rate: expect.any(Number),
+      tier_3_escalation_rate: expect.any(Number),
+    }));
+    expect(runtime.runtime.audit_records.map((record: { event_type: string }) => record.event_type)).toEqual(expect.arrayContaining([
+      "tool_bypass_blocked",
+      "access_approved",
+      "grant_revoked",
+      "diagnosis_recorded",
+      "remediation_approved",
+    ]));
+    expect(runtime.runtime.evidence_records.map((record: { kind: string }) => record.kind)).toEqual(expect.arrayContaining([
+      "probe_result",
+      "access_decision",
+      "temporary_grant",
+      "revocation",
+      "diagnosis",
+      "remediation",
+      "checkride",
+      "policy_learning",
+    ]));
   });
 
   it("derives supported scopes from probe evidence without scenario-specific feature names", () => {

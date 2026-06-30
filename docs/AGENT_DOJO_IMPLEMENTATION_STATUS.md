@@ -152,6 +152,17 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_revoke_proof_capsule` | `executable` |
 | `synthi_dojo_create_hosted_runtime_session` | `executable` |
 | `synthi_dojo_run_with_proof_capsule` | `executable` |
+| `synthi_dojo_therapeutic_init_trace` | `executable` |
+| `synthi_dojo_therapeutic_run_probe` | `executable` |
+| `synthi_dojo_therapeutic_request_access` | `executable` |
+| `synthi_dojo_therapeutic_dispatch_protected_tool` | `executable` |
+| `synthi_dojo_therapeutic_revoke_grants` | `executable` |
+| `synthi_dojo_therapeutic_run_checkrides` | `executable` |
+| `synthi_dojo_therapeutic_learn_policy` | `executable` |
+| `synthi_dojo_therapeutic_review_access` | `executable` |
+| `synthi_dojo_therapeutic_record_diagnosis` | `executable` |
+| `synthi_dojo_therapeutic_propose_remediation` | `executable` |
+| `synthi_dojo_therapeutic_get_runtime` | `executable` |
 
 ## Current Report Classification
 

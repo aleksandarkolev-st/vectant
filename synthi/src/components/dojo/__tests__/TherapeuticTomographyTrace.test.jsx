@@ -63,10 +63,30 @@ describe('TherapeuticTomographyTrace', () => {
     expect(text).toContain('Machine-verifiable claims');
     expect(text).toContain('Human-reviewed claims');
     expect(text).toContain('Narrative claims');
+    expect(text).toContain('Operational Control Surface');
+    expect(text).toContain('Live authority dose');
+    expect(text).toContain('Requested access');
+    expect(text).toContain('Tier 1');
+    expect(text).toContain('Available lower-risk probes');
+    expect(text).toContain('Selected probe');
+    expect(text).toContain('Revocation status');
+    expect(text).toContain('Remediation boundary');
+    expect(text).toContain('Pending reviews');
+    expect(text).toContain('Pending human_or_llm_review review');
+    expect(text).toContain('Dojo/Vivarium Evaluation');
+    expect(text).toContain('auto grants: false');
+    expect(text).toContain('adversarial probe output');
+    expect(text).toContain('Policy learning');
+    expect(text).toContain('broader access auto-grant: false');
+    expect(text).toContain('prefer probe sequence');
+    expect(text).toContain('Proof latency p95');
+    expect(text).toContain('Deterministic');
     expect(text).toContain('feature:customer_plan');
     expect(text).toContain('train_serve_skew in customer_plan transformation');
     expect(text).toContain('model_weights');
     expect(view.querySelector('[data-testid="tomography-proof-capsule"]')?.textContent).toContain('proof_001');
+    expect(view.querySelector('[data-testid="tomography-operational-controls"]')?.textContent).toContain('feature_lineage_hash');
+    expect(view.querySelector('[data-testid="tomography-evaluation"]')?.textContent).toContain('Policy/case records');
     expect(view.querySelector('[data-testid="tomography-avoided-access"]')?.textContent).toContain('admin_privileges');
   });
 
@@ -196,5 +216,101 @@ function traceFixture() {
     remediation_plan: 'Prepare a separate remediation proof before write access.',
     avoided_access: ['raw_prod_logs', 'full_database', 'model_weights', 'admin_privileges', 'write_access'],
     learned_policy_delta: ['Prefer aggregate probes before lineage.'],
+    checkride_reports: [{
+      report_id: 'therapeutic_checkride_demo_001',
+      task_id: 'quality_drop_demo_001',
+      task_class: 'ml_quality_drop',
+      generated_at: '2026-06-29T13:30:00.000Z',
+      passed_count: 5,
+      failed_count: 0,
+      blocked_count: 1,
+      auto_grants_broader_future_access: false,
+      policy_delta_records: [{
+        policy_delta_id: 'delta_probe_first',
+        status: 'hypothesis',
+        auto_grants_broader_access: false,
+      }],
+      case_law_records: [{
+        case_id: 'case_source_drift',
+        status: 'proposed',
+        auto_grants_broader_access: false,
+      }],
+      results: [
+        {
+          checkride_id: 'checkride_over',
+          kind: 'over_escalation',
+          status: 'passed',
+          finding: 'Broad sensitive access was blocked while lower-risk probes existed.',
+          blocked_by: [],
+          evidence_refs: ['trace:quality_drop_demo_001'],
+        },
+        {
+          checkride_id: 'checkride_adversarial',
+          kind: 'adversarial_probe_output',
+          status: 'passed',
+          finding: 'Leaky probe output fails closed under allowed-shape and forbidden-output validation.',
+          blocked_by: [],
+          evidence_refs: ['trace:quality_drop_demo_001'],
+        },
+        {
+          checkride_id: 'checkride_source_drift',
+          kind: 'source_drift',
+          status: 'blocked',
+          finding: 'Proof capsules need source-drift recertification or evidence-link refresh.',
+          blocked_by: ['stale_proof_capsule'],
+          evidence_refs: ['trace:quality_drop_demo_001'],
+        },
+      ],
+    }],
+    policy_learning_records: [
+      {
+        learning_id: 'learning_probe_sequence',
+        task_class: 'ml_quality_drop',
+        learning_kind: 'prefer_probe_sequence',
+        recommendation: 'Prefer eval_slice_compare -> feature_drift_summary before requesting scoped authority for ml_quality_drop.',
+        confidence: 1,
+        supporting_evidence_refs: ['trace:quality_drop_demo_001'],
+        source_trace_ids: ['quality_drop_demo_001'],
+        source_checkride_report_ids: ['therapeutic_checkride_demo_001'],
+        auto_grants_broader_access: false,
+      },
+    ],
+    review_requests: [
+      {
+        review_id: 'review_tier2_001',
+        task_id: 'quality_drop_demo_001',
+        tier: 2,
+        decision_mechanism: 'human_or_llm_review',
+        required_gates: ['deterministic_verifier', 'judgment_claim_review'],
+        proof_capsule_id: 'proof_001',
+        deterministic_claim_results: [
+          { claim: 'request_is_read_only', result: 'pass', critical: true },
+        ],
+        judgment_claims: [],
+        narrative_claims: [],
+        status: 'pending',
+        auto_grants_broader_access: false,
+        request: {
+          id: 'multi_feature_review',
+          authority_dose: 5,
+          scope: 'feature:customer_plan,feature:billing_country',
+          mode: 'read_only',
+          data_classes: ['feature_lineage_hash'],
+          tools: ['feature_lineage_hash', 'feature_lineage_compare'],
+          expiration: 'end_of_task',
+          revocable: true,
+        },
+      },
+    ],
+    proof_metrics: {
+      proof_verification_latency_p50: 4,
+      proof_verification_latency_p95: 12,
+      percent_decisions_deterministic: 75,
+      percent_decisions_llm_reviewed: 0,
+      percent_decisions_human_reviewed: 25,
+      average_tokens_per_access_decision: 0,
+      cached_proof_hit_rate: 0,
+      tier_3_escalation_rate: 0,
+    },
   };
 }

@@ -144,12 +144,19 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
     },
     tomography: {
       trace: null,
+      checkrideReports: [],
+      policyLearningRecords: [],
+      reviewRequests: [],
+      proofMetrics: {},
       metrics: {
         probeCount: 0,
         machineClaimCount: 0,
         humanClaimCount: 0,
         narrativeClaimCount: 0,
         avoidedAccessCount: 0,
+        checkrideCount: 0,
+        policyLearningCount: 0,
+        pendingReviewCount: 0,
       },
     },
     bridgeStatus: 'unknown',
@@ -1411,6 +1418,30 @@ function normalizeTomographyClaim(item = {}) {
   };
 }
 
+function normalizeTomographyCheckrideReport(item = {}) {
+  const results = asArray(item.results).map((result) => ({
+    checkrideId: result.checkride_id || result.checkrideId || '',
+    kind: result.kind || '',
+    status: result.status || '',
+    finding: result.finding || '',
+    blockedBy: compactStrings(result.blocked_by || result.blockedBy),
+    evidenceRefs: compactStrings(result.evidence_refs || result.evidenceRefs),
+  })).filter((result) => result.kind);
+  return {
+    reportId: item.report_id || item.reportId || '',
+    taskId: item.task_id || item.taskId || '',
+    taskClass: item.task_class || item.taskClass || '',
+    generatedAt: item.generated_at || item.generatedAt || '',
+    results,
+    passedCount: Number(item.passed_count ?? item.passedCount ?? results.filter((result) => result.status === 'passed').length),
+    failedCount: Number(item.failed_count ?? item.failedCount ?? results.filter((result) => result.status === 'failed').length),
+    blockedCount: Number(item.blocked_count ?? item.blockedCount ?? results.filter((result) => result.status === 'blocked').length),
+    policyDeltaRecords: asArray(item.policy_delta_records || item.policyDeltaRecords),
+    caseLawRecords: asArray(item.case_law_records || item.caseLawRecords),
+    autoGrantsBroaderFutureAccess: Boolean(item.auto_grants_broader_future_access ?? item.autoGrantsBroaderFutureAccess),
+  };
+}
+
 function normalizeTomographyTrace(state, dojo) {
   const raw = dojo.therapeuticTomography
     || dojo.therapeutic_tomography
@@ -1422,15 +1453,76 @@ function normalizeTomographyTrace(state, dojo) {
   if (!raw) {
     return {
       trace: null,
+      checkrideReports: [],
+      policyLearningRecords: [],
+      reviewRequests: [],
+      proofMetrics: {},
       metrics: {
         probeCount: 0,
         machineClaimCount: 0,
         humanClaimCount: 0,
         narrativeClaimCount: 0,
         avoidedAccessCount: 0,
+        checkrideCount: 0,
+        policyLearningCount: 0,
+        pendingReviewCount: 0,
       },
     };
   }
+  const rawCheckrideReports = raw.checkride_reports
+    || raw.checkrideReports
+    || raw.runtime?.checkride_reports
+    || raw.runtime?.checkrideReports
+    || [];
+  const checkrideReports = asArray(rawCheckrideReports).map(normalizeTomographyCheckrideReport).filter((report) => report.results.length);
+  const rawPolicyLearningRecords = raw.policy_learning_records
+    || raw.policyLearningRecords
+    || raw.runtime?.policy_learning_records
+    || raw.runtime?.policyLearningRecords
+    || [];
+  const policyLearningRecords = asArray(rawPolicyLearningRecords).map((record) => ({
+    learningId: record.learning_id || record.learningId || '',
+    taskClass: record.task_class || record.taskClass || '',
+    learningKind: record.learning_kind || record.learningKind || '',
+    recommendation: record.recommendation || '',
+    confidence: Number(record.confidence ?? 0),
+    supportingEvidenceRefs: compactStrings(record.supporting_evidence_refs || record.supportingEvidenceRefs),
+    sourceTraceIds: compactStrings(record.source_trace_ids || record.sourceTraceIds),
+    sourceCheckrideReportIds: compactStrings(record.source_checkride_report_ids || record.sourceCheckrideReportIds),
+    autoGrantsBroaderAccess: Boolean(record.auto_grants_broader_access ?? record.autoGrantsBroaderAccess),
+  })).filter((record) => record.recommendation);
+  const rawReviewRequests = raw.review_requests
+    || raw.reviewRequests
+    || raw.runtime?.review_requests
+    || raw.runtime?.reviewRequests
+    || [];
+  const reviewRequests = asArray(rawReviewRequests).map((review) => ({
+    reviewId: review.review_id || review.reviewId || '',
+    taskId: review.task_id || review.taskId || '',
+    tier: Number(review.tier ?? 0),
+    decisionMechanism: review.decision_mechanism || review.decisionMechanism || '',
+    requiredGates: compactStrings(review.required_gates || review.requiredGates),
+    proofCapsuleId: review.proof_capsule_id || review.proofCapsuleId || '',
+    deterministicClaimResults: asArray(review.deterministic_claim_results || review.deterministicClaimResults).map(normalizeTomographyClaim),
+    judgmentClaims: asArray(review.judgment_claims || review.judgmentClaims).map(normalizeTomographyClaim),
+    narrativeClaims: asArray(review.narrative_claims || review.narrativeClaims).map(normalizeTomographyClaim),
+    status: review.status || '',
+    reviewerRole: review.reviewer_role || review.reviewerRole || '',
+    rationale: review.rationale || '',
+    autoGrantsBroaderAccess: Boolean(review.auto_grants_broader_access ?? review.autoGrantsBroaderAccess),
+    request: normalizeTomographyAccessRequest(review.request || {}),
+  })).filter((review) => review.reviewId || review.request.id);
+  const rawProofMetrics = raw.proof_metrics || raw.proofMetrics || raw.runtime?.proof_metrics || raw.runtime?.proofMetrics || {};
+  const proofMetrics = {
+    proofVerificationLatencyP50: Number(rawProofMetrics.proof_verification_latency_p50 ?? rawProofMetrics.proofVerificationLatencyP50 ?? 0),
+    proofVerificationLatencyP95: Number(rawProofMetrics.proof_verification_latency_p95 ?? rawProofMetrics.proofVerificationLatencyP95 ?? 0),
+    percentDecisionsDeterministic: Number(rawProofMetrics.percent_decisions_deterministic ?? rawProofMetrics.percentDecisionsDeterministic ?? 0),
+    percentDecisionsLlmReviewed: Number(rawProofMetrics.percent_decisions_llm_reviewed ?? rawProofMetrics.percentDecisionsLlmReviewed ?? 0),
+    percentDecisionsHumanReviewed: Number(rawProofMetrics.percent_decisions_human_reviewed ?? rawProofMetrics.percentDecisionsHumanReviewed ?? 0),
+    averageTokensPerAccessDecision: Number(rawProofMetrics.average_tokens_per_access_decision ?? rawProofMetrics.averageTokensPerAccessDecision ?? 0),
+    cachedProofHitRate: Number(rawProofMetrics.cached_proof_hit_rate ?? rawProofMetrics.cachedProofHitRate ?? 0),
+    tier3EscalationRate: Number(rawProofMetrics.tier_3_escalation_rate ?? rawProofMetrics.tier3EscalationRate ?? 0),
+  };
   const proofCapsules = asArray(raw.proof_capsules || raw.proofCapsules).map((capsule) => ({
     id: capsule.id || capsule.proof_id || capsule.proofId || '',
     approved: Boolean(capsule.approved),
@@ -1514,12 +1606,19 @@ function normalizeTomographyTrace(state, dojo) {
   const firstProof = proofCapsules[0] || {};
   return {
     trace,
+    checkrideReports,
+    policyLearningRecords,
+    reviewRequests,
+    proofMetrics,
     metrics: {
       probeCount: projectionProbes.length,
       machineClaimCount: firstProof.machineClaims?.length || 0,
       humanClaimCount: firstProof.humanClaims?.length || 0,
       narrativeClaimCount: firstProof.narrativeClaims?.length || 0,
       avoidedAccessCount: trace.avoidedAccess.length,
+      checkrideCount: checkrideReports.reduce((sum, report) => sum + report.results.length, 0),
+      policyLearningCount: policyLearningRecords.length,
+      pendingReviewCount: reviewRequests.filter((review) => review.status === 'pending').length,
     },
   };
 }

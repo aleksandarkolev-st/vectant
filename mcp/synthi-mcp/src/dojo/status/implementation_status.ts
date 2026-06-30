@@ -117,6 +117,17 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),
   synthi_dojo_create_hosted_runtime_session: hostedRuntimeGateway("Creates a tenant-scoped hosted runtime session with short-lived credentials and configurable Postgres-backed session custody for production proof-gated Dojo execution."),
   synthi_dojo_run_with_proof_capsule: proofGatedDispatch("Runs the proof-gated Dojo dispatch path, blocks replay through current proof records, and requires hosted runtime session authorization before production proof consumption."),
+  synthi_dojo_therapeutic_init_trace: proofGatedDispatch("Initializes a stateful therapeutic tomography trace/runtime store for arbitrary task classes while preserving the ML quality-drop golden fixture."),
+  synthi_dojo_therapeutic_run_probe: proofGatedDispatch("Executes contract-bound therapeutic probe adapters, enforces output schemas and forbidden-output gates, and records probe evidence/audit entries."),
+  synthi_dojo_therapeutic_request_access: proofGatedDispatch("Routes non-demo access requests through the therapeutic Authority Broker, strict proof capsule builder, temporary grant minting, and evidence/audit recording."),
+  synthi_dojo_therapeutic_dispatch_protected_tool: proofGatedDispatch("Blocks protected tool/data-class dispatch unless an active scoped therapeutic grant exists, recording bypass attempts as audit/evidence."),
+  synthi_dojo_therapeutic_revoke_grants: proofGatedDispatch("Revokes therapeutic temporary grants on task end or explicit request and records revocation success/failure."),
+  synthi_dojo_therapeutic_run_checkrides: proofGatedDispatch("Runs therapeutic Dojo/Vivarium checkrides and records policy-delta/case-law hypotheses without auto-granting broader future access."),
+  synthi_dojo_therapeutic_learn_policy: proofGatedDispatch("Derives conservative therapeutic policy-learning records from traces/checkrides while preserving the no-auto-broader-access boundary."),
+  synthi_dojo_therapeutic_review_access: proofGatedDispatch("Resolves pending Tier 2/Tier 3 therapeutic reviews, adding human judgment claims before broker enforcement can mint scoped grants."),
+  synthi_dojo_therapeutic_record_diagnosis: proofGatedDispatch("Records a verified therapeutic diagnosis from probe/proof evidence while preserving the no-mutation diagnostic boundary."),
+  synthi_dojo_therapeutic_propose_remediation: proofGatedDispatch("Runs the separate therapeutic remediation proposal gate for scoped write access with diagnosis proof, rollback, postconditions, human approval, and revocation-ready grants."),
+  synthi_dojo_therapeutic_get_runtime: proofGatedDispatch("Returns reconstructable therapeutic trace, grant, proof-status, audit, and evidence state for operational review."),
 };
 
 export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementationMetadata> = {
