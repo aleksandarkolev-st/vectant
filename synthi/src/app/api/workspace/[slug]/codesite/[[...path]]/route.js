@@ -111,6 +111,10 @@ export async function GET(request, { params }) {
       return okJson({ status: transaction.status, transaction });
     }
 
+    if (route[0] === 'transactions' && route[2] === 'source-state-since') {
+      return okJson(await validateTransaction(slug, route[1]));
+    }
+
     if (route[0] === 'agent-sessions' && route[2] === 'inbox') {
       return okJson({ inbox: await getAgentInbox(slug, route[1]) });
     }

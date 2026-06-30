@@ -16,6 +16,7 @@ const {
     createProject: vi.fn(),
     getControlState: vi.fn(),
     recordTransactionWrite: vi.fn(),
+    validateTransaction: vi.fn(),
   },
 }));
 
@@ -140,6 +141,23 @@ describe('CodeSite catch-all route', () => {
     expect(response.status).toBe(200);
     expect(await json(response)).toEqual({ ok: false, policyDecision: { decision: 'block' } });
     expect(controlPlane.recordTransactionWrite).toHaveBeenCalledWith('acme', 'txn-1', { path: 'api/auth/signup.ts' });
+  });
+
+  it('serves source-state-since through the documented read endpoint', async () => {
+    controlPlane.validateTransaction.mockResolvedValue({
+      decision: { ok: true, reasonCodes: ['serializable_validation_passed'] },
+    });
+
+    const response = await GET(
+      new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/source-state-since'),
+      params(['transactions', 'txn-1', 'source-state-since']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      decision: { ok: true, reasonCodes: ['serializable_validation_passed'] },
+    });
+    expect(controlPlane.validateTransaction).toHaveBeenCalledWith('acme', 'txn-1');
   });
 
   it('rejects unauthenticated read access before dispatch', async () => {
