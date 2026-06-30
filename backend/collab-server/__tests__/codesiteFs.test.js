@@ -13,6 +13,7 @@ const {
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteQuarantineWorkspace,
+  deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   finalizeCodeSiteQuarantineWorkspace,
@@ -145,6 +146,33 @@ test('allows writes inside lease route and blocks no-fly or out-of-route writes'
     () => assertCodeSiteWriteAllowed(context, { path: 'synthi/src/app/page.jsx', tool: 'file_write', kind: 'write-file' }),
     (error) => error.code === 'CODESITE_WRITE_DENIED' && error.event.details.reason_codes.includes('outside_clearance_route'),
   );
+});
+
+test('derives ranged line provenance from content changes', () => {
+  const rows = deriveLineProvenanceFromContentChange(
+    'src/App.jsx',
+    ['alpha', 'beta', 'gamma', 'delta', 'omega'].join('\n'),
+    ['alpha', 'BETA', 'gamma', 'DELTA', 'omega'].join('\n'),
+    {
+      evidenceRefs: ['runtime:event:apply-1'],
+      processAncestry: ['collab-server'],
+      promptSummary: 'Apply two edits',
+    },
+  );
+
+  assert.deepStrictEqual(rows.map((row) => ({
+    filePath: row.filePath,
+    startLine: row.startLine,
+    endLine: row.endLine,
+    lineAnchor: row.lineAnchor,
+  })), [
+    { filePath: 'src/App.jsx', startLine: 2, endLine: 2, lineAnchor: 'src/App.jsx#L2-L2' },
+    { filePath: 'src/App.jsx', startLine: 4, endLine: 4, lineAnchor: 'src/App.jsx#L4-L4' },
+  ]);
+  assert(rows.every((row) => row.evidenceRefs.includes('runtime:event:apply-1')));
+  assert(rows.every((row) => row.evidenceRefs.some((ref) => ref.startsWith('hunk:sha256:'))));
+  assert.deepStrictEqual(rows[0].processAncestry, ['collab-server']);
+  assert.strictEqual(rows[0].promptSummary, 'Apply two edits');
 });
 
 test('monitor mode returns denied events without throwing', () => {

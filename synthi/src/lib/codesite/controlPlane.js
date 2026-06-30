@@ -1398,7 +1398,7 @@ async function verifyLineProvenanceEvidence(transaction) {
   const coveredPaths = new Set(events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
     .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
-    .flatMap(({ details }) => normalizeLineProvenanceInput(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
+    .flatMap(({ details }) => strictLineProvenanceRows(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
     .map((row) => row.filePath));
   const missingPaths = paths.filter((filePath) => !lineProvenanceCoversPath(coveredPaths, filePath));
   return {
@@ -1406,6 +1406,18 @@ async function verifyLineProvenanceEvidence(transaction) {
     reasonCodes: missingPaths.length ? ['line_provenance_required'] : ['line_provenance_verified'],
     missingPaths,
   };
+}
+
+function strictLineProvenanceRows(value, defaultPath) {
+  return normalizeLineProvenanceInput(value, defaultPath).filter(isStrictLineProvenanceRow);
+}
+
+function isStrictLineProvenanceRow(row) {
+  return Number.isInteger(row?.startLine)
+    && Number.isInteger(row?.endLine)
+    && row.startLine >= 1
+    && row.endLine >= row.startLine
+    && /#L\d+/i.test(String(row.lineAnchor || ''));
 }
 
 function lineProvenanceCoversPath(coveredPaths, path) {
@@ -1428,7 +1440,7 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
     .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
     .flatMap(({ event, details }) => {
       const defaultPath = normalizePath(details.path);
-      const rows = normalizeLineProvenanceInput(details.lineProvenance || details.line_provenance, defaultPath);
+      const rows = strictLineProvenanceRows(details.lineProvenance || details.line_provenance, defaultPath);
       return rows.map((row) => ({
         projectId: transaction.projectId,
         transactionId: transaction.id,

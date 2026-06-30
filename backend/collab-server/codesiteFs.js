@@ -855,6 +855,126 @@ function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reas
   };
 }
 
+function deriveLineProvenanceFromContentChange(filePath, before, after, options = {}) {
+  const relPath = normalizeRepoRelativePath(filePath);
+  const ranges = diffLineRanges(String(before ?? ''), String(after ?? ''));
+  return ranges.map((range, index) => {
+    const hunkDigest = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({
+        path: relPath,
+        index: index + 1,
+        range,
+        beforeHash: crypto.createHash('sha256').update(String(before ?? '')).digest('hex'),
+        afterHash: crypto.createHash('sha256').update(String(after ?? '')).digest('hex'),
+      }))
+      .digest('hex');
+    return {
+      filePath: relPath,
+      startLine: range.startLine,
+      endLine: range.endLine,
+      lineAnchor: `${relPath}#L${range.startLine}-L${range.endLine}`,
+      reasonRef: options.reasonRef || `content-diff:${relPath}:hunk:${index + 1}`,
+      evidenceRefs: unique([`hunk:sha256:${hunkDigest}`, ...asArray(options.evidenceRefs)]),
+      processAncestry: asArray(options.processAncestry),
+      promptSummary: options.promptSummary || 'Derived from content diff',
+    };
+  });
+}
+
+function diffLineRanges(before, after) {
+  if (before === after) return [];
+  const sourceLines = contentLines(before);
+  const targetLines = contentLines(after);
+  const maxLcsLines = 2000;
+  if (sourceLines.length > maxLcsLines || targetLines.length > maxLcsLines) {
+    return [coarseLineRange(sourceLines, targetLines)];
+  }
+
+  const m = sourceLines.length;
+  const n = targetLines.length;
+  const dp = new Array(m + 1);
+  for (let row = 0; row <= m; row += 1) dp[row] = new Int32Array(n + 1);
+  for (let row = m - 1; row >= 0; row -= 1) {
+    for (let col = n - 1; col >= 0; col -= 1) {
+      dp[row][col] = sourceLines[row] === targetLines[col]
+        ? dp[row + 1][col + 1] + 1
+        : Math.max(dp[row + 1][col], dp[row][col + 1]);
+    }
+  }
+
+  const ranges = [];
+  let sourceIndex = 0;
+  let targetIndex = 0;
+  let pending = null;
+  const ensurePending = () => {
+    if (!pending) {
+      pending = { startLine: Math.max(1, targetIndex + 1), deletedLines: 0, insertedLines: 0 };
+    }
+  };
+  const flush = () => {
+    if (!pending) return;
+    const span = Math.max(pending.deletedLines, pending.insertedLines, 1);
+    ranges.push({
+      startLine: pending.startLine,
+      endLine: pending.startLine + span - 1,
+    });
+    pending = null;
+  };
+
+  while (sourceIndex < m || targetIndex < n) {
+    if (
+      sourceIndex < m
+      && targetIndex < n
+      && sourceLines[sourceIndex] === targetLines[targetIndex]
+    ) {
+      flush();
+      sourceIndex += 1;
+      targetIndex += 1;
+    } else if (
+      sourceIndex < m
+      && (targetIndex >= n || dp[sourceIndex + 1][targetIndex] >= dp[sourceIndex][targetIndex + 1])
+    ) {
+      ensurePending();
+      pending.deletedLines += 1;
+      sourceIndex += 1;
+    } else {
+      ensurePending();
+      pending.insertedLines += 1;
+      targetIndex += 1;
+    }
+  }
+  flush();
+  return ranges;
+}
+
+function coarseLineRange(sourceLines, targetLines) {
+  let prefix = 0;
+  const prefixMax = Math.min(sourceLines.length, targetLines.length);
+  while (prefix < prefixMax && sourceLines[prefix] === targetLines[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < Math.min(sourceLines.length, targetLines.length) - prefix
+    && sourceLines[sourceLines.length - 1 - suffix] === targetLines[targetLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const sourceSpan = sourceLines.length - prefix - suffix;
+  const targetSpan = targetLines.length - prefix - suffix;
+  const startLine = Math.max(1, prefix + 1);
+  return {
+    startLine,
+    endLine: startLine + Math.max(sourceSpan, targetSpan, 1) - 1,
+  };
+}
+
+function contentLines(value) {
+  if (!value) return [];
+  const lines = String(value).split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -906,6 +1026,7 @@ module.exports = {
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteQuarantineWorkspace,
+  deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   evaluateCodeSiteWrite,

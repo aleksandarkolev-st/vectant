@@ -41,6 +41,7 @@ const {
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
   createCodeSiteQuarantineWorkspace,
+  deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   finalizeCodeSiteQuarantineWorkspace,
@@ -449,6 +450,47 @@ function computeHash(content) {
   return crypto.createHash('md5').update(content || '').digest('hex');
 }
 
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
+  const explicitLineProvenance = arrayValue(
+    payload.lineProvenance
+    || payload.line_provenance
+    || payload.hunks
+    || payload.lineAnchors
+    || payload.line_anchors,
+  );
+  return {
+    lineProvenance: [...explicitLineProvenance, ...arrayValue(derivedLineProvenance)],
+    evidenceRefs: arrayValue(payload.evidenceRefs || payload.evidence_refs),
+    processAncestry: arrayValue(payload.processAncestry || payload.process_ancestry),
+  };
+}
+
+async function readWorkspaceFileForLineProvenance(slug, filePath, userId) {
+  try {
+    return await gitService.readFile(slug, filePath, userId);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    return '';
+  }
+}
+
+async function deriveCodeSiteLineProvenance(slug, filePath, nextContent, userId, options = {}) {
+  if (typeof nextContent !== 'string') return [];
+  const previousContent = typeof options.previousContent === 'string'
+    ? options.previousContent
+    : await readWorkspaceFileForLineProvenance(slug, filePath, userId);
+  return deriveLineProvenanceFromContentChange(filePath, previousContent, nextContent, {
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: options.promptSummary,
+    reasonRef: options.reasonRef,
+  });
+}
+
 /**
  * Build a deterministic Yjs room/doc name.
  * v2 format:
@@ -733,8 +775,10 @@ async function flushDocToDisk(docName, options = {}) {
   // the edited content with nothing to revert to.
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
   const fullPath = path.join(repoPath, filePath);
+  let priorContent = '';
   try {
     const prior = await fsPromises.readFile(fullPath, 'utf8');
+    priorContent = prior;
     if (prior !== content) {
       const priorHash = computeHash(prior);
       const existingCount = await persistence.countFileVersions(slug, filePath);
@@ -754,10 +798,17 @@ async function flushDocToDisk(docName, options = {}) {
       logger.warn('version_baseline_read_failed', { slug, filePath }, err);
     }
   }
+  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, priorContent, content, {
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: 'Yjs save flushed to disk',
+    reasonRef: `yjs_flush:${filePath}`,
+  });
   await enforceCodeSiteWriteAllowed(options.codesiteContext, {
     path: filePath,
     kind: 'yjs_flush',
     tool: 'file_write',
+    ...codeSiteWriteEvidence(options, derivedLineProvenance),
   });
   await gitService.safeWriteFile(fullPath, content);
 
@@ -929,10 +980,18 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   if (!fs.existsSync(repoPath)) return;
 
   const fullPath = path.join(repoPath, filePath);
+  const previousContent = await readWorkspaceFileForLineProvenance(slug, filePath, effectiveUser);
+  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, previousContent, content, {
+    evidenceRefs: scope.evidenceRefs,
+    processAncestry: scope.processAncestry,
+    promptSummary: 'Yjs pre-stage flush to disk',
+    reasonRef: `yjs_flush:${filePath}`,
+  });
   await enforceCodeSiteWriteAllowed(scope.codesiteContext, {
     path: filePath,
     kind: 'yjs_flush',
     tool: 'file_write',
+    ...codeSiteWriteEvidence(scope, derivedLineProvenance),
   });
   await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
   await fsPromises.writeFile(fullPath, content, 'utf-8');
@@ -2261,11 +2320,21 @@ const server = http.createServer(async (req, res) => {
         actorUserId: parsed.userId || null,
         effectiveUserId: parsed.userId || null,
       });
-      await enforceCodeSiteWritesAllowed(codeSiteContext, (parsed.files || []).map((file) => ({
-        path: file?.path,
-        kind: 'program-scaffold',
-        tool: 'file_write',
-      })));
+      const scaffoldAttempts = await Promise.all((parsed.files || []).map(async (file) => {
+        const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, file?.path, file?.content, parsed.userId || null, {
+          evidenceRefs: file?.evidenceRefs || file?.evidence_refs || parsed.evidenceRefs || parsed.evidence_refs,
+          processAncestry: file?.processAncestry || file?.process_ancestry || parsed.processAncestry || parsed.process_ancestry,
+          promptSummary: 'Program scaffold file write',
+          reasonRef: `program-scaffold:${file?.path}`,
+        });
+        return {
+          path: file?.path,
+          kind: 'program-scaffold',
+          tool: 'file_write',
+          ...codeSiteWriteEvidence({ ...parsed, ...file }, derivedLineProvenance),
+        };
+      }));
+      await enforceCodeSiteWritesAllowed(codeSiteContext, scaffoldAttempts);
       const result = applyScaffoldFiles(cwd, parsed.files || []);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
@@ -4041,7 +4110,11 @@ const server = http.createServer(async (req, res) => {
               actorUserId: userId || null,
               effectiveUserId: effectiveUserId || null,
             });
-            const codeSiteNotifyScope = { ...notifyScope, codesiteContext: codeSiteContext };
+            const codeSiteNotifyScope = {
+              ...notifyScope,
+              codesiteContext: codeSiteContext,
+              ...codeSiteWriteEvidence(data),
+            };
 
             // ── Per-requester token isolation ──────────────────────────
             // Repo path / working tree → effectiveUserId (guest writes
@@ -4660,7 +4733,11 @@ const server = http.createServer(async (req, res) => {
                       // so calling syncFile() here was redundant AND prevented
                       // the very first version from being restorable.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
-                      await flushDocToDisk(docKey, { contentOverride: data.content, codesiteContext: codeSiteContext });
+                      await flushDocToDisk(docKey, {
+                        contentOverride: data.content,
+                        codesiteContext: codeSiteContext,
+                        ...codeSiteWriteEvidence(data),
+                      });
                     }
                     result = { success: true };
                     break;
@@ -4732,15 +4809,24 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
+                  {
+                    const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, data.path, data.content, effectiveUserId, {
+                      evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                      processAncestry: data.processAncestry || data.process_ancestry,
+                      promptSummary: 'Direct file write',
+                      reasonRef: `write-file:${data.path}`,
+                    });
                     await enforceCodeSiteWriteAllowed(codeSiteContext, {
                       path: data.path,
                       kind: 'write-file',
                       tool: 'file_write',
+                      ...codeSiteWriteEvidence(data, derivedLineProvenance),
                     });
-                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
-                    result = { success: true };
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    break;
+	                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
+	                    result = { success: true };
+	                    broadcastFileTreeChanged(slug, notifyScope);
+	                  }
+	                  break;
                 case 'apply-shadow-patch':
                     // Synthi Genome — master plan §8.4.
                     // Apply a verified shadow patch as a CRDT-aware Yjs.Text
@@ -4755,10 +4841,20 @@ const server = http.createServer(async (req, res) => {
                         continue;
                       }
                       try {
+                        const previousContent = typeof f.base === 'string'
+                          ? f.base
+                          : await readWorkspaceFileForLineProvenance(slug, f.path, effectiveUserId);
+                        const derivedLineProvenance = deriveLineProvenanceFromContentChange(f.path, previousContent, f.patched, {
+                          evidenceRefs: f.evidenceRefs || f.evidence_refs || data.evidenceRefs || data.evidence_refs,
+                          processAncestry: f.processAncestry || f.process_ancestry || data.processAncestry || data.process_ancestry,
+                          promptSummary: 'Apply verified shadow patch',
+                          reasonRef: `apply-shadow-patch:${data.universeId || 'universe'}:${f.path}`,
+                        });
                         await enforceCodeSiteWriteAllowed(codeSiteContext, {
                           path: f.path,
                           kind: 'apply-shadow-patch',
                           tool: 'shadow_patch',
+                          ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
                         });
                         const docName = buildDocName(slug, f.path, notifyScope);
                         const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
@@ -4782,50 +4878,99 @@ const server = http.createServer(async (req, res) => {
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
-                  await enforceCodeSiteWritesAllowed(codeSiteContext, (data.files || []).map((file) => ({
-                    path: file?.path,
-                    kind: 'write-files-batch',
-                    tool: 'file_write',
-                    lineProvenance: file?.lineProvenance || file?.line_provenance || file?.hunks || file?.lineAnchors || file?.line_anchors || [],
-                    evidenceRefs: file?.evidenceRefs || file?.evidence_refs || [],
-                  })));
+                  {
+                    const attempts = await Promise.all((data.files || []).map(async (file) => {
+                      const nextContent = file?.encoding === 'base64'
+                        ? null
+                        : file?.content;
+                      const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, file?.path, nextContent, effectiveUserId, {
+                        evidenceRefs: file?.evidenceRefs || file?.evidence_refs || data.evidenceRefs || data.evidence_refs,
+                        processAncestry: file?.processAncestry || file?.process_ancestry || data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Batch file write',
+                        reasonRef: `write-files-batch:${file?.path}`,
+                      });
+                      return {
+                        path: file?.path,
+                        kind: 'write-files-batch',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence({ ...data, ...file }, derivedLineProvenance),
+                      };
+                    }));
+                    await enforceCodeSiteWritesAllowed(codeSiteContext, attempts);
+                  }
                   result = await gitService.writeFilesBatch(slug, data.files, {
                     syncToGcs: data.syncToGcs !== false,
                     userId: effectiveUserId,
                   });
                   break;
                 case 'create-directory':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.path,
-                      kind: 'create-directory',
-                      tool: 'file_write',
-                    });
+	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
+	                      path: data.path,
+	                      kind: 'create-directory',
+	                      tool: 'file_write',
+                        ...codeSiteWriteEvidence(data),
+	                    });
                     await gitService.createDirectory(slug, data.path, effectiveUserId);
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'delete-item':
-                    // Delete a file or folder from the workspace
-                    console.log('[Collab] delete-item called for:', slug, data.path);
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.path,
-                      kind: 'delete-item',
-                      tool: 'file_delete',
-                    });
-                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
+	                    // Delete a file or folder from the workspace
+	                    console.log('[Collab] delete-item called for:', slug, data.path);
+                    {
+                      const previousContent = await readWorkspaceFileForLineProvenance(slug, data.path, effectiveUserId);
+                      const derivedLineProvenance = deriveLineProvenanceFromContentChange(data.path, previousContent, '', {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Delete workspace item',
+                        reasonRef: `delete-item:${data.path}`,
+                      });
+	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
+	                      path: data.path,
+	                      kind: 'delete-item',
+	                      tool: 'file_delete',
+                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
+	                    });
+                    }
+	                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
                       await invalidateDocsForSlug(slug, [data.path], notifyScope);
                     }
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
-                case 'rename-item':
-                    // Rename / move a file or directory
-                    await enforceCodeSiteWritesAllowed(codeSiteContext, [
-                      { path: data.oldPath, kind: 'rename-item:old', tool: 'file_rename' },
-                      { path: data.newPath, kind: 'rename-item:new', tool: 'file_rename' },
-                    ]);
-                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
+	                case 'rename-item':
+	                    // Rename / move a file or directory
+                    {
+                      const previousContent = await readWorkspaceFileForLineProvenance(slug, data.oldPath, effectiveUserId);
+                      const oldPathLineProvenance = deriveLineProvenanceFromContentChange(data.oldPath, previousContent, '', {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Rename source path',
+                        reasonRef: `rename-item:old:${data.oldPath}`,
+                      });
+                      const newPathLineProvenance = deriveLineProvenanceFromContentChange(data.newPath, '', previousContent, {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Rename destination path',
+                        reasonRef: `rename-item:new:${data.newPath}`,
+                      });
+                      await enforceCodeSiteWritesAllowed(codeSiteContext, [
+                        {
+                          path: data.oldPath,
+                          kind: 'rename-item:old',
+                          tool: 'file_rename',
+                          ...codeSiteWriteEvidence(data, oldPathLineProvenance),
+                        },
+                        {
+                          path: data.newPath,
+                          kind: 'rename-item:new',
+                          tool: 'file_rename',
+                          ...codeSiteWriteEvidence(data, newPathLineProvenance),
+                        },
+                      ]);
+                    }
+	                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
                       await invalidateDocsForSlug(slug, [data.oldPath], notifyScope);
