@@ -3,7 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { codeSiteGitActionAttempts } = require('../codesiteGitPolicy');
+const {
+  codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
+} = require('../codesiteGitPolicy');
 
 test('maps path-scoped index actions to git_index attempts', () => {
   assert.deepEqual(codeSiteGitActionAttempts('stage', { filePath: 'src/app.js' }), [{
@@ -27,9 +30,11 @@ test('maps repo-wide worktree actions to broad git_worktree attempts', () => {
     'discard-all',
     'pull',
     'merge-branch',
+    'stash-push',
     'stash-pop',
     'stash-apply',
     'interactive-rebase',
+    'rebase-abort',
     'rebase-continue',
     'cherry-pick',
     'revert',
@@ -55,6 +60,42 @@ test('maps path-scoped worktree actions to git_worktree attempts', () => {
       kind: action,
       tool: 'git_worktree',
     }]);
+  }
+});
+
+test('marks git actions whose callbacks run through the CodeSiteFS boundary', () => {
+  for (const action of [
+    'abort-merge',
+    'checkout',
+    'cherry-pick',
+    'discard',
+    'discard-all',
+    'discard-lines',
+    'interactive-rebase',
+    'mark-resolved',
+    'merge-branch',
+    'pull',
+    'rebase-abort',
+    'rebase-continue',
+    'resolve-ours',
+    'resolve-theirs',
+    'revert',
+    'stash-apply',
+    'stash-pop',
+    'stash-push',
+  ]) {
+    assert.equal(shouldRunCodeSiteGitBoundary(action), true, action);
+  }
+
+  for (const action of [
+    'init',
+    'clone',
+    'commit',
+    'push',
+    'stash-drop',
+    'status',
+  ]) {
+    assert.equal(shouldRunCodeSiteGitBoundary(action), false, action);
   }
 });
 

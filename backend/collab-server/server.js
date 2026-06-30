@@ -20,7 +20,10 @@ const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntime
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
-const { codeSiteGitActionAttempts } = require('./codesiteGitPolicy');
+const {
+  codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
+} = require('./codesiteGitPolicy');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
@@ -980,23 +983,6 @@ function codeSiteEnforceOptions(context, options = {}) {
 async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
   const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
   return codesiteFs.run(operation, applyFn, options);
-}
-
-const CODE_SITE_GIT_BOUNDARY_ACTIONS = new Set([
-  'abort-merge',
-  'checkout',
-  'discard',
-  'discard-all',
-  'discard-lines',
-  'mark-resolved',
-  'merge-branch',
-  'pull',
-  'resolve-ours',
-  'resolve-theirs',
-]);
-
-function shouldRunCodeSiteGitBoundary(action) {
-  return CODE_SITE_GIT_BOUNDARY_ACTIONS.has(String(action || ''));
 }
 
 async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn, options = {}) {
@@ -4813,12 +4799,20 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashList(slug, effectiveUserId);
                     break;
                 case 'stash-push':
-                    result = await gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'stash-pop':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4829,7 +4823,10 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-apply':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashApply(slug, data.index, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashApply(slug, data.index, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4843,7 +4840,10 @@ const server = http.createServer(async (req, res) => {
                 case 'interactive-rebase':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4855,7 +4855,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-abort':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseAbort(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseAbort(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4867,7 +4870,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-continue':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseContinue(slug, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseContinue(slug, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4877,7 +4883,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'cherry-pick':
-                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4895,7 +4906,12 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
                     break;
                 case 'revert':
-                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);

@@ -53,6 +53,27 @@ const GIT_CONFIG_ACTIONS = new Set([
   'set-remote-url',
 ]);
 
+const CODE_SITE_GIT_BOUNDARY_ACTIONS = new Set([
+  'abort-merge',
+  'checkout',
+  'cherry-pick',
+  'discard',
+  'discard-all',
+  'discard-lines',
+  'interactive-rebase',
+  'mark-resolved',
+  'merge-branch',
+  'pull',
+  'rebase-abort',
+  'rebase-continue',
+  'resolve-ours',
+  'resolve-theirs',
+  'revert',
+  'stash-apply',
+  'stash-pop',
+  'stash-push',
+]);
+
 function codeSiteGitActionAttempts(action, data = {}) {
   const normalizedAction = String(action || '').trim();
   if (!normalizedAction) return [];
@@ -78,6 +99,10 @@ function codeSiteGitActionAttempts(action, data = {}) {
   return [];
 }
 
+function shouldRunCodeSiteGitBoundary(action) {
+  return CODE_SITE_GIT_BOUNDARY_ACTIONS.has(String(action || ''));
+}
+
 function gitAttempt(kind, targetPath, tool) {
   return {
     path: targetPath,
@@ -88,4 +113,5 @@ function gitAttempt(kind, targetPath, tool) {
 
 module.exports = {
   codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
 };
