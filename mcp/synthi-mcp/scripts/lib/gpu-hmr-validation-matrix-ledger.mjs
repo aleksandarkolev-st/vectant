@@ -181,6 +181,10 @@ const COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS = Object.freeze([
   'host_identity',
   'output_oracle',
 ]);
+const RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_large_project_cold_path.v1';
+const RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY =
+  'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -435,6 +439,14 @@ function stringEvidenceList(values) {
 
 function compactObject(value) {
   return isObject(value) ? value : {};
+}
+
+function firstCompactObject(...values) {
+  for (const value of values) {
+    const object = compactObject(value);
+    if (Object.keys(object).length > 0) return object;
+  }
+  return {};
 }
 
 function compactObjectList(value) {
@@ -1199,6 +1211,345 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     template_hash: recomputedTemplateHash,
     blockingGaps,
     blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function listCount(value) {
+  if (Array.isArray(value)) return value.length;
+  if (isObject(value)) {
+    return Object.values(value).reduce((sum, entry) => sum + listCount(entry), 0);
+  }
+  return value === undefined || value === null ? 0 : 1;
+}
+
+function randomColdManifestResult(json = {}) {
+  const results = compactObjectList(json.results);
+  if (results.length === 0) return {};
+  const selection = compactObject(json.selection);
+  const selectedIds = compactStringList([
+    ...(Array.isArray(selection.selectedIds) ? selection.selectedIds : []),
+    ...(Array.isArray(selection.selected_ids) ? selection.selected_ids : []),
+  ]);
+  if (selectedIds.length > 0) {
+    const matching = results.find((result) =>
+      selectedIds.includes(firstText(result.candidateId, result.candidate_id))
+    );
+    if (matching) return matching;
+  }
+  return results[0];
+}
+
+function randomColdManifestCandidate(json = {}, result = {}) {
+  const candidateId = firstText(result.candidateId, result.candidate_id);
+  const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
+  const candidates = compactObjectList(json.candidates);
+  return selectedCandidates.find((candidate) => firstText(candidate.id) === candidateId)
+    ?? candidates.find((candidate) => firstText(candidate.id) === candidateId)
+    ?? selectedCandidates[0]
+    ?? candidates[0]
+    ?? {};
+}
+
+function randomColdBackendFromEvidence({ result = {}, candidate = {}, sourceIntake = {} } = {}) {
+  const directBackend = firstText(result.backend, candidate.backend);
+  if (directBackend) return directBackend;
+  const backendFamily = firstText(
+    result.backendFamily,
+    result.backend_family,
+    candidate.backendFamily,
+    candidate.backend_family,
+  );
+  if (backendFamily === 'real_rocm') return 'hip';
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(sourceIntake.backendCandidates) ? sourceIntake.backendCandidates : []),
+    ...(Array.isArray(sourceIntake.backend_candidates) ? sourceIntake.backend_candidates : []),
+    ...(Array.isArray(candidate.backendCandidates) ? candidate.backendCandidates : []),
+    ...(Array.isArray(candidate.backend_candidates) ? candidate.backend_candidates : []),
+  ]);
+  const preferred = ['hip_rocm', 'hip', 'hiprt', 'opencl', 'vulkan', 'webgpu_wgsl', 'cuda', 'sycl'];
+  const selected = preferred.find((backend) => backendCandidates.includes(backend));
+  if (selected === 'hip_rocm') return 'hip';
+  if (selected === 'webgpu_wgsl') return 'webgpu';
+  if (selected) return selected;
+  if (backendCandidates.length > 1) return 'mixed_gpu';
+  return firstText(backendFamily) ?? 'unknown';
+}
+
+function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
+  const facet = compactObject(sourceIntake);
+  const buildDiscovery = compactObject(
+    facet.buildMetadataDiscovery
+    ?? facet.build_metadata_discovery
+    ?? result.buildMetadataDiscovery
+    ?? result.build_metadata_discovery,
+  );
+  const buildContent = compactObject(
+    facet.buildMetadataContentEvidence
+    ?? facet.build_metadata_content_evidence
+    ?? result.buildMetadataContentEvidence
+    ?? result.build_metadata_content_evidence,
+  );
+  const runtimeBoundaryExpectation = compactObject(
+    facet.runtimeBoundaryExpectation
+    ?? facet.runtime_boundary_expectation
+    ?? result.runtimeBoundaryExpectation
+    ?? result.runtime_boundary_expectation,
+  );
+  const present = Object.keys(facet).length > 0;
+  const accepted = firstBool(
+    facet.acceptedAsIntakeEvidence,
+    facet.accepted_as_intake_evidence,
+    result.sourceTreeIntakeAccepted,
+    result.source_tree_intake_accepted,
+  ) === true;
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
+    ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
+    ...(Array.isArray(buildDiscovery.backendCandidates) ? buildDiscovery.backendCandidates : []),
+    ...(Array.isArray(buildDiscovery.backend_candidates) ? buildDiscovery.backend_candidates : []),
+    ...(Array.isArray(runtimeBoundaryExpectation.backendCandidates)
+      ? runtimeBoundaryExpectation.backendCandidates
+      : []),
+    ...(Array.isArray(runtimeBoundaryExpectation.backend_candidates)
+      ? runtimeBoundaryExpectation.backend_candidates
+      : []),
+  ]);
+  const detectedBuildSystems = compactStringList([
+    ...(Array.isArray(facet.detectedBuildSystems) ? facet.detectedBuildSystems : []),
+    ...(Array.isArray(facet.detected_build_systems) ? facet.detected_build_systems : []),
+    ...(Array.isArray(buildDiscovery.detectedBuildSystems) ? buildDiscovery.detectedBuildSystems : []),
+    ...(Array.isArray(buildDiscovery.detected_build_systems) ? buildDiscovery.detected_build_systems : []),
+  ]);
+  const failedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  return {
+    present,
+    accepted,
+    acceptedAsIntakeEvidence: accepted,
+    accepted_as_intake_evidence: accepted,
+    proofAuthority: firstText(facet.proofAuthority, facet.proof_authority) ?? null,
+    proof_authority: firstText(facet.proofAuthority, facet.proof_authority) ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: firstText(facet.status, result.status) ?? null,
+    transport: firstText(facet.transport) ?? null,
+    sourceListingHash: normalizeSha256(firstText(
+      facet.sourceListingHash,
+      facet.source_listing_hash,
+      facet.listingHash,
+      facet.listing_hash,
+    )),
+    source_listing_hash: normalizeSha256(firstText(
+      facet.sourceListingHash,
+      facet.source_listing_hash,
+      facet.listingHash,
+      facet.listing_hash,
+    )),
+    facetHash: normalizeSha256(firstText(facet.facetHash, facet.facet_hash)),
+    facet_hash: normalizeSha256(firstText(facet.facetHash, facet.facet_hash)),
+    fileCount: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
+    file_count: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
+    totalKnownBytes: finiteNumber(facet.totalKnownBytes ?? facet.total_known_bytes) ?? 0,
+    total_known_bytes: finiteNumber(facet.totalKnownBytes ?? facet.total_known_bytes) ?? 0,
+    byteLengthMode: firstText(facet.byteLengthMode, facet.byte_length_mode),
+    byte_length_mode: firstText(facet.byteLengthMode, facet.byte_length_mode),
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    detectedBuildSystems,
+    detected_build_systems: detectedBuildSystems,
+    buildMetadataSignalCount: listCount(
+      buildDiscovery.buildSystemSignals
+      ?? buildDiscovery.build_system_signals,
+    ),
+    build_metadata_signal_count: listCount(
+      buildDiscovery.buildSystemSignals
+      ?? buildDiscovery.build_system_signals,
+    ),
+    gpuSourceSignalCount: listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
+    gpu_source_signal_count: listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
+    buildMetadataDiscoveryAccepted: firstBool(
+      facet.buildMetadataDiscoveryAccepted,
+      facet.build_metadata_discovery_accepted,
+      result.buildMetadataDiscoveryAccepted,
+      result.build_metadata_discovery_accepted,
+    ) === true,
+    build_metadata_discovery_accepted: firstBool(
+      facet.buildMetadataDiscoveryAccepted,
+      facet.build_metadata_discovery_accepted,
+      result.buildMetadataDiscoveryAccepted,
+      result.build_metadata_discovery_accepted,
+    ) === true,
+    buildMetadataContentAccepted: firstBool(
+      facet.buildMetadataContentAccepted,
+      facet.build_metadata_content_accepted,
+      result.buildMetadataContentAccepted,
+      result.build_metadata_content_accepted,
+    ) === true,
+    build_metadata_content_accepted: firstBool(
+      facet.buildMetadataContentAccepted,
+      facet.build_metadata_content_accepted,
+      result.buildMetadataContentAccepted,
+      result.build_metadata_content_accepted,
+    ) === true,
+    buildMetadataContentHash: normalizeSha256(firstText(
+      buildContent.contentEvidenceHash,
+      buildContent.content_evidence_hash,
+      buildContent.facetHash,
+      buildContent.facet_hash,
+    )),
+    build_metadata_content_hash: normalizeSha256(firstText(
+      buildContent.contentEvidenceHash,
+      buildContent.content_evidence_hash,
+      buildContent.facetHash,
+      buildContent.facet_hash,
+    )),
+    runtimeBoundaryExpectationAccepted: firstBool(
+      facet.runtimeBoundaryExpectationAccepted,
+      facet.runtime_boundary_expectation_accepted,
+      result.runtimeBoundaryExpectationAccepted,
+      result.runtime_boundary_expectation_accepted,
+    ) === true,
+    runtime_boundary_expectation_accepted: firstBool(
+      facet.runtimeBoundaryExpectationAccepted,
+      facet.runtime_boundary_expectation_accepted,
+      result.runtimeBoundaryExpectationAccepted,
+      result.runtime_boundary_expectation_accepted,
+    ) === true,
+    runtimeBoundaryExpectationHash: normalizeSha256(firstText(
+      runtimeBoundaryExpectation.expectationHash,
+      runtimeBoundaryExpectation.expectation_hash,
+    )),
+    runtime_boundary_expectation_hash: normalizeSha256(firstText(
+      runtimeBoundaryExpectation.expectationHash,
+      runtimeBoundaryExpectation.expectation_hash,
+    )),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
+  const selection = compactObject(json.selection);
+  const selectedIds = compactStringList([
+    ...(Array.isArray(selection.selectedIds) ? selection.selectedIds : []),
+    ...(Array.isArray(selection.selected_ids) ? selection.selected_ids : []),
+  ]);
+  const schemaVersion = firstText(json.schemaVersion, json.schema_version, json.schema);
+  const proofAuthority = firstText(json.proofAuthority, json.proof_authority);
+  const eventType = firstText(json.eventType, json.event_type);
+  const dryRun = firstBool(json.dryRun, json.dry_run) === true
+    || firstText(result.status) === 'selected_not_executed_dry_run';
+  const resultStatus = firstText(result.status) ?? firstText(json.status) ?? 'unknown';
+  const acceptedForGpuHmr = firstBool(json.acceptedForGpuHmr, json.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(json.gpuHmrSuccess, json.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    json.canSatisfyRuntimeProof,
+    json.can_satisfy_runtime_proof,
+  );
+  const resultAcceptedForGpuHmr = firstBool(
+    result.acceptedForGpuHmr,
+    result.accepted_for_gpu_hmr,
+  );
+  const resultGpuHmrSuccess = firstBool(result.gpuHmrSuccess, result.gpu_hmr_success);
+  const resultCanSatisfyRuntimeProof = firstBool(
+    result.canSatisfyRuntimeProof,
+    result.can_satisfy_runtime_proof,
+  );
+  const failedGates = compactStringList([
+    schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION
+      ? null
+      : 'random_large_project_cold_path_schema_invalid',
+    proofAuthority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
+      ? null
+      : 'random_large_project_cold_path_authority_invalid',
+    acceptedForGpuHmr === true
+      ? 'random_large_project_cold_path_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_large_project_cold_path_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_large_project_cold_path_claimed_runtime_authority'
+      : null,
+    resultAcceptedForGpuHmr === true
+      ? 'random_large_project_cold_path_result_claimed_gpu_hmr_acceptance'
+      : null,
+    resultGpuHmrSuccess === true
+      ? 'random_large_project_cold_path_result_claimed_gpu_hmr_success'
+      : null,
+    resultCanSatisfyRuntimeProof === true
+      ? 'random_large_project_cold_path_result_claimed_runtime_authority'
+      : null,
+    selectedIds.length > 0 || firstText(result.candidateId, result.candidate_id)
+      ? null
+      : 'random_large_project_cold_path_selected_candidate_missing',
+  ]);
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    runId: firstText(json.runId, json.run_id),
+    run_id: firstText(json.runId, json.run_id),
+    eventType,
+    event_type: eventType,
+    status: firstText(json.status),
+    resultStatus,
+    result_status: resultStatus,
+    dryRun,
+    dry_run: dryRun,
+    selectedCandidateIds: selectedIds,
+    selected_candidate_ids: selectedIds,
+    selectedCandidateCount: selectedIds.length,
+    selected_candidate_count: selectedIds.length,
+    candidateId: firstText(result.candidateId, result.candidate_id, candidate.id),
+    candidate_id: firstText(result.candidateId, result.candidate_id, candidate.id),
+    candidateSource: firstText(candidate.candidateSource, candidate.candidate_source),
+    candidate_source: firstText(candidate.candidateSource, candidate.candidate_source),
+    profileMode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
+    profile_mode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
+    sourceUrl: firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url),
+    source_url: firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url),
+    immutableCommit: firstText(
+      result.immutableCommit,
+      result.immutable_commit,
+      candidate.immutableCommit,
+      candidate.immutable_commit,
+    ),
+    immutable_commit: firstText(
+      result.immutableCommit,
+      result.immutable_commit,
+      candidate.immutableCommit,
+      candidate.immutable_commit,
+    ),
+    selectionHash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
+    selection_hash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
+    pendingManifestHash: normalizeSha256(firstText(
+      json.pendingManifestHash,
+      json.pending_manifest_hash,
+    )),
+    pending_manifest_hash: normalizeSha256(firstText(
+      json.pendingManifestHash,
+      json.pending_manifest_hash,
+    )),
     failedGates,
     failed_gates: failedGates,
   };
@@ -11294,6 +11645,67 @@ function rowSafetyFailures(row, context = {}) {
       failures.push({ code: 'preflight_only_requires_typed_backend_evidence' });
     }
   }
+  if (row.proofMode === 'random_large_project_cold_path') {
+    const coldPathFacet = compactObject(
+      row.randomLargeProjectColdPath
+      ?? row.random_large_project_cold_path,
+    );
+    const coldPathGates = compactStringList([
+      ...(Array.isArray(coldPathFacet.failedGates) ? coldPathFacet.failedGates : []),
+      ...(Array.isArray(coldPathFacet.failed_gates) ? coldPathFacet.failed_gates : []),
+    ]);
+    if (coldPathGates.length > 0) {
+      failures.push({ code: 'random_large_project_cold_path_facet_invalid' });
+      failures.push(...coldPathGates.map((code) => ({ code })));
+    }
+    if (firstBool(coldPathFacet.acceptedForGpuHmr, coldPathFacet.accepted_for_gpu_hmr) === true) {
+      failures.push({ code: 'random_large_project_cold_path_cannot_accept_gpu_hmr' });
+    }
+    if (firstBool(coldPathFacet.gpuHmrSuccess, coldPathFacet.gpu_hmr_success) === true) {
+      failures.push({ code: 'random_large_project_cold_path_cannot_report_gpu_hmr_success' });
+    }
+    if (
+      firstBool(
+        coldPathFacet.canSatisfyRuntimeProof,
+        coldPathFacet.can_satisfy_runtime_proof,
+      ) === true
+    ) {
+      failures.push({ code: 'random_large_project_cold_path_cannot_claim_runtime_authority' });
+    }
+    const coldTemplate = compactObject(
+      row.coldRuntimeBoundaryEventManifestTemplate
+      ?? row.cold_runtime_boundary_event_manifest_template,
+    );
+    const coldTemplatePresent = coldTemplate.present === true
+      || row.runtimeBoundaryEventManifestTemplateAccepted === true
+      || row.runtime_boundary_event_manifest_template_accepted === true;
+    if (coldTemplatePresent && coldTemplate.validated !== true) {
+      failures.push({ code: 'random_large_project_cold_template_not_validated' });
+      failures.push(...compactStringList([
+        ...(Array.isArray(coldTemplate.failedGates) ? coldTemplate.failedGates : []),
+        ...(Array.isArray(coldTemplate.failed_gates) ? coldTemplate.failed_gates : []),
+      ]).map((code) => ({ code })));
+    }
+    if (
+      firstBool(
+        coldTemplate.acceptedForGpuHmr,
+        coldTemplate.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(coldTemplate.gpuHmrSuccess, coldTemplate.gpu_hmr_success) === true
+      || firstBool(
+        coldTemplate.canSatisfyRuntimeProof,
+        coldTemplate.can_satisfy_runtime_proof,
+      ) === true
+    ) {
+      failures.push({ code: 'random_large_project_cold_template_claimed_runtime_authority' });
+    }
+    if (row.acceptedForGpuHmr === true || row.gpuHmrSuccess === true) {
+      failures.push({ code: 'random_large_project_cold_path_row_cannot_claim_gpu_hmr_success' });
+    }
+    if (row.matrixOutcome === 'full_runtime_gpu_hmr') {
+      failures.push({ code: 'random_large_project_cold_path_row_cannot_be_full_runtime_gpu_hmr' });
+    }
+  }
   return failures;
 }
 
@@ -19778,12 +20190,195 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
   });
 }
 
+function randomLargeProjectColdPathRow(json, filePath, context) {
+  const result = randomColdManifestResult(json);
+  const candidate = randomColdManifestCandidate(json, result);
+  const sourceIntake = firstCompactObject(
+    result.sourceIntakeEvidence,
+    result.source_intake_evidence,
+  );
+  const coldSourceTreeIntake = randomColdSourceIntakeSummary(sourceIntake, result);
+  const coldTemplateRaw = firstCompactObject(
+    result.runtimeBoundaryEventManifestTemplate,
+    result.runtime_boundary_event_manifest_template,
+    sourceIntake.runtimeBoundaryEventManifestTemplate,
+    sourceIntake.runtime_boundary_event_manifest_template,
+  );
+  const coldTemplateDeclaredAccepted = firstBool(
+    result.runtimeBoundaryEventManifestTemplateAccepted,
+    result.runtime_boundary_event_manifest_template_accepted,
+    sourceIntake.runtimeBoundaryEventManifestTemplateAccepted,
+    sourceIntake.runtime_boundary_event_manifest_template_accepted,
+  ) === true;
+  const coldRuntimeBoundaryEventManifestTemplate =
+    Object.keys(coldTemplateRaw).length > 0
+      ? coldRuntimeBoundaryEventManifestTemplateFacet(coldTemplateRaw)
+      : {
+        present: false,
+        validated: false,
+        accepted: false,
+        acceptedAsSupportEvidence: false,
+        accepted_as_support_evidence: false,
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        failedGates: coldTemplateDeclaredAccepted
+          ? ['cold_runtime_boundary_event_manifest_template_missing']
+          : [],
+        failed_gates: coldTemplateDeclaredAccepted
+          ? ['cold_runtime_boundary_event_manifest_template_missing']
+          : [],
+      };
+  const randomLargeProjectColdPath =
+    randomColdPathSupportFacet(json, result, candidate);
+  const dryRun = randomLargeProjectColdPath.dryRun === true;
+  const eventType = firstText(randomLargeProjectColdPath.eventType);
+  const resultStatus = firstText(randomLargeProjectColdPath.resultStatus);
+  const selectedCandidateId = firstText(
+    randomLargeProjectColdPath.candidateId,
+    candidate.id,
+    'random-large-project-cold-path',
+  );
+  const sourceUrl = firstText(
+    randomLargeProjectColdPath.sourceUrl,
+    result.sourceUrl,
+    result.source_url,
+    candidate.sourceUrl,
+    candidate.source_url,
+  );
+  const immutableCommit = firstText(
+    randomLargeProjectColdPath.immutableCommit,
+    result.immutableCommit,
+    result.immutable_commit,
+    candidate.immutableCommit,
+    candidate.immutable_commit,
+  );
+  const backend = randomColdBackendFromEvidence({ result, candidate, sourceIntake });
+  const resultBlockingGaps = compactStringList([
+    ...(Array.isArray(result.blockingGaps) ? result.blockingGaps : []),
+    ...(Array.isArray(result.blocking_gaps) ? result.blocking_gaps : []),
+    ...(Array.isArray(result.unsupportedReasons) ? result.unsupportedReasons : []),
+    ...(Array.isArray(result.unsupported_reasons) ? result.unsupported_reasons : []),
+  ]);
+  const failClosedStatusGaps = compactStringList([
+    resultStatus && /timeout/i.test(resultStatus) ? 'random_cold_path_runner_timeout_failed_closed' : null,
+    resultStatus && /failed|error/i.test(resultStatus) ? 'random_cold_path_runner_failed_closed' : null,
+    resultStatus && /refused/i.test(resultStatus) ? 'random_cold_path_refused' : null,
+  ]);
+  const proofGaps = compactStringList([
+    ...resultBlockingGaps,
+    ...failClosedStatusGaps,
+    'same_process_loader_unproven',
+    'epoch_publication_unproven',
+    'dispatch_trace_unproven',
+    'host_identity_unproven',
+    'output_oracle_unproven',
+    'strict_runtime_ledger_missing',
+  ]);
+  const pending = eventType === 'cold_path_pending';
+  const actualAttempt = eventType === 'cold_path_complete' && dryRun !== true;
+  const matrixOutcome = pending
+    ? 'unproven'
+    : dryRun
+      ? 'preflight_only'
+      : 'refusal_proven';
+  const proofIds = compactStringList([
+    firstText(randomLargeProjectColdPath.runId)
+      ? `random-large-project-cold-path:${randomLargeProjectColdPath.runId}`
+      : null,
+    randomLargeProjectColdPath.selectionHash,
+    randomLargeProjectColdPath.pendingManifestHash,
+    coldSourceTreeIntake.sourceListingHash,
+    coldSourceTreeIntake.facetHash,
+    coldSourceTreeIntake.buildMetadataContentHash,
+    coldSourceTreeIntake.runtimeBoundaryExpectationHash,
+    coldRuntimeBoundaryEventManifestTemplate.templateHash,
+  ]);
+  return finalizeRow({
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend,
+    targetId: selectedCandidateId,
+    profileId: firstText(
+      result.profileMode,
+      result.profile_mode,
+      candidate.profileMode,
+      candidate.profile_mode,
+      'random_large_project_cold_path',
+    ),
+    proofMode: 'random_large_project_cold_path',
+    evidenceKind: dryRun ? 'random_large_project_cold_path_dry_run' : 'random_large_project_cold_path',
+    matrixOutcome,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofChainAccepted: false,
+    proofChain: 'random_large_project_cold_path_refusal_only',
+    proof_chain: 'random_large_project_cold_path_refusal_only',
+    acceptanceClass: dryRun ? 'cold_path_selection_preflight_only' : 'runtime_proof_rejected',
+    acceptance_class: dryRun ? 'cold_path_selection_preflight_only' : 'runtime_proof_rejected',
+    refusalProven: matrixOutcome === 'refusal_proven',
+    refusal_proven: matrixOutcome === 'refusal_proven',
+    randomLargeProjectColdPath,
+    random_large_project_cold_path: randomLargeProjectColdPath,
+    coldSourceTreeIntake,
+    cold_source_tree_intake: coldSourceTreeIntake,
+    coldRuntimeBoundaryEventManifestTemplate,
+    cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    sourceTreeIntakeAccepted: coldSourceTreeIntake.accepted === true,
+    source_tree_intake_accepted: coldSourceTreeIntake.accepted === true,
+    buildMetadataDiscoveryAccepted: coldSourceTreeIntake.buildMetadataDiscoveryAccepted === true,
+    build_metadata_discovery_accepted: coldSourceTreeIntake.buildMetadataDiscoveryAccepted === true,
+    buildMetadataContentAccepted: coldSourceTreeIntake.buildMetadataContentAccepted === true,
+    build_metadata_content_accepted: coldSourceTreeIntake.buildMetadataContentAccepted === true,
+    runtimeBoundaryEventManifestTemplateAccepted:
+      coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence === true,
+    runtime_boundary_event_manifest_template_accepted:
+      coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence === true,
+    proofIds,
+    proof_ids: proofIds,
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+    runMode: {
+      accepted: false,
+      metricScope: 'cold',
+      metric_scope: 'cold',
+      evidenceAuthority: 'cold_path_intake_only_not_gpu_hmr_runtime',
+      evidence_authority: 'cold_path_intake_only_not_gpu_hmr_runtime',
+    },
+    timings: compactObject({
+      timeoutMs: finiteNumber(json.timeoutMs ?? json.timeout_ms),
+      runnerTimeoutMs: finiteNumber(json.runnerTimeoutMs ?? json.runner_timeout_ms),
+      sourceIntakeTimeoutMs: finiteNumber(
+        json.sourceIntakeTimeoutMs ?? json.source_intake_timeout_ms,
+      ),
+    }),
+    reasons: dryRun
+      ? ['random_large_project_cold_path_dry_run_not_runtime_proof']
+      : proofGaps,
+    openGaps: pending
+      ? ['random_large_project_cold_path_pending_not_finalized']
+      : dryRun
+        ? ['random_large_project_cold_path_dry_run_not_runtime_proof']
+        : proofGaps,
+    actualAttempt,
+    actual_attempt: actualAttempt,
+  });
+}
+
 async function classifyJsonArtifact(json, filePath, context) {
   if (Array.isArray(json) && json.every((record) => isObject(record) && 'name' in record && 'status' in record)) {
     return agentSplitRow(json, filePath, context);
   }
   if (!isObject(json)) return null;
-  const schema = firstText(json.schemaVersion, json.schema) ?? '';
+  const schema = firstText(json.schemaVersion, json.schema_version, json.schema) ?? '';
   const proofId = firstText(json.proofId, json.proof_id) ?? '';
   if (
     schema === 'synthi.gpu_hmr.generated_split_granularity.v1'
@@ -19798,6 +20393,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema === 'synthi.gpu.hmr.external_project_rejection.v1') {
     return externalProjectRejectionRow(json, filePath, context);
+  }
+  if (schema === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION) {
+    return randomLargeProjectColdPathRow(json, filePath, context);
   }
   if (
     schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1'
@@ -20506,6 +21104,14 @@ function rowRefs(rows) {
     externalVisualProofArtifact: row.externalVisualProofArtifact,
     realRocmExternalHeaderPrerequisites: row.realRocmExternalHeaderPrerequisites,
     real_rocm_external_header_prerequisites: row.realRocmExternalHeaderPrerequisites,
+    randomLargeProjectColdPath: row.randomLargeProjectColdPath,
+    random_large_project_cold_path: row.randomLargeProjectColdPath,
+    coldSourceTreeIntake: row.coldSourceTreeIntake,
+    cold_source_tree_intake: row.coldSourceTreeIntake,
+    coldRuntimeBoundaryEventManifestTemplate:
+      row.coldRuntimeBoundaryEventManifestTemplate,
+    cold_runtime_boundary_event_manifest_template:
+      row.coldRuntimeBoundaryEventManifestTemplate,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
@@ -21205,6 +21811,13 @@ function planCoverage(rows) {
     )
   );
   const fissionRows = deterministicFissionRows(rows, () => true);
+  const randomColdRefusalRows = refusalRows(rows, (row) =>
+    row.proofMode === 'random_large_project_cold_path'
+  );
+  const randomColdPreflightRows = preflightOnlyRows(rows, (row) =>
+    row.proofMode === 'random_large_project_cold_path'
+  );
+  const randomColdRows = [...randomColdRefusalRows, ...randomColdPreflightRows];
 
   return [
     coverageEntry({
@@ -21230,6 +21843,25 @@ function planCoverage(rows) {
       source_first_evidence_authority: 'source_first_provenance_only_plus_strict_runtime_ledger',
       asyncVisualCasSupportAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
       async_visual_cas_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    }),
+    coverageEntry({
+      id: 'random_large_arbitrary_project_cold_path',
+      requirement: 'Random large arbitrary-project cold-path intake with immutable source, build metadata, runtime-boundary expectation, and fail-closed proof gaps',
+      status: randomColdRefusalRows.length > 0
+        ? 'refused'
+        : randomColdPreflightRows.length > 0
+          ? 'preflight_only'
+          : 'missing',
+      rows: randomColdRows,
+      openGaps: randomColdRows.length > 0
+        ? compactStringList(randomColdRows.flatMap((row) => row.openGaps))
+        : ['random_large_project_cold_path_required'],
+      refusalRowCount: randomColdRefusalRows.length,
+      refusal_row_count: randomColdRefusalRows.length,
+      preflightRowCount: randomColdPreflightRows.length,
+      preflight_row_count: randomColdPreflightRows.length,
+      proofAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
+      proof_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     }),
     coverageEntry({
       id: 'hiprt_visual_path',

@@ -1403,6 +1403,303 @@ const logsRoot = path.join(mcpRoot, '.gpu-hmr-test-logs');
 const artifactsRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts');
 const casRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts-cas');
 
+function randomColdPathManifest({
+  candidateId = 'direct-random-wgpu-cold',
+  template = hashedColdRuntimeBoundaryTemplateFacet(),
+  resultOverrides = {},
+  topLevelOverrides = {},
+} = {}) {
+  const sourceUrl = 'https://example.invalid/arbitrary/wgpu.git';
+  const immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f';
+  const sourceIntakeEvidence = {
+    proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
+    proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    acceptedAsIntakeEvidence: true,
+    accepted_as_intake_evidence: true,
+    transport: 'github_git_tree_api_recursive',
+    sourceListingHash: hashValue(`${candidateId}:listing`),
+    source_listing_hash: hashValue(`${candidateId}:listing`),
+    facetHash: hashValue(`${candidateId}:source-intake`),
+    facet_hash: hashValue(`${candidateId}:source-intake`),
+    fileCount: 2445,
+    file_count: 2445,
+    totalKnownBytes: 35885065,
+    total_known_bytes: 35885065,
+    backendCandidates: ['vulkan', 'webgpu_wgsl'],
+    backend_candidates: ['vulkan', 'webgpu_wgsl'],
+    detectedBuildSystems: ['cargo', 'npm_or_node'],
+    detected_build_systems: ['cargo', 'npm_or_node'],
+    buildMetadataDiscoveryAccepted: true,
+    build_metadata_discovery_accepted: true,
+    buildMetadataDiscovery: {
+      proofAuthority: 'build_metadata_discovery_only_not_gpu_hmr_success',
+      proof_authority: 'build_metadata_discovery_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      detectedBuildSystems: ['cargo', 'npm_or_node'],
+      detected_build_systems: ['cargo', 'npm_or_node'],
+      backendCandidates: ['vulkan', 'webgpu_wgsl'],
+      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      buildSystemSignals: {
+        cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
+        npm_or_node: ['tests/wasm/runner/package.json'],
+      },
+      build_system_signals: {
+        cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
+        npm_or_node: ['tests/wasm/runner/package.json'],
+      },
+    },
+    buildMetadataContentAccepted: true,
+    build_metadata_content_accepted: true,
+    buildMetadataContentEvidence: {
+      proofAuthority: 'build_metadata_content_bytes_only_not_gpu_hmr_success',
+      proof_authority: 'build_metadata_content_bytes_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      acceptedAsBuildMetadataContent: true,
+      accepted_as_build_metadata_content: true,
+      contentEvidenceHash: hashValue(`${candidateId}:build-content`),
+      content_evidence_hash: hashValue(`${candidateId}:build-content`),
+      acceptedBuildFileCount: 2,
+      accepted_build_file_count: 2,
+    },
+    runtimeBoundaryExpectationAccepted: true,
+    runtime_boundary_expectation_accepted: true,
+    runtimeBoundaryExpectation: {
+      proofAuthority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
+      proof_authority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      acceptedAsRuntimeBoundaryExpectation: true,
+      accepted_as_runtime_boundary_expectation: true,
+      expectationHash: hashValue(`${candidateId}:runtime-boundary-expectation`),
+      expectation_hash: hashValue(`${candidateId}:runtime-boundary-expectation`),
+      backendCandidates: ['vulkan', 'webgpu_wgsl'],
+      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      requiredBoundaryStages: [
+        'same_process_loader',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+      required_boundary_stages: [
+        'same_process_loader',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    runtimeBoundaryEventManifestTemplateAccepted: true,
+    runtime_boundary_event_manifest_template_accepted: true,
+    runtimeBoundaryEventManifestTemplate: template,
+    runtime_boundary_event_manifest_template: template,
+  };
+  const result = {
+    candidateId,
+    status: 'unprofiled_arbitrary_project_cold_intake_refused',
+    backendFamily: 'unknown_gpu_project',
+    backend_family: 'unknown_gpu_project',
+    profileMode: 'unprofiled_arbitrary_project_cold_intake',
+    profile_mode: 'unprofiled_arbitrary_project_cold_intake',
+    runnerAttempted: false,
+    runner_attempted: false,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    sourceTreeIntakeAccepted: true,
+    source_tree_intake_accepted: true,
+    buildMetadataDiscoveryAccepted: true,
+    build_metadata_discovery_accepted: true,
+    buildMetadataContentAccepted: true,
+    build_metadata_content_accepted: true,
+    runtimeBoundaryExpectationAccepted: true,
+    runtime_boundary_expectation_accepted: true,
+    runtimeBoundaryEventManifestTemplateAccepted: true,
+    runtime_boundary_event_manifest_template_accepted: true,
+    runtimeBoundaryEventManifestTemplate: template,
+    runtime_boundary_event_manifest_template: template,
+    sourceIntakeEvidence,
+    source_intake_evidence: sourceIntakeEvidence,
+    blockingGaps: [
+      'runtime_profile_contract_missing',
+      'semantic_build_metadata_execution_missing',
+      'same_process_loader_unproven',
+      'epoch_publication_unproven',
+      'dispatch_trace_unproven',
+      'host_identity_unproven',
+      'output_oracle_unproven',
+      'strict_runtime_ledger_missing',
+    ],
+    blocking_gaps: [
+      'runtime_profile_contract_missing',
+      'semantic_build_metadata_execution_missing',
+      'same_process_loader_unproven',
+      'epoch_publication_unproven',
+      'dispatch_trace_unproven',
+      'host_identity_unproven',
+      'output_oracle_unproven',
+      'strict_runtime_ledger_missing',
+    ],
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    ...resultOverrides,
+  };
+  return {
+    schemaVersion: 'synthi.gpu_hmr.random_large_project_cold_path.v1',
+    schema_version: 'synthi.gpu_hmr.random_large_project_cold_path.v1',
+    proofAuthority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+    proof_authority: 'random_large_project_cold_path_selection_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    runId: `${candidateId}-run`,
+    run_id: `${candidateId}-run`,
+    eventType: 'cold_path_complete',
+    event_type: 'cold_path_complete',
+    status: 'complete',
+    selection: {
+      seed: 'random-cold-smoke',
+      selectedIds: [candidateId],
+      selected_ids: [candidateId],
+      selectionHash: hashValue(`${candidateId}:selection`),
+      selection_hash: hashValue(`${candidateId}:selection`),
+    },
+    candidates: [{
+      id: candidateId,
+      backendFamily: 'unknown_gpu_project',
+      backend_family: 'unknown_gpu_project',
+      profileMode: 'unprofiled_arbitrary_project_cold_intake',
+      profile_mode: 'unprofiled_arbitrary_project_cold_intake',
+      candidateSource: 'direct_source_url_commit',
+      candidate_source: 'direct_source_url_commit',
+      sourceUrl,
+      source_url: sourceUrl,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+    }],
+    selectedCandidates: [{
+      id: candidateId,
+      backendFamily: 'unknown_gpu_project',
+      backend_family: 'unknown_gpu_project',
+      profileMode: 'unprofiled_arbitrary_project_cold_intake',
+      profile_mode: 'unprofiled_arbitrary_project_cold_intake',
+      candidateSource: 'direct_source_url_commit',
+      candidate_source: 'direct_source_url_commit',
+      sourceUrl,
+      source_url: sourceUrl,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+    }],
+    dryRun: false,
+    dry_run: false,
+    timeoutMs: 120000,
+    timeout_ms: 120000,
+    runnerTimeoutMs: 240000,
+    runner_timeout_ms: 240000,
+    sourceIntake: true,
+    source_intake: true,
+    sourceIntakeTimeoutMs: 120000,
+    source_intake_timeout_ms: 120000,
+    pendingManifestHash: hashValue(`${candidateId}:pending-manifest`),
+    pending_manifest_hash: hashValue(`${candidateId}:pending-manifest`),
+    results: [result],
+    ...topLevelOverrides,
+  };
+}
+
+const randomColdPathDir = path.join(tmpRoot, 'random-large-project-cold-path-smoke');
+await writeJson(
+  path.join(randomColdPathDir, 'random-cold-valid.json'),
+  randomColdPathManifest(),
+);
+const randomColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [randomColdPathDir],
+  generatedAt: '2026-06-30T21:00:00.000Z',
+  includeUnproven: true,
+});
+const randomColdRow = randomColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(randomColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(randomColdRow.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.gpuHmrSuccess, false);
+assert.equal(randomColdRow.safety.accepted, true);
+assert.equal(randomColdRow.coldSourceTreeIntake.accepted, true);
+assert.equal(randomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, true);
+assert.equal(
+  randomColdRow.coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence,
+  true,
+);
+assert.ok(randomColdRow.openGaps.includes('strict_runtime_ledger_missing'));
+const randomColdCoverage = new Map(
+  randomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status, 'refused');
+assert.equal(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
+  1,
+);
+
+const forgedRuntimeEventsTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+forgedRuntimeEventsTemplateSeed.manifestTemplate = {
+  ...forgedRuntimeEventsTemplateSeed.manifestTemplate,
+  runtimeBoundaryEvents: [{ eventKind: 'dispatch_trace', dispatch_id: 'forged-dispatch' }],
+};
+forgedRuntimeEventsTemplateSeed.manifest_template =
+  forgedRuntimeEventsTemplateSeed.manifestTemplate;
+const forgedRandomColdPathDir = path.join(tmpRoot, 'random-large-project-cold-path-forged');
+await writeJson(
+  path.join(forgedRandomColdPathDir, 'random-cold-forged-template.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-wgpu-forged-template',
+    template: rehashColdRuntimeBoundaryTemplateFacet(forgedRuntimeEventsTemplateSeed),
+  }),
+);
+const forgedRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedRandomColdPathDir],
+  generatedAt: '2026-06-30T21:00:01.000Z',
+  includeUnproven: true,
+});
+const forgedRandomColdRow = forgedRandomColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedRandomColdRow?.acceptedForGpuHmr, false);
+assert.equal(forgedRandomColdRow.gpuHmrSuccess, false);
+assert.equal(forgedRandomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, false);
+assert.ok(forgedRandomColdRow.coldRuntimeBoundaryEventManifestTemplate.failedGates.includes(
+  'cold_runtime_boundary_event_manifest_template_contains_runtime_events',
+));
+assert.equal(forgedRandomColdRow.safety.accepted, false);
+assert.ok(forgedRandomColdLedger.query.failedGates.some(
+  (gate) => gate.code === 'random_large_project_cold_template_not_validated',
+));
+
 const visualDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow');
 await writeRgbaPng(path.join(visualDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
 await writeRgbaPng(path.join(visualDir, 'after-hmr-first.png'), 8, 8, (x, y) => [16 + x, 24 + y, 48, 255]);
