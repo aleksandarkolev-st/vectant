@@ -80,6 +80,50 @@ describe("CodeSite MCP tool surface", () => {
     );
   });
 
+  it("preflights CodeSiteFS writes before external adapters mutate files", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      ok: false,
+      disposition: "write_denied",
+      reasonCodes: ["active_clearance_required"],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_preflight_write", {
+      workspace_slug: "acme",
+      project_id: "project-1",
+      base_url: "http://localhost:3100/",
+      file_path: "backend/collab-server/terminalService.js",
+      source: "runtime_pod_terminal",
+      tool: "terminal_exec",
+      mutation_lease_id: "lease-1",
+      processAncestry: ["runtime-pod", "bash"],
+      evidenceRefs: ["runtime:event:write-intent-1"],
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/codesitefs-events"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          source: "runtime_pod_terminal",
+          tool: "terminal_exec",
+          processAncestry: ["runtime-pod", "bash"],
+          evidenceRefs: ["runtime:event:write-intent-1"],
+          path: "backend/collab-server/terminalService.js",
+          mutationLeaseId: "lease-1",
+        }),
+      }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_preflight_write",
+      response: expect.objectContaining({
+        disposition: "write_denied",
+        reasonCodes: ["active_clearance_required"],
+      }),
+    }));
+  });
+
   it("applies patches through collab-server only after CodeSite dry-run approval", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockJsonResponse({

@@ -7,6 +7,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_transaction_status",
   "synthi_codesite_preview_transaction",
   "synthi_codesite_dry_run_patch",
+  "synthi_codesite_preflight_write",
   "synthi_codesite_apply_patch",
   "synthi_codesite_record_assumption",
   "synthi_codesite_record_read",
@@ -124,6 +125,18 @@ export const CODESITE_TOOLS = [
     transaction_id: { type: "string" },
     files: { type: "array", items: { type: "object" } },
   }, ["transaction_id"]),
+  codeSiteTool("synthi_codesite_preflight_write", "Ask CodeSiteFS for a pre-mutation write decision before a terminal, runtime, Yjs, MCP, scaffold, or patch adapter mutates a file.", {
+    path: { type: "string" },
+    file_path: { type: "string" },
+    tool: { type: "string" },
+    source: { type: "string" },
+    operation: { type: "string" },
+    mutation_lease_id: { type: "string" },
+    disposition: { type: "string" },
+    quarantine: { type: "boolean" },
+    processAncestry: { type: "array", items: { type: "string" } },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, []),
   codeSiteTool("synthi_codesite_apply_patch", "Apply file patches through collab-server write-files-batch after CodeSite transaction dry-run approval.", {
     transaction_id: { type: "string" },
     mutation_lease_id: { type: "string" },
@@ -313,6 +326,15 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         method: "POST",
         path: `/transactions/${encodeURIComponent(requiredString(args, "transaction_id"))}/dry-run-patch`,
         body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_preflight_write":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/codesitefs-events`,
+        body: bodyFromArgs(args, {
+          ...pathOverlay(args),
+          ...(optionalString(args["mutation_lease_id"]) ? { mutationLeaseId: optionalString(args["mutation_lease_id"]) as string } : {}),
+        }),
       };
     case "synthi_codesite_apply_patch":
       return null;

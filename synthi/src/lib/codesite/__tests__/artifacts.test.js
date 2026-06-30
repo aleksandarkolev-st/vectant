@@ -54,6 +54,7 @@ describe('CodeSite artifact projection', () => {
 
     expect(paths).toContain('manifest.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools).toContain('synthi_codesite_get_radar');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools).toContain('synthi_codesite_preflight_write');
     expect(paths).toContain('schemas/agent-session.schema.json');
     expect(paths).toContain('schemas/clearance.schema.json');
     expect(paths).toContain('schemas/execution-plan.schema.json');
@@ -82,6 +83,7 @@ describe('CodeSite artifact projection', () => {
       required: ['eventType', 'details'],
     });
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
+    expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
