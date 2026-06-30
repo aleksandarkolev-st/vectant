@@ -474,13 +474,19 @@ describe('CodeSite control plane transaction validation', () => {
       path: 'synthi/prisma/schema.prisma',
       tool: 'file_write',
       evidenceRefs: ['write:evidence'],
-      processAncestry: ['mcp:synthi_codesite_apply_patch'],
-      lineProvenance: [{
-        startLine: 7,
-        endLine: 9,
-        evidenceRefs: ['hunk:evidence'],
-        promptSummary: 'Update schema field',
-      }],
+      codesiteFsEvent: {
+        type: 'write_allowed',
+        evidence_refs: ['fs:event:evidence'],
+        details: {
+          process_ancestry: ['mcp:synthi_codesite_apply_patch'],
+          lineProvenance: [{
+            startLine: 7,
+            endLine: 9,
+            evidenceRefs: ['hunk:evidence'],
+            promptSummary: 'Update schema field',
+          }],
+        },
+      },
     });
     const allowedEvent = prisma.codeSiteEvent.create.mock.calls
       .map((call) => call[0])
@@ -491,7 +497,7 @@ describe('CodeSite control plane transaction validation', () => {
     expect(details).toMatchObject({
       transactionId: 'txn-1',
       path: 'synthi/prisma/schema.prisma',
-      evidenceRefs: ['write:evidence'],
+      evidenceRefs: ['write:evidence', 'fs:event:evidence'],
       processAncestry: ['mcp:synthi_codesite_apply_patch'],
     });
     expect(details.lineProvenance).toEqual([expect.objectContaining({
@@ -713,6 +719,53 @@ describe('CodeSite control plane transaction validation', () => {
         evidenceRefsJson: expect.stringContaining('hunk:evidence'),
         processAncestryJson: expect.stringContaining('mcp:synthi_codesite_apply_patch'),
         promptSummary: 'Add auth schema field',
+      }),
+    }));
+  });
+
+  it('blocks proof-carrying commits when changed paths lack line provenance evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(['line_provenance_required']);
+    expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteLineProvenance.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({
+        status: 'blocked',
+        commitDecisionJson: expect.stringContaining('line_provenance_required'),
       }),
     }));
   });

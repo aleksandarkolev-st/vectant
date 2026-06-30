@@ -4786,6 +4786,8 @@ const server = http.createServer(async (req, res) => {
                     path: file?.path,
                     kind: 'write-files-batch',
                     tool: 'file_write',
+                    lineProvenance: file?.lineProvenance || file?.line_provenance || file?.hunks || file?.lineAnchors || file?.line_anchors || [],
+                    evidenceRefs: file?.evidenceRefs || file?.evidence_refs || [],
                   })));
                   result = await gitService.writeFilesBatch(slug, data.files, {
                     syncToGcs: data.syncToGcs !== false,

@@ -313,8 +313,15 @@ async function recordCodeSiteWriteAttempt(context, result, options = {}) {
     body: JSON.stringify({
       path: result.path,
       tool: result.tool,
-      evidenceRefs: context.evidenceRefs || [],
-      processAncestry: context.processAncestry || [],
+      evidenceRefs: unique([
+        ...asArray(context.evidenceRefs),
+        ...asArray(result.event.evidence_refs || result.event.evidenceRefs),
+      ]),
+      processAncestry: unique([
+        ...asArray(context.processAncestry),
+        ...asArray(result.event.details?.process_ancestry || result.event.details?.processAncestry),
+      ]),
+      lineProvenance: result.event.details?.lineProvenance || result.event.details?.line_provenance || [],
       codesiteFsEvent: result.event,
     }),
   });
@@ -823,6 +830,9 @@ function denied(context, attempt, relPath, reasonCodes) {
 }
 
 function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reason = null) {
+  const attemptEvidenceRefs = asArray(attempt.evidenceRefs || attempt.evidence_refs);
+  const attemptProcessAncestry = asArray(attempt.processAncestry || attempt.process_ancestry);
+  const lineProvenance = asArray(attempt.lineProvenance || attempt.line_provenance || attempt.hunks || attempt.lineAnchors || attempt.line_anchors);
   return {
     type,
     transaction_id: context.transactionId || null,
@@ -834,14 +844,19 @@ function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reas
     path: relPath,
     tool: attempt.tool || attempt.kind || 'file_write',
     wall_time: new Date().toISOString(),
-    evidence_refs: context.evidenceRefs || [],
+    evidence_refs: unique([...asArray(context.evidenceRefs), ...attemptEvidenceRefs]),
     details: {
       reason: reason || reasonCodes.join(','),
       reason_codes: reasonCodes,
-      process_ancestry: context.processAncestry || [],
+      process_ancestry: unique([...asArray(context.processAncestry), ...attemptProcessAncestry]),
       operation: attempt.kind || 'write',
+      ...(lineProvenance.length ? { lineProvenance } : {}),
     },
   };
+}
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function matchPathPattern(relPath, patternValue) {

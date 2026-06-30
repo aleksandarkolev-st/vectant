@@ -173,6 +173,7 @@ test('enforcement records allowed transaction writes through the CodeSite contro
     allowedPaths: ['synthi/src/**'],
     allowedTools: ['file_write'],
     controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+    evidenceRefs: ['lease:proof'],
     processAncestry: ['node', 'collab-server'],
   };
 
@@ -180,6 +181,16 @@ test('enforcement records allowed transaction writes through the CodeSite contro
     path: 'synthi/src/App.jsx',
     tool: 'file_write',
     kind: 'write-file',
+    evidenceRefs: ['hunk:evidence'],
+    processAncestry: ['mcp:synthi_codesite_apply_patch'],
+    lineProvenance: [{
+      filePath: 'synthi/src/App.jsx',
+      startLine: 12,
+      endLine: 18,
+      lineAnchor: 'synthi/src/App.jsx#L12-L18',
+      evidenceRefs: ['hunk:evidence'],
+      promptSummary: 'Update app shell copy',
+    }],
   }, { fetch });
 
   assert.strictEqual(result.ok, true);
@@ -188,8 +199,16 @@ test('enforcement records allowed transaction writes through the CodeSite contro
   assert.deepStrictEqual(JSON.parse(calls[0].options.body), {
     path: 'synthi/src/App.jsx',
     tool: 'file_write',
-    evidenceRefs: [],
-    processAncestry: ['node', 'collab-server'],
+    evidenceRefs: ['lease:proof', 'hunk:evidence'],
+    processAncestry: ['node', 'collab-server', 'mcp:synthi_codesite_apply_patch'],
+    lineProvenance: [{
+      filePath: 'synthi/src/App.jsx',
+      startLine: 12,
+      endLine: 18,
+      lineAnchor: 'synthi/src/App.jsx#L12-L18',
+      evidenceRefs: ['hunk:evidence'],
+      promptSummary: 'Update app shell copy',
+    }],
     codesiteFsEvent: result.event,
   });
 });

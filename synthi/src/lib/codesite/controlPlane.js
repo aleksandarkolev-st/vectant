@@ -692,7 +692,13 @@ export async function dryRunTransactionWrites(workspaceSlug, transactionId, body
 
 function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
   const lineProvenance = normalizeLineProvenanceInput(
-    body.lineProvenance || body.line_provenance || body.hunks || body.lineAnchors || body.line_anchors,
+    body.lineProvenance
+      || body.line_provenance
+      || body.hunks
+      || body.lineAnchors
+      || body.line_anchors
+      || codesiteFsEvent?.details?.lineProvenance
+      || codesiteFsEvent?.details?.line_provenance,
     path,
   );
   const evidenceRefs = unique([
@@ -1036,6 +1042,37 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {})
     return { decision, transaction: transactionProjection(updated) };
   }
 
+  const lineProvenanceDecision = await verifyLineProvenanceEvidence(transaction);
+  if (!lineProvenanceDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: lineProvenanceDecision.reasonCodes,
+      missingLineProvenancePaths: lineProvenanceDecision.missingPaths,
+      validatedAt: new Date().toISOString(),
+    };
+    const updated = await prisma.codeSiteMutationTransaction.update({
+      where: { id: transaction.id },
+      data: {
+        status: 'blocked',
+        commitDecisionJson: stringifyJson(decision),
+      },
+    });
+    await recordEvent(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      eventType: 'transaction_validated',
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      actorType: 'transaction',
+      actorId: transaction.id,
+      details: {
+        transactionId: transaction.id,
+        decision,
+        towerInstruction: 'Line-level causal provenance is required for every changed path before landing.',
+      },
+    });
+    return { decision, transaction: transactionProjection(updated) };
+  }
+
   const bundle = await createProofBundleForTransaction(transaction, {
     ...body,
     inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
@@ -1334,31 +1371,46 @@ function isDurableInspectionEvidenceRef(ref) {
 }
 
 async function seedLineProvenance(transaction, bundle) {
-  const paths = parseJson(transaction.writeSetJson, []);
   const eventRows = await lineProvenanceRowsFromWriteEvents(transaction, bundle);
-  const coveredPaths = new Set();
   for (const row of eventRows) {
-    coveredPaths.add(row.filePath);
     await prisma.codeSiteLineProvenance.create({ data: row });
   }
-  for (const filePath of paths) {
-    if (coveredPaths.has(filePath)) continue;
-    await prisma.codeSiteLineProvenance.create({
-      data: {
-        projectId: transaction.projectId,
-        transactionId: transaction.id,
-        filePath,
-        lineAnchor: `${filePath}#codesite:${transaction.id}`,
-        displayCallsign: transaction.mutationLease.displayCallsign,
-        reasonRef: `transaction:${transaction.id}`,
-        evidenceRefsJson: stringifyJson([`proof:${bundle.id}`, `transaction:${transaction.id}`]),
-        dojoSourceRefsJson: stringifyJson([]),
-        proofBundleId: bundle.id,
-        processAncestryJson: stringifyJson([]),
-        promptSummary: 'CodeSite transaction commit',
-      },
-    });
+  return { seededRows: eventRows.length, coveredPaths: unique(eventRows.map((row) => row.filePath)) };
+}
+
+async function verifyLineProvenanceEvidence(transaction) {
+  const paths = unique([
+    ...parseJson(transaction.writeSetJson, []),
+    ...parseJson(transaction.observedWriteSetJson, []),
+  ]);
+  if (!paths.length) {
+    return { ok: true, reasonCodes: ['no_write_set_no_line_provenance_required'], missingPaths: [] };
   }
+  const events = await prisma.codeSiteEvent.findMany({
+    where: {
+      projectId: transaction.projectId,
+      eventType: 'write_allowed',
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  const coveredPaths = new Set(events
+    .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
+    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
+    .flatMap(({ details }) => normalizeLineProvenanceInput(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
+    .map((row) => row.filePath));
+  const missingPaths = paths.filter((filePath) => !lineProvenanceCoversPath(coveredPaths, filePath));
+  return {
+    ok: missingPaths.length === 0,
+    reasonCodes: missingPaths.length ? ['line_provenance_required'] : ['line_provenance_verified'],
+    missingPaths,
+  };
+}
+
+function lineProvenanceCoversPath(coveredPaths, path) {
+  if (coveredPaths.has(path)) return true;
+  return [...coveredPaths].some((coveredPath) => (
+    matchPathPattern(coveredPath, path) || matchPathPattern(path, coveredPath)
+  ));
 }
 
 async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
