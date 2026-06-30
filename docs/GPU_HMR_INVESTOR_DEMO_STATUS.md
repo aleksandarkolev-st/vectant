@@ -115,8 +115,8 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 30 proof snapshot:
 
 ```text
-latest global matrix after the scoped Vulkan host-runtime proof, scoped OpenCL host-runtime proof, and large-ROCm MIOpen bounded refusal rerun: gpu-validation-matrix-ledger:sha256:1ab2a6d4968c89ff3109ebf14395c9c1cd899345cd916f6903f70885e309c502
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T125807Z.json
+latest global matrix after the scoped Vulkan host-runtime proof, scoped OpenCL host-runtime proof, runtime-boundary event-manifest materializer, and large-ROCm MIOpen bounded refusal rerun: gpu-validation-matrix-ledger:sha256:e9ee4aaa7c6386b325780c2ddc0261df7e42337c3e9c1ac6b3b9b0c6ac634bd2
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T133648Z.json
 latest global matrix summary: 63 rows, 17 accepted full-runtime GPU HMR, 17 broad library-agnostic full-runtime GPU HMR rows by matrix-computed proof, 0 scoped full-runtime GPU HMR rows after broad matrix classification, 17 all full-runtime rows, 33 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
 latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, opencl_declared_compute_readback: 2, vulkan_declared_pipeline_visual: 1, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 current accepted strict backend families: HIP, OpenCL, Vulkan, WebGPU
@@ -124,7 +124,7 @@ current OpenCL full-runtime rows: hot_delta_1=gpu-validation-matrix-row:sha256:4
 current Vulkan full-runtime row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8, proof=vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84, runtime_artifact=vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134, ledger=gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
 latest broad readiness: accepted=true, authority=matrix_computed_not_row_declared, broad proof=gpu-hmr-broad-library-agnostic-proof:sha256:ceecc271c663a3d21619119e1c80eb171f317dabe4deebc6d837c40ef65a7ea3
 claim boundary: matrix-level broad readiness is accepted across strict rows and adversarial refusals, but arbitrary target/project acceptance still requires per-project loader, epoch, dispatch, host-identity, output-oracle, firewall, and strict proof-ledger closure
-latest MIOpen bounded rerun: gpu-real-rocm-MIOpen-20260630113345, strict runtime proof gpu-runtime-proof:sha256:c2693e5f9ab7930ea7d2899fc9e19c7c2053fb803ff21adef1418acb0144c9f0, retained as refusal-only serious-project evidence with no artifact transport, epoch, dispatch, host identity, output oracle, firewall, or strict runtime closure
+latest MIOpen bounded rerun: gpu-real-rocm-MIOpen-20260630132711, strict runtime proof gpu-runtime-proof:sha256:fc7ae97d93b58e06f034a97b7d8f44037d1da8ed16f22bed499a3e249b25e02a, retained as refusal-only serious-project evidence with no artifact transport, epoch, dispatch, host identity, output oracle, firewall, event-manifest boundary lines, or strict runtime closure
 global matrix: gpu-validation-matrix-ledger:sha256:9021cc8be6f4e5f65643be933368394843db710d6e010bc30834ad34b4383787
 previous pre-OpenCL/Vulkan baseline matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T061201Z.json
 previous pre-OpenCL/Vulkan baseline matrix summary: 56 rows, 14 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR, 14 scoped full-runtime GPU HMR, 14 all full-runtime rows, 29 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
