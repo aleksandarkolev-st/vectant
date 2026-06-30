@@ -65,10 +65,18 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
 
   const { portableDigest, ...unsigned } = bundle;
   const expectedPortableDigest = digest(unsigned);
+  const legacyDatePortableDigest = legacyDateObjectDigest(unsigned);
+  const legacyDateDigestMatched = Boolean(
+    portableDigest
+    && legacyDatePortableDigest
+    && portableDigest === legacyDatePortableDigest
+  );
   if (!portableDigest) {
     warnings.push('portableDigest is absent; canonical digest was computed but cannot be compared');
-  } else if (portableDigest !== expectedPortableDigest) {
+  } else if (portableDigest !== expectedPortableDigest && !legacyDateDigestMatched) {
     errors.push('portableDigest mismatch');
+  } else if (legacyDateDigestMatched) {
+    warnings.push('portableDigest matches legacy Date-object canonicalization; regenerate the proof bundle to use ISO timestamp canonicalization');
   }
 
   const trailerResult = verifyTrailers(bundle, options);
@@ -78,7 +86,10 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
   const reasonCodes = [];
   if (schemaVersionOk) reasonCodes.push('proof_bundle_schema_valid');
   if (missingFields.length === 0) reasonCodes.push('proof_bundle_required_fields_present');
-  if (portableDigest && portableDigest === expectedPortableDigest) reasonCodes.push('proof_bundle_digest_valid');
+  if (portableDigest && (portableDigest === expectedPortableDigest || legacyDateDigestMatched)) {
+    reasonCodes.push('proof_bundle_digest_valid');
+  }
+  if (legacyDateDigestMatched) reasonCodes.push('proof_bundle_legacy_date_digest_valid');
   if (trailerResult.checked) reasonCodes.push('proof_commit_trailers_match');
   if (warnings.length > 0) reasonCodes.push('proof_bundle_warnings_present');
   if (errors.length > 0) reasonCodes.push('proof_bundle_verification_failed');
@@ -91,6 +102,7 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
     bundlePath: absoluteBundlePath,
     trailersPath: trailerResult.trailersPath,
     expectedPortableDigest,
+    legacyDatePortableDigest,
     observedPortableDigest: portableDigest || null,
     transactionId: bundle.transactionId || null,
     mutationLeaseId: bundle.mutationLeaseId || null,
@@ -185,11 +197,17 @@ function digest(value) {
   return `sha256:${crypto.createHash('sha256').update(stableJson(value)).digest('hex')}`;
 }
 
+function legacyDateObjectDigest(unsigned) {
+  if (!unsigned || typeof unsigned.createdAt !== 'string') return null;
+  return digest({ ...unsigned, createdAt: {} });
+}
+
 function stableJson(value) {
   return JSON.stringify(sortJson(value));
 }
 
 function sortJson(value) {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(sortJson);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));

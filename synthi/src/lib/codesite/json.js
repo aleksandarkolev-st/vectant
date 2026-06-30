@@ -23,6 +23,7 @@ export function stableJson(value) {
 }
 
 function sortJson(value) {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(sortJson);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(

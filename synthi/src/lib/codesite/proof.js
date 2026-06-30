@@ -36,12 +36,18 @@ export function buildProofBundle({
       displayCallsign: row.displayCallsign,
       proofBundleId: row.proofBundleId,
     })),
-    createdAt: proofBundle?.createdAt || new Date().toISOString(),
+    createdAt: normalizeProofTimestamp(proofBundle?.createdAt) || new Date().toISOString(),
   };
   return {
     ...payload,
     portableDigest: digest(payload),
   };
+}
+
+function normalizeProofTimestamp(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string' && value.trim()) return value;
+  return null;
 }
 
 export function proofCommitTrailers(proofBundle) {
@@ -71,12 +77,25 @@ export function verifyProofBundle(bundle) {
   }
   const { portableDigest, ...unsigned } = bundle;
   const expected = digest(unsigned);
-  const ok = !portableDigest || portableDigest === expected;
+  const legacyDateDigest = legacyDateObjectDigest(unsigned);
+  const legacyDateDigestMatched = Boolean(portableDigest && legacyDateDigest && portableDigest === legacyDateDigest);
+  const ok = !portableDigest || portableDigest === expected || legacyDateDigestMatched;
   return {
     ok,
-    reasonCodes: ok ? ['proof_bundle_digest_valid'] : ['proof_bundle_digest_mismatch'],
+    reasonCodes: ok
+      ? [
+        'proof_bundle_digest_valid',
+        ...(legacyDateDigestMatched ? ['proof_bundle_legacy_date_digest_valid'] : []),
+      ]
+      : ['proof_bundle_digest_mismatch'],
     expectedDigest: expected,
+    legacyDateDigest,
     observedDigest: portableDigest || null,
     canonicalJson: stableJson(unsigned),
   };
+}
+
+function legacyDateObjectDigest(unsigned) {
+  if (!unsigned || typeof unsigned.createdAt !== 'string') return null;
+  return digest({ ...unsigned, createdAt: {} });
 }

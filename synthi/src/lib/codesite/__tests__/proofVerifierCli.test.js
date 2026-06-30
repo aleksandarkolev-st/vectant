@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildProofBundle, formatCommitTrailers } from '../proof.js';
@@ -29,7 +30,7 @@ function makeBundle() {
       repoState: { evidenceDigest: `sha256:${'c'.repeat(64)}` },
       incidentReplayDigest: `sha256:${'d'.repeat(64)}`,
       bundleDigest: `sha256:${'e'.repeat(64)}`,
-      createdAt: '2026-06-30T11:30:00.000Z',
+      createdAt: new Date('2026-06-30T11:30:00.000Z'),
     },
   });
 }
@@ -48,6 +49,24 @@ function runVerifier(args) {
   };
 }
 
+function legacyDateDigest(bundle) {
+  const { portableDigest, ...unsigned } = bundle;
+  return `sha256:${crypto.createHash('sha256').update(stableJson({
+    ...unsigned,
+    createdAt: {},
+  })).digest('hex')}`;
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+}
+
 describe('CodeSite proof verifier CLI', () => {
   afterEach(() => {
     for (const root of roots.splice(0)) {
@@ -59,6 +78,7 @@ describe('CodeSite proof verifier CLI', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
     roots.push(root);
     const bundle = makeBundle();
+    expect(bundle.createdAt).toBe('2026-06-30T11:30:00.000Z');
     const bundlePath = path.join(root, 'txn-1.proof.json');
     const trailersPath = path.join(root, 'txn-1.trailers.txt');
     fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
@@ -96,6 +116,32 @@ describe('CodeSite proof verifier CLI', () => {
       ok: false,
       reasonCodes: expect.arrayContaining(['proof_bundle_verification_failed']),
       errors: expect.arrayContaining(['portableDigest mismatch']),
+    });
+  });
+
+  it('accepts legacy proof bundles hashed with Date-object canonicalization and warns to regenerate', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    bundle.portableDigest = legacyDateDigest(bundle);
+    const bundlePath = path.join(root, 'txn-1.legacy-date.proof.json');
+    const trailersPath = path.join(root, 'txn-1.legacy-date.trailers.txt');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    fs.writeFileSync(trailersPath, formatCommitTrailers(bundle));
+
+    const result = runVerifier(['--bundle', bundlePath, '--trailers', trailersPath, '--require-trailers']);
+
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_digest_valid',
+        'proof_bundle_legacy_date_digest_valid',
+        'proof_bundle_warnings_present',
+      ]),
+      warnings: expect.arrayContaining([
+        expect.stringContaining('legacy Date-object canonicalization'),
+      ]),
     });
   });
 });
