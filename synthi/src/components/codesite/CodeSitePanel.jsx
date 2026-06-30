@@ -241,52 +241,308 @@ function zonePaths(zone) {
   return asArray(zone?.paths || zone?.route || zone?.allowedPaths);
 }
 
-function AirspaceMap({ zones, noFlyZones, flights, risks }) {
+function pathPatternSegments(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .split('/')
+    .filter(Boolean);
+}
+
+function remainingPatternCanBeEmpty(segments, start) {
+  return segments.slice(start).every((segment) => segment === '**');
+}
+
+function globSegmentRegex(segment) {
+  const escaped = String(segment).replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`);
+}
+
+function pathSegmentsMayOverlap(left, right) {
+  if (left === right) return true;
+  const leftGlob = /[*?]/.test(left);
+  const rightGlob = /[*?]/.test(right);
+  if (leftGlob && !rightGlob) return globSegmentRegex(left).test(right);
+  if (rightGlob && !leftGlob) return globSegmentRegex(right).test(left);
+  return leftGlob && rightGlob;
+}
+
+function pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex = 0, rightIndex = 0, seen = new Set()) {
+  const key = `${leftIndex}:${rightIndex}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+
+  if (leftIndex >= leftSegments.length && rightIndex >= rightSegments.length) return true;
+  if (leftIndex >= leftSegments.length) return remainingPatternCanBeEmpty(rightSegments, rightIndex);
+  if (rightIndex >= rightSegments.length) return remainingPatternCanBeEmpty(leftSegments, leftIndex);
+
+  const left = leftSegments[leftIndex];
+  const right = rightSegments[rightIndex];
+  if (left === '**') {
+    return pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex, new Set(seen))
+      || pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex, rightIndex + 1, new Set(seen));
+  }
+  if (right === '**') {
+    return pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex, rightIndex + 1, new Set(seen))
+      || pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex, new Set(seen));
+  }
+  return pathSegmentsMayOverlap(left, right)
+    && pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex + 1, new Set(seen));
+}
+
+function pathsLikelyOverlap(left, right) {
+  const leftSegments = pathPatternSegments(left);
+  const rightSegments = pathPatternSegments(right);
+  if (!leftSegments.length || !rightSegments.length) return false;
+  return pathPatternsMayOverlap(leftSegments, rightSegments);
+}
+
+function normalizedZoneToken(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function zoneHasFlight(zone, flight) {
+  const paths = zonePaths(zone);
+  const route = asArray(flight?.route);
+  return paths.length > 0 && route.some((path) => paths.some((zonePath) => pathsLikelyOverlap(path, zonePath)));
+}
+
+function riskTouchesZone(risk, zone) {
+  const riskPaths = [
+    risk?.conflictZone,
+    risk?.path,
+    risk?.zoneKey,
+    ...asArray(risk?.affectedZones),
+  ].filter(Boolean);
+  const paths = zonePaths(zone);
+  const zoneTokens = new Set([
+    zone?.zoneKey,
+    zone?.key,
+    zone?.id,
+    zoneName(zone, 0),
+  ].map(normalizedZoneToken).filter(Boolean));
+  return riskPaths.some((riskPath) => paths.some((zonePath) => pathsLikelyOverlap(riskPath, zonePath)))
+    || riskPaths.some((riskPath) => zoneTokens.has(normalizedZoneToken(riskPath)));
+}
+
+function riskTouchesFlight(risk, flight) {
+  const riskPaths = [
+    risk?.conflictZone,
+    risk?.path,
+    risk?.zoneKey,
+    ...asArray(risk?.affectedZones),
+  ].filter(Boolean);
+  return asArray(flight?.route).some((routePath) => riskPaths.some((riskPath) => pathsLikelyOverlap(routePath, riskPath)));
+}
+
+function radarPoint(angle, radius) {
+  const radians = (angle - 90) * (Math.PI / 180);
+  return {
+    x: 50 + Math.cos(radians) * radius,
+    y: 50 + Math.sin(radians) * radius,
+  };
+}
+
+function sectorPath(index, total, outer = 45) {
+  const startAngle = (360 / total) * index;
+  const endAngle = (360 / total) * (index + 1);
+  const start = radarPoint(startAngle, outer);
+  const end = radarPoint(endAngle, outer);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return `M 50 50 L ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${outer} ${outer} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)} Z`;
+}
+
+function plotFlight(flight, index, zones, totalFlights) {
+  const matchedZoneIndex = zones.findIndex((zone) => zoneHasFlight(zone, flight));
+  const zoneIndex = matchedZoneIndex === -1 ? index % Math.max(1, zones.length || totalFlights) : matchedZoneIndex;
+  const baseAngle = zones.length ? (360 / zones.length) * zoneIndex : (360 / Math.max(1, totalFlights)) * index;
+  const angle = baseAngle + 18 + ((index * 17) % Math.max(26, 360 / Math.max(1, zones.length || totalFlights)));
+  const radius = 18 + ((index % 3) * 9);
+  return radarPoint(angle, radius);
+}
+
+function eventPoint(event, index, total) {
+  const seed = String(event?.eventType || event?.id || index).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const angle = (seed + (index * 29)) % 360;
+  const radius = 12 + ((index % Math.max(1, total)) * (34 / Math.max(1, total)));
+  return radarPoint(angle, radius);
+}
+
+function radarColor(status, riskLevel = null) {
+  const risk = String(riskLevel || '').toLowerCase();
+  if (['critical', 'high'].includes(risk)) return '#ff5757';
+  if (['medium', 'warning'].includes(risk)) return '#fbbf24';
+  const normalized = String(status || '').toLowerCase();
+  if (['holding', 'blocked', 'denied', 'mayday', 'failed', 'critical'].includes(normalized)) return '#ff5757';
+  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium'].includes(normalized)) return '#fbbf24';
+  return '#4ade80';
+}
+
+function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
   ];
   const visibleFlights = flights.slice(0, 5);
+  const visibleRisks = risks.slice(0, 4);
+  const replayEvents = events.slice(0, 7).reverse();
+  const replayPoints = replayEvents.map((event, index) => eventPoint(event, index, replayEvents.length));
+  const replayPath = replayPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
+  const landingRuns = asArray(inspections).slice(-4).reverse();
 
   return (
     <div className="space-y-2">
       <div
-        className="relative overflow-hidden rounded border"
+        data-testid="codesite-radar-graph"
+        className="overflow-hidden rounded border p-3"
         style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
       >
-        <div className="absolute inset-y-0 left-1/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
-        <div className="absolute inset-y-0 left-2/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
-        <div className="relative space-y-1 p-2">
-          {lanes.slice(0, 5).map((zone, index) => {
-            const relatedFlights = visibleFlights.filter((flight) => {
-              const route = asArray(flight.route);
-              const paths = zonePaths(zone);
-              return route.some((path) => paths.some((zonePath) => path.includes(zonePath.replace('/**', '')) || zonePath.includes(path.replace('/**', ''))));
-            });
-            const hasRisk = risks.some((risk) => compact(risk.conflictZone || risk.path || risk.zoneKey, '').includes(zonePaths(zone)[0]?.replace('/**', '') || zoneName(zone, index)));
-            return (
-              <div
-                key={zone.zoneKey || zone.id || index}
-                className="grid min-h-[46px] grid-cols-[72px_minmax(0,1fr)_minmax(84px,auto)] items-center gap-2 rounded border px-2 py-1.5"
-                style={{
-                  borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
-                  background: hasRisk ? 'color-mix(in srgb, #ff5757 7%, var(--bg-editor))' : 'var(--bg-editor)',
-                }}
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
-                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
-                </div>
-                <PathList paths={zonePaths(zone)} empty="route pending" />
-                <div className="flex justify-end gap-1">
-                  {relatedFlights.length ? relatedFlights.map((flight) => (
-                    <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
-                      {compact(flight.displayCallsign, 'agent')}
-                    </Pill>
-                  )) : <Pill>clear</Pill>}
-                </div>
+        <div className="grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]">
+          <div
+            className="relative min-h-[280px] overflow-hidden rounded border"
+            style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-editor) 88%, transparent)' }}
+          >
+            <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" role="img" aria-label="CodeSite radar graph with flights, risks, and replay trace">
+              <defs>
+                <radialGradient id="codesite-radar-sweep" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="var(--accent-primary)" stopOpacity="0.18" />
+                  <stop offset="66%" stopColor="var(--accent-primary)" stopOpacity="0.04" />
+                  <stop offset="100%" stopColor="var(--accent-primary)" stopOpacity="0" />
+                </radialGradient>
+              </defs>
+              <rect width="100" height="100" fill="url(#codesite-radar-sweep)" opacity="0.82" />
+              {[14, 27, 40].map((radius) => (
+                <circle key={radius} cx="50" cy="50" r={radius} fill="none" stroke="var(--border-subtle)" strokeWidth="0.35" />
+              ))}
+              {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => {
+                const end = radarPoint(angle, 45);
+                return <line key={angle} x1="50" y1="50" x2={end.x} y2={end.y} stroke="var(--border-subtle)" strokeWidth="0.25" />;
+              })}
+              {lanes.slice(0, 6).map((zone, index) => {
+                const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+                return (
+                  <path
+                    key={`sector-${zone.zoneKey || zone.id || index}`}
+                    d={sectorPath(index, Math.max(1, Math.min(6, lanes.length)))}
+                    fill={hasRisk ? '#ff5757' : 'var(--accent-primary)'}
+                    opacity={hasRisk ? '0.16' : '0.06'}
+                    stroke={hasRisk ? '#ff5757' : 'var(--border-subtle)'}
+                    strokeWidth="0.35"
+                  />
+                );
+              })}
+              {visibleRisks.map((risk, index) => {
+                const angle = 24 + (index * 68);
+                const left = radarPoint(angle - 13, 44);
+                const right = radarPoint(angle + 18, 44);
+                return (
+                  <path
+                    key={`risk-cone-${index}`}
+                    data-testid="codesite-risk-cone"
+                    d={`M 50 50 L ${left.x.toFixed(2)} ${left.y.toFixed(2)} L ${right.x.toFixed(2)} ${right.y.toFixed(2)} Z`}
+                    fill={radarColor(null, risk.severity || risk.riskLevel)}
+                    opacity="0.24"
+                  />
+                );
+              })}
+              {replayPoints.length > 1 ? (
+                <polyline
+                  data-testid="codesite-replay-trace"
+                  points={replayPath}
+                  fill="none"
+                  stroke="color-mix(in srgb, var(--accent-primary) 72%, #8fd9ff)"
+                  strokeWidth="0.9"
+                  strokeDasharray="2.4 1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ) : null}
+              {visibleFlights.map((flight, index) => {
+                const point = plotFlight(flight, index, lanes, visibleFlights.length);
+                const hasRisk = risks.some((risk) => riskTouchesFlight(risk, flight));
+                const color = radarColor(flight.status, hasRisk ? 'high' : null);
+                const holding = ['holding', 'blocked', 'preflight'].includes(String(flight.status || '').toLowerCase());
+                return (
+                  <g key={`flight-dot-${flight.id || flight.displayCallsign || index}`} data-testid="codesite-flight-blip">
+                    {holding ? (
+                      <circle
+                        data-testid="codesite-holding-pattern"
+                        cx={point.x}
+                        cy={point.y}
+                        r="4.5"
+                        fill="none"
+                        stroke={color}
+                        strokeWidth="0.45"
+                        strokeDasharray="1.4 1.2"
+                        opacity="0.92"
+                      />
+                    ) : null}
+                    <circle cx={point.x} cy={point.y} r="2.2" fill={color} stroke="var(--bg-surface)" strokeWidth="0.8" />
+                    <text x={Math.min(86, point.x + 3.4)} y={Math.max(9, point.y - 2.4)} fill="var(--text-primary)" fontSize="3.1" fontFamily="monospace">
+                      {compact(flight.displayCallsign, 'agent').slice(0, 10)}
+                    </text>
+                  </g>
+                );
+              })}
+              <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
+            </svg>
+            <div className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <span>Risk cone</span>
+              <span>Replay trace</span>
+              <span>Holding pattern</span>
+            </div>
+            <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <span>{visibleFlights.length} flights tracked</span>
+              <span>{visibleRisks.length || 'no'} active risk cones</span>
+            </div>
+          </div>
+
+          <div className="grid content-start gap-2">
+            <div className="grid gap-1">
+              {lanes.slice(0, 4).map((zone, index) => {
+                const relatedFlights = visibleFlights.filter((flight) => {
+                  return zoneHasFlight(zone, flight);
+                });
+                const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+                return (
+                  <div
+                    key={zone.zoneKey || zone.id || index}
+                    data-testid="codesite-airspace-lane"
+                    className="grid min-h-[42px] grid-cols-[76px_minmax(0,1fr)_minmax(76px,auto)] items-center gap-2 rounded border px-2 py-1.5 text-xs"
+                    style={{
+                      borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
+                      background: hasRisk ? 'color-mix(in srgb, #ff5757 12%, var(--bg-editor))' : 'var(--bg-editor)',
+                    }}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
+                    </div>
+                    <PathList paths={zonePaths(zone)} empty="route pending" />
+                    <div className="flex min-w-0 justify-end gap-1">
+                      {relatedFlights.length ? relatedFlights.map((flight) => (
+                        <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
+                          {compact(flight.displayCallsign, 'agent')}
+                        </Pill>
+                      )) : <Pill>clear</Pill>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Landing queue</span>
+                <Pill tone={landingRuns.some((run) => String(run.status).includes('failed')) ? 'failed' : 'active'}>{landingRuns.length}</Pill>
               </div>
-            );
-          })}
+              {landingRuns.length ? landingRuns.map((run) => (
+                <div key={run.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
+                  <span className="min-w-0 truncate">{compact(run.displayCallsign, 'inspection')}</span>
+                  <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(run.status, 'pending')}</span>
+                </div>
+              )) : <div style={{ color: 'var(--text-muted)' }}>No landings</div>}
+            </div>
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
@@ -550,7 +806,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </div>
 
               <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
-                <AirspaceMap zones={zones} noFlyZones={noFlyZones} flights={activeFlights} risks={risks} />
+                <AirspaceMap
+                  zones={zones}
+                  noFlyZones={noFlyZones}
+                  flights={activeFlights}
+                  risks={risks}
+                  events={events}
+                  inspections={inspectionRuns}
+                />
               </Section>
 
               <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(radarState.collisionForecast.riskLevel)}>{compact(radarState.collisionForecast.riskLevel, 'unknown')}</Pill>}>

@@ -139,7 +139,7 @@ function radarState() {
         displayCallsign: 'ATLAS-1',
         mission: 'Checkout API',
         domain: 'backend',
-        status: 'airborne',
+        status: 'holding',
         route: ['api/checkout/**'],
       }],
       activeMutationLeases: [{
@@ -168,15 +168,26 @@ function radarState() {
         risks: [{ risk: 'write_overlap', severity: 'medium', conflictZone: 'api/checkout/**' }],
       },
     },
-    events: [{
-      id: 'event-1',
-      eventType: 'flight_plan_filed',
-      displayCallsign: 'ATLAS-1',
-      logicalTime: 7,
-      details: { executionPlanId: 'plan-1', mission: 'Checkout API' },
-      evidenceRefs: ['event:evidence'],
-      createdAt: '2026-06-29T23:31:00.000Z',
-    }],
+    events: [
+      {
+        id: 'event-1',
+        eventType: 'flight_plan_filed',
+        displayCallsign: 'ATLAS-1',
+        logicalTime: 7,
+        details: { executionPlanId: 'plan-1', mission: 'Checkout API' },
+        evidenceRefs: ['event:evidence'],
+        createdAt: '2026-06-29T23:31:00.000Z',
+      },
+      {
+        id: 'event-2',
+        eventType: 'mutation_lease_issued',
+        displayCallsign: 'ATLAS-1',
+        logicalTime: 8,
+        details: { leaseId: 'lease-1', route: 'api/checkout/**' },
+        evidenceRefs: ['event:evidence:lease'],
+        createdAt: '2026-06-29T23:32:00.000Z',
+      },
+    ],
     artifactPreview: { files: [{ path: 'projects/proj-1/control-state.json', bytes: 1200, contentPreview: '{\\n  \"towerState\": \"holding\"\\n}\\n' }] },
     selectedProjectId: 'proj-1',
     counts: {
@@ -185,7 +196,7 @@ function radarState() {
       activeMutationLeases: 1,
       activeTransactions: 1,
       requiredActions: 1,
-      events: 1,
+      events: 2,
       proofBundles: 1,
       incidents: 1,
       inspectionRuns: 1,
@@ -228,6 +239,12 @@ describe('CodeSitePanel', () => {
 	    expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
+    expect(container.querySelector('[data-testid="codesite-radar-graph"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-risk-cone"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-replay-trace"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-flight-blip"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-holding-pattern"]')).toBeTruthy();
+    expect(container.textContent).toContain('Landing queue');
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');
