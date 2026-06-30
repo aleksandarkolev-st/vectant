@@ -78,7 +78,9 @@
     "landing_requested"
   ],
   "browserProof": {
-    "generatedAt": "2026-06-30T22:36:23.964Z",
+    "generatedAt": "2026-06-30T23:40:53.167Z",
+    "appUrl": "http://127.0.0.1:3109",
+    "route": "/workspace/codesite-radar-proof-1782857554702/codesite",
     "captures": [
       {
         "viewport": {
@@ -107,7 +109,117 @@
           "flightBlips": 3,
           "hasLandingQueue": true,
           "hasRiskLabel": true,
-          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nclear\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspecti"
+          "laneRects": [
+            {
+              "width": 744.125,
+              "height": 42,
+              "text": "Critical controlled airspaceClass Aapi/auth/**billing/**db/migrations/**infra/prod/**+3SCHEMA-01API-02TEST-03",
+              "pathChips": [
+                {
+                  "text": "api/auth/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "billing/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "db/migrations/**",
+                  "width": 110.328125,
+                  "height": 22
+                },
+                {
+                  "text": "infra/prod/**",
+                  "width": 92.28125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 744.125,
+              "height": 42,
+              "text": "Shared contract airspaceClass Bpackages/schemas/**openapi/**packages/*/src/index.tssynthi/prisma/**+1SCHEMA-01",
+              "pathChips": [
+                {
+                  "text": "packages/schemas/**",
+                  "width": 128.390625,
+                  "height": 22
+                },
+                {
+                  "text": "openapi/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "packages/*/src/index.ts",
+                  "width": 152.484375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/prisma/**",
+                  "width": 110.328125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 744.125,
+              "height": 42,
+              "text": "Feature implementation airspaceClass Capps/web/**components/**synthi/src/app/**synthi/src/components/**+1clear",
+              "pathChips": [
+                {
+                  "text": "apps/web/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "components/**",
+                  "width": 92.28125,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/app/**",
+                  "width": 116.359375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/components/**",
+                  "width": 158.5,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 744.125,
+              "height": 42,
+              "text": "Low-risk support airspaceClass Ddocs/**tests/****/__tests__/****/*.test.js+4SCHEMA-01API-02TEST-03",
+              "pathChips": [
+                {
+                  "text": "docs/**",
+                  "width": 56.15625,
+                  "height": 22
+                },
+                {
+                  "text": "tests/**",
+                  "width": 62.171875,
+                  "height": 22
+                },
+                {
+                  "text": "**/__tests__/**",
+                  "width": 104.3125,
+                  "height": 22
+                },
+                {
+                  "text": "**/*.test.js",
+                  "width": 86.25,
+                  "height": 22
+                }
+              ]
+            }
+          ],
+          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nSCHEMA-01\nAPI-02\nTEST-03\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nSCHEMA-01\nAPI-02\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspection\nInspect checkout landing\ntests/checkout/**\nholding\nClearances\n0\nNo active clearances\nTransactions And Proof\n0\nNo open transactions\nInspections And Incidents\n0\nINSPECT-77\nrequested\napi/checkout/route.js\npackages/schemas/checkout/order.ts\nsignal\nsignal\ntest:run:checkout-radar-proof\nArtifact Projection\n44\nmanifest.json\n1508b\nairspace/zones.json\n30163b\nairspace/no-fly-zones.json\n92b\nairspace/class-rules.json\n409b\nprojects/cmr17duur00cvob4t45xujhu4/tower-plan.json\n3713b\nprojects/cmr17duur00cvob4t45xujhu4/control-state.json\n3128b\nprojects/cmr17duur00cvob4t45xujhu4/radar-snapshot.json\n3128b\nprojects/cmr17duur00cvob4t45xujhu4/collision-forecast.json\n665b\nprojects/cmr17duur00cvob4t45xujhu4/events.jsonl\n5233b\nprojects/cmr17duur00cvob4t45xujhu4/provenance/line-provenance.jsonl\n0b\nmanifest.json\n{\n  \"version\": 1,\n  \"project_id\": \"cmr17duur00cvob4t45xujhu4\",\n  \"workspace_slug\": \"codesite-radar-proof-1782857554702\",\n  \"control_state\": \"projects/cmr17duur00cvob4t45xujhu4/control-state.json\",\n  \"events\": \"projects/cmr17duur00cvob4t45xujhu4/events.jsonl\",\n  \"schemas\": \"schemas/\",\n  \"inbox_root\": \"projects/cmr17duur00cvob4t45xujhu4/inbox/\",\n  \"proof_bundle_root\": \"projects/cmr17duur00cvob4t45xujhu4/proof-bundles/\",\n  \"mcp_tools\": [\n    \"synthi_codesite_file_fl"
         }
       },
       {
@@ -123,7 +235,7 @@
             "x": 12,
             "y": 399,
             "width": 366,
-            "height": 851.328125
+            "height": 787.265625
           },
           "svgRect": {
             "x": 26,
@@ -137,7 +249,117 @@
           "flightBlips": 3,
           "hasLandingQueue": true,
           "hasRiskLabel": true,
-          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nclear\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspecti"
+          "laneRects": [
+            {
+              "width": 340,
+              "height": 97.984375,
+              "text": "Critical controlled airspaceClass Aapi/auth/**billing/**db/migrations/**infra/prod/**+3SCHEMA-01API-02TEST-03",
+              "pathChips": [
+                {
+                  "text": "api/auth/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "billing/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "db/migrations/**",
+                  "width": 110.328125,
+                  "height": 22
+                },
+                {
+                  "text": "infra/prod/**",
+                  "width": 92.28125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 340,
+              "height": 97.984375,
+              "text": "Shared contract airspaceClass Bpackages/schemas/**openapi/**packages/*/src/index.tssynthi/prisma/**+1SCHEMA-01",
+              "pathChips": [
+                {
+                  "text": "packages/schemas/**",
+                  "width": 128.390625,
+                  "height": 22
+                },
+                {
+                  "text": "openapi/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "packages/*/src/index.ts",
+                  "width": 152.484375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/prisma/**",
+                  "width": 110.328125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 340,
+              "height": 97.984375,
+              "text": "Feature implementation airspaceClass Capps/web/**components/**synthi/src/app/**synthi/src/components/**+1clear",
+              "pathChips": [
+                {
+                  "text": "apps/web/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "components/**",
+                  "width": 92.28125,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/app/**",
+                  "width": 116.359375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/components/**",
+                  "width": 158.5,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 340,
+              "height": 89.3125,
+              "text": "Low-risk support airspaceClass Ddocs/**tests/****/__tests__/****/*.test.js+4SCHEMA-01API-02TEST-03",
+              "pathChips": [
+                {
+                  "text": "docs/**",
+                  "width": 56.15625,
+                  "height": 22
+                },
+                {
+                  "text": "tests/**",
+                  "width": 62.171875,
+                  "height": 22
+                },
+                {
+                  "text": "**/__tests__/**",
+                  "width": 104.3125,
+                  "height": 22
+                },
+                {
+                  "text": "**/*.test.js",
+                  "width": 86.25,
+                  "height": 22
+                }
+              ]
+            }
+          ],
+          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nSCHEMA-01\nAPI-02\nTEST-03\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nSCHEMA-01\nAPI-02\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspection\nInspect checkout landing\ntests/checkout/**\nholding\nClearances\n0\nNo active clearances\nTransactions And Proof\n0\nNo open transactions\nInspections And Incidents\n0\nINSPECT-77\nrequested\napi/checkout/route.js\npackages/schemas/checkout/order.ts\nsignal\nsignal\ntest:run:checkout-radar-proof\nArtifact Projection\n44\nmanifest.json\n1508b\nairspace/zones.json\n30163b\nairspace/no-fly-zones.json\n92b\nairspace/class-rules.json\n409b\nprojects/cmr17duur00cvob4t45xujhu4/tower-plan.json\n3713b\nprojects/cmr17duur00cvob4t45xujhu4/control-state.json\n3128b\nprojects/cmr17duur00cvob4t45xujhu4/radar-snapshot.json\n3128b\nprojects/cmr17duur00cvob4t45xujhu4/collision-forecast.json\n665b\nprojects/cmr17duur00cvob4t45xujhu4/events.jsonl\n5233b\nprojects/cmr17duur00cvob4t45xujhu4/provenance/line-provenance.jsonl\n0b\nmanifest.json\n{\n  \"version\": 1,\n  \"project_id\": \"cmr17duur00cvob4t45xujhu4\",\n  \"workspace_slug\": \"codesite-radar-proof-1782857554702\",\n  \"control_state\": \"projects/cmr17duur00cvob4t45xujhu4/control-state.json\",\n  \"events\": \"projects/cmr17duur00cvob4t45xujhu4/events.jsonl\",\n  \"schemas\": \"schemas/\",\n  \"inbox_root\": \"projects/cmr17duur00cvob4t45xujhu4/inbox/\",\n  \"proof_bundle_root\": \"projects/cmr17duur00cvob4t45xujhu4/proof-bundles/\",\n  \"mcp_tools\": [\n    \"synthi_codesite_file_fl"
         }
       }
     ]

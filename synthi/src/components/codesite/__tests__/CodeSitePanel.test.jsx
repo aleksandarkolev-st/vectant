@@ -77,6 +77,30 @@ function laneNamed(name) {
     .find((lane) => lane.textContent.includes(name));
 }
 
+function testRadarPoint(angle, radius) {
+  const radians = (angle - 90) * (Math.PI / 180);
+  return {
+    x: 50 + Math.cos(radians) * radius,
+    y: 50 + Math.sin(radians) * radius,
+  };
+}
+
+function testEventPoint(event, index, total) {
+  const seed = String(event?.eventType || event?.id || index).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const angle = (seed + (index * 29)) % 360;
+  const radius = 12 + ((index % Math.max(1, total)) * (34 / Math.max(1, total)));
+  return testRadarPoint(angle, radius);
+}
+
+function expectedReplayPath(events) {
+  const newestFirstEvents = events.slice(-12).reverse();
+  const replayEvents = newestFirstEvents.slice(0, 7).reverse();
+  return replayEvents
+    .map((event, index) => testEventPoint(event, index, replayEvents.length))
+    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
+    .join(' ');
+}
+
 function radarState() {
   return {
     workspaceSlug: 'acme',
@@ -159,15 +183,15 @@ function radarState() {
       activeMutationLeases: [{
         id: 'lease-1',
         displayCallsign: 'ATLAS-1',
-	        status: 'active',
-	        lease: { allowedPaths: ['api/checkout/**'] },
-	        dojoProofRef: 'pcap-checkout-schema',
-	        dojoLicenseRef: 'schema.level_2@2026-06-25',
-	        dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
-	        dojoLedgerCheckpointHash: 'sha256:ledger',
-	        dojoDecisionDigest: 'sha256:dojo-decision',
-	        expiresAt: '2026-06-29T23:59:00.000Z',
-	      }],
+        status: 'active',
+        lease: { allowedPaths: ['api/checkout/**'] },
+        dojoProofRef: 'pcap-checkout-schema',
+        dojoLicenseRef: 'schema.level_2@2026-06-25',
+        dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
+        dojoLedgerCheckpointHash: 'sha256:ledger',
+        dojoDecisionDigest: 'sha256:dojo-decision',
+        expiresAt: '2026-06-29T23:59:00.000Z',
+      }],
       activeTransactions: [{
         id: 'txn-1',
         status: 'open',
@@ -246,10 +270,10 @@ describe('CodeSitePanel', () => {
 
     expect(container.querySelector('[data-testid="codesite-panel"]')).toBeTruthy();
     expect(container.textContent).toContain('Checkout coordination');
-	    expect(container.textContent).toContain('ATLAS-1');
-	    expect(container.textContent).toContain('pcap-checkout-schema');
-	    expect(container.textContent).toContain('schema.level_2@2026-06-25');
-	    expect(container.textContent).toContain('dojo:evidence:checkride-1');
+    expect(container.textContent).toContain('ATLAS-1');
+    expect(container.textContent).toContain('pcap-checkout-schema');
+    expect(container.textContent).toContain('schema.level_2@2026-06-25');
+    expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
@@ -304,6 +328,36 @@ describe('CodeSitePanel', () => {
 
     expect(container.querySelectorAll('[data-testid="codesite-flight-blip"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="codesite-holding-pattern"]')).toHaveLength(0);
+  });
+
+  it('draws the replay trace from the latest event tail', async () => {
+    const state = radarState();
+    state.events = [
+      'flight_plan_filed',
+      'clearance_requested',
+      'clearance_issued',
+      'transaction_opened',
+      'write_attempted',
+      'write_allowed',
+      'transaction_validated',
+      'landing_requested',
+      'inspection_result',
+    ].map((eventType, index) => ({
+      id: `event-${index + 1}`,
+      eventType,
+      displayCallsign: 'ATLAS-1',
+      logicalTime: index + 1,
+      details: { index },
+      evidenceRefs: [`event:evidence:${index + 1}`],
+      createdAt: `2026-06-29T23:${String(31 + index).padStart(2, '0')}:00.000Z`,
+    }));
+    state.counts.events = state.events.length;
+
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+    renderPanel();
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-replay-trace"]').getAttribute('points')).toBe(expectedReplayPath(state.events));
   });
 
   it('opens the first project from the empty state', async () => {

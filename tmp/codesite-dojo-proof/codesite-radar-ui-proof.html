@@ -1,92 +1,38 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CodeSite Radar UI Proof</title>
   <style>
-    :root {
-      color-scheme: dark;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #08090e;
-      color: #f4f5f8;
-    }
-    body {
-      margin: 0;
-      padding: 28px;
-      background: #08090e;
-    }
-    header {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: end;
-      margin-bottom: 18px;
-    }
-    h1 {
-      margin: 0;
-      font-size: 22px;
-      letter-spacing: 0;
-    }
-    p {
-      margin: 6px 0 0;
-      color: #9ba2b8;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 16px;
-    }
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-    .card {
-      overflow: hidden;
-      border: 1px solid #24283a;
-      border-radius: 8px;
-      background: #11131d;
-    }
-    .card img {
-      display: block;
-      width: 100%;
-      max-height: 640px;
-      object-fit: contain;
-      background: #05060a;
-      border-bottom: 1px solid #24283a;
-    }
-    .card span {
-      display: block;
-      padding: 10px 12px;
-      color: #cbd1e3;
-      font-size: 12px;
-      overflow-wrap: anywhere;
-    }
-    code {
-      color: #f4f5f8;
-    }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b0b10; color: #f4f7fb; }
+    body { margin: 0; padding: 24px; }
+    main { max-width: 1500px; margin: 0 auto; display: grid; gap: 24px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 18px; margin-bottom: 8px; }
+    p { color: #9aa6bd; margin-bottom: 12px; }
+    section { border: 1px solid #252a38; border-radius: 8px; padding: 16px; background: #141622; }
+    img { display: block; width: 100%; height: auto; border-radius: 6px; border: 1px solid #252a38; }
   </style>
 </head>
 <body>
-  <header>
-    <div>
+  <main>
+    <header>
       <h1>CodeSite Radar UI Proof</h1>
-      <p>Docker-backed browser proof for the semantic radar graph, risk cone, replay trace, holding patterns, and landing queue.</p>
-      <p>Evidence JSON: <a href="codesite-radar-ui-proof.json"><code>codesite-radar-ui-proof.json</code></a></p>
-    </div>
-    <p>Stored in repo <code>tmp/codesite-dojo-proof</code></p>
-  </header>
-  <main class="grid">
-    <a class="card" href="codesite-radar-ui-desktop.png">
-      <img src="codesite-radar-ui-desktop.png" alt="Desktop CodeSite radar UI proof">
-      <span>codesite-radar-ui-desktop.png</span>
-    </a>
-    <a class="card" href="codesite-radar-ui-mobile.png">
-      <img src="codesite-radar-ui-mobile.png" alt="Mobile CodeSite radar UI proof">
-      <span>codesite-radar-ui-mobile.png</span>
-    </a>
+      <p>Generated 2026-06-30T23:40:53.167Z from http://127.0.0.1:3109/workspace/codesite-radar-proof-1782857554702/codesite</p>
+    </header>
+    <section>
+      <h2>desktop (1440 x 980)</h2>
+      <p>Radar 1416 x 306, 3 flights, 1 risk cone, 3 holding patterns, 16 readable path chips.</p>
+      <img src="codesite-radar-ui-desktop.png" alt="CodeSite radar desktop proof screenshot" />
+    </section>
+
+    <section>
+      <h2>mobile (390 x 920)</h2>
+      <p>Radar 366 x 787, 3 flights, 1 risk cone, 3 holding patterns, 16 readable path chips.</p>
+      <img src="codesite-radar-ui-mobile.png" alt="CodeSite radar mobile proof screenshot" />
+    </section>
   </main>
 </body>
 </html>

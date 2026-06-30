@@ -379,13 +379,17 @@ function radarColor(status, riskLevel = null) {
   return '#4ade80';
 }
 
+function replayTailFromNewestFirst(events) {
+  return events.slice(0, 7).reverse();
+}
+
 function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
   ];
   const visibleFlights = flights.slice(0, 5);
   const visibleRisks = risks.slice(0, 4);
-  const replayEvents = events.slice(0, 7).reverse();
+  const replayEvents = replayTailFromNewestFirst(events);
   const replayPoints = replayEvents.map((event, index) => eventPoint(event, index, replayEvents.length));
   const replayPath = replayPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
   const landingRuns = asArray(inspections).slice(-4).reverse();
@@ -508,7 +512,7 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                   <div
                     key={zone.zoneKey || zone.id || index}
                     data-testid="codesite-airspace-lane"
-                    className="grid min-h-[42px] grid-cols-[76px_minmax(0,1fr)_minmax(76px,auto)] items-center gap-2 rounded border px-2 py-1.5 text-xs"
+                    className="grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[76px_minmax(0,1fr)_minmax(76px,auto)]"
                     style={{
                       borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
                       background: hasRisk ? 'color-mix(in srgb, #ff5757 12%, var(--bg-editor))' : 'var(--bg-editor)',
@@ -518,8 +522,10 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                       <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
                       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
                     </div>
-                    <PathList paths={zonePaths(zone)} empty="route pending" />
-                    <div className="flex min-w-0 justify-end gap-1">
+                    <div className="col-span-2 col-start-1 row-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:row-start-auto">
+                      <PathList paths={zonePaths(zone)} empty="route pending" />
+                    </div>
+                    <div className="col-start-2 row-start-1 flex min-w-0 justify-end gap-1 sm:col-auto sm:row-auto">
                       {relatedFlights.length ? relatedFlights.map((flight) => (
                         <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
                           {compact(flight.displayCallsign, 'agent')}
@@ -873,19 +879,19 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <div className="truncate font-medium">{compact(lease.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(lease.expiresAt) || 'open'}</div>
                         </div>
-	                        <div className="min-w-0">
-	                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
-                            <TagList
-                              items={[
-                                lease.dojoProofRef,
-                                lease.dojoLicenseRef,
-                                ...asArray(lease.dojoEvidenceRefs),
-                                lease.dojoLedgerCheckpointHash,
-                                lease.dojoDecisionDigest,
-                              ]}
-                              empty=""
-                            />
-	                        </div>
+                        <div className="min-w-0">
+                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
+                          <TagList
+                            items={[
+                              lease.dojoProofRef,
+                              lease.dojoLicenseRef,
+                              ...asArray(lease.dojoEvidenceRefs),
+                              lease.dojoLedgerCheckpointHash,
+                              lease.dojoDecisionDigest,
+                            ]}
+                            empty=""
+                          />
+                        </div>
                         <div className="justify-self-end"><Pill tone={lease.status}>{lease.status}</Pill></div>
                       </Row>
                     ))}
@@ -924,26 +930,26 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             <CheckCircle2 className="h-4 w-4" style={{ color: 'color-mix(in srgb, #4ade80 70%, var(--text-primary))' }} />
                           </div>
                         </div>
-	                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-	                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
-	                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" maxVisible={10} />
-	                        </div>
-	                        {bundle.repoState ? (
-	                          <div className="mt-1">
-	                            <PathList
-	                              paths={[
-	                                bundle.repoState.evidenceDigest && `repo-state:${bundle.repoState.evidenceDigest}`,
-	                                bundle.repoState.gitHead && `git-head:${bundle.repoState.gitHead}`,
-	                                bundle.repoState.worktreeDiffDigest && `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
-	                                ...asArray(bundle.repoState.writeFileDigests).map((file) => `${file.path}:${file.digest || 'missing'}`),
-	                              ].filter(Boolean)}
-	                              empty="no repo-state evidence"
-	                              maxVisible={6}
-	                            />
-	                          </div>
-	                        ) : null}
-	                      </div>
-	                    ))}
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
+                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" maxVisible={10} />
+                        </div>
+                        {bundle.repoState ? (
+                          <div className="mt-1">
+                            <PathList
+                              paths={[
+                                bundle.repoState.evidenceDigest && `repo-state:${bundle.repoState.evidenceDigest}`,
+                                bundle.repoState.gitHead && `git-head:${bundle.repoState.gitHead}`,
+                                bundle.repoState.worktreeDiffDigest && `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
+                                ...asArray(bundle.repoState.writeFileDigests).map((file) => `${file.path}:${file.digest || 'missing'}`),
+                              ].filter(Boolean)}
+                              empty="no repo-state evidence"
+                              maxVisible={6}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                 )}
               </Section>
