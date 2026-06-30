@@ -13,7 +13,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -83,6 +83,15 @@ const CFG = {
     ?? process.env.SYNTHI_GEMINI_DELTA_MODEL
     ?? 'gemini-3.1-flash-lite',
   profilePath: process.env.SYNTHI_GPU_AGENT_PROFILE_PATH ?? '',
+  directSourceManifestPath: process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
+    ?? process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
+    ?? '',
+  directSourceRoot: process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT
+    ?? process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
+    ?? '',
+  directSourceAuthority: process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
+    ?? process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
+    ?? '',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
@@ -494,6 +503,242 @@ function normalizeAgentProfileSourceFiles(source, profileDir) {
   return normalized;
 }
 
+const DIRECT_SOURCE_AUTHORITIES = new Set([
+  'direct_source_url_commit',
+  'direct_local_git_repo_path',
+  'user_source_files',
+  'workspace_source_files',
+  'cli_or_env_direct_source',
+]);
+
+function normalizeDirectSourceAuthority(value) {
+  const text = profileString(value, 'sourceAuthority').trim();
+  if (!text) return 'cli_or_env_direct_source';
+  if (!DIRECT_SOURCE_AUTHORITIES.has(text)) {
+    throw new Error(
+      `invalid direct source authority ${text}: expected one of ${[...DIRECT_SOURCE_AUTHORITIES].join(', ')}`,
+    );
+  }
+  return text;
+}
+
+function realPathForExistingPath(value) {
+  return realpathSync(value);
+}
+
+function assertPathInsideRoot(filePath, rootPath, label) {
+  if (!rootPath) return;
+  const rootReal = realPathForExistingPath(rootPath);
+  const fileReal = realPathForExistingPath(filePath);
+  const rel = path.relative(rootReal, fileReal);
+  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return;
+  throw new Error(`direct source ${label} escapes source root: ${filePath}`);
+}
+
+function normalizeDirectSourceFiles(source, {
+  manifestDir,
+  sourceRoot,
+} = {}) {
+  const entries = profileArray(
+    source.files
+      ?? source.sourceFiles
+      ?? source.source_files
+      ?? source.initialFiles
+      ?? source.initial_files,
+    'directSource.files',
+  );
+  if (entries.length === 0) {
+    throw new Error('direct source manifest must provide at least one source file');
+  }
+  const baseDir = sourceRoot || manifestDir || process.cwd();
+  const normalized = entries.map((entry, index) => {
+    const raw = profileObject(entry, `directSource.files[${index}]`);
+    const workspacePath = cleanRel(profileString(
+      raw.workspacePath
+        ?? raw.workspace_path
+        ?? raw.path
+        ?? raw.name
+        ?? raw.filename,
+      `directSource.files[${index}].path`,
+      { required: true },
+    ));
+    if (!workspacePath || workspacePath.startsWith('../') || workspacePath.includes('/../')) {
+      throw new Error(`invalid direct source file path: ${workspacePath}`);
+    }
+    const declaredContentHash = profileString(
+      raw.contentHash ?? raw.content_hash ?? raw.sha256,
+      `directSource.files[${index}].contentHash`,
+    ).toLowerCase();
+    const hostPath = profileString(
+      raw.sourcePath
+        ?? raw.source_path
+        ?? raw.hostPath
+        ?? raw.host_path
+        ?? raw.filePath
+        ?? raw.file_path,
+      `directSource.files[${index}].sourcePath`,
+    );
+    const inlineContent = typeof raw.inline === 'string'
+      ? raw.inline
+      : typeof raw.content === 'string'
+        ? raw.content
+        : '';
+    const resolvedSourcePath = hostPath ? resolveProfilePath(hostPath, baseDir) : '';
+    if (resolvedSourcePath && sourceRoot) {
+      assertPathInsideRoot(resolvedSourcePath, sourceRoot, `files[${index}]`);
+    }
+    if (!inlineContent && (!resolvedSourcePath || !existsSync(resolvedSourcePath))) {
+      throw new Error(`invalid direct source file ${workspacePath}: expected inline content or readable sourcePath`);
+    }
+    const content = inlineContent || readFileSync(resolvedSourcePath, 'utf8');
+    const contentHash = sourceContentHash(content);
+    validateDeclaredSourceHash(declaredContentHash, contentHash, `directSource.files[${index}].contentHash`);
+    const evidenceRef = `evidence:agent-direct-source-file:${contentHash}`;
+    return {
+      path: workspacePath,
+      name: workspacePath,
+      content,
+      sourcePath: hostPath || null,
+      source_path: hostPath || null,
+      resolvedPath: resolvedSourcePath || null,
+      resolved_path: resolvedSourcePath || null,
+      contentHash,
+      content_hash: contentHash,
+      declaredContentHash: declaredContentHash || null,
+      declared_content_hash: declaredContentHash || null,
+      byteLength: Buffer.byteLength(content, 'utf8'),
+      byte_length: Buffer.byteLength(content, 'utf8'),
+      evidenceRef,
+      evidence_ref: evidenceRef,
+    };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  const seen = new Set();
+  for (const entry of normalized) {
+    if (seen.has(entry.path)) {
+      throw new Error(`invalid direct source manifest: duplicate workspace path ${entry.path}`);
+    }
+    seen.add(entry.path);
+  }
+  return normalized;
+}
+
+function normalizeDirectSourceOverride(rawManifest, {
+  manifestPath = '',
+  sourceRoot = '',
+  requestedSourceAuthority = '',
+  fallbackEntryPath = 'main.cpp',
+} = {}) {
+  const raw = profileObject(rawManifest, 'directSourceManifest');
+  const source = profileObject(raw.source ?? raw, 'directSourceManifest.source');
+  const manifestDir = manifestPath ? path.dirname(resolveProfilePath(manifestPath)) : process.cwd();
+  const rootFromManifest = profileString(
+    raw.sourceRoot
+      ?? raw.source_root
+      ?? source.sourceRoot
+      ?? source.source_root,
+    'directSourceManifest.sourceRoot',
+  );
+  const resolvedSourceRoot = sourceRoot
+    ? resolveProfilePath(sourceRoot, process.cwd())
+    : rootFromManifest
+      ? resolveProfilePath(rootFromManifest, manifestDir)
+      : manifestDir;
+  const sourceAuthority = normalizeDirectSourceAuthority(
+    requestedSourceAuthority
+      || raw.sourceAuthority
+      || raw.source_authority
+      || source.sourceAuthority
+      || source.source_authority,
+  );
+  if (sourceAuthority === 'direct_local_git_repo_path' && !resolvedSourceRoot) {
+    throw new Error('direct_local_git_repo_path source authority requires a source root');
+  }
+  const entryPath = cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? fallbackEntryPath);
+  const files = normalizeDirectSourceFiles(source, {
+    manifestDir,
+    sourceRoot: existsSync(resolvedSourceRoot) ? resolvedSourceRoot : '',
+  });
+  const entryFile = files.find((entry) => entry.path === entryPath);
+  if (!entryFile) {
+    throw new Error(`direct source manifest entryPath ${entryPath} is missing from source files`);
+  }
+  const manifestHash = sourceFilesManifestHash(files);
+  const evidenceRef = `evidence:agent-direct-source-manifest:${manifestHash}`;
+  return {
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    entryPath,
+    entry_path: entryPath,
+    files,
+    sourceFiles: files,
+    source_files: files,
+    fileManifest: files.map(sourceFileHashEntry),
+    file_manifest: files.map(sourceFileHashEntry),
+    manifestHash,
+    manifest_hash: manifestHash,
+    contentHash: entryFile.contentHash,
+    content_hash: entryFile.contentHash,
+    byteLength: entryFile.byteLength,
+    byte_length: entryFile.byteLength,
+    manifestPath: manifestPath ? resolveProfilePath(manifestPath) : null,
+    manifest_path: manifestPath ? resolveProfilePath(manifestPath) : null,
+    sourceRoot: resolvedSourceRoot || null,
+    source_root: resolvedSourceRoot || null,
+    evidenceRef,
+    evidence_ref: evidenceRef,
+  };
+}
+
+function loadDirectSourceOverride() {
+  const manifestPath = profileString(CFG.directSourceManifestPath, 'SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH');
+  if (!manifestPath) return null;
+  const resolvedManifestPath = resolveProfilePath(manifestPath);
+  if (!existsSync(resolvedManifestPath)) {
+    throw new Error(`direct source manifest not found: ${resolvedManifestPath}`);
+  }
+  const raw = JSON.parse(readFileSync(resolvedManifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  return normalizeDirectSourceOverride(raw, {
+    manifestPath: resolvedManifestPath,
+    sourceRoot: CFG.directSourceRoot,
+    requestedSourceAuthority: CFG.directSourceAuthority,
+  });
+}
+
+function applyDirectSourceOverride(profile, override = loadDirectSourceOverride()) {
+  if (!override) return profile;
+  profile.source = {
+    ...profile.source,
+    entryPath: override.entryPath,
+    entry_path: override.entry_path,
+    path: null,
+    resolvedPath: null,
+    resolved_path: null,
+    inline: '',
+    fixture: '',
+    files: override.files,
+    sourceFiles: override.sourceFiles,
+    source_files: override.source_files,
+    fileManifest: override.fileManifest,
+    file_manifest: override.file_manifest,
+    manifestHash: override.manifestHash,
+    manifest_hash: override.manifest_hash,
+    contentHash: override.contentHash,
+    content_hash: override.content_hash,
+    declaredContentHash: null,
+    declared_content_hash: null,
+    directSourceManifestPath: override.manifestPath,
+    direct_source_manifest_path: override.manifest_path,
+    directSourceRoot: override.sourceRoot,
+    direct_source_root: override.source_root,
+    evidenceRef: override.evidenceRef,
+    evidence_ref: override.evidence_ref,
+  };
+  profile.sourceAuthority = override.sourceAuthority;
+  profile.source_authority = override.source_authority;
+  refreshAgentProfileHash(profile);
+  return profile;
+}
+
 function agentProfileHash(profile) {
   return `sha256:${sha256Hex(stableJson({
     schemaVersion: profile.schemaVersion,
@@ -704,7 +949,7 @@ function loadAgentVisualProfile(profilePath = CFG.profilePath) {
     throw new Error(`agent visual profile not found: ${resolved}`);
   }
   const raw = JSON.parse(readFileSync(resolved, 'utf8'));
-  return normalizeAgentVisualProfile(raw, { profilePath: resolved });
+  return applyDirectSourceOverride(normalizeAgentVisualProfile(raw, { profilePath: resolved }));
 }
 
 function sourceFromAgentVisualProfile(profile, vendor) {
@@ -728,10 +973,15 @@ function sourceFromAgentVisualProfile(profile, vendor) {
       actualHash,
       'source.contentHash',
     );
+    const sourceAuthority = profile.sourceAuthority ?? profile.source_authority ?? '';
+    const directSourceAuthority = DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority);
     profile.source.contentHash = actualHash;
     profile.source.content_hash = actualHash;
-    profile.source.evidenceRef = `evidence:agent-profile-source:${actualHash}`;
-    profile.source.evidence_ref = `evidence:agent-profile-source:${actualHash}`;
+    const evidenceRef = directSourceAuthority
+      ? (profile.source.evidenceRef ?? profile.source.evidence_ref ?? `evidence:agent-direct-source:${actualHash}`)
+      : `evidence:agent-profile-source:${actualHash}`;
+    profile.source.evidenceRef = evidenceRef;
+    profile.source.evidence_ref = evidenceRef;
     refreshAgentProfileHash(profile);
     return sourceText;
   }
@@ -3946,6 +4196,9 @@ function sourceFirstIngestionEvidence({
     ACTIVE_AGENT_PROFILE?.source?.evidence_ref,
     ACTIVE_AGENT_PROFILE?.source?.contentHash,
     ACTIVE_AGENT_PROFILE?.source?.content_hash,
+    ...(Array.isArray(ACTIVE_AGENT_PROFILE?.source?.files)
+      ? ACTIVE_AGENT_PROFILE.source.files.map((entry) => entry.evidenceRef ?? entry.evidence_ref)
+      : []),
     initialManifestHash,
     sourcePurityManifestHash,
     sourcePurityInitialManifestHash,
@@ -4734,6 +4987,59 @@ function selfCheckAgentVisualProfile() {
     } catch (err) {
       sourceFileHashMissingRejected = String(err.message).includes('source.files[0].contentHash');
     }
+    const directSourceProfile = applyDirectSourceOverride(
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-direct-source-profile',
+        profileClass: 'self_check_visual_gpu_path',
+        source: {
+          entryPath: 'src/main.cpp',
+          fixture: 'ray-light',
+        },
+        compile: {
+          width: 320,
+          height: 240,
+        },
+        visualProof: {
+          minChangedRatio: 0.02,
+          minMeanAbs: 1.5,
+        },
+        deviceEdits: [{
+          runMode: 'hot_delta_1',
+          find: 'kSceneLight * kExposure',
+          replace: 'kSceneLight * (kExposure + 0.25f)',
+        }],
+      }),
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        entryPath: 'src/main.cpp',
+        files: [
+          {
+            path: 'include/params.hpp',
+            inline: multiFileHeaderSource,
+          },
+          {
+            path: 'src/main.cpp',
+            inline: multiFileEntrySource,
+          },
+        ],
+      }, {
+        manifestPath: path.join(process.cwd(), 'self-check-direct-source-manifest.json'),
+      }),
+    );
+    let directProfileAuthorityRejected = false;
+    try {
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'profile_source_files',
+        entryPath: 'src/main.cpp',
+        files: [{
+          path: 'src/main.cpp',
+          inline: multiFileEntrySource,
+        }],
+      });
+    } catch (err) {
+      directProfileAuthorityRejected = String(err.message).includes('invalid direct source authority');
+    }
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -4804,6 +5110,30 @@ function selfCheckAgentVisualProfile() {
       sawGpuSplit: { matched: false },
       splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
     });
+    ACTIVE_AGENT_PROFILE = directSourceProfile;
+    const directSourceResolvedSource = sourceFromAgentVisualProfile(directSourceProfile, 'rocm');
+    const directSourceInitialFiles = sourceFilesForInitialCompile(
+      directSourceProfile.source.entryPath,
+      directSourceResolvedSource,
+    );
+    const acceptedDirectSourceFirst = sourceFirstIngestionEvidence({
+      source: directSourceResolvedSource,
+      entryPath: directSourceProfile.source.entryPath,
+      sourcePurityEvidence: assertNoSynthiAbi(directSourceResolvedSource, {
+        entryPath: directSourceProfile.source.entryPath,
+        files: directSourceInitialFiles,
+      }),
+      initialCompileArgs: {
+        ...sourceFirstInitialCompileArgs,
+        filename: directSourceProfile.source.entryPath,
+        files: directSourceInitialFiles,
+      },
+      initialCompileResult: { waitSummary: { status: 'applied' } },
+      split: sourceFirstSplit,
+      sawGpuSplit: { matched: false },
+      splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
+    });
+    ACTIVE_AGENT_PROFILE = multiFileProfile;
     const dirtySecondaryInitialFiles = multiFileInitialFiles.map((entry) =>
       entry.path === 'include/params.hpp'
         ? {
@@ -4989,6 +5319,20 @@ function selfCheckAgentVisualProfile() {
       || !ambiguousRejected
       || fixtureBackedIdentity !== 'ray-light'
       || multiFileProfile.sourceAuthority !== 'profile_source_files'
+      || directSourceProfile.sourceAuthority !== 'user_source_files'
+      || directSourceProfile.source.fixture !== ''
+      || directSourceProfile.source.files.length !== 2
+      || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
+      || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')
+      || directSourceResolvedSource !== multiFileEntrySource
+      || directSourceInitialFiles.length !== 2
+      || acceptedDirectSourceFirst.accepted !== true
+      || acceptedDirectSourceFirst.sourceAuthority !== 'user_source_files'
+      || acceptedDirectSourceFirst.sourceTreeManifestHashMatches !== true
+      || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
+        String(entry).startsWith('evidence:agent-direct-source-file:sha256:')
+      )
+      || !directProfileAuthorityRejected
       || multiFileProfile.source.files.length !== 2
       || !multiFileProfile.source.manifestHash?.startsWith('sha256:')
       || multiFileResolvedSource !== multiFileEntrySource
