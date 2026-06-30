@@ -150,8 +150,24 @@ const encodePath = (p = '') =>
         .map(encodeURIComponent)
         .join('/');
 
+const DEFAULT_AGENT_PROVIDER = 'synthi-chat';
+const DEFAULT_AGENT_RUNTIME = 'synthi-chat-tool';
+
+function managedAgentRequestHeaders(options = {}) {
+    const provider = options.agentProvider || DEFAULT_AGENT_PROVIDER;
+    const runtime = options.agentRuntime || DEFAULT_AGENT_RUNTIME;
+    const sessionId = options.agentSessionId || options.chatSessionId || options.conversationId || '';
+    const headers = {
+        'x-synthi-agent-provider': provider,
+        'x-synthi-agent-runtime': runtime,
+        'x-synthi-process-ancestry': runtime,
+    };
+    if (sessionId) headers['x-synthi-agent-session-id'] = sessionId;
+    return headers;
+}
+
 function workspaceRequestHeaders(options = {}, extra = {}) {
-    const headers = { ...extra };
+    const headers = { ...managedAgentRequestHeaders(options), ...extra };
     const filesystemUserId = options.filesystemUserId || options.userId || null;
     if (filesystemUserId) headers['x-user-id'] = filesystemUserId;
     if (options.runtimeScope) headers['x-runtime-scope'] = options.runtimeScope;
@@ -270,7 +286,7 @@ async function execRunCommand(slug, args, _signal, options = {}) {
     const userId = options.userId || args?.userId || null;
     const runtimeScope = options.runtimeScope || args?.runtimeScope || buildUserRuntimeScope(slug, userId);
     const filesystemUserId = options.filesystemUserId || args?.filesystemUserId || userId;
-    const commandHeaders = { 'content-type': 'application/json' };
+    const commandHeaders = { ...managedAgentRequestHeaders(options), 'content-type': 'application/json' };
     if (userId) commandHeaders['x-user-id'] = userId;
     if (runtimeScope) commandHeaders['x-runtime-scope'] = runtimeScope;
     if (filesystemUserId) commandHeaders['x-runtime-fs-user-id'] = filesystemUserId;

@@ -97,6 +97,7 @@ import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
 import ProgramsPanel from '@/components/programs/ProgramsPanel';
+import CodeSitePanel from '@/components/codesite/CodeSitePanel';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
@@ -269,6 +270,7 @@ const SIDEBAR_DOCK_PANEL_TYPES = new Set([
     IDE_PANEL.EXTENSION_VIEW,
     IDE_PANEL.CHAT,
     IDE_PANEL.AGENT_WORKFLOWS,
+    IDE_PANEL.CODESITE,
     IDE_PANEL.SETTINGS,
     IDE_PANEL.PULL_REQUESTS,
     IDE_PANEL.AI_HEALING,
@@ -3151,6 +3153,8 @@ export default function EditorPage({ params }) {
                         />
                     ) : sidebarView === 'programs' ? (
                         <ProgramsPanel />
+                    ) : sidebarView === 'codesite' ? (
+                        <CodeSitePanel workspaceSlug={slug} />
                     ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);

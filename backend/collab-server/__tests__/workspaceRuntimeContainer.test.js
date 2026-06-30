@@ -6,6 +6,7 @@ const {
   runtimeContainerHost,
   shouldCull,
   RUNTIME_IMAGE,
+  volumeSubpathForPath,
 } = require('../workspaceRuntimeContainer');
 
 test('runtimeContainerName is deterministic and docker-safe per (slug,userId)', () => {
@@ -13,6 +14,8 @@ test('runtimeContainerName is deterministic and docker-safe per (slug,userId)', 
   assert.match(a, /^workspace-runtime-[a-z0-9-]+$/);
   assert.equal(a, runtimeContainerName('My_Repo', '242593757'));
   assert.notEqual(a, runtimeContainerName('My_Repo', 'other-user'));
+  assert.notEqual(a, runtimeContainerName('My_Repo', '242593757', { codeSiteQuarantineRoot: '/tmp/q1' }));
+  assert.match(runtimeContainerName('My_Repo', '242593757', { codeSiteQuarantineRoot: '/tmp/q1' }), /codesite-[a-f0-9]{10}$/);
 });
 
 test('runtimeContainerHost equals the container name (compose DNS on the shared network)', () => {
@@ -29,6 +32,11 @@ test('RUNTIME_IMAGE defaults to vectant-runtime:local', () => {
   assert.equal(RUNTIME_IMAGE, 'vectant-runtime:local');
 });
 
+test('volumeSubpathForPath derives safe named-volume subpaths', () => {
+  assert.equal(volumeSubpathForPath('/data/codesitefs-quarantine/repo/txn', '/data'), 'codesitefs-quarantine/repo/txn');
+  assert.equal(volumeSubpathForPath('/tmp/codesitefs-quarantine/repo/txn', '/data'), '');
+});
+
 const { createRuntimeManager } = require('../workspaceRuntimeContainer');
 
 function fakeDocker() {
@@ -43,7 +51,7 @@ function fakeDocker() {
       const c = {
         id,
         start: async () => { containers.get(id).running = true; },
-        inspect: async () => ({ Id: id, State: { Running: containers.get(id).running } }),
+        inspect: async () => ({ Id: id, State: { Running: containers.get(id).running }, Config: { Labels: opts.Labels || {} } }),
         remove: async () => { containers.delete(id); },
         exec: async () => ({
           start: async () => ({ on: () => {}, write: () => {}, end: () => {} }),
@@ -99,12 +107,63 @@ test('with a dataVolume, the per-user repo is mounted into /workspace via a volu
   assert.equal(m.VolumeOptions.Subpath, 'repos/my-repo/242593757');
 });
 
+test('CodeSite active runtime containers require an explicit quarantine mount', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await assert.rejects(
+    () => mgr.ensureRuntimeContainer('repo', 'u1', { codesiteContext: { active: true, transactionId: 'txn-1' } }),
+    /codesite_runtime_quarantine_required/,
+  );
+  assert.equal(docker.created.length, 0);
+});
+
+test('CodeSite runtime containers mount /workspace to a writable quarantine root', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1',
+  });
+  const opts = docker.created[0];
+  assert.match(opts.name, /^workspace-runtime-repo-u1-codesite-[a-f0-9]{10}$/);
+  assert.equal(opts.Labels['vectant/codesite-workspace-mode'], 'quarantine');
+  assert.equal(opts.Labels['vectant/codesite-transaction-id'], 'txn-1');
+  assert.ok(opts.HostConfig.Binds.some((bind) => bind === '/tmp/codesite-q/repo/txn-1:/workspace'));
+  assert.ok(opts.Env.includes('CODESITE_WORKSPACE_QUARANTINED=1'));
+});
+
+test('CodeSite runtime volume mounts use the quarantine subpath in dataVolume mode', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker, dataVolume: 'synthi-ide_collab-data', reposSubpath: 'repos', dataVolumeRoot: '/data' });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/data/codesitefs-quarantine/repo/txn-1',
+  });
+  const mount = docker.created[0].HostConfig.Mounts[0];
+  assert.equal(mount.Target, '/workspace');
+  assert.equal(mount.ReadOnly, false);
+  assert.equal(mount.VolumeOptions.Subpath, 'codesitefs-quarantine/repo/txn-1');
+});
+
 test('ensureRuntimeContainer reuses a running container (no second create)', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker });
   await mgr.ensureRuntimeContainer('repo', 'u1');
   await mgr.ensureRuntimeContainer('repo', 'u1');
   assert.equal(docker.created.length, 1);
+});
+
+test('CodeSite quarantine and ordinary runtime containers do not reuse each other', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1');
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1',
+  });
+  assert.equal(docker.created.length, 2);
+  assert.equal(docker.created[0].name, 'workspace-runtime-repo-u1');
+  assert.match(docker.created[1].name, /^workspace-runtime-repo-u1-codesite-[a-f0-9]{10}$/);
 });
 
 test('ensureRuntimeContainer adopts an existing running container after a restart (no 409)', async () => {
@@ -117,6 +176,29 @@ test('ensureRuntimeContainer adopts an existing running container after a restar
   const res = await m2.ensureRuntimeContainer('repo', 'u1');
   assert.equal(res.created, false, 'should adopt, not recreate');
   assert.equal(docker.created.length, 1, 'no second createContainer (would 409)');
+});
+
+test('ensureRuntimeContainer rejects adoption when an existing CodeSite container has wrong mode labels', async () => {
+  const docker = fakeDocker();
+  const root = '/tmp/codesite-q/repo/txn-1';
+  const name = runtimeContainerName('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: root,
+  });
+  const stale = await docker.createContainer({
+    name,
+    Labels: { 'vectant/codesite-workspace-mode': 'readwrite' },
+    HostConfig: { Binds: [`${root}:/workspace`] },
+  });
+  await stale.start();
+  const mgr = createRuntimeManager({ docker });
+  await assert.rejects(
+    () => mgr.ensureRuntimeContainer('repo', 'u1', {
+      codesiteContext: { active: true, transactionId: 'txn-1' },
+      codeSiteQuarantineRoot: root,
+    }),
+    /codesite_runtime_container_mode_mismatch/,
+  );
 });
 
 test('teardown removes the container and forgets the session', async () => {
@@ -183,7 +265,15 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   const mgr = createRuntimeManager({ docker });
   await mgr.ensureRuntimeContainer('repo', 'u1');
 
-  const handle = await mgr.execInteractiveShell('repo', 'u1', { cols: 120, rows: 40 });
+  const handle = await mgr.execInteractiveShell('repo', 'u1', {
+    cols: 120,
+    rows: 40,
+    env: {
+      CODESITE_TRANSACTION_ID: 'txn-1',
+      CODESITE_MUTATION_LEASE_ID: 'lease-1',
+      PATH: '/host/bin',
+    },
+  });
 
   // Interactive login shell, in the workspace, as the rootless user, with a TTY.
   assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-l']);
@@ -192,6 +282,9 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   assert.equal(execOpts.Tty, true);
   assert.equal(execOpts.AttachStdin, true);
   assert.ok(execOpts.Env.includes('TERM=xterm-256color'), 'TERM must be set for a real terminal');
+  assert.ok(execOpts.Env.includes('CODESITE_TRANSACTION_ID=txn-1'), 'CodeSite transaction id must reach runtime shells');
+  assert.ok(execOpts.Env.includes('CODESITE_MUTATION_LEASE_ID=lease-1'), 'CodeSite lease id must reach runtime shells');
+  assert.ok(!execOpts.Env.includes('PATH=/host/bin'), 'host PATH must stay scrubbed');
 
   // PTY-shaped handle + resize.
   assert.equal(typeof handle.ptyProcess.onData, 'function');

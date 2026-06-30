@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const path = require('path');
 
 /**
@@ -26,6 +27,7 @@ const REPOS_DIR = process.env.REPOS_DIR || '/data/repos';
 // volume (collab-data mounts at /data, repos at /data/repos → prefix 'repos').
 const WORKSPACE_DATA_VOLUME = process.env.WORKSPACE_DATA_VOLUME || '';
 const REPOS_VOLUME_SUBPATH = process.env.REPOS_VOLUME_SUBPATH || 'repos';
+const WORKSPACE_DATA_VOLUME_ROOT = process.env.WORKSPACE_DATA_VOLUME_ROOT || '/data';
 // Outer-container privilege. Dev (Docker Desktop/WSL2) needs it so rootless
 // dockerd can set up user namespaces; prod (k8s + Sysbox) sets RUNTIME_PRIVILEGED=0
 // and supplies a runtimeClass instead. Defaults ON; any value other than '0'/'false' is on.
@@ -38,18 +40,56 @@ const HOST_ENV_DENYLIST = new Set([
   'HOSTNAME', 'TMPDIR', 'TERM', 'NODE_ENV', '_',
 ]);
 
-function safeName(value) {
-  return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 40);
+function safeName(value, max = 40) {
+  return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, max);
+}
+
+function shortDigest(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 10);
+}
+
+function codeSiteQuarantineRoot(options = {}) {
+  return options.codeSiteQuarantineRoot || options.quarantineRoot || options.codesiteQuarantine?.root || '';
+}
+
+function runtimeWorkspaceMode(options = {}) {
+  if (codeSiteQuarantineRoot(options)) return 'quarantine';
+  if (options.codeSiteReadonly || options.readonlyWorkspace) return 'readonly';
+  return 'readwrite';
+}
+
+function runtimeIdentityOptions(options = {}) {
+  const mode = runtimeWorkspaceMode(options);
+  if (mode !== 'quarantine') return { mode };
+  const identity = options.codeSiteQuarantineId ||
+    options.quarantineId ||
+    options.codesiteContext?.transactionId ||
+    codeSiteQuarantineRoot(options);
+  return { mode, quarantineId: shortDigest(identity) };
+}
+
+function volumeSubpathForPath(fullPath, volumeRoot = WORKSPACE_DATA_VOLUME_ROOT) {
+  if (!fullPath || !volumeRoot) return '';
+  const normalizedRoot = path.posix.resolve(volumeRoot);
+  const normalizedPath = path.posix.resolve(fullPath);
+  const relative = path.posix.relative(normalizedRoot, normalizedPath);
+  if (!relative || relative.startsWith('..') || path.posix.isAbsolute(relative)) return '';
+  return relative;
 }
 
 /** Deterministic, docker-safe container name per workspace+user. */
-function runtimeContainerName(slug, userId) {
-  return `workspace-runtime-${safeName(`${slug}-${userId}`)}`;
+function runtimeContainerName(slug, userId, options = {}) {
+  const { mode, quarantineId } = runtimeIdentityOptions(options);
+  if (mode === 'quarantine') {
+    return `workspace-runtime-${safeName(`${slug}-${userId}`, 30)}-codesite-${quarantineId}`;
+  }
+  const suffix = mode === 'readonly' ? '-codesite-ro' : '';
+  return `workspace-runtime-${safeName(`${slug}-${userId}${suffix}`)}`;
 }
 
 /** On the shared compose network the container is reachable by its name. */
-function runtimeContainerHost(slug, userId) {
-  return runtimeContainerName(slug, userId);
+function runtimeContainerHost(slug, userId, options = {}) {
+  return runtimeContainerName(slug, userId, options);
 }
 
 /** Idle-cull decision (pure). */
@@ -72,16 +112,27 @@ function createRuntimeManager({
   privileged = RUNTIME_PRIVILEGED,
   dataVolume = WORKSPACE_DATA_VOLUME,
   reposSubpath = REPOS_VOLUME_SUBPATH,
+  dataVolumeRoot = WORKSPACE_DATA_VOLUME_ROOT,
   logger = console,
 } = {}) {
   if (!docker) throw new TypeError('docker client is required');
   /** key `${slug} ${userId}` -> { containerId, lastActive } */
   const sessions = new Map();
-  const keyOf = (slug, userId) => `${slug} ${userId}`;
+  const keyOf = (slug, userId, options = {}) => {
+    const { mode, quarantineId } = runtimeIdentityOptions(options);
+    return `${slug} ${userId} ${mode}${quarantineId ? `:${quarantineId}` : ''}`;
+  };
 
-  async function ensureRuntimeContainer(slug, userId) {
-    const name = runtimeContainerName(slug, userId);
-    const key = keyOf(slug, userId);
+  async function ensureRuntimeContainer(slug, userId, options = {}) {
+    const quarantineRoot = codeSiteQuarantineRoot(options);
+    if (options.codesiteContext?.active && !quarantineRoot) {
+      const error = new Error('codesite_runtime_quarantine_required');
+      error.code = 'CODESITE_RUNTIME_QUARANTINE_REQUIRED';
+      throw error;
+    }
+    const mode = runtimeWorkspaceMode(options);
+    const name = runtimeContainerName(slug, userId, options);
+    const key = keyOf(slug, userId, options);
     const now = Date.now();
 
     const tracked = sessions.get(key);
@@ -104,6 +155,22 @@ function createRuntimeManager({
       const existing = docker.getContainer(name);
       const info = await existing.inspect();
       if (info && info.State && info.State.Running) {
+        const labels = info.Config?.Labels || info.Labels || {};
+        const existingMode = labels['vectant/codesite-workspace-mode'] || (mode === 'readwrite' ? 'readwrite' : '');
+        if (existingMode !== mode) {
+          const error = new Error('codesite_runtime_container_mode_mismatch');
+          error.code = 'CODESITE_RUNTIME_CONTAINER_MODE_MISMATCH';
+          throw error;
+        }
+        if (mode === 'quarantine') {
+          const expected = runtimeIdentityOptions(options).quarantineId;
+          const actual = labels['vectant/codesite-quarantine-id'] || '';
+          if (actual && actual !== expected) {
+            const error = new Error('codesite_runtime_quarantine_mismatch');
+            error.code = 'CODESITE_RUNTIME_QUARANTINE_MISMATCH';
+            throw error;
+          }
+        }
         sessions.set(key, { containerId: info.Id, lastActive: now });
         return { name, host: name, containerId: info.Id, created: false };
       }
@@ -122,16 +189,43 @@ function createRuntimeManager({
     //    collab-server see the exact same files. A host-path bind would fail here
     //    because the daemon resolves bind sources on the host, not inside collab.
     //  - dataVolume empty (collab-server on the host): bind the host path directly.
+    const readonlyWorkspace = mode === 'readonly';
+    const quarantineVolumeSubpath = quarantineRoot
+      ? (options.codeSiteQuarantineVolumeSubpath || volumeSubpathForPath(quarantineRoot, dataVolumeRoot))
+      : '';
+    if (mode === 'quarantine' && dataVolume && !quarantineVolumeSubpath) {
+      const error = new Error('codesite_runtime_quarantine_volume_unavailable');
+      error.code = 'CODESITE_RUNTIME_QUARANTINE_VOLUME_UNAVAILABLE';
+      throw error;
+    }
     const workspaceMount = dataVolume
       ? {
           Mounts: [{
             Type: 'volume',
             Source: dataVolume,
             Target: '/workspace',
-            VolumeOptions: { Subpath: path.posix.join(reposSubpath, safeName(slug), safeName(userId)) },
+            ReadOnly: readonlyWorkspace,
+            VolumeOptions: {
+              Subpath: mode === 'quarantine'
+                ? quarantineVolumeSubpath
+                : path.posix.join(reposSubpath, safeName(slug), safeName(userId)),
+            },
           }],
         }
-      : { Binds: [`${path.posix.join(reposDir, safeName(slug), safeName(userId))}:/workspace`] };
+      : {
+          Binds: [
+            `${mode === 'quarantine' ? quarantineRoot : path.posix.join(reposDir, safeName(slug), safeName(userId))}:/workspace${readonlyWorkspace ? ':ro' : ''}`,
+          ],
+        };
+    const runtimeEnv = [];
+    if (readonlyWorkspace) {
+      runtimeEnv.push('CODESITE_WORKSPACE_READONLY=1', 'SYNTHI_CODESITE_WORKSPACE_READONLY=1');
+    }
+    if (mode === 'quarantine') {
+      runtimeEnv.push('CODESITE_WORKSPACE_QUARANTINED=1', 'SYNTHI_CODESITE_WORKSPACE_QUARANTINED=1');
+      runtimeEnv.push('CODESITE_QUARANTINE_ROOT=/workspace');
+    }
+    const { quarantineId } = runtimeIdentityOptions(options);
     const createOpts = {
       name,
       Image: image,
@@ -139,8 +233,14 @@ function createRuntimeManager({
         'vectant/runtime': 'workspace-runtime-local',
         'vectant/slug': String(slug),
         'vectant/userId': String(userId),
+        'vectant/codesite-workspace-mode': mode,
+        ...(mode === 'quarantine' ? {
+          'vectant/codesite-transaction-id': String(options.codesiteContext?.transactionId || ''),
+          'vectant/codesite-quarantine-id': quarantineId,
+        } : {}),
         'vectant/lastActive': String(now),
       },
+      Env: runtimeEnv.length ? runtimeEnv : undefined,
       HostConfig: {
         // Privileged on the OUTER container lets rootless dockerd set up its user
         // namespaces in the Docker Desktop/WSL2 dev stack. Prod (k8s + Sysbox)
@@ -157,7 +257,7 @@ function createRuntimeManager({
     sessions.set(key, { containerId: container.id, lastActive: now });
     // Use the structured-logger convention (event, data). console (the test
     // default) also accepts this. NB: collab-server's logger has no `.log`.
-    logger.info('runtime_container_started', { name, slug, userId });
+    logger.info('runtime_container_started', { name, slug, userId, mode });
     return { name, host: name, containerId: container.id, created: true };
   }
 
@@ -168,8 +268,9 @@ function createRuntimeManager({
    * awaits this between ensureRuntimeContainer and execInRuntime. Returns true if
    * ready, false on timeout.
    */
-  async function waitForRuntimeReady(slug, userId, { timeoutMs = 45000, intervalMs = 3000 } = {}) {
-    const s = sessions.get(keyOf(slug, userId));
+  async function waitForRuntimeReady(slug, userId, options = {}) {
+    const { timeoutMs = 45000, intervalMs = 3000 } = options;
+    const s = sessions.get(keyOf(slug, userId, options));
     if (!s) throw new Error('runtime container not started');
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -224,8 +325,8 @@ function createRuntimeManager({
     }
   }
 
-  async function execInRuntime(slug, userId, { command, env = {}, tty = true } = {}) {
-    const s = sessions.get(keyOf(slug, userId));
+  async function execInRuntime(slug, userId, { command, env = {}, tty = true, ...runtimeOptions } = {}) {
+    const s = sessions.get(keyOf(slug, userId, runtimeOptions));
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
 
@@ -276,18 +377,26 @@ function createRuntimeManager({
    * nothing host-leaked to scrub here; we only set TERM + a friendly PS1.
    * @returns {{ ptyProcess: {onData,onExit,write,kill,resize}, stop } }
    */
-  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24 } = {}) {
-    const s = sessions.get(keyOf(slug, userId));
+  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24, env = {}, ...runtimeOptions } = {}) {
+    const s = sessions.get(keyOf(slug, userId, runtimeOptions));
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
 
     // ~/<workspace> style prompt parity with the host-shell terminal. /workspace
     // is the mount target; show it as "~/workspace" so the path reads cleanly.
     const PS1 = String.raw`\[\e[36m\]~/workspace\[\e[0m\]$ `;
+    const Env = [
+      'TERM=xterm-256color',
+      'COLORTERM=truecolor',
+      `PS1=${PS1}`,
+      ...Object.entries(env)
+        .filter(([k, v]) => typeof k === 'string' && v != null && !HOST_ENV_DENYLIST.has(k.toUpperCase()))
+        .map(([k, v]) => `${k}=${v}`),
+    ];
     const exec = await docker.getContainer(s.containerId).exec({
       Cmd: ['/bin/bash', '-l'],
       User: 'rootless',
-      Env: ['TERM=xterm-256color', 'COLORTERM=truecolor', `PS1=${PS1}`],
+      Env,
       AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,
@@ -362,7 +471,9 @@ module.exports = {
   RUNTIME_PRIVILEGED,
   WORKSPACE_DATA_VOLUME,
   REPOS_VOLUME_SUBPATH,
+  WORKSPACE_DATA_VOLUME_ROOT,
   safeName,
+  volumeSubpathForPath,
   runtimeContainerName,
   runtimeContainerHost,
   shouldCull,

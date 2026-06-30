@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const repoCache = require('./repoCache');
+const { normalizeRepoRelativePath } = require('./codesiteFs');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -3532,7 +3533,8 @@ class GitService {
 
     async syncFile(slug, filePath, content, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const fullPath = path.join(repoPath, filePath);
+        const safeRel = normalizeRepoRelativePath(filePath);
+        const fullPath = path.join(repoPath, safeRel);
         await safeWriteFile(fullPath, content);
     }
 
@@ -3545,8 +3547,10 @@ class GitService {
      */
     async renameItem(slug, oldPath, newPath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const absOld = path.join(repoPath, oldPath);
-        const absNew = path.join(repoPath, newPath);
+        const safeOld = normalizeRepoRelativePath(oldPath);
+        const safeNew = normalizeRepoRelativePath(newPath);
+        const absOld = path.join(repoPath, safeOld);
+        const absNew = path.join(repoPath, safeNew);
         // Ensure the target directory exists
         await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
         await fs.promises.rename(absOld, absNew);
@@ -3555,7 +3559,8 @@ class GitService {
 
     async deleteFile(slug, filePath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const fullPath = path.join(repoPath, filePath);
+        const safeRel = normalizeRepoRelativePath(filePath);
+        const fullPath = path.join(repoPath, safeRel);
         try {
             await fs.promises.unlink(fullPath);
         } catch (_) {
@@ -3572,8 +3577,9 @@ class GitService {
     async deleteItem(slug, itemPath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         // Remove trailing slash for path operations
-        const cleanPath = itemPath.endsWith('/') ? itemPath.slice(0, -1) : itemPath;
-        const fullPath = path.join(repoPath, cleanPath);
+        const cleanPath = String(itemPath || '').endsWith('/') ? String(itemPath).slice(0, -1) : itemPath;
+        const safeRel = normalizeRepoRelativePath(cleanPath);
+        const fullPath = path.join(repoPath, safeRel);
         
         let deleted = 0;
         
@@ -3720,8 +3726,10 @@ class GitService {
 
     async writeFile(slug, filePath, content, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = this._sanitizeRelativePath(filePath);
-        if (!safeRel) {
+        let safeRel;
+        try {
+            safeRel = normalizeRepoRelativePath(filePath);
+        } catch (_) {
             throw new Error('Invalid file path');
         }
         const fullPath = path.join(repoPath, safeRel);
@@ -3734,7 +3742,8 @@ class GitService {
 
     async createDirectory(slug, dirPath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const fullPath = path.join(repoPath, dirPath);
+        const safeRel = normalizeRepoRelativePath(dirPath);
+        const fullPath = path.join(repoPath, safeRel);
         try {
             await fs.promises.mkdir(fullPath, { recursive: true });
         } catch (e) {
@@ -3758,8 +3767,10 @@ class GitService {
 
             for (const f of files) {
                 try {
-                    const rel = this._sanitizeRelativePath(f?.path);
-                    if (!rel) {
+                    let rel;
+                    try {
+                        rel = normalizeRepoRelativePath(f?.path);
+                    } catch (_) {
                         skipped.push({ path: f?.path, reason: 'invalid_path' });
                         continue;
                     }

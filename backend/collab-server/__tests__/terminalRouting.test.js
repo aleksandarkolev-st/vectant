@@ -1,8 +1,14 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { shouldUseContainerTerminal } = require('../terminalService');
-const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript, pickRuntimeScopeForSlug } = require('../runtimePodTerminal');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalRouting');
+const {
+  runtimeTerminalTarget,
+  programRuntimeTarget,
+  codeSiteProgramRuntimeLaunchMode,
+  buildRuntimeShellScript,
+  pickRuntimeScopeForSlug,
+} = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
   const rt = {};
@@ -13,6 +19,31 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: null, workspaceSlug: 'repo' }), false);
   // missing slug (can't resolve a per-workspace container)
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
+});
+
+test('CodeSite terminal launch mode quarantines local shells and blocks runtime-backed shells', () => {
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: null,
+    workspaceSlug: 'repo',
+  }), 'normal');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    workspaceSlug: 'repo',
+  }), 'quarantine');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    usesRuntimePodTerminal: true,
+    workspaceSlug: 'repo',
+  }), 'block-runtime');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    enableContainerRuntime: true,
+    workspaceRuntime: {},
+    workspaceSlug: 'repo',
+  }), 'block-runtime');
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec
@@ -42,6 +73,33 @@ test('programRuntimeTarget: container + hybrid only → hybrid', () => {
 });
 test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
+});
+
+test('CodeSite program runtime mode permits headless quarantine, hybrid quarantine, and blocks unenforced runtimes', () => {
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: null,
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }), 'normal');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'web',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }), 'quarantine');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: false,
+    hasHybrid: true,
+  }), 'quarantine-runtime');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: false,
+  }), 'block-runtime');
 });
 
 // Slice-1 — the shared runtime shell-script builder runs the program command in
