@@ -2846,18 +2846,26 @@ async function compileViaMcp(args, timeoutMs, options = {}) {
     waitSummary.proofFinalizationRetry = retryEvidence;
     waitSummary.proof_finalization_retry = retryEvidence;
   }
+  const requestedProofStateGate = waitContract.waitArgs.requiredGpuProofState
+    ? requestedProofStateValidation(wait, waitContract.waitArgs.requiredGpuProofState)
+    : null;
+  if (requestedProofStateGate) {
+    waitSummary.requestedProofStateGate = requestedProofStateGate;
+    waitSummary.requested_proof_state_gate = requestedProofStateGate;
+  }
   if (wait?.error) waitSummary.error = String(wait.error).slice(0, 4000);
   if (wait?.gpu_proof_validation) waitSummary.gpu_proof_validation = wait.gpu_proof_validation;
   if (wait?.gpu_proof_telemetry) waitSummary.gpu_proof_telemetry = wait.gpu_proof_telemetry;
   const requireAppliedWait = options.requireAppliedWait === true
     || waitContract.isGpuDeviceEdit
     || typeof options.requiredGpuProofState === 'string';
+  const waitGateSatisfied = wait?.status === 'applied' || requestedProofStateGate?.accepted === true;
   record(
     options.waitRecordLabel ?? 'mcp wait_hmr proof gate',
-    wait?.status === 'applied' ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
+    waitGateSatisfied ? 'pass' : requireAppliedWait ? 'fail' : 'warn',
     JSON.stringify(waitSummary),
   );
-  if (requireAppliedWait && wait?.status !== 'applied') {
+  if (requireAppliedWait && !waitGateSatisfied) {
     throw new Error(`required synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
   }
   return { compile, wait, waitContract, waitSummary, timingMetrics };
@@ -2916,6 +2924,98 @@ function proofIdLooksImmutable(value) {
     && /^gpu-(?:runtime-)?proof(?::sha256)?:[a-f0-9]{64}$/i.test(value.trim());
 }
 
+function requestedProofStateValidation(wait, requiredState) {
+  const normalizedRequiredState = String(requiredState ?? '').trim();
+  const requiredRank = gpuHmrProofStateRank(normalizedRequiredState);
+  const validation = proofValidationObject(wait);
+  const telemetry = proofTelemetryObject(wait);
+  const validatedRequiredState = validation.requiredState ?? validation.required_state ?? null;
+  const validatedResultState = validation.resultState ?? validation.result_state ?? null;
+  const resultState = telemetry.resultState ?? telemetry.result_state ?? validatedResultState ?? null;
+  const effectiveResultRank = Number.isFinite(validation.effectiveResultRank)
+    ? validation.effectiveResultRank
+    : Number.isFinite(validation.effective_result_rank)
+      ? validation.effective_result_rank
+      : gpuHmrProofStateRank(resultState);
+  const resultRank = Math.max(gpuHmrProofStateRank(resultState), gpuHmrProofStateRank(validatedResultState), effectiveResultRank);
+  const validatedRequiredRank = gpuHmrProofStateRank(validatedRequiredState);
+  const proofId = telemetry.proofId ?? telemetry.proof_id ?? null;
+  const proofArtifactPath = telemetry.proofArtifactPath ?? telemetry.proof_artifact_path ?? null;
+  const status = String(wait?.status ?? '');
+  const rejectedCompileOnlyBoundary = normalizedRequiredState === 'gpu-hmr-compile-proven' && status === 'rejected';
+  const rejected_compile_only_boundary = rejectedCompileOnlyBoundary;
+  const statusCanCarryValidation = status === 'applied' || rejectedCompileOnlyBoundary;
+  const accepted = requiredRank > 0
+    && statusCanCarryValidation
+    && !wait?.error
+    && validation.satisfied === true
+    && validatedRequiredRank >= requiredRank
+    && resultRank >= requiredRank
+    && proofIdLooksImmutable(proofId)
+    && typeof proofArtifactPath === 'string'
+    && proofArtifactPath.trim().length > 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.requested_proof_state_gate.v1',
+    schema_version: 'synthi.gpu_hmr.requested_proof_state_gate.v1',
+    proofAuthority: 'structured_requested_proof_state_validation_only_not_gpu_hmr_acceptance',
+    proof_authority: 'structured_requested_proof_state_validation_only_not_gpu_hmr_acceptance',
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    status: wait?.status ?? null,
+    statusCanCarryValidation,
+    status_can_carry_validation: statusCanCarryValidation,
+    rejectedCompileOnlyBoundary,
+    rejected_compile_only_boundary,
+    requiredState: normalizedRequiredState || null,
+    required_state: normalizedRequiredState || null,
+    requiredRank,
+    required_rank: requiredRank,
+    validatedRequiredState,
+    validated_required_state: validatedRequiredState,
+    validatedRequiredRank,
+    validated_required_rank: validatedRequiredRank,
+    resultState,
+    result_state: resultState,
+    validatedResultState,
+    validated_result_state: validatedResultState,
+    effectiveResultRank,
+    effective_result_rank: effectiveResultRank,
+    resultRank,
+    result_rank: resultRank,
+    validationSatisfied: validation.satisfied === true,
+    validation_satisfied: validation.satisfied === true,
+    proofId,
+    proof_id: proofId,
+    proofArtifactPath,
+    proof_artifact_path: proofArtifactPath,
+    blockingGaps: accepted ? [] : [
+      ...(requiredRank > 0 ? [] : ['requested_proof_state_unknown']),
+      ...(statusCanCarryValidation ? [] : ['wait_status_cannot_carry_requested_proof_validation']),
+      ...(!wait?.error ? [] : ['wait_error_present']),
+      ...(validation.satisfied === true ? [] : ['requested_proof_state_validation_not_satisfied']),
+      ...(validatedRequiredRank >= requiredRank ? [] : ['validated_required_state_below_requested_state']),
+      ...(resultRank >= requiredRank ? [] : ['result_state_below_requested_state']),
+      ...(proofIdLooksImmutable(proofId) ? [] : ['requested_proof_state_proof_id_missing_or_mutable']),
+      ...(typeof proofArtifactPath === 'string' && proofArtifactPath.trim().length > 0 ? [] : ['requested_proof_state_proof_artifact_path_missing']),
+    ],
+    blocking_gaps: accepted ? [] : [
+      ...(requiredRank > 0 ? [] : ['requested_proof_state_unknown']),
+      ...(statusCanCarryValidation ? [] : ['wait_status_cannot_carry_requested_proof_validation']),
+      ...(!wait?.error ? [] : ['wait_error_present']),
+      ...(validation.satisfied === true ? [] : ['requested_proof_state_validation_not_satisfied']),
+      ...(validatedRequiredRank >= requiredRank ? [] : ['validated_required_state_below_requested_state']),
+      ...(resultRank >= requiredRank ? [] : ['result_state_below_requested_state']),
+      ...(proofIdLooksImmutable(proofId) ? [] : ['requested_proof_state_proof_id_missing_or_mutable']),
+      ...(typeof proofArtifactPath === 'string' && proofArtifactPath.trim().length > 0 ? [] : ['requested_proof_state_proof_artifact_path_missing']),
+    ],
+  };
+}
+
 function initialDeviceCompileProofFromResult(result) {
   const wait = result?.wait && typeof result.wait === 'object' ? result.wait : {};
   const validation = proofValidationObject(wait);
@@ -2932,11 +3032,8 @@ function initialDeviceCompileProofFromResult(result) {
   const proofArtifactPath = telemetry.proofArtifactPath ?? telemetry.proof_artifact_path ?? null;
   const resultRank = Math.max(gpuHmrProofStateRank(resultState), gpuHmrProofStateRank(validatedResultState), effectiveResultRank);
   const requiredRank = gpuHmrProofStateRank('gpu-hmr-compile-proven');
-  const accepted = wait.status === 'applied'
-    && validation.satisfied === true
-    && resultRank >= requiredRank
-    && gpuHmrProofStateRank(validatedRequiredState) >= requiredRank
-    && proofIdLooksImmutable(proofId);
+  const requestedProofStateGate = requestedProofStateValidation(wait, 'gpu-hmr-compile-proven');
+  const accepted = requestedProofStateGate.accepted === true;
   return {
     accepted,
     waitStatus: wait.status ?? null,
@@ -2967,6 +3064,8 @@ function initialDeviceCompileProofFromResult(result) {
     source: telemetry.source ?? null,
     observedAt: telemetry.observedAt ?? telemetry.observed_at ?? null,
     observed_at: telemetry.observedAt ?? telemetry.observed_at ?? null,
+    requestedProofStateGate,
+    requested_proof_state_gate: requestedProofStateGate,
   };
 }
 
@@ -5301,6 +5400,99 @@ async function selfCheckProofFinalizationRetry() {
   console.log('proof-finalization retry self-check passed');
 }
 
+function selfCheckRequestedProofStateGate() {
+  const compileProvenRejectedWait = {
+    status: 'rejected',
+    gpu_proof_validation: {
+      requiredState: 'gpu-hmr-compile-proven',
+      resultState: 'gpu-hmr-compile-proven',
+      effectiveResultRank: 1,
+      degradedState: 'gpu-hmr-dispatch-unobserved',
+      degradedStateRankCap: 4,
+      satisfied: true,
+    },
+    gpu_proof_telemetry: {
+      proofId: `gpu-proof:${'a'.repeat(64)}`,
+      proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-compile.json',
+      resultState: 'gpu-hmr-compile-proven',
+      degradedState: 'gpu-hmr-dispatch-unobserved',
+      degradedReason: 'runtime_dispatch_not_observed',
+      source: 'gpu-proof-state',
+    },
+  };
+  const compileGate = requestedProofStateValidation(compileProvenRejectedWait, 'gpu-hmr-compile-proven');
+  const initialCompileProof = initialDeviceCompileProofFromResult({ wait: compileProvenRejectedWait });
+  const fullRuntimeProof = fullRuntimeGpuHmrProofFromResult({ wait: compileProvenRejectedWait });
+  const timeoutGate = requestedProofStateValidation({
+    ...compileProvenRejectedWait,
+    status: 'timeout',
+  }, 'gpu-hmr-compile-proven');
+  const errorGate = requestedProofStateValidation({
+    ...compileProvenRejectedWait,
+    error: 'gpu_hmr_proof_insufficient',
+  }, 'gpu-hmr-compile-proven');
+  const weakRankGate = requestedProofStateValidation({
+    ...compileProvenRejectedWait,
+    gpu_proof_validation: {
+      ...compileProvenRejectedWait.gpu_proof_validation,
+      resultState: 'gpu-hmr-compile-proven',
+      effectiveResultRank: 1,
+      requiredState: 'gpu-hmr-compile-proven',
+    },
+  }, 'gpu-hmr-dispatch-observed');
+  const rejectedFullRuntimeGate = requestedProofStateValidation({
+    status: 'rejected',
+    gpu_proof_validation: {
+      requiredState: 'gpu-hmr-full-runtime-proven',
+      resultState: 'gpu-hmr-full-runtime-proven',
+      effectiveResultRank: 9,
+      satisfied: true,
+    },
+    gpu_proof_telemetry: {
+      proofId: `gpu-runtime-proof:sha256:${'b'.repeat(64)}`,
+      proofArtifactPath: '.synthi/gpu-hmr/proofs/self-check-runtime.json',
+      resultState: 'gpu-hmr-full-runtime-proven',
+    },
+  }, 'gpu-hmr-full-runtime-proven');
+  const missingArtifactPathGate = requestedProofStateValidation({
+    ...compileProvenRejectedWait,
+    gpu_proof_telemetry: {
+      ...compileProvenRejectedWait.gpu_proof_telemetry,
+      proofArtifactPath: '',
+    },
+  }, 'gpu-hmr-compile-proven');
+  if (
+    compileGate.accepted !== true
+    || compileGate.rejectedCompileOnlyBoundary !== true
+    || compileGate.gpuHmrSuccess !== false
+    || initialCompileProof.accepted !== true
+    || initialCompileProof.waitStatus !== 'rejected'
+    || fullRuntimeProof.accepted !== false
+    || timeoutGate.accepted !== false
+    || !timeoutGate.blockingGaps.includes('wait_status_cannot_carry_requested_proof_validation')
+    || errorGate.accepted !== false
+    || !errorGate.blockingGaps.includes('wait_error_present')
+    || weakRankGate.accepted !== false
+    || !weakRankGate.blockingGaps.includes('validated_required_state_below_requested_state')
+    || rejectedFullRuntimeGate.accepted !== false
+    || !rejectedFullRuntimeGate.blockingGaps.includes('wait_status_cannot_carry_requested_proof_validation')
+    || missingArtifactPathGate.accepted !== false
+    || !missingArtifactPathGate.blockingGaps.includes('requested_proof_state_proof_artifact_path_missing')
+  ) {
+    throw new Error(`requested proof-state gate self-check failed: ${JSON.stringify({
+      compileGate,
+      initialCompileProof,
+      fullRuntimeProof,
+      timeoutGate,
+      errorGate,
+      weakRankGate,
+      rejectedFullRuntimeGate,
+      missingArtifactPathGate,
+    }).slice(0, 4000)}`);
+  }
+  console.log('requested proof-state gate self-check passed');
+}
+
 function selfCheckMcpStartupCleanup() {
   const calls = [];
   const fakeProc = {
@@ -7361,6 +7553,7 @@ if (process.argv.includes('--self-check')) {
     selfCheckAgentVisualProfile();
     selfCheckRunModeVisualLedgerClockDomain();
     await selfCheckProofFinalizationRetry();
+    selfCheckRequestedProofStateGate();
     selfCheckMcpStartupCleanup();
   } catch (err) {
     console.error(err.stack || err.message);
