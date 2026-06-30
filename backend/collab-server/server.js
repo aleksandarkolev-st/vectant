@@ -252,7 +252,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
 // only container/webGui sessions; env-gated (SYNTHI_CONTINUOUS_FLUSH_ENABLED /
 // SYNTHI_FLUSH_INTERVAL_MS / SYNTHI_FLUSH_DEBOUNCE_MS) so it is a no-op otherwise.
 const continuousFlush = createContinuousFlushService({
-  flushFn: (slug, userId) => flushWorkspaceDocsToDisk(slug, userId),
+  flushFn: (slug, userId, scope) => flushWorkspaceDocsToDisk(slug, userId, scope),
   isSessionActive: (sessionId) =>
     managedProgramRuntime.getManagedSession(sessionId)?.state === 'running',
 });
@@ -2066,7 +2066,13 @@ const server = http.createServer(async (req, res) => {
       });
       // Container/webGui programs read /workspace from disk for their whole
       // lifetime — keep the editor's content flushed there while this session runs.
-      continuousFlush.registerSession({ sessionId, slug, userId: actorUserId, config: launchConfig });
+      continuousFlush.registerSession({
+        sessionId,
+        slug,
+        userId: actorUserId,
+        config: launchConfig,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
     } catch (err) {
