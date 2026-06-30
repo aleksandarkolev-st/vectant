@@ -1400,16 +1400,24 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
     });
 }
 
-export async function createDocument(workspaceSlug, projectId, body = {}) {
+export async function createDocument(workspaceSlug, projectId, body = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId);
   const kind = String(body.kind || body.type || 'rfi');
+  const routing = await validateDocumentRouting(project.id, body, actor);
   const document = await prisma.codeSiteDocument.create({
     data: {
       projectId: project.id,
       kind,
       status: body.status || 'open',
       title: String(body.title || defaultDocumentTitle(kind)),
-      bodyJson: stringifyJson(redactDocumentBody(body.body || body)),
+      bodyJson: stringifyJson(redactDocumentBody({
+        ...(body.body || body),
+        routing: {
+          fromSessionId: routing.fromSession?.id || null,
+          toSessionIds: routing.targetSessions.map((session) => session.id),
+          projectRefs: documentProjectRefs(body),
+        },
+      })),
       blocking: Boolean(body.blocking),
     },
   });
@@ -1427,7 +1435,7 @@ export async function createDocument(workspaceSlug, projectId, body = {}) {
       toSession: body.toSessionId || body.to_session || null,
     },
   });
-  const inboxItems = await routeDocumentToInbox(project.id, document, event, body);
+  const inboxItems = await routeDocumentToInbox(project.id, document, event, body, routing.targetSessions);
   return { document: documentProjection(document), inboxItems: inboxItems.map(inboxProjection) };
 }
 
@@ -1452,22 +1460,74 @@ function eventTypeForDocument(kind) {
   }[kind] || 'tower_instruction';
 }
 
-function redactDocumentBody(body) {
-  const redacted = { ...body };
-  for (const key of Object.keys(redacted)) {
-    if (/secret|token|password|api[_-]?key|privatePrompt/i.test(key)) {
-      redacted[key] = '[redacted]';
-    }
+async function validateDocumentRouting(projectId, body = {}, actor = null) {
+  const fromSessionId = body.fromSessionId || body.from_session || body.sourceSessionId || body.source_session || null;
+  const targetSessionIds = unique(asArray(body.toSessionId || body.to_session || body.recipients || []));
+  const fromSession = fromSessionId
+    ? await prisma.codeSiteAgentSession.findFirst({ where: { id: fromSessionId, projectId } })
+    : null;
+  if (fromSessionId && !fromSession) throw notFound('source_agent_session_not_found');
+  if (fromSession && actor && !actor.bypass && actor.userId !== fromSession.ownerUserId) {
+    throw forbidden('document_sender_forbidden');
   }
-  return redacted;
+  if (!hasDocumentProjectRef(body)) {
+    throw badRequest('document_project_reference_required');
+  }
+  const targetSessions = targetSessionIds.length
+    ? await prisma.codeSiteAgentSession.findMany({ where: { projectId, id: { in: targetSessionIds } } })
+    : [];
+  const foundTargetIds = new Set(targetSessions.map((session) => session.id));
+  const missingTargetIds = targetSessionIds.filter((id) => !foundTargetIds.has(id));
+  if (missingTargetIds.length) {
+    throw badRequest('document_recipient_not_in_project', { missingTargetIds });
+  }
+  return { fromSession, targetSessions };
 }
 
-async function routeDocumentToInbox(projectId, document, event, body) {
-  const targetSessionIds = asArray(body.toSessionId || body.to_session || body.recipients || []);
-  if (targetSessionIds.length === 0) return [];
-  const sessions = await prisma.codeSiteAgentSession.findMany({
-    where: { projectId, id: { in: targetSessionIds } },
-  });
+function hasDocumentProjectRef(body = {}) {
+  return Object.values(documentProjectRefs(body)).some((value) => (
+    Array.isArray(value) ? value.length > 0 : Boolean(value)
+  ));
+}
+
+function documentProjectRefs(body = {}) {
+  return {
+    executionPlanId: body.executionPlanId || body.execution_plan_id || null,
+    mutationLeaseId: body.mutationLeaseId || body.mutation_lease_id || body.clearanceId || body.clearance_id || null,
+    transactionId: body.transactionId || body.transaction_id || null,
+    affectedZones: asArray(body.affectedZones || body.affected_zones || body.affectedZone || body.affected_zone),
+    contractRefs: asArray(body.contractRefs || body.contract_refs || body.contractRef || body.contract_ref),
+    inspectionRunId: body.inspectionRunId || body.inspection_run_id || null,
+    incidentId: body.incidentId || body.incident_id || null,
+  };
+}
+
+function redactDocumentBody(body) {
+  return redactValue(body);
+}
+
+function redactValue(input, key = '') {
+  if (isSensitiveKey(key)) return '[redacted]';
+  if (Array.isArray(input)) return input.map((item) => redactValue(item, key));
+  if (!input || typeof input !== 'object') {
+    return isSensitiveValue(input) ? '[redacted]' : input;
+  }
+  return Object.fromEntries(
+    Object.entries(input).map(([entryKey, value]) => [entryKey, redactValue(value, entryKey)]),
+  );
+}
+
+function isSensitiveKey(key) {
+  return /secret|token|password|api[_-]?key|private[_-]?prompt|credential|authorization|cookie/i.test(String(key || ''));
+}
+
+function isSensitiveValue(value) {
+  if (typeof value !== 'string') return false;
+  return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/.test(value);
+}
+
+async function routeDocumentToInbox(projectId, document, event, body, targetSessions = null) {
+  const sessions = targetSessions || [];
   const created = [];
   for (const session of sessions) {
     created.push(await prisma.codeSiteAgentInboxItem.create({

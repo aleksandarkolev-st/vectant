@@ -249,7 +249,7 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'documents') {
-      return okJson(await createDocument(slug, route[1], body), { status: 201 });
+      return okJson(await createDocument(slug, route[1], body, access.actor), { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'incidents') {

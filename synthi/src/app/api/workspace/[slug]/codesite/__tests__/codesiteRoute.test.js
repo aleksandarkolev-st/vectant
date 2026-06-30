@@ -14,6 +14,7 @@ const {
   controlPlane: {
     acknowledgeInboxItem: vi.fn(),
     listProjects: vi.fn(),
+    createDocument: vi.fn(),
     createProject: vi.fn(),
     dryRunTransactionWrites: vi.fn(),
     getEvents: vi.fn(),
@@ -187,6 +188,38 @@ describe('CodeSite catch-all route', () => {
       decision: 'hold',
       reasonCodes: ['schema_first'],
     });
+  });
+
+  it('passes the resolved actor through tower-mediated document routes', async () => {
+    controlPlane.createDocument.mockResolvedValue({
+      document: { id: 'doc-1', kind: 'rfi' },
+      inboxItems: [{ id: 'inbox-1' }],
+    });
+    const body = {
+      kind: 'rfi',
+      fromSessionId: 'ags-1',
+      toSessionId: 'ags-2',
+      executionPlanId: 'plan-1',
+      title: 'Need schema owner approval',
+    };
+    const request = new Request('http://test/api/workspace/acme/codesite/projects/proj-1/documents', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const response = await POST(request, params(['projects', 'proj-1', 'documents']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      document: { id: 'doc-1', kind: 'rfi' },
+      inboxItems: [{ id: 'inbox-1' }],
+    });
+    expect(controlPlane.createDocument).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      body,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
   });
 
   it('serves source-state-since through the documented read endpoint', async () => {

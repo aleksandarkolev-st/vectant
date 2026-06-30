@@ -7,6 +7,7 @@ const { prisma } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     codeSiteProject: {
+      findFirst: vi.fn(),
       findUnique: vi.fn(),
     },
     codeSiteExecutionPlan: {
@@ -17,8 +18,10 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteAgentSession: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
     },
     codeSiteAgentInboxItem: {
+      create: vi.fn(),
       findMany: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
@@ -49,6 +52,9 @@ const { prisma } = vi.hoisted(() => ({
       create: vi.fn(),
       findMany: vi.fn(),
     },
+    codeSiteDocument: {
+      create: vi.fn(),
+    },
   },
 }));
 
@@ -59,6 +65,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  createDocument,
   dryRunTransactionWrites,
   getAgentInbox,
   getIncidentReplay,
@@ -179,6 +186,17 @@ describe('CodeSite control plane transaction validation', () => {
         noFlyZones: ['secrets/**'],
       }),
     });
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
     prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
       id: 'lease-created',
@@ -194,6 +212,25 @@ describe('CodeSite control plane transaction validation', () => {
       ownerUserId: 'user-1',
       displayCallsign: 'ATLAS-1',
     });
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+    }]);
+    prisma.codeSiteDocument.create.mockImplementation(async ({ data }) => ({
+      id: 'doc-1',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteAgentInboxItem.create.mockImplementation(async ({ data }) => ({
+      id: 'inbox-created',
+      status: 'pending',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+      ...data,
+    }));
     prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
     prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue({
       id: 'inbox-1',
@@ -509,6 +546,63 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'inbox-1' },
       data: expect.objectContaining({ status: 'acknowledged' }),
     }));
+  });
+
+  it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
+    const result = await createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      title: 'Need schema owner approval',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+      blocking: true,
+      body: {
+        question: 'Can signup payload include displayName?',
+        nested: {
+          apiKey: 'sk-secret-value-123456',
+          privatePrompt: 'raw local prompt',
+        },
+      },
+    }, { userId: 'user-1' });
+    const documentCreate = prisma.codeSiteDocument.create.mock.calls.at(-1)[0];
+    const savedBody = JSON.parse(documentCreate.data.bodyJson);
+
+    expect(result.inboxItems).toHaveLength(1);
+    expect(savedBody.nested.apiKey).toBe('[redacted]');
+    expect(savedBody.nested.privatePrompt).toBe('[redacted]');
+    expect(savedBody.routing).toMatchObject({
+      fromSessionId: 'agent-1',
+      toSessionIds: ['agent-2'],
+      projectRefs: { executionPlanId: 'plan-1' },
+    });
+    expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        requiresResponse: true,
+      }),
+    }));
+  });
+
+  it('rejects cross-agent documents without sender ownership or project references', async () => {
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'document_sender_forbidden',
+    });
+
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_project_reference_required',
+    });
   });
 
   it('blocks proof-carrying commits until landing inspection evidence covers the write set', async () => {
