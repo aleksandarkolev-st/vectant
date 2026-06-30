@@ -12359,6 +12359,261 @@ async function hipModuleRuntimeRow(json, filePath, context) {
   });
 }
 
+async function openClRuntimeRow(json, filePath, context) {
+  const ledger = ledgerFacet(json);
+  const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
+  const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
+  const openclContract = compactObject(contract.opencl_contract ?? contract.openclContract);
+  const sourceAdaptation = sourceAdaptationProofFacet(
+    json,
+    json.runtimeProofArtifact,
+    json.runtime_proof_artifact,
+    ledgerRecord,
+    ledger.record,
+    contract,
+  );
+  const nativeApiEvidence = compactObject(json.nativeOpenClApiEvidence ?? json.native_opencl_api_evidence);
+  const nativeCounts = compactObject(nativeApiEvidence.counts);
+  const runtimeTrace = compactObject(json.runtimeTrace ?? json.runtime_trace);
+  const negativeEditRefusal = compactObject(json.negativeEditRefusal ?? json.negative_edit_refusal);
+  const executableStaticCheck = compactObject(
+    negativeEditRefusal.executableStaticCheck ?? negativeEditRefusal.executable_static_check,
+  );
+  const computeOracleFacet = await realRocmLedgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    { present: false, accepted: false },
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  const directComputeArtifacts = compactObject(
+    json.computeOracleArtifacts
+    ?? json.compute_oracle_artifacts
+    ?? ledgerRecord.oracle_artifacts?.compute_oracle_artifacts
+    ?? ledgerRecord.oracleArtifacts?.computeOracleArtifacts,
+  );
+  const computeCardEvidence = await visualArtifactEvidence(
+    [
+      directComputeArtifacts.rendered_card_png,
+      directComputeArtifacts.renderedCardPng,
+      computeOracleFacet.compute?.renderedCard?.path,
+    ],
+    context.repoRoot,
+    path.dirname(filePath),
+    {},
+    false,
+  );
+  const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
+  const expectedOutputVerified =
+    directComputeArtifacts.expected_output_declared === true
+    && directComputeArtifacts.expected_output_required !== false
+    && directComputeArtifacts.expected_output_verified === true
+    && computeValidation.expectedOutputVerified === true;
+  const supportedPipelineScope = firstText(
+    openclContract.supported_pipeline_scope,
+    openclContract.supportedPipelineScope,
+    contract.artifact_identity?.supported_pipeline_scope,
+    contract.artifactIdentity?.supportedPipelineScope,
+    json.profile?.validationScope,
+    json.profile?.validation_scope,
+  );
+  const declaredScopeEvidence = declaredScopeEvidenceFacet({
+    supportedPipelineScope,
+    contract,
+    backendContract: openclContract,
+    profile: json.profile,
+  });
+  const artifactAfterHash = firstText(
+    json.compiler?.afterProgramHash,
+    json.compiler?.after_program_hash,
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    ledgerRecord.artifact_after_hash,
+    ledgerRecord.artifactAfterHash,
+  );
+  const loaderEpoch2 = eventByEpoch(eventList(runtimeTrace.loaderEvents, runtimeTrace.loader_events), 2);
+  const epochPublish2 = eventByEpoch(eventList(runtimeTrace.epochEvents, runtimeTrace.epoch_events), 2);
+  const dispatchEpoch2 = eventByEpoch(eventList(runtimeTrace.dispatchEvents, runtimeTrace.dispatch_events), 2);
+  const outputEpoch2 = eventByEpoch(eventList(runtimeTrace.outputEvents, runtimeTrace.output_events), 2);
+  const retirementEvent = compactObject(runtimeTrace.retirementEvent ?? runtimeTrace.retirement_event);
+  const runtimeTimestamps = {
+    loader: eventTimestampNs(loaderEpoch2),
+    epochPublish: eventTimestampNs(epochPublish2),
+    dispatch: eventTimestampNs(dispatchEpoch2),
+    output: eventTimestampNs(outputEpoch2),
+    retirement: eventTimestampNs(retirementEvent),
+  };
+  const runtimeTimestampProofAccepted =
+    runtimeTimestamps.loader !== null
+    && runtimeTimestamps.epochPublish !== null
+    && runtimeTimestamps.dispatch !== null
+    && runtimeTimestamps.output !== null
+    && runtimeTimestamps.retirement !== null
+    && runtimeTimestamps.loader <= runtimeTimestamps.epochPublish
+    && runtimeTimestamps.epochPublish <= runtimeTimestamps.dispatch
+    && runtimeTimestamps.dispatch <= runtimeTimestamps.output
+    && runtimeTimestamps.output <= runtimeTimestamps.retirement;
+  const epoch2ArtifactHashes = [
+    loaderEpoch2.artifact_hash,
+    loaderEpoch2.artifactHash,
+    epochPublish2.artifact_hash,
+    epochPublish2.artifactHash,
+    dispatchEpoch2.artifact_hash,
+    dispatchEpoch2.artifactHash,
+    outputEpoch2.artifact_hash,
+    outputEpoch2.artifactHash,
+  ].map(text).filter(Boolean);
+  const epoch2ArtifactHashProofAccepted =
+    Boolean(artifactAfterHash)
+    && epoch2ArtifactHashes.length >= 4
+    && epoch2ArtifactHashes.every((hash) => hash === artifactAfterHash);
+  const negativeAbiRefusalAccepted =
+    negativeEditRefusal.refusalProven === true
+    && negativeEditRefusal.gpuHmrSuccess === false
+    && negativeEditRefusal.abiCompatibilityClass === 'layout_changed'
+    && executableStaticCheck.accepted === true
+    && executableStaticCheck.signatureChanged === true
+    && executableStaticCheck.negativeKernelFound === true
+    && Boolean(firstText(executableStaticCheck.sourceAfterHash, executableStaticCheck.source_after_hash))
+    && Boolean(firstText(executableStaticCheck.acceptedSignatureHash, executableStaticCheck.accepted_signature_hash))
+    && Boolean(firstText(executableStaticCheck.negativeSignatureHash, executableStaticCheck.negative_signature_hash));
+  const accepted =
+    json.gpuHmrSuccess === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && computeOracleFacet.accepted === true
+    && computeValidation.accepted === true
+    && expectedOutputVerified
+    && runtimeTrace.processRestarted === false
+    && runtimeTrace.sameProcess === true
+    && nativeApiEvidence.accepted === true
+    && Number(nativeCounts.clBuildProgram ?? 0) >= 2
+    && Number(nativeCounts.clCreateKernel ?? 0) >= 2
+    && Number(nativeCounts.clEnqueueNDRangeKernel ?? 0) >= 2
+    && Number(nativeCounts.clEnqueueReadBuffer ?? 0) >= 2
+    && declaredScopeEvidence.accepted === true
+    && negativeAbiRefusalAccepted
+    && runtimeTimestampProofAccepted
+    && epoch2ArtifactHashProofAccepted
+    && runtimeProofArtifactGate.accepted === true
+    && sourceAdaptation.acceptedForNoShimHmr === true;
+  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  return finalizeRow({
+    artifactSchema: json.schema,
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: 'opencl',
+    targetId: profileId,
+    profileId,
+    proofMode: 'opencl_runtime_readback',
+    evidenceKind: 'compute_oracle',
+    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
+    acceptanceClass: accepted ? 'scoped_opencl_runtime_hmr' : 'opencl_runtime_rejected',
+    acceptanceScope: accepted ? 'opencl_declared_compute_readback' : null,
+    acceptance_scope: accepted ? 'opencl_declared_compute_readback' : null,
+    acceptedForGpuHmr: accepted,
+    gpuHmrSuccess: accepted,
+    refusalProven: false,
+    proofChainAccepted: accepted,
+    proofChain: accepted ? 'opencl_ledger_native_api_readback_chain' : 'opencl_runtime_chain_rejected',
+    proofIds: proofIdsFrom(json, ledger, runtimeProofArtifact),
+    ledger,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
+    sourceAdaptation,
+    source_adaptation: sourceAdaptation,
+    sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
+    outputOracleFacet: computeOracleFacet,
+    output_oracle_facet: computeOracleFacet,
+    supportedPipelineScope,
+    supported_pipeline_scope: supportedPipelineScope,
+    declaredScopeEvidence,
+    declared_scope_evidence: declaredScopeEvidence,
+    expectedOutputVerified,
+    expected_output_verified: expectedOutputVerified,
+    expectedOutputHash: directComputeArtifacts.expected_output_hash,
+    expected_output_hash: directComputeArtifacts.expected_output_hash,
+    nativeOpenClApiEvidence: nativeApiEvidence,
+    native_opencl_api_evidence: nativeApiEvidence,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
+    negativeEditRefusal,
+    negative_edit_refusal: negativeEditRefusal,
+    negativeAbiRefusalAccepted,
+    negative_abi_refusal_accepted: negativeAbiRefusalAccepted,
+    runtimeTimestampProof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    runtime_timestamp_proof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    epoch2ArtifactHashProof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifactAfterHash,
+      observedArtifactHashes: epoch2ArtifactHashes,
+    },
+    epoch2_artifact_hash_proof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifact_after_hash: artifactAfterHash,
+      observed_artifact_hashes: epoch2ArtifactHashes,
+    },
+    visual: {
+      required: false,
+      accepted: false,
+      evidenceKind: 'compute_card_not_runtime_visual_oracle',
+      reason: 'opencl_readback_card_is_human_compute_evidence_not_frame_visual_proof',
+    },
+    computeCardEvidence,
+    compute_card_evidence: computeCardEvidence,
+    runMode: timingEvidence(
+      ledgerRecord,
+      json.timingMetrics,
+      json.timing_metrics,
+      json.timings,
+    ),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: boolOrNull(runtimeTrace.processRestarted),
+    timings: {
+      totalValidatorWallTimeNs: finiteNumber(json.timings?.total_validator_wall_time),
+      dispatchToOutputProofTimeNs: finiteNumber(json.timings?.dispatch_to_output_proof_time),
+      oracleAnalysisTimeNs: finiteNumber(json.timings?.oracle_analysis_time),
+    },
+    reasons: accepted ? [] : compactStringList([
+      ...ledger.failedInvariants.map((failure) => failure.code),
+      ...((computeOracleFacet.failedGates ?? []).map((failure) => failure.code)),
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
+      computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
+      computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
+      expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
+      runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      runtimeTrace.sameProcess === true ? null : 'same_process_not_accepted',
+      runtimeTrace.processRestarted === false ? null : 'process_continuity_not_accepted',
+      nativeApiEvidence.accepted === true ? null : 'native_opencl_api_not_accepted',
+      declaredScopeEvidence.accepted === true
+        ? null
+        : 'opencl_declared_scope_not_evidence_backed',
+      negativeAbiRefusalAccepted ? null : 'opencl_negative_abi_refusal_not_executable',
+      runtimeTimestampProofAccepted ? null : 'opencl_runtime_event_timestamps_not_observed',
+      epoch2ArtifactHashProofAccepted ? null : 'opencl_epoch2_artifact_hash_chain_not_proven',
+    ]),
+    openGaps: accepted ? [] : compactStringList([
+      'opencl_runtime_readback_proof_not_accepted',
+      ...sourceAdaptation.failedGates.map((failure) => failure.code),
+    ]),
+  });
+}
+
 async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
   const externalProjectContract = externalProjectContractEvidence(json);
@@ -18262,6 +18517,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (schema.includes('hip_module_runtime_proof') || proofId.startsWith('hip-module-runtime-proof:')) {
     return hipModuleRuntimeRow(json, filePath, context);
+  }
+  if (schema.includes('opencl_runtime_proof') || proofId.startsWith('opencl-runtime-proof:')) {
+    return openClRuntimeRow(json, filePath, context);
   }
   if (
     schema.includes('oidn_preflight')
