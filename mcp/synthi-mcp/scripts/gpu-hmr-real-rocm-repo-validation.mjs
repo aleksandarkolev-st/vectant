@@ -7957,6 +7957,26 @@ function parseLifecycleExitCodeText(timings, phase) {
   return match?.[1] ?? null;
 }
 
+function usableLifecycleStatusText(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text.toLowerCase() === 'unknown') return null;
+  return text;
+}
+
+function parseLifecycleStatusTextFromWrapperLogs(logs, phase) {
+  const token = `${String(phase ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_status`;
+  for (const log of logs) {
+    const lines = String(log ?? '').split(/\r?\n/g);
+    for (const line of lines) {
+      if (!/^upstream (?:run|build) skipped after\b/.test(line)) continue;
+      const match = new RegExp(`\\b${token}=([^\\s]+)\\b`).exec(line);
+      const status = usableLifecycleStatusText(match?.[1]);
+      if (status !== null) return status;
+    }
+  }
+  return null;
+}
+
 function lifecycleExitCodeFailed(value) {
   const text = String(value ?? '').trim().toLowerCase();
   return Boolean(text && !['0', 'skipped', 'not-run', 'not_run'].includes(text));
@@ -7981,12 +8001,27 @@ function classifyUpstreamLifecycleFailure({
     String(runLog ?? ''),
     String(lifecycleError?.message ?? ''),
   ].join('\n');
-  const runExitCodeText = /\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1] ?? null;
-  const configureExitCodeText = parseLifecycleExitCodeText(timings, 'configure');
-  const buildExitCodeText = parseLifecycleExitCodeText(timings, 'build');
-  const configureStageFailed = /\bconfigure_ms=failed\b/.test(String(timings ?? ''))
+  const statusLogs = [runLog, buildLog];
+  const runExitCodeText =
+    usableLifecycleStatusText(/\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1])
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'run');
+  const configureExitCodeText =
+    usableLifecycleStatusText(parseLifecycleExitCodeText(timings, 'configure'))
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'configure');
+  const postConfigureExitCodeText =
+    usableLifecycleStatusText(parseLifecycleExitCodeText(timings, 'post_configure'))
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'post_configure');
+  const buildExitCodeText =
+    usableLifecycleStatusText(parseLifecycleExitCodeText(timings, 'build'))
+    ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'build');
+  const configureStatusKnown = configureExitCodeText !== null;
+  const postConfigureStatusKnown = postConfigureExitCodeText !== null;
+  const buildStatusKnown = buildExitCodeText !== null;
+  const configureStageFailed = (!configureStatusKnown && /\bconfigure_ms=failed\b/.test(String(timings ?? '')))
     || lifecycleExitCodeFailed(configureExitCodeText);
-  const buildStageFailed = /\bbuild_ms=failed\b/.test(String(timings ?? ''))
+  const postConfigureStageFailed = (!postConfigureStatusKnown && /\bpost_configure_ms=failed\b/.test(String(timings ?? '')))
+    || lifecycleExitCodeFailed(postConfigureExitCodeText);
+  const buildStageFailed = (!buildStatusKnown && /\bbuild_ms=failed\b/.test(String(timings ?? '')))
     || lifecycleExitCodeFailed(buildExitCodeText);
   const buildStageSkipped = lifecycleExitCodeSkipped(buildExitCodeText);
   const runNotStarted = runExitCodeText === 'not-run';
@@ -7999,8 +8034,15 @@ function classifyUpstreamLifecycleFailure({
     configureStageFailed
     || (!configureLogSucceeded && /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText));
   const buildBlockedByConfigure = cmakeConfigureFailed && (buildStageFailed || buildStageSkipped);
+  const buildBlockedByPostConfigure = !cmakeConfigureFailed
+    && postConfigureStageFailed
+    && (buildStageFailed || buildStageSkipped);
   const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
+  const runBlockedByPostConfigure = !cmakeConfigureFailed
+    && postConfigureStageFailed
+    && runNotStarted;
   const buildFailed = !buildBlockedByConfigure
+    && !buildBlockedByPostConfigure
     && (
       buildStageFailed
       || /fatal\s+error:.*file\s+not\s+found/i.test(buildLogText)
@@ -8016,8 +8058,11 @@ function classifyUpstreamLifecycleFailure({
     cmakeConfigureFailed ? 'cmake_configure_failed' : null,
     missingDependencies.length > 0 ? 'missing_build_dependency' : null,
     buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
+    postConfigureStageFailed ? 'upstream_post_configure_failed' : null,
+    buildBlockedByPostConfigure ? 'upstream_build_blocked_by_post_configure' : null,
     buildFailed ? 'upstream_build_failed' : null,
     runBlockedByConfigure ? 'upstream_run_not_started_after_configure_failure' : null,
+    runBlockedByPostConfigure ? 'upstream_run_not_started_after_post_configure_failure' : null,
     runBlockedByBuild ? 'upstream_run_not_started_after_build_failure' : null,
     runFailed ? 'upstream_run_failed' : null,
     lifecycleError ? 'upstream_lifecycle_command_failed' : null,
@@ -8034,10 +8079,16 @@ function classifyUpstreamLifecycleFailure({
     cmake_configure_failed: cmakeConfigureFailed,
     configureExitCodeText,
     configure_exit_code_text: configureExitCodeText,
+    postConfigureFailed: postConfigureStageFailed,
+    post_configure_failed: postConfigureStageFailed,
+    postConfigureExitCodeText,
+    post_configure_exit_code_text: postConfigureExitCodeText,
     buildFailed,
     build_failed: buildFailed,
     buildBlockedByConfigure,
     build_blocked_by_configure: buildBlockedByConfigure,
+    buildBlockedByPostConfigure,
+    build_blocked_by_post_configure: buildBlockedByPostConfigure,
     buildExitCodeText,
     build_exit_code_text: buildExitCodeText,
     runFailed,
@@ -8046,6 +8097,8 @@ function classifyUpstreamLifecycleFailure({
     run_blocked_by_build: runBlockedByBuild,
     runBlockedByConfigure,
     run_blocked_by_configure: runBlockedByConfigure,
+    runBlockedByPostConfigure,
+    run_blocked_by_post_configure: runBlockedByPostConfigure,
     runExitCodeText,
     run_exit_code_text: runExitCodeText,
     timings,
@@ -11205,6 +11258,14 @@ function realRocmUpstreamLifecycleProofSchedulingGaps() {
     lifecycle.buildBlockedByConfigure === true
     || lifecycle.build_blocked_by_configure === true
     || reasons.includes('upstream_build_blocked_by_configure');
+  const postConfigureFailed =
+    lifecycle.postConfigureFailed === true
+    || lifecycle.post_configure_failed === true
+    || reasons.includes('upstream_post_configure_failed');
+  const buildBlockedByPostConfigure =
+    lifecycle.buildBlockedByPostConfigure === true
+    || lifecycle.build_blocked_by_post_configure === true
+    || reasons.includes('upstream_build_blocked_by_post_configure');
   const buildFailed =
     lifecycle.buildFailed === true
     || lifecycle.build_failed === true
@@ -11213,6 +11274,10 @@ function realRocmUpstreamLifecycleProofSchedulingGaps() {
     lifecycle.runBlockedByConfigure === true
     || lifecycle.run_blocked_by_configure === true
     || reasons.includes('upstream_run_not_started_after_configure_failure');
+  const runBlockedByPostConfigure =
+    lifecycle.runBlockedByPostConfigure === true
+    || lifecycle.run_blocked_by_post_configure === true
+    || reasons.includes('upstream_run_not_started_after_post_configure_failure');
   const runBlockedByBuild =
     lifecycle.runBlockedByBuild === true
     || lifecycle.run_blocked_by_build === true
@@ -11222,7 +11287,10 @@ function realRocmUpstreamLifecycleProofSchedulingGaps() {
   const runtimeStagesAbsent =
     cmakeConfigureFailed
     || buildBlockedByConfigure
+    || postConfigureFailed
+    || buildBlockedByPostConfigure
     || runBlockedByConfigure
+    || runBlockedByPostConfigure
     || runBlockedByBuild
     || (buildFailed && runNotStarted)
     || (missingBuildDependency && runNotStarted);
@@ -23688,6 +23756,84 @@ int main()
     || !buildFailureClassification.missingDependencies.includes('half/half.hpp')
   ) {
     throw new Error('upstream lifecycle build-failure classifier self-check failed');
+  }
+  const timeoutBuildFailureClassification = classifyUpstreamLifecycleFailure({
+    timings: [
+      'configure_ms=failed',
+      'build_ms=failed',
+      'run_ms=skipped',
+      'configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLog: '-- The C compiler identification is Clang\n-- Generic project option OFF',
+    buildLog: '[ 38%] Building CXX object src/CMakeFiles/lib.dir/kernel.cpp.o\nTerminated\ngmake: *** [Makefile:6677: target] Terminated',
+    runLog: 'upstream run skipped after configure_status=0 post_configure_status=0 build_status=143',
+    lifecycleError: new Error('worker-side lifecycle timeout terminated build'),
+  });
+  if (
+    timeoutBuildFailureClassification.cmakeConfigureFailed
+    || timeoutBuildFailureClassification.configureExitCodeText !== '0'
+    || timeoutBuildFailureClassification.buildExitCodeText !== '143'
+    || !timeoutBuildFailureClassification.buildFailed
+    || !timeoutBuildFailureClassification.runBlockedByBuild
+    || timeoutBuildFailureClassification.reasons.includes('cmake_configure_failed')
+    || !timeoutBuildFailureClassification.reasons.includes('upstream_build_failed')
+    || !timeoutBuildFailureClassification.reasons.includes('upstream_run_not_started_after_build_failure')
+  ) {
+    throw new Error('upstream lifecycle timeout-build classifier self-check failed');
+  }
+  const postConfigureFailureClassification = classifyUpstreamLifecycleFailure({
+    timings: [
+      'configure_ms=100',
+      'build_ms=0',
+      'run_ms=0',
+      'configure_exit_code=0',
+      'post_configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLog: 'Configuring done\nBuild files have been written to: /tmp/build',
+    buildLog: 'upstream build skipped after configure_status=0 post_configure_status=7',
+    runLog: 'upstream run skipped after configure_status=0 post_configure_status=7 build_status=skipped',
+    lifecycleError: new Error('post-configure adaptation failed'),
+  });
+  if (
+    postConfigureFailureClassification.cmakeConfigureFailed
+    || postConfigureFailureClassification.configureExitCodeText !== '0'
+    || postConfigureFailureClassification.postConfigureExitCodeText !== '7'
+    || !postConfigureFailureClassification.postConfigureFailed
+    || !postConfigureFailureClassification.buildBlockedByPostConfigure
+    || !postConfigureFailureClassification.runBlockedByPostConfigure
+    || postConfigureFailureClassification.buildFailed
+    || postConfigureFailureClassification.reasons.includes('cmake_configure_failed')
+    || !postConfigureFailureClassification.reasons.includes('upstream_post_configure_failed')
+    || !postConfigureFailureClassification.reasons.includes('upstream_build_blocked_by_post_configure')
+    || !postConfigureFailureClassification.reasons.includes('upstream_run_not_started_after_post_configure_failure')
+  ) {
+    throw new Error('upstream lifecycle post-configure classifier self-check failed');
+  }
+  const projectLogStatusSpoofClassification = classifyUpstreamLifecycleFailure({
+    timings: [
+      'configure_ms=failed',
+      'build_ms=failed',
+      'run_ms=skipped',
+      'configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+    ].join('\n'),
+    configureLog: 'project log: configure_status=0\nConfiguring incomplete, errors occurred!',
+    buildLog: 'project log: build_status=0',
+    runLog: 'project log: run_status=0',
+    lifecycleError: new Error('configure command failed'),
+  });
+  if (
+    projectLogStatusSpoofClassification.configureExitCodeText !== null
+    || projectLogStatusSpoofClassification.buildExitCodeText !== null
+    || !projectLogStatusSpoofClassification.cmakeConfigureFailed
+    || !projectLogStatusSpoofClassification.reasons.includes('cmake_configure_failed')
+  ) {
+    throw new Error('upstream lifecycle wrapper-only status parser self-check failed');
   }
   const missingDependencyProbeRoots = missingDependencyProbeIncludeRoots({
     targetIncludeDirs: ['include', '/abs-ignored', '../escape-ignored'],

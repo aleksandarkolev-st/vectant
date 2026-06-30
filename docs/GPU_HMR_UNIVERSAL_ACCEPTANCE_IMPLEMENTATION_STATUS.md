@@ -4,6 +4,22 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Real ROCm Lifecycle Status Classifier Hardening
+
+The real ROCm upstream lifecycle classifier now treats timeout-fallback `unknown` status fields as unknown locally, then recovers `configure_status`, `post_configure_status`, `build_status`, and `run_status` only from wrapper-owned skip lines such as `upstream build skipped after ...` and `upstream run skipped after ...`. Arbitrary project logs that print success-shaped `*_status=0` tokens are ignored for status recovery, so a build script cannot spoof a configure/build/run success by writing convenient text.
+
+This closes a serious-project refusal fidelity gap without adding any project branch. A run that configured successfully and then timed out or was terminated in build now classifies as `upstream_build_failed` / `upstream_run_not_started_after_build_failure`, not as a configure failure just because fallback timing text had `configure_ms=failed`. Post-configure failures now have explicit `upstream_post_configure_failed`, build-blocked, and run-blocked reasons. The resulting proof-scheduling signals remain refusal-only and cannot satisfy artifact transport, epoch publication, dispatch trace, host identity, app-hook closure, output oracle, firewall, strict runtime proof, or proof-ledger success.
+
+The follow-up bounded MIOpen verification attempt after this code change timed out before producing a retained result, and the marked worker-side lifecycle process was cleaned up. No new MIOpen success or new retained MIOpen proof artifact is claimed from that timed attempt; the latest retained serious-project evidence remains the fail-closed `gpu-real-rocm-MIOpen-20260630132711` artifact described below.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including timeout-build, post-configure, and project-log status-spoof lifecycle classifier checks
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; self-check proof gpu-validation-matrix-ledger:sha256:9be661cda537f20d1d54d74c1ee6803ad7245483381e1bb1943a881a57b846d4
+```
+
 ## 2026-06-30 Vulkan Host Runtime And Broad Matrix Refresh
 
 Vulkan now has scoped live full-runtime visual proof on this Windows host through a generic host-local Vulkan transport. The runtime proof still records the worker-container Vulkan preflight as refusal-only support when the worker has only `libvulkan.so.1` and no ICD/tooling. On Windows hosts with usable Vulkan, the runner executes a temporary PowerShell `Add-Type` probe that binds `vulkan-1.dll`, creates a real Vulkan instance/device/queue, descriptor set, pipeline layouts, shader modules, compute pipelines, command buffers, fences, and a host-visible readback buffer, then dispatches epoch 1 before creating/loading/publishing and dispatching epoch 2.
