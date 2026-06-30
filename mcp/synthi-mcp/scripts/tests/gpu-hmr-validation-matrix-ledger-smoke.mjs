@@ -17395,8 +17395,6 @@ await writeJson(olderBoundarySupportPath, {
   slug: 'gpu-real-rocm-runtime-boundary-support-older-rich-refusal',
   real_rocm_runtime_adapter_execution: boundarySupportExecution,
   realRocmRuntimeAdapterExecution: boundarySupportExecution,
-  real_rocm_runtime_adapter_stage_events: boundarySupportStageEvents,
-  realRocmRuntimeAdapterStageEvents: boundarySupportStageEvents,
 });
 await writeJson(newerBoundaryThinPath, {
   ...runtimeBoundarySupportBaseArtifact,
@@ -17463,6 +17461,17 @@ assert.equal(
 assert.ok(
   runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterExecution.failedGates.includes(
     'real_rocm_runtime_adapter_execution_boundary_coverage_incomplete',
+  ),
+);
+assert.equal(runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterStageEvents.present, true);
+assert.equal(runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterStageEvents.accepted, false);
+assert.deepEqual(
+  runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterStageEvents.boundaryLineHashes,
+  boundarySupportStageEvents.boundaryLineHashes,
+);
+assert.ok(
+  runtimeBoundarySupportSelectionRow.realRocmRuntimeAdapterStageEvents.missingStages.includes(
+    'output_oracle',
   ),
 );
 const runtimeBoundarySupportAttempt =

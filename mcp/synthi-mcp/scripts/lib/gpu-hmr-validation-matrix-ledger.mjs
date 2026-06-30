@@ -7966,6 +7966,168 @@ function realRocmRuntimeAdapterStageEventsFacet(input = {}) {
   };
 }
 
+function runtimeAdapterStageFieldChecks(stage, fieldsList = []) {
+  const hasField = (...names) => fieldsList.some((fields) => Boolean(firstText(
+    ...names.map((name) => fields[name]),
+  )));
+  const hasArtifactHash = () => fieldsList.some((fields) =>
+    Boolean(artifactHashFromRuntimeBoundaryFields(fields))
+  );
+  switch (stage) {
+    case 'artifact_transport':
+      return {
+        changed_artifact_hash: hasArtifactHash(),
+        same_process_transport_event: hasField('runtime_session', 'runtimeSession')
+          && hasField('process_id', 'processId', 'pid'),
+        loaded_artifact_hash: hasArtifactHash(),
+      };
+    case 'epoch_publication':
+      return {
+        published_epoch: hasField('epoch', 'published_epoch', 'publishedEpoch'),
+        published_artifact_hash: hasArtifactHash(),
+        same_process_epoch_event: hasField('runtime_session', 'runtimeSession')
+          && hasField('process_id', 'processId', 'pid'),
+      };
+    case 'dispatch_trace':
+      return {
+        dispatch_id: hasField('dispatch_id', 'dispatchId', 'dispatch'),
+        dispatch_epoch: hasField('epoch', 'dispatch_epoch', 'dispatchEpoch'),
+        dispatch_artifact_hash: hasArtifactHash(),
+      };
+    case 'host_identity':
+      return {
+        process_id: hasField('process_id', 'processId', 'pid'),
+        device_identity: hasField('device_uuid', 'deviceUuid', 'device_id', 'deviceId'),
+        context_or_queue_identity: hasField(
+          'context_id',
+          'contextId',
+          'queue_id',
+          'queueId',
+          'stream',
+          'stream_id',
+          'streamId',
+        ),
+      };
+    case 'output_oracle':
+      return {
+        after_dispatch_id: hasField(
+          'after_dispatch_id',
+          'afterDispatchId',
+          'dispatch_id',
+          'dispatchId',
+        ),
+        output_target_id: hasField('output_target_id', 'outputTargetId'),
+        readback_or_visual_artifact: hasField(
+          'raw_readback_bin',
+          'rawReadbackBin',
+          'raw_readback_hash',
+          'rawReadbackHash',
+          'before_image',
+          'beforeImage',
+          'after_image',
+          'afterImage',
+          'diff_image',
+          'diffImage',
+          'readback_bytes',
+          'readback_sample_sha256',
+        ),
+      };
+    default:
+      return {};
+  }
+}
+
+function realRocmRuntimeAdapterStageEventsFromBoundaryLines(lines = []) {
+  const normalizedLines = compactStringList(Array.isArray(lines) ? lines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  if (normalizedLines.length === 0) return {};
+  const stageResults = {};
+  const boundaryLineHashes = runtimeBoundaryLineHashes(normalizedLines);
+  const blockingGaps = [];
+  for (const stage of REAL_ROCM_APP_HOOK_REQUIRED_STAGES) {
+    const camelKey = realRocmAppHookStageCamel(stage);
+    const event = REAL_ROCM_RUNTIME_ADAPTER_REQUIRED_BOUNDARY_EVENTS.find((item) =>
+      item.kind === stage
+    );
+    const stageLines = event
+      ? normalizedLines.filter((line) => event.pattern.test(line))
+      : [];
+    const observed = stageLines.length > 0;
+    const requiredProofKinds = realRocmStageProofKinds(stage);
+    const fieldsList = stageLines.map(parseRuntimeBoundaryKeyValues);
+    const fieldChecks = observed ? runtimeAdapterStageFieldChecks(stage, fieldsList) : {};
+    const missingProofKinds = observed
+      ? requiredProofKinds.filter((kind) => fieldChecks[kind] !== true)
+      : requiredProofKinds;
+    const stageBoundaryLineHashes = runtimeBoundaryLineHashes(stageLines);
+    const evidenceRefs = stageLines.map((line) =>
+      `runtime-adapter-stage:${stage}:${normalizeSha256(
+        `sha256:${sha256Hex(String(line))}`,
+      )}`
+    );
+    const result = {
+      stage,
+      observed,
+      runtimeObserved: observed,
+      runtime_observed: observed,
+      boundaryLineCount: stageLines.length,
+      boundary_line_count: stageLines.length,
+      boundaryLineHashes: stageBoundaryLineHashes,
+      boundary_line_hashes: stageBoundaryLineHashes,
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
+      fieldChecks,
+      field_checks: fieldChecks,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    };
+    if (!observed) blockingGaps.push(`runtime_adapter_stage_${stage}_missing`);
+    for (const proofKind of missingProofKinds) {
+      blockingGaps.push(`runtime_adapter_stage_${stage}_${proofKind}_missing`);
+    }
+    stageResults[stage] = result;
+    stageResults[camelKey] = result;
+  }
+  const facetSeed = { boundaryLineHashes, stageResults, blockingGaps };
+  const complete = blockingGaps.length === 0;
+  return {
+    schemaVersion: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION,
+    schema_version: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION,
+    proofAuthority: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY,
+    proof_authority: REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY,
+    present: true,
+    complete,
+    acceptedAsSupportEvidence: complete,
+    accepted_as_support_evidence: complete,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    boundaryLineCount: normalizedLines.length,
+    boundary_line_count: normalizedLines.length,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    stageResults,
+    stage_results: stageResults,
+    evidenceRefs: Object.values(stageResults).flatMap((stage) =>
+      Array.isArray(stage.evidenceRefs) ? stage.evidenceRefs : []
+    ),
+    evidence_refs: Object.values(stageResults).flatMap((stage) =>
+      Array.isArray(stage.evidenceRefs) ? stage.evidenceRefs : []
+    ),
+    facetHash: `sha256:${sha256Hex(stableJson(facetSeed))}`,
+    facet_hash: `sha256:${sha256Hex(stableJson(facetSeed))}`,
+  };
+}
+
 function realRocmAppHookStageCamel(stageName) {
   return stageName.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
 }
@@ -15965,7 +16127,88 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? evidence.runtime_adapter_execution
     ?? evidence.runtimeAdapterExecution,
   ));
-  const realRocmRuntimeAdapterStageEvents = realRocmRuntimeAdapterStageEventsFacet(compactObject(
+  const serializedRealRocmAppHookContractCandidate = compactObject(
+    json.real_rocm_app_hook_contract
+    ?? json.realRocmAppHookContract
+    ?? json.app_hook_contract
+    ?? json.appHookContract
+    ?? summary.real_rocm_app_hook_contract
+    ?? summary.realRocmAppHookContract
+    ?? summary.app_hook_contract
+    ?? summary.appHookContract
+    ?? runtimeProofArtifact.real_rocm_app_hook_contract
+    ?? runtimeProofArtifact.realRocmAppHookContract
+    ?? runtimeProofArtifact.app_hook_contract
+    ?? runtimeProofArtifact.appHookContract,
+  );
+  const serializedAppHookRequiresStageEvents =
+    serializedRealRocmAppHookContractCandidate.derivedFromRuntimeAdapterStageEvents === true
+    || serializedRealRocmAppHookContractCandidate.derived_from_runtime_adapter_stage_events === true
+    || firstText(
+      serializedRealRocmAppHookContractCandidate.contractSource,
+      serializedRealRocmAppHookContractCandidate.contract_source,
+      serializedRealRocmAppHookContractCandidate.source,
+    ) === 'runtime_adapter_stage_events';
+  const runtimeBoundaryTargetProcessSourceLines = compactStringList([
+    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines)
+      ? realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines)
+      ? realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines)
+      ? realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines
+      : []),
+    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtime_boundary_lines)
+      ? realRocmRuntimeProfileAdapterResult.runtime_boundary_lines
+      : []),
+    ...(Array.isArray(realRocmRuntimeAdapterExecution.adapterRuntimeBoundaryLines)
+      ? realRocmRuntimeAdapterExecution.adapterRuntimeBoundaryLines
+      : []),
+    ...(Array.isArray(realRocmRuntimeAdapterExecution.adapter_runtime_boundary_lines)
+      ? realRocmRuntimeAdapterExecution.adapter_runtime_boundary_lines
+      : []),
+    ...(Array.isArray(realRocmRuntimeAdapterExecution.runtimeBoundaryLines)
+      ? realRocmRuntimeAdapterExecution.runtimeBoundaryLines
+      : []),
+    ...(Array.isArray(realRocmRuntimeAdapterExecution.runtime_boundary_lines)
+      ? realRocmRuntimeAdapterExecution.runtime_boundary_lines
+      : []),
+  ]);
+  const runtimeBoundaryStageEventSourceLines = compactStringList([
+    ...(runtimeBoundarySupportAuthorityNeutral(realRocmRuntimeProfileAdapterResult)
+      ? [
+        ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines)
+          ? realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines
+          : []),
+        ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines)
+          ? realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines
+          : []),
+        ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines)
+          ? realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines
+          : []),
+        ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtime_boundary_lines)
+          ? realRocmRuntimeProfileAdapterResult.runtime_boundary_lines
+          : []),
+      ]
+      : []),
+    ...(runtimeBoundarySupportAuthorityNeutral(realRocmRuntimeAdapterExecution)
+      && firstText(
+        realRocmRuntimeAdapterExecution.proofAuthority,
+        realRocmRuntimeAdapterExecution.proof_authority,
+      ) === REAL_ROCM_RUNTIME_ADAPTER_EXECUTION_AUTHORITY
+      && firstText(realRocmRuntimeAdapterExecution.status) === 'runtime_adapter_executed'
+      ? [
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.runtimeBoundaryLines)
+          ? realRocmRuntimeAdapterExecution.runtimeBoundaryLines
+          : []),
+        ...(Array.isArray(realRocmRuntimeAdapterExecution.runtime_boundary_lines)
+          ? realRocmRuntimeAdapterExecution.runtime_boundary_lines
+          : []),
+      ]
+      : []),
+  ]);
+  const serializedRuntimeAdapterStageEvents = compactObject(
     json.real_rocm_runtime_adapter_stage_events
     ?? json.realRocmRuntimeAdapterStageEvents
     ?? json.runtime_adapter_stage_events
@@ -15982,7 +16225,16 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? evidence.realRocmRuntimeAdapterStageEvents
     ?? evidence.runtime_adapter_stage_events
     ?? evidence.runtimeAdapterStageEvents,
-  ));
+  );
+  const realRocmRuntimeAdapterStageEvents = realRocmRuntimeAdapterStageEventsFacet(
+    Object.keys(serializedRuntimeAdapterStageEvents).length > 0
+      ? serializedRuntimeAdapterStageEvents
+      : serializedAppHookRequiresStageEvents
+        ? {}
+        : realRocmRuntimeAdapterStageEventsFromBoundaryLines(
+        runtimeBoundaryStageEventSourceLines,
+      ),
+  );
   const realRocmRuntimeAdapterResultTransport =
     realRocmRuntimeAdapterResultTransportFacet(compactObject(
       json.real_rocm_runtime_adapter_result_transport
@@ -16021,32 +16273,6 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ?? evidence.runtime_boundary_target_environment
       ?? evidence.runtimeBoundaryTargetEnvironment,
     ));
-  const runtimeBoundaryTargetProcessSourceLines = compactStringList([
-    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines)
-      ? realRocmRuntimeProfileAdapterResult.adapterRuntimeBoundaryLines
-      : []),
-    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines)
-      ? realRocmRuntimeProfileAdapterResult.adapter_runtime_boundary_lines
-      : []),
-    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines)
-      ? realRocmRuntimeProfileAdapterResult.runtimeBoundaryLines
-      : []),
-    ...(Array.isArray(realRocmRuntimeProfileAdapterResult.runtime_boundary_lines)
-      ? realRocmRuntimeProfileAdapterResult.runtime_boundary_lines
-      : []),
-    ...(Array.isArray(realRocmRuntimeAdapterExecution.adapterRuntimeBoundaryLines)
-      ? realRocmRuntimeAdapterExecution.adapterRuntimeBoundaryLines
-      : []),
-    ...(Array.isArray(realRocmRuntimeAdapterExecution.adapter_runtime_boundary_lines)
-      ? realRocmRuntimeAdapterExecution.adapter_runtime_boundary_lines
-      : []),
-    ...(Array.isArray(realRocmRuntimeAdapterExecution.runtimeBoundaryLines)
-      ? realRocmRuntimeAdapterExecution.runtimeBoundaryLines
-      : []),
-    ...(Array.isArray(realRocmRuntimeAdapterExecution.runtime_boundary_lines)
-      ? realRocmRuntimeAdapterExecution.runtime_boundary_lines
-      : []),
-  ]);
   const realRocmRuntimeBoundaryTargetProcessProvenance =
     realRocmRuntimeBoundaryTargetProcessProvenanceFacet(compactObject({
       ...compactObject(
@@ -16229,20 +16455,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.source_delta_execution
     ?? runtimeProofArtifact.sourceDeltaExecution,
   ));
-  const serializedRealRocmAppHookContract = compactObject(
-    json.real_rocm_app_hook_contract
-    ?? json.realRocmAppHookContract
-    ?? json.app_hook_contract
-    ?? json.appHookContract
-    ?? summary.real_rocm_app_hook_contract
-    ?? summary.realRocmAppHookContract
-    ?? summary.app_hook_contract
-    ?? summary.appHookContract
-    ?? runtimeProofArtifact.real_rocm_app_hook_contract
-    ?? runtimeProofArtifact.realRocmAppHookContract
-    ?? runtimeProofArtifact.app_hook_contract
-    ?? runtimeProofArtifact.appHookContract,
-  );
+  const serializedRealRocmAppHookContract = serializedRealRocmAppHookContractCandidate;
   const derivedRealRocmAppHookContract =
     realRocmDerivedAppHookContractFromStageEvents(realRocmRuntimeAdapterStageEvents);
   const realRocmAppHookContract =
