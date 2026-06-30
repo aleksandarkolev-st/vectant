@@ -4,6 +4,26 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Adapter Result Bridge Hardening
+
+Real ROCm runtime evidence now consumes adapter-result boundary lines only from a usable imported bridge: declared and present result, exact evidence-only authority, accepted strict proof summary, zero bridge blocking gaps, active runtime-profile id match, no GPU HMR/runtime/dispatch authority claims, and copied result transport when transport is declared.
+
+The runner no longer lets a refused adapter result refresh `runtime_adapter_execution` or feed `workerEvidence`. A bridge with complete boundary lines but `gpuHmrSuccess` / `canSatisfyRuntimeProof` claims remains refusal evidence; a copied=false transport remains unusable; and a mismatched `profileId` cannot be imported as the active runtime profile. Runtime proof artifacts now preserve refused adapter-result bridges as strict limitations even when the embedded strict proof id is otherwise accepted.
+
+The real ROCm final verdict has an additional generic adapter-final-support gate for configured adapter/result paths. This does not make adapter support proof authority; it prevents a retained report from claiming `gpu_hmr_success=true` before matrix recomputation when the adapter bridge, execution facet, result transport, or stage-events support facet is rejected.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-proof-artifact.mjs -> passed
+node mcp/synthi-mcp/node_modules/vitest/vitest.mjs run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts -> passed, 283 tests
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; includes profile-id mismatch refusal, forged adapter-result authority refusal, copied=false transport refusal, result-bridge execution refresh, and final-support gate checks
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed; smoke ledger rows=65, retained matrix summary remains 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Runtime-Adapter Event Manifest Template
 
 Real ROCm runtime adapters now support a generic structured event-manifest path. A profile or env-declared `runtimeAdapter` can provide repo-relative `eventManifestPath` / `event_manifest_path`, which the runner validates with the same no-traversal relative path rules as adapter result paths and exports into the worker as `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH` plus the `SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH` alias.
@@ -2501,6 +2521,7 @@ Passed after the latest code fix or latest verification rerun:
 
 ```text
 npx vitest run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts
+node mcp/synthi-mcp/node_modules/vitest/vitest.mjs run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts
 npm --prefix mcp/synthi-mcp run build
 npm --prefix mcp/synthi-mcp run proof:external-project:self-check
 npm --prefix mcp/synthi-mcp run proof:visual-evidence:self-check
@@ -2510,6 +2531,8 @@ npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check
 npm --prefix mcp/synthi-mcp run proof:acceptance-contract:self-check
 npm --prefix mcp/synthi-mcp run proof:adversarial-ledger:self-check
 node --check mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-proof-artifact.mjs
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix

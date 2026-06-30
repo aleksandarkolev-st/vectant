@@ -993,20 +993,45 @@ function realRocmRuntimeProfileAdapterResultLimitations(result) {
   const strictAccepted =
     result.strictRuntimeProofAccepted === true
     || result.strict_runtime_proof_accepted === true;
-  if (strictAccepted) return [];
   const blockingGaps = compactStringList([
     ...(Array.isArray(result.blockingGaps) ? result.blockingGaps : []),
     ...(Array.isArray(result.blocking_gaps) ? result.blocking_gaps : []),
   ]);
-  const evidenceRefs = compactStringList([
-    ...(Array.isArray(result.evidenceRefs) ? result.evidenceRefs : []),
-    ...(Array.isArray(result.evidence_refs) ? result.evidence_refs : []),
-  ]);
-  const observedState = firstString(
+  const claimedRuntimeAuthority =
+    result.acceptedForGpuHmr === true
+    || result.accepted_for_gpu_hmr === true
+    || result.gpuHmrSuccess === true
+    || result.gpu_hmr_success === true
+    || result.canSatisfyRuntimeProof === true
+    || result.can_satisfy_runtime_proof === true
+    || result.canSatisfyDispatchProof === true
+    || result.can_satisfy_dispatch_proof === true;
+  const status = firstString(
     result.status,
     result.reason,
     'real_rocm_runtime_profile_adapter_result_unproven',
   );
+  if (
+    strictAccepted
+    && status === 'runtime_profile_adapter_result_imported'
+    && blockingGaps.length === 0
+    && !claimedRuntimeAuthority
+  ) {
+    return [];
+  }
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(result.evidenceRefs) ? result.evidenceRefs : []),
+    ...(Array.isArray(result.evidence_refs) ? result.evidence_refs : []),
+  ]);
+  const observedState = status;
+  const normalizedBlockingGaps = compactStringList([
+    ...blockingGaps,
+    strictAccepted ? null : 'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+    claimedRuntimeAuthority ? 'runtime_profile_adapter_result_claimed_runtime_authority' : null,
+    status === 'runtime_profile_adapter_result_imported'
+      ? null
+      : 'runtime_profile_adapter_result_not_imported',
+  ]);
   return [{
     stageId: 'real-rocm-runtime-profile-adapter-result',
     stage_id: 'real-rocm-runtime-profile-adapter-result',
@@ -1019,8 +1044,8 @@ function realRocmRuntimeProfileAdapterResultLimitations(result) {
     degraded_state: 'gpu-hmr-runtime-profile-adapter-result-unproven',
     degradedReason: observedState,
     degraded_reason: observedState,
-    blockingGaps,
-    blocking_gaps: blockingGaps,
+    blockingGaps: normalizedBlockingGaps,
+    blocking_gaps: normalizedBlockingGaps,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     proofArtifactPath: null,

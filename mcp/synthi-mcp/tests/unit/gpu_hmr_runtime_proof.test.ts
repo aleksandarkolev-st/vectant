@@ -9124,6 +9124,47 @@ describe("GPU HMR runtime output proof classification", () => {
     );
   });
 
+  it("keeps refused real ROCm runtime adapter results as proof limitations", () => {
+    const artifact = buildValidationRuntimeProofArtifact(acceptedValidationRuntimeInput({
+      realRocmRuntimeProfileAdapterResult: {
+        schemaVersion: "synthi.real_rocm.runtime_profile_adapter_result_bridge.v1",
+        schema_version: "synthi.real_rocm.runtime_profile_adapter_result_bridge.v1",
+        proofAuthority: "declared_adapter_result_import_not_runtime_authority",
+        proof_authority: "declared_adapter_result_import_not_runtime_authority",
+        declared: true,
+        present: true,
+        status: "runtime_profile_adapter_result_refusal_evidence",
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: true,
+        can_satisfy_runtime_proof: true,
+        blockingGaps: ["runtime_profile_adapter_result_claimed_runtime_authority"],
+        blocking_gaps: ["runtime_profile_adapter_result_claimed_runtime_authority"],
+        evidenceRefs: ["runtime-profile-adapter-boundary-lines"],
+        evidence_refs: ["runtime-profile-adapter-boundary-lines"],
+      },
+    }));
+
+    expect(artifact.gpuHmrSuccess).toBe(false);
+    expect(artifact.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage_id: "real-rocm-runtime-profile-adapter-result",
+          status: "blocked",
+          degraded_reason: "runtime_profile_adapter_result_refusal_evidence",
+          blocking_gaps: expect.arrayContaining([
+            "runtime_profile_adapter_result_claimed_runtime_authority",
+            "runtime_profile_adapter_result_not_imported",
+          ]),
+        }),
+      ])
+    );
+  });
+
   it("rejects GPU HMR ledger records missing required safety identity", () => {
     const strictLedgerEvidence = acceptedStrictLedgerEvidence();
     const baseRecord = {
