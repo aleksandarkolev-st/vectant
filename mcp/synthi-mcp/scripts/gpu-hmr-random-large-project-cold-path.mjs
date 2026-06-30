@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,8 +8,11 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = path.resolve(SCRIPT_DIR, '..');
 const REPO_ROOT = path.resolve(MCP_ROOT, '..', '..');
 const LOG_DIR = path.join(MCP_ROOT, '.gpu-hmr-test-logs', 'random-large-project-cold-path');
+const SOURCE_INTAKE_DIR = path.join(LOG_DIR, 'source-intake');
 const SCHEMA = 'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const AUTHORITY = 'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
+const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
 
 const DEFAULT_CANDIDATES = [
   {
@@ -103,6 +106,9 @@ function cleanCandidate(raw, index = 0) {
       ?? '',
   ).trim();
   if (!id) throw new Error(`candidate[${index}] id missing`);
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id)) {
+    throw new Error(`candidate[${index}] id must be a safe identifier`);
+  }
   if (!/^[a-z][a-z0-9_-]*$/i.test(backendFamily)) {
     throw new Error(`candidate[${index}] backendFamily must be a safe identifier`);
   }
@@ -210,7 +216,13 @@ function killChildTree(child) {
 
 function runProcess(command, args, options) {
   return new Promise((resolve) => {
-    const { timeoutMs = 0, ...spawnOptions } = options ?? {};
+    const {
+      timeoutMs = 0,
+      stdoutMax = 32000,
+      stderrMax = 32000,
+      streamOutput = true,
+      ...spawnOptions
+    } = options ?? {};
     const startedAt = new Date().toISOString();
     let child;
     try {
@@ -259,13 +271,13 @@ function runProcess(command, args, options) {
     };
     child.stdout?.on('data', (chunk) => {
       const text = String(chunk);
-      stdout = tail(stdout + text, 32000);
-      process.stdout.write(text);
+      stdout = tail(stdout + text, stdoutMax);
+      if (streamOutput) process.stdout.write(text);
     });
     child.stderr?.on('data', (chunk) => {
       const text = String(chunk);
-      stderr = tail(stderr + text, 32000);
-      process.stderr.write(text);
+      stderr = tail(stderr + text, stderrMax);
+      if (streamOutput) process.stderr.write(text);
     });
     child.on('error', (error) => {
       finish({ exitCode: null, signal: null, error: error.message, stdout, stderr });
@@ -276,7 +288,454 @@ function runProcess(command, args, options) {
   });
 }
 
-async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeoutMs }) {
+function sourceIntakePathForCandidate(candidate) {
+  return path.join(
+    SOURCE_INTAKE_DIR,
+    `${candidate.id}-${candidate.immutableCommit.slice(0, 12)}`,
+  );
+}
+
+function classifySourceListing(files) {
+  const buildFileBasenames = new Set([
+    'cmakelists.txt',
+    'makefile',
+    'meson.build',
+    'build.bazel',
+    'workspace',
+    'cargo.toml',
+    'package.json',
+    'pyproject.toml',
+    'build.gradle',
+    'configure.ac',
+    'xmake.lua',
+    'premake5.lua',
+  ]);
+  const buildFileExtensions = new Set(['.sln', '.vcxproj', '.vcxproj.filters', '.csproj']);
+  const gpuExtensions = new Set([
+    '.hip',
+    '.cu',
+    '.cuh',
+    '.cl',
+    '.clh',
+    '.wgsl',
+    '.glsl',
+    '.hlsl',
+    '.spv',
+    '.metal',
+    '.comp',
+    '.vert',
+    '.frag',
+    '.geom',
+    '.tesc',
+    '.tese',
+    '.ll',
+    '.mlir',
+  ]);
+  const backendSignals = new Map();
+  const addBackend = (backend, pathName, reason) => {
+    if (!backendSignals.has(backend)) backendSignals.set(backend, []);
+    const entries = backendSignals.get(backend);
+    if (entries.length < 20) entries.push({ path: pathName, reason });
+  };
+  const buildSignals = [];
+  const gpuSourceSignals = [];
+  for (const file of files) {
+    const pathName = String(file.path ?? '');
+    const lower = pathName.toLowerCase();
+    const basename = lower.split('/').pop() ?? lower;
+    const ext = path.extname(lower);
+    if (buildFileBasenames.has(basename) || buildFileExtensions.has(ext)) {
+      if (buildSignals.length < 80) buildSignals.push(pathName);
+    }
+    if (gpuExtensions.has(ext)) {
+      if (gpuSourceSignals.length < 80) gpuSourceSignals.push(pathName);
+    }
+    if (ext === '.hip' || lower.includes('/hip/') || lower.includes('rocm')) addBackend('hip_rocm', pathName, 'path_or_extension');
+    if (ext === '.cu' || ext === '.cuh' || lower.includes('cuda')) addBackend('cuda', pathName, 'path_or_extension');
+    if (ext === '.cl' || ext === '.clh' || lower.includes('opencl')) addBackend('opencl', pathName, 'path_or_extension');
+    if (ext === '.wgsl' || lower.includes('wgpu') || lower.includes('webgpu')) addBackend('webgpu_wgsl', pathName, 'path_or_extension');
+    if (
+      ['.spv', '.glsl', '.hlsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
+      || lower.includes('vulkan')
+    ) addBackend('vulkan', pathName, 'path_or_extension');
+    if (ext === '.metal' || lower.includes('/metal/')) addBackend('metal', pathName, 'path_or_extension');
+    if (lower.includes('sycl') || lower.includes('dpcpp')) addBackend('sycl', pathName, 'path_or_extension');
+  }
+  const backendCandidates = [...backendSignals.keys()].sort();
+  return {
+    buildSignals,
+    build_signals: buildSignals,
+    buildSignalCount: buildSignals.length,
+    build_signal_count: buildSignals.length,
+    gpuSourceSignals,
+    gpu_source_signals: gpuSourceSignals,
+    gpuSourceSignalCount: gpuSourceSignals.length,
+    gpu_source_signal_count: gpuSourceSignals.length,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    backendSignals: Object.fromEntries(backendSignals),
+    backend_signals: Object.fromEntries(backendSignals),
+  };
+}
+
+function parseGitLsTree(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(\w+)\s+([0-9a-f]{40,64})\s+(-|\d+)\t(.+)$/i);
+      if (!match) return null;
+      return {
+        mode: match[1],
+        type: match[2],
+        object: match[3],
+        byteLength: match[4] === '-' ? null : Number(match[4]),
+        byte_length: match[4] === '-' ? null : Number(match[4]),
+        path: match[5],
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseGitHubRepoUrl(sourceUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(sourceUrl));
+  } catch {
+    return null;
+  }
+  if (parsed.hostname.toLowerCase() !== 'github.com') return null;
+  const [owner, rawRepo] = parsed.pathname.split('/').filter(Boolean);
+  if (!owner || !rawRepo) return null;
+  const repo = rawRepo.replace(/\.git$/i, '');
+  if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+  return { owner, repo };
+}
+
+async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
+  const parsed = parseGitHubRepoUrl(candidate.sourceUrl);
+  if (!parsed) return { attempted: false };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), sourceIntakeTimeoutMs);
+  timer.unref?.();
+  const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${candidate.immutableCommit}?recursive=1`;
+  const startedAt = new Date().toISOString();
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'synthi-gpu-hmr-random-cold-intake',
+      },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      return {
+        attempted: true,
+        accepted: false,
+        status: 'source_intake_github_tree_failed',
+        reason: 'source_tree_github_tree_fetch_failed',
+        apiUrl,
+        api_url: apiUrl,
+        httpStatus: response.status,
+        http_status: response.status,
+        bodyTail: tail(text, 2000),
+        body_tail: tail(text, 2000),
+        startedAt,
+        started_at: startedAt,
+        finishedAt: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      };
+    }
+    const payload = JSON.parse(text);
+    if (payload?.truncated === true) {
+      return {
+        attempted: true,
+        accepted: false,
+        status: 'source_intake_github_tree_truncated',
+        reason: 'source_tree_github_tree_truncated',
+        apiUrl,
+        api_url: apiUrl,
+        startedAt,
+        started_at: startedAt,
+        finishedAt: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      };
+    }
+    const files = Array.isArray(payload?.tree)
+      ? payload.tree
+        .filter((entry) => entry?.type === 'blob' && entry.path && entry.sha)
+        .map((entry) => ({
+          mode: String(entry.mode ?? ''),
+          type: 'blob',
+          object: String(entry.sha),
+          byteLength: Number.isFinite(entry.size) ? entry.size : null,
+          byte_length: Number.isFinite(entry.size) ? entry.size : null,
+          path: String(entry.path),
+        }))
+      : [];
+    return {
+      attempted: true,
+      accepted: true,
+      apiUrl,
+      api_url: apiUrl,
+      transport: 'github_git_tree_api_recursive',
+      files,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: error?.name === 'AbortError'
+        ? 'source_intake_github_tree_timeout'
+        : 'source_intake_github_tree_error',
+      reason: error?.name === 'AbortError'
+        ? 'source_tree_github_tree_timeout'
+        : 'source_tree_github_tree_error',
+      apiUrl,
+      api_url: apiUrl,
+      error: error?.message || String(error),
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, transportEvidence = {} }) {
+  const listingIdentity = files.map((file) => ({
+    path: file.path,
+    object: file.object,
+    byteLength: file.byteLength,
+  }));
+  const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
+  const classification = classifySourceListing(files);
+  const blockingGaps = [];
+  if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
+  if (classification.backendCandidates.length === 0) blockingGaps.push('gpu_backend_signal_not_detected');
+  const facet = {
+    ...base,
+    status: 'source_intake_listing_accepted',
+    acceptedAsIntakeEvidence: true,
+    accepted_as_intake_evidence: true,
+    transport,
+    sourceTransport: transport,
+    source_transport: transport,
+    transportEvidence,
+    transport_evidence: transportEvidence,
+    fileCount: files.length,
+    file_count: files.length,
+    totalKnownBytes,
+    total_known_bytes: totalKnownBytes,
+    listingHash: contentHash(stableJson(listingIdentity)),
+    listing_hash: contentHash(stableJson(listingIdentity)),
+    sampleFiles: files.slice(0, 80).map((file) => file.path),
+    sample_files: files.slice(0, 80).map((file) => file.path),
+    buildSystemHints: candidate.buildSystemHints,
+    build_system_hints: candidate.buildSystemHints,
+    runtimeBoundaryHints: candidate.runtimeBoundaryHints,
+    runtime_boundary_hints: candidate.runtimeBoundaryHints,
+    oracleHints: candidate.oracleHints,
+    oracle_hints: candidate.oracleHints,
+    ...classification,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    finishedAt: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  };
+  return {
+    ...facet,
+    facetHash: contentHash(stableJson(facet)),
+    facet_hash: contentHash(stableJson(facet)),
+  };
+}
+
+async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
+  const startedAt = new Date().toISOString();
+  const localPath = sourceIntakePathForCandidate(candidate);
+  const relativeLocalPath = path.relative(REPO_ROOT, localPath).replace(/\\/g, '/');
+  const base = {
+    schemaVersion: SOURCE_INTAKE_SCHEMA,
+    schema_version: SOURCE_INTAKE_SCHEMA,
+    proofAuthority: SOURCE_INTAKE_AUTHORITY,
+    proof_authority: SOURCE_INTAKE_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    localPath: relativeLocalPath,
+    local_path: relativeLocalPath,
+    startedAt,
+    started_at: startedAt,
+  };
+  const fail = (status, reason, extra = {}) => {
+    const facet = {
+      ...base,
+      status,
+      acceptedAsIntakeEvidence: false,
+      accepted_as_intake_evidence: false,
+      blockingGaps: [reason],
+      blocking_gaps: [reason],
+      ...extra,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+    return {
+      ...facet,
+      facetHash: contentHash(stableJson(facet)),
+      facet_hash: contentHash(stableJson(facet)),
+    };
+  };
+  await rm(localPath, { recursive: true, force: true });
+  const githubTree = await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
+  if (githubTree.attempted === true) {
+    if (githubTree.accepted !== true) {
+      return fail(githubTree.status, githubTree.reason, {
+        githubTree,
+        github_tree: githubTree,
+      });
+    }
+    if (!Array.isArray(githubTree.files) || githubTree.files.length === 0) {
+      return fail('source_intake_empty_listing', 'source_tree_listing_empty', {
+        githubTree,
+        github_tree: githubTree,
+      });
+    }
+    return buildAcceptedSourceIntakeFacet({
+      base,
+      candidate,
+      files: githubTree.files,
+      transport: githubTree.transport,
+      transportEvidence: {
+        apiUrl: githubTree.apiUrl,
+        api_url: githubTree.api_url,
+        startedAt: githubTree.startedAt,
+        started_at: githubTree.started_at,
+        finishedAt: githubTree.finishedAt,
+        finished_at: githubTree.finished_at,
+      },
+    });
+  }
+  await mkdir(localPath, { recursive: true });
+  const gitInit = await runProcess(
+    'git',
+    ['init', localPath],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: Math.min(sourceIntakeTimeoutMs, 30000),
+      stdoutMax: 64000,
+      stderrMax: 64000,
+      streamOutput: false,
+    },
+  );
+  if (gitInit.exitCode !== 0 || gitInit.timedOut || gitInit.error) {
+    return fail('source_intake_git_init_failed', 'source_tree_git_init_failed', {
+      gitInit,
+      git_init: gitInit,
+    });
+  }
+  const remoteAdd = await runProcess(
+    'git',
+    ['-C', localPath, 'remote', 'add', 'origin', candidate.sourceUrl],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: Math.min(sourceIntakeTimeoutMs, 30000),
+      stdoutMax: 64000,
+      stderrMax: 64000,
+      streamOutput: false,
+    },
+  );
+  if (remoteAdd.exitCode !== 0 || remoteAdd.timedOut || remoteAdd.error) {
+    return fail('source_intake_remote_add_failed', 'source_tree_remote_add_failed', {
+      remoteAdd,
+      remote_add: remoteAdd,
+    });
+  }
+  const fetch = await runProcess(
+    'git',
+    ['-C', localPath, 'fetch', '--depth=1', '--filter=blob:none', 'origin', candidate.immutableCommit],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: sourceIntakeTimeoutMs,
+      stdoutMax: 64000,
+      stderrMax: 64000,
+      streamOutput: false,
+    },
+  );
+  if (fetch.exitCode !== 0 || fetch.timedOut || fetch.error) {
+    return fail('source_intake_fetch_failed', 'source_tree_fetch_failed', {
+      fetch,
+      fetch_result: fetch,
+    });
+  }
+  const commitCheck = await runProcess(
+    'git',
+    ['-C', localPath, 'cat-file', '-e', `${candidate.immutableCommit}^{commit}`],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
+      streamOutput: false,
+    },
+  );
+  if (commitCheck.exitCode !== 0 || commitCheck.timedOut || commitCheck.error) {
+    return fail('source_intake_commit_missing', 'immutable_commit_not_available', {
+      commitCheck,
+      commit_check: commitCheck,
+    });
+  }
+  const lsTree = await runProcess(
+    'git',
+    ['-C', localPath, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
+      stdoutMax: 8 * 1024 * 1024,
+      stderrMax: 64000,
+      streamOutput: false,
+    },
+  );
+  if (lsTree.exitCode !== 0 || lsTree.timedOut || lsTree.error) {
+    return fail('source_intake_listing_failed', 'source_tree_listing_failed', {
+      listingResult: lsTree,
+      listing_result: lsTree,
+    });
+  }
+  const files = parseGitLsTree(lsTree.stdout);
+  if (files.length === 0) {
+    return fail('source_intake_empty_listing', 'source_tree_listing_empty');
+  }
+  return buildAcceptedSourceIntakeFacet({
+    base,
+    candidate,
+    files,
+    transport: 'git_fetch_depth_1_blobless',
+    transportEvidence: {
+      gitInit,
+      git_init: gitInit,
+      remoteAdd,
+      remote_add: remoteAdd,
+      fetch,
+      fetch_result: fetch,
+    },
+  });
+}
+
+async function runSelectedCandidate(
+  candidate,
+  { dryRun, timeoutMs, runnerTimeoutMs, sourceIntake, sourceIntakeTimeoutMs },
+) {
   if (dryRun) {
     return {
       candidateId: candidate.id,
@@ -287,6 +746,10 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeou
     };
   }
   if (!candidate.profilePath || candidate.backendFamily !== 'real_rocm') {
+    const sourceIntakeEvidence = sourceIntake === true
+      ? await runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs })
+      : null;
+    const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
     const blockingGaps = [
       'runtime_profile_contract_missing',
       'build_metadata_unverified',
@@ -297,6 +760,9 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeou
       'output_oracle_unproven',
       'strict_runtime_ledger_missing',
     ];
+    if (!sourceTreeIntakeAccepted) {
+      blockingGaps.unshift('source_tree_intake_missing');
+    }
     if (candidate.backendFamily !== 'real_rocm') {
       blockingGaps.unshift('local_backend_runner_unavailable');
     }
@@ -313,6 +779,10 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeou
       source_url: candidate.sourceUrl,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
+      sourceTreeIntakeAccepted,
+      source_tree_intake_accepted: sourceTreeIntakeAccepted,
+      sourceIntakeEvidence,
+      source_intake_evidence: sourceIntakeEvidence,
       blockingGaps,
       blocking_gaps: blockingGaps,
       unsupportedReasons: blockingGaps,
@@ -384,6 +854,8 @@ async function buildManifest({
   dryRun,
   timeoutMs,
   runnerTimeoutMs,
+  sourceIntake,
+  sourceIntakeTimeoutMs,
   candidates,
   outputDir,
   runCandidate = runSelectedCandidate,
@@ -401,6 +873,8 @@ async function buildManifest({
       dryRun,
       timeoutMs,
       runnerTimeoutMs,
+      sourceIntake,
+      sourceIntakeTimeoutMs,
       candidates,
       selected,
       startedAt,
@@ -420,7 +894,13 @@ async function buildManifest({
   const results = [];
   for (const candidate of selected) {
     try {
-      results.push(await runCandidate(candidate, { dryRun, timeoutMs, runnerTimeoutMs }));
+      results.push(await runCandidate(candidate, {
+        dryRun,
+        timeoutMs,
+        runnerTimeoutMs,
+        sourceIntake,
+        sourceIntakeTimeoutMs,
+      }));
     } catch (error) {
       results.push({
         candidateId: candidate.id,
@@ -441,6 +921,8 @@ async function buildManifest({
     dryRun,
     timeoutMs,
     runnerTimeoutMs,
+    sourceIntake,
+    sourceIntakeTimeoutMs,
     candidates,
     selected,
     startedAt,
@@ -462,6 +944,8 @@ function createManifest({
   dryRun,
   timeoutMs,
   runnerTimeoutMs,
+  sourceIntake,
+  sourceIntakeTimeoutMs,
   candidates,
   selected,
   startedAt,
@@ -560,6 +1044,10 @@ function createManifest({
     timeout_ms: timeoutMs,
     runnerTimeoutMs,
     runner_timeout_ms: runnerTimeoutMs,
+    sourceIntake,
+    source_intake: sourceIntake,
+    sourceIntakeTimeoutMs,
+    source_intake_timeout_ms: sourceIntakeTimeoutMs,
     pendingManifestPath: pendingWritten?.filePath ?? null,
     pending_manifest_path: pendingWritten?.filePath ?? null,
     pendingManifestHash: pendingWritten?.hash ?? null,
@@ -649,6 +1137,20 @@ async function selfCheck() {
     || unprofiled.profileMode !== 'unprofiled_arbitrary_project_cold_intake'
   ) {
     throw new Error('random large-project cold-path unprofiled normalization failed');
+  }
+  const parsedListing = parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
+    '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tsrc/vulkan/shader.comp',
+  ].join('\n'));
+  const listingClassification = classifySourceListing(parsedListing);
+  if (
+    parsedListing.length !== 3
+    || listingClassification.buildSignalCount !== 1
+    || !listingClassification.backendCandidates.includes('hip_rocm')
+    || !listingClassification.backendCandidates.includes('vulkan')
+  ) {
+    throw new Error('random large-project cold-path source listing classifier self-check failed');
   }
   const { manifest } = await buildManifest({
     seed: 'self-check-seed',
@@ -744,6 +1246,11 @@ async function main() {
     process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUN_TIMEOUT_MS
       ?? Math.max(timeoutMs + 120000, timeoutMs),
   );
+  const sourceIntake = process.env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE !== '0';
+  const sourceIntakeTimeoutMs = Number(
+    process.env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE_TIMEOUT_MS
+      ?? Math.max(timeoutMs, 120000),
+  );
   const candidates = await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
@@ -755,6 +1262,8 @@ async function main() {
     dryRun,
     timeoutMs,
     runnerTimeoutMs,
+    sourceIntake,
+    sourceIntakeTimeoutMs,
     candidates,
     outputDir: path.resolve(args.outputDir ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR ?? LOG_DIR),
   });
