@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { submitForReview, approveSubmission, rejectSubmission } from '../reviewOrchestrator';
+import { submitForReview, approveSubmission, rejectSubmission, processSubmission } from '../reviewOrchestrator';
 
 const containerConfig = {
   packageId: 'tool', version: '1.0.0', displayName: 'Tool', runtimeType: 'container',
@@ -7,6 +7,15 @@ const containerConfig = {
   launch: 'docker run --rm -p 6901:6901 -v "$PWD":/workspace reg.io/me/tool:1',
   surfaces: [], health: null, permissions: ['program.launch'], source: 'vectant.programs.json', sourceHints: {},
 };
+const webConfig = { ...containerConfig, runtimeType: 'web', launch: 'npm run dev', install: ['npm ci'] };
+
+/** A persisted 'submitted' container row, as the worker (processSubmission) sees it. */
+function submittedRow(over = {}) {
+  return {
+    id: 'ver1', version: '1.0.0', reviewState: 'submitted', submittedByUserId: 'u1', sourceImageRef: 'reg.io/me/tool:1',
+    manifestJson: JSON.stringify(containerConfig), program: { id: 'prog1', publisher: 'team', packageId: '@team/tool' }, ...over,
+  };
+}
 
 let deps;
 beforeEach(() => {
@@ -28,35 +37,100 @@ beforeEach(() => {
   };
 });
 
-describe('submitForReview', () => {
-  it('clean container submission lands in pending_review (Phase 1, no AI)', async () => {
+describe('submitForReview (hybrid routing)', () => {
+  it('container/image submission is queued (returns submitted, not run inline)', async () => {
     const res = await submitForReview({ workspaceSlug: 'team', config: containerConfig, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' }, deps);
+    expect(res.reviewState).toBe('submitted');
+    expect(deps.scanner).not.toHaveBeenCalled();
+    expect(deps.store.createSubmission).toHaveBeenCalled();
+  });
+
+  it('web submission runs inline → pending_review (flag off)', async () => {
+    deps.aiEnabled = false;
+    const res = await submitForReview({ workspaceSlug: 'team', config: webConfig, sourceImageRef: null, submittedByUserId: 'u1' }, deps);
+    expect(res.reviewState).toBe('pending_review');
+    expect(deps.scanner).not.toHaveBeenCalled();
+  });
+
+  it('web submission with a failing hard gate → rejected inline', async () => {
+    deps.hardGates.mockReturnValue({ ok: false, reasons: [{ code: 'host_escape', message: 'x' }] });
+    const res = await submitForReview({ workspaceSlug: 'team', config: webConfig, sourceImageRef: null, submittedByUserId: 'u1' }, deps);
+    expect(res.reviewState).toBe('rejected');
+    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'submitted', toState: 'rejected', reason: [{ code: 'host_escape', message: 'x' }] }));
+  });
+});
+
+describe('processSubmission (worker drives the pipeline)', () => {
+  it('container row: clean scan + flag off → pending_review', async () => {
+    deps.aiEnabled = false;
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
     expect(res.reviewState).toBe('pending_review');
     expect(deps.scanner).toHaveBeenCalledWith('reg.io/me/tool:1', expect.anything());
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'submitted', toState: 'scanning' }));
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'pending_review' }));
   });
 
-  it('hard-gate failure routes straight to rejected (never scanned)', async () => {
+  it('hard-gate failure → rejected (never scanned)', async () => {
     deps.hardGates.mockReturnValue({ ok: false, reasons: [{ code: 'host_escape', message: 'x' }] });
-    const res = await submitForReview({ workspaceSlug: 'team', config: containerConfig, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' }, deps);
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
     expect(res.reviewState).toBe('rejected');
     expect(deps.scanner).not.toHaveBeenCalled();
-    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'submitted', toState: 'rejected', reason: [{ code: 'host_escape', message: 'x' }] }));
   });
 
-  it('over-threshold CVE routes to rejected', async () => {
+  it('over-threshold CVE → rejected', async () => {
     deps.scanner.mockResolvedValue({ ok: false, summary: { decisiveCves: ['CVE-9'] } });
-    const res = await submitForReview({ workspaceSlug: 'team', config: containerConfig, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' }, deps);
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
     expect(res.reviewState).toBe('rejected');
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'rejected' }));
   });
 
-  it('web submission skips scanning and lands in pending_review', async () => {
-    const web = { ...containerConfig, runtimeType: 'web', launch: 'npm run dev', install: ['npm ci'] };
-    const res = await submitForReview({ workspaceSlug: 'team', config: web, sourceImageRef: null, submittedByUserId: 'u1' }, deps);
+  it('flag ON + auto_approve → ai_review → published (rehost + publish)', async () => {
+    deps.aiEnabled = true;
+    deps.aiDecide.mockReturnValue('auto_approve');
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('published');
+    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'ai_review' }));
+    expect(deps.reHost).toHaveBeenCalled();
+    expect(deps.store.publishApprovedVersion).toHaveBeenCalled();
+  });
+
+  it('flag ON + auto_reject → ai_review → rejected (records reasons)', async () => {
+    deps.aiEnabled = true;
+    deps.aiReview.mockResolvedValue({ riskScore: 0.9, flags: ['malware'], rationale: 'bad' });
+    deps.aiDecide.mockReturnValue('auto_reject');
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('rejected');
+    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'ai_review', toState: 'rejected' }));
+    expect(deps.reHost).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + manual → pending_review (stores aiRiskJson)', async () => {
+    deps.aiEnabled = true;
+    deps.aiDecide.mockReturnValue('manual');
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('pending_review');
+    expect(deps.reHost).not.toHaveBeenCalled();
+    const aiTransition = deps.store.transitionReview.mock.calls.find((c) => c[1].toState === 'pending_review');
+    expect(aiTransition[1].patch.aiRiskJson).toContain('riskScore');
+  });
+
+  it('leaves a terminal / human-queue row untouched', async () => {
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow({ reviewState: 'pending_review' }));
+    const res = await processSubmission('ver1', deps);
     expect(res.reviewState).toBe('pending_review');
     expect(deps.scanner).not.toHaveBeenCalled();
+  });
+
+  it('returns not_found for a missing version', async () => {
+    deps.store.getReviewVersionById.mockResolvedValue(null);
+    const res = await processSubmission('nope', deps);
+    expect(res.error).toBe('not_found');
   });
 });
 
@@ -103,48 +177,5 @@ describe('rejectSubmission', () => {
     const res = await rejectSubmission({ versionId: 'ver1', adminUserId: 'admin1', notes: 'spammy' }, deps);
     expect(res.reviewState).toBe('rejected');
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'pending_review', toState: 'rejected', actorUserId: 'admin1', patch: { reviewNotes: 'spammy' } }));
-  });
-});
-
-describe('submitForReview — Phase 2 AI layer', () => {
-  const base = { workspaceSlug: 'team', config: containerConfig, sourceImageRef: 'reg.io/me/tool:1', submittedByUserId: 'u1' };
-
-  it('flag OFF → pending_review, AI not called (Phase-1 behavior preserved)', async () => {
-    deps.aiEnabled = false;
-    const res = await submitForReview(base, deps);
-    expect(res.reviewState).toBe('pending_review');
-    expect(deps.aiReview).not.toHaveBeenCalled();
-  });
-
-  it('flag ON + auto_approve → ai_review → published (reuses re-host + publish)', async () => {
-    deps.aiEnabled = true;
-    deps.aiDecide.mockReturnValue('auto_approve');
-    deps.store.getReviewVersionById.mockResolvedValue({
-      id: 'ver1', version: '1.0.0', reviewState: 'rehosting', submittedByUserId: 'u1', sourceImageRef: 'reg.io/me/tool:1',
-      manifestJson: JSON.stringify(containerConfig), program: { id: 'prog1', publisher: 'team', packageId: '@team/tool' },
-    });
-    const res = await submitForReview(base, deps);
-    expect(res.reviewState).toBe('published');
-    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'ai_review' }));
-    expect(deps.reHost).toHaveBeenCalled();
-    expect(deps.store.publishApprovedVersion).toHaveBeenCalled();
-  });
-
-  it('flag ON + manual decision → pending_review (stores aiRiskJson)', async () => {
-    deps.aiEnabled = true;
-    deps.aiDecide.mockReturnValue('manual');
-    const res = await submitForReview(base, deps);
-    expect(res.reviewState).toBe('pending_review');
-    expect(deps.reHost).not.toHaveBeenCalled();
-    const aiTransition = deps.store.transitionReview.mock.calls.find((c) => c[1].toState === 'pending_review');
-    expect(aiTransition[1].patch.aiRiskJson).toContain('riskScore');
-  });
-
-  it('flag ON + AI fails closed (high risk) → manual', async () => {
-    deps.aiEnabled = true;
-    deps.aiReview.mockResolvedValue({ riskScore: 1, flags: ['ai_unavailable'], rationale: 'down' });
-    deps.aiDecide.mockReturnValue('manual');
-    const res = await submitForReview(base, deps);
-    expect(res.reviewState).toBe('pending_review');
   });
 });
