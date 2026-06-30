@@ -170,6 +170,43 @@ test('enforcement records allowed transaction writes through the CodeSite contro
   });
 });
 
+test('enforcement fails closed without durable CodeSite control-plane context', async () => {
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['synthi/src/**'],
+    allowedTools: ['file_write'],
+  };
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch: async () => new Response('{}') }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.type === 'write_denied'
+      && error.event.details.reason_codes.includes('codesite_transaction_required')
+      && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
+  );
+});
+
+test('monitor mode does not fail closed when durable CodeSite context is absent', async () => {
+  const result = await enforceCodeSiteWriteAllowed({
+    active: true,
+    mode: 'monitor',
+    workspaceSlug: 'acme',
+    allowedPaths: ['synthi/src/**'],
+  }, {
+    path: 'synthi/src/App.jsx',
+    tool: 'file_write',
+    kind: 'write-file',
+  });
+
+  assert.strictEqual(result.ok, true);
+});
+
 test('enforcement fails closed when persisted transaction policy rejects the write', async () => {
   const fetch = async () => new Response(JSON.stringify({
     ok: false,

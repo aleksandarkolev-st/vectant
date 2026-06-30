@@ -212,6 +212,21 @@ function assertCodeSiteWritesAllowed(context, attempts) {
 
 async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
   const result = evaluateCodeSiteWrite(context, attempt);
+  const durableFailure = evaluateCodeSiteDurableContext(context, options);
+  if (durableFailure && context?.mode !== 'monitor') {
+    throw new CodeSiteFSDeniedError({
+      ...result.event,
+      type: 'write_denied',
+      details: {
+        ...result.event.details,
+        reason: `CodeSite write requires durable control-plane context: ${durableFailure.reasonCodes.join(',')}`,
+        reason_codes: [
+          ...durableFailure.reasonCodes,
+          ...asArray(result.event.details?.reason_codes),
+        ],
+      },
+    });
+  }
   if (context?.active && context.transactionId) {
     try {
       await recordCodeSiteWriteAttempt(context, result, {
@@ -235,6 +250,15 @@ async function enforceCodeSiteWritesAllowed(context, attempts, options = {}) {
     results.push(await enforceCodeSiteWriteAllowed(context, attempt, options));
   }
   return results;
+}
+
+function evaluateCodeSiteDurableContext(context, options = {}) {
+  if (!context?.active || context.mode === 'monitor') return null;
+  const reasonCodes = [];
+  if (!context.transactionId) reasonCodes.push('codesite_transaction_required');
+  if (!resolveControlPlaneBaseUrl(context)) reasonCodes.push('codesite_control_plane_url_required');
+  if (typeof (options.fetch || global.fetch) !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
+  return reasonCodes.length ? { reasonCodes } : null;
 }
 
 async function recordCodeSiteWriteAttempt(context, result, options = {}) {
