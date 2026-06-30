@@ -29,6 +29,7 @@ import {
   listLocalPrograms,
   listPendingReview,
   listPermissionGrants,
+  listProcessableSubmissions,
   listProgramRuntimeEvents,
   listProgramSessions,
   listPublishedPrograms,
@@ -38,6 +39,7 @@ import {
   toPublicMarketplaceProgram,
   toReviewQueueItem,
   transitionReview,
+  unpublishProgram,
   updateInstallStatus,
   updateProgramSession,
   upsertLocalProgram,
@@ -440,7 +442,7 @@ describe('listPublishedPrograms', () => {
 
 describe('getPublishedProgramVersion', () => {
   it('resolves a published program + version + parsed config', async () => {
-    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/web', publisher: 'team' });
+    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/web', publisher: 'team', publishedVersion: '1.0.0' });
     h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', reviewState: 'published', manifestJson: JSON.stringify({ packageId: 'web', version: '1.0.0', launch: 'npm run dev', permissions: ['program.launch'] }) });
 
     const found = await getPublishedProgramVersion('@team/web', '1.0.0');
@@ -613,5 +615,33 @@ describe('getPublishedProgramVersion (only serves published)', () => {
     h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', reviewState: 'pending_review', manifestJson: '{"launch":"x"}' });
     const found = await getPublishedProgramVersion('@team/tool', '1.0.0');
     expect(found).toBeNull();
+  });
+
+  it('returns null when the requested version is not the live publishedVersion', async () => {
+    h.prisma.marketplaceProgram.findUnique.mockResolvedValue({ id: 'p1', packageId: '@team/tool', publisher: 'team', publishedVersion: '2.0.0' });
+    h.prisma.programVersion.findUnique.mockResolvedValue({ id: 'v1', reviewState: 'published', manifestJson: '{"launch":"x"}' });
+    const found = await getPublishedProgramVersion('@team/tool', '1.0.0');
+    expect(found).toBeNull();
+  });
+});
+
+describe('unpublishProgram', () => {
+  it('clears the live pointers (drops from marketplace)', async () => {
+    h.prisma.marketplaceProgram.update.mockResolvedValue({ id: 'p1', publishedVersion: null });
+    await unpublishProgram('@team/tool');
+    expect(h.prisma.marketplaceProgram.update).toHaveBeenCalledWith({ where: { packageId: '@team/tool' }, data: { publishedVersion: null, publishedDigest: null } });
+  });
+});
+
+describe('listProcessableSubmissions', () => {
+  it('lists non-terminal submissions for the sweep, bounded + oldest-first', async () => {
+    h.prisma.programVersion.findMany.mockResolvedValue([{ id: 'ver1', reviewState: 'submitted' }]);
+    const rows = await listProcessableSubmissions(50);
+    expect(h.prisma.programVersion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { reviewState: { in: ['submitted', 'scanning', 'ai_review'] } },
+      orderBy: { submittedAt: 'asc' },
+      take: 50,
+    }));
+    expect(rows[0].id).toBe('ver1');
   });
 });

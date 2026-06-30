@@ -248,6 +248,9 @@ export async function getPublishedProgramVersion(packageId, version) {
   // Never serve an unreviewed / superseded digest: installers only ever resolve
   // a version that is currently in the `published` state.
   if (versionRow.reviewState !== 'published') return null;
+  // Only the currently-live version is installable — unpublish / supersede takes
+  // effect immediately; no resurrecting an old reviewed digest.
+  if (program.publishedVersion && program.publishedVersion !== version) return null;
   const config = parseJsonText(versionRow.manifestJson, null);
   if (!config) return null;
   return { program, version: versionRow, config };
@@ -365,6 +368,23 @@ export async function listPendingReview() {
     where: { reviewState: 'pending_review' },
     orderBy: { submittedAt: 'desc' },
     include: { program: true },
+  });
+}
+
+/** Take a published program down: clear its live pointer (drops from marketplace). */
+export async function unpublishProgram(packageId) {
+  return prisma.marketplaceProgram.update({
+    where: { packageId },
+    data: { publishedVersion: null, publishedDigest: null },
+  });
+}
+
+/** Non-terminal submissions for the autonomous sweep (bounded, oldest-first). */
+export async function listProcessableSubmissions(limit = 50) {
+  return prisma.programVersion.findMany({
+    where: { reviewState: { in: ['submitted', 'scanning', 'ai_review'] } },
+    orderBy: { submittedAt: 'asc' },
+    take: limit,
   });
 }
 
