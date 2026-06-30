@@ -25,6 +25,20 @@ node mcp/synthi-mcp/node_modules/vitest/vitest.mjs run mcp/synthi-mcp/tests/unit
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed, current matrix still reports 56 rows, 14 accepted scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows
 ```
 
+## 2026-06-30 Runtime-Adapter Host Identity Boundary Gate
+
+Adapter boundary coverage now recomputes host-identity proof shape instead of accepting a loose event-family line. When `[gpu-runtime-boundary] host_identity ...` is present, the matrix runs the shared `runtimeHostIdentityEvidence` classifier and requires generic numeric before/after identity lineage plus preserved runner-process, host-state, and runtime-resource roles with stable non-null pointers. Runtime generation tokens remain bound to the strict ledger; the host-identity snapshot lineage is carried separately through generic fields such as `host_identity_previous_generation` and `host_identity_active_generation`.
+
+New smoke coverage keeps all five adapter boundary event families present but replaces the host identity snapshot with a single role-less event. That row remains `unproven`, with both adapter-result and direct adapter-execution facets failing `real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete`. The complete bridge fixture still accepts only when the normal strict ledger, same-process oracle, runtime chain, app-hook, sidecar, output oracle, firewall, and runtime-proof gates close. This is generic large-ROCm adapter hardening, not project-specific acceptance.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, gpu-validation-matrix-ledger:sha256:39a94118e82494841200e7ab967403f9a56a64ac6b38673eb29a9c4ac75ccce1, rows=65
+```
+
 ## 2026-06-30 Source-First Role Hardening
 
 The source-first generated split validator now fails closed unless the generated sidecar declares explicit module files and explicit GPU device roles. It no longer invents default generated split paths such as `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`, or vendor-default `device.hip` / `device.cu`. Device role paths must be present in `compile_manifest.module_files`, generated files are read from the declared manifest path set, and host-source exclusions for deterministic fission are derived from declared non-device module files instead of fixed role names.
@@ -124,7 +138,7 @@ This remains support/refusal evidence only. It does not replace observed artifac
 
 ```text
 implementation commit: e0a06ccd1 feat(gpu-hmr): add generic rocm runtime adapter evidence
-latest local patch: direct runtime-adapter execution boundary overlay plus generic worker-to-host adapter result transport
+latest local patch: runtime-adapter host-identity boundary proof-shape gate
 subagent used: real-ROCm validation matrix adapter-result bridge audit
 subagent used: focused docs/overclaim audit for latest runtime-adapter, MIOpen, source-first, and visual-proof evidence
 subagent used: real-ROCm runtime-adapter/app-hook scheduling audit
@@ -134,11 +148,13 @@ subagent used: runtime-adapter execution normalization audit
 subagent used: validation-matrix compute artifact CAS resolver audit
 subagent used: strict-ledger CAS-only compute artifact overlay audit
 subagent used: generic runtime-adapter execution/result-path audit
+subagent used: generic large-ROCm app-hook/runtime adapter stage-closure audit
 verification: node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
 verification: node --check mcp/synthi-mcp/scripts/lib/real-rocm-validation-command-env.mjs -> passed
 verification: node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed after self-contained adapter-result boundary-line checks; optional POSIX template execution skipped on this Windows host because `sh` was blocked or unavailable
 verification: node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 verification: node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed after host-identity boundary proof-shape gating, gpu-validation-matrix-ledger:sha256:39a94118e82494841200e7ab967403f9a56a64ac6b38673eb29a9c4ac75ccce1, rows=65
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed after runtime-adapter result transport matrix ingestion, gpu-validation-matrix-ledger:sha256:682e9c68d102eb03cf242ac2a7e8a9ee2bd364f1848e7c7dc0d100d1d08bdbdf, rows=63
 verification: node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed after direct runtime-adapter execution overlay support, gpu-validation-matrix-ledger:sha256:83584ae0a146f8344c6ce81107ed04e273987e71c96228ff0276b252f99faef8, rows=63
 verification: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after direct runtime-adapter execution overlay support, generic worker-to-host adapter result transport, and runtime-adapter result transport matrix ingestion; smoke proof gpu-validation-matrix-ledger:sha256:52e71a078861b4804fa9f4a6dfc2f663815d67b55454b9e65b0c9be75edaab7a, current matrix proof gpu-validation-matrix-ledger:sha256:4b9c3cc0beb76f2192055b0b1753b7e3f6818c56c720a55223f87ec76b3f90be, rowCount=56, acceptedFullRuntimeGpuHmrRows=14, broadFullRuntimeGpuHmrRows=0
@@ -609,6 +625,7 @@ The 2026-06-24/2026-06-25 continuation added these generic anti-overclaim gates:
 - real ROCm runtime output-oracle, app-hook, and device-sidecar contracts can now be supplied as validated JSON-object environment inputs (`SYNTHI_REAL_ROCM_OUTPUT_ORACLE_RUNTIME_PROFILE_JSON`, `SYNTHI_REAL_ROCM_APP_HOOK_CONTRACT_JSON`, `SYNTHI_REAL_ROCM_DEVICE_SIDECAR_CONTRACT_JSON`, plus `SYNTHI_GPU_HMR_*` aliases). These inputs are recorded in command metadata and source fields, but they are evidence-only declarations; the runtime still has to prove loader/artifact transport, epoch publication, dispatch, host identity, output oracle, firewall, and strict runtime proof closure before any row can be accepted.
 - final-acceptance `large_rocm_ml_infrastructure` profiles now implicitly require an app-hook contract from `targetClass`/profile evidence, even when a profile omits an explicit `requiresAppHookContract` flag. The runner self-check covers this as a target-class rule rather than a repo-name branch.
 - runtime-adapter boundary coverage and runtime-chain overlay parsing now agree on generic dispatch event shapes. The matrix accepts `[gpu-runtime-boundary] synthi_gpu_launch ...` and `[gpu-runtime-boundary] native_runtime_dispatch ...` as dispatch-boundary evidence sources for overlay extraction, then still requires artifact hash, epoch, dispatch ID, output target, process identity, timestamp ordering, output oracle, firewall, and strict runtime-proof closure before acceptance. The complete adapter-boundary bridge smoke fixture uses `synthi_gpu_launch`, while the mismatch fixture still exercises `native_runtime_dispatch`.
+- runtime-adapter boundary host-identity coverage now requires proof-shaped identity snapshots, not just a host-identity event line. Matrix ingestion recomputes host preservation from generic boundary fields, requires numeric before/after identity lineage plus preserved runner-process, host-state, and runtime-resource roles, and refuses a role-less host identity line even when artifact transport, epoch publication, dispatch trace, and output oracle boundary events are all present.
 - real ROCm target-progression ledger entries now rederive mandatory proof gates from the report fields before writing the retained ledger artifact. A serialized or stale `pass` row cannot override missing final-acceptance full-runtime, output-oracle, prior-phase, or visual/compute proof.
 - real ROCm worker repository transfer failures now emit a generic structured `synthi.real_rocm.worker_repo_transfer_failure.v1` facet and the validation matrix treats accepted transfer facets as fail-closed refusal evidence. The smoke fixture is project-agnostic and verifies `gpuHmrSuccess=false`, `acceptedForGpuHmr=false`, `proofChain=real_rocm_strict_runtime_refusal`, and attempt-completeness score 70.
 - compute-oracle/runtime-chain epoch checks now normalize string and numeric epoch fields before comparing loader, publish, dispatch, output, and oracle evidence. Numeric JSON epochs emitted by HIP module runtime artifacts can pass only when the strict runtime proof artifact, proof ledger, dispatch event, and readback oracle all agree; missing or mismatched epochs still fail closed.

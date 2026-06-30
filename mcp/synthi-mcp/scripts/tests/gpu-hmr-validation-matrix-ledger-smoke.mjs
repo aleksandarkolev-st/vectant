@@ -3919,12 +3919,19 @@ function runtimeAdapterBoundaryBridgeFixture(scope, materials, overrides = {}) {
   const strictRuntimeProofId = materials.runtimeProofArtifact?.proofId
     ?? materials.runtime_proof_artifact?.proofId
     ?? `gpu-runtime-proof:sha256:${sha256Hex(`runtime:${scope}`)}`;
+  const hostIdentityRuntimeSession = `runtime-session:${scope}`;
+  const hostIdentityProcessId = 'pid:4242';
   const boundaryLines = [
-    `[gpu-runtime-boundary] artifact_transport event=loaded id=loader:${scope} runtime_session=runtime-session:${scope} process_id=pid:4242 generation=generation:${scope} artifact_hash=${artifactHash} artifact_bytes=8 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:${artifactHash} ram_transport_proven=true load_result=ok timestamp_monotonic_ns=1000`,
-    `[gpu-runtime-boundary] dispatcher_epoch event=published id=epoch:${scope} process_id=pid:4242 epoch=epoch:${scope} active_generation=generation:${scope} previous_generation=generation:previous new_artifact_id=artifact:${artifactHash} new_artifact_hash=${artifactHash} dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash_before=${hashValue(`dispatch-table-before:${scope}`)} dispatch_table_hash_after=${hashValue(`dispatch-table-after:${scope}`)} changed_entries=1 stream_ordering_proven=true retirement_tracked=true old_generation_retired=true timestamp_monotonic_ns=2000`,
-    `[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=complete attachment_provenance=native_runtime_bridge runtime_session=runtime-session:${scope} process_id=pid:4242 artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} dispatch_id=dispatch:${scope} output_target_id=output-target:${scope} dispatch_timestamp=3000 dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash=${hashValue(`dispatch-table-after:${scope}`)}`,
-    `[gpu-runtime-boundary] host_identity event=stable runtime_session=runtime-session:${scope} process_id=pid:4242 device_uuid=gpu:synthetic-rocm context_id=context:0 queue_id=stream:0 generation=generation:${scope} timestamp_monotonic_ns=3500`,
-    `[gpu-runtime-boundary] output_oracle id=oracle:${scope} kind=buffer_checksum expected=${hashValue(`compute-checksum-after:${scope}`)} actual=${hashValue(`compute-checksum-after:${scope}`)} passed=true runtime_session=runtime-session:${scope} process_id=pid:4242 artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} output_target_id=output-target:${scope} after_dispatch_id=dispatch:${scope} dispatch_table_entry_id=dispatch-table-entry:${scope} readback_timestamp=4000 timestamp_monotonic_ns=4000 readback_bytes=8 readback_sample_sha256=${hashValue(`readback-slice:${scope}`)}`,
+    `[gpu-runtime-boundary] artifact_transport event=loaded id=loader:${scope} runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} generation=generation:${scope} artifact_hash=${artifactHash} artifact_bytes=8 reload_request_transport=ram_bytes selected_loader_transport=ram_bytes loader_api=hipModuleLoadData ram_reference=true ram_blob_id=artifact:${artifactHash} ram_transport_proven=true load_result=ok timestamp_monotonic_ns=1000`,
+    `[gpu-runtime-boundary] dispatcher_epoch event=published id=epoch:${scope} process_id=${hostIdentityProcessId} epoch=epoch:${scope} active_generation=generation:${scope} previous_generation=generation:previous host_identity_active_generation=2 host_identity_previous_generation=1 new_artifact_id=artifact:${artifactHash} new_artifact_hash=${artifactHash} dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash_before=${hashValue(`dispatch-table-before:${scope}`)} dispatch_table_hash_after=${hashValue(`dispatch-table-after:${scope}`)} changed_entries=1 stream_ordering_proven=true retirement_tracked=true old_generation_retired=true timestamp_monotonic_ns=2000`,
+    `[gpu-runtime-boundary] native_runtime_dispatch dispatch=ok proof_bridge=complete attachment_provenance=native_runtime_bridge runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} dispatch_id=dispatch:${scope} output_target_id=output-target:${scope} dispatch_timestamp=3000 dispatch_table_entry_id=dispatch-table-entry:${scope} dispatch_table_hash=${hashValue(`dispatch-table-after:${scope}`)}`,
+    `[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=1 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} timestamp_monotonic_ns=3400`,
+    `[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} timestamp_monotonic_ns=3500`,
+    `[gpu-runtime-boundary] host_identity role=host_state ptr=0x1000 aux=42 generation=1 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} timestamp_monotonic_ns=3400`,
+    `[gpu-runtime-boundary] host_identity role=host_state ptr=0x1000 aux=42 generation=2 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} timestamp_monotonic_ns=3500`,
+    `[gpu-runtime-boundary] host_identity role=stream_context ptr=0x2000 aux=0 generation=1 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} timestamp_monotonic_ns=3400`,
+    `[gpu-runtime-boundary] host_identity role=stream_context ptr=0x2000 aux=0 generation=2 runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} device_uuid=gpu:synthetic-rocm context_id=context:0 queue_id=stream:0 timestamp_monotonic_ns=3500`,
+    `[gpu-runtime-boundary] output_oracle id=oracle:${scope} kind=buffer_checksum expected=${hashValue(`compute-checksum-after:${scope}`)} actual=${hashValue(`compute-checksum-after:${scope}`)} passed=true runtime_session=${hostIdentityRuntimeSession} process_id=${hostIdentityProcessId} artifact_id=artifact:${artifactHash} epoch=epoch:${scope} generation=generation:${scope} output_target_id=output-target:${scope} after_dispatch_id=dispatch:${scope} dispatch_table_entry_id=dispatch-table-entry:${scope} readback_timestamp=4000 timestamp_monotonic_ns=4000 readback_bytes=8 readback_sample_sha256=${hashValue(`readback-slice:${scope}`)}`,
   ];
   return {
     schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
@@ -3972,6 +3979,25 @@ function runtimeAdapterBoundaryBridgeFixture(scope, materials, overrides = {}) {
     failed_gates: [],
     ...overrides,
   };
+}
+
+function replaceBoundaryHostIdentityWithWeakEvent(lines, scope) {
+  const weakHostIdentityLine =
+    `[gpu-runtime-boundary] host_identity event=stable runtime_session=runtime-session:${scope} process_id=pid:4242 device_uuid=gpu:synthetic-rocm context_id=context:0 queue_id=stream:0 generation=2 timestamp_monotonic_ns=3500`;
+  let inserted = false;
+  const result = [];
+  for (const line of Array.isArray(lines) ? lines : []) {
+    if (/\bhost_identity\b/i.test(String(line ?? ''))) {
+      if (!inserted) {
+        result.push(weakHostIdentityLine);
+        inserted = true;
+      }
+      continue;
+    }
+    result.push(line);
+  }
+  if (!inserted) result.push(weakHostIdentityLine);
+  return result;
 }
 
 function runtimeAdapterExecutionFixture(scope, materials, overrides = {}) {
@@ -13821,6 +13847,11 @@ assert.equal(
     .adapterBoundaryCoverage.acceptedAsDiagnosticEvidence,
   true,
 );
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.hostIdentityProofShaped,
+  true,
+);
 assert.deepEqual(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeProfileAdapterResult
     .adapterBoundaryCoverage.missingEventKinds,
@@ -13838,6 +13869,11 @@ assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution.gp
 assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution
     .adapterBoundaryCoverage.acceptedAsDiagnosticEvidence,
+  true,
+);
+assert.equal(
+  completeAdapterBoundaryBridgeRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.hostIdentityProofShaped,
   true,
 );
 assert.deepEqual(
@@ -13888,7 +13924,7 @@ assert.equal(completeAdapterBoundaryBridgeRow.realRocmSameProcessRuntimeOracleGa
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeStageObligations.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, true);
 assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted, true);
-assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 10);
+assert.equal(completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 20);
 assert.deepEqual(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlaySources,
   ['runtime_profile_adapter_result', 'runtime_adapter_execution'],
@@ -13909,6 +13945,141 @@ assert.equal(
   completeAdapterBoundaryBridgeRow.realRocmRuntimeChain.outputTargetId,
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
+
+const adapterBoundaryWeakHostIdentityDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-host-identity-weak',
+);
+await fs.mkdir(adapterBoundaryWeakHostIdentityDir, { recursive: true });
+const adapterBoundaryWeakHostIdentityReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterBoundaryWeakHostIdentityResult = {
+  ...adapterBoundaryWeakHostIdentityReport.real_rocm_runtime_profile_adapter_result,
+};
+const adapterBoundaryWeakHostIdentityResultLines =
+  replaceBoundaryHostIdentityWithWeakEvent(
+    adapterBoundaryWeakHostIdentityResult.adapterRuntimeBoundaryLines,
+    completeAdapterBoundaryBridgeScope,
+  );
+adapterBoundaryWeakHostIdentityResult.adapterRuntimeBoundaryLines =
+  adapterBoundaryWeakHostIdentityResultLines;
+adapterBoundaryWeakHostIdentityResult.adapter_runtime_boundary_lines =
+  adapterBoundaryWeakHostIdentityResultLines;
+adapterBoundaryWeakHostIdentityResult.evidenceRefs = [
+  adapterBoundaryWeakHostIdentityResult.adapterResultHash,
+  ...adapterBoundaryWeakHostIdentityResultLines.map((line) =>
+    `adapter-boundary:${hashValue(line)}`
+  ),
+];
+adapterBoundaryWeakHostIdentityResult.evidence_refs =
+  adapterBoundaryWeakHostIdentityResult.evidenceRefs;
+const adapterBoundaryWeakHostIdentityExecution = {
+  ...adapterBoundaryWeakHostIdentityReport.real_rocm_runtime_adapter_execution,
+};
+const adapterBoundaryWeakHostIdentityExecutionLines =
+  replaceBoundaryHostIdentityWithWeakEvent(
+    adapterBoundaryWeakHostIdentityExecution.runtimeBoundaryLines,
+    completeAdapterBoundaryBridgeScope,
+  );
+adapterBoundaryWeakHostIdentityExecution.runtimeBoundaryLines =
+  adapterBoundaryWeakHostIdentityExecutionLines;
+adapterBoundaryWeakHostIdentityExecution.runtime_boundary_lines =
+  adapterBoundaryWeakHostIdentityExecutionLines;
+adapterBoundaryWeakHostIdentityExecution.runtimeBoundaryLineCount =
+  adapterBoundaryWeakHostIdentityExecutionLines.length;
+adapterBoundaryWeakHostIdentityExecution.runtime_boundary_line_count =
+  adapterBoundaryWeakHostIdentityExecutionLines.length;
+adapterBoundaryWeakHostIdentityExecution.evidenceRefs = [
+  `runtime-adapter-execution:${completeAdapterBoundaryBridgeScope}`,
+  `runtime-adapter-template:runtime_boundary_log_harvest_v1`,
+  `runtime-adapter-command:${adapterBoundaryWeakHostIdentityExecution.adapterCommandHash}`,
+  ...adapterBoundaryWeakHostIdentityExecutionLines.map((line) =>
+    `runtime-adapter-boundary:${hashValue(line)}`
+  ),
+];
+adapterBoundaryWeakHostIdentityExecution.evidence_refs =
+  adapterBoundaryWeakHostIdentityExecution.evidenceRefs;
+adapterBoundaryWeakHostIdentityReport.slug =
+  'gpu-real-rocm-adapter-boundary-host-identity-weak-20260630';
+adapterBoundaryWeakHostIdentityReport.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryWeakHostIdentityResult;
+adapterBoundaryWeakHostIdentityReport.real_rocm_runtime_adapter_execution =
+  adapterBoundaryWeakHostIdentityExecution;
+adapterBoundaryWeakHostIdentityReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryWeakHostIdentityResult;
+adapterBoundaryWeakHostIdentityReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryWeakHostIdentityResult;
+adapterBoundaryWeakHostIdentityReport.runtime_proof_artifact.realRocmRuntimeAdapterExecution =
+  adapterBoundaryWeakHostIdentityExecution;
+adapterBoundaryWeakHostIdentityReport.runtime_proof_artifact.real_rocm_runtime_adapter_execution =
+  adapterBoundaryWeakHostIdentityExecution;
+await writeJson(
+  path.join(
+    adapterBoundaryWeakHostIdentityDir,
+    'real-rocm-adapter-boundary-host-identity-weak.json',
+  ),
+  adapterBoundaryWeakHostIdentityReport,
+);
+const adapterBoundaryWeakHostIdentityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryWeakHostIdentityDir],
+  generatedAt: '2026-06-30T00:00:02.2645Z',
+  includeUnproven: true,
+});
+const adapterBoundaryWeakHostIdentityRow = adapterBoundaryWeakHostIdentityLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryWeakHostIdentityRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryWeakHostIdentityRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeProfileAdapterResult.accepted,
+  false,
+);
+assert.equal(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeAdapterExecution.accepted,
+  false,
+);
+assert.deepEqual(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.missingEventKinds,
+  [],
+);
+assert.deepEqual(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.missingEventKinds,
+  [],
+);
+assert.equal(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.hostIdentityProofShaped,
+  false,
+);
+assert.equal(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.hostIdentityProofShaped,
+  false,
+);
+assert.ok(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.hostIdentityEvidence.rejected_reasons.includes('role_missing'),
+);
+assert.ok(
+  adapterBoundaryWeakHostIdentityRow.realRocmRuntimeAdapterExecution
+    .adapterBoundaryCoverage.hostIdentityEvidence.rejected_reasons.includes('role_missing'),
+);
+assert.ok(adapterBoundaryWeakHostIdentityRow.openGaps.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete',
+));
+assert.ok(adapterBoundaryWeakHostIdentityRow.openGaps.includes(
+  'real_rocm_runtime_adapter_execution:real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete',
+));
+assert.ok(adapterBoundaryWeakHostIdentityRow.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete',
+));
+assert.ok(adapterBoundaryWeakHostIdentityRow.reasons.includes(
+  'real_rocm_runtime_adapter_execution:real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete',
+));
 
 const forgedOperationalEvidenceRocmDir = path.join(
   logsRoot,
@@ -14557,7 +14728,7 @@ for (const clearedGap of [
 }
 assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.accepted, false);
 assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted, true);
-assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 5);
+assert.equal(adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount, 10);
 assert.deepEqual(
   adapterBoundaryBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlaySources,
   ['runtime_adapter_execution'],

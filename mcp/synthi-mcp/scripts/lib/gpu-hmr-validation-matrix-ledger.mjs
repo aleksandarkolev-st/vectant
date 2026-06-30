@@ -19,6 +19,10 @@ import {
   validateArtifactCasManifest,
 } from './gpu-hmr-artifact-cas.mjs';
 import {
+  runtimeHostIdentityEvidence,
+} from './gpu-hmr-runtime-evidence.mjs';
+
+import {
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_AUTHORITY,
   GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
   GPU_HMR_VISUAL_INCREMENTAL_EVIDENCE_BINDING_SCHEMA_VERSION,
@@ -617,6 +621,50 @@ function runtimeBoundaryLineEvidenceRefs(lines = [], prefix = 'runtime-boundary-
   return runtimeBoundaryLineHashes(lines).map((hash) => `${prefix}:${hash}`);
 }
 
+function runtimeBoundaryIntegerField(...values) {
+  for (const value of values) {
+    const raw = firstText(value);
+    if (!raw) continue;
+    const numeric = Number(raw);
+    if (Number.isInteger(numeric)) return numeric;
+  }
+  return null;
+}
+
+function adapterBoundaryExpectedHostIdentityLineage(boundaryLines = []) {
+  const epochFields = (Array.isArray(boundaryLines) ? boundaryLines : [])
+    .filter((line) => /\[gpu-runtime-boundary\]/i.test(String(line ?? '')))
+    .filter((line) => /\bdispatcher_epoch\b/i.test(String(line ?? '')))
+    .map(parseRuntimeBoundaryKeyValues)
+    .filter((fields) => Object.keys(fields).length > 0)
+    .at(-1);
+  if (!epochFields) return null;
+  const previousGeneration = runtimeBoundaryIntegerField(
+    epochFields.host_identity_previous_generation,
+    epochFields.hostIdentityPreviousGeneration,
+    epochFields.identity_previous_generation,
+    epochFields.identityPreviousGeneration,
+    epochFields.previous_generation,
+    epochFields.previousGeneration,
+    epochFields.from_generation,
+    epochFields.fromGeneration,
+  );
+  const activeGeneration = runtimeBoundaryIntegerField(
+    epochFields.host_identity_active_generation,
+    epochFields.hostIdentityActiveGeneration,
+    epochFields.identity_active_generation,
+    epochFields.identityActiveGeneration,
+    epochFields.active_generation,
+    epochFields.activeGeneration,
+    epochFields.generation,
+  );
+  return previousGeneration !== null
+    && activeGeneration !== null
+    && activeGeneration > previousGeneration
+    ? { previousGeneration, activeGeneration }
+    : null;
+}
+
 function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) {
   const boundaryLines = compactStringList(Array.isArray(lines) ? lines : [])
     .filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
@@ -662,8 +710,21 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
       missingEventKinds.push(event.kind);
     }
   }
+  const hostIdentityObserved = observedEventKinds.includes('host_identity');
+  const hostIdentityLineage = adapterBoundaryExpectedHostIdentityLineage(boundaryLines);
+  const hostIdentityEvidence = runtimeHostIdentityEvidence(boundaryLines, {
+    expectedGenerationLineage: hostIdentityLineage,
+    requireGenerationLineage: true,
+  });
+  const hostIdentityProofShaped =
+    !hostIdentityObserved
+    || (
+      hostIdentityLineage !== null
+      && hostIdentityEvidence.identity_checks_passed === true
+    );
   const coverageSeed = {
     boundaryLineHashes,
+    hostIdentityProofShaped,
     missingEventKinds,
     observedEventKinds,
   };
@@ -704,6 +765,12 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
     suppliedCoverageHash && suppliedCoverageHash !== recomputedCoverageHash
       ? 'real_rocm_runtime_adapter_boundary_coverage_hash_mismatch'
       : null,
+    hostIdentityObserved && hostIdentityLineage === null
+      ? 'real_rocm_runtime_adapter_boundary_host_identity_lineage_missing'
+      : null,
+    hostIdentityObserved && hostIdentityProofShaped !== true
+      ? 'real_rocm_runtime_adapter_boundary_host_identity_fields_incomplete'
+      : null,
   ]);
   return {
     present: suppliedPresent || boundaryLines.length > 0,
@@ -731,6 +798,12 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
     observed_event_kinds: observedEventKinds,
     missingEventKinds,
     missing_event_kinds: missingEventKinds,
+    hostIdentityProofShaped,
+    host_identity_proof_shaped: hostIdentityProofShaped,
+    hostIdentityLineage,
+    host_identity_lineage: hostIdentityLineage,
+    hostIdentityEvidence,
+    host_identity_evidence: hostIdentityEvidence,
     ...observedFlags,
     failedGates,
     failed_gates: failedGates,
