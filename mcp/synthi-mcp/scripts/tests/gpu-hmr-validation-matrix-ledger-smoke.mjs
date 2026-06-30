@@ -7261,6 +7261,31 @@ function acceptedBroadReadinessCandidate({
   return withQueryRecomputedRowId(row);
 }
 
+function withoutSourceFirstVisualSupport(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  delete cloned.sourceFirstIngestion;
+  delete cloned.source_first_ingestion;
+  if (cloned.asyncVisualCasBundle) {
+    cloned.asyncVisualCasBundle = {
+      ...cloned.asyncVisualCasBundle,
+      accepted: false,
+      failedGates: [
+        ...new Set([
+          ...(
+            cloned.asyncVisualCasBundle.failedGates
+            ?? cloned.asyncVisualCasBundle.failed_gates
+            ?? []
+          ),
+          'source_first_visual_support_removed_for_broad_readiness_fixture',
+        ]),
+      ],
+    };
+    cloned.asyncVisualCasBundle.failed_gates = cloned.asyncVisualCasBundle.failedGates;
+    cloned.async_visual_cas_bundle = cloned.asyncVisualCasBundle;
+  }
+  return withQueryRecomputedRowId(cloned);
+}
+
 function refusalMatrixRow(targetId, backend = 'hip') {
   return withQueryRecomputedRowId({
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -7970,6 +7995,32 @@ assert.ok(
   broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessWithoutSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withoutSourceFirstVisualSupport(row)),
+    randomColdReadinessMatrixRow(),
+  ],
+});
+assert.equal(broadReadinessWithoutSourceFirstVisualQuery.accepted, true);
+assert.equal(
+  broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
 const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   randomColdReadinessMatrixRow(),
@@ -8011,14 +8062,32 @@ assert.equal(
   1,
 );
 assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualRowCount,
+  2,
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualTargets,
+  ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
+);
+assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathRows,
   1,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualRows,
+  2,
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathTargets,
   ['random-cold-readiness-user-project'],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualTargets,
+  ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
 );
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
