@@ -88,7 +88,12 @@ function stableJson(value) {
 function cleanCandidate(raw, index = 0) {
   const candidate = raw && typeof raw === 'object' ? raw : {};
   const id = String(candidate.id ?? '').trim();
-  const backendFamily = String(candidate.backendFamily ?? candidate.backend_family ?? '').trim();
+  const backendFamily = String(
+    candidate.backendFamily
+      ?? candidate.backend_family
+      ?? candidate.backend
+      ?? 'unknown_gpu_project',
+  ).trim().toLowerCase();
   const profilePath = String(candidate.profilePath ?? candidate.profile_path ?? '').trim();
   const sourceUrl = String(candidate.sourceUrl ?? candidate.source_url ?? candidate.repo?.url ?? '').trim();
   const immutableCommit = String(
@@ -98,23 +103,32 @@ function cleanCandidate(raw, index = 0) {
       ?? '',
   ).trim();
   if (!id) throw new Error(`candidate[${index}] id missing`);
-  if (!backendFamily) throw new Error(`candidate[${index}] backendFamily missing`);
-  if (backendFamily !== 'real_rocm') {
-    throw new Error(`candidate[${index}] unsupported backendFamily=${backendFamily}`);
+  if (!/^[a-z][a-z0-9_-]*$/i.test(backendFamily)) {
+    throw new Error(`candidate[${index}] backendFamily must be a safe identifier`);
   }
-  if (!profilePath) throw new Error(`candidate[${index}] profilePath missing`);
   if (!sourceUrl) throw new Error(`candidate[${index}] sourceUrl missing`);
   if (!/^[0-9a-f]{40,64}$/i.test(immutableCommit)) {
     throw new Error(`candidate[${index}] immutableCommit must be a git commit hash`);
   }
-  const resolvedProfilePath = path.resolve(profilePath);
+  const resolvedProfilePath = profilePath ? path.resolve(profilePath) : null;
+  const profileMode = resolvedProfilePath
+    ? 'profile_driven_real_rocm_runner'
+    : 'unprofiled_arbitrary_project_cold_intake';
   return {
     id,
     backendFamily,
     profilePath: resolvedProfilePath,
+    profileMode,
+    profile_mode: profileMode,
     sourceUrl,
     immutableCommit,
     sizeSignals: candidate.sizeSignals ?? candidate.size_signals ?? {},
+    buildSystemHints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
+    build_system_hints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
+    runtimeBoundaryHints: candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
+    runtime_boundary_hints: candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
+    oracleHints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
+    oracle_hints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
   };
 }
 
@@ -267,6 +281,42 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeou
     return {
       candidateId: candidate.id,
       status: 'selected_not_executed_dry_run',
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    };
+  }
+  if (!candidate.profilePath || candidate.backendFamily !== 'real_rocm') {
+    const blockingGaps = [
+      'runtime_profile_contract_missing',
+      'build_metadata_unverified',
+      'same_process_loader_unproven',
+      'epoch_publication_unproven',
+      'dispatch_trace_unproven',
+      'host_identity_unproven',
+      'output_oracle_unproven',
+      'strict_runtime_ledger_missing',
+    ];
+    if (candidate.backendFamily !== 'real_rocm') {
+      blockingGaps.unshift('local_backend_runner_unavailable');
+    }
+    return {
+      candidateId: candidate.id,
+      status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      backendFamily: candidate.backendFamily,
+      backend_family: candidate.backendFamily,
+      profileMode: candidate.profileMode,
+      profile_mode: candidate.profileMode,
+      runnerAttempted: false,
+      runner_attempted: false,
+      sourceUrl: candidate.sourceUrl,
+      source_url: candidate.sourceUrl,
+      immutableCommit: candidate.immutableCommit,
+      immutable_commit: candidate.immutableCommit,
+      blockingGaps,
+      blocking_gaps: blockingGaps,
+      unsupportedReasons: blockingGaps,
+      unsupported_reasons: blockingGaps,
       acceptedForGpuHmr: false,
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
@@ -464,12 +514,20 @@ function createManifest({
       id: candidate.id,
       backendFamily: candidate.backendFamily,
       backend_family: candidate.backendFamily,
+      profileMode: candidate.profileMode,
+      profile_mode: candidate.profileMode,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
       sizeSignals: candidate.sizeSignals,
       size_signals: candidate.sizeSignals,
+      buildSystemHints: candidate.buildSystemHints,
+      build_system_hints: candidate.buildSystemHints,
+      runtimeBoundaryHints: candidate.runtimeBoundaryHints,
+      runtime_boundary_hints: candidate.runtimeBoundaryHints,
+      oracleHints: candidate.oracleHints,
+      oracle_hints: candidate.oracleHints,
     })),
     selectedCandidates: selected.map((candidate) => ({
       id: candidate.id,
@@ -477,6 +535,8 @@ function createManifest({
       backend_family: candidate.backendFamily,
       profilePath: candidate.profilePath,
       profile_path: candidate.profilePath,
+      profileMode: candidate.profileMode,
+      profile_mode: candidate.profileMode,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       immutableCommit: candidate.immutableCommit,
@@ -487,6 +547,12 @@ function createManifest({
       selection_key: candidate.selectionKey,
       sizeSignals: candidate.sizeSignals,
       size_signals: candidate.sizeSignals,
+      buildSystemHints: candidate.buildSystemHints,
+      build_system_hints: candidate.buildSystemHints,
+      runtimeBoundaryHints: candidate.runtimeBoundaryHints,
+      runtime_boundary_hints: candidate.runtimeBoundaryHints,
+      oracleHints: candidate.oracleHints,
+      oracle_hints: candidate.oracleHints,
     })),
     dryRun,
     dry_run: dryRun,
@@ -525,6 +591,18 @@ async function selfCheck() {
       sourceUrl: 'https://example.invalid/gamma.git',
       immutableCommit: 'cccccccccccccccccccccccccccccccccccccccc',
     }),
+    cleanCandidate({
+      id: 'delta-unprofiled-large',
+      sourceUrl: 'https://example.invalid/delta.git',
+      immutableCommit: 'dddddddddddddddddddddddddddddddddddddddd',
+      sizeSignals: {
+        class: 'large_unknown_gpu_project',
+        coldPathKind: 'unprofiled_arbitrary_project',
+      },
+      buildSystemHints: {
+        observedFiles: ['CMakeLists.txt'],
+      },
+    }),
   ];
   const first = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
   const second = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
@@ -545,6 +623,32 @@ async function selfCheck() {
   }
   if (!rejectedMissingCommit) {
     throw new Error('random large-project cold-path candidate validation accepted missing commit');
+  }
+  let rejectedUnsafeBackend = false;
+  try {
+    cleanCandidate({
+      id: 'bad-backend',
+      backendFamily: '../real_rocm',
+      sourceUrl: 'https://example.invalid/bad-backend.git',
+      immutableCommit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    });
+  } catch {
+    rejectedUnsafeBackend = true;
+  }
+  if (!rejectedUnsafeBackend) {
+    throw new Error('random large-project cold-path candidate validation accepted unsafe backend');
+  }
+  const unprofiled = cleanCandidate({
+    id: 'plain-arbitrary-large',
+    sourceUrl: 'https://example.invalid/plain.git',
+    immutableCommit: 'ffffffffffffffffffffffffffffffffffffffff',
+  });
+  if (
+    unprofiled.profilePath !== null
+    || unprofiled.backendFamily !== 'unknown_gpu_project'
+    || unprofiled.profileMode !== 'unprofiled_arbitrary_project_cold_intake'
+  ) {
+    throw new Error('random large-project cold-path unprofiled normalization failed');
   }
   const { manifest } = await buildManifest({
     seed: 'self-check-seed',
@@ -600,6 +704,27 @@ async function selfCheck() {
     || pendingManifest.results[0]?.status !== 'synthetic_runner_timeout_failed_closed'
   ) {
     throw new Error('random large-project cold-path pending manifest self-check failed');
+  }
+  const { manifest: unprofiledManifest } = await buildManifest({
+    seed: 'unprofiled-self-check-seed',
+    count: 1,
+    candidateId: 'delta-unprofiled-large',
+    dryRun: false,
+    timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
+    candidates,
+    outputDir: path.join(LOG_DIR, 'self-check'),
+  });
+  const unprofiledResult = unprofiledManifest.results[0] ?? {};
+  if (
+    unprofiledResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
+    || unprofiledResult.runnerAttempted !== false
+    || !unprofiledResult.blockingGaps?.includes('runtime_profile_contract_missing')
+    || !unprofiledResult.blockingGaps?.includes('strict_runtime_ledger_missing')
+    || unprofiledResult.acceptedForGpuHmr !== false
+    || unprofiledResult.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-path unprofiled refusal self-check failed');
   }
   console.log('random large-project cold-path self-check passed');
 }
