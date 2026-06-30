@@ -166,6 +166,21 @@ const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_adapter_boundary_coverage.v1';
 const REAL_ROCM_RUNTIME_ADAPTER_BOUNDARY_COVERAGE_AUTHORITY =
   'adapter_boundary_coverage_diagnostic_only_not_runtime_authority';
+const COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1';
+const COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY =
+  'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_event.v1';
+const RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_event_manifest.v1';
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS = Object.freeze([
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+]);
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -895,6 +910,297 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
     supplied_coverage_hash: suppliedCoverageHash ?? null,
     coverageHash: recomputedCoverageHash,
     coverage_hash: recomputedCoverageHash,
+  };
+}
+
+function coldTemplateHashSeed(value = {}) {
+  const seed = { ...compactObject(value) };
+  delete seed.templateHash;
+  delete seed.template_hash;
+  return seed;
+}
+
+function coldTemplateContentHash(value = {}) {
+  return normalizeSha256(`sha256:${sha256Hex(stableJson(coldTemplateHashSeed(value)))}`);
+}
+
+function runtimeBoundaryTemplateEventKind(event = {}) {
+  return firstText(
+    event.eventKind,
+    event.event_kind,
+    event.kind,
+    event.stage,
+    event.stageKind,
+    event.stage_kind,
+  )?.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') ?? null;
+}
+
+export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const acceptedAsTemplate = firstBool(
+    facet.acceptedAsRuntimeBoundaryEventManifestTemplate,
+    facet.accepted_as_runtime_boundary_event_manifest_template,
+  );
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const requiredEventKinds = compactStringList([
+    ...(Array.isArray(facet.requiredEventKinds) ? facet.requiredEventKinds : []),
+    ...(Array.isArray(facet.required_event_kinds) ? facet.required_event_kinds : []),
+  ]).map((kind) => kind.toLowerCase()).sort();
+  const eventTemplates = compactObjectList(
+    facet.eventObjectTemplates ?? facet.event_object_templates,
+  );
+  const manifestTemplate = compactObject(facet.manifestTemplate ?? facet.manifest_template);
+  const manifestTemplateEvents = [
+    ...(Array.isArray(manifestTemplate.runtimeBoundaryEvents)
+      ? manifestTemplate.runtimeBoundaryEvents
+      : []),
+    ...(Array.isArray(manifestTemplate.runtime_boundary_events)
+      ? manifestTemplate.runtime_boundary_events
+      : []),
+    ...(Array.isArray(manifestTemplate.adapterRuntimeBoundaryEvents)
+      ? manifestTemplate.adapterRuntimeBoundaryEvents
+      : []),
+    ...(Array.isArray(manifestTemplate.adapter_runtime_boundary_events)
+      ? manifestTemplate.adapter_runtime_boundary_events
+      : []),
+  ];
+  const requiredKindSet = new Set(COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS);
+  const suppliedRequiredKindSet = new Set(requiredEventKinds);
+  const eventKinds = compactStringList(eventTemplates.map(runtimeBoundaryTemplateEventKind))
+    .map((kind) => kind.toLowerCase())
+    .sort();
+  const eventKindSet = new Set(eventKinds);
+  const missingRequiredKinds = COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS
+    .filter((kind) => !suppliedRequiredKindSet.has(kind) || !eventKindSet.has(kind));
+  const unknownRequiredKinds = requiredEventKinds.filter((kind) => !requiredKindSet.has(kind));
+  const unknownEventKinds = eventKinds.filter((kind) => !requiredKindSet.has(kind));
+  const eventTemplateFailures = [];
+  const eventTemplateHashes = [];
+  for (const eventTemplate of eventTemplates) {
+    const kind = runtimeBoundaryTemplateEventKind(eventTemplate) ?? 'unknown';
+    const eventSchema = firstText(eventTemplate.schemaVersion, eventTemplate.schema_version);
+    const eventAcceptedForGpuHmr = firstBool(
+      eventTemplate.acceptedForGpuHmr,
+      eventTemplate.accepted_for_gpu_hmr,
+    );
+    const eventGpuHmrSuccess = firstBool(
+      eventTemplate.gpuHmrSuccess,
+      eventTemplate.gpu_hmr_success,
+    );
+    const eventCanSatisfyRuntimeProof = firstBool(
+      eventTemplate.canSatisfyRuntimeProof,
+      eventTemplate.can_satisfy_runtime_proof,
+    );
+    const eventCanSatisfyDispatchProof = firstBool(
+      eventTemplate.canSatisfyDispatchProof,
+      eventTemplate.can_satisfy_dispatch_proof,
+    );
+    const requiredFields = compactStringList([
+      ...(Array.isArray(eventTemplate.requiredFields) ? eventTemplate.requiredFields : []),
+      ...(Array.isArray(eventTemplate.required_fields) ? eventTemplate.required_fields : []),
+    ]);
+    const suppliedEventHash = normalizeSha256(firstText(
+      eventTemplate.templateHash,
+      eventTemplate.template_hash,
+    ));
+    const recomputedEventHash = coldTemplateContentHash(eventTemplate);
+    eventTemplateHashes.push(recomputedEventHash);
+    if (eventSchema !== RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_schema_invalid:${kind}`,
+      );
+    }
+    if (!requiredKindSet.has(kind)) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_kind_unknown:${kind}`,
+      );
+    }
+    if (requiredFields.length === 0) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_required_fields_missing:${kind}`,
+      );
+    }
+    if (kind === 'artifact_transport' && !requiredFields.includes('artifact_hash')) {
+      eventTemplateFailures.push('cold_runtime_boundary_event_template_artifact_hash_missing');
+    }
+    if (kind === 'epoch_publication' && !requiredFields.includes('epoch')) {
+      eventTemplateFailures.push('cold_runtime_boundary_event_template_epoch_missing');
+    }
+    if (kind === 'dispatch_trace' && !requiredFields.includes('dispatch_id')) {
+      eventTemplateFailures.push('cold_runtime_boundary_event_template_dispatch_id_missing');
+    }
+    if (kind === 'host_identity' && !requiredFields.includes('process_id')) {
+      eventTemplateFailures.push('cold_runtime_boundary_event_template_process_id_missing');
+    }
+    if (kind === 'output_oracle' && !requiredFields.includes('after_dispatch_id')) {
+      eventTemplateFailures.push('cold_runtime_boundary_event_template_after_dispatch_id_missing');
+    }
+    if (eventAcceptedForGpuHmr === true) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_claimed_gpu_hmr_acceptance:${kind}`,
+      );
+    }
+    if (eventGpuHmrSuccess === true) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_claimed_gpu_hmr_success:${kind}`,
+      );
+    }
+    if (eventCanSatisfyRuntimeProof === true) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_claimed_runtime_authority:${kind}`,
+      );
+    }
+    if (eventCanSatisfyDispatchProof === true) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_claimed_dispatch_authority:${kind}`,
+      );
+    }
+    if (!suppliedEventHash || suppliedEventHash !== recomputedEventHash) {
+      eventTemplateFailures.push(
+        `cold_runtime_boundary_event_template_hash_mismatch:${kind}`,
+      );
+    }
+  }
+  const suppliedTemplateHash = normalizeSha256(firstText(
+    facet.templateHash,
+    facet.template_hash,
+  ));
+  const recomputedTemplateHash = coldTemplateContentHash(facet);
+  const failedGates = compactStringList([
+    present ? null : 'cold_runtime_boundary_event_manifest_template_missing',
+    schemaVersion
+      ? null
+      : 'cold_runtime_boundary_event_manifest_template_schema_missing',
+    schemaVersion
+      && schemaVersion !== COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_SCHEMA_VERSION
+      ? 'cold_runtime_boundary_event_manifest_template_schema_unknown'
+      : null,
+    proofAuthority === COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY
+      ? null
+      : 'cold_runtime_boundary_event_manifest_template_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'cold_runtime_boundary_event_manifest_template_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'cold_runtime_boundary_event_manifest_template_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'cold_runtime_boundary_event_manifest_template_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'cold_runtime_boundary_event_manifest_template_claimed_dispatch_authority'
+      : null,
+    eventTemplates.length === 0
+      ? 'cold_runtime_boundary_event_manifest_template_events_missing'
+      : null,
+    ...missingRequiredKinds
+      .map((kind) => `cold_runtime_boundary_event_manifest_template_${kind}_missing`),
+    ...unknownRequiredKinds
+      .map((kind) => `cold_runtime_boundary_event_manifest_template_required_kind_unknown:${kind}`),
+    ...unknownEventKinds
+      .map((kind) => `cold_runtime_boundary_event_manifest_template_event_kind_unknown:${kind}`),
+    firstText(manifestTemplate.schemaVersion, manifestTemplate.schema_version)
+      === RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA_VERSION
+      ? null
+      : 'cold_runtime_boundary_event_manifest_template_manifest_schema_invalid',
+    firstText(manifestTemplate.proofAuthority, manifestTemplate.proof_authority)
+      === COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY
+      ? null
+      : 'cold_runtime_boundary_event_manifest_template_manifest_authority_invalid',
+    firstBool(
+      manifestTemplate.acceptedForGpuHmr,
+      manifestTemplate.accepted_for_gpu_hmr,
+    ) === true
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_claimed_gpu_hmr_acceptance'
+      : null,
+    firstBool(manifestTemplate.gpuHmrSuccess, manifestTemplate.gpu_hmr_success) === true
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_claimed_gpu_hmr_success'
+      : null,
+    firstBool(
+      manifestTemplate.canSatisfyRuntimeProof,
+      manifestTemplate.can_satisfy_runtime_proof,
+    ) === true
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_claimed_runtime_authority'
+      : null,
+    manifestTemplateEvents.length > 0
+      ? 'cold_runtime_boundary_event_manifest_template_contains_runtime_events'
+      : null,
+    firstBool(
+      manifestTemplate.requiresObservedRuntimeEvents,
+      manifestTemplate.requires_observed_runtime_events,
+    ) === true
+      ? null
+      : 'cold_runtime_boundary_event_manifest_template_observed_events_requirement_missing',
+    acceptedAsTemplate === true && blockingGaps.length > 0
+      ? 'cold_runtime_boundary_event_manifest_template_accepted_with_blocking_gaps'
+      : null,
+    !suppliedTemplateHash || suppliedTemplateHash !== recomputedTemplateHash
+      ? 'cold_runtime_boundary_event_manifest_template_hash_mismatch'
+      : null,
+    ...eventTemplateFailures,
+  ]);
+  return {
+    present,
+    validated: failedGates.length === 0,
+    accepted: false,
+    acceptedAsSupportEvidence:
+      failedGates.length === 0
+      && acceptedAsTemplate === true
+      && blockingGaps.length === 0,
+    accepted_as_support_evidence:
+      failedGates.length === 0
+      && acceptedAsTemplate === true
+      && blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion:
+      schemaVersion ?? COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_SCHEMA_VERSION,
+    schema_version:
+      schemaVersion ?? COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_SCHEMA_VERSION,
+    proofAuthority:
+      proofAuthority ?? COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY,
+    proof_authority:
+      proofAuthority ?? COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY,
+    requiredEventKinds,
+    required_event_kinds: requiredEventKinds,
+    observedEventKinds: eventKinds,
+    observed_event_kinds: eventKinds,
+    missingRequiredEventKinds: missingRequiredKinds,
+    missing_required_event_kinds: missingRequiredKinds,
+    eventTemplateCount: eventTemplates.length,
+    event_template_count: eventTemplates.length,
+    eventTemplateHashes,
+    event_template_hashes: eventTemplateHashes,
+    suppliedTemplateHash: suppliedTemplateHash ?? null,
+    supplied_template_hash: suppliedTemplateHash ?? null,
+    templateHash: recomputedTemplateHash,
+    template_hash: recomputedTemplateHash,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
   };
 }
 

@@ -11,6 +11,7 @@ import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+  coldRuntimeBoundaryEventManifestTemplateFacet,
   queryGpuHmrValidationMatrixLedger,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 import {
@@ -90,6 +91,246 @@ function hashValue(label) {
 function contentHashFor(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
 }
+
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY =
+  'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
+
+function hashedColdRuntimeBoundaryEventTemplate(kind, requiredFields) {
+  const template = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_boundary_event.v1',
+    eventKind: kind,
+    event_kind: kind,
+    requiredFields,
+    required_fields: requiredFields,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  return {
+    ...template,
+    templateHash: contentHashFor(template),
+    template_hash: contentHashFor(template),
+  };
+}
+
+function hashedColdRuntimeBoundaryTemplateFacet(overrides = {}) {
+  const eventObjectTemplates = [
+    hashedColdRuntimeBoundaryEventTemplate('artifact_transport', [
+      'runtime_session',
+      'process_id',
+      'artifact_hash',
+    ]),
+    hashedColdRuntimeBoundaryEventTemplate('epoch_publication', [
+      'runtime_session',
+      'process_id',
+      'epoch',
+    ]),
+    hashedColdRuntimeBoundaryEventTemplate('dispatch_trace', [
+      'runtime_session',
+      'process_id',
+      'dispatch_id',
+    ]),
+    hashedColdRuntimeBoundaryEventTemplate('host_identity', [
+      'runtime_session',
+      'process_id',
+      'device_uuid',
+    ]),
+    hashedColdRuntimeBoundaryEventTemplate('output_oracle', [
+      'runtime_session',
+      'process_id',
+      'after_dispatch_id',
+    ]),
+  ];
+  const seed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1',
+    schema_version: 'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1',
+    proofAuthority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+    proof_authority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsRuntimeBoundaryEventManifestTemplate: true,
+    accepted_as_runtime_boundary_event_manifest_template: true,
+    requiredEventKinds: COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS,
+    required_event_kinds: COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS,
+    eventObjectTemplates,
+    event_object_templates: eventObjectTemplates,
+    manifestTemplate: {
+      schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+      schema_version: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+      proofAuthority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+      proof_authority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      requiresObservedRuntimeEvents: true,
+      requires_observed_runtime_events: true,
+      eventObjectTemplates,
+      event_object_templates: eventObjectTemplates,
+    },
+    manifest_template: {
+      schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+      schema_version: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+      proofAuthority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+      proof_authority: COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      requiresObservedRuntimeEvents: true,
+      requires_observed_runtime_events: true,
+      eventObjectTemplates,
+      event_object_templates: eventObjectTemplates,
+    },
+    blockingGaps: [],
+    blocking_gaps: [],
+    ...overrides,
+  };
+  return {
+    ...seed,
+    templateHash: contentHashFor(seed),
+    template_hash: contentHashFor(seed),
+  };
+}
+
+function rehashColdRuntimeBoundaryTemplateFacet(value) {
+  const seed = JSON.parse(JSON.stringify(value));
+  delete seed.templateHash;
+  delete seed.template_hash;
+  return {
+    ...seed,
+    templateHash: contentHashFor(seed),
+    template_hash: contentHashFor(seed),
+  };
+}
+
+const acceptedColdRuntimeBoundaryTemplate =
+  coldRuntimeBoundaryEventManifestTemplateFacet(hashedColdRuntimeBoundaryTemplateFacet());
+assert.equal(acceptedColdRuntimeBoundaryTemplate.validated, true);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.acceptedAsSupportEvidence, true);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.acceptedForGpuHmr, false);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.gpuHmrSuccess, false);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.canSatisfyRuntimeProof, false);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.eventTemplateCount, 5);
+assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.missingRequiredEventKinds, []);
+assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.failedGates, []);
+
+const forgedColdRuntimeBoundarySuccess =
+  coldRuntimeBoundaryEventManifestTemplateFacet(hashedColdRuntimeBoundaryTemplateFacet({
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+  }));
+assert.equal(forgedColdRuntimeBoundarySuccess.validated, false);
+assert.equal(forgedColdRuntimeBoundarySuccess.acceptedAsSupportEvidence, false);
+assert.ok(
+  forgedColdRuntimeBoundarySuccess.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_claimed_gpu_hmr_success'),
+);
+
+const populatedRuntimeEventsTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+populatedRuntimeEventsTemplateSeed.manifestTemplate = {
+  ...populatedRuntimeEventsTemplateSeed.manifestTemplate,
+  runtimeBoundaryEvents: [
+    {
+      schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event.v1',
+      eventKind: 'dispatch_trace',
+      dispatch_id: 'dispatch-forged',
+    },
+  ],
+};
+populatedRuntimeEventsTemplateSeed.manifest_template =
+  populatedRuntimeEventsTemplateSeed.manifestTemplate;
+const populatedRuntimeEventsTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(
+  rehashColdRuntimeBoundaryTemplateFacet(populatedRuntimeEventsTemplateSeed),
+);
+assert.equal(populatedRuntimeEventsTemplate.validated, false);
+assert.ok(
+  populatedRuntimeEventsTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_contains_runtime_events'),
+);
+
+const missingOutputOracleTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+missingOutputOracleTemplateSeed.requiredEventKinds =
+  missingOutputOracleTemplateSeed.requiredEventKinds
+    .filter((kind) => kind !== 'output_oracle');
+missingOutputOracleTemplateSeed.required_event_kinds =
+  missingOutputOracleTemplateSeed.requiredEventKinds;
+missingOutputOracleTemplateSeed.eventObjectTemplates =
+  missingOutputOracleTemplateSeed.eventObjectTemplates
+    .filter((entry) => entry.eventKind !== 'output_oracle');
+missingOutputOracleTemplateSeed.event_object_templates =
+  missingOutputOracleTemplateSeed.eventObjectTemplates;
+missingOutputOracleTemplateSeed.manifestTemplate.eventObjectTemplates =
+  missingOutputOracleTemplateSeed.eventObjectTemplates;
+missingOutputOracleTemplateSeed.manifestTemplate.event_object_templates =
+  missingOutputOracleTemplateSeed.eventObjectTemplates;
+missingOutputOracleTemplateSeed.manifest_template =
+  missingOutputOracleTemplateSeed.manifestTemplate;
+const missingOutputOracleTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(
+  rehashColdRuntimeBoundaryTemplateFacet(missingOutputOracleTemplateSeed),
+);
+assert.equal(missingOutputOracleTemplate.validated, false);
+assert.ok(
+  missingOutputOracleTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_output_oracle_missing'),
+);
+
+const badEventHashTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+badEventHashTemplateSeed.eventObjectTemplates[0].templateHash =
+  hashValue('forged-cold-runtime-boundary-event-template');
+badEventHashTemplateSeed.eventObjectTemplates[0].template_hash =
+  badEventHashTemplateSeed.eventObjectTemplates[0].templateHash;
+badEventHashTemplateSeed.event_object_templates =
+  badEventHashTemplateSeed.eventObjectTemplates;
+badEventHashTemplateSeed.manifestTemplate.eventObjectTemplates =
+  badEventHashTemplateSeed.eventObjectTemplates;
+badEventHashTemplateSeed.manifestTemplate.event_object_templates =
+  badEventHashTemplateSeed.eventObjectTemplates;
+badEventHashTemplateSeed.manifest_template =
+  badEventHashTemplateSeed.manifestTemplate;
+const badEventHashTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(
+  rehashColdRuntimeBoundaryTemplateFacet(badEventHashTemplateSeed),
+);
+assert.equal(badEventHashTemplate.validated, false);
+assert.ok(
+  badEventHashTemplate.failedGates
+    .includes('cold_runtime_boundary_event_template_hash_mismatch:artifact_transport'),
+);
+
+const badTopHashTemplate = {
+  ...hashedColdRuntimeBoundaryTemplateFacet(),
+  templateHash: hashValue('forged-cold-runtime-boundary-template'),
+  template_hash: hashValue('forged-cold-runtime-boundary-template'),
+};
+const badTopHashFacet = coldRuntimeBoundaryEventManifestTemplateFacet(badTopHashTemplate);
+assert.equal(badTopHashFacet.validated, false);
+assert.ok(
+  badTopHashFacet.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_hash_mismatch'),
+);
 
 function selectedIslandIdFor(selectedPath, selectedKernel) {
   return `kernel:${selectedKernel}:${sha256Hex(selectedPath).slice(0, 16)}`;
