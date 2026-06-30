@@ -2,6 +2,11 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  canonicalDojoProofPayload,
+  createEd25519DojoProofSigner,
+  generateEd25519DojoProofKeyPair,
+} from '../../../../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -181,6 +186,57 @@ function executionPlanFixture(route = ['synthi/prisma/**']) {
       ownerUserId: 'user-1',
       displayCallsign: 'ATLAS-1',
     },
+  };
+}
+
+function signedDojoProofFixture() {
+  const keyPair = generateEd25519DojoProofKeyPair('dojo-test-key');
+  const signer = createEd25519DojoProofSigner({
+    key_id: keyPair.key_id,
+    private_key_pem: keyPair.private_key_pem,
+  });
+  const unsignedCapsule = {
+    schema_version: 'synthi.dojo.proofCapsule.v1',
+    capsule_id: 'pcap-auth-schema',
+    skill_id: 'codesite.schema',
+    skill_version: '2026-06-25.1',
+    requested_action: 'codesite.mutation.clearance',
+    license_version: 'schema.level_2@2026-06-25',
+    issuer: 'dojo-test-issuer',
+    key_id: keyPair.key_id,
+    nonce: 'nonce-codesite-test-1',
+    ledger_checkpoint_hash: 'a'.repeat(64),
+    evidence_claims: [{
+      claim: 'codesite.restricted_mutation',
+      satisfied: true,
+      evidence_refs: ['evidence:ev-checkride-1'],
+    }],
+    evidence_record_ids: ['ev-checkride-1'],
+    issued_at: '2026-06-29T00:00:00.000Z',
+    expires_at: '2026-07-02T00:00:00.000Z',
+    signature_algorithm: 'ed25519',
+  };
+  const signature = signer.sign(canonicalDojoProofPayload(unsignedCapsule));
+  return {
+    dojoProofCapsule: {
+      ...unsignedCapsule,
+      signature: signature.signature,
+    },
+    dojoProofKey: {
+      schema_version: 'synthi.dojo.proofKey.v1',
+      tenant_id: 'acme',
+      key_id: keyPair.key_id,
+      issuer: 'dojo-test-issuer',
+      algorithm: 'ed25519',
+      signing_provider: 'ed25519-local',
+      key_custody: 'local',
+      public_key_pem: keyPair.public_key_pem,
+      status: 'active',
+      created_at: '2026-06-29T00:00:00.000Z',
+      retain_for_forensic_verification: false,
+    },
+    dojoRequiredEvidenceClaims: ['codesite.restricted_mutation'],
+    implementationStatus: { executable: true, productionRuntime: false },
   };
 }
 
@@ -369,6 +425,8 @@ describe('CodeSite control plane transaction validation', () => {
       'dojo_license_ref_required',
       'dojo_evidence_refs_required',
       'dojo_implementation_not_executable',
+      'dojo_public_proof_capsule_required',
+      'dojo_public_proof_key_required',
     ]));
     expect(prisma.codeSiteMutationLease.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -379,7 +437,7 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
-  it('allows restricted airspace clearances with executable Dojo proof refs', async () => {
+  it('blocks restricted airspace clearances with metadata-only Dojo proof refs', async () => {
     const lease = await requestMutationLease('acme', 'plan-1', {
       allowedPaths: ['synthi/prisma/**'],
       dojoProofRef: 'pcap-auth-schema',
@@ -390,9 +448,28 @@ describe('CodeSite control plane transaction validation', () => {
       implementationStatus: { executable: true, productionRuntime: false },
     });
 
+    expect(lease.status).toBe('blocked');
+    expect(lease.dojoProofRef).toBe('pcap-auth-schema');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_public_proof_verification_required',
+      'dojo_public_proof_capsule_required',
+      'dojo_public_proof_key_required',
+    ]));
+  });
+
+  it('allows restricted airspace clearances with a verified Dojo proof capsule', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
     expect(lease.status).toBe('active');
     expect(lease.dojoProofRef).toBe('pcap-auth-schema');
-    expect(lease.policyDecision.reasonCodes).toContain('dojo_clearance_proof_verified');
+    expect(lease.dojoDecisionDigest).toMatch(/^sha256:/);
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+    ]));
   });
 
   it('allows low-risk clearances without Dojo proof', async () => {
