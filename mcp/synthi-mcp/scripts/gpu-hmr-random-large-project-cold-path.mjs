@@ -51,6 +51,111 @@ const DEFAULT_CANDIDATES = [
       coldPathKind: 'real_upstream_cmake_project',
     },
   },
+  {
+    id: 'unprofiled-llama-cpp-multibackend',
+    backendFamily: 'unknown_gpu_project',
+    sourceUrl: 'https://github.com/ggerganov/llama.cpp.git',
+    immutableCommit: '4f31eedb0ccf546b7e8d6bb243b170f12522f54d',
+    sizeSignals: {
+      class: 'large_arbitrary_multibackend_user_project',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt', 'Makefile'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'same_process_loader',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['compute_readback', 'visual_oracle'],
+    },
+  },
+  {
+    id: 'unprofiled-wgpu-rust-graphics-stack',
+    backendFamily: 'unknown_gpu_project',
+    sourceUrl: 'https://github.com/gfx-rs/wgpu.git',
+    immutableCommit: '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
+    sizeSignals: {
+      class: 'large_arbitrary_webgpu_vulkan_metal_user_project',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['Cargo.toml'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'pipeline_epoch',
+        'frame_or_compute_dispatch_trace',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['mapped_buffer_readback', 'visual_oracle'],
+    },
+  },
+  {
+    id: 'unprofiled-dawn-webgpu-stack',
+    backendFamily: 'unknown_gpu_project',
+    sourceUrl: 'https://github.com/google/dawn.git',
+    immutableCommit: 'a25d07794c686b4de8e231e53b7550c3e983e6e6',
+    sizeSignals: {
+      class: 'large_arbitrary_webgpu_native_stack',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'shader_or_pipeline_epoch',
+        'dispatch_trace',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['mapped_buffer_readback', 'visual_oracle'],
+    },
+  },
+  {
+    id: 'unprofiled-godot-engine-rendering',
+    backendFamily: 'unknown_gpu_project',
+    sourceUrl: 'https://github.com/godotengine/godot.git',
+    immutableCommit: 'f4c57c2824951a5df945392923bdfdc1c4055395',
+    sizeSignals: {
+      class: 'large_arbitrary_engine_rendering_project',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['SConstruct'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'engine_reload_hook',
+        'same_process_loader',
+        'pipeline_epoch',
+        'frame_dispatch_trace',
+        'host_identity',
+        'visual_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['deterministic_visual_oracle'],
+    },
+  },
 ];
 
 function parseArgs(argv = process.argv.slice(2)) {
@@ -309,6 +414,9 @@ function classifySourceListing(files) {
     'configure.ac',
     'xmake.lua',
     'premake5.lua',
+    'sconstruct',
+    'sconscript',
+    'build.gn',
   ]);
   const buildFileExtensions = new Set(['.sln', '.vcxproj', '.vcxproj.filters', '.csproj']);
   const gpuExtensions = new Set([
@@ -1057,6 +1165,17 @@ function createManifest({
 }
 
 async function selfCheck() {
+  const defaultCandidates = await loadCandidates();
+  const defaultUnprofiledCandidates = defaultCandidates.filter(
+    (candidate) => candidate.profileMode === 'unprofiled_arbitrary_project_cold_intake',
+  );
+  if (
+    defaultCandidates.length < 6
+    || defaultUnprofiledCandidates.length < 3
+    || !defaultUnprofiledCandidates.every((candidate) => candidate.profilePath === null)
+  ) {
+    throw new Error('random large-project cold-path default pool must include unprofiled arbitrary project intake candidates');
+  }
   const candidates = [
     cleanCandidate({
       id: 'alpha-large',
