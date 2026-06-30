@@ -46,11 +46,25 @@ function normalizeRepoRelativePath(input) {
 }
 
 function codeSiteContextFromRequest(req, data = {}, extra = {}) {
+  const hasCodeSitePayload = Object.prototype.hasOwnProperty.call(data, 'codesite')
+    || Object.prototype.hasOwnProperty.call(data, 'codeSite');
   const payload = data.codesite || data.codeSite || {};
   const header = (name) => req?.headers?.[name] || req?.headers?.[name.toLowerCase()];
+  const explicitMode = value(payload.mode, header('x-codesite-mode'));
+  const required = truthy(value(
+    payload.required,
+    payload.require,
+    payload.enforce,
+    payload.active,
+    data.codesiteRequired,
+    data.codeSiteRequired,
+    header('x-codesite-required'),
+    header('x-codesite-active'),
+  ));
   const context = {
     active: false,
-    mode: value(payload.mode, header('x-codesite-mode')) || 'enforce',
+    required,
+    mode: explicitMode || 'enforce',
     workspaceSlug: extra.workspaceSlug || data.workspaceSlug || data.slug || null,
     actorUserId: extra.actorUserId || data.userId || data.actorUserId || header('x-user-id') || null,
     effectiveUserId: extra.effectiveUserId || null,
@@ -71,7 +85,10 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     context.mutationLeaseId ||
     context.allowedPaths.length ||
     context.blockedPaths.length ||
-    payload.enforce === true,
+    required ||
+    explicitMode ||
+    hasCodeSitePayload ||
+    Object.keys(payload).length > 0,
   );
   return context;
 }
@@ -174,6 +191,12 @@ function jsonEnv(envValue) {
 
 function value(...values) {
   return values.find((item) => item !== undefined && item !== null && item !== '');
+}
+
+function truthy(input) {
+  if (input === true || input === 1) return true;
+  if (typeof input !== 'string') return false;
+  return ['1', 'true', 'yes', 'on', 'enforce', 'required'].includes(input.trim().toLowerCase());
 }
 
 function parsePatternList(input) {

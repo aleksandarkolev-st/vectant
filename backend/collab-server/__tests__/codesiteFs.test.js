@@ -44,6 +44,29 @@ test('extracts CodeSite context from payload and headers', () => {
   assert.strictEqual(context.displayCallsign, 'CODEX-04');
 });
 
+test('empty legacy requests stay inactive but declared CodeSite requests fail closed', async () => {
+  const legacy = codeSiteContextFromRequest({ headers: {} }, {}, { workspaceSlug: 'acme' });
+  assert.strictEqual(legacy.active, false);
+
+  for (const context of [
+    codeSiteContextFromRequest({ headers: { 'x-codesite-required': '1' } }, {}, { workspaceSlug: 'acme' }),
+    codeSiteContextFromRequest({ headers: { 'x-codesite-mode': 'enforce' } }, {}, { workspaceSlug: 'acme' }),
+    codeSiteContextFromRequest({ headers: {} }, { codesite: {} }, { workspaceSlug: 'acme' }),
+  ]) {
+    assert.strictEqual(context.active, true);
+    await assert.rejects(
+      () => enforceCodeSiteWriteAllowed(context, {
+        path: 'synthi/src/App.jsx',
+        tool: 'file_write',
+        kind: 'write-file',
+      }, { fetch: async () => new Response('{}') }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.details.reason_codes.includes('codesite_transaction_required')
+        && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
+    );
+  }
+});
+
 test('derives sanitized CodeSite runtime env and metadata for managed processes', () => {
   const context = codeSiteContextFromRequest({
     headers: {
