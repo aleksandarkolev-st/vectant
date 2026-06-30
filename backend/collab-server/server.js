@@ -20,6 +20,7 @@ const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntime
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
+const { codeSiteGitActionAttempts } = require('./codesiteGitPolicy');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
@@ -4177,6 +4178,11 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ error: 'invalid_path', message: pathErr.message }));
                 return;
               }
+            }
+
+            const codeSiteGitAttempts = codeSiteGitActionAttempts(action, data);
+            if (codeSiteGitAttempts.length) {
+              await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts);
             }
 
             switch (action) {
