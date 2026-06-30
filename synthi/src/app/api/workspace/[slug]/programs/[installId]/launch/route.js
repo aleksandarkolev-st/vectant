@@ -9,13 +9,13 @@ import {
   appendProgramRuntimeEvent,
 } from '@/lib/programs/store';
 import { launchInstalledProgram } from '@/lib/programs/runtimeClient';
-import { mergeProgramSession } from '@/lib/programs/routeHelpers';
+import { codeSiteContextFromBody, mergeProgramSession } from '@/lib/programs/routeHelpers';
 
 export const runtime = 'nodejs';
 
 // POST /api/workspace/:slug/programs/:installId/launch
 // Owner/admin: launch a persisted install from its stored recipe manifest.
-export async function POST(_req, { params }) {
+export async function POST(req, { params }) {
   const { slug, installId } = await params;
   const actor = await resolveActor();
   if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
@@ -23,6 +23,8 @@ export async function POST(_req, { params }) {
   if (!(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: slug }))) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
+  const body = await req.json().catch(() => ({}));
+  const codeSiteContext = codeSiteContextFromBody(body);
 
   const install = await getInstall(installId);
   if (!install || install.workspaceSlug !== slug) {
@@ -53,6 +55,7 @@ export async function POST(_req, { params }) {
     sessionId: session.id,
     type: 'launch_requested',
     data: { installId: install.id, runtimeType: session.runtimeType },
+    codeSiteContext,
   });
 
   try {
@@ -70,6 +73,7 @@ export async function POST(_req, { params }) {
       sessionId: session.id,
       type: 'launch_ack',
       data: { state: nextState, activePorts: snapshot?.activePorts || [] },
+      codeSiteContext,
     });
 
     return NextResponse.json({ session: mergeProgramSession(updated, snapshot) });
@@ -79,6 +83,7 @@ export async function POST(_req, { params }) {
       sessionId: session.id,
       type: 'launch_failed',
       data: { message: error?.message || 'runtime launch failed' },
+      codeSiteContext,
     });
     return NextResponse.json({ error: 'runtime_launch_failed', session: failed }, { status: 502 });
   }

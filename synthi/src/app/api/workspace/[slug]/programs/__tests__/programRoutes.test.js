@@ -272,16 +272,25 @@ describe('POST /programs/install', () => {
 
 describe('POST /programs/[installId]/launch', () => {
   it('launches an install from its stored manifest for an owner/admin', async () => {
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' };
     h.getInstall.mockResolvedValue({ id: 'inst1', programId: 'prog1', workspaceSlug: 'team', version: '1.0.0' });
     h.getProgramVersion.mockResolvedValue({ manifestJson: JSON.stringify({ runtimeType: 'web', displayName: 'Web', launch: 'npm run dev', ports: [3000] }) });
     h.createProgramSession.mockResolvedValue({ id: 'ps1', workspaceSlug: 'team', runtimeType: 'web', state: 'starting' });
     h.launchInstalledProgram.mockResolvedValue({ sessionId: 'ps1', state: 'running', activePorts: [3000], webPort: 3000 });
     h.updateProgramSession.mockResolvedValue({ id: 'ps1', workspaceSlug: 'team', state: 'running' });
 
-    const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', {}, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
+    const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', { codeSiteContext }, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
 
     expect(res.status).toBe(200);
     expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps1', userId: 'gh1' }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_requested',
+      codeSiteContext,
+    }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_ack',
+      codeSiteContext,
+    }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps1', state: 'running', activePorts: [3000], webPort: 3000 });
   });
@@ -360,15 +369,24 @@ describe('GET /programs/detect (Slice 1)', () => {
   });
 
   it('POST launches the detected repo program (re-detected server-side) and surfaces runtimeScope', async () => {
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' };
     h.fetchDetectedRepoProgram.mockResolvedValue({ config: { runtimeType: 'container', displayName: 'Compose', launch: 'docker compose up' }, source: 'docker-compose.yml' });
     h.createProgramSession.mockResolvedValue({ id: 'ps-d', workspaceSlug: 'team', runtimeType: 'container', state: 'starting' });
     h.launchInstalledProgram.mockResolvedValue({ sessionId: 'ps-d', state: 'running', activePorts: [8080], webPort: 8080, runtimeScope: 'scope-1' });
     h.updateProgramSession.mockResolvedValue({ id: 'ps-d', workspaceSlug: 'team', state: 'running' });
 
-    const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', {}, 'POST'), ctx({ slug: 'team' }));
+    const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', { codeSiteContext }, 'POST'), ctx({ slug: 'team' }));
 
     expect(res.status).toBe(200);
     expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-d', userId: 'gh1' }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_requested',
+      codeSiteContext,
+    }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_ack',
+      codeSiteContext,
+    }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-d', state: 'running', runtimeScope: 'scope-1' });
   });

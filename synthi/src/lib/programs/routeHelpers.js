@@ -5,6 +5,11 @@ export function normalizeGrantScopes(value) {
   return [...new Set(scopes.map((scope) => String(scope || '').trim()).filter(Boolean))];
 }
 
+export function codeSiteContextFromBody(body) {
+  const context = body?.codeSiteContext || body?.code_site_context || null;
+  return context && typeof context === 'object' && !Array.isArray(context) ? context : null;
+}
+
 // A DB session can keep an active state long after its runtime is gone (idle-cull,
 // collab-server restart, crash). These are the states we reconcile to "stopped" when
 // no live runtime session backs the row.

@@ -1,4 +1,8 @@
 import prisma from '@/lib/prisma';
+import {
+  codeSiteEvidenceRefsJson,
+  firstCodeSiteRef,
+} from '@/lib/codesite/substrateIdentity';
 
 function parseJsonText(text, fallback) {
   if (text == null) return fallback;
@@ -17,8 +21,12 @@ function toPublicPermissionGrant(row) {
 
 function toPublicProgramRuntimeEvent(row) {
   if (!row) return row;
-  const { dataJson, ...rest } = row;
-  return { ...rest, data: parseJsonText(dataJson, null) };
+  const { dataJson, codeSiteEvidenceRefsJson, ...rest } = row;
+  return {
+    ...rest,
+    data: parseJsonText(dataJson, null),
+    codeSiteEvidenceRefs: parseJsonText(codeSiteEvidenceRefsJson, []),
+  };
 }
 
 export async function createPermissionGrant({ workspaceSlug, scopes = [], grantedByUserId }) {
@@ -76,12 +84,31 @@ export async function listProgramSessions(workspaceSlug, { stateIn = null, limit
   });
 }
 
-export async function appendProgramRuntimeEvent({ sessionId, type, data = null }) {
+export async function appendProgramRuntimeEvent({
+  sessionId,
+  type,
+  data = null,
+  codeSiteContext = null,
+  codeSiteProjectId = null,
+  codeSiteTransactionId = null,
+  codeSiteMutationLeaseId = null,
+  codeSiteAgentSessionId = null,
+  codeSiteEvidenceRefs = null,
+}) {
+  const codeSiteRefs = normalizeCodeSiteRuntimeRefs({
+    codeSiteContext,
+    codeSiteProjectId,
+    codeSiteTransactionId,
+    codeSiteMutationLeaseId,
+    codeSiteAgentSessionId,
+    codeSiteEvidenceRefs,
+  });
   const row = await prisma.programRuntimeEvent.create({
     data: {
       sessionId,
       type,
       dataJson: data == null ? null : JSON.stringify(data),
+      ...codeSiteRefs,
     },
   });
   return toPublicProgramRuntimeEvent(row);
@@ -93,6 +120,19 @@ export async function listProgramRuntimeEvents(sessionId) {
     orderBy: { createdAt: 'asc' },
   });
   return rows.map(toPublicProgramRuntimeEvent);
+}
+
+function normalizeCodeSiteRuntimeRefs(input = {}) {
+  const context = input.codeSiteContext && typeof input.codeSiteContext === 'object' && !Array.isArray(input.codeSiteContext)
+    ? input.codeSiteContext
+    : {};
+  return {
+    codeSiteProjectId: firstCodeSiteRef(input.codeSiteProjectId, context.codeSiteProjectId, context.projectId),
+    codeSiteTransactionId: firstCodeSiteRef(input.codeSiteTransactionId, context.codeSiteTransactionId, context.transactionId),
+    codeSiteMutationLeaseId: firstCodeSiteRef(input.codeSiteMutationLeaseId, context.codeSiteMutationLeaseId, context.mutationLeaseId, context.leaseId),
+    codeSiteAgentSessionId: firstCodeSiteRef(input.codeSiteAgentSessionId, context.codeSiteAgentSessionId, context.agentSessionId),
+    codeSiteEvidenceRefsJson: codeSiteEvidenceRefsJson(input.codeSiteEvidenceRefs || context.codeSiteEvidenceRefs || context.evidenceRefs),
+  };
 }
 
 // ── Local program + install helpers (Phase 2) ──

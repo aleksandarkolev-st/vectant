@@ -10,7 +10,7 @@ import {
   appendProgramRuntimeEvent,
 } from '@/lib/programs/store';
 import { launchInstalledProgram } from '@/lib/programs/runtimeClient';
-import { mergeProgramSession, PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
+import { codeSiteContextFromBody, mergeProgramSession, PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 
 export const runtime = 'nodejs';
@@ -44,6 +44,7 @@ export async function POST(req) {
   const body = await req.json().catch(() => ({}));
   const workspaceSlug = String(body.workspaceSlug || '').trim();
   const installId = String(body.installId || '').trim();
+  const codeSiteContext = codeSiteContextFromBody(body);
   if (!workspaceSlug) return NextResponse.json({ error: 'workspace_required' }, { status: 400 });
   if (!installId) return NextResponse.json({ error: 'install_required' }, { status: 400 });
 
@@ -92,6 +93,7 @@ export async function POST(req) {
     sessionId: session.id,
     type: 'launch_requested',
     data: { installId: install.id, runtimeType: 'container', via: 'mcp' },
+    codeSiteContext,
   });
 
   try {
@@ -109,6 +111,7 @@ export async function POST(req) {
       sessionId: session.id,
       type: 'launch_ack',
       data: { state: nextState, activePorts: snapshot?.activePorts || [] },
+      codeSiteContext,
     });
 
     return NextResponse.json({ session: mergeProgramSession(updated, snapshot) });
@@ -118,6 +121,7 @@ export async function POST(req) {
       sessionId: session.id,
       type: 'launch_failed',
       data: { message: error?.message || 'runtime launch failed' },
+      codeSiteContext,
     });
     return NextResponse.json({ error: 'runtime_launch_failed', session: failed }, { status: 502 });
   }

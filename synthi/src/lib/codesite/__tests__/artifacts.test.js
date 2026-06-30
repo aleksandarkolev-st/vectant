@@ -83,6 +83,7 @@ describe('CodeSite artifact projection', () => {
       required: ['eventType', 'details'],
     });
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
+    expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');

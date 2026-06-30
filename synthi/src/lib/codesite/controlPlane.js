@@ -28,6 +28,10 @@ import {
   resolveCodeSiteRepoRoot,
   validateReadSnapshotEvidence,
 } from './repoSnapshot';
+import {
+  codeSiteEvidenceRefsJson,
+  firstCodeSiteRef,
+} from './substrateIdentity';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -201,6 +205,11 @@ async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlP
         status: 'registered',
         permissionsJson: stringifyJson(['codesite:mutation', 'codesite:inbox']),
         redactionPolicyJson: stringifyJson(defaultRedactionPolicy()),
+        dojoPilotLicenseRef: firstCodeSiteRef(mission.dojoPilotLicenseRef, mission.dojo_license_ref),
+        dojoProofRef: firstCodeSiteRef(mission.dojoProofRef, mission.dojo_proof_ref),
+        dojoEvidenceRefsJson: codeSiteEvidenceRefsJson(mission.dojoEvidenceRefs || mission.dojo_evidence_refs),
+        dojoDecisionDigest: firstCodeSiteRef(mission.dojoDecisionDigest, mission.dojo_decision_digest),
+        pilotLicenseSnapshotJson: stringifyJson(mission.pilotLicenseSnapshot || mission.pilot_license_snapshot || null),
       },
     });
     agentSessions.push(session);
@@ -501,6 +510,11 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
       status: body.status || 'registered',
       permissionsJson: stringifyJson(body.permissions || []),
       redactionPolicyJson: stringifyJson(body.redactionPolicy || body.redaction_policy || defaultRedactionPolicy()),
+      dojoPilotLicenseRef: firstCodeSiteRef(body.dojoPilotLicenseRef, body.dojo_pilot_license_ref, body.dojoLicenseRef, body.dojo_license_ref),
+      dojoProofRef: firstCodeSiteRef(body.dojoProofRef, body.dojo_proof_ref),
+      dojoEvidenceRefsJson: codeSiteEvidenceRefsJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || body.evidenceRefs || body.evidence_refs),
+      dojoDecisionDigest: firstCodeSiteRef(body.dojoDecisionDigest, body.dojo_decision_digest),
+      pilotLicenseSnapshotJson: stringifyJson(body.pilotLicenseSnapshot || body.pilot_license_snapshot || null),
     },
   });
   await recordEvent(project.id, {
@@ -4184,6 +4198,11 @@ function sessionProjection(session) {
     status: session.status,
     permissions: parseJson(session.permissionsJson, []),
     redactionPolicy: parseJson(session.redactionPolicyJson, {}),
+    dojoPilotLicenseRef: session.dojoPilotLicenseRef || null,
+    dojoProofRef: session.dojoProofRef || null,
+    dojoEvidenceRefs: parseJson(session.dojoEvidenceRefsJson, []),
+    dojoDecisionDigest: session.dojoDecisionDigest || null,
+    pilotLicenseSnapshot: parseJson(session.pilotLicenseSnapshotJson, null),
     createdAt: session.createdAt,
     endedAt: session.endedAt,
   };

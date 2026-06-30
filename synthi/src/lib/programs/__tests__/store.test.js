@@ -186,10 +186,62 @@ describe('appendProgramRuntimeEvent', () => {
         sessionId: 'ps1',
         type: 'running',
         dataJson: '{"surface":"terminal","truncated":true}',
+        codeSiteProjectId: null,
+        codeSiteTransactionId: null,
+        codeSiteMutationLeaseId: null,
+        codeSiteAgentSessionId: null,
+        codeSiteEvidenceRefsJson: '[]',
       },
     });
     expect(row.data).toEqual({ surface: 'terminal', truncated: true });
+    expect(row.codeSiteEvidenceRefs).toEqual([]);
     expect(row.dataJson).toBeUndefined();
+  });
+
+  it('stores CodeSite refs on runtime events for transaction-aware launches', async () => {
+    const createdAt = new Date('2026-06-03T12:16:00.000Z');
+    h.prisma.programRuntimeEvent.create.mockResolvedValue({
+      id: 'ev-codesite',
+      sessionId: 'ps1',
+      type: 'exec',
+      dataJson: '{"command":"npm test"}',
+      codeSiteProjectId: 'project-1',
+      codeSiteTransactionId: 'txn-1',
+      codeSiteMutationLeaseId: 'lease-1',
+      codeSiteAgentSessionId: 'agent-1',
+      codeSiteEvidenceRefsJson: '["runtime:event:exec-1"]',
+      createdAt,
+    });
+
+    const row = await appendProgramRuntimeEvent({
+      sessionId: 'ps1',
+      type: 'exec',
+      data: { command: 'npm test' },
+      codeSiteContext: {
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        evidenceRefs: ['runtime:event:exec-1', 'runtime:event:exec-1'],
+      },
+    });
+
+    expect(h.prisma.programRuntimeEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        codeSiteProjectId: 'project-1',
+        codeSiteTransactionId: 'txn-1',
+        codeSiteMutationLeaseId: 'lease-1',
+        codeSiteAgentSessionId: 'agent-1',
+        codeSiteEvidenceRefsJson: JSON.stringify(['runtime:event:exec-1']),
+      }),
+    });
+    expect(row).toMatchObject({
+      codeSiteProjectId: 'project-1',
+      codeSiteTransactionId: 'txn-1',
+      codeSiteMutationLeaseId: 'lease-1',
+      codeSiteAgentSessionId: 'agent-1',
+      codeSiteEvidenceRefs: ['runtime:event:exec-1'],
+    });
   });
 });
 

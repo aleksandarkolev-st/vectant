@@ -14,6 +14,7 @@ import {
   listProgramRuntimeSessions,
 } from '@/lib/programs/runtimeClient';
 import {
+  codeSiteContextFromBody,
   mergeProgramSession,
   normalizeGrantScopes,
   PROGRAM_LAUNCH_SCOPE,
@@ -56,6 +57,7 @@ export async function POST(req, { params }) {
 
   const body = await req.json().catch(() => ({}));
   const command = String(body.command || '').trim();
+  const codeSiteContext = codeSiteContextFromBody(body);
   if (!command) {
     return NextResponse.json({ error: 'command_required' }, { status: 400 });
   }
@@ -90,6 +92,7 @@ export async function POST(req, { params }) {
       grantId: grant.id,
       runtimeType: session.runtimeType,
     },
+    codeSiteContext,
   });
 
   try {
@@ -114,6 +117,7 @@ export async function POST(req, { params }) {
         timedOut: Boolean(runtime.timedOut),
         outputBytes: String(runtime.output || '').length,
       },
+      codeSiteContext,
     });
 
     return NextResponse.json({
@@ -134,6 +138,7 @@ export async function POST(req, { params }) {
       data: {
         message: error?.message || 'runtime launch failed',
       },
+      codeSiteContext,
     });
     return NextResponse.json({ error: 'runtime_launch_failed', session: failed }, { status: 502 });
   }

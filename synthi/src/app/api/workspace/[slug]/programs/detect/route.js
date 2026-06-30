@@ -3,7 +3,7 @@ import { resolveActor } from '@/lib/integrations/session';
 import { canReadScope, canWriteScope } from '@/lib/integrations/scope';
 import { createProgramSession, updateProgramSession, appendProgramRuntimeEvent } from '@/lib/programs/store';
 import { fetchDetectedRepoProgram, launchInstalledProgram } from '@/lib/programs/runtimeClient';
-import { mergeProgramSession } from '@/lib/programs/routeHelpers';
+import { codeSiteContextFromBody, mergeProgramSession } from '@/lib/programs/routeHelpers';
 
 export const runtime = 'nodejs';
 
@@ -28,7 +28,7 @@ export async function GET(_req, { params }) {
 // Owner/admin: launch the auto-detected container program. The config is
 // RE-DETECTED server-side (never trusted from the client) and launched through
 // the collab managed-runtime launch-program path (→ sysbox pod when enabled).
-export async function POST(_req, { params }) {
+export async function POST(req, { params }) {
   const { slug } = await params;
   const actor = await resolveActor();
   if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
@@ -36,6 +36,8 @@ export async function POST(_req, { params }) {
   if (!(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: slug }))) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
+  const body = await req.json().catch(() => ({}));
+  const codeSiteContext = codeSiteContextFromBody(body);
 
   const userId = actor.workspaceUserId || actor.userId;
   const detected = await fetchDetectedRepoProgram(slug, userId).catch(() => null);
@@ -55,6 +57,7 @@ export async function POST(_req, { params }) {
     sessionId: session.id,
     type: 'launch_requested',
     data: { source, runtimeType: session.runtimeType },
+    codeSiteContext,
   });
 
   try {
@@ -72,6 +75,7 @@ export async function POST(_req, { params }) {
       sessionId: session.id,
       type: 'launch_ack',
       data: { state: nextState, activePorts: snapshot?.activePorts || [] },
+      codeSiteContext,
     });
 
     return NextResponse.json({ session: mergeProgramSession(updated, snapshot) });
@@ -81,6 +85,7 @@ export async function POST(_req, { params }) {
       sessionId: session.id,
       type: 'launch_failed',
       data: { message: error?.message || 'runtime launch failed' },
+      codeSiteContext,
     });
     return NextResponse.json({ error: 'runtime_launch_failed', session: failed }, { status: 502 });
   }

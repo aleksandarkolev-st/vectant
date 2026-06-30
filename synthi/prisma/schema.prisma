@@ -116,10 +116,18 @@ model McpCallAudit {
   argsHash      String?                    // sha256 hex of the JSON args (NOT raw args)
   argsBytes     Int?
   resultBytes   Int?
+  codeSiteProjectId       String?
+  codeSiteTransactionId   String?
+  codeSiteMutationLeaseId String?
+  codeSiteAgentSessionId  String?
+  codeSiteEvidenceRefsJson String?
   createdAt     DateTime @default(now())
 
   @@index([connectionId])
   @@index([createdAt])
+  @@index([codeSiteProjectId])
+  @@index([codeSiteTransactionId])
+  @@index([codeSiteMutationLeaseId])
 }
 
 model PersonalAccessToken {
@@ -257,16 +265,24 @@ model PermissionGrant {
 }
 
 model ProgramRuntimeEvent {
-  id        String   @id @default(cuid())
-  sessionId String
-  type      String
-  dataJson  String?
-  createdAt DateTime @default(now())
+  id                         String   @id @default(cuid())
+  sessionId                  String
+  type                       String
+  dataJson                   String?
+  codeSiteProjectId          String?
+  codeSiteTransactionId      String?
+  codeSiteMutationLeaseId    String?
+  codeSiteAgentSessionId     String?
+  codeSiteEvidenceRefsJson   String?
+  createdAt                  DateTime @default(now())
 
   session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([createdAt])
+  @@index([codeSiteProjectId])
+  @@index([codeSiteTransactionId])
+  @@index([codeSiteMutationLeaseId])
 }
 
 model CodeSiteProject {
@@ -329,6 +345,11 @@ model CodeSiteAgentSession {
   status              String
   permissionsJson     String
   redactionPolicyJson String?
+  dojoPilotLicenseRef String?
+  dojoProofRef        String?
+  dojoEvidenceRefsJson String?
+  dojoDecisionDigest  String?
+  pilotLicenseSnapshotJson String?
   createdAt           DateTime @default(now())
   endedAt             DateTime?
 

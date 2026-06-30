@@ -96,6 +96,7 @@ vi.mock('@/lib/prisma', () => ({
 import {
   commitTransaction,
   acknowledgeInboxItem,
+  createAgentSession,
   createCounterfactualRun,
   createProject,
   createIncident,
@@ -556,6 +557,65 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: expect.stringContaining('Hold position until schema-first route lands'),
       }),
     }));
+  });
+
+  it('persists Dojo pilot license refs on agent sessions', async () => {
+    const result = await createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-1',
+      agentProvider: 'codex',
+      agentRuntime: 'tmp-codex-cli',
+      dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+      dojoProofRef: 'proof:pilot-session',
+      dojoEvidenceRefs: ['dojo:evidence:pilot-session'],
+      dojoDecisionDigest: 'sha256:pilotdecision',
+      pilotLicenseSnapshot: { licenseClass: 'runtime', level: 2 },
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+        dojoProofRef: 'proof:pilot-session',
+        dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:pilot-session']),
+        dojoDecisionDigest: 'sha256:pilotdecision',
+        pilotLicenseSnapshotJson: JSON.stringify({ licenseClass: 'runtime', level: 2 }),
+      }),
+    }));
+    expect(result).toMatchObject({
+      displayCallsign: 'PILOT-1',
+      dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+      dojoProofRef: 'proof:pilot-session',
+      dojoEvidenceRefs: ['dojo:evidence:pilot-session'],
+      dojoDecisionDigest: 'sha256:pilotdecision',
+      pilotLicenseSnapshot: { licenseClass: 'runtime', level: 2 },
+    });
+  });
+
+  it('bounds Dojo pilot refs before writing agent sessions', async () => {
+    const result = await createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-2',
+      agentProvider: 'codex',
+      agentRuntime: 'tmp-codex-cli',
+      dojoPilotLicenseRef: { ref: 'license:bad-shape' },
+      dojoProofRef: { ref: 'proof:bad-shape' },
+      dojoEvidenceRefs: ['dojo:evidence:1', 'dojo:evidence:1', 'x'.repeat(256)],
+      dojoDecisionDigest: 'x'.repeat(256),
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        dojoPilotLicenseRef: null,
+        dojoProofRef: null,
+        dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:1']),
+        dojoDecisionDigest: null,
+      }),
+    }));
+    expect(result).toMatchObject({
+      displayCallsign: 'PILOT-2',
+      dojoPilotLicenseRef: null,
+      dojoProofRef: null,
+      dojoEvidenceRefs: ['dojo:evidence:1'],
+      dojoDecisionDigest: null,
+    });
   });
 
   it('blocks restricted airspace clearances without executable Dojo proof', async () => {

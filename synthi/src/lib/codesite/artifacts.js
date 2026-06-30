@@ -44,6 +44,11 @@ export function codesiteSchemas() {
       status: { type: 'string' },
       permissions: { type: 'array' },
       redactionPolicy: { type: 'object' },
+      dojoPilotLicenseRef: { type: ['string', 'null'] },
+      dojoProofRef: { type: ['string', 'null'] },
+      dojoEvidenceRefs: { type: 'array', items: { type: 'string' } },
+      dojoDecisionDigest: { type: ['string', 'null'] },
+      pilotLicenseSnapshot: { type: ['object', 'null'] },
     }, ['ownerUserId', 'agentProvider', 'displayCallsign', 'status']),
     'execution-plan.schema.json': schema('ExecutionPlan', {
       agentSessionId: { type: 'string' },

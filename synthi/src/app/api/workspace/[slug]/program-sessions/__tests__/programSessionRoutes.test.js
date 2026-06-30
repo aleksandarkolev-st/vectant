@@ -110,6 +110,7 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
   });
 
   it('allows an owner/admin launch, records consent, and reuses the Prisma session id as the runtime session id', async () => {
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' };
     h.createPermissionGrant.mockResolvedValue({ id: 'grant-1', scopes: ['program.launch'] });
     h.createProgramSession.mockResolvedValue({
       id: 'ps-1',
@@ -137,13 +138,21 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
       req('http://localhost/api/workspace/team/program-sessions', {
         command: 'npm run dev',
         grantScopes: ['program.launch'],
+        codeSiteContext,
       }, 'POST'),
       ctx({ slug: 'team' }),
     );
 
     expect(res.status).toBe(201);
     expect(h.launchRuntime).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-1', command: 'npm run dev' }));
-    expect(h.appendProgramRuntimeEvent).toHaveBeenCalled();
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_requested',
+      codeSiteContext,
+    }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_ack',
+      codeSiteContext,
+    }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-1', state: 'running', activePorts: [5173], webPort: 5173, lastHealthState: 'ok' });
     expect(body.grant).toMatchObject({ id: 'grant-1' });
@@ -164,27 +173,37 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
 
 describe('POST session actions', () => {
   it('stops a session for an owner/admin and persists the stopped state', async () => {
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1' };
     h.getProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'running' });
     h.stopRuntime.mockResolvedValue({ sessionId: 'ps-1', state: 'stopped' });
     h.updateProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'stopped' });
 
-    const res = await POST_SESSION_STOP(req('http://localhost/api/workspace/team/program-sessions/ps-1/stop', {}, 'POST'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+    const res = await POST_SESSION_STOP(req('http://localhost/api/workspace/team/program-sessions/ps-1/stop', { codeSiteContext }, 'POST'), ctx({ slug: 'team', sessionId: 'ps-1' }));
 
     expect(res.status).toBe(200);
     expect(h.stopRuntime).toHaveBeenCalledWith('team', 'ps-1');
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'stop_ack',
+      codeSiteContext,
+    }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-1', state: 'stopped' });
   });
 
   it('restarts a session for an owner/admin and persists the new runtime state', async () => {
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1' };
     h.getProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'stopped' });
     h.restartRuntime.mockResolvedValue({ sessionId: 'ps-1', state: 'running', activePorts: [3000], webPort: 3000 });
     h.updateProgramSession.mockResolvedValue({ id: 'ps-1', workspaceSlug: 'team', state: 'running' });
 
-    const res = await POST_SESSION_RESTART(req('http://localhost/api/workspace/team/program-sessions/ps-1/restart', {}, 'POST'), ctx({ slug: 'team', sessionId: 'ps-1' }));
+    const res = await POST_SESSION_RESTART(req('http://localhost/api/workspace/team/program-sessions/ps-1/restart', { codeSiteContext }, 'POST'), ctx({ slug: 'team', sessionId: 'ps-1' }));
 
     expect(res.status).toBe(200);
     expect(h.restartRuntime).toHaveBeenCalledWith('team', 'ps-1');
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'restart_ack',
+      codeSiteContext,
+    }));
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-1', state: 'running', activePorts: [3000] });
   });
