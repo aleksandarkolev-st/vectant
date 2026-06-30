@@ -121,9 +121,9 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 30 proof snapshot:
 
 ```text
-latest global matrix after the scoped Vulkan host-runtime proof, scoped OpenCL host-runtime proof, runtime-boundary event-manifest materializer, and large-ROCm MIOpen bounded refusal rerun: gpu-validation-matrix-ledger:sha256:e9ee4aaa7c6386b325780c2ddc0261df7e42337c3e9c1ac6b3b9b0c6ac634bd2
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T133648Z.json
-latest global matrix summary before direct/user-owned source-first hardening: 63 rows, 17 accepted full-runtime GPU HMR, 17 broad library-agnostic full-runtime GPU HMR rows by the then-current matrix-computed proof, 0 scoped full-runtime GPU HMR rows after broad matrix classification, 17 all full-runtime rows, 33 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 1 preflight-only row, 0 included unproven rows
+latest global matrix after the direct/user-owned source-first visual proof and saved validation-matrix refresh: gpu-validation-matrix-ledger:sha256:f5831ff07c43f3749193c721fcc169c05d53950e5d152586c06062f4b08ef6e0
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260630T224155Z.json
+latest global matrix summary: 96 rows, 17 accepted full-runtime GPU HMR, 17 broad library-agnostic full-runtime GPU HMR rows by matrix-computed proof, 0 scoped full-runtime GPU HMR rows after broad matrix classification, 17 all full-runtime rows, 59 refusals, 7 cold splits, 2 deterministic fission, 3 visual profiles, 8 preflight-only rows, 0 included unproven rows
 latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 2, hip_module_declared_compute_readback: 2, opencl_declared_compute_readback: 2, vulkan_declared_pipeline_visual: 1, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 current accepted strict backend families: HIP, OpenCL, Vulkan, WebGPU
 current OpenCL full-runtime rows: hot_delta_1=gpu-validation-matrix-row:sha256:4943d7b099075a431f37236b184ad7dfbac131d385dae48eb6ed99731f1b5773, hot_delta_2=gpu-validation-matrix-row:sha256:d5e45d4eb8952ca30a1fbc882ea02b491581783f66f3fbd566de71f07959ca84
