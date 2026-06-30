@@ -1190,11 +1190,12 @@ async function routeDocumentToInbox(projectId, document, event, body) {
   return created;
 }
 
-export async function getAgentInbox(workspaceSlug, agentSessionId) {
+export async function getAgentInbox(workspaceSlug, agentSessionId, actor = null) {
   const session = await prisma.codeSiteAgentSession.findFirst({
     where: { id: agentSessionId, project: { workspaceSlug } },
   });
   if (!session) throw notFound('agent_session_not_found');
+  requireAgentInboxAccess(session, actor);
   const items = await prisma.codeSiteAgentInboxItem.findMany({
     where: { agentSessionId },
     orderBy: { createdAt: 'asc' },
@@ -1202,7 +1203,12 @@ export async function getAgentInbox(workspaceSlug, agentSessionId) {
   return items.map(inboxProjection);
 }
 
-export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventId) {
+export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventId, actor = null) {
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: agentSessionId, project: { workspaceSlug } },
+  });
+  if (!session) throw notFound('agent_session_not_found');
+  requireAgentInboxAccess(session, actor);
   const item = await prisma.codeSiteAgentInboxItem.findFirst({
     where: { agentSessionId, eventId, project: { workspaceSlug } },
   });
@@ -1212,6 +1218,16 @@ export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventI
     data: { status: 'acknowledged', acknowledgedAt: new Date() },
   });
   return inboxProjection(updated);
+}
+
+function requireAgentInboxAccess(session, actor) {
+  if (actor?.bypass) return;
+  if (!actor?.userId || session.ownerUserId !== actor.userId) {
+    throw forbidden('agent_inbox_forbidden', {
+      agentSessionId: session.id,
+      recipientUserId: session.ownerUserId,
+    });
+  }
 }
 
 export async function createIncident(workspaceSlug, projectId, body = {}) {
@@ -1683,6 +1699,14 @@ function notFound(code) {
 function badRequest(code, detail) {
   const error = new Error(code);
   error.status = 400;
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
+function forbidden(code, detail) {
+  const error = new Error(code);
+  error.status = 403;
   error.code = code;
   error.detail = detail;
   return error;

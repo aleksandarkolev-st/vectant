@@ -123,14 +123,14 @@ export async function GET(request, { params }) {
     if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] === 'stream') {
       return eventStreamResponse({
         signal: request.signal,
-        load: () => getAgentInbox(slug, route[1]),
+        load: () => getAgentInbox(slug, route[1], access.actor),
         eventName: () => 'codesite_inbox',
         idOf: (item) => item.eventId || item.id,
       });
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox') {
-      return okJson({ inbox: await getAgentInbox(slug, route[1]) });
+      return okJson({ inbox: await getAgentInbox(slug, route[1], access.actor) });
     }
 
     if (route[0] === 'provenance' && route[1] === 'line') {
@@ -285,7 +285,7 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) {
-      return okJson({ inboxItem: await acknowledgeInboxItem(slug, route[1], route[3]) });
+      return okJson({ inboxItem: await acknowledgeInboxItem(slug, route[1], route[3], access.actor) });
     }
 
     return routeNotFound(route);

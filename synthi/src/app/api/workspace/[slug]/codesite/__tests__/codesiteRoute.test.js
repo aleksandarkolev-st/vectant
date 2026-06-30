@@ -12,10 +12,12 @@ const {
   checkLimit: vi.fn(),
   resolveActor: vi.fn(),
   controlPlane: {
+    acknowledgeInboxItem: vi.fn(),
     listProjects: vi.fn(),
     createProject: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
+    getAgentInbox: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getSourceStateSince: vi.fn(),
@@ -203,6 +205,37 @@ describe('CodeSite catch-all route', () => {
     expect(text).toContain('event: flight_plan_filed');
     expect(text).toContain('data:');
     expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null);
+  });
+
+  it('passes the resolved actor through agent inbox read and ack routes', async () => {
+    controlPlane.getAgentInbox.mockResolvedValue([{ id: 'inbox-1', eventId: 'evt-1' }]);
+    controlPlane.acknowledgeInboxItem.mockResolvedValue({ id: 'inbox-1', status: 'acknowledged' });
+
+    const readResponse = await GET(
+      new Request('http://test/api/workspace/acme/codesite/agent-sessions/ags-1/inbox'),
+      params(['agent-sessions', 'ags-1', 'inbox']),
+    );
+    const ackResponse = await POST(
+      new Request('http://test/api/workspace/acme/codesite/agent-sessions/ags-1/inbox/evt-1', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+      params(['agent-sessions', 'ags-1', 'inbox', 'evt-1']),
+    );
+
+    expect(readResponse.status).toBe(200);
+    expect(ackResponse.status).toBe(200);
+    expect(controlPlane.getAgentInbox).toHaveBeenCalledWith(
+      'acme',
+      'ags-1',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(controlPlane.acknowledgeInboxItem).toHaveBeenCalledWith(
+      'acme',
+      'ags-1',
+      'evt-1',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
   });
 
   it('rejects unauthenticated read access before dispatch', async () => {

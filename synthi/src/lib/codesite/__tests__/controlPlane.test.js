@@ -9,6 +9,14 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteProject: {
       findUnique: vi.fn(),
     },
+    codeSiteAgentSession: {
+      findFirst: vi.fn(),
+    },
+    codeSiteAgentInboxItem: {
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+      update: vi.fn(),
+    },
     codeSiteAssumptionLease: {
       findMany: vi.fn(),
     },
@@ -44,6 +52,8 @@ vi.mock('@/lib/prisma', () => ({
 
 import {
   commitTransaction,
+  acknowledgeInboxItem,
+  getAgentInbox,
   getIncidentReplay,
   getProofBundle,
   getSourceStateSince,
@@ -105,6 +115,42 @@ describe('CodeSite control plane transaction validation', () => {
       }),
     });
     prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValue({
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+    });
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue({
+      id: 'inbox-1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      recipientUserId: 'user-1',
+      eventId: 'evt-1',
+      documentId: 'doc-1',
+      kind: 'rfi',
+      requiresResponse: true,
+      status: 'pending',
+      redactedPayloadJson: JSON.stringify({ title: 'RFI' }),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+    });
+    prisma.codeSiteAgentInboxItem.update.mockImplementation(async ({ data }) => ({
+      id: 'inbox-1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      recipientUserId: 'user-1',
+      eventId: 'evt-1',
+      documentId: 'doc-1',
+      kind: 'rfi',
+      requiresResponse: true,
+      status: 'pending',
+      redactedPayloadJson: JSON.stringify({ title: 'RFI' }),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+      ...data,
+    }));
     prisma.codeSiteEvent.count.mockResolvedValue(1);
     prisma.codeSiteEvent.create.mockResolvedValue({ id: 'event-validation' });
     prisma.codeSitePolicyDecision.create.mockImplementation(async ({ data }) => ({
@@ -251,6 +297,24 @@ describe('CodeSite control plane transaction validation', () => {
         actorType: 'codesitefs',
         detailsJson: expect.stringContaining('outside_clearance_route'),
       }),
+    }));
+  });
+
+  it('gates agent inbox reads and acknowledgements to the owning user session', async () => {
+    await expect(getAgentInbox('acme', 'agent-1', { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_inbox_forbidden',
+    });
+    expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+
+    const inbox = await getAgentInbox('acme', 'agent-1', { userId: 'user-1' });
+    const acknowledged = await acknowledgeInboxItem('acme', 'agent-1', 'evt-1', { userId: 'user-1' });
+
+    expect(inbox).toEqual([]);
+    expect(acknowledged).toMatchObject({ status: 'acknowledged', eventId: 'evt-1' });
+    expect(prisma.codeSiteAgentInboxItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'inbox-1' },
+      data: expect.objectContaining({ status: 'acknowledged' }),
     }));
   });
 
