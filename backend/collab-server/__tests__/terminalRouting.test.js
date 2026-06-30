@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { shouldUseContainerTerminal } = require('../terminalService');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalService');
 const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript, pickRuntimeScopeForSlug } = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
@@ -13,6 +13,25 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: null, workspaceSlug: 'repo' }), false);
   // missing slug (can't resolve a per-workspace container)
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
+});
+
+test('CodeSite terminal launch mode quarantines local shells and blocks runtime-backed shells', () => {
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: null,
+    workspaceSlug: 'repo',
+  }), 'normal');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    workspaceSlug: 'repo',
+  }), 'quarantine');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    enableContainerRuntime: true,
+    workspaceRuntime: {},
+    workspaceSlug: 'repo',
+  }), 'block-runtime');
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec

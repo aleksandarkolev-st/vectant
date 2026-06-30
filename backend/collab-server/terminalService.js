@@ -116,6 +116,16 @@ function clearSessionTimers(session) {
   if (session.orphanTimer) clearTimeout(session.orphanTimer);
 }
 
+function finalizeSessionCodeSiteQuarantine(sessionId, session, reason = 'disposed') {
+  const quarantine = session?.codesiteQuarantine;
+  const context = session?.codesiteContext;
+  if (!quarantine || !context?.active) return;
+  session.codesiteQuarantine = null;
+  finalizeCodeSiteQuarantineWorkspace(context, quarantine).catch((err) => {
+    console.warn(`[Terminal] CodeSite quarantine finalize failed for ${sessionId} (${reason}): ${err?.message || err}`);
+  });
+}
+
 function disposeTerminalSession(sessionId, reason = 'disposed') {
   const session = activeSessions.get(sessionId);
   if (!session) return;
@@ -126,6 +136,7 @@ function disposeTerminalSession(sessionId, reason = 'disposed') {
   try { session.unwatchFs?.(); } catch (_) {}
   try { session.pty?.kill?.(); } catch (_) {}
   try { session.releasePort?.(); } catch (_) {}
+  finalizeSessionCodeSiteQuarantine(sessionId, session, reason);
   activeSessions.delete(sessionId);
   console.log(`[Terminal] Session ${sessionId} disposed (${reason})`);
 }
@@ -1563,6 +1574,13 @@ function shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, 
   return Boolean(enableContainerRuntime && workspaceRuntime && workspaceSlug);
 }
 
+function codeSiteTerminalLaunchMode({ codeSiteContext, runtimeScope = '', enableContainerRuntime = false, workspaceRuntime = null, workspaceSlug = '' } = {}) {
+  if (!codeSiteContext?.active) return 'normal';
+  if (shouldUseRuntimePodTerminal(runtimeScope)) return 'block-runtime';
+  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'block-runtime';
+  return 'quarantine';
+}
+
 function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
@@ -1654,6 +1672,9 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         userId: existingSession.userId || requestedUserId,
         filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
         codesite: existingSession.codesite || codeSiteMetadata,
+        codesiteContext: existingSession.codesiteContext || codeSiteContext,
+        codesiteQuarantine: existingSession.codesiteQuarantine || null,
+        codesiteOriginalCwd: existingSession.codesiteOriginalCwd || null,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
         dataDisposable: null,
@@ -1762,6 +1783,8 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
     let cwd;
+    let codeSiteQuarantine = null;
+    let codeSiteOriginalCwd = null;
     try {
       await ensureRuntimeFilesystem({
         workspaceSlug,
@@ -1775,6 +1798,37 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
       ws.close(1011, 'Workspace filesystem preparation failed');
       return;
+    }
+    codeSiteOriginalCwd = cwd;
+    const launchMode = codeSiteTerminalLaunchMode({
+      codeSiteContext,
+      runtimeScope,
+      enableContainerRuntime,
+      workspaceRuntime,
+      workspaceSlug,
+    });
+    if (launchMode === 'block-runtime') {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'codesite_terminal_quarantine_unavailable',
+        message: 'CodeSite terminal blocked: runtime-container/sysbox terminals cannot mount a quarantine workspace yet.',
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite terminal quarantine unavailable');
+      return;
+    }
+    if (launchMode === 'quarantine') {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'terminal-ws',
+        });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error(`[Terminal] Failed to prepare CodeSite quarantine for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite quarantine: ' + err.message }));
+        ws.close(1011, 'CodeSite quarantine preparation failed');
+        return;
+      }
     }
 
     console.log(`[Terminal] New session ${sessionId} | runtimeScope=${runtimeScope || 'legacy'} | workspace=${workspaceSlug} | userId=${requestedUserId} | fsUser=${requestedFilesystemUserId || 'none'} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
@@ -1835,6 +1889,10 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         }));
       } catch (err) {
         try { runtimeLaunch?.releasePort?.(); } catch (_) {}
+        if (codeSiteQuarantine) {
+          await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+          codeSiteQuarantine = null;
+        }
         console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
         ws.close(1011, 'PTY spawn failed');
@@ -1862,6 +1920,9 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
       codesite: codeSiteMetadata,
+      codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      codesiteQuarantine: codeSiteQuarantine || null,
+      codesiteOriginalCwd,
       releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,
       dataDisposable: null,
@@ -1995,6 +2056,7 @@ function broadcastToAll(message) {
 module.exports = {
   createTerminalWSS,
   shouldUseContainerTerminal,
+  codeSiteTerminalLaunchMode,
   createHeadlessSession,
   activeSessions,
   broadcastToAll,
