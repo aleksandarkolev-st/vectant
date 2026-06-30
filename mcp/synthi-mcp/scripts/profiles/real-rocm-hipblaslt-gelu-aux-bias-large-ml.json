@@ -59,6 +59,7 @@
     "template": "runtime_boundary_log_harvest_v1",
     "workingDirectory": ".",
     "resultPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-results/real-rocm-hipblaslt-gelu-aux-bias-large-ml-runtime-adapter.json",
+    "eventManifestPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-events/real-rocm-hipblaslt-gelu-aux-bias-large-ml-runtime-boundary-events.json",
     "runWhen": "after_lifecycle_attempt",
     "requiresSuccessfulBuild": false,
     "requiresSuccessfulRun": false,
