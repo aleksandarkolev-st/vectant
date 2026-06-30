@@ -163,7 +163,7 @@ export async function GET(request, { params }) {
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
-  const access = await requireCodesiteAccess(slug, 'write');
+  const access = await requireCodesiteAccess(slug, postAccessMode(route));
   if (!access.ok) return errorJson(access.status, access.error);
   const limited = enforceRateLimit(access.actor, route.join('/'), route.includes('events') ? 'audit' : 'crud');
   if (limited) return limited;
@@ -187,11 +187,11 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'execution-plans') {
-      return okJson({ executionPlan: await createExecutionPlan(slug, route[1], body) }, { status: 201 });
+      return okJson({ executionPlan: await createExecutionPlan(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'execution-plans' && route[2] === 'mutation-leases') {
-      return okJson({ mutationLease: await requestMutationLease(slug, route[1], body) }, { status: 201 });
+      return okJson({ mutationLease: await requestMutationLease(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'transactions') {
@@ -294,6 +294,32 @@ export async function POST(request, { params }) {
   } catch (error) {
     return handleCodesiteError(error);
   }
+}
+
+function postAccessMode(route) {
+  if (route[0] === 'projects' && route[2] === 'agent-sessions') return 'read';
+  if (route[0] === 'projects' && route[2] === 'execution-plans') return 'read';
+  if (route[0] === 'execution-plans' && route[2] === 'mutation-leases') return 'read';
+  if (route[0] === 'mutation-leases' && route[2] === 'transactions') return 'read';
+  if (route[0] === 'transactions' && [
+    'record-read',
+    'record-write',
+    'assumptions',
+    'validate',
+    'preview',
+    'dry-run-patch',
+    'commit',
+    'abort',
+    'source-state-since',
+  ].includes(route[2])) return 'read';
+  if (route[0] === 'projects' && [
+    'codesitefs-events',
+    'documents',
+    'collision-predict',
+    'shadow-merge-simulate',
+  ].includes(route[2])) return 'read';
+  if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) return 'read';
+  return 'write';
 }
 
 function eventStreamResponse({ signal, initialSince = null, load, eventName, idOf }) {

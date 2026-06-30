@@ -106,6 +106,8 @@ async function json(response) {
 describe('CodeSite catch-all route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.SYNTHI_WORKSPACE_AUTH_BYPASS;
+    delete process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS;
     resolveActor.mockResolvedValue({ userId: 'user-1', email: 'u@example.test' });
     canReadScope.mockResolvedValue(true);
     canWriteScope.mockResolvedValue(true);
@@ -143,6 +145,23 @@ describe('CodeSite catch-all route', () => {
       'acme',
       expect.objectContaining({ userId: 'user-1' }),
       { title: 'Signup' },
+    );
+  });
+
+  it('keeps project creation write-gated for plain workspace members', async () => {
+    canWriteScope.mockResolvedValue(false);
+    const request = new Request('http://test/api/workspace/acme/codesite/projects', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Signup' }),
+    });
+
+    const response = await POST(request, params(['projects']));
+
+    expect(response.status).toBe(403);
+    expect(controlPlane.createProject).not.toHaveBeenCalled();
+    expect(canWriteScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
     );
   });
 
@@ -235,6 +254,7 @@ describe('CodeSite catch-all route', () => {
   });
 
   it('passes the resolved actor through tower-mediated document routes', async () => {
+    canWriteScope.mockResolvedValue(false);
     controlPlane.createDocument.mockResolvedValue({
       document: { id: 'doc-1', kind: 'rfi' },
       inboxItems: [{ id: 'inbox-1' }],
@@ -264,6 +284,7 @@ describe('CodeSite catch-all route', () => {
       body,
       expect.objectContaining({ userId: 'user-1' }),
     );
+    expect(canWriteScope).not.toHaveBeenCalled();
   });
 
   it('serves source-state-since through the documented read endpoint', async () => {
@@ -312,6 +333,7 @@ describe('CodeSite catch-all route', () => {
   });
 
   it('passes the resolved actor through agent inbox read and ack routes', async () => {
+    canWriteScope.mockResolvedValue(false);
     controlPlane.getAgentInbox.mockResolvedValue([{ id: 'inbox-1', eventId: 'evt-1' }]);
     controlPlane.acknowledgeInboxItem.mockResolvedValue({ id: 'inbox-1', status: 'acknowledged' });
 
@@ -340,6 +362,7 @@ describe('CodeSite catch-all route', () => {
       'evt-1',
       expect.objectContaining({ userId: 'user-1' }),
     );
+    expect(canWriteScope).not.toHaveBeenCalled();
   });
 
   it('rejects unauthenticated read access before dispatch', async () => {

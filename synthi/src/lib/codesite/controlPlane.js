@@ -500,10 +500,13 @@ export async function updateControlPlan(workspaceSlug, projectId, body = {}) {
 export async function createAgentSession(workspaceSlug, projectId, actor, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
   const callsign = String(body.displayCallsign || body.callsign || nextCallsign(body.agentProvider || 'AGENT')).toUpperCase();
+  const requestedOwnerUserId = body.ownerUserId || body.owner_user_id || null;
+  const ownerUserId = requestedOwnerUserId || actor?.userId || 'unknown';
+  requireActorOwnsUserId(ownerUserId, actor, 'agent_session_owner_forbidden');
   const session = await prisma.codeSiteAgentSession.create({
     data: {
       projectId: project.id,
-      ownerUserId: body.ownerUserId || actor?.userId || 'unknown',
+      ownerUserId,
       agentProvider: String(body.agentProvider || body.provider || 'custom'),
       agentRuntime: body.agentRuntime || body.runtime || null,
       providerSessionRef: body.providerSessionRef || body.provider_session_ref || null,
@@ -543,7 +546,7 @@ function defaultRedactionPolicy() {
     acceptsTowerMessages: true,
     redactSecrets: true,
     redactPrivatePrompts: true,
-    allowAttachments: true,
+    allowAttachments: false,
     visibleZones: ['**'],
     allowedDocumentKinds: [
       'rfi',
@@ -559,9 +562,10 @@ function defaultRedactionPolicy() {
   };
 }
 
-export async function createExecutionPlan(workspaceSlug, projectId, body = {}) {
+export async function createExecutionPlan(workspaceSlug, projectId, body = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId);
   const agentSession = await requireAgentSession(project.id, body.agentSessionId || body.agent_session_id);
+  requireAgentSessionOwnerAccess(agentSession, actor, 'execution_plan_agent_forbidden');
   const route = pathsForRoute(body.route || body.allowedPaths || []);
   const blockedZones = pathsForRoute(body.blockedZones || body.noFlyZones || body.no_fly_zones || []);
   const plan = await prisma.codeSiteExecutionPlan.create({
@@ -604,12 +608,13 @@ function normalizeDurationMs(value) {
   return amount * ({ ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[unit] || 1);
 }
 
-export async function requestMutationLease(workspaceSlug, executionPlanId, body = {}) {
+export async function requestMutationLease(workspaceSlug, executionPlanId, body = {}, actor = null) {
   const plan = await prisma.codeSiteExecutionPlan.findFirst({
     where: { id: executionPlanId, project: { workspaceSlug } },
     include: { project: true, agentSession: true },
   });
   if (!plan) throw notFound('execution_plan_not_found');
+  requireAgentSessionOwnerAccess(plan.agentSession, actor, 'mutation_lease_agent_forbidden');
 
   const zonePolicy = parseJson(plan.project.zonePolicyJson, compileZonePolicy());
   const executionPlan = executionPlanProjection(plan);
@@ -2210,7 +2215,7 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
 export async function createDocument(workspaceSlug, projectId, body = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId);
   const kind = String(body.kind || body.type || 'rfi');
-  const routing = await validateDocumentRouting(project.id, body, actor);
+  const routing = await validateDocumentRouting(workspaceSlug, project.id, body, actor);
   const document = await prisma.codeSiteDocument.create({
     data: {
       projectId: project.id,
@@ -2267,7 +2272,7 @@ function eventTypeForDocument(kind) {
   }[kind] || 'tower_instruction';
 }
 
-async function validateDocumentRouting(projectId, body = {}, actor = null) {
+async function validateDocumentRouting(workspaceSlug, projectId, body = {}, actor = null) {
   const fromSessionId = body.fromSessionId || body.from_session || body.sourceSessionId || body.source_session || null;
   const targetSessionIds = unique(asArray(body.toSessionId || body.to_session || body.recipients || []));
   const kind = String(body.kind || body.type || 'rfi');
@@ -2275,6 +2280,7 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
     ? await prisma.codeSiteAgentSession.findFirst({ where: { id: fromSessionId, projectId } })
     : null;
   if (fromSessionId && !fromSession) throw notFound('source_agent_session_not_found');
+  if (actor && !actor.bypass && !fromSession) throw forbidden('document_sender_session_required');
   if (fromSession && actor && !actor.bypass && actor.userId !== fromSession.ownerUserId) {
     throw forbidden('document_sender_forbidden');
   }
@@ -2288,6 +2294,9 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
   const missingTargetIds = targetSessionIds.filter((id) => !foundTargetIds.has(id));
   if (missingTargetIds.length) {
     throw badRequest('document_recipient_not_in_project', { missingTargetIds });
+  }
+  if (!actor?.bypass) {
+    await requireWorkspaceSessionMembers(workspaceSlug, [fromSession, ...targetSessions].filter(Boolean));
   }
   const blockedRecipients = targetSessions
     .map((session) => ({
@@ -2306,6 +2315,20 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
     throw badRequest('document_recipient_policy_blocked', { blockedRecipients });
   }
   return { fromSession, targetSessions };
+}
+
+async function requireWorkspaceSessionMembers(workspaceSlug, sessions = []) {
+  const ownerUserIds = unique(sessions.map((session) => session?.ownerUserId).filter(Boolean));
+  if (!ownerUserIds.length) return;
+  const workspace = await prisma.workspace.findUnique({
+    where: { slug: workspaceSlug },
+    include: { memberships: { where: { userId: { in: ownerUserIds } } } },
+  });
+  const memberUserIds = new Set(asArray(workspace?.memberships).map((membership) => membership.userId));
+  const missing = ownerUserIds.filter((userId) => !memberUserIds.has(userId));
+  if (missing.length) {
+    throw badRequest('document_session_owner_not_workspace_member', { userIds: missing });
+  }
 }
 
 function hasDocumentProjectRef(body = {}) {
@@ -2350,7 +2373,7 @@ function shouldRedactField(key, policy) {
   if (policy.redactSecrets !== false && /secret|token|password|api[_-]?key|credential|authorization|cookie/i.test(name)) {
     return true;
   }
-  if (policy.redactPrivatePrompts !== false && /private[_-]?prompt|prompt[_-]?transcript|raw[_-]?prompt/i.test(name)) {
+  if (policy.redactPrivatePrompts !== false && /private[_-]?prompt|prompt[_-]?transcript|raw[_-]?prompt|cli[_-]?history|terminal[_-]?(history|transcript|session)|session[_-]?memory|conversation[_-]?(history|transcript)|raw[_-]?(trace|session|memory)/i.test(name)) {
     return true;
   }
   return documentPolicyFields(policy, ['redactedFields', 'redacted_fields', 'privateFields', 'private_fields'])
@@ -2370,7 +2393,7 @@ function shouldDropField(key, policy) {
 function isSensitiveValue(value, policy = defaultRedactionPolicy()) {
   if (policy.redactSecrets === false) return false;
   if (typeof value !== 'string') return false;
-  return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/.test(value);
+  return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/-]+=*|(?:DATABASE_URL|[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*)\s*=|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s]+)/.test(value);
 }
 
 async function routeDocumentToInbox(projectId, document, event, body, targetSessions = null) {
@@ -4095,6 +4118,20 @@ function requireTransactionActorAccess(transaction, actor = null) {
   }
 }
 
+function requireActorOwnsUserId(ownerUserId, actor = null, code = 'agent_owner_forbidden') {
+  if (!actor || actor.bypass) return;
+  if (!actor.userId || !ownerUserId || actor.userId !== ownerUserId) {
+    throw forbidden(code, {
+      ownerUserId: ownerUserId || null,
+      actorUserId: actor.userId || null,
+    });
+  }
+}
+
+function requireAgentSessionOwnerAccess(session, actor = null, code = 'agent_session_owner_forbidden') {
+  requireActorOwnsUserId(session?.ownerUserId, actor, code);
+}
+
 function requireLeaseActorAccess(lease, actor = null) {
   if (!actor || actor.bypass) return;
   const ownerUserId = lease.agentSession?.ownerUserId;
@@ -4174,10 +4211,10 @@ function projectProjection(project) {
     inspectionRuns: asArray(project.inspectionRuns).map(inspectionProjection),
     proofBundles: asArray(project.proofBundles).map(proofBundleProjection),
     lineProvenance: asArray(project.lineProvenance).map(lineProvenanceProjection),
-    documents: asArray(project.documents).map(documentProjection),
+    documents: asArray(project.documents).map(documentSummaryProjection),
     counterfactualRuns: asArray(project.counterfactualRuns).map(counterfactualProjection),
     policyDeltas: asArray(project.policyDeltas).map(policyDeltaProjection),
-    inboxItems: asArray(project.inboxItems).map(inboxProjection),
+    inboxItems: asArray(project.inboxItems).map(inboxSummaryProjection),
   };
 }
 
@@ -4402,6 +4439,19 @@ function documentProjection(document) {
   };
 }
 
+function documentSummaryProjection(document) {
+  return {
+    id: document.id,
+    projectId: document.projectId,
+    kind: document.kind,
+    status: document.status,
+    title: document.title,
+    blocking: document.blocking,
+    createdAt: document.createdAt,
+    resolvedAt: document.resolvedAt,
+  };
+}
+
 function inboxProjection(item) {
   return {
     id: item.id,
@@ -4414,6 +4464,22 @@ function inboxProjection(item) {
     requiresResponse: item.requiresResponse,
     status: item.status,
     redactedPayload: parseJson(item.redactedPayloadJson, {}),
+    createdAt: item.createdAt,
+    acknowledgedAt: item.acknowledgedAt,
+  };
+}
+
+function inboxSummaryProjection(item) {
+  return {
+    id: item.id,
+    projectId: item.projectId,
+    agentSessionId: item.agentSessionId,
+    eventId: item.eventId,
+    documentId: item.documentId,
+    kind: item.kind,
+    requiresResponse: item.requiresResponse,
+    status: item.status,
+    payloadAvailable: Boolean(item.redactedPayloadJson),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
   };

@@ -86,6 +86,9 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteMutationZone: {
       upsert: vi.fn(),
     },
+    workspace: {
+      findUnique: vi.fn(),
+    },
   },
 }));
 
@@ -98,6 +101,7 @@ import {
   acknowledgeInboxItem,
   createAgentSession,
   createCounterfactualRun,
+  createExecutionPlan,
   createProject,
   createIncident,
   createDocument,
@@ -107,6 +111,7 @@ import {
   getAgentManifest,
   getEvents,
   getIncidentReplay,
+  getProject,
   getProofBundle,
   getSourceStateSince,
   openTransaction,
@@ -313,6 +318,13 @@ describe('CodeSite control plane transaction validation', () => {
       controlPlanJson: JSON.stringify({}),
       createdAt: new Date('2026-06-29T23:00:00.000Z'),
       updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.workspace.findUnique.mockResolvedValue({
+      slug: 'acme',
+      memberships: [
+        { userId: 'user-1', role: 'member' },
+        { userId: 'user-2', role: 'member' },
+      ],
     });
     prisma.codeSiteMutationZone.upsert.mockResolvedValue({});
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
@@ -625,6 +637,31 @@ describe('CodeSite control plane transaction validation', () => {
       dojoProofRef: null,
       dojoEvidenceRefs: ['dojo:evidence:1'],
       dojoDecisionDigest: null,
+    });
+  });
+
+  it('binds agent sessions, execution plans, and clearances to the owning user', async () => {
+    await expect(createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-3',
+      ownerUserId: 'user-2',
+    })).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_owner_forbidden',
+    });
+
+    await expect(createExecutionPlan('acme', 'project-1', {
+      agentSessionId: 'agent-1',
+      route: ['synthi/prisma/**'],
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'execution_plan_agent_forbidden',
+    });
+
+    await expect(requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'mutation_lease_agent_forbidden',
     });
   });
 
@@ -1558,6 +1595,75 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('summarizes documents and inbox payloads in project-wide snapshots', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      mutationTxns: [],
+      assumptions: [],
+      policyDecisions: [],
+      events: [],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [{
+        id: 'doc-private',
+        projectId: 'project-1',
+        kind: 'rfi',
+        status: 'open',
+        title: 'Private RFI',
+        bodyJson: JSON.stringify({ question: 'private payload' }),
+        blocking: true,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        resolvedAt: null,
+      }],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [{
+        id: 'inbox-private',
+        projectId: 'project-1',
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        eventId: 'evt-private',
+        documentId: 'doc-private',
+        kind: 'rfi',
+        requiresResponse: true,
+        status: 'pending',
+        redactedPayloadJson: JSON.stringify({ body: { question: 'recipient-only' } }),
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        acknowledgedAt: null,
+      }],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.documents[0]).toMatchObject({
+      id: 'doc-private',
+      title: 'Private RFI',
+      blocking: true,
+    });
+    expect(project.documents[0]).not.toHaveProperty('body');
+    expect(project.inboxItems[0]).toMatchObject({
+      id: 'inbox-private',
+      agentSessionId: 'agent-2',
+      eventId: 'evt-private',
+      payloadAvailable: true,
+    });
+    expect(project.inboxItems[0]).not.toHaveProperty('redactedPayload');
+    expect(project.inboxItems[0]).not.toHaveProperty('recipientUserId');
+  });
+
   it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
     const result = await createDocument('acme', 'project-1', {
       kind: 'rfi',
@@ -1568,6 +1674,10 @@ describe('CodeSite control plane transaction validation', () => {
       blocking: true,
       body: {
         question: 'Can signup payload include displayName?',
+        databaseUrl: 'DATABASE_URL=postgres://user:pass@localhost:5432/app',
+        bearerHeader: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature',
+        cliHistory: 'codex run --with-env DATABASE_URL=postgres://user:pass@localhost/app',
+        attachments: [{ name: 'raw-session.txt', content: 'local session memory' }],
         nested: {
           apiKey: 'sk-secret-value-123456',
           privatePrompt: 'raw local prompt',
@@ -1580,6 +1690,10 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.inboxItems).toHaveLength(1);
     expect(savedBody.nested.apiKey).toBe('[redacted]');
     expect(savedBody.nested.privatePrompt).toBe('[redacted]');
+    expect(savedBody.databaseUrl).toBe('[redacted]');
+    expect(savedBody.bearerHeader).toBe('[redacted]');
+    expect(savedBody.cliHistory).toBe('[redacted]');
+    expect(savedBody.attachments).toBeUndefined();
     expect(savedBody.routing).toMatchObject({
       fromSessionId: 'agent-1',
       toSessionIds: ['agent-2'],
@@ -1671,6 +1785,24 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('blocks document delivery when a participant session owner is no longer a workspace member', async () => {
+    prisma.workspace.findUnique.mockResolvedValueOnce({
+      slug: 'acme',
+      memberships: [{ userId: 'user-1', role: 'member' }],
+    });
+
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_session_owner_not_workspace_member',
+      detail: { userIds: ['user-2'] },
+    });
+  });
+
   it('applies recipient document kind and payload redaction policy before inbox delivery', async () => {
     prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
       id: 'agent-2',
@@ -1737,6 +1869,15 @@ describe('CodeSite control plane transaction validation', () => {
   });
 
   it('rejects cross-agent documents without sender ownership or project references', async () => {
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 403,
+      code: 'document_sender_session_required',
+    });
+
     await expect(createDocument('acme', 'project-1', {
       kind: 'rfi',
       fromSessionId: 'agent-1',
