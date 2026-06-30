@@ -6998,6 +6998,21 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
     ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
   ]);
+  const serializedBoundaryImportBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.boundaryImportBlockingGaps) ? facet.boundaryImportBlockingGaps : []),
+    ...(Array.isArray(facet.boundary_import_blocking_gaps) ? facet.boundary_import_blocking_gaps : []),
+  ]).filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted');
+  const boundaryImportBlockingGaps = compactStringList([
+    ...serializedBoundaryImportBlockingGaps,
+    ...blockingGaps.filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted'),
+    adapterRuntimeBoundaryLines.length > 0
+      ? null
+      : 'runtime_profile_adapter_boundary_lines_missing',
+    adapterBoundaryCoverage.missingEventKinds.length === 0
+      ? null
+      : 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
+    ...adapterBoundaryCoverage.failedGates,
+  ]);
   const imported = status === 'runtime_profile_adapter_result_imported';
   const failedGates = compactStringList([
     schemaVersion ? null : 'real_rocm_runtime_profile_adapter_result_schema_missing',
@@ -7050,12 +7065,30 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     imported && evidenceRefs.length === 0
       ? 'real_rocm_runtime_profile_adapter_result_evidence_refs_missing'
       : null,
-    imported && adapterBoundaryCoverage.missingEventKinds.length > 0
+    adapterBoundaryCoverage.missingEventKinds.length > 0
       ? 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete'
       : null,
     ...adapterBoundaryCoverage.failedGates,
     ...serializedFailedGates,
   ]);
+  const strictSummaryOnlyGates = new Set([
+    'real_rocm_runtime_profile_adapter_result_imported_without_strict_proof',
+    'real_rocm_runtime_profile_adapter_result_imported_without_runtime_artifact',
+    'real_rocm_runtime_profile_adapter_result_imported_without_proof_ledger',
+    'real_rocm_runtime_profile_adapter_result_strict_proof_id_missing',
+    'real_rocm_runtime_profile_adapter_result_proof_ledger_id_missing',
+    'real_rocm_runtime_profile_adapter_result_hash_missing',
+  ]);
+  const boundaryImportFailedGates = compactStringList(
+    failedGates.filter((gate) => !strictSummaryOnlyGates.has(gate)),
+  );
+  const acceptedAsBoundaryEvidence =
+    resultPresent === true
+    && adapterRuntimeBoundaryLines.length > 0
+    && adapterBoundaryCoverage.acceptedAsDiagnosticEvidence === true
+    && adapterBoundaryCoverage.missingEventKinds.length === 0
+    && boundaryImportBlockingGaps.length === 0
+    && boundaryImportFailedGates.length === 0;
   return {
     present: true,
     declared,
@@ -7064,6 +7097,8 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     accepted: failedGates.length === 0,
     acceptedAsRefusalEvidence,
     accepted_as_refusal_evidence: acceptedAsRefusalEvidence,
+    acceptedAsBoundaryEvidence,
+    accepted_as_boundary_evidence: acceptedAsBoundaryEvidence,
     acceptedForGpuHmr: acceptedForGpuHmr === true,
     accepted_for_gpu_hmr: acceptedForGpuHmr === true,
     gpuHmrSuccess: gpuHmrSuccess === true,
@@ -7091,6 +7126,10 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     proof_authority: proofAuthority,
     blockingGaps,
     blocking_gaps: blockingGaps,
+    boundaryImportBlockingGaps,
+    boundary_import_blocking_gaps: boundaryImportBlockingGaps,
+    boundaryImportFailedGates,
+    boundary_import_failed_gates: boundaryImportFailedGates,
     failedGates,
     failed_gates: failedGates,
     adapterRuntimeBoundaryLines,
@@ -15753,6 +15792,16 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ? 'real_rocm_runtime_profile_adapter_result_proof_ledger_id_mismatch'
       : null,
   ]);
+  const runtimeProfileAdapterResultBoundaryOnlyAccepted =
+    realRocmRuntimeProfileAdapterResult.present === true
+    && realRocmRuntimeProfileAdapterResult.acceptedAsBoundaryEvidence === true
+    && runtimeProofArtifactGate.accepted === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && Array.isArray(ledger.failedInvariants)
+    && ledger.failedInvariants.length === 0
+    && runtimeProfileAdapterResultBindingGates.length === 0;
   if (realRocmRuntimeProfileAdapterResult.present === true) {
     realRocmRuntimeProfileAdapterResult.rowStrictRuntimeProofId = runtimeProofArtifactGate.proofId ?? null;
     realRocmRuntimeProfileAdapterResult.row_strict_runtime_proof_id = runtimeProofArtifactGate.proofId ?? null;
@@ -15783,7 +15832,18 @@ async function realRocmRepoValidationRow(json, filePath, context) {
           ? realRocmRuntimeProfileAdapterResult.failed_gates
           : []),
         ...runtimeProfileAdapterResultBindingGates,
-      ])
+      ]).filter((gap) =>
+        runtimeProfileAdapterResultBoundaryOnlyAccepted !== true
+        || ![
+          'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+          'real_rocm_runtime_profile_adapter_result_imported_without_strict_proof',
+          'real_rocm_runtime_profile_adapter_result_imported_without_runtime_artifact',
+          'real_rocm_runtime_profile_adapter_result_imported_without_proof_ledger',
+          'real_rocm_runtime_profile_adapter_result_strict_proof_id_missing',
+          'real_rocm_runtime_profile_adapter_result_proof_ledger_id_missing',
+          'real_rocm_runtime_profile_adapter_result_hash_missing',
+        ].includes(gap)
+      )
       : [];
   const realRocmRuntimeAdapterExecutionGaps =
     realRocmRuntimeAdapterExecution.present === true
@@ -16141,7 +16201,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     || (
       realRocmRuntimeProfileAdapterResult.accepted === true
       && runtimeProfileAdapterResultBindingGates.length === 0
-    );
+    )
+    || runtimeProfileAdapterResultBoundaryOnlyAccepted === true;
   const runtimeAdapterExecutionAccepted =
     realRocmRuntimeAdapterExecution.present !== true
     || realRocmRuntimeAdapterExecution.accepted === true;

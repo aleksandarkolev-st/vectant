@@ -3669,6 +3669,32 @@ function runtimeProfileAdapterResultBridgeBlockingGaps(bridge = {}) {
   ]);
 }
 
+function runtimeProfileAdapterResultBridgeBoundaryImportGaps(bridge = {}) {
+  return runtimeProfileAdapterResultBridgeBlockingGaps(bridge)
+    .filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted');
+}
+
+function runtimeProfileAdapterResultBridgeBoundaryCoverageComplete(bridge = {}) {
+  const coverage = bridge?.adapterBoundaryCoverage ?? bridge?.adapter_boundary_coverage ?? {};
+  const missingEventKinds = compactStringList([
+    ...(Array.isArray(coverage.missingEventKinds) ? coverage.missingEventKinds : []),
+    ...(Array.isArray(coverage.missing_event_kinds) ? coverage.missing_event_kinds : []),
+  ]);
+  const failedGates = compactStringList([
+    ...(Array.isArray(coverage.failedGates) ? coverage.failedGates : []),
+    ...(Array.isArray(coverage.failed_gates) ? coverage.failed_gates : []),
+  ]);
+  return coverage
+    && typeof coverage === 'object'
+    && !Array.isArray(coverage)
+    && (
+      coverage.acceptedAsDiagnosticEvidence === true
+      || coverage.accepted_as_diagnostic_evidence === true
+    )
+    && missingEventKinds.length === 0
+    && failedGates.length === 0;
+}
+
 function runtimeProfileAdapterResultBridgeClaimsRuntimeAuthority(bridge = {}) {
   return bridge?.acceptedForGpuHmr === true
     || bridge?.accepted_for_gpu_hmr === true
@@ -3692,6 +3718,29 @@ function runtimeProfileAdapterResultBridgeUsableForRuntimeEvidence(bridge = {}) 
     && proofAuthority === 'declared_adapter_result_import_not_runtime_authority'
     && strictRuntimeProofAccepted
     && runtimeProfileAdapterResultBridgeBlockingGaps(bridge).length === 0
+    && !runtimeProfileAdapterResultBridgeClaimsRuntimeAuthority(bridge);
+}
+
+function runtimeProfileAdapterResultBridgeUsableForBoundaryImport(bridge = {}) {
+  if (!bridge || typeof bridge !== 'object' || Array.isArray(bridge)) return false;
+  const proofAuthority = stringField(bridge, ['proofAuthority', 'proof_authority']);
+  const boundaryLineCount = Number(
+    bridge.adapterRuntimeBoundaryLineCount
+      ?? bridge.adapter_runtime_boundary_line_count
+      ?? bridge.runtimeBoundaryLineCount
+      ?? bridge.runtime_boundary_line_count
+      ?? 0,
+  );
+  return (
+    bridge.status === 'runtime_profile_adapter_result_imported'
+    || bridge.status === 'runtime_profile_adapter_result_refusal_evidence'
+  )
+    && bridge.declared === true
+    && bridge.present === true
+    && proofAuthority === 'declared_adapter_result_import_not_runtime_authority'
+    && boundaryLineCount > 0
+    && runtimeProfileAdapterResultBridgeBoundaryImportGaps(bridge).length === 0
+    && runtimeProfileAdapterResultBridgeBoundaryCoverageComplete(bridge)
     && !runtimeProfileAdapterResultBridgeClaimsRuntimeAuthority(bridge);
 }
 
@@ -3789,8 +3838,16 @@ function realRocmRuntimeAdapterFinalSupportGaps() {
     || execution?.declared === true
     || transport?.declared === true;
   if (!adapterSupportRequired) return [];
+  const bridgeStrictlyAccepted =
+    runtimeProfileAdapterResultBridgeUsableForRuntimeEvidence(bridge);
+  const bridgeBoundaryImportAccepted =
+    runtimeProfileAdapterResultBridgeUsableForBoundaryImport(bridge)
+    && report.full_runtime_proof?.fullRuntimeProven === true
+    && report.runtime_proof_artifact?.gpuHmrSuccess === true
+    && Array.isArray(report.runtime_proof_artifact_strict_gates)
+    && report.runtime_proof_artifact_strict_gates.every((gate) => gate.status === 'pass');
   return compactStringList([
-    runtimeProfileAdapterResultBridgeUsableForRuntimeEvidence(bridge)
+    bridgeStrictlyAccepted || bridgeBoundaryImportAccepted
       ? null
       : 'real_rocm_runtime_profile_adapter_result_not_accepted',
     runtimeAdapterExecutionUsableForRuntimeEvidence(execution)
@@ -3893,8 +3950,9 @@ function runtimeBoundaryStructuredEventLine(entry = {}) {
     if (rawValue === undefined || rawValue === null) continue;
     if (!['string', 'number', 'boolean'].includes(typeof rawValue)) continue;
     const value = String(rawValue).trim();
-    if (!value || /\s/.test(value)) continue;
-    parts.push(`${key}=${value}`);
+    if (!value || /["\r\n]/.test(value)) continue;
+    const serializedValue = /\s/.test(value) ? `"${value}"` : value;
+    parts.push(`${key}=${serializedValue}`);
   }
   if (parts.length === 0) return '';
   return `[gpu-runtime-boundary] ${token} ${parts.join(' ')}`;
@@ -4622,8 +4680,12 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     'runtime-profile-adapter-boundary',
   );
   const adapterAppHookContract = runtimeProfileAdapterAppHookContract(parsed ?? {});
+  const boundaryImportBlockingGaps = [];
   if (parsed && strictSummary.strictRuntimeProofAccepted !== true) {
     blockingGaps.push('runtime_profile_adapter_strict_runtime_proof_not_accepted');
+  }
+  if (parsed && adapterBoundaryCoverage.missingEventKinds.length > 0) {
+    boundaryImportBlockingGaps.push('runtime_profile_adapter_boundary_coverage_incomplete');
   }
   if (parsed && runtimeProfileId) {
     if (!parsedProfileId) {
@@ -4641,6 +4703,12 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     || parsed.can_satisfy_runtime_proof === true
   )) {
     blockingGaps.push('runtime_profile_adapter_result_claimed_runtime_authority');
+  }
+  boundaryImportBlockingGaps.push(
+    ...blockingGaps.filter((gap) => gap !== 'runtime_profile_adapter_strict_runtime_proof_not_accepted'),
+  );
+  if (parsed && adapterRuntimeBoundaryLines.length === 0) {
+    boundaryImportBlockingGaps.push('runtime_profile_adapter_boundary_lines_missing');
   }
   const evidenceRefs = compactStringList([
     rawSha256,
@@ -4685,6 +4753,16 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
     adapter_runtime_boundary_evidence_refs: adapterRuntimeBoundaryEvidenceRefs,
     adapterBoundaryCoverage,
     adapter_boundary_coverage: adapterBoundaryCoverage,
+    acceptedAsBoundaryEvidence:
+      parsed !== null
+      && adapterRuntimeBoundaryLines.length > 0
+      && boundaryImportBlockingGaps.length === 0,
+    accepted_as_boundary_evidence:
+      parsed !== null
+      && adapterRuntimeBoundaryLines.length > 0
+      && boundaryImportBlockingGaps.length === 0,
+    boundaryImportBlockingGaps,
+    boundary_import_blocking_gaps: boundaryImportBlockingGaps,
     adapterAppHookContract: adapterAppHookContract,
     adapter_app_hook_contract: adapterAppHookContract,
     acceptedAsRefusalEvidence: blockingGaps.length > 0,
@@ -5033,7 +5111,7 @@ function refreshRuntimeAdapterExecutionFromResultBridge(bridge = report.real_roc
   const execution = report.real_rocm_runtime_adapter_execution;
   if (!execution || typeof execution !== 'object' || Array.isArray(execution)) return execution;
   if (execution.status !== 'runtime_adapter_executed') return execution;
-  if (!runtimeProfileAdapterResultBridgeUsableForRuntimeEvidence(bridge)) return execution;
+  if (!runtimeProfileAdapterResultBridgeUsableForBoundaryImport(bridge)) return execution;
   const resultTransport = report.real_rocm_runtime_adapter_result_transport ?? {};
   if (resultTransport.declared === true && resultTransport.copied !== true) return execution;
   const resultLines = compactStringList([
@@ -18406,6 +18484,131 @@ async function selfCheckRuntimeDispatchEvidence() {
         coverage: structuredAdapterResult.adapterBoundaryCoverage,
       })}`);
     }
+    await writeFile(
+      adapterResultSelfCheckPath,
+      `${JSON.stringify({
+        ...adapterResultSelfCheck,
+        strictRuntimeProofAccepted: false,
+        strict_runtime_proof_accepted: false,
+        strictRuntimeProofArtifactPresent: false,
+        strict_runtime_proof_artifact_present: false,
+        strictRuntimeProofId: null,
+        strict_runtime_proof_id: null,
+        proofLedgerPresent: false,
+        proof_ledger_present: false,
+        proofLedgerId: null,
+        proof_ledger_id: null,
+        resultHash: null,
+        result_hash: null,
+        runtimeBoundaryLines: [],
+        runtime_boundary_lines: [],
+        adapterRuntimeBoundaryLines: [],
+        adapter_runtime_boundary_lines: [],
+        runtimeBoundaryEvents: structuredAdapterRuntimeBoundaryEvents,
+        runtime_boundary_events: structuredAdapterRuntimeBoundaryEvents,
+      }, null, 2)}\n`,
+    );
+    const boundaryOnlyAdapterResult = await collectRuntimeProfileAdapterResultBridge({
+      profileId: 'self-check-runtime-profile',
+    });
+    if (
+      boundaryOnlyAdapterResult.status !== 'runtime_profile_adapter_result_refusal_evidence'
+      || boundaryOnlyAdapterResult.strictRuntimeProofAccepted !== false
+      || boundaryOnlyAdapterResult.acceptedAsBoundaryEvidence !== true
+      || boundaryOnlyAdapterResult.accepted_as_boundary_evidence !== true
+      || !boundaryOnlyAdapterResult.blockingGaps.includes(
+        'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+      )
+      || boundaryOnlyAdapterResult.boundaryImportBlockingGaps.length !== 0
+      || boundaryOnlyAdapterResult.adapterRuntimeBoundaryLineCount
+        !== completeAdapterRuntimeBoundaryLines.length
+      || boundaryOnlyAdapterResult.adapterBoundaryCoverage?.missingEventKinds?.length !== 0
+      || boundaryOnlyAdapterResult.acceptedForGpuHmr !== false
+      || boundaryOnlyAdapterResult.canSatisfyRuntimeProof !== false
+    ) {
+      throw new Error(`boundary-only runtime adapter result import self-check failed ${stableJson({
+        status: boundaryOnlyAdapterResult.status,
+        strict: boundaryOnlyAdapterResult.strictRuntimeProofAccepted,
+        acceptedAsBoundaryEvidence: boundaryOnlyAdapterResult.acceptedAsBoundaryEvidence,
+        gaps: boundaryOnlyAdapterResult.blockingGaps,
+        boundaryImportGaps: boundaryOnlyAdapterResult.boundaryImportBlockingGaps,
+      })}`);
+    }
+    const aliasArtifactLine = runtimeBoundaryStructuredEventLine({
+      schemaVersion: REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'artifact_transport',
+      fields: {
+        runtimeSession: 'pid123-self-check',
+        artifact_content_hash: `sha256:${'a'.repeat(64)}`,
+        byteLength: 4,
+        transport: 'ram_bytes',
+        loader_api: 'hipModuleLoadData',
+        ramArtifactReferenceProvided: true,
+        ramBlobId: `artifact:sha256:${'a'.repeat(64)}`,
+        ramTransportProven: true,
+        load_result: 'ok',
+      },
+    });
+    const aliasOutputLine = runtimeBoundaryStructuredEventLine({
+      schemaVersion: REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'output_oracle',
+      fields: {
+        id: 'oracle:alias-self-check',
+        oracle_kind: 'buffer_checksum',
+        expected_hash: `sha256:${'b'.repeat(64)}`,
+        actual_hash: `sha256:${'b'.repeat(64)}`,
+        passed: true,
+        runtimeSession: 'pid123-self-check',
+        artifact_hash: `sha256:${'a'.repeat(64)}`,
+        outputTargetId: 'output-target:self-check',
+        afterDispatchId: 'dispatch:self-check',
+        timestamp_after_dispatch: 4000,
+        raw_readback_bin: 'C:/tmp/synthi adapter/readback.bin',
+      },
+    });
+    const invalidAliasOutputLine = runtimeBoundaryStructuredEventLine({
+      schemaVersion: REAL_ROCM_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'output_oracle',
+      fields: {
+        id: 'oracle:alias-rejected',
+        kind: 'buffer_checksum',
+        runtimeSession: 'pid123-self-check',
+        passed: true,
+      },
+    });
+    const aliasArtifactEvidence = runtimeArtifactTransportEvidence([aliasArtifactLine]);
+    const aliasOutputEvidence = runtimeOutputOracleEvidence([
+      aliasOutputLine,
+      invalidAliasOutputLine,
+    ]);
+    if (
+      !aliasOutputLine.includes('raw_readback_bin="C:/tmp/synthi adapter/readback.bin"')
+      || aliasArtifactEvidence.total_count !== 1
+      || aliasArtifactEvidence.rejected_count !== 0
+      || aliasArtifactEvidence.artifact_hash !== `sha256:${'a'.repeat(64)}`
+      || aliasArtifactEvidence.artifact_id !== `artifact:sha256:${'a'.repeat(64)}`
+      || aliasArtifactEvidence.ram_transport_proven !== true
+      || aliasOutputEvidence.candidate_count !== 2
+      || aliasOutputEvidence.total_count !== 1
+      || aliasOutputEvidence.rejected_count !== 1
+      || !aliasOutputEvidence.rejected_reasons.includes('expected_missing')
+      || aliasOutputEvidence.output_oracle?.expected !== `sha256:${'b'.repeat(64)}`
+      || aliasOutputEvidence.output_oracle?.actual !== `sha256:${'b'.repeat(64)}`
+      || aliasOutputEvidence.output_oracle?.runtimeSession !== 'pid123-self-check'
+      || aliasOutputEvidence.output_oracle?.artifactId !== `sha256:${'a'.repeat(64)}`
+      || aliasOutputEvidence.output_oracle?.outputTargetId !== 'output-target:self-check'
+      || aliasOutputEvidence.output_oracle?.afterDispatchId !== 'dispatch:self-check'
+      || aliasOutputEvidence.output_oracle?.rawReadbackBin
+        !== 'C:/tmp/synthi adapter/readback.bin'
+      || aliasOutputEvidence.deterministic_oracle_passed !== true
+    ) {
+      throw new Error(`runtime adapter alias/quoted boundary parser self-check failed ${stableJson({
+        aliasArtifactLine,
+        aliasOutputLine,
+        artifactEvidence: aliasArtifactEvidence,
+        outputEvidence: aliasOutputEvidence,
+      })}`);
+    }
     CFG.runtimeAdapter = normalizeRealRocmRuntimeAdapter({
       enabled: true,
       template: 'runtime_boundary_event_manifest_v1',
@@ -18437,7 +18640,7 @@ async function selfCheckRuntimeDispatchEvidence() {
     report.evidence.real_rocm_runtime_adapter_result_transport =
       report.real_rocm_runtime_adapter_result_transport;
     const refreshedExecutionFacet =
-      refreshRuntimeAdapterExecutionFromResultBridge(structuredAdapterResult);
+      refreshRuntimeAdapterExecutionFromResultBridge(boundaryOnlyAdapterResult);
     if (
       unmergedExecutionFacet.status !== 'runtime_adapter_executed'
       || !unmergedExecutionFacet.blockingGaps.includes(
@@ -18450,7 +18653,7 @@ async function selfCheckRuntimeDispatchEvidence() {
       || refreshedExecutionFacet.adapterBoundaryCoverage?.missingEventKinds?.length !== 0
       || refreshedExecutionFacet.adapterBoundaryCoverage?.outputEventObserved !== true
       || refreshedExecutionFacet.boundarySource !== 'runtime_adapter_result_manifest'
-      || refreshedExecutionFacet.resultBridgeHash !== structuredAdapterResult.bridgeHash
+      || refreshedExecutionFacet.resultBridgeHash !== boundaryOnlyAdapterResult.bridgeHash
       || !refreshedExecutionFacet.runtimeBoundaryEvidenceRefs.some((ref) =>
         ref.startsWith('runtime-adapter-result-boundary:')
       )
@@ -23395,7 +23598,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
   const adapterResultBridge = report.real_rocm_runtime_profile_adapter_result;
   const adapterExecutionFacet = report.real_rocm_runtime_adapter_execution;
   const adapterResultBoundaryLines =
-    runtimeProfileAdapterResultBridgeUsableForRuntimeEvidence(adapterResultBridge)
+    runtimeProfileAdapterResultBridgeUsableForBoundaryImport(adapterResultBridge)
       ? [
           ...(Array.isArray(adapterResultBridge?.adapter_runtime_boundary_lines)
             ? adapterResultBridge.adapter_runtime_boundary_lines

@@ -929,28 +929,77 @@ function outputOracleRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
     line,
-    oracleId: fields.id ?? fields.oracle_id ?? null,
+    oracleId:
+      fields.id
+      ?? fields.oracle_id
+      ?? fields.oracleId
+      ?? null,
     requiredOracleId:
       fields.required_oracle_id
       ?? fields.requiredOracleId
       ?? fields.required_oracle
       ?? fields.required_id
       ?? null,
-    kind: fields.kind ?? null,
+    kind: fields.kind ?? fields.oracle_kind ?? fields.oracleKind ?? null,
     producer: fields.producer ?? fields.producer_id ?? null,
-    expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
-    actual: Object.prototype.hasOwnProperty.call(fields, 'actual') ? fields.actual : null,
+    expected:
+      Object.prototype.hasOwnProperty.call(fields, 'expected')
+        ? fields.expected
+        : fields.expected_sha256
+          ?? fields.expectedSha256
+          ?? fields.expected_hash
+          ?? fields.expectedHash
+          ?? fields.expected_checksum
+          ?? fields.expectedChecksum
+          ?? null,
+    actual:
+      Object.prototype.hasOwnProperty.call(fields, 'actual')
+        ? fields.actual
+        : fields.actual_sha256
+          ?? fields.actualSha256
+          ?? fields.actual_hash
+          ?? fields.actualHash
+          ?? fields.actual_checksum
+          ?? fields.actualChecksum
+          ?? null,
     tolerance: fields.tolerance ?? fields.absolute_tolerance ?? fields.abs_tolerance ?? null,
     passed: boolValue(fields.passed),
-    generation: integerValue(fields.generation),
-    runtimeSession: fields.runtime_session ?? null,
-    outputTargetId: fields.output_target_id ?? fields.output_target ?? fields.target ?? null,
+    generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+    runtimeSession:
+      fields.runtime_session
+      ?? fields.runtimeSession
+      ?? fields.runtime_session_id
+      ?? fields.runtimeSessionId
+      ?? fields.session_id
+      ?? fields.sessionId
+      ?? null,
+    outputTargetId:
+      fields.output_target_id
+      ?? fields.outputTargetId
+      ?? fields.output_target
+      ?? fields.outputTarget
+      ?? fields.target_id
+      ?? fields.targetId
+      ?? fields.target
+      ?? null,
     readbackTimestamp:
       fields.readback_timestamp
       ?? fields.readback_ts
       ?? fields.readback_elapsed_ms
+      ?? fields.timestamp_after_dispatch
+      ?? fields.timestampAfterDispatch
       ?? null,
-    artifactId: fields.artifact_id ?? fields.artifact ?? null,
+    artifactId:
+      fields.artifact_id
+      ?? fields.artifactId
+      ?? fields.artifact
+      ?? fields.artifact_hash
+      ?? fields.artifactHash
+      ?? fields.artifact_content_hash
+      ?? fields.artifactContentHash
+      ?? fields.loaded_artifact_hash
+      ?? fields.loadedArtifactHash
+      ?? null,
     afterDispatchId:
       fields.after_dispatch_id
       ?? fields.afterDispatchId
@@ -2066,17 +2115,69 @@ function artifactTransportRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   const degradedState = fields.degraded_state ?? fields.degradedState ?? null;
   const degradedReason = fields.degraded_reason ?? fields.degradedReason ?? null;
+  const artifactHash =
+    fields.artifact_hash
+    ?? fields.artifactHash
+    ?? fields.artifact_content_hash
+    ?? fields.artifactContentHash
+    ?? fields.artifact_sha256
+    ?? fields.artifactSha256
+    ?? fields.content_hash
+    ?? fields.contentHash
+    ?? fields.loaded_artifact_hash
+    ?? fields.loadedArtifactHash
+    ?? fields.sha256
+    ?? null;
+  const artifactBytes = integerValue(
+    fields.artifact_bytes
+    ?? fields.artifactBytes
+    ?? fields.artifact_byte_length
+    ?? fields.artifactByteLength
+    ?? fields.byte_length
+    ?? fields.byteLength
+    ?? fields.content_length
+    ?? fields.contentLength,
+  );
+  const selectedLoaderTransport =
+    fields.selected_loader_transport
+    ?? fields.selectedLoaderTransport
+    ?? fields.loader_transport
+    ?? fields.loaderTransport
+    ?? fields.transport
+    ?? null;
+  const reloadRequestTransport =
+    fields.reload_request_transport
+    ?? fields.reloadRequestTransport
+    ?? fields.request_transport
+    ?? fields.requestTransport
+    ?? fields.source_transport
+    ?? fields.sourceTransport
+    ?? selectedLoaderTransport
+    ?? null;
+  const ramBlobId =
+    fields.ram_blob_id
+    ?? fields.ramBlobId
+    ?? fields.artifact_id
+    ?? fields.artifactId
+    ?? null;
   return {
     line,
-    runtimeSession: fields.runtime_session ?? null,
-    generation: integerValue(fields.generation),
-    artifactHash: fields.artifact_hash ?? null,
-    artifactBytes: integerValue(fields.artifact_bytes),
-    reloadRequestTransport: fields.reload_request_transport ?? fields.reloadRequestTransport ?? null,
-    selectedLoaderTransport: fields.selected_loader_transport ?? fields.selectedLoaderTransport ?? null,
+    runtimeSession:
+      fields.runtime_session
+      ?? fields.runtimeSession
+      ?? fields.runtime_session_id
+      ?? fields.runtimeSessionId
+      ?? fields.session_id
+      ?? fields.sessionId
+      ?? null,
+    generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+    artifactHash,
+    artifactBytes,
+    reloadRequestTransport,
+    selectedLoaderTransport,
     loaderApi: fields.loader_api ?? fields.loaderApi ?? null,
     ramReference: boolValue(fields.ram_reference ?? fields.ramArtifactReferenceProvided),
-    ramBlobId: fields.ram_blob_id ?? fields.ramBlobId ?? null,
+    ramBlobId,
     ramTransportProven: boolValue(fields.ram_transport_proven ?? fields.ramTransportProven),
     degradedState: degradedState === 'none' ? null : degradedState,
     degradedReason: degradedReason === 'none' ? null : degradedReason,
@@ -2086,21 +2187,35 @@ function artifactTransportRecord(line) {
 
 export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
-  const rawRecords = (Array.isArray(lines) ? lines : [])
+  const candidateRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bartifact_transport\b/i))
-    .map(artifactTransportRecord)
-    .filter((record) =>
-      typeof record.runtimeSession === 'string'
-      && record.runtimeSession.trim()
-      && typeof record.selectedLoaderTransport === 'string'
-      && record.selectedLoaderTransport.trim()
-      && typeof record.reloadRequestTransport === 'string'
-      && record.reloadRequestTransport.trim()
-      && typeof record.artifactHash === 'string'
-      && /^sha256:[0-9a-f]{64}$/i.test(record.artifactHash)
-      && Number.isFinite(record.artifactBytes)
-      && record.artifactBytes >= 0
-    );
+    .map(artifactTransportRecord);
+  const artifactTransportRecordRejectionReasons = (record) => compactStringList([
+    typeof record.runtimeSession === 'string' && record.runtimeSession.trim()
+      ? null
+      : 'runtime_session_missing',
+    typeof record.selectedLoaderTransport === 'string' && record.selectedLoaderTransport.trim()
+      ? null
+      : 'selected_loader_transport_missing',
+    typeof record.reloadRequestTransport === 'string' && record.reloadRequestTransport.trim()
+      ? null
+      : 'reload_request_transport_missing',
+    typeof record.artifactHash === 'string' && /^sha256:[0-9a-f]{64}$/i.test(record.artifactHash)
+      ? null
+      : 'artifact_hash_missing_or_invalid',
+    Number.isFinite(record.artifactBytes) && record.artifactBytes >= 0
+      ? null
+      : 'artifact_bytes_missing_or_invalid',
+  ]);
+  const rawRecords = candidateRecords.filter((record) =>
+    artifactTransportRecordRejectionReasons(record).length === 0
+  );
+  const rejectedRecords = candidateRecords
+    .filter((record) => artifactTransportRecordRejectionReasons(record).length > 0)
+    .map((record) => ({
+      reasons: artifactTransportRecordRejectionReasons(record),
+      line: record.line,
+    }));
   const records = rawRecords.filter((record) =>
     expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession)
   );
@@ -2155,6 +2270,10 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
 
   return {
     total_count: rawRecords.length,
+    candidate_count: candidateRecords.length,
+    rejected_count: rejectedRecords.length,
+    rejected_reasons: compactStringList(rejectedRecords.flatMap((record) => record.reasons)),
+    rejected_records: rejectedRecords.slice(-10),
     matched_count: records.length,
     latest,
     process_id: processIds.length === 1 ? processIds[0] : null,
@@ -2199,20 +2318,32 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
 }
 
 export function runtimeOutputOracleEvidence(lines, observation = {}) {
-  const records = (Array.isArray(lines) ? lines : [])
+  const candidateRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\boutput_oracle\b/i))
-    .map(outputOracleRecord)
-    .filter((record) =>
-      typeof record.oracleId === 'string'
-      && record.oracleId.trim()
-      && typeof record.kind === 'string'
-      && record.kind.trim()
-      && record.expected !== null
-      && record.actual !== null
-      && record.passed !== null
-      && typeof record.runtimeSession === 'string'
-      && record.runtimeSession.trim()
-    );
+    .map(outputOracleRecord);
+  const outputOracleRecordRejectionReasons = (record) => compactStringList([
+    typeof record.oracleId === 'string' && record.oracleId.trim()
+      ? null
+      : 'oracle_id_missing',
+    typeof record.kind === 'string' && record.kind.trim()
+      ? null
+      : 'oracle_kind_missing',
+    record.expected !== null ? null : 'expected_missing',
+    record.actual !== null ? null : 'actual_missing',
+    record.passed !== null ? null : 'passed_missing',
+    typeof record.runtimeSession === 'string' && record.runtimeSession.trim()
+      ? null
+      : 'runtime_session_missing',
+  ]);
+  const records = candidateRecords.filter((record) =>
+    outputOracleRecordRejectionReasons(record).length === 0
+  );
+  const rejectedRecords = candidateRecords
+    .filter((record) => outputOracleRecordRejectionReasons(record).length > 0)
+    .map((record) => ({
+      reasons: outputOracleRecordRejectionReasons(record),
+      line: record.line,
+    }));
   const expectedContract = normalizeOracleContract(observation.expectedOracle ?? observation.outputOracleContract);
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const matchingRecords = records.filter((record) =>
@@ -2240,6 +2371,10 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
 
   return {
     total_count: records.length,
+    candidate_count: candidateRecords.length,
+    rejected_count: rejectedRecords.length,
+    rejected_reasons: compactStringList(rejectedRecords.flatMap((record) => record.reasons)),
+    rejected_records: rejectedRecords.slice(-10),
     matched_count: matchingRecords.length,
     passed_count: passedRecords.length,
     failed_count: matchingRecords.length - passedRecords.length,

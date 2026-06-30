@@ -14450,6 +14450,189 @@ assert.equal(
   `output-target:${completeAdapterBoundaryBridgeScope}`,
 );
 
+const adapterBoundaryOnlyBridgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-only-bridge-complete',
+);
+await fs.mkdir(adapterBoundaryOnlyBridgeDir, { recursive: true });
+const adapterBoundaryOnlyBridgeReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+const adapterBoundaryOnlyBridgeFacet = {
+  ...adapterBoundaryOnlyBridgeReport.real_rocm_runtime_profile_adapter_result,
+  status: 'runtime_profile_adapter_result_refusal_evidence',
+  strictRuntimeProofAccepted: false,
+  strict_runtime_proof_accepted: false,
+  strictRuntimeProofArtifactPresent: false,
+  strict_runtime_proof_artifact_present: false,
+  proofLedgerPresent: false,
+  proof_ledger_present: false,
+  strictRuntimeProofId: null,
+  strict_runtime_proof_id: null,
+  proofLedgerId: null,
+  proof_ledger_id: null,
+  adapterResultHash: null,
+  adapter_result_hash: null,
+  resultHash: null,
+  result_hash: null,
+  acceptedAsBoundaryEvidence: true,
+  accepted_as_boundary_evidence: true,
+  blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+  blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+  boundaryImportBlockingGaps: [],
+  boundary_import_blocking_gaps: [],
+  failedGates: [
+    'real_rocm_runtime_profile_adapter_result_imported_without_strict_proof',
+    'real_rocm_runtime_profile_adapter_result_imported_without_runtime_artifact',
+    'real_rocm_runtime_profile_adapter_result_imported_without_proof_ledger',
+    'real_rocm_runtime_profile_adapter_result_strict_proof_id_missing',
+    'real_rocm_runtime_profile_adapter_result_proof_ledger_id_missing',
+    'real_rocm_runtime_profile_adapter_result_hash_missing',
+  ],
+  failed_gates: [
+    'real_rocm_runtime_profile_adapter_result_imported_without_strict_proof',
+    'real_rocm_runtime_profile_adapter_result_imported_without_runtime_artifact',
+    'real_rocm_runtime_profile_adapter_result_imported_without_proof_ledger',
+    'real_rocm_runtime_profile_adapter_result_strict_proof_id_missing',
+    'real_rocm_runtime_profile_adapter_result_proof_ledger_id_missing',
+    'real_rocm_runtime_profile_adapter_result_hash_missing',
+  ],
+};
+adapterBoundaryOnlyBridgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-only-bridge-complete-20260630';
+adapterBoundaryOnlyBridgeReport.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryOnlyBridgeFacet;
+adapterBoundaryOnlyBridgeReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryOnlyBridgeFacet;
+adapterBoundaryOnlyBridgeReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryOnlyBridgeFacet;
+await writeJson(
+  path.join(
+    adapterBoundaryOnlyBridgeDir,
+    'real-rocm-adapter-boundary-only-bridge-complete.json',
+  ),
+  adapterBoundaryOnlyBridgeReport,
+);
+const adapterBoundaryOnlyBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryOnlyBridgeDir],
+  generatedAt: '2026-06-30T00:00:02.264Z',
+  includeUnproven: true,
+});
+const adapterBoundaryOnlyBridgeRow = adapterBoundaryOnlyBridgeLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(adapterBoundaryOnlyBridgeRow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(adapterBoundaryOnlyBridgeRow.acceptedForGpuHmr, true);
+assert.equal(adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.accepted, false);
+assert.equal(
+  adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.acceptedAsBoundaryEvidence,
+  true,
+);
+assert.deepEqual(
+  adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.boundaryImportBlockingGaps,
+  [],
+);
+assert.ok(
+  adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.blockingGaps.includes(
+    'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+  ),
+);
+assert.equal(
+  adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.acceptedForGpuHmr,
+  false,
+);
+assert.equal(adapterBoundaryOnlyBridgeRow.realRocmRuntimeProfileAdapterResult.gpuHmrSuccess, false);
+assert.equal(adapterBoundaryOnlyBridgeRow.runtimeProofArtifact.accepted, true);
+assert.equal(adapterBoundaryOnlyBridgeRow.ledger.gpuHmrSuccess, true);
+assert.equal(adapterBoundaryOnlyBridgeRow.realRocmRuntimeChain.accepted, true);
+assert.equal(
+  adapterBoundaryOnlyBridgeRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted,
+  true,
+);
+assert.ok(
+  !adapterBoundaryOnlyBridgeRow.reasons.includes(
+    'real_rocm_runtime_profile_adapter_result_not_accepted',
+  ),
+);
+assert.ok(
+  !adapterBoundaryOnlyBridgeRow.openGaps.includes(
+    'real_rocm_runtime_profile_adapter_result_not_accepted',
+  ),
+);
+
+const adapterBoundaryOnlyPartialBridgeDir = path.join(
+  logsRoot,
+  'real-rocm-adapter-boundary-only-partial-bridge',
+);
+await fs.mkdir(adapterBoundaryOnlyPartialBridgeDir, { recursive: true });
+const adapterBoundaryOnlyPartialBridgeReport =
+  JSON.parse(JSON.stringify(adapterBoundaryOnlyBridgeReport));
+const adapterBoundaryOnlyPartialBridgeFacet =
+  adapterBoundaryOnlyPartialBridgeReport.real_rocm_runtime_profile_adapter_result;
+const partialBoundaryLines = (
+  Array.isArray(adapterBoundaryOnlyPartialBridgeFacet.adapterRuntimeBoundaryLines)
+    ? adapterBoundaryOnlyPartialBridgeFacet.adapterRuntimeBoundaryLines
+    : []
+)
+  .map((line) => String(line ?? '').trim())
+  .filter(Boolean)
+  .filter((line) => !/\boutput_oracle\b/i.test(line));
+adapterBoundaryOnlyPartialBridgeFacet.adapterRuntimeBoundaryLines = partialBoundaryLines;
+adapterBoundaryOnlyPartialBridgeFacet.adapter_runtime_boundary_lines = partialBoundaryLines;
+adapterBoundaryOnlyPartialBridgeFacet.runtimeBoundaryLines = partialBoundaryLines;
+adapterBoundaryOnlyPartialBridgeFacet.runtime_boundary_lines = partialBoundaryLines;
+adapterBoundaryOnlyPartialBridgeFacet.acceptedAsBoundaryEvidence = true;
+adapterBoundaryOnlyPartialBridgeFacet.accepted_as_boundary_evidence = true;
+adapterBoundaryOnlyPartialBridgeFacet.boundaryImportBlockingGaps = [];
+adapterBoundaryOnlyPartialBridgeFacet.boundary_import_blocking_gaps = [];
+adapterBoundaryOnlyPartialBridgeReport.slug =
+  'gpu-real-rocm-adapter-boundary-only-partial-bridge-20260630';
+adapterBoundaryOnlyPartialBridgeReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterBoundaryOnlyPartialBridgeFacet;
+adapterBoundaryOnlyPartialBridgeReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterBoundaryOnlyPartialBridgeFacet;
+await writeJson(
+  path.join(
+    adapterBoundaryOnlyPartialBridgeDir,
+    'real-rocm-adapter-boundary-only-partial-bridge.json',
+  ),
+  adapterBoundaryOnlyPartialBridgeReport,
+);
+const adapterBoundaryOnlyPartialBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [adapterBoundaryOnlyPartialBridgeDir],
+  generatedAt: '2026-06-30T00:00:02.265Z',
+  includeUnproven: true,
+});
+const adapterBoundaryOnlyPartialBridgeRow =
+  adapterBoundaryOnlyPartialBridgeLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(adapterBoundaryOnlyPartialBridgeRow?.matrixOutcome, 'unproven');
+assert.equal(adapterBoundaryOnlyPartialBridgeRow.acceptedForGpuHmr, false);
+assert.equal(
+  adapterBoundaryOnlyPartialBridgeRow.realRocmRuntimeProfileAdapterResult
+    .acceptedAsBoundaryEvidence,
+  false,
+);
+assert.ok(
+  adapterBoundaryOnlyPartialBridgeRow.realRocmRuntimeProfileAdapterResult
+    .boundaryImportBlockingGaps.includes(
+      'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
+    ),
+);
+assert.ok(
+  adapterBoundaryOnlyPartialBridgeRow.realRocmRuntimeProfileAdapterResult
+    .adapterBoundaryCoverage.missingEventKinds.includes('output_oracle'),
+);
+assert.ok(
+  adapterBoundaryOnlyPartialBridgeRow.reasons.includes(
+    'real_rocm_runtime_profile_adapter_result:real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
+  ),
+);
+
 const adapterStageEventsForgedAuthorityDir = path.join(
   logsRoot,
   'real-rocm-adapter-stage-events-forged-authority',
