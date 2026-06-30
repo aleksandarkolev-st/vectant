@@ -55,6 +55,7 @@ const BROAD_LIBRARY_AGNOSTIC_PROOF_SCHEMA_VERSION =
 const BROAD_LIBRARY_MIN_BACKEND_COUNT = 4;
 const BROAD_LIBRARY_MIN_ACCEPTANCE_SCOPE_COUNT = 4;
 const BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT = 8;
+const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -21017,9 +21018,11 @@ function computeBroadLibraryAgnosticProof(rows) {
     refusalRowsForReadiness.length >= BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT
       ? null
       : 'broad_acceptance_requires_adversarial_refusals',
-    randomColdPathRows.length > 0
+    randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
       ? null
-      : 'broad_acceptance_requires_random_large_project_cold_path',
+      : randomColdPathRows.length === 0
+        ? 'broad_acceptance_requires_random_large_project_cold_path'
+        : 'broad_acceptance_requires_more_random_large_project_cold_paths',
     sourceFirstVisualRows.length > 0
       ? null
       : 'broad_acceptance_requires_source_first_visual_full_runtime_row',
@@ -21101,8 +21104,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     minimum_acceptance_scope_count: BROAD_LIBRARY_MIN_ACCEPTANCE_SCOPE_COUNT,
     minimumAdversarialRefusalCount: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
     minimum_adversarial_refusal_count: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
-    minimumRandomColdPathCount: 1,
-    minimum_random_cold_path_count: 1,
+    minimumRandomColdPathCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_random_cold_path_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimumSourceFirstVisualFullRuntimeCount: 1,
     minimum_source_first_visual_full_runtime_count: 1,
     openGaps,

@@ -7939,6 +7939,13 @@ const broadReadinessRows = [
     refusalMatrixRow(`broad-readiness-adversarial-refusal-${index + 1}`)
   ),
 ];
+const broadReadinessRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `random-cold-readiness-user-project-${index + 1}`,
+    sourceUrl: `https://example.invalid/user/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`random-cold-readiness-commit-${index + 1}`).slice(0, 40),
+  })
+);
 const broadReadinessWithoutRandomColdQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRows,
@@ -8015,7 +8022,7 @@ const broadReadinessWithoutSourceFirstVisualQuery = queryGpuHmrValidationMatrixL
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
     ...broadReadinessRows.map((row) => withoutSourceFirstVisualSupport(row)),
-    randomColdReadinessMatrixRow(),
+    ...broadReadinessRandomColdRows,
   ],
 });
 assert.equal(broadReadinessWithoutSourceFirstVisualQuery.accepted, true);
@@ -8026,7 +8033,7 @@ assert.equal(
 assert.equal(
   broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathRowCount,
-  1,
+  5,
 );
 assert.equal(
   broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
@@ -8041,7 +8048,7 @@ const broadReadinessWithProfiledSourceFirstVisualQuery = queryGpuHmrValidationMa
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
     ...broadReadinessRows.map((row) => withSourceFirstSourceAuthority(row, 'profile_source_files')),
-    randomColdReadinessMatrixRow(),
+    ...broadReadinessRandomColdRows,
   ],
 });
 assert.equal(broadReadinessWithProfiledSourceFirstVisualQuery.accepted, true);
@@ -8052,7 +8059,7 @@ assert.equal(
 assert.equal(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathRowCount,
-  1,
+  5,
 );
 assert.equal(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
@@ -8063,9 +8070,31 @@ assert.ok(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
-const broadReadinessRowsWithRandomCold = [
+const broadReadinessRowsWithOneRandomCold = [
   ...broadReadinessRows,
   randomColdReadinessMatrixRow(),
+];
+const broadReadinessWithOneRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: broadReadinessRowsWithOneRandomCold,
+});
+assert.equal(broadReadinessWithOneRandomColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithOneRandomColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithOneRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithOneRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_more_random_large_project_cold_paths',
+  ),
+);
+const broadReadinessRowsWithRandomCold = [
+  ...broadReadinessRows,
+  ...broadReadinessRandomColdRows,
 ];
 const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -8101,7 +8130,7 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  1,
+  5,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualRowCount,
@@ -8114,7 +8143,7 @@ assert.deepEqual(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathRows,
-  1,
+  5,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -8124,7 +8153,13 @@ assert.equal(
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathTargets,
-  ['random-cold-readiness-user-project'],
+  [
+    'random-cold-readiness-user-project-1',
+    'random-cold-readiness-user-project-2',
+    'random-cold-readiness-user-project-3',
+    'random-cold-readiness-user-project-4',
+    'random-cold-readiness-user-project-5',
+  ],
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
