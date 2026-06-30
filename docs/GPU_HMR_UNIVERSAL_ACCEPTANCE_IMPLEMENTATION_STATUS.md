@@ -4,6 +4,22 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Agent-Split Proof Wait Retry And MCP Cleanup
+
+The source-first agent-split runner now has a generic strict-proof finalization retry for `synthi_wait_hmr`. The retry is limited to proof-pending/missing strict-proof cases such as `proof_state_missing`, `proof_ledger_missing`, or `runtime_proof_artifact_missing`; it does not retry terminal rejections, `failed_fast` timeout-intelligence results, malformed errors, CPU/full-rebuild/restart evidence, failed ledger invariants, rejected runtime proof artifacts, or non-strict waits. The second wait reuses the same compile dispatch timestamp, `since_ts`, module, selected generated path, edit id/hash, and required proof contract. It is bounded to one support-only retry by default.
+
+The retry evidence is intentionally non-authoritative: `synthi.gpu_hmr.strict_proof_wait_retry.v1`, `proofAuthority=strict_proof_wait_retry_scheduling_only_not_gpu_hmr_acceptance`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. It records per-attempt status, reason, result state/rank, proof ids, failed gates, retry budget, elapsed time, and the stable wait-contract binding. A later accepted wait still has to pass the existing full-runtime proof and visual/output oracle gates; retry evidence cannot lower the requested proof state or satisfy GPU HMR by itself.
+
+The same patch fixes MCP startup cleanup in the agent-split runner. If MCP `initialize` or `tools/list` fails before `mcpState` is assigned, the just-spawned MCP process is now terminated immediately and the cleanup is recorded. MCP startup waits now use the runner's generic `MCP_REQUEST_TIMEOUT_MS` budget instead of a hardcoded 20 second cap. This addresses a real default rerun failure where MCP initialize timed out and left Node child processes alive.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check -> passed, including proof-finalization retry and MCP startup cleanup self-checks
+npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace without SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS -> failed closed as gpu-agent-split-1782837031653 at the cold source-first compile/apply gate; compile-proven validation was satisfied, but wait status was rejected, so no source-first GPU HMR acceptance or visual proof is claimed from that newest attempt
+```
+
 ## 2026-06-30 Source-First Visual Proof And MIOpen Bounded Rerun
 
 The source-first realistic raytrace user path was rerun from uncompiled profile source files with a longer strict proof wait window. The runner seeded `src/main.cpp` plus `src/scene_config.h`, preserved the local quoted-include closure through the deterministic splitter, generated explicit module files and device roles under `.synthi/generated/gpu/`, selected worker-detected ROCm arch `gfx1201`, published two hot GPU epochs, and closed strict visual runtime proof for both hot deltas. The retained workspace is `gpu-agent-split-1782834376257` at `http://localhost:3000/workspace/gpu-agent-split-1782834376257`.
