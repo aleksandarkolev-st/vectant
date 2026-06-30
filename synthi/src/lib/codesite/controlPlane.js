@@ -573,6 +573,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     ? codesiteFsEvent.type
     : null;
   const writeEvidence = writeEvidenceFromBody(body, path, codesiteFsEvent);
+  const semanticDependencyRefs = semanticSignalsFromWrite(body);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const evaluation = evaluatePathMutation({
@@ -594,6 +595,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       tool: body.tool || 'file_write',
       zone: evaluation.zone,
       codesiteFsEvent,
+      semanticDependencyRefs,
       ...writeEvidence,
     },
   });
@@ -635,6 +637,49 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       quarantined: codesiteFsEventType === 'write_quarantined',
       transaction: transactionProjection(transaction),
       policyDecision: policyDecisionProjection(decision),
+    };
+  }
+
+  const invalidatedTransactionAssumptions = await invalidatedAssumptionsForTransaction(transaction);
+  if (invalidatedTransactionAssumptions.length > 0) {
+    const reasonCodes = unique(['assumption_invalidated_write_blocked', 'rebase_required']);
+    const decision = await createPolicyDecision(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      decision: 'block',
+      reasonCodes,
+      input: {
+        transactionId,
+        path,
+        tool: body.tool || 'file_write',
+        invalidatedAssumptions: invalidatedTransactionAssumptions.map((assumption) => assumption.id),
+      },
+      decisionJson: {
+        path,
+        zone: evaluation.zone,
+        invalidatedAssumptions: invalidatedTransactionAssumptions.map(assumptionProjection),
+        towerInstruction: 'Hold position: transaction assumptions are stale. Rebase assumptions before further writes.',
+      },
+    });
+    await recordEvent(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      eventType: 'write_denied',
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      actorType: 'policy_engine',
+      actorId: decision.id,
+      details: {
+        transactionId: transaction.id,
+        path,
+        reasonCodes,
+        policyDecisionId: decision.id,
+        invalidatedAssumptions: invalidatedTransactionAssumptions.map(assumptionProjection),
+      },
+    });
+    return {
+      ok: false,
+      transaction: transactionProjection(transaction),
+      policyDecision: policyDecisionProjection(decision),
+      invalidatedAssumptions: invalidatedTransactionAssumptions.map(assumptionProjection),
     };
   }
 
@@ -681,7 +726,11 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       observedWriteSetJson: stringifyJson(observed),
     },
   });
-  const invalidated = await invalidateAssumptionsForPath(transaction.projectId, path, transaction.mutationLease.displayCallsign);
+  const invalidated = await invalidateAssumptionsForWrite(transaction.projectId, {
+    path,
+    semanticDependencyRefs,
+    invalidatedBy: transaction.mutationLease.displayCallsign,
+  });
   await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'write_allowed',
@@ -692,6 +741,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       transactionId: transaction.id,
       path,
       zone: evaluation.zone,
+      semanticDependencyRefs,
       invalidatedAssumptions: invalidated,
       ...writeEvidence,
     },
@@ -806,7 +856,18 @@ function codeSiteFsReasonCodes(codesiteFsEvent, fallback = []) {
   return reasonCodes.length ? reasonCodes : asArray(fallback);
 }
 
-async function invalidateAssumptionsForPath(projectId, path, invalidatedBy) {
+async function invalidatedAssumptionsForTransaction(transaction) {
+  const assumptionRefs = parseJson(transaction.assumptionRefsJson, []);
+  if (!assumptionRefs.length) return [];
+  return prisma.codeSiteAssumptionLease.findMany({
+    where: {
+      id: { in: assumptionRefs },
+      status: 'invalidated',
+    },
+  });
+}
+
+async function invalidateAssumptionsForWrite(projectId, { path, semanticDependencyRefs = [], invalidatedBy }) {
   const active = await prisma.codeSiteAssumptionLease.findMany({
     where: { projectId, status: 'active' },
   });
@@ -814,10 +875,7 @@ async function invalidateAssumptionsForPath(projectId, path, invalidatedBy) {
   for (const assumption of active) {
     const dependsOn = asArray(parseJson(assumption.dependsOnJson, []));
     const usedBy = asArray(parseJson(assumption.usedByJson, []));
-    const matches = [...dependsOn, ...usedBy].some((item) => {
-      const candidate = typeof item === 'string' ? item : item?.path || item?.ref || '';
-      return candidate === path || candidate.includes(path) || path.includes(candidate);
-    });
+    const matches = assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs });
     if (!matches) continue;
     const updated = await prisma.codeSiteAssumptionLease.update({
       where: { id: assumption.id },
@@ -836,10 +894,119 @@ async function invalidateAssumptionsForPath(projectId, path, invalidatedBy) {
         assumptionKey: assumption.assumptionKey,
         invalidatedBy,
         path,
+        semanticDependencyRefs,
       },
     });
   }
   return invalidated;
+}
+
+function assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs }) {
+  const assumptionRefs = [...dependsOn, ...usedBy];
+  if (assumptionRefs.some((item) => assumptionPathMatchesWrite(item, path))) return true;
+  const writeSignals = normalizeSemanticRefs(semanticDependencyRefs);
+  if (!writeSignals.length) return false;
+  const assumptionSignals = normalizeSemanticRefs(assumptionRefs);
+  return assumptionSignals.some((assumptionRef) => writeSignals.some((writeRef) => semanticRefsConflict(assumptionRef, writeRef)));
+}
+
+function assumptionPathMatchesWrite(item, writePath) {
+  const candidate = typeof item === 'string'
+    ? item
+    : item?.path || item?.filePath || item?.file_path || item?.sourcePath || item?.source_path || item?.dependencyPath || item?.dependency_path;
+  const normalized = normalizePath(candidate);
+  return normalized && sourcePathsOverlap(normalized, writePath);
+}
+
+function semanticSignalsFromWrite(body = {}) {
+  return normalizeSemanticRefs([
+    body.semanticDependencyRefs,
+    body.semantic_dependency_refs,
+    body.semanticRefs,
+    body.semantic_refs,
+    body.contractRefs,
+    body.contract_refs,
+    body.schemaRefs,
+    body.schema_refs,
+    body.invalidates,
+    body.invalidatesRefs,
+    body.invalidates_refs,
+    body.invalidatedRefs,
+    body.invalidated_refs,
+  ]);
+}
+
+function normalizeSemanticRefs(values) {
+  const refs = asArray(values).flatMap((value) => {
+    if (Array.isArray(value)) return normalizeSemanticRefs(value);
+    const parsed = parseSemanticRef(value);
+    return parsed ? [parsed] : [];
+  });
+  const seen = new Set();
+  return refs.filter((ref) => {
+    const key = stableJson(ref);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function parseSemanticRef(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(.+?)@([^/@]+)$/);
+    return {
+      ref: normalizeSemanticRefKey(match ? match[1] : trimmed),
+      version: match ? String(match[2]).trim() : null,
+      raw: trimmed,
+      invalidates: true,
+    };
+  }
+  if (typeof value !== 'object') return null;
+  const ref = value.ref
+    || value.key
+    || value.id
+    || value.contract
+    || value.contractRef
+    || value.contract_ref
+    || value.schema
+    || value.schemaRef
+    || value.schema_ref
+    || value.dependency
+    || value.dependencyRef
+    || value.dependency_ref;
+  const pathRef = value.path || value.filePath || value.file_path || value.sourcePath || value.source_path || value.dependencyPath || value.dependency_path;
+  const normalizedRef = normalizeSemanticRefKey(ref);
+  const normalizedPath = normalizePath(pathRef);
+  if (!normalizedRef && !normalizedPath) return null;
+  return {
+    ...(normalizedRef ? { ref: normalizedRef } : {}),
+    ...(normalizedPath ? { path: normalizedPath } : {}),
+    version: value.version || value.toVersion || value.to_version || value.schemaVersion || value.schema_version || null,
+    fromVersion: value.fromVersion || value.from_version || null,
+    raw: value.raw || ref || pathRef || null,
+    invalidates: value.invalidates !== false,
+  };
+}
+
+function normalizeSemanticRefKey(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().replace(/^semantic:/, '').replace(/^contract:/, '').replace(/^schema:/, '');
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function semanticRefsConflict(assumptionRef, writeRef) {
+  if (assumptionRef.path && writeRef.path && sourcePathsOverlap(assumptionRef.path, writeRef.path)) return true;
+  if (!assumptionRef.ref || !writeRef.ref) return false;
+  const sameBase = assumptionRef.ref === writeRef.ref
+    || assumptionRef.ref.startsWith(`${writeRef.ref}.`)
+    || writeRef.ref.startsWith(`${assumptionRef.ref}.`);
+  if (!sameBase) return false;
+  if (assumptionRef.version && writeRef.version) return assumptionRef.version !== writeRef.version;
+  if (assumptionRef.version && writeRef.fromVersion) return assumptionRef.version === writeRef.fromVersion;
+  return writeRef.invalidates !== false;
 }
 
 export async function recordAssumption(workspaceSlug, transactionId, body = {}) {

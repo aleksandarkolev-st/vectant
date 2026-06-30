@@ -37,7 +37,9 @@ const { prisma } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     codeSiteAssumptionLease: {
+      create: vi.fn(),
       findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteEvent: {
       count: vi.fn(),
@@ -290,7 +292,25 @@ describe('CodeSite control plane transaction validation', () => {
       expiresAt: null,
       revokedAt: null,
     }));
+    prisma.codeSiteAssumptionLease.create.mockImplementation(async ({ data }) => ({
+      id: 'assumption-created',
+      createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      invalidatedAt: null,
+      invalidatedBy: null,
+      ...data,
+    }));
     prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
+    prisma.codeSiteAssumptionLease.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      ...data,
+    }));
     prisma.codeSiteAgentSession.findFirst.mockResolvedValue({
       id: 'agent-1',
       projectId: 'project-1',
@@ -659,6 +679,91 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('invalidates versioned semantic assumptions when a write changes the depended contract', async () => {
+    const activeAssumption = {
+      id: 'asm-signup-v1',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-2',
+      displayCallsign: 'CLAUDE-17',
+      assumptionKey: 'auth.signup.schema.v1',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      status: 'active',
+      invalidatedBy: null,
+      invalidatedAt: null,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([activeAssumption]);
+    prisma.codeSiteAssumptionLease.update.mockImplementation(async ({ data }) => ({
+      ...activeAssumption,
+      ...data,
+    }));
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      semanticRefs: [{ ref: 'auth.signup.schema', version: 'v2' }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.invalidatedAssumptions).toEqual([
+      expect.objectContaining({
+        id: 'asm-signup-v1',
+        status: 'invalidated',
+        invalidatedBy: 'ATLAS-1',
+      }),
+    ]);
+    expect(prisma.codeSiteAssumptionLease.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'asm-signup-v1' },
+      data: expect.objectContaining({
+        status: 'invalidated',
+        invalidatedBy: 'ATLAS-1',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'assumption_invalidated',
+        detailsJson: expect.stringContaining('auth.signup.schema'),
+      }),
+    }));
+  });
+
+  it('blocks further writes when the transaction has invalidated assumptions', async () => {
+    const staleAssumption = {
+      id: 'asm-stale',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema.v1',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      status: 'invalidated',
+      invalidatedBy: 'SCHEMA-01',
+      invalidatedAt: new Date('2026-06-29T23:03:00.000Z'),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      assumptionRefsJson: JSON.stringify(['asm-stale']),
+    });
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([staleAssumption]);
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.policyDecision.decision).toBe('block');
+    expect(result.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'assumption_invalidated_write_blocked',
+      'rebase_required',
+    ]));
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        observedWriteSetJson: expect.any(String),
+      }),
     }));
   });
 
