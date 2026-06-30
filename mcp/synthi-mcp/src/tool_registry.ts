@@ -145,6 +145,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_get_source_state_since",
   "synthi_codesite_get_radar",
   "synthi_codesite_next_event",
+  "synthi_codesite_get_inbox",
   "synthi_codesite_ack_event",
   "synthi_codesite_predict_collision",
   "synthi_codesite_shadow_merge_simulate",

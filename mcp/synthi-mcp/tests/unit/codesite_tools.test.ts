@@ -80,6 +80,33 @@ describe("CodeSite MCP tool surface", () => {
     );
   });
 
+  it("polls per-agent inbox items separately from project events", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      inbox: [
+        { id: "item-acked", eventId: "evt-1", acknowledgedAt: "2026-06-30T00:00:00.000Z" },
+        { id: "item-open", eventId: "evt-2", acknowledgedAt: null },
+      ],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_inbox", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      agent_session_id: "agent-1",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/agent-sessions/agent-1/inbox"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_get_inbox",
+      next_inbox_item: expect.objectContaining({ id: "item-open" }),
+      inbox_count: 2,
+    }));
+  });
+
   it("maps RFI and mayday tools to structured document and incident routes", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockJsonResponse({ document: { kind: "rfi" } }))

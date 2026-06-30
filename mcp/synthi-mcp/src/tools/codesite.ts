@@ -15,6 +15,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_source_state_since",
   "synthi_codesite_get_radar",
   "synthi_codesite_next_event",
+  "synthi_codesite_get_inbox",
   "synthi_codesite_ack_event",
   "synthi_codesite_predict_collision",
   "synthi_codesite_shadow_merge_simulate",
@@ -151,6 +152,9 @@ export const CODESITE_TOOLS = [
   codeSiteTool("synthi_codesite_next_event", "Poll the next CodeSite event after an optional event id.", {
     since: { type: "string" },
   }, []),
+  codeSiteTool("synthi_codesite_get_inbox", "Poll durable tower-routed inbox items for an agent session.", {
+    agent_session_id: { type: "string" },
+  }, ["agent_session_id"]),
   codeSiteTool("synthi_codesite_ack_event", "Acknowledge an inbox event for an agent session.", {
     agent_session_id: { type: "string" },
     event_id: { type: "string" },
@@ -205,6 +209,21 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
         tool: toolName,
         next_event: events[0] ?? null,
         event_count: events.length,
+        request: response.request,
+      });
+    }
+    if (toolName === "synthi_codesite_get_inbox") {
+      const inbox = Array.isArray(response.data["inbox"]) ? response.data["inbox"] : [];
+      const nextInboxItem = inbox.find((item) => (
+        typeof item === "object"
+        && item !== null
+        && (item as JsonObject)["acknowledgedAt"] == null
+      )) ?? inbox[0] ?? null;
+      return jsonResponse({
+        ok: true,
+        tool: toolName,
+        next_inbox_item: nextInboxItem,
+        inbox_count: inbox.length,
         request: response.request,
       });
     }
@@ -321,6 +340,11 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         method: "GET",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/events`,
         query: optionalString(args["since"]) ? { since: optionalString(args["since"]) as string } : undefined,
+      };
+    case "synthi_codesite_get_inbox":
+      return {
+        method: "GET",
+        path: `/agent-sessions/${encodeURIComponent(requiredString(args, "agent_session_id"))}/inbox`,
       };
     case "synthi_codesite_ack_event":
       return {
