@@ -1429,6 +1429,7 @@ export async function getAgentManifest(workspaceSlug, projectId) {
       'synthi_codesite_ack_event',
       'synthi_codesite_open_transaction',
       'synthi_codesite_validate_transaction',
+      'synthi_codesite_apply_patch',
       'synthi_codesite_predict_collision',
     ],
   };

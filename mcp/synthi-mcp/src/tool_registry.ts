@@ -137,6 +137,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_get_transaction_status",
   "synthi_codesite_preview_transaction",
   "synthi_codesite_dry_run_patch",
+  "synthi_codesite_apply_patch",
   "synthi_codesite_record_assumption",
   "synthi_codesite_record_read",
   "synthi_codesite_record_write",

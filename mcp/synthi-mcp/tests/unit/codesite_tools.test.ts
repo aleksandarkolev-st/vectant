@@ -80,6 +80,88 @@ describe("CodeSite MCP tool surface", () => {
     );
   });
 
+  it("applies patches through collab-server only after CodeSite dry-run approval", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({
+        results: [{ ok: true, transaction: { id: "txn-1" } }],
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        success: true,
+        written: ["synthi/src/app/page.jsx"],
+      }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_apply_patch", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      collab_base_url: "http://collab.test/",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "user-1",
+      files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+      allowedPaths: ["synthi/src/**"],
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/transactions/txn-1/dry-run-patch"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://collab.test/git/acme/write-files-batch"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-codesite-transaction-id": "txn-1",
+          "x-codesite-control-plane-url": "http://localhost:3100/api/workspace/acme/codesite",
+          "x-user-id": "user-1",
+        }),
+      }),
+    );
+    const collabBody = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body));
+    expect(collabBody).toMatchObject({
+      files: [{ path: "synthi/src/app/page.jsx", content: "export default function Page() {}" }],
+      userId: "user-1",
+      codesite: {
+        enforce: true,
+        transactionId: "txn-1",
+        mutationLeaseId: "lease-1",
+        controlPlaneUrl: "http://localhost:3100/api/workspace/acme/codesite",
+        allowedPaths: ["synthi/src/**"],
+        processAncestry: ["mcp:synthi_codesite_apply_patch"],
+      },
+    });
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_apply_patch",
+      apply: expect.objectContaining({ success: true }),
+    }));
+  });
+
+  it("does not apply patches when CodeSite dry-run rejects a write", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      results: [{ ok: false, policyDecision: { decision: "block", reasonCodes: ["outside_clearance_route"] } }],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_apply_patch", {
+      transaction_id: "txn-1",
+      files: [{ path: "secrets/.env", content: "TOKEN=bad" }],
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_patch_policy_denied",
+      transaction_id: "txn-1",
+    }));
+  });
+
   it("polls per-agent inbox items separately from project events", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
       inbox: [

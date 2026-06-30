@@ -7,6 +7,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_transaction_status",
   "synthi_codesite_preview_transaction",
   "synthi_codesite_dry_run_patch",
+  "synthi_codesite_apply_patch",
   "synthi_codesite_record_assumption",
   "synthi_codesite_record_read",
   "synthi_codesite_record_write",
@@ -46,6 +47,7 @@ const CONTROL_ARG_KEYS = new Set([
   "body",
   "bundle_id",
   "codesite_api_base_url",
+  "collab_base_url",
   "cookie",
   "event_id",
   "execution_plan_id",
@@ -58,6 +60,8 @@ const CONTROL_ARG_KEYS = new Set([
   "since",
   "transaction_id",
   "workspace_slug",
+  "user_id",
+  "session_id",
 ]);
 
 const COMMON_PROPERTIES = {
@@ -120,6 +124,18 @@ export const CODESITE_TOOLS = [
     transaction_id: { type: "string" },
     files: { type: "array", items: { type: "object" } },
   }, ["transaction_id"]),
+  codeSiteTool("synthi_codesite_apply_patch", "Apply file patches through collab-server write-files-batch after CodeSite transaction dry-run approval.", {
+    transaction_id: { type: "string" },
+    mutation_lease_id: { type: "string" },
+    files: { type: "array", items: { type: "object" } },
+    collab_base_url: { type: "string" },
+    user_id: { type: "string" },
+    session_id: { type: "string" },
+    displayCallsign: { type: "string" },
+    allowedPaths: { type: "array", items: { type: "string" } },
+    blockedPaths: { type: "array", items: { type: "string" } },
+    allowedTools: { type: "array", items: { type: "string" } },
+  }, ["transaction_id", "files"]),
   codeSiteTool("synthi_codesite_record_assumption", "Record an assumption lease used by a transaction.", {
     transaction_id: { type: "string" },
     assumptionKey: { type: "string" },
@@ -198,6 +214,9 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
   if (!isCodeSiteToolName(toolName)) return null;
   try {
     const input = objectArg(args);
+    if (toolName === "synthi_codesite_apply_patch") {
+      return await dispatchCodeSiteApplyPatch(input);
+    }
     const request = buildCodeSiteRequest(toolName, input);
     if (!request) return errorResponse("codesite_tool_not_implemented", { tool: toolName });
     const response = await callCodeSite(input, request);
@@ -295,6 +314,8 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         path: `/transactions/${encodeURIComponent(requiredString(args, "transaction_id"))}/dry-run-patch`,
         body: bodyFromArgs(args),
       };
+    case "synthi_codesite_apply_patch":
+      return null;
     case "synthi_codesite_record_assumption":
       return {
         method: "POST",
@@ -412,6 +433,125 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
   }
 }
 
+async function dispatchCodeSiteApplyPatch(args: JsonObject): Promise<ToolResponse> {
+  const transactionId = requiredString(args, "transaction_id");
+  const files = filePatchList(args["files"]);
+  if (!files.length) return errorResponse("codesite_patch_files_required");
+
+  const dryRunRequest: CodeSiteRequest = {
+    method: "POST",
+    path: `/transactions/${encodeURIComponent(transactionId)}/dry-run-patch`,
+    body: { files },
+  };
+  const dryRun = await callCodeSite(args, dryRunRequest);
+  if (!("data" in dryRun)) return dryRun;
+
+  const dryRunResults = Array.isArray(dryRun.data["results"]) ? dryRun.data["results"] : [];
+  const denied = dryRunResults.filter((result) => (
+    typeof result === "object"
+    && result !== null
+    && (result as JsonObject)["ok"] === false
+  ));
+  if (denied.length > 0) {
+    return errorResponse("codesite_patch_policy_denied", {
+      transaction_id: transactionId,
+      denied,
+      dry_run: dryRun.data,
+      request: dryRun.request,
+    });
+  }
+
+  const apply = await callCollabWriteFilesBatch(args, files);
+  if (!("data" in apply)) return apply;
+  return jsonResponse({
+    ok: true,
+    tool: "synthi_codesite_apply_patch",
+    dry_run: dryRun.data,
+    apply: apply.data,
+    requests: {
+      dry_run: dryRun.request,
+      apply: apply.request,
+    },
+  });
+}
+
+async function callCollabWriteFilesBatch(args: JsonObject, files: JsonObject[]): Promise<{
+  isError: false;
+  data: JsonObject;
+  request: JsonObject;
+} | ToolResponse> {
+  const workspaceSlug = requiredWorkspaceSlug(args);
+  const transactionId = requiredString(args, "transaction_id");
+  const apiBase = resolveApiBase(args);
+  const collabBase = trimTrailingSlash(
+    optionalString(args["collab_base_url"]) ??
+      envString("SYNTHI_COLLAB_BASE_URL") ??
+      envString("COLLAB_SERVER_URL") ??
+      "http://127.0.0.1:1234"
+  );
+  const url = new URL(`${collabBase}/git/${encodeURIComponent(workspaceSlug)}/write-files-batch`);
+  const token = optionalString(args["auth_token"]) ?? envString("SYNTHI_CODESITE_TOKEN");
+  const cookie = optionalString(args["cookie"]) ?? envString("SYNTHI_CODESITE_COOKIE");
+  const userId = optionalString(args["user_id"]) ?? envString("SYNTHI_CODESITE_USER_ID");
+  const sessionId = optionalString(args["session_id"]) ?? envString("SYNTHI_CODESITE_SESSION_ID");
+  const codesite = {
+    enforce: true,
+    mode: "enforce",
+    workspaceSlug,
+    transactionId,
+    mutationLeaseId: optionalString(args["mutation_lease_id"]) ?? optionalString(args["mutationLeaseId"]),
+    displayCallsign: optionalString(args["displayCallsign"]) ?? optionalString(args["callsign"]),
+    controlPlaneUrl: apiBase,
+    authToken: token,
+    cookie,
+    allowedPaths: stringListArg(args["allowedPaths"] ?? args["allowed_paths"]),
+    blockedPaths: stringListArg(args["blockedPaths"] ?? args["blocked_paths"]),
+    allowedTools: stringListArg(args["allowedTools"] ?? args["allowed_tools"]),
+    processAncestry: ["mcp:synthi_codesite_apply_patch"],
+  };
+  const body: JsonObject = {
+    files,
+    syncToGcs: args["syncToGcs"] !== false && args["sync_to_gcs"] !== false,
+    codesite,
+    ...(userId ? { userId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  };
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+    "x-codesite-mode": "enforce",
+    "x-codesite-transaction-id": transactionId,
+    "x-codesite-control-plane-url": apiBase,
+  };
+  if (token) headers["authorization"] = `Bearer ${token}`;
+  if (cookie) headers["cookie"] = cookie;
+  if (userId) headers["x-user-id"] = userId;
+  if (sessionId) headers["x-session-id"] = sessionId;
+  if (codesite.mutationLeaseId) headers["x-codesite-lease-id"] = codesite.mutationLeaseId;
+  if (codesite.displayCallsign) headers["x-codesite-callsign"] = codesite.displayCallsign;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const data = parseJsonObject(text);
+  const requestSummary = {
+    method: "POST",
+    path: `/git/${workspaceSlug}/write-files-batch`,
+    url: url.toString(),
+  };
+  if (!response.ok) {
+    return errorResponse("codesite_collab_patch_apply_failed", {
+      status: response.status,
+      request: requestSummary,
+      response: data,
+    });
+  }
+  return { isError: false, data, request: requestSummary };
+}
+
 async function callCodeSite(args: JsonObject, request: CodeSiteRequest): Promise<{
   isError: false;
   data: JsonObject;
@@ -515,6 +655,20 @@ function objectArg(args: unknown): JsonObject {
 function objectOpt(value: unknown): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as JsonObject;
+}
+
+function filePatchList(value: unknown): JsonObject[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is JsonObject => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({ ...item }));
+}
+
+function stringListArg(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
 }
 
 function requiredString(args: JsonObject, field: string): string {
