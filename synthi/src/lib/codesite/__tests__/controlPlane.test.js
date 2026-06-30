@@ -1009,6 +1009,36 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('does not invalidate an assumption when writing a declared consumer path', async () => {
+    const activeAssumption = {
+      id: 'asm-consumer',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema.v2',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v2' }]),
+      usedByJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      status: 'active',
+      invalidatedBy: null,
+      invalidatedAt: null,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([activeAssumption]);
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.invalidatedAssumptions).toEqual([]);
+    expect(prisma.codeSiteAssumptionLease.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'assumption_invalidated',
+      }),
+    }));
+  });
+
   it('blocks further writes when the transaction has invalidated assumptions', async () => {
     const staleAssumption = {
       id: 'asm-stale',

@@ -1267,11 +1267,11 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
 }
 
 function assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs }) {
-  const assumptionRefs = [...dependsOn, ...usedBy];
-  if (assumptionRefs.some((item) => assumptionPathMatchesWrite(item, path))) return true;
+  void usedBy;
+  if (dependsOn.some((item) => assumptionPathMatchesWrite(item, path))) return true;
   const writeSignals = normalizeSemanticRefs(semanticDependencyRefs);
   if (!writeSignals.length) return false;
-  const assumptionSignals = normalizeSemanticRefs(assumptionRefs);
+  const assumptionSignals = normalizeSemanticRefs(dependsOn);
   return assumptionSignals.some((assumptionRef) => writeSignals.some((writeRef) => semanticRefsConflict(assumptionRef, writeRef)));
 }
 
