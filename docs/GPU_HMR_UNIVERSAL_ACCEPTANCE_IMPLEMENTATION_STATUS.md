@@ -26,6 +26,19 @@ npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed, gpu-validatio
 
 The large ROCm ML rows remain refusal evidence only. The broad matrix proof is a recomputed validation-matrix generalization claim over strict rows and adversarial refusals; it does not authorize MIOpen, Composable Kernel, hipBLASLt, HIPRT no-shim apps, Bevy, CUDA, or arbitrary engine-owned pipeline caches without their own runtime boundary, output-oracle, firewall, and strict ledger closure.
 
+## 2026-06-30 Real ROCm Runtime-Adapter Lifecycle Finalizer
+
+Declared `runtimeAdapter.runWhen=after_lifecycle_attempt` adapters now have a finalizer execution slot before runtime evidence collection when the normal run path exits early and no `runtime_adapter_execution` facet exists. This is keyed only on the generic lifecycle enum and declared/enabled adapter state; non-finalizer lifecycle slots, undeclared adapters, and rows that already have an execution facet are skipped.
+
+The purpose is to preserve fail-closed adapter/result/event-manifest evidence for large ROCm lifecycle failures such as configure, build, or metadata collection errors. The facet remains support/refusal evidence only: adapter command success, copied result manifests, copied event manifests, boundary lines, and template identity still cannot authorize GPU HMR without the normal strict runtime proof artifact, recomputed ledger, runtime-chain closure, artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, and row-safety gates.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed, including lifecycle-finalizer eligibility checks; POSIX template execution self-checks remain skipped fail-closed on this Windows host with EPERM
+```
+
 ## 2026-06-30 OpenCL Host Runtime And Matrix Refresh
 
 OpenCL now has scoped live full-runtime compute/readback proof on this Windows host through a generic host-local OpenCL transport. The runtime proof still first attempts the worker-container path; when that path is structurally unavailable because the container has no usable OpenCL ICD/platform, the runner can execute a temporary PowerShell `Add-Type` probe that binds `OpenCL.dll`, builds before/after OpenCL C programs, dispatches `synthi_opencl_epoch_kernel` through `clEnqueueNDRangeKernel`, reads raw output bytes through `clEnqueueReadBuffer`, and emits the same runtime trace/readback artifacts used by the existing strict proof ledger.

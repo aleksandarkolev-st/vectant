@@ -6004,6 +6004,24 @@ exit 0
   return facet;
 }
 
+function shouldExecuteRuntimeAdapterInFinalizer(adapter = CFG.runtimeAdapter) {
+  if (!adapter?.declared || adapter.enabled !== true) return false;
+  if ((adapter.runWhen ?? adapter.run_when ?? 'after_upstream_run') !== 'after_lifecycle_attempt') {
+    return false;
+  }
+  return !runtimeAdapterExecutionDeclaredOrPresent(report.real_rocm_runtime_adapter_execution);
+}
+
+async function executeRuntimeAdapterInFinalizerIfNeeded() {
+  if (!shouldExecuteRuntimeAdapterInFinalizer()) return null;
+  record(
+    'real ROCm runtime adapter finalizer execution',
+    'warn',
+    'after_lifecycle_attempt adapter had no execution facet before final runtime evidence collection',
+  );
+  return executeRuntimeAdapter();
+}
+
 function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
   return Boolean(String(requestedCommit ?? '').trim()) && !localCommitAvailable;
 }
@@ -19848,6 +19866,29 @@ async function selfCheckRuntimeDispatchEvidence() {
     ) {
       throw new Error('runtime adapter lifecycle scheduling self-check failed');
     }
+    CFG.runtimeAdapter = afterLifecycleAttemptAdapter;
+    report.real_rocm_runtime_adapter_execution = null;
+    if (shouldExecuteRuntimeAdapterInFinalizer() !== true) {
+      throw new Error('runtime adapter finalizer self-check skipped after_lifecycle_attempt adapter');
+    }
+    report.real_rocm_runtime_adapter_execution = {
+      declared: true,
+      status: 'runtime_adapter_skipped',
+    };
+    if (shouldExecuteRuntimeAdapterInFinalizer() !== false) {
+      throw new Error('runtime adapter finalizer self-check ignored existing execution facet');
+    }
+    report.real_rocm_runtime_adapter_execution = null;
+    CFG.runtimeAdapter = afterBuildAttemptAdapter;
+    if (shouldExecuteRuntimeAdapterInFinalizer() !== false) {
+      throw new Error('runtime adapter finalizer self-check accepted non-finalizer adapter');
+    }
+    CFG.runtimeAdapter = normalizeRealRocmRuntimeAdapter(null);
+    if (shouldExecuteRuntimeAdapterInFinalizer() !== false) {
+      throw new Error('runtime adapter finalizer self-check accepted undeclared adapter');
+    }
+    report.real_rocm_runtime_adapter_execution = savedRuntimeAdapterExecution;
+    CFG.runtimeAdapter = eventManifestRuntimeAdapter;
     const templateExecutionDir = path.join(LOG_DIR, 'runtime-adapter-template-self-check');
     await rm(templateExecutionDir, { recursive: true, force: true });
     await mkdir(templateExecutionDir, { recursive: true });
@@ -26761,6 +26802,9 @@ if (process.argv.includes('--self-check')) {
           console.error(err);
         });
       }
+      await executeRuntimeAdapterInFinalizerIfNeeded().catch((err) => {
+        record('real ROCm runtime adapter finalizer execution', 'warn', err.stack || err.message);
+      });
       updateRuntimeEvidenceCollectionStatus({ status: 'collecting' });
       await collectRuntimeEvidence(runtimeEvidenceContext)
         .then(() => {
