@@ -732,6 +732,55 @@ if [ "$boundary_tmp_ready" = "1" ]; then
 fi
 exit 0
 `],
+  ['runtime_boundary_event_manifest_v1', `
+event_manifest_path="\${SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH:-}"
+if [ -z "$event_manifest_path" ]; then
+  event_manifest_path="\${SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH:-}"
+fi
+adapter_gap="runtime_adapter_event_manifest_missing"
+manifest_status="missing"
+if [ -n "$event_manifest_path" ] && [ -r "$event_manifest_path" ]; then
+  manifest_status="readable"
+  adapter_gap="runtime_profile_adapter_strict_runtime_proof_not_accepted"
+fi
+if [ -n "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" ]; then
+  mkdir -p "$(dirname "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH")"
+  if [ "$manifest_status" = "readable" ]; then
+    cat "$event_manifest_path" > "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH"
+  else
+    cat > "$SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH" <<EOF
+{
+  "schemaVersion": "synthi.gpu_hmr.runtime_profile_adapter_result.v1",
+  "profileId": "\${SYNTHI_REAL_ROCM_PROFILE_ID}",
+  "profile_id": "\${SYNTHI_REAL_ROCM_PROFILE_ID}",
+  "adapterTemplate": "runtime_boundary_event_manifest_v1",
+  "adapter_template": "runtime_boundary_event_manifest_v1",
+  "acceptedForGpuHmr": false,
+  "accepted_for_gpu_hmr": false,
+  "gpuHmrSuccess": false,
+  "gpu_hmr_success": false,
+  "canSatisfyRuntimeProof": false,
+  "can_satisfy_runtime_proof": false,
+  "strictRuntimeProofAccepted": false,
+  "strict_runtime_proof_accepted": false,
+  "strictRuntimeProofArtifactPresent": false,
+  "strict_runtime_proof_artifact_present": false,
+  "proofLedgerPresent": false,
+  "proof_ledger_present": false,
+  "runtimeBoundaryEvents": [],
+  "runtime_boundary_events": [],
+  "blockingGaps": ["$adapter_gap"],
+  "blocking_gaps": ["$adapter_gap"]
+}
+EOF
+  fi
+fi
+if [ "$manifest_status" = "readable" ]; then
+  grep -F "[gpu-runtime-boundary]" "$event_manifest_path" 2>/dev/null || true
+fi
+printf '[synthi-runtime-adapter] template=runtime_boundary_event_manifest_v1 manifest_status=%s manifest_path=%s result_path=%s\\n' "$manifest_status" "$event_manifest_path" "\${SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH:-none}"
+exit 0
+`],
 ]);
 
 function runtimeAdapterTemplateCommand(template) {
@@ -773,6 +822,15 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
       ?? adapter.adapterResultPath
       ?? adapter.adapter_result_path,
     'runtimeAdapter.resultPath',
+  );
+  const eventManifestPath = normalizeRuntimeAdapterRelativePath(
+    adapter.eventManifestPath
+      ?? adapter.event_manifest_path
+      ?? adapter.runtimeBoundaryEventManifestPath
+      ?? adapter.runtime_boundary_event_manifest_path
+      ?? adapter.boundaryEventManifestPath
+      ?? adapter.boundary_event_manifest_path,
+    'runtimeAdapter.eventManifestPath',
   );
   const timeoutMs = optionalProfileNumber(
     adapter.timeoutMs ?? adapter.timeout_ms,
@@ -830,6 +888,8 @@ function normalizeRealRocmRuntimeAdapter(rawAdapter) {
     working_directory: workingDirectory,
     resultPath,
     result_path: resultPath,
+    eventManifestPath,
+    event_manifest_path: eventManifestPath,
     timeoutMs: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
     timeout_ms: timeoutMs !== null ? Math.max(1000, Math.trunc(timeoutMs)) : 300000,
     runWhen,
@@ -4249,6 +4309,17 @@ function runtimeAdapterWorkerResultPath(rawPath = runtimeAdapterDeclaredResultPa
   return `${CFG.workerRepoPath}/${normalized}`;
 }
 
+function runtimeAdapterWorkerEventManifestPath(adapter = CFG.runtimeAdapter) {
+  const normalized = String(adapter?.eventManifestPath ?? adapter?.event_manifest_path ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+  if (!normalized || normalized === '.') return '';
+  const parts = normalized.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) return '';
+  return `${CFG.workerRepoPath}/${normalized}`;
+}
+
 function runtimeAdapterMetric(timings, key) {
   const escaped = String(key ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`\\b${escaped}=([^\\s]+)\\b`).exec(String(timings ?? ''));
@@ -4579,6 +4650,7 @@ async function executeRuntimeAdapter() {
   const workingDirectory = runtimeAdapterWorkerDirectory(adapter);
   const adapterResultPath = runtimeAdapterDeclaredResultPath(adapter);
   const adapterWorkerResultPath = runtimeAdapterWorkerResultPath(adapterResultPath);
+  const adapterWorkerEventManifestPath = runtimeAdapterWorkerEventManifestPath(adapter);
   const timeoutSeconds = Math.max(1, Math.ceil(Number(adapter.timeoutMs ?? 300000) / 1000));
   const runLogPath = `${CFG.workerTempDir}/run.log`;
   const adapterLogPath = adapter.appendRunLog === false
@@ -4617,6 +4689,8 @@ else
     export SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE_PATH=${shQuote(WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH)}
     export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
     export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_RESULT_PATH=${shQuote(adapterWorkerResultPath)}
+    export SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH=${shQuote(adapterWorkerEventManifestPath)}
+    export SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH=${shQuote(adapterWorkerEventManifestPath)}
     if [ -n ${shQuote(adapterWorkerResultPath)} ]; then
       mkdir -p "$(dirname ${shQuote(adapterWorkerResultPath)})"
     fi
@@ -17560,6 +17634,14 @@ async function selfCheckRuntimeDispatchEvidence() {
       resultPath: '.gpu-hmr-test-logs/runtime-adapter-results/self-check.json',
       runWhen: 'after_lifecycle_attempt',
     });
+    const eventManifestRuntimeAdapter = normalizeRealRocmRuntimeAdapter({
+      enabled: true,
+      template: 'runtime_boundary_event_manifest_v1',
+      workingDirectory: '.',
+      resultPath: '.gpu-hmr-test-logs/runtime-adapter-results/event-manifest-self-check.json',
+      eventManifestPath: '.gpu-hmr-test-logs/runtime-adapter-events/event-manifest.json',
+      runWhen: 'after_lifecycle_attempt',
+    });
     if (
       afterBuildAttemptAdapter.requiresSuccessfulBuild !== false
       || runtimeAdapterSkipReasonForPhase(afterBuildAttemptAdapter, failedBuildPhase) !== null
@@ -17575,6 +17657,15 @@ async function selfCheckRuntimeDispatchEvidence() {
       || !templatedRuntimeAdapter.command.includes('"runtimeBoundaryLines"')
       || !templatedRuntimeAdapter.command.includes('"adapterRuntimeBoundaryLines"')
       || !templatedRuntimeAdapter.command.includes('runtime_adapter_template_boundary_json_unavailable')
+      || eventManifestRuntimeAdapter.template !== 'runtime_boundary_event_manifest_v1'
+      || eventManifestRuntimeAdapter.eventManifestPath
+        !== '.gpu-hmr-test-logs/runtime-adapter-events/event-manifest.json'
+      || eventManifestRuntimeAdapter.event_manifest_path
+        !== '.gpu-hmr-test-logs/runtime-adapter-events/event-manifest.json'
+      || !eventManifestRuntimeAdapter.command.includes(
+        'SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH',
+      )
+      || !eventManifestRuntimeAdapter.command.includes('runtime_boundary_event_manifest_v1')
     ) {
       throw new Error('runtime adapter lifecycle scheduling self-check failed');
     }
@@ -17632,6 +17723,71 @@ async function selfCheckRuntimeDispatchEvidence() {
     } finally {
       await rm(templateExecutionDir, { recursive: true, force: true });
     }
+    const eventManifestTemplateDir = path.join(LOG_DIR, 'runtime-adapter-event-manifest-template-self-check');
+    await rm(eventManifestTemplateDir, { recursive: true, force: true });
+    await mkdir(eventManifestTemplateDir, { recursive: true });
+    const eventManifestPath = path.join(eventManifestTemplateDir, 'event-manifest.json');
+    const eventManifestResultPath = path.join(eventManifestTemplateDir, 'adapter-result.json');
+    await writeFile(eventManifestPath, `${JSON.stringify({
+      schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
+      profileId: 'runtime-adapter-event-manifest-template-self-check',
+      profile_id: 'runtime-adapter-event-manifest-template-self-check',
+      adapterTemplate: 'runtime_boundary_event_manifest_v1',
+      adapter_template: 'runtime_boundary_event_manifest_v1',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      strictRuntimeProofAccepted: false,
+      strict_runtime_proof_accepted: false,
+      runtimeBoundaryEvents: structuredAdapterRuntimeBoundaryEvents,
+      runtime_boundary_events: structuredAdapterRuntimeBoundaryEvents,
+      blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+      blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+    }, null, 2)}\n`);
+    try {
+      const eventManifestTemplateOutput = await execText(
+        'sh',
+        ['-lc', eventManifestRuntimeAdapter.command],
+        30000,
+        true,
+        {
+          cwd: eventManifestTemplateDir,
+          env: {
+            ...process.env,
+            SYNTHI_REAL_ROCM_PROFILE_ID: 'runtime-adapter-event-manifest-template-self-check',
+            SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH: eventManifestPath,
+            SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_RESULT_PATH: eventManifestResultPath,
+          },
+        },
+      );
+      const eventManifestResult = JSON.parse(await readFile(eventManifestResultPath, 'utf8'));
+      if (
+        !String(eventManifestTemplateOutput ?? '').includes('runtime_boundary_event_manifest_v1')
+        || eventManifestResult.adapterTemplate !== 'runtime_boundary_event_manifest_v1'
+        || eventManifestResult.runtimeBoundaryEvents?.length !== structuredAdapterRuntimeBoundaryEvents.length
+        || eventManifestResult.runtime_boundary_events?.length !== structuredAdapterRuntimeBoundaryEvents.length
+        || eventManifestResult.acceptedForGpuHmr !== false
+        || eventManifestResult.gpuHmrSuccess !== false
+        || eventManifestResult.canSatisfyRuntimeProof !== false
+      ) {
+        throw new Error('runtime adapter event-manifest template execution failed support-only copy check');
+      }
+    } catch (err) {
+      if (['EACCES', 'ENOENT', 'EPERM'].includes(err?.code)) {
+        record(
+          'runtime adapter event-manifest template execution self-check',
+          'warn',
+          `skipped because POSIX sh is unavailable or blocked on this host (${err.code})`,
+        );
+      } else {
+        throw err;
+      }
+    } finally {
+      await rm(eventManifestTemplateDir, { recursive: true, force: true });
+    }
     let rejectedUnknownTemplate = false;
     try {
       normalizeRealRocmRuntimeAdapter({
@@ -17655,6 +17811,19 @@ async function selfCheckRuntimeDispatchEvidence() {
     }
     if (!rejectedMissingCommandAndTemplate) {
       throw new Error('runtime adapter accepted missing command and template');
+    }
+    let rejectedUnsafeEventManifestPath = false;
+    try {
+      normalizeRealRocmRuntimeAdapter({
+        enabled: true,
+        template: 'runtime_boundary_event_manifest_v1',
+        eventManifestPath: '../event-manifest.json',
+      });
+    } catch {
+      rejectedUnsafeEventManifestPath = true;
+    }
+    if (!rejectedUnsafeEventManifestPath) {
+      throw new Error('runtime adapter accepted unsafe event manifest path');
     }
     let rejectedUnknownRunWhen = false;
     try {

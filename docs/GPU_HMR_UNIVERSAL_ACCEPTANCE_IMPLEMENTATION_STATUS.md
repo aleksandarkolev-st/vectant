@@ -4,6 +4,24 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Runtime-Adapter Event Manifest Template
+
+Real ROCm runtime adapters now support a generic structured event-manifest path. A profile or env-declared `runtimeAdapter` can provide repo-relative `eventManifestPath` / `event_manifest_path`, which the runner validates with the same no-traversal relative path rules as adapter result paths and exports into the worker as `SYNTHI_REAL_ROCM_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH` plus the `SYNTHI_GPU_HMR_RUNTIME_ADAPTER_EVENT_MANIFEST_PATH` alias.
+
+A new packaged `runtime_boundary_event_manifest_v1` adapter template publishes that manifest to the configured adapter result path without requiring inline project-specific shell commands. This lets arbitrary projects provide a structured `synthi.gpu_hmr.runtime_profile_adapter_result.v1` manifest containing typed runtime-boundary events and app-hook evidence. The copied manifest is not proof authority: bridge import, structured event materialization, stage-events, runtime-chain closure, output oracle, firewall, strict runtime proof artifact, and proof-ledger gates still recompute the evidence and reject any success-authority claims.
+
+The existing large ROCm ML profiles remain on the generic `runtime_boundary_log_harvest_v1` template and still report strict refusals until real target-process artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, and accepted strict runtime proof are observed.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; POSIX shell execution of adapter templates skipped on this host, but template normalization, structured bridge import, unsafe event-manifest path rejection, and support-only authority checks passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:status-docs:self-check -> passed before this documentation update; retained matrix still reports 56 rows, 14 scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows
+```
+
 ## 2026-06-30 Structured Runtime-Adapter Event Materialization
 
 Runtime-profile adapter result manifests can now emit typed `synthi.gpu_hmr.runtime_boundary_event.v1` objects through `runtimeBoundaryEvents`, `runtime_boundary_events`, `adapterRuntimeBoundaryEvents`, or `adapter_runtime_boundary_events`. The real ROCm runner materializes recognized event kinds into canonical `[gpu-runtime-boundary]` lines and then sends those lines through the existing artifact-transport, epoch-publication, dispatch, host-identity, output-oracle, stage-events, adapter-result bridge, and validation-matrix parsers.
