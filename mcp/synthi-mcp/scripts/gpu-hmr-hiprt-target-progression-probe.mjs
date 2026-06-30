@@ -38,6 +38,8 @@ const DEFAULT_DELTA_FROM = 'buffer_d[x] *= buffer_c[x];';
 const DEFAULT_DELTA_TO = 'buffer_d[x] *= buffer_c[x] + 1.0f;';
 const LEDGER_SCHEMA_VERSION = 'synthi.real_rocm.target_progression_ledger.v1';
 const PROOF_SCHEMA_VERSION = 'synthi.hiprt.target_progression_probe.v1';
+const PROOF_AUTHORITY = 'hiprt_target_progression_evidence_only_not_gpu_hmr_acceptance';
+const LEDGER_AUTHORITY = 'target_progression_ledger_evidence_only_not_gpu_hmr_acceptance';
 
 function cleanIdentifier(value) {
   return String(value || 'probe')
@@ -415,6 +417,18 @@ function buildLedgerEntries({
     .filter((artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact));
   const base = {
     schemaVersion: 'synthi.real_rocm.target_progression_ledger_entry.v1',
+    proofAuthority: LEDGER_AUTHORITY,
+    proof_authority: LEDGER_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyFinalGpuHmrAcceptance: false,
+    can_satisfy_final_gpu_hmr_acceptance: false,
+    targetProgressionEvidenceOnly: true,
+    target_progression_evidence_only: true,
     targetName,
     finalAcceptanceTarget,
     status: 'pass',
@@ -527,6 +541,11 @@ async function selfCheck() {
       visualArtifact?.contentHash !== expectedVisualHash
       || !entries[0].visualEvidenceContentHashes.includes(expectedVisualHash)
       || entries[0].visualEvidenceAcceptedCount !== 1
+      || entries[0].proofAuthority !== LEDGER_AUTHORITY
+      || entries[0].acceptedForGpuHmr !== false
+      || entries[0].gpuHmrSuccess !== false
+      || entries[0].canSatisfyRuntimeProof !== false
+      || entries[0].targetProgressionEvidenceOnly !== true
     ) {
       throw new Error('self-check target progression ledger did not hash visual file bytes');
     }
@@ -730,6 +749,28 @@ async function main() {
   const generatedAt = new Date().toISOString();
   const proofSeed = {
     schemaVersion: PROOF_SCHEMA_VERSION,
+    proofAuthority: PROOF_AUTHORITY,
+    proof_authority: PROOF_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyFinalGpuHmrAcceptance: false,
+    can_satisfy_final_gpu_hmr_acceptance: false,
+    targetProgressionEvidenceOnly: true,
+    target_progression_evidence_only: true,
+    acceptanceLimitations: [
+      'target_progression_probe_not_final_gpu_hmr_acceptance',
+      'hiprt_application_scene_bvh_framebuffer_reload_hook_not_proven',
+      'strict_full_runtime_gpu_hmr_ledger_not_emitted_by_this_probe',
+    ],
+    acceptance_limitations: [
+      'target_progression_probe_not_final_gpu_hmr_acceptance',
+      'hiprt_application_scene_bvh_framebuffer_reload_hook_not_proven',
+      'strict_full_runtime_gpu_hmr_ledger_not_emitted_by_this_probe',
+    ],
     slug,
     generatedAt,
     repoPath,
@@ -855,6 +896,18 @@ async function main() {
   });
   const ledgerSeed = {
     schemaVersion: LEDGER_SCHEMA_VERSION,
+    proofAuthority: LEDGER_AUTHORITY,
+    proof_authority: LEDGER_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyFinalGpuHmrAcceptance: false,
+    can_satisfy_final_gpu_hmr_acceptance: false,
+    targetProgressionEvidenceOnly: true,
+    target_progression_evidence_only: true,
     sourceRun: {
       slug,
       targetName,
