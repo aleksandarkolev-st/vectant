@@ -80,6 +80,28 @@ function optionalStringMap(value, field) {
   return out;
 }
 
+function optionalObject(value, field) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be an object`);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function optionalObjectList(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be an array of objects`);
+  }
+  return value.map((item, index) => {
+    const normalized = optionalObject(item, `${field}[${index}]`);
+    if (!normalized) {
+      throw new Error(`runtime profile ${field}[${index}] must be an object`);
+    }
+    return normalized;
+  });
+}
+
 function optionalBoolean(value, field) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'boolean') {
@@ -291,6 +313,21 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       capabilities: Array.isArray(adapter.capabilities)
         ? adapter.capabilities.map((item, index) => nonEmptyString(item, `adapter.capabilities[${index}]`))
         : [],
+      runtimeBoundaryEvents: optionalObjectList(
+        adapter.runtimeBoundaryEvents ?? adapter.runtime_boundary_events,
+        'adapter.runtimeBoundaryEvents',
+      ),
+      runtimeBoundaryEventManifestPath: optionalString(
+        adapter.runtimeBoundaryEventManifestPath
+          ?? adapter.runtime_boundary_event_manifest_path
+          ?? adapter.eventManifestPath
+          ?? adapter.event_manifest_path,
+        'adapter.runtimeBoundaryEventManifestPath',
+      )?.replace(/\\/g, '/') ?? null,
+      runtimeBoundaryAppHook: optionalObject(
+        adapter.runtimeBoundaryAppHook ?? adapter.runtime_boundary_app_hook,
+        'adapter.runtimeBoundaryAppHook',
+      ),
     },
     runtime: {
       targetName,

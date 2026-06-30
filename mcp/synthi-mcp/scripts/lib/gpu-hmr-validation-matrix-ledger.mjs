@@ -4685,6 +4685,71 @@ function declaredScopeEvidenceFacet({
   };
 }
 
+const HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION =
+  'synthi.gpu_hmr.hiprt_runtime_boundary_app_hook.v1';
+const HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
+
+function runtimeBoundaryAppHookDisclosureAccepted(disclosure = {}) {
+  const hook = compactObject(
+    disclosure.runtimeBoundaryAppHook
+      ?? disclosure.runtime_boundary_app_hook,
+  );
+  const stageResults = compactObject(hook.stageResults ?? hook.stage_results);
+  const stageFailures = HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.filter((stage) =>
+    compactObject(stageResults[stage]).accepted !== true);
+  const authorityClaims = [
+    hook.acceptedForGpuHmr,
+    hook.accepted_for_gpu_hmr,
+    hook.gpuHmrSuccess,
+    hook.gpu_hmr_success,
+    hook.canSatisfyRuntimeProof,
+    hook.can_satisfy_runtime_proof,
+    hook.canSatisfyDispatchProof,
+    hook.can_satisfy_dispatch_proof,
+  ].some((value) => firstBool(value) === true);
+  const evidenceRefs = compactStringList(hook.evidenceRefs ?? hook.evidence_refs);
+  const accepted =
+    Object.keys(hook).length > 0
+    && firstText(hook.schemaVersion, hook.schema_version) === HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION
+    && firstText(hook.proofAuthority, hook.proof_authority) === 'hiprt_runtime_boundary_events_not_gpu_hmr_success'
+    && hook.accepted === true
+    && firstBool(hook.acceptedAsAppHookEvidence, hook.accepted_as_app_hook_evidence) === true
+    && authorityClaims === false
+    && stageFailures.length === 0
+    && evidenceRefs.length >= HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.length;
+  return {
+    present: Object.keys(hook).length > 0,
+    accepted,
+    hook,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: compactStringList([
+      Object.keys(hook).length > 0 ? null : 'runtime_boundary_app_hook_missing',
+      firstText(hook.schemaVersion, hook.schema_version) === HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION
+        ? null
+        : 'runtime_boundary_app_hook_schema_invalid',
+      firstText(hook.proofAuthority, hook.proof_authority) === 'hiprt_runtime_boundary_events_not_gpu_hmr_success'
+        ? null
+        : 'runtime_boundary_app_hook_authority_invalid',
+      hook.accepted === true ? null : 'runtime_boundary_app_hook_not_accepted',
+      firstBool(hook.acceptedAsAppHookEvidence, hook.accepted_as_app_hook_evidence) === true
+        ? null
+        : 'runtime_boundary_app_hook_evidence_not_accepted',
+      authorityClaims ? 'runtime_boundary_app_hook_claimed_gpu_hmr_authority' : null,
+      ...stageFailures.map((stage) => `runtime_boundary_app_hook_stage_${stage}_not_accepted`),
+      evidenceRefs.length >= HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.length
+        ? null
+        : 'runtime_boundary_app_hook_evidence_refs_incomplete',
+    ]),
+  };
+}
+
 function runtimeProbeInstrumentationDisclosureFacet(...sources) {
   const disclosure = compactObject(sources.find((source) => Object.keys(compactObject(source)).length > 0));
   const sourceAdaptations = compactStringList(
@@ -4716,28 +4781,47 @@ function runtimeProbeInstrumentationDisclosureFacet(...sources) {
     disclosure.adapted_or_already_present,
   );
   const present = Object.keys(disclosure).length > 0;
-  const accepted =
+  const kind = firstText(disclosure.kind);
+  const instrumentationKind = firstText(disclosure.instrumentationKind, disclosure.instrumentation_kind);
+  const adapterFamilyPresent = Boolean(firstText(disclosure.adapterFamily, disclosure.adapter_family));
+  const proofAuthorityPresent = Boolean(firstText(disclosure.proofAuthority, disclosure.proof_authority));
+  const executionBoundaryPresent = Boolean(firstText(disclosure.executionBoundary, disclosure.execution_boundary));
+  const unsupportedWithoutEvidencePresent = compactStringList(
+    disclosure.unsupportedWithoutEvidence
+      ?? disclosure.unsupported_without_evidence
+  ).length > 0;
+  const commonAccepted =
     present
     && disclosure.accepted === true
-    && firstText(disclosure.kind) === 'declared_profile_probe_instrumentation'
-    && firstText(disclosure.instrumentationKind, disclosure.instrumentation_kind) === 'profile_probe_instrumentation'
-    && Boolean(firstText(disclosure.adapterFamily, disclosure.adapter_family))
-    && Boolean(firstText(disclosure.proofAuthority, disclosure.proof_authority))
-    && Boolean(firstText(disclosure.executionBoundary, disclosure.execution_boundary))
+    && adapterFamilyPresent
+    && proofAuthorityPresent
+    && executionBoundaryPresent
     && scope === 'hiprt_declared_visual_profile'
-    && sourceAdaptations.length > 0
-    && adaptedOrAlreadyPresent === true
     && arbitraryTargetAccepted === false
     && arbitraryLibraryAccepted === false
     && broadApplicationAccepted === false
-    && compactStringList(
-      disclosure.unsupportedWithoutEvidence
-      ?? disclosure.unsupported_without_evidence
-    ).length > 0;
+    && unsupportedWithoutEvidencePresent;
+  const sourceAdaptedDisclosure =
+    kind === 'declared_profile_probe_instrumentation'
+    && instrumentationKind === 'profile_probe_instrumentation'
+    && sourceAdaptations.length > 0
+    && adaptedOrAlreadyPresent === true;
+  const appHookDisclosure = runtimeBoundaryAppHookDisclosureAccepted(disclosure);
+  const runtimeBoundaryAppHookDisclosure =
+    kind === 'declared_runtime_boundary_app_hook'
+    && instrumentationKind === 'runtime_boundary_app_hook'
+    && sourceAdaptations.length === 0
+    && adaptedOrAlreadyPresent === false
+    && appHookDisclosure.accepted === true;
+  const accepted =
+    commonAccepted
+    && (sourceAdaptedDisclosure || runtimeBoundaryAppHookDisclosure);
   return {
     present,
     accepted,
     disclosure,
+    runtimeBoundaryAppHook: appHookDisclosure,
+    runtime_boundary_app_hook: appHookDisclosure,
     sourceAdaptations,
     source_adaptations: sourceAdaptations,
     scope,
@@ -4752,32 +4836,25 @@ function runtimeProbeInstrumentationDisclosureFacet(...sources) {
     failedGates: compactStringList([
       present ? null : 'runtime_probe_instrumentation_disclosure_missing',
       disclosure.accepted === true ? null : 'runtime_probe_instrumentation_disclosure_not_accepted',
-      firstText(disclosure.kind) === 'declared_profile_probe_instrumentation'
+      sourceAdaptedDisclosure || runtimeBoundaryAppHookDisclosure
         ? null
-        : 'runtime_probe_instrumentation_kind_not_declared',
-      firstText(disclosure.instrumentationKind, disclosure.instrumentation_kind) === 'profile_probe_instrumentation'
-        ? null
-        : 'runtime_probe_instrumentation_type_not_profile_probe',
-      firstText(disclosure.adapterFamily, disclosure.adapter_family)
-        ? null
-        : 'runtime_probe_instrumentation_adapter_family_missing',
-      firstText(disclosure.proofAuthority, disclosure.proof_authority)
-        ? null
-        : 'runtime_probe_instrumentation_authority_missing',
-      firstText(disclosure.executionBoundary, disclosure.execution_boundary)
-        ? null
-        : 'runtime_probe_instrumentation_execution_boundary_missing',
+        : 'runtime_probe_instrumentation_kind_or_type_not_supported',
+      adapterFamilyPresent ? null : 'runtime_probe_instrumentation_adapter_family_missing',
+      proofAuthorityPresent ? null : 'runtime_probe_instrumentation_authority_missing',
+      executionBoundaryPresent ? null : 'runtime_probe_instrumentation_execution_boundary_missing',
       scope === 'hiprt_declared_visual_profile'
         ? null
         : 'runtime_probe_instrumentation_scope_not_hiprt_declared_visual_profile',
-      sourceAdaptations.length > 0 ? null : 'runtime_probe_source_adaptations_missing',
-      adaptedOrAlreadyPresent === true ? null : 'runtime_probe_source_adaptations_not_applied',
+      sourceAdaptedDisclosure || runtimeBoundaryAppHookDisclosure
+        ? null
+        : 'runtime_probe_instrumentation_required_shape_missing',
       arbitraryTargetAccepted === false ? null : 'runtime_probe_claims_arbitrary_target_acceptance',
       arbitraryLibraryAccepted === false ? null : 'runtime_probe_claims_arbitrary_library_acceptance',
       broadApplicationAccepted === false ? null : 'runtime_probe_claims_broad_application_acceptance',
-      compactStringList(disclosure.unsupportedWithoutEvidence ?? disclosure.unsupported_without_evidence).length > 0
-        ? null
-        : 'runtime_probe_unsupported_without_evidence_missing',
+      unsupportedWithoutEvidencePresent ? null : 'runtime_probe_unsupported_without_evidence_missing',
+      ...(runtimeBoundaryAppHookDisclosure || kind !== 'declared_runtime_boundary_app_hook'
+        ? []
+        : appHookDisclosure.failedGates),
     ]),
   };
 }

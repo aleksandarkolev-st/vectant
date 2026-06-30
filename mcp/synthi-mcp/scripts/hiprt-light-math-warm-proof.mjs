@@ -2,6 +2,7 @@
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -21,6 +22,7 @@ import {
   buildGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
+import { collectGpuHmrValidationMatrixLedger } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
 import {
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
@@ -250,6 +252,19 @@ const CFG = {
     PROFILE.negativeEdit ?? null,
     'negative edit',
   ),
+  runtimeBoundaryEvents: parseJsonArrayEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENTS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_RUNTIME_BOUNDARY_EVENTS_JSON,
+    PROFILE.runtimeProfile?.adapter?.runtimeBoundaryEvents ?? [],
+    'runtime boundary events',
+  ),
+  runtimeBoundaryEventManifestPath:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
+    ?? process.env.SYNTHI_HIPRT_WARM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
+    ?? PROFILE.runtimeProfile?.adapter?.runtimeBoundaryEventManifestPath
+    ?? '',
+  runtimeBoundaryAppHook:
+    PROFILE.runtimeProfile?.adapter?.runtimeBoundaryAppHook ?? null,
   allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
   runtimeProfile: PROFILE.runtimeProfile,
 };
@@ -322,6 +337,15 @@ function parseJsonObjectEnv(raw, fallback, label) {
   if (source === null || source === undefined) return null;
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
     throw new Error(`${label} must be a JSON object`);
+  }
+  return source;
+}
+
+function parseJsonArrayEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (source === null || source === undefined) return [];
+  if (!Array.isArray(source)) {
+    throw new Error(`${label} must be a JSON array`);
   }
   return source;
 }
@@ -410,6 +434,30 @@ function stableJson(value) {
 
 function sha256Json(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactStringList(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)));
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (value !== undefined && value !== null && ['number', 'boolean'].includes(typeof value)) {
+      return String(value);
+    }
+  }
+  return '';
+}
+
+function boolTrue(value) {
+  return value === true || String(value ?? '').toLowerCase() === 'true';
 }
 
 async function execText(file, args, options = {}) {
@@ -1436,6 +1484,313 @@ function isSourceAdaptedRuntimeProbeInstrumentation(value) {
     || value?.adapted_or_already_present === true;
 }
 
+function hiprtRuntimeEpochFor({ proof, dispatch }) {
+  return `hiprt-epoch:${proof.slug}:${CFG.reloadKernelSymbol}:${dispatch?.sequence ?? 'unknown'}`;
+}
+
+function hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter }) {
+  return `dispatch:${sha256Json({
+    slug: proof.slug,
+    kernel: CFG.reloadKernelSymbol,
+    sequence: dispatch?.sequence,
+    functionPtr: dispatch?.functionPtr,
+    artifactHashAfter,
+  })}`;
+}
+
+const HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_event.v1';
+const HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION =
+  'synthi.gpu_hmr.hiprt_runtime_boundary_app_hook.v1';
+const HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
+const HIPRT_RUNTIME_BOUNDARY_RESERVED_KEYS = new Set([
+  'schemaVersion',
+  'schema_version',
+  'eventKind',
+  'event_kind',
+  'event',
+  'kind',
+  'stage',
+  'stageKind',
+  'stage_kind',
+  'fields',
+  'boundaryFields',
+  'boundary_fields',
+  'acceptedForGpuHmr',
+  'accepted_for_gpu_hmr',
+  'gpuHmrSuccess',
+  'gpu_hmr_success',
+  'canSatisfyRuntimeProof',
+  'can_satisfy_runtime_proof',
+  'canSatisfyDispatchProof',
+  'can_satisfy_dispatch_proof',
+  'proofAuthority',
+  'proof_authority',
+]);
+
+function hiprtRuntimeBoundaryEventKind(event = {}) {
+  return firstText(
+    event.eventKind,
+    event.event_kind,
+    event.event,
+    event.kind,
+    event.stage,
+    event.stageKind,
+    event.stage_kind,
+  ).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function hiprtRuntimeBoundaryEventFields(event = {}) {
+  if (isPlainObject(event.fields)) return event.fields;
+  if (isPlainObject(event.boundaryFields)) return event.boundaryFields;
+  if (isPlainObject(event.boundary_fields)) return event.boundary_fields;
+  const fields = {};
+  for (const [key, value] of Object.entries(event ?? {})) {
+    if (HIPRT_RUNTIME_BOUNDARY_RESERVED_KEYS.has(key)) continue;
+    fields[key] = value;
+  }
+  return fields;
+}
+
+function hiprtRuntimeBoundaryField(fields = {}, ...keys) {
+  for (const key of keys) {
+    const value = fields[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function hiprtRuntimeBoundaryEventClaimsAuthority(event = {}) {
+  return boolTrue(event.acceptedForGpuHmr)
+    || boolTrue(event.accepted_for_gpu_hmr)
+    || boolTrue(event.gpuHmrSuccess)
+    || boolTrue(event.gpu_hmr_success)
+    || boolTrue(event.canSatisfyRuntimeProof)
+    || boolTrue(event.can_satisfy_runtime_proof)
+    || boolTrue(event.canSatisfyDispatchProof)
+    || boolTrue(event.can_satisfy_dispatch_proof);
+}
+
+function hiprtRuntimeBoundaryEventSchemaAccepted(event = {}) {
+  const schema = firstText(event.schemaVersion, event.schema_version);
+  return !schema || schema === HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION;
+}
+
+function hiprtRuntimeBoundaryAppHookFacet({ events, expected, source = 'profile_runtime_boundary_events' }) {
+  const eventList = Array.isArray(events) ? events.filter(isPlainObject) : [];
+  const stageResults = {};
+  const blockingGaps = [];
+  const eventHashes = [];
+  const eventsByKind = new Map();
+  for (const event of eventList) {
+    const kind = hiprtRuntimeBoundaryEventKind(event);
+    const fields = hiprtRuntimeBoundaryEventFields(event);
+    const eventHash = sha256Json({ kind, fields });
+    eventHashes.push(eventHash);
+    if (!hiprtRuntimeBoundaryEventSchemaAccepted(event)) {
+      blockingGaps.push('hiprt_runtime_boundary_event_schema_unrecognized');
+      continue;
+    }
+    if (hiprtRuntimeBoundaryEventClaimsAuthority(event)) {
+      blockingGaps.push('hiprt_runtime_boundary_event_claimed_gpu_hmr_authority');
+      continue;
+    }
+    if (!HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.includes(kind)) {
+      blockingGaps.push(`hiprt_runtime_boundary_event_kind_unrecognized:${kind || 'missing'}`);
+      continue;
+    }
+    if (!eventsByKind.has(kind)) eventsByKind.set(kind, []);
+    eventsByKind.get(kind).push({ event, fields, eventHash });
+  }
+  for (const stage of HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES) {
+    const candidates = eventsByKind.get(stage) ?? [];
+    const acceptedCandidates = candidates.filter(({ fields }) => {
+      const artifactHash = hiprtRuntimeBoundaryField(fields, 'artifact_hash', 'artifactHash', 'artifact_id', 'artifactId');
+      const epoch = hiprtRuntimeBoundaryField(fields, 'epoch', 'published_epoch', 'publishedEpoch');
+      const processId = hiprtRuntimeBoundaryField(fields, 'process_id', 'processId', 'pid');
+      if (stage === 'artifact_transport') {
+        return artifactHash === expected.artifactHashAfter && processId === expected.processId;
+      }
+      if (stage === 'epoch_publication') {
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && processId === expected.processId;
+      }
+      if (stage === 'dispatch_trace') {
+        const dispatchId = hiprtRuntimeBoundaryField(fields, 'dispatch_id', 'dispatchId', 'after_dispatch_id', 'afterDispatchId');
+        const kernel = hiprtRuntimeBoundaryField(fields, 'kernel_entry', 'kernelEntry', 'kernel_name', 'kernelName');
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && dispatchId === expected.dispatchId
+          && processId === expected.processId
+          && kernel === CFG.reloadKernelSymbol;
+      }
+      if (stage === 'host_identity') {
+        const deviceUuid = hiprtRuntimeBoundaryField(fields, 'device_uuid', 'deviceUuid');
+        const stream = hiprtRuntimeBoundaryField(fields, 'stream', 'queue', 'queue_id', 'queueId');
+        return processId === expected.processId
+          && deviceUuid === expected.deviceUuid
+          && stream === expected.stream;
+      }
+      if (stage === 'output_oracle') {
+        const afterDispatchId = hiprtRuntimeBoundaryField(fields, 'after_dispatch_id', 'afterDispatchId', 'dispatch_id', 'dispatchId');
+        const beforeHash = hiprtRuntimeBoundaryField(fields, 'before_image_hash', 'beforeImageHash');
+        const afterHash = hiprtRuntimeBoundaryField(fields, 'after_image_hash', 'afterImageHash');
+        const diffHash = hiprtRuntimeBoundaryField(fields, 'diff_image_hash', 'diffImageHash');
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && afterDispatchId === expected.dispatchId
+          && processId === expected.processId
+          && beforeHash === expected.visualArtifacts.before_image_hash
+          && afterHash === expected.visualArtifacts.after_image_hash
+          && diffHash === expected.visualArtifacts.diff_image_hash;
+      }
+      return false;
+    });
+    if (acceptedCandidates.length === 0) {
+      blockingGaps.push(`hiprt_runtime_boundary_stage_${stage}_missing_or_mismatched`);
+    }
+    stageResults[stage] = {
+      stage,
+      observed: candidates.length > 0,
+      accepted: acceptedCandidates.length > 0,
+      candidateCount: candidates.length,
+      candidate_count: candidates.length,
+      acceptedCandidateCount: acceptedCandidates.length,
+      accepted_candidate_count: acceptedCandidates.length,
+      eventHashes: candidates.map((candidate) => candidate.eventHash),
+      event_hashes: candidates.map((candidate) => candidate.eventHash),
+    };
+  }
+  const accepted = eventList.length > 0 && blockingGaps.length === 0;
+  return {
+    schemaVersion: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+    schema_version: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+    proofAuthority: 'hiprt_runtime_boundary_events_not_gpu_hmr_success',
+    proof_authority: 'hiprt_runtime_boundary_events_not_gpu_hmr_success',
+    source,
+    accepted,
+    acceptedAsAppHookEvidence: accepted,
+    accepted_as_app_hook_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    eventCount: eventList.length,
+    event_count: eventList.length,
+    eventHashes,
+    event_hashes: eventHashes,
+    stageResults,
+    stage_results: stageResults,
+    missingStages: HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.filter((stage) => stageResults[stage]?.accepted !== true),
+    missing_stages: HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.filter((stage) => stageResults[stage]?.accepted !== true),
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs: eventHashes,
+    evidence_refs: eventHashes,
+  };
+}
+
+function hiprtRuntimeProbeInstrumentationFromAppHook(facet) {
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_runtime_boundary_app_hook',
+    instrumentationKind: 'runtime_boundary_app_hook',
+    instrumentation_kind: 'runtime_boundary_app_hook',
+    adapterFamily: 'hiprt-runtime-boundary-app-hook',
+    adapter_family: 'hiprt-runtime-boundary-app-hook',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    accepted: facet.accepted === true,
+    applied: false,
+    adaptedOrAlreadyPresent: false,
+    adapted_or_already_present: false,
+    sourceAdaptations: [],
+    source_adaptations: [],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    proof_authority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    executionBoundary: 'HIPRT app-emitted runtime boundary events',
+    execution_boundary: 'HIPRT app-emitted runtime boundary events',
+    runtimeBoundaryAppHook: facet,
+    runtime_boundary_app_hook: facet,
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'runtime_boundary_events_missing_or_unmatched',
+    ],
+    unsupported_without_evidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'runtime_boundary_events_missing_or_unmatched',
+    ],
+  };
+}
+
+function resolveRuntimeBoundaryManifestPath(rawPath) {
+  const raw = String(rawPath ?? '').trim();
+  if (!raw) return null;
+  const resolved = path.resolve(path.isAbsolute(raw) ? raw : path.join(REPO_ROOT, raw));
+  const allowedRoots = [REPO_ROOT, CFG.outputDir].map((root) => path.resolve(root));
+  if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))) {
+    throw new Error(`runtime boundary event manifest path must stay inside the workspace or output directory: ${raw}`);
+  }
+  return resolved;
+}
+
+async function loadRuntimeBoundaryEventsFromConfig() {
+  const inlineEvents = Array.isArray(CFG.runtimeBoundaryEvents) ? CFG.runtimeBoundaryEvents : [];
+  const manifestPath = resolveRuntimeBoundaryManifestPath(CFG.runtimeBoundaryEventManifestPath);
+  if (!manifestPath) {
+    return {
+      events: inlineEvents,
+      manifestPath: null,
+      source: inlineEvents.length > 0 ? 'profile_inline_runtime_boundary_events' : 'none',
+    };
+  }
+  const parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  if (
+    boolTrue(parsed.acceptedForGpuHmr)
+    || boolTrue(parsed.accepted_for_gpu_hmr)
+    || boolTrue(parsed.gpuHmrSuccess)
+    || boolTrue(parsed.gpu_hmr_success)
+    || boolTrue(parsed.canSatisfyRuntimeProof)
+    || boolTrue(parsed.can_satisfy_runtime_proof)
+  ) {
+    throw new Error('runtime boundary event manifest must not claim GPU HMR or runtime proof authority');
+  }
+  const manifestEvents = [
+    ...(Array.isArray(parsed.runtimeBoundaryEvents) ? parsed.runtimeBoundaryEvents : []),
+    ...(Array.isArray(parsed.runtime_boundary_events) ? parsed.runtime_boundary_events : []),
+    ...(Array.isArray(parsed.adapterRuntimeBoundaryEvents) ? parsed.adapterRuntimeBoundaryEvents : []),
+    ...(Array.isArray(parsed.adapter_runtime_boundary_events) ? parsed.adapter_runtime_boundary_events : []),
+  ];
+  return {
+    events: [...inlineEvents, ...manifestEvents],
+    manifestPath,
+    source: 'profile_runtime_boundary_event_manifest',
+  };
+}
+
 async function buildHiprtTarget(reason) {
   const localLogPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${reason}-build.log`);
   const script = `
@@ -2101,10 +2456,12 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const shaderArtifact = changedRun.shaderCacheArtifact ?? {};
   const post = changedRun.postRecompileEvidence ?? {};
   const dispatch = post.dispatch ?? {};
-  const runtimeProbeInstrumentation = proof.runtimeProbeInstrumentation ?? proof.runtime_probe_instrumentation ?? {};
-  const sourceAdaptedProfile = isSourceAdaptedRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
-  const sourceAdaptations =
-    sourceAdaptationListFromRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
+  const declaredRuntimeProbeInstrumentation =
+    proof.runtimeProbeInstrumentation ?? proof.runtime_probe_instrumentation ?? {};
+  const declaredSourceAdaptedProfile =
+    isSourceAdaptedRuntimeProbeInstrumentation(declaredRuntimeProbeInstrumentation);
+  const declaredSourceAdaptations =
+    sourceAdaptationListFromRuntimeProbeInstrumentation(declaredRuntimeProbeInstrumentation);
   const artifactHashAfter = shaderArtifact.selectedArtifactHash;
   const artifactHashBefore = shaderArtifact.beforeManifestHash;
   const limitations = [];
@@ -2115,27 +2472,11 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   if (!dispatch.processId) limitations.push({ code: 'hiprt_dispatch_process_id_missing' });
   if (!dispatch.stream) limitations.push({ code: 'hiprt_dispatch_stream_missing' });
   if (!proof.accepted) limitations.push({ code: 'hiprt_visual_proof_not_accepted' });
-  if (runtimeProbeInstrumentation.accepted !== true) {
-    limitations.push({ code: 'hiprt_profile_instrumentation_disclosure_missing' });
-  }
-  if (sourceAdaptedProfile) {
-    limitations.push({
-      code: 'source_adapted_profile_not_no_shim_gpu_hmr',
-      sourceAdaptations,
-      source_adaptations: sourceAdaptations,
-    });
-  }
 
   const processId = dispatch.processId ?? 'unknown-process';
   const stream = dispatch.stream ?? 'unknown-stream';
-  const epoch = `hiprt-epoch:${proof.slug}:${CFG.reloadKernelSymbol}:${dispatch.sequence ?? 'unknown'}`;
-  const dispatchId = `dispatch:${sha256Json({
-    slug: proof.slug,
-    kernel: CFG.reloadKernelSymbol,
-    sequence: dispatch.sequence,
-    functionPtr: dispatch.functionPtr,
-    artifactHashAfter,
-  })}`;
+  const epoch = hiprtRuntimeEpochFor({ proof, dispatch });
+  const dispatchId = hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter });
   const loaderTs = addNs(changedRun.triggerFinishedMonotonicNs ?? monotonicNowNs(), 1);
   const publishTs = addNs(loaderTs, 1);
   const dispatchTs = addNs(publishTs, 1);
@@ -2158,12 +2499,65 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const deterministicVisualModeEvaluation = deterministicVisualMode
     ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
     : null;
+  const runtimeBoundaryEvents = Array.isArray(proof.runtimeBoundaryEvents)
+    ? proof.runtimeBoundaryEvents
+    : (Array.isArray(proof.runtime_boundary_events) ? proof.runtime_boundary_events : []);
+  const runtimeBoundaryAppHook = hiprtRuntimeBoundaryAppHookFacet({
+    events: runtimeBoundaryEvents,
+    expected: {
+      artifactHashAfter,
+      epoch,
+      dispatchId,
+      processId,
+      stream,
+      deviceUuid: `rocm:${CFG.gpuArch}`,
+      visualArtifacts: visualArtifacts ?? {},
+    },
+    source: proof.runtimeBoundaryEventSource ?? proof.runtime_boundary_event_source ?? 'profile_runtime_boundary_events',
+  });
+  const appHookRuntimeProbeInstrumentation =
+    runtimeBoundaryAppHook.accepted === true && declaredSourceAdaptedProfile === false
+      ? hiprtRuntimeProbeInstrumentationFromAppHook(runtimeBoundaryAppHook)
+      : null;
+  const runtimeProbeInstrumentation =
+    appHookRuntimeProbeInstrumentation ?? declaredRuntimeProbeInstrumentation;
+  const sourceAdaptedProfile =
+    declaredSourceAdaptedProfile || isSourceAdaptedRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
+  const sourceAdaptations = compactStringList([
+    ...declaredSourceAdaptations,
+    ...sourceAdaptationListFromRuntimeProbeInstrumentation(runtimeProbeInstrumentation),
+  ]);
+  if (runtimeProbeInstrumentation.accepted !== true) {
+    limitations.push({ code: 'hiprt_profile_instrumentation_disclosure_missing' });
+  }
+  if (runtimeBoundaryEvents.length > 0 && runtimeBoundaryAppHook.accepted !== true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_app_hook_not_accepted',
+      blockingGaps: runtimeBoundaryAppHook.blockingGaps,
+      blocking_gaps: runtimeBoundaryAppHook.blockingGaps,
+    });
+  }
+  if (runtimeBoundaryAppHook.accepted === true && declaredSourceAdaptedProfile === true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_app_hook_ignored_for_source_adapted_profile',
+      sourceAdaptations,
+      source_adaptations: sourceAdaptations,
+    });
+  }
+  if (sourceAdaptedProfile) {
+    limitations.push({
+      code: 'source_adapted_profile_not_no_shim_gpu_hmr',
+      sourceAdaptations,
+      source_adaptations: sourceAdaptations,
+    });
+  }
   const evidenceRefs = [
     `runtime:hiprt:same-process-recompile:${proof.slug}`,
     `runtime:hiprt:shader-cache-delta:${shaderArtifact.selectedArtifactHash ?? 'missing'}`,
     `runtime:hiprt:native-launch:${dispatch.sequence ?? 'missing'}`,
     `visual:hiprt:framebuffer-diff:${proof.diff.contentHash}`,
     `runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`,
+    ...(runtimeBoundaryAppHook.accepted ? runtimeBoundaryAppHook.evidenceRefs : []),
   ];
   const compileRecipeHash = sha256Json({
     source: proof.source.file,
@@ -2493,6 +2887,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     output_oracle_target: contractInput.outputProof.outputOracleTarget,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     runtimeProbeInstrumentation,
+    runtime_boundary_app_hook: runtimeBoundaryAppHook,
+    runtimeBoundaryAppHook,
     metric_clock: 'monotonic_ns',
     metric_scope: CFG.metricScope,
     cache_state: CFG.cacheState,
@@ -2583,6 +2979,11 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
         evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
       },
       {
+        stageId: 'hiprt-runtime-boundary-app-hook',
+        status: runtimeBoundaryEvents.length === 0 || runtimeBoundaryAppHook.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: runtimeBoundaryAppHook.evidenceRefs ?? [],
+      },
+      {
         stageId: 'hiprt-no-source-adapted-profile',
         status: sourceAdaptedProfile ? 'failed' : 'passed',
         evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
@@ -2607,6 +3008,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeBoundaryAppHook,
+    runtime_boundary_app_hook: runtimeBoundaryAppHook,
     shaderCacheArtifact: shaderArtifact,
     shader_cache_artifact: shaderArtifact,
     postRecompileEvidence: post,
@@ -3091,7 +3494,425 @@ function summarizeStrictProof(strict) {
   };
 }
 
+async function writeHiprtBoundarySelfCheckImage(filePath, variant) {
+  const width = 96;
+  const height = 64;
+  const raw = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const gradient = Math.floor((x / width) * 120 + (y / height) * 80);
+      if (variant === 'after') {
+        raw[i] = Math.min(255, 80 + gradient);
+        raw[i + 1] = Math.min(255, 110 + Math.floor(y * 1.5));
+        raw[i + 2] = Math.max(0, 220 - gradient);
+      } else {
+        raw[i] = Math.min(255, 30 + Math.floor(y * 0.8));
+        raw[i + 1] = Math.min(255, 60 + gradient);
+        raw[i + 2] = Math.min(255, 90 + Math.floor(x * 0.8));
+      }
+      raw[i + 3] = 255;
+    }
+  }
+  await sharp(raw, { raw: { width, height, channels: 4 } }).png().toFile(filePath);
+}
+
+function hiprtBoundarySelfCheckRuntimeProbeInstrumentation() {
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_runtime_boundary_app_hook',
+    instrumentationKind: 'runtime_boundary_app_hook',
+    instrumentation_kind: 'runtime_boundary_app_hook',
+    adapterFamily: 'hiprt-runtime-boundary-app-hook',
+    adapter_family: 'hiprt-runtime-boundary-app-hook',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    accepted: true,
+    applied: false,
+    adaptedOrAlreadyPresent: false,
+    adapted_or_already_present: false,
+    sourceAdaptations: [],
+    source_adaptations: [],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    proof_authority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    executionBoundary: 'HIPRT app-emitted runtime boundary events',
+    execution_boundary: 'HIPRT app-emitted runtime boundary events',
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: ['unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook'],
+    unsupported_without_evidence: ['unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook'],
+  };
+}
+
+function hiprtBoundarySelfCheckEvents({ proof, artifactHashAfter, epoch, dispatchId }) {
+  const processId = proof.runtime.changed.postRecompileEvidence.dispatch.processId;
+  const stream = proof.runtime.changed.postRecompileEvidence.dispatch.stream;
+  const deviceUuid = `rocm:${CFG.gpuArch}`;
+  return [
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'artifact_transport',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        artifact_id: artifactHashAfter,
+        process_id: processId,
+        loader_api: 'hiprt_app_boundary_loader',
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'epoch_publication',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        process_id: processId,
+        publish_mechanism: 'app_boundary_epoch_publish',
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'dispatch_trace',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        dispatch_id: dispatchId,
+        process_id: processId,
+        kernel_entry: CFG.reloadKernelSymbol,
+        stream,
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'host_identity',
+      fields: {
+        process_id: processId,
+        device_uuid: deviceUuid,
+        context_id: 'hiprt-boundary-self-check-context',
+        stream,
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'output_oracle',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        after_dispatch_id: dispatchId,
+        process_id: processId,
+        output_target: proof.runtime.changed.workerCapturePath,
+        before_image_hash: proof.baseline.contentHash,
+        after_image_hash: proof.changed.contentHash,
+        diff_image_hash: proof.diff.contentHash,
+      },
+    },
+  ];
+}
+
+async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
+  if (!CFG.gpuArch) CFG.gpuArch = 'gfx0000';
+  if (!CFG.gpuArchSource) CFG.gpuArchSource = 'self_check';
+  if (!CFG.rocmPrefix) CFG.rocmPrefix = '/opt/rocm-self-check';
+  if (!CFG.rocmPrefixSource) CFG.rocmPrefixSource = 'self_check';
+  const beforePath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-before.png`);
+  const afterPath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-after.png`);
+  const diffPath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-diff.png`);
+  await writeHiprtBoundarySelfCheckImage(beforePath, 'before');
+  await writeHiprtBoundarySelfCheckImage(afterPath, 'after');
+  const baselineStats = await imageStats(beforePath);
+  const changedStats = await imageStats(afterPath);
+  const diff = await diffImages({ baselinePath: beforePath, changedPath: afterPath, diffPath });
+  const artifactHashBefore = sha256Json({ role: 'before', profile: CFG.profileId, source: CFG.sourceRel });
+  const artifactHashAfter = sha256Json({ role: 'after', profile: CFG.profileId, source: CFG.sourceRel });
+  const proof = {
+    schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
+    slug: overrides.slug ?? 'hiprt-runtime-boundary-app-hook-self-check',
+    createdAt: '2026-06-30T00:00:00.000Z',
+    mode: 'same-process',
+    metricScope: 'hot_delta_1',
+    metric_scope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    cache_state: 'compiler_cache_warm',
+    profile: {
+      id: CFG.profileId,
+      requiredKernels: CFG.requiredKernels,
+      reloadKernelName: CFG.reloadKernelName,
+      reloadKernelSymbol: CFG.reloadKernelSymbol,
+    },
+    runtimeProfile: CFG.runtimeProfile,
+    claim: 'A HIPRT app-emitted runtime boundary event chain proves a deterministic framebuffer change.',
+    repo: {
+      workerContainer: 'self-check',
+      workerRepoPath: tmpDir,
+      commit: 'hiprt-boundary-self-check-commit',
+      target: CFG.targetName,
+    },
+    dimensions: { width: 96, height: 64 },
+    source: {
+      file: CFG.sourceRel,
+      before: CFG.before,
+      after: CFG.after,
+      baselineHash: artifactHashBefore,
+      changedHash: artifactHashAfter,
+    },
+    sourceWrites: {
+      baseline: { contentHash: artifactHashBefore, workerSha256: artifactHashBefore },
+      changed: { contentHash: artifactHashAfter, workerSha256: artifactHashAfter },
+      restoredBaseline: { contentHash: artifactHashBefore, workerSha256: artifactHashBefore },
+    },
+    baselineReuse: { reused: false },
+    sameProcessAdapter: null,
+    sameProcessBuild: null,
+    runtimeProbeInstrumentation: overrides.runtimeProbeInstrumentation
+      ?? hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+    runtime_probe_instrumentation: overrides.runtimeProbeInstrumentation
+      ?? hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+    strictHmrProvenance: {
+      fullRuntimeProven: true,
+      strictFullRuntimePassed: true,
+      runtimeProof: 'hiprt-boundary-self-check',
+    },
+    runtime: {
+      baseline: {
+        variant: 'baseline',
+        localCapturePath: beforePath,
+        contentHash: baselineStats.contentHash,
+        content_hash: baselineStats.contentHash,
+        localCaptureHash: baselineStats.contentHash,
+        local_capture_hash: baselineStats.contentHash,
+        captureLine: 'SYNTHI_HIPRT_FRAME_CAPTURE baseline',
+        nativeLaunchKernels: CFG.requiredKernels,
+        runMs: 1,
+        hostWallMs: 1,
+      },
+      changed: {
+        variant: 'changed',
+        localCapturePath: afterPath,
+        workerCapturePath: afterPath,
+        contentHash: changedStats.contentHash,
+        content_hash: changedStats.contentHash,
+        localCaptureHash: changedStats.contentHash,
+        local_capture_hash: changedStats.contentHash,
+        captureLine: 'SYNTHI_HIPRT_FRAME_CAPTURE changed',
+        nativeLaunchKernels: CFG.requiredKernels,
+        runMs: 1,
+        hostWallMs: 1,
+        totalHostWallMs: 2,
+        sameProcess: true,
+        liveRecompileMs: 1,
+        triggerTouchMs: 1,
+        triggerFinishedMonotonicNs: 1000,
+        runCompletedMonotonicNs: 2000,
+        shaderCacheArtifact: {
+          selectedArtifactHash: artifactHashAfter,
+          beforeManifestHash: artifactHashBefore,
+        },
+        postRecompileEvidence: {
+          accepted: true,
+          dispatch: {
+            sequence: 7,
+            processId: 'pid:hiprt-boundary-self-check',
+            runtimeSession: 'hiprt-boundary-self-check-session',
+            stream: 'stream:hiprt-boundary-self-check',
+            functionPtr: '0xabc7',
+            argsPtr: '0xfeed7',
+            api: 'hipModuleLaunchKernel',
+            gridDim: [1, 1, 1],
+            blockDim: [8, 1, 1],
+            sharedBytes: 0,
+          },
+        },
+      },
+    },
+    baseline: baselineStats,
+    changed: changedStats,
+    diff,
+    timings: {
+      totalWallMs: 4,
+      duration_ms: 4,
+      sameProcessLiveRecompileMs: 1,
+      sameProcessAdapterBuildMs: 0,
+      baselineRunMs: 1,
+      baselineHostWallMs: 1,
+      changedRunMs: 1,
+      changedHostWallMs: 1,
+    },
+    acceptance: {
+      strictProvenance: true,
+      sourceHashesDiffer: true,
+      baselineCopiedToWorker: true,
+      changedCopiedToWorker: true,
+      restoredBaselineInWorker: true,
+      baselineCapture: true,
+      changedCapture: true,
+      baselineNativeKernels: true,
+      changedNativeKernels: true,
+      sameProcessRuntime: true,
+      visualDelta: true,
+      oracleRegionNonBlank: true,
+    },
+    accepted: true,
+  };
+  const dispatch = proof.runtime.changed.postRecompileEvidence.dispatch;
+  const epoch = hiprtRuntimeEpochFor({ proof, dispatch });
+  const dispatchId = hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter });
+  proof.runtimeBoundaryEvents = overrides.runtimeBoundaryEvents
+    ?? hiprtBoundarySelfCheckEvents({ proof, artifactHashAfter, epoch, dispatchId });
+  proof.runtime_boundary_events = proof.runtimeBoundaryEvents;
+  proof.runtimeBoundaryEventSource = 'hiprt_runtime_boundary_app_hook_self_check';
+  proof.runtime_boundary_event_source = proof.runtimeBoundaryEventSource;
+  proof.timingMetrics = hiprtWarmTimingMetrics(proof);
+  const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
+  proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtimeProbeInstrumentation =
+    strictRuntimeProof.runtimeProofArtifact.runtimeProbeInstrumentation
+    ?? strictRuntimeProof.runtimeProofArtifact.runtime_probe_instrumentation
+    ?? proof.runtimeProbeInstrumentation;
+  proof.runtime_probe_instrumentation = proof.runtimeProbeInstrumentation;
+  proof.proofLedger = strictRuntimeProof.proofLedger;
+  proof.proof_ledger = strictRuntimeProof.proofLedger;
+  proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
+  proof.proof_ledger_query = strictRuntimeProof.proofLedgerQuery;
+  proof.acceptanceContract = strictRuntimeProof.acceptanceContract;
+  proof.acceptance_contract = strictRuntimeProof.acceptanceContract;
+  proof.acceptanceContractEvaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
+  proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
+  proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
+  proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
+  proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
+  proof.sourceAdaptedProfile = strictRuntimeProof.runtimeProofArtifact.sourceAdaptedProfile === true;
+  proof.source_adapted_profile = proof.sourceAdaptedProfile;
+  proof.sourceAdaptations = strictRuntimeProof.runtimeProofArtifact.sourceAdaptations ?? [];
+  proof.source_adaptations = proof.sourceAdaptations;
+  proof.visualProfileAccepted = strictRuntimeProof.runtimeProofArtifact.visualProfileAccepted === true;
+  proof.visual_profile_accepted = proof.visualProfileAccepted;
+  proof.gpuHmrSuccess = strictRuntimeProof.runtimeProofArtifact.gpuHmrSuccess === true;
+  proof.gpu_hmr_success = proof.gpuHmrSuccess;
+  proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
+  proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
+  proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(stableJson({
+    slug: proof.slug,
+    proofLedgerId: proof.proofLedger.proofId,
+    runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+  }))}`;
+  return proof;
+}
+
+async function hiprtRuntimeBoundaryAppHookSelfCheck() {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-hiprt-boundary-self-check-'));
+  try {
+    const acceptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir);
+    if (
+      acceptedProof.gpuHmrSuccess !== true
+      || acceptedProof.runtimeProofArtifact?.strictGate?.accepted !== true
+      || acceptedProof.runtimeBoundaryAppHook?.accepted !== true
+      || acceptedProof.sourceAdaptedProfile !== false
+    ) {
+      throw new Error(`HIPRT runtime-boundary self-check proof rejected ${stableJson({
+        gpuHmrSuccess: acceptedProof.gpuHmrSuccess,
+        strictGate: acceptedProof.runtimeProofArtifact?.strictGate,
+        runtimeBoundaryAppHook: acceptedProof.runtimeBoundaryAppHook,
+        sourceAdaptedProfile: acceptedProof.sourceAdaptedProfile,
+      })}`);
+    }
+    const acceptedPath = path.join(tmpDir, 'hiprt-runtime-boundary-app-hook-proof.json');
+    await fs.writeFile(acceptedPath, `${JSON.stringify(acceptedProof, null, 2)}\n`);
+    const matrix = await collectGpuHmrValidationMatrixLedger({
+      repoRoot: REPO_ROOT,
+      mcpRoot: path.resolve(__dirname, '..'),
+      roots: [tmpDir],
+      latestPerTarget: false,
+      includeUnproven: true,
+      generatedAt: '2026-06-30T00:00:00.000Z',
+    });
+    const acceptedRow = matrix.rows.find((row) =>
+      row.proofIds?.includes(acceptedProof.runtimeProofArtifact.proofId));
+    if (
+      acceptedRow?.matrixOutcome !== 'full_runtime_gpu_hmr'
+      || acceptedRow?.backend !== 'hiprt'
+      || acceptedRow?.acceptedForGpuHmr !== true
+    ) {
+      throw new Error(`HIPRT runtime-boundary matrix self-check rejected accepted fixture ${stableJson({
+        matrixOutcome: acceptedRow?.matrixOutcome,
+        acceptanceClass: acceptedRow?.acceptanceClass,
+        acceptedForGpuHmr: acceptedRow?.acceptedForGpuHmr,
+        gpuHmrSuccess: acceptedRow?.gpuHmrSuccess,
+        reasons: acceptedRow?.reasons,
+        openGaps: acceptedRow?.openGaps,
+        ledger: acceptedRow?.ledger,
+        runtimeProofArtifact: acceptedRow?.runtimeProofArtifact,
+        runtimeProbeInstrumentation: acceptedRow?.runtimeProbeInstrumentation,
+        hiprtContract: acceptedRow?.hiprtContract,
+        sourceAdaptedProfile: acceptedRow?.sourceAdaptedProfile,
+        visualAccepted: acceptedRow?.visual?.accepted,
+        oracleRegionAccepted: acceptedRow?.oracleRegion?.accepted,
+        rowId: acceptedRow?.rowId,
+      })}`);
+    }
+    const sourceAdaptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
+      slug: 'hiprt-runtime-boundary-source-adapted-self-check',
+      runtimeProbeInstrumentation: {
+        ...hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+        accepted: true,
+        adaptedOrAlreadyPresent: true,
+        adapted_or_already_present: true,
+        sourceAdaptations: ['same_process_targeted_kernel_recompile_hook'],
+        source_adaptations: ['same_process_targeted_kernel_recompile_hook'],
+      },
+    });
+    if (
+      sourceAdaptedProof.gpuHmrSuccess !== false
+      || !sourceAdaptedProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'source_adapted_profile_not_no_shim_gpu_hmr')
+    ) {
+      throw new Error('HIPRT runtime-boundary self-check accepted source-adapted fixture');
+    }
+    const missingOutputProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
+      slug: 'hiprt-runtime-boundary-missing-output-self-check',
+      runtimeBoundaryEvents: acceptedProof.runtimeBoundaryEvents.filter((event) =>
+        hiprtRuntimeBoundaryEventKind(event) !== 'output_oracle'),
+    });
+    if (
+      missingOutputProof.gpuHmrSuccess !== false
+      || !missingOutputProof.runtimeBoundaryAppHook?.blockingGaps?.includes(
+        'hiprt_runtime_boundary_stage_output_oracle_missing_or_mismatched',
+      )
+    ) {
+      throw new Error('HIPRT runtime-boundary self-check accepted missing output oracle event');
+    }
+    console.log(JSON.stringify({
+      ok: true,
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+      proofId: acceptedProof.proofId,
+      runtimeProofArtifactId: acceptedProof.runtimeProofArtifact.proofId,
+      matrixProofId: matrix.proofId,
+      rowId: acceptedRow.rowId,
+      sourceAdaptedRejected: true,
+      missingOutputRejected: true,
+    }, null, 2));
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  if (process.argv.includes('--runtime-boundary-app-hook-self-check')) {
+    await hiprtRuntimeBoundaryAppHookSelfCheck();
+    return;
+  }
   const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
   await ensureRocmBuildConfig();
@@ -3208,6 +4029,7 @@ async function main() {
   const accepted = Object.values(acceptance).every(Boolean);
   const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
   const runtimeProbeInstrumentation = buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter);
+  const runtimeBoundaryEventSource = await loadRuntimeBoundaryEventsFromConfig();
   const proof = {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug: CFG.slug,
@@ -3264,6 +4086,12 @@ async function main() {
     sameProcessBuild,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeBoundaryEvents: runtimeBoundaryEventSource.events,
+    runtime_boundary_events: runtimeBoundaryEventSource.events,
+    runtimeBoundaryEventSource: runtimeBoundaryEventSource.source,
+    runtime_boundary_event_source: runtimeBoundaryEventSource.source,
+    runtimeBoundaryEventManifestPath: runtimeBoundaryEventSource.manifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventSource.manifestPath,
     strictHmrProvenance: strictSummary,
     runtime: {
       baseline: baselineRun,
@@ -3299,6 +4127,11 @@ async function main() {
   const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
   proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
   proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtimeProbeInstrumentation =
+    strictRuntimeProof.runtimeProofArtifact.runtimeProbeInstrumentation
+    ?? strictRuntimeProof.runtimeProofArtifact.runtime_probe_instrumentation
+    ?? proof.runtimeProbeInstrumentation;
+  proof.runtime_probe_instrumentation = proof.runtimeProbeInstrumentation;
   proof.proofLedger = strictRuntimeProof.proofLedger;
   proof.proof_ledger = strictRuntimeProof.proofLedger;
   proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
@@ -3309,6 +4142,8 @@ async function main() {
   proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
   proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
+  proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
   proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
   proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
   proof.sourceAdaptedProfile = strictRuntimeProof.runtimeProofArtifact.sourceAdaptedProfile === true;
@@ -3341,6 +4176,7 @@ async function main() {
     sourceAdaptedProfile: proof.sourceAdaptedProfile,
     sourceAdaptations: proof.sourceAdaptations,
     runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtimeBoundaryAppHook: proof.runtimeBoundaryAppHook,
     runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
     proofLedgerId: proof.proofLedger.proofId,
     acceptanceContractHash: proof.acceptanceContract.contract_hash,
