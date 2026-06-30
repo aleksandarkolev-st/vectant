@@ -4187,6 +4187,118 @@ function fullRuntimeCoverageIdentity(row = {}) {
   };
 }
 
+function fullRuntimeRowIdentityBindingFacet(row = {}) {
+  const record = ledgerRecordForRow(row);
+  const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
+  const rowProfileId = firstText(
+    row.profileId,
+    row.profile_id,
+    row.validationProfileId,
+    row.validation_profile_id,
+  );
+  const recordProjectId = firstText(record.projectId, record.project_id);
+  const recordEditId = firstText(record.editId, record.edit_id);
+  const ledgerProofId = firstText(row.ledger?.proofId, row.ledger?.proof_id, record.proofId, record.proof_id);
+  const runtimeProofId = firstText(
+    row.runtimeProofArtifact?.proofId,
+    row.runtimeProofArtifact?.proof_id,
+    row.runtime_proof_artifact?.proofId,
+    row.runtime_proof_artifact?.proof_id,
+  );
+  const acceptanceContract = compactObject(row.acceptanceContract ?? row.acceptance_contract);
+  const contractProjectId = firstText(acceptanceContract.projectId, acceptanceContract.project_id);
+  const validationProfile = compactObject(row.validationProfileEvidence ?? row.validation_profile_evidence);
+  const validationProfileBinding = compactObject(validationProfile.binding);
+  const validationProfileId = firstText(validationProfile.profileId, validationProfile.profile_id);
+  const validationProfileProofIds = compactStringList(
+    validationProfile.proofIds ?? validationProfile.proof_ids,
+  );
+  const validationProfileEvidenceRefs = compactStringList(
+    validationProfile.evidenceRefs ?? validationProfile.evidence_refs,
+  );
+  const sourceFirst = compactObject(row.sourceFirstIngestion ?? row.source_first_ingestion);
+  const sourceFirstTargetId = firstText(sourceFirst.targetId, sourceFirst.target_id);
+  const requiredStrictProofIds = compactStringList([ledgerProofId, runtimeProofId]);
+  const directlyBoundRuntimeIdentities = compactStringList([
+    recordProjectId,
+    recordEditId,
+    contractProjectId,
+  ]);
+  const targetDirectlyBoundToLedger =
+    Boolean(rowTargetId)
+    && directlyBoundRuntimeIdentities.includes(rowTargetId);
+  const contractProjectBoundToLedger =
+    !contractProjectId
+    || !recordProjectId
+    || contractProjectId === recordProjectId;
+  const sourceFirstTargetBoundToRow =
+    sourceFirst.accepted === true
+    && Boolean(rowTargetId)
+    && sourceFirstTargetId === rowTargetId;
+  const validationProfileProofIdsBindStrictRuntime =
+    requiredStrictProofIds.length > 0
+    && requiredStrictProofIds.every((proofId) => validationProfileProofIds.includes(proofId));
+  const validationProfileTargetBoundToEvidenceRefs =
+    Boolean(rowTargetId)
+    && validationProfileEvidenceRefs.includes(rowTargetId);
+  const validationProfileProfileBoundToRow =
+    !validationProfileId
+    || !rowProfileId
+    || validationProfileId === rowProfileId
+    || rowProfileId.startsWith(`${validationProfileId}:`)
+    || rowProfileId.includes(`:${validationProfileId}:`);
+  const sourceFirstAliasBoundToLedger =
+    sourceFirstTargetBoundToRow
+    && validationProfile.accepted === true
+    && validationProfileBinding.proofIdsBoundToRow === true
+    && validationProfileProofIdsBindStrictRuntime
+    && validationProfileTargetBoundToEvidenceRefs
+    && validationProfileProfileBoundToRow;
+  const rowTargetBoundToLedger =
+    targetDirectlyBoundToLedger
+    || sourceFirstAliasBoundToLedger;
+  const failedGates = compactStringList([
+    rowTargetId ? null : 'full_runtime_row_target_id_missing',
+    recordProjectId ? null : 'full_runtime_ledger_project_id_missing',
+    contractProjectBoundToLedger ? null : 'full_runtime_contract_project_not_bound_to_ledger_record',
+    rowTargetBoundToLedger ? null : 'gpu_hmr_success_requires_row_target_bound_to_ledger_record',
+  ]);
+  return {
+    accepted: failedGates.length === 0,
+    authority: 'matrix_recomputed_row_ledger_identity_binding',
+    rowTargetId,
+    row_target_id: rowTargetId,
+    rowProfileId,
+    row_profile_id: rowProfileId,
+    recordProjectId,
+    record_project_id: recordProjectId,
+    recordEditId,
+    record_edit_id: recordEditId,
+    contractProjectId,
+    contract_project_id: contractProjectId,
+    ledgerProofId,
+    ledger_proof_id: ledgerProofId,
+    runtimeProofId,
+    runtime_proof_id: runtimeProofId,
+    targetDirectlyBoundToLedger,
+    target_directly_bound_to_ledger: targetDirectlyBoundToLedger,
+    sourceFirstAliasBoundToLedger,
+    source_first_alias_bound_to_ledger: sourceFirstAliasBoundToLedger,
+    sourceFirstTargetBoundToRow,
+    source_first_target_bound_to_row: sourceFirstTargetBoundToRow,
+    validationProfileProofIdsBindStrictRuntime,
+    validation_profile_proof_ids_bind_strict_runtime: validationProfileProofIdsBindStrictRuntime,
+    validationProfileTargetBoundToEvidenceRefs,
+    validation_profile_target_bound_to_evidence_refs: validationProfileTargetBoundToEvidenceRefs,
+    validationProfileProfileBoundToRow,
+    validation_profile_profile_bound_to_row: validationProfileProfileBoundToRow,
+    contractProjectBoundToLedger,
+    contract_project_bound_to_ledger: contractProjectBoundToLedger,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 function rawRunModeCoverageSupport(row = {}) {
   const runMode = compactObject(row.runMode ?? row.run_mode);
   return compactObject(
@@ -5122,6 +5234,8 @@ function finalizeRow(seed) {
   row.run_mode_coverage_support = row.runModeCoverageSupport;
   row.validationProfileEvidence = validationProfileEvidenceFacet(row);
   row.validation_profile_evidence = row.validationProfileEvidence;
+  row.fullRuntimeRowIdentityBinding = fullRuntimeRowIdentityBindingFacet(row);
+  row.full_runtime_row_identity_binding = row.fullRuntimeRowIdentityBinding;
   row.declaredAcceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? null;
   row.declared_acceptance_scope = row.declaredAcceptanceScope;
   row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
@@ -8016,6 +8130,10 @@ function fullRuntimeLedgerAuthorityFailures(row) {
       rowBackend,
       recordBackend,
     });
+  }
+  const effectiveRowIdentityBinding = fullRuntimeRowIdentityBindingFacet(row);
+  if (effectiveRowIdentityBinding.accepted !== true) {
+    failures.push(...compactObjectList(effectiveRowIdentityBinding.failedGates));
   }
   if (recomputed !== null) {
     const recomputedRecord = compactObject(recomputed.record);

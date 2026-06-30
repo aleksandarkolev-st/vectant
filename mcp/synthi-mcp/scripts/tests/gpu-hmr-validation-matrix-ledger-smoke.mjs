@@ -6218,12 +6218,33 @@ function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
 
 function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
   const row = JSON.parse(JSON.stringify(acceptedFlow));
+  const effectiveProfileId = fields.profileId ?? fields.profile_id ?? targetId;
+  const validationProfileEvidence = {
+    ...(row.validationProfileEvidence ?? {}),
+    profileId: effectiveProfileId,
+    profile_id: effectiveProfileId,
+    evidenceRefs: [
+      ...new Set([
+        ...((row.validationProfileEvidence?.evidenceRefs ?? row.validationProfileEvidence?.evidence_refs) ?? []),
+        targetId,
+      ]),
+    ],
+  };
+  validationProfileEvidence.evidence_refs = validationProfileEvidence.evidenceRefs;
   const out = {
     ...row,
     targetId,
-    profileId: targetId,
+    target_id: targetId,
+    profileId: effectiveProfileId,
+    profile_id: effectiveProfileId,
+    sourceFirstIngestion: sourceFirstIngestionEvidenceFor({ targetId }),
+    source_first_ingestion: sourceFirstIngestionEvidenceFor({ targetId }),
+    validationProfileEvidence,
+    validation_profile_evidence: validationProfileEvidence,
     ...fields,
   };
+  out.source_first_ingestion = out.sourceFirstIngestion ?? out.source_first_ingestion;
+  out.validation_profile_evidence = out.validationProfileEvidence ?? out.validation_profile_evidence;
   delete out.matrixKey;
   delete out.attemptKey;
   delete out.row_id;
@@ -8934,6 +8955,25 @@ assert.ok(sourceFirstCasOnlyRunMode.visual.images.every((image) => image.resolve
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.accepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.workerCasInputAccepted, true);
 assert.equal(sourceFirstCasOnlyRunMode.asyncVisualCasBundle.nativeImageDependencyBound, true);
+
+const retargetedSourceFirstReplayRow = JSON.parse(JSON.stringify(acceptedFlow));
+retargetedSourceFirstReplayRow.targetId = 'flow-source-first-retargeted-alias';
+retargetedSourceFirstReplayRow.target_id = 'flow-source-first-retargeted-alias';
+retargetedSourceFirstReplayRow.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+  targetId: 'flow-source-first-retargeted-alias',
+});
+retargetedSourceFirstReplayRow.source_first_ingestion = retargetedSourceFirstReplayRow.sourceFirstIngestion;
+delete retargetedSourceFirstReplayRow.fullRuntimeRowIdentityBinding;
+delete retargetedSourceFirstReplayRow.full_runtime_row_identity_binding;
+const retargetedSourceFirstReplayQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId(retargetedSourceFirstReplayRow)],
+});
+assert.equal(retargetedSourceFirstReplayQuery.accepted, false);
+assert.equal(retargetedSourceFirstReplayQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(retargetedSourceFirstReplayQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_row_target_bound_to_ledger_record'
+));
 
 const forgedSourceFirstVisualJobRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-forged-visual-job'
