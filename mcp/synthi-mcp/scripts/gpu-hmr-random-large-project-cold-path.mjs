@@ -164,11 +164,85 @@ function tail(text, max = 8000) {
   return value.length > max ? value.slice(-max) : value;
 }
 
+function makeStamp(date = new Date()) {
+  return date.toISOString().replace(/[-:.]/g, '').replace('T', 'T').slice(0, 18);
+}
+
+function killChildTree(child) {
+  if (!child?.pid) return false;
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // Timeout cleanup is best-effort and never proof authority.
+  }
+  if (process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      killer.on('error', () => {});
+    } catch {
+      // child.kill above is the portable fallback.
+    }
+  }
+  const hardKill = setTimeout(() => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // The process may already be gone.
+    }
+  }, 2000);
+  hardKill.unref?.();
+  return true;
+}
+
 function runProcess(command, args, options) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, options);
+    const { timeoutMs = 0, ...spawnOptions } = options ?? {};
+    const startedAt = new Date().toISOString();
+    let child;
+    try {
+      child = spawn(command, args, spawnOptions);
+    } catch (error) {
+      resolve({
+        exitCode: null,
+        signal: null,
+        error: error?.message || String(error),
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        timeoutMs: Number(timeoutMs) || 0,
+        timeoutKillAttempted: false,
+        childPid: null,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      });
+      return;
+    }
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let timeoutKillAttempted = false;
+    let settled = false;
+    const timer = Number(timeoutMs) > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        timeoutKillAttempted = killChildTree(child);
+      }, Number(timeoutMs))
+      : null;
+    timer?.unref?.();
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({
+        ...payload,
+        timedOut,
+        timeoutMs: Number(timeoutMs) || 0,
+        timeoutKillAttempted,
+        childPid: child.pid ?? null,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      });
+    };
     child.stdout?.on('data', (chunk) => {
       const text = String(chunk);
       stdout = tail(stdout + text, 32000);
@@ -180,15 +254,15 @@ function runProcess(command, args, options) {
       process.stderr.write(text);
     });
     child.on('error', (error) => {
-      resolve({ exitCode: null, signal: null, error: error.message, stdout, stderr });
+      finish({ exitCode: null, signal: null, error: error.message, stdout, stderr });
     });
     child.on('close', (exitCode, signal) => {
-      resolve({ exitCode, signal, error: null, stdout, stderr });
+      finish({ exitCode, signal, error: null, stdout, stderr });
     });
   });
 }
 
-async function runSelectedCandidate(candidate, { dryRun, timeoutMs }) {
+async function runSelectedCandidate(candidate, { dryRun, timeoutMs, runnerTimeoutMs }) {
   if (dryRun) {
     return {
       candidateId: candidate.id,
@@ -214,14 +288,28 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs }) {
   const result = await runProcess(
     process.execPath,
     [path.join(SCRIPT_DIR, 'gpu-hmr-real-rocm-repo-validation.mjs')],
-    { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], timeoutMs: runnerTimeoutMs },
   );
   return {
     candidateId: candidate.id,
-    status: result.exitCode === 0 ? 'runner_completed' : 'runner_failed_closed_or_error',
+    status: result.timedOut
+      ? 'runner_timeout_failed_closed'
+      : (result.exitCode === 0 ? 'runner_completed' : 'runner_failed_closed_or_error'),
     exitCode: result.exitCode,
     signal: result.signal,
     error: result.error,
+    timedOut: result.timedOut,
+    timed_out: result.timedOut,
+    runnerTimeoutMs: result.timeoutMs,
+    runner_timeout_ms: result.timeoutMs,
+    timeoutKillAttempted: result.timeoutKillAttempted,
+    timeout_kill_attempted: result.timeoutKillAttempted,
+    childPid: result.childPid,
+    child_pid: result.childPid,
+    startedAt: result.startedAt,
+    started_at: result.startedAt,
+    finishedAt: result.finishedAt,
+    finished_at: result.finishedAt,
     stdoutTail: tail(result.stdout),
     stderrTail: tail(result.stderr),
     acceptedForGpuHmr: false,
@@ -230,13 +318,13 @@ async function runSelectedCandidate(candidate, { dryRun, timeoutMs }) {
   };
 }
 
-async function writeManifest(manifest, outputDir = LOG_DIR) {
+async function writeManifest(manifest, outputDir = LOG_DIR, { suffix = '', filePath = null } = {}) {
   await mkdir(outputDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[-:.]/g, '').replace('T', 'T').slice(0, 15);
-  const filePath = path.join(outputDir, `random-large-project-cold-path-${stamp}.json`);
+  const stamp = manifest.runId ?? manifest.run_id ?? makeStamp();
+  const resolvedFilePath = filePath ?? path.join(outputDir, `random-large-project-cold-path-${stamp}${suffix}.json`);
   const body = `${JSON.stringify(manifest, null, 2)}\n`;
-  await writeFile(filePath, body);
-  return { filePath, hash: contentHash(body) };
+  await writeFile(resolvedFilePath, body);
+  return { filePath: resolvedFilePath, hash: contentHash(body) };
 }
 
 async function buildManifest({
@@ -245,17 +333,95 @@ async function buildManifest({
   candidateId,
   dryRun,
   timeoutMs,
+  runnerTimeoutMs,
   candidates,
   outputDir,
+  runCandidate = runSelectedCandidate,
 }) {
   const selected = selectCandidates({ candidates, seed, count, candidateId });
+  const runId = makeStamp();
   const startedAt = new Date().toISOString();
+  let pendingWritten = null;
+  if (!dryRun) {
+    const pendingManifest = createManifest({
+      runId,
+      seed,
+      count,
+      candidateId,
+      dryRun,
+      timeoutMs,
+      runnerTimeoutMs,
+      candidates,
+      selected,
+      startedAt,
+      finishedAt: null,
+      eventType: 'cold_path_pending',
+      status: 'pending',
+      results: selected.map((candidate) => ({
+        candidateId: candidate.id,
+        status: 'selected_pending_execution',
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      })),
+    });
+    pendingWritten = await writeManifest(pendingManifest, outputDir, { suffix: '-pending' });
+  }
   const results = [];
   for (const candidate of selected) {
-    results.push(await runSelectedCandidate(candidate, { dryRun, timeoutMs }));
+    try {
+      results.push(await runCandidate(candidate, { dryRun, timeoutMs, runnerTimeoutMs }));
+    } catch (error) {
+      results.push({
+        candidateId: candidate.id,
+        status: 'sampler_candidate_error_failed_closed',
+        error: error?.message || String(error),
+        acceptedForGpuHmr: false,
+        gpuHmrSuccess: false,
+        canSatisfyRuntimeProof: false,
+      });
+    }
   }
   const finishedAt = new Date().toISOString();
-  const manifest = {
+  const manifest = createManifest({
+    runId,
+    seed,
+    count,
+    candidateId,
+    dryRun,
+    timeoutMs,
+    runnerTimeoutMs,
+    candidates,
+    selected,
+    startedAt,
+    finishedAt,
+    eventType: 'cold_path_complete',
+    status: 'complete',
+    results,
+    pendingWritten,
+  });
+  const written = await writeManifest(manifest, outputDir);
+  return { manifest: { ...manifest, manifestPath: written.filePath, manifestHash: written.hash }, written };
+}
+
+function createManifest({
+  runId,
+  seed,
+  count,
+  candidateId,
+  dryRun,
+  timeoutMs,
+  runnerTimeoutMs,
+  candidates,
+  selected,
+  startedAt,
+  finishedAt,
+  eventType,
+  status,
+  results,
+  pendingWritten = null,
+}) {
+  return {
     schemaVersion: SCHEMA,
     schema_version: SCHEMA,
     proofAuthority: AUTHORITY,
@@ -266,6 +432,11 @@ async function buildManifest({
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    runId,
+    run_id: runId,
+    eventType,
+    event_type: eventType,
+    status,
     startedAt,
     started_at: startedAt,
     finishedAt,
@@ -321,10 +492,14 @@ async function buildManifest({
     dry_run: dryRun,
     timeoutMs,
     timeout_ms: timeoutMs,
+    runnerTimeoutMs,
+    runner_timeout_ms: runnerTimeoutMs,
+    pendingManifestPath: pendingWritten?.filePath ?? null,
+    pending_manifest_path: pendingWritten?.filePath ?? null,
+    pendingManifestHash: pendingWritten?.hash ?? null,
+    pending_manifest_hash: pendingWritten?.hash ?? null,
     results,
   };
-  const written = await writeManifest(manifest, outputDir);
-  return { manifest: { ...manifest, manifestPath: written.filePath, manifestHash: written.hash }, written };
 }
 
 async function selfCheck() {
@@ -376,6 +551,7 @@ async function selfCheck() {
     count: 1,
     dryRun: true,
     timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
     candidates,
     outputDir: path.join(LOG_DIR, 'self-check'),
   });
@@ -388,6 +564,42 @@ async function selfCheck() {
     || !manifest.selection.selectionHash?.startsWith('sha256:')
   ) {
     throw new Error('random large-project cold-path manifest self-check failed');
+  }
+  const timeoutProbe = await runProcess(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1000)'],
+    { stdio: ['ignore', 'pipe', 'pipe'], timeoutMs: 50 },
+  );
+  if (timeoutProbe.error && /\bEPERM\b/i.test(timeoutProbe.error)) {
+    console.warn('random large-project cold-path timeout self-check skipped child spawn probe: EPERM');
+  } else if (!timeoutProbe.timedOut || timeoutProbe.timeoutMs !== 50 || !timeoutProbe.timeoutKillAttempted) {
+    throw new Error('random large-project cold-path timeout self-check failed');
+  }
+  const { manifest: pendingManifest } = await buildManifest({
+    seed: 'pending-self-check-seed',
+    count: 1,
+    dryRun: false,
+    timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
+    candidates,
+    outputDir: path.join(LOG_DIR, 'self-check'),
+    runCandidate: async (candidate) => ({
+      candidateId: candidate.id,
+      status: 'synthetic_runner_timeout_failed_closed',
+      timedOut: true,
+      timed_out: true,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    }),
+  });
+  if (
+    pendingManifest.eventType !== 'cold_path_complete'
+    || !pendingManifest.pendingManifestPath
+    || !pendingManifest.pendingManifestHash?.startsWith('sha256:')
+    || pendingManifest.results[0]?.status !== 'synthetic_runner_timeout_failed_closed'
+  ) {
+    throw new Error('random large-project cold-path pending manifest self-check failed');
   }
   console.log('random large-project cold-path self-check passed');
 }
@@ -403,6 +615,10 @@ async function main() {
   const dryRun = Boolean(args.dryRun || process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DRY_RUN === '1');
   const candidateId = args.candidateId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATE_ID ?? '';
   const timeoutMs = Number(process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_TIMEOUT_MS ?? process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? 120000);
+  const runnerTimeoutMs = Number(
+    process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUN_TIMEOUT_MS
+      ?? Math.max(timeoutMs + 120000, timeoutMs),
+  );
   const candidates = await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
@@ -413,6 +629,7 @@ async function main() {
     candidateId,
     dryRun,
     timeoutMs,
+    runnerTimeoutMs,
     candidates,
     outputDir: path.resolve(args.outputDir ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR ?? LOG_DIR),
   });
