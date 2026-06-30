@@ -4440,13 +4440,28 @@ const server = http.createServer(async (req, res) => {
                 }
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remove-remote':
-                    result = await gitService.removeRemote(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.removeRemote(slug, data.name, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'set-remote-url':
-                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
@@ -4565,70 +4580,112 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'fetch':
-                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
-                    break;
-	                case 'commit':
-	                    const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
-	                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
-	                    });
-                    const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
-                      ? {
-                        ...data,
-                        codesite: {
-                          ...(data.codesite || data.codeSite || {}),
-                          proofBundle: codeSiteCommitProof.proofBundle,
-                        },
-                      }
-                      : data;
-                    result = await withTelemetry('git:commit', () => gitService.commit(
-                      slug,
-                      codeSiteCommitMessage(data.message, codeSiteCommitPayload),
-                      effectiveUserId,
-                      data.amend,
-                      commitIdentity,
-                    ));
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
-                    break;
-                case 'stage':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before staging
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
-                    break;
-                case 'stage-all':
-                    result = await gitService.stageAll(slug, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
-                    break;
-                case 'stage-lines':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before patching so the
-                    // working tree matches the editor state exactly.
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
-                    break;
-                case 'unstage-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
-                    break;
-                case 'discard-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId),
+                        async () => withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds)),
                       );
                       result = boundary.applyResult;
                     }
-                    releaseStagingLock(slug, data.filePath);
+                    break;
+                case 'commit':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
+                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                        });
+                        const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
+                          ? {
+                            ...data,
+                            codesite: {
+                              ...(data.codesite || data.codeSite || {}),
+                              proofBundle: codeSiteCommitProof.proofBundle,
+                            },
+                          }
+                          : data;
+                        return withTelemetry('git:commit', () => gitService.commit(
+                          slug,
+                          codeSiteCommitMessage(data.message, codeSiteCommitPayload),
+                          effectiveUserId,
+                          data.amend,
+                          commitIdentity,
+                        ));
+                      });
+                      result = boundary.applyResult;
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'stage':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before staging
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'stage-all':
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'stage-lines':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before patching so the
+                          // working tree matches the editor state exactly.
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'unstage-lines':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'discard-lines':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
@@ -4636,19 +4693,35 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':
-                    acquireStagingLock(slug, data.filePath);
-                    result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          return gitService.unstageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-all':
-                    result = await gitService.unstageAll(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.unstageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds)),
+                      );
+                      result = boundary.applyResult;
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     } finally {
                       resumeWatcher(slug);
@@ -4764,11 +4837,13 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'check-merge-conflicts':
-                    // In-memory merge conflict detection using git merge-tree.
-                    // No working tree changes — runs in milliseconds.
-                    result = await gitService.checkMergeConflicts(
+                    // Fetch updates remote-tracking refs, then merge-tree checks in memory.
+                    {
+                      const boundary = await runGitBoundary(() => gitService.checkMergeConflicts(
                         slug, data.baseBranch, data.headBranch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds
-                    );
+                      ));
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
@@ -4835,7 +4910,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'stash-drop':
-                    result = await gitService.stashDrop(slug, data.index, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashDrop(slug, data.index, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'interactive-rebase':
                     pauseWatcher(slug);
@@ -4897,13 +4977,28 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getTags(slug, effectiveUserId);
                     break;
                 case 'create-tag':
-                    result = await gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'delete-tag':
-                    result = await gitService.deleteTag(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.deleteTag(slug, data.name, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'push-tag':
-                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'revert':
                     {

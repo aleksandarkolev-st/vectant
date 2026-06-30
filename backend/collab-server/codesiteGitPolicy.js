@@ -39,7 +39,9 @@ const REPO_WORKTREE_ACTIONS = new Set([
 ]);
 
 const GIT_REF_ACTIONS = new Set([
+  'check-merge-conflicts',
   'commit',
+  'fetch',
   'push',
   'create-tag',
   'delete-tag',
@@ -55,23 +57,40 @@ const GIT_CONFIG_ACTIONS = new Set([
 
 const CODE_SITE_GIT_BOUNDARY_ACTIONS = new Set([
   'abort-merge',
+  'add-remote',
+  'check-merge-conflicts',
   'checkout',
   'cherry-pick',
+  'commit',
+  'create-tag',
+  'delete-tag',
   'discard',
   'discard-all',
   'discard-lines',
+  'fetch',
   'interactive-rebase',
   'mark-resolved',
   'merge-branch',
   'pull',
+  'push',
+  'push-tag',
   'rebase-abort',
   'rebase-continue',
+  'remove-remote',
   'resolve-ours',
   'resolve-theirs',
   'revert',
+  'set-remote-url',
+  'stage',
+  'stage-all',
+  'stage-lines',
   'stash-apply',
+  'stash-drop',
   'stash-pop',
   'stash-push',
+  'unstage',
+  'unstage-all',
+  'unstage-lines',
 ]);
 
 function codeSiteGitActionAttempts(action, data = {}) {

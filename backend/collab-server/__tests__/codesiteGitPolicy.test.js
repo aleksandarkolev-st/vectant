@@ -66,23 +66,40 @@ test('maps path-scoped worktree actions to git_worktree attempts', () => {
 test('marks git actions whose callbacks run through the CodeSiteFS boundary', () => {
   for (const action of [
     'abort-merge',
+    'add-remote',
+    'check-merge-conflicts',
     'checkout',
     'cherry-pick',
+    'commit',
+    'create-tag',
+    'delete-tag',
     'discard',
     'discard-all',
     'discard-lines',
+    'fetch',
     'interactive-rebase',
     'mark-resolved',
     'merge-branch',
     'pull',
+    'push',
+    'push-tag',
     'rebase-abort',
     'rebase-continue',
+    'remove-remote',
     'resolve-ours',
     'resolve-theirs',
     'revert',
+    'set-remote-url',
+    'stage',
+    'stage-all',
+    'stage-lines',
     'stash-apply',
+    'stash-drop',
     'stash-pop',
     'stash-push',
+    'unstage',
+    'unstage-all',
+    'unstage-lines',
   ]) {
     assert.equal(shouldRunCodeSiteGitBoundary(action), true, action);
   }
@@ -90,9 +107,6 @@ test('marks git actions whose callbacks run through the CodeSiteFS boundary', ()
   for (const action of [
     'init',
     'clone',
-    'commit',
-    'push',
-    'stash-drop',
     'status',
   ]) {
     assert.equal(shouldRunCodeSiteGitBoundary(action), false, action);
@@ -103,6 +117,16 @@ test('maps tags, stash refs, and remotes to ref/config attempts', () => {
   assert.deepEqual(codeSiteGitActionAttempts('commit'), [{
     path: '**',
     kind: 'commit',
+    tool: 'git_refs',
+  }]);
+  assert.deepEqual(codeSiteGitActionAttempts('fetch'), [{
+    path: '**',
+    kind: 'fetch',
+    tool: 'git_refs',
+  }]);
+  assert.deepEqual(codeSiteGitActionAttempts('check-merge-conflicts'), [{
+    path: '**',
+    kind: 'check-merge-conflicts',
     tool: 'git_refs',
   }]);
   assert.deepEqual(codeSiteGitActionAttempts('push'), [{
