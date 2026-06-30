@@ -483,8 +483,8 @@ describe('CodeSite control plane transaction validation', () => {
       status: 'completed',
       changedPathsJson: JSON.stringify(['synthi/prisma/**']),
       inspectionSignalsJson: JSON.stringify([
-        { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:pass'] },
-        { key: 'tests', status: 'passed', evidenceRefs: ['tests:pass'] },
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
       ]),
       evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
       requestedAt: new Date('2026-06-29T23:02:00.000Z'),
@@ -499,8 +499,8 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.proofBundle.commitSha).toBe('abc123');
     expect(evidenceRefs).toEqual(expect.arrayContaining([
       'runtime:event:inspection-1',
-      'typecheck:pass',
-      'tests:pass',
+      'runtime:event:typecheck-1',
+      'runtime:event:tests-1',
       'codesite:inspection:inspection-1',
       'codesite:repo-state:sha256:repo-state',
       'codesite:transaction:txn-1',
@@ -532,8 +532,8 @@ describe('CodeSite control plane transaction validation', () => {
       status: 'completed',
       changedPathsJson: JSON.stringify(['synthi/prisma/**']),
       inspectionSignalsJson: JSON.stringify([
-        { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:pass'] },
-        { key: 'tests', status: 'passed', evidenceRefs: ['tests:pass'] },
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
       ]),
       evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
       requestedAt: new Date('2026-06-29T23:02:00.000Z'),
@@ -544,6 +544,34 @@ describe('CodeSite control plane transaction validation', () => {
 
     expect(result.decision.ok).toBe(false);
     expect(result.decision.reasonCodes).toContain('repo_state_evidence_required');
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects synthetic landing pass strings without executable inspection evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:pass'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['tests:pass'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['inspection:claimed']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState: repoStateFixture() });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'inspection_signal_required',
+      'inspection_executable_evidence_required',
+    ]));
     expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
   });
 

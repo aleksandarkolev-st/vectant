@@ -1168,6 +1168,7 @@ async function verifyLandingInspections(transaction) {
   const passedRuns = scopedRuns.filter(inspectionRunPassed);
   const coveringRuns = passedRuns.filter((run) => inspectionCoversAllPaths(run, changedPaths));
   const evidenceRefs = unique(coveringRuns.flatMap(inspectionEvidenceRefs));
+  const durableEvidenceRefs = evidenceRefs.filter(isDurableInspectionEvidenceRef);
   const requiredSignals = requiredInspectionSignals(transaction);
   const missingPaths = changedPaths.filter((path) => !coveringRuns.some((run) => inspectionCoversPath(run, path)));
   const missingSignals = requiredSignals.filter((signal) => (
@@ -1182,6 +1183,7 @@ async function verifyLandingInspections(transaction) {
     ...(missingPaths.length ? ['inspection_path_coverage_required'] : []),
     ...(missingSignals.length ? ['inspection_signal_required'] : []),
     ...(evidenceRefs.length === 0 ? ['inspection_evidence_required'] : []),
+    ...(evidenceRefs.length > 0 && durableEvidenceRefs.length === 0 ? ['inspection_executable_evidence_required'] : []),
   ];
 
   return {
@@ -1256,7 +1258,8 @@ function inspectionSatisfiesSignal(run, requiredSignal) {
   const signals = asArray(parseJson(run.inspectionSignalsJson, []));
   return signals.some((signal) => {
     if (inspectionSignalFailed(signal)) return false;
-    return normalizeInspectionSignal(signalKey(signal)) === requiredSignal;
+    return normalizeInspectionSignal(signalKey(signal)) === requiredSignal
+      && inspectionSignalHasDurableEvidence(run, signal);
   });
 }
 
@@ -1273,6 +1276,21 @@ function normalizeInspectionSignal(value) {
     .replace(/[^a-z0-9_]+/g, '_')
     .replace(/_pass(ed)?$/, '')
     .replace(/^_+|_+$/g, '');
+}
+
+function inspectionSignalHasDurableEvidence(run, signal) {
+  const signalRefs = signalEvidenceRefs(signal);
+  const refs = signalRefs.length ? signalRefs : inspectionEvidenceRefs(run);
+  return refs.some(isDurableInspectionEvidenceRef);
+}
+
+function signalEvidenceRefs(signal) {
+  if (typeof signal === 'string') return [];
+  return asArray(signal?.evidenceRefs || signal?.evidence_refs || signal?.evidenceRef || signal?.evidence_ref);
+}
+
+function isDurableInspectionEvidenceRef(ref) {
+  return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
 }
 
 async function seedLineProvenance(transaction, bundle) {
