@@ -4,6 +4,25 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Native Observer Host-Identity Breadcrumbs
+
+The real ROCm native launch observer now emits generic support-only `host_identity` boundary breadcrumbs around observer-ready, native launch attempt, and native launch observed events. The emitted fields include explicit `process_id=pid:<pid>` plus runner-process and stream-context identities, so arbitrary target runs no longer depend on runtime-session string shape for basic process/stream diagnostics.
+
+Runtime host-identity parsing now consumes explicit `process_id`, `device_uuid`, `context_id`, and `queue_id` fields. Same-process and native-runtime bridge gates were tightened so a PID or host-identity line alone cannot satisfy the host-identity stage. Host proof still requires the host-preservation proof or explicit stable identity evidence, and the new self-check keeps native observer breadcrumbs non-authoritative without device identity, preserved identity lineage, artifact transport, epoch publication, dispatch, output oracle, firewall proof, strict runtime proof, and ledger closure.
+
+This is not broad real-ROCm GPU HMR acceptance. The latest matrix self-check still reports 56 rows, 14 scoped full-runtime rows, and 0 broad library-agnostic full-runtime rows.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-runtime-evidence.mjs -> passed
+docker run --rm --entrypoint cc -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker:latest -fsyntax-only cpp_src/synthi_gpu_native_launch_observer.c -> passed
+node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check -> passed; includes native host-identity breadcrumb coverage and strict non-authority checks
+npm --prefix mcp/synthi-mcp run proof:real-rocm:self-check -> passed; POSIX template execution self-checks skipped fail-closed on this host
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed after rerun with a longer command timeout; smoke ledger `gpu-validation-matrix-ledger:sha256:a4329aa6730ef4bf5f70608f1d217f5a447ecd221f15e36db9581ef937322c66`, retained matrix `gpu-validation-matrix-ledger:sha256:7eda4b3f463acd44889c5db88722487fd48b271a2ecf477ce34720cd6743d2bc`, 56 rows, 14 scoped full-runtime rows, 0 broad rows
+```
+
 ## 2026-06-30 Runtime-Boundary Target-Process Provenance
 
 Real ROCm runtime-boundary support now binds adapter/native-observer boundary lines to target-process provenance before those lines can support final real-ROCm acceptance. The native launch observer emits a generic runtime session from `SYNTHI_REAL_ROCM_RUNTIME_SESSION` or `SYNTHI_GPU_HMR_RUNTIME_SESSION`, falling back to a process-derived observer session only when no explicit session is provided, and includes `process_id=pid:<pid>` on emitted `[gpu-runtime-boundary]` lines.

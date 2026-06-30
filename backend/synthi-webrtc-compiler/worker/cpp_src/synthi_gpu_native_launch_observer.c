@@ -352,6 +352,39 @@ static const char* synthi_observed_array_allocation_apis(void) {
     return "oroMallocArray,hipMallocArray,cudaMallocArray,cuArrayCreate,cuArrayCreate_v2";
 }
 
+static void synthi_log_native_host_identity(
+    const char* event,
+    unsigned long long sequence,
+    void* stream) {
+    char event_token[64];
+    synthi_sanitize_token(event, event_token, sizeof(event_token));
+    const char* session = synthi_runtime_session();
+    long pid = (long)getpid();
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] host_identity event=%s role=runner_process runtime_session=%s process_id=pid:%ld pid=%ld generation=0 ptr=0x%llx aux=%llu attachment_provenance=native_runtime_intercept\n",
+        event_token,
+        session,
+        pid,
+        pid,
+        (unsigned long long)pid,
+        0ULL);
+    if (stream != NULL) {
+        fprintf(
+            stderr,
+            "[gpu-runtime-boundary] host_identity event=%s role=stream_context runtime_session=%s process_id=pid:%ld pid=%ld generation=0 stream=0x%llx context_id=stream:0x%llx queue_id=stream:0x%llx ptr=0x%llx aux=%llu attachment_provenance=native_runtime_intercept\n",
+            event_token,
+            session,
+            pid,
+            pid,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            0ULL);
+    }
+}
+
 __attribute__((constructor))
 static void synthi_log_native_launch_observer_ready(void) {
     char mode_token[128];
@@ -370,6 +403,7 @@ static void synthi_log_native_launch_observer_ready(void) {
         synthi_observed_function_resolution_apis(),
         synthi_observed_texture_object_apis(),
         synthi_observed_array_allocation_apis());
+    synthi_log_native_host_identity("native_observer_ready", 0, NULL);
 }
 
 static unsigned long long synthi_next_sequence(void) {
@@ -858,6 +892,7 @@ static void synthi_log_native_launch_attempt(
         (unsigned long long)(uintptr_t)stream,
         shared_bytes,
         real_launch_resolved ? "true" : "false");
+    synthi_log_native_host_identity("native_launch_attempt", sequence, stream);
     synthi_log_native_launch_candidates(sequence, function, kernel_symbol);
 }
 
@@ -905,6 +940,7 @@ static void synthi_log_native_launch(
         kernel_symbol,
         session,
         (long)getpid());
+    synthi_log_native_host_identity("native_launch_observed", sequence, stream);
 }
 
 static int synthi_module_launch(

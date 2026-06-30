@@ -155,6 +155,18 @@ function processIdFromRuntimeSession(value) {
   return match ? `pid:${match[1]}` : null;
 }
 
+function normalizedProcessId(value) {
+  const token = String(value ?? '').trim();
+  if (!token) return null;
+  const prefixed = token.match(/^pid:(\d+)$/i);
+  if (prefixed) return `pid:${prefixed[1]}`;
+  const compact = token.match(/^pid(\d+)$/i);
+  if (compact) return `pid:${compact[1]}`;
+  const numeric = token.match(/^\d+$/);
+  if (numeric) return `pid:${numeric[0]}`;
+  return null;
+}
+
 function processIdsFromRuntimeSessions(values) {
   return compactStringList((Array.isArray(values) ? values : [])
     .map(processIdFromRuntimeSession)
@@ -647,6 +659,10 @@ function hostIdentityRecord(line) {
     aux: fields.aux ?? null,
     generation: integerValue(fields.generation),
     runtimeSession: fields.runtime_session ?? null,
+    processId: normalizedProcessId(fields.process_id ?? fields.pid),
+    deviceUuid: fields.device_uuid ?? fields.device_id ?? null,
+    contextId: fields.context_id ?? fields.context ?? null,
+    queueId: fields.queue_id ?? fields.queue ?? fields.stream ?? null,
   };
 }
 
@@ -765,7 +781,6 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     }
   }
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
-  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const byRole = new Map();
   for (const record of records) {
@@ -812,6 +827,13 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   optionalChangedRoles.sort();
   lineageMissingRoles.sort();
   optionalLineageMissingRoles.sort();
+  const processIds = compactStringList([
+    ...records.map((record) => record.processId),
+    ...processIdsFromRuntimeSessions(runtimeSessionIds),
+  ]);
+  const deviceUuids = compactStringList(records.map((record) => record.deviceUuid));
+  const contextIds = compactStringList(records.map((record) => record.contextId));
+  const queueIds = compactStringList(records.map((record) => record.queueId));
   const preservedRoleCategories = compactStringList(
     preservedRoles.map((role) => hostIdentityRoleCategory(role)),
   );
@@ -841,6 +863,12 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     role_count: byRole.size,
     process_id: processIds.length === 1 ? processIds[0] : null,
     process_ids: processIds,
+    device_uuid: deviceUuids.length === 1 ? deviceUuids[0] : null,
+    device_uuids: deviceUuids,
+    context_id: contextIds.length === 1 ? contextIds[0] : null,
+    context_ids: contextIds,
+    queue_id: queueIds.length === 1 ? queueIds[0] : null,
+    queue_ids: queueIds,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: records.length > 0,

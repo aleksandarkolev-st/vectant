@@ -14771,7 +14771,8 @@ function realRocmNativeRuntimeProofBridgeFacet({
     && (runtimeHostPreservation?.proof?.resultState === 'gpu-hmr-host-preservation-proven'
       || hostEvidence.process_preserved === true
       || hostEvidence.same_process === true
-      || Number(hostEvidence.preserved_count ?? hostEvidence.total_count ?? 0) > 0);
+      || hostEvidence.identity_checks_passed === true
+      || Number(hostEvidence.preserved_count ?? 0) > 0);
   const dispatchEpoch = firstRuntimeText(
     runtimeDispatch.epoch,
     ...(Array.isArray(runtimeDispatch.epochs) ? runtimeDispatch.epochs : []),
@@ -15147,7 +15148,8 @@ function realRocmSameProcessRuntimeOracleFacet({
     && (runtimeHostPreservation?.proof?.resultState === 'gpu-hmr-host-preservation-proven'
       || hostEvidence.process_preserved === true
       || hostEvidence.same_process === true
-      || Number(hostEvidence.preserved_count ?? hostEvidence.total_count ?? 0) > 0);
+      || hostEvidence.identity_checks_passed === true
+      || Number(hostEvidence.preserved_count ?? 0) > 0);
   const dispatchUsedPublishedEpoch =
     dispatchTraceObserved
     && epochPublicationObserved
@@ -19515,6 +19517,78 @@ async function selfCheckRuntimeDispatchEvidence() {
     runtimeStageObligations: nativeOnlyStageObligations,
     runtimeEligibility: nativeOnlyEligibility,
   });
+  const nativeHostIdentityLines = [
+    '[gpu-runtime-boundary] native_launch_observer_ready runtime_session=native-session process_id=pid:42 pid=42 mode=observe_only apis=genericLaunch function_resolution_apis=genericGetFunction texture_object_apis=genericTextureCreate array_allocation_apis=genericArrayAlloc attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] host_identity event=native_observer_ready role=runner_process runtime_session=native-session process_id=pid:42 pid=42 generation=0 ptr=0x2a aux=0 attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] native_function_resolution api=genericGetFunction runtime_session=native-session process_id=pid:42 module=0x9 symbol=kernel function_ptr=0x1 result=0 resolution=ok real_resolver_resolved=true attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] native_launch_attempt api=genericLaunch runtime_session=native-session process_id=pid:42 sequence=1 function_ptr=0x1 kernel_symbol=kernel grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 real_launch_resolved=true dispatch=attempted-native attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] host_identity event=native_launch_attempt role=runner_process runtime_session=native-session process_id=pid:42 pid=42 generation=0 ptr=0x2a aux=0 attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] host_identity event=native_launch_attempt role=stream_context runtime_session=native-session process_id=pid:42 pid=42 generation=0 stream=0x3 context_id=stream:0x3 queue_id=stream:0x3 ptr=0x3 aux=0 attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] native_launch_observed api=genericLaunch runtime_session=native-session process_id=pid:42 sequence=1 function_ptr=0x1 kernel_symbol=kernel grid=(1,1,1) block=(1,1,1) args_ptr=0x2 stream=0x3 shared_bytes=0 result=0 dispatch=observed-native attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] host_identity event=native_launch_observed role=runner_process runtime_session=native-session process_id=pid:42 pid=42 generation=0 ptr=0x2a aux=0 attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] host_identity event=native_launch_observed role=stream_context runtime_session=native-session process_id=pid:42 pid=42 generation=0 stream=0x3 context_id=stream:0x3 queue_id=stream:0x3 ptr=0x3 aux=0 attachment_provenance=native_runtime_intercept',
+    '[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:1 dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 function_ptr=0x1 kernel_symbol=kernel runtime_session=native-session process_id=pid:42',
+  ];
+  const nativeHostIdentityRuntimeEvidence = runtimeEvidenceFromValidationLogs({
+    slug: 'target-session',
+    workerLogs: '',
+    upstreamRunLog: nativeHostIdentityLines.join('\n'),
+  });
+  const nativeHostIdentityObservation = runtimeNativeLaunchObservationEvidence(
+    nativeHostIdentityRuntimeEvidence.runtimeEvidence,
+  );
+  const nativeHostIdentityDispatch = runtimeDispatchEvidence(
+    nativeHostIdentityRuntimeEvidence.runtimeEvidence,
+  );
+  const nativeHostIdentityHostPreservation = hostPreservationProofFromRuntimeEvidence(
+    nativeHostIdentityRuntimeEvidence.runtimeEvidence,
+    { runtimeSessionIds: ['native-session'] },
+  );
+  const nativeHostIdentityBoundary = nativeRocmLaunchBoundaryRefusalFacet({
+    nativeObservation: nativeHostIdentityObservation,
+    runtimeDispatch: nativeHostIdentityDispatch,
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+    runtimeOutputOracle: { total_count: 0 },
+    runtimeHostPreservation: nativeHostIdentityHostPreservation,
+    outputOracleResolution: {
+      mode: 'none',
+      requestedProfile: 'none',
+      runtimeProfilePresent: false,
+      contractPresent: false,
+    },
+    fullRuntimeProof: { fullRuntimeProven: false },
+  });
+  const nativeHostIdentitySameProcess = realRocmSameProcessRuntimeOracleFacet({
+    appHookContractFacet: nativeOnlyMissingHook,
+    nativeRuntimeBridgeFacet: {},
+    runtimeDispatch: nativeHostIdentityDispatch,
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+    runtimeOutputOracle: { total_count: 0 },
+    runtimeHostPreservation: nativeHostIdentityHostPreservation,
+    fullRuntimeProof: { fullRuntimeProven: false },
+    firewallEvidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    },
+  });
+  const nativeHostIdentityStageObligations = realRocmRuntimeStageObligationsFacet({
+    nativeLaunchBoundary: nativeHostIdentityBoundary,
+    sameProcessRuntimeOracle: nativeHostIdentitySameProcess,
+    runtimeCapabilityPreflight: { observed: true },
+    fullRuntimeProof: { fullRuntimeProven: false },
+    firewallEvidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+    },
+    profileProofObligations: {
+      requiresFullRuntimeProof: true,
+      requiresAppHookContract: true,
+    },
+  });
   const declaredHookContract = normalizeRealRocmAppHookContract({
     required: true,
     artifactTransport: { evidenceRefs: ['hook:artifact-transport'] },
@@ -19863,6 +19937,76 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !summarizeGpuHmrOriginalHostPathProof(nativeOnlyOriginalHost.proof).includes('array_capability=unavailable')
   ) {
     throw new Error('native launch observation self-check must remain observe-only');
+  }
+  const nativeHostIdentitySelfCheckFailures = [
+    ['host_identity_count', nativeHostIdentityHostPreservation.evidence.total_count === 5],
+    ['process_id', nativeHostIdentityHostPreservation.evidence.process_id === 'pid:42'],
+    ['context_id', nativeHostIdentityHostPreservation.evidence.context_id === 'stream:0x3'],
+    ['queue_id', nativeHostIdentityHostPreservation.evidence.queue_id === 'stream:0x3'],
+    ['device_uuid_absent', nativeHostIdentityHostPreservation.evidence.device_uuid === null],
+    [
+      'identity_checks_not_passed',
+      nativeHostIdentityHostPreservation.evidence.identity_checks_passed === false,
+    ],
+    [
+      'roles_not_changed',
+      Array.isArray(nativeHostIdentityHostPreservation.evidence.changed_roles)
+        && nativeHostIdentityHostPreservation.evidence.changed_roles.length === 0,
+    ],
+    [
+      'host_preservation_not_proven',
+      nativeHostIdentityHostPreservation.proof.resultState !== 'gpu-hmr-host-preservation-proven',
+    ],
+    ['boundary_host_observed', nativeHostIdentityBoundary.host_identity_observed === true],
+    [
+      'boundary_host_gap_closed',
+      !nativeHostIdentityBoundary.blocking_gaps.includes('host_identity_not_observed'),
+    ],
+    ['boundary_refusal', nativeHostIdentityBoundary.status === 'refusal_evidence'],
+    [
+      'artifact_gap_remains',
+      nativeHostIdentityBoundary.blocking_gaps.includes('artifact_transport_not_observed'),
+    ],
+    ['epoch_gap_remains', nativeHostIdentityBoundary.blocking_gaps.includes('epoch_not_observed')],
+    [
+      'oracle_gap_remains',
+      nativeHostIdentityBoundary.blocking_gaps.includes('output_oracle_profile_absent'),
+    ],
+    [
+      'same_process_host_observed',
+      nativeHostIdentitySameProcess.stage_results?.host_identity?.observed === true,
+    ],
+    [
+      'same_process_identity_not_proven',
+      nativeHostIdentitySameProcess.stage_results?.host_identity?.same_process_identity_observed === false,
+    ],
+    [
+      'same_process_device_missing',
+      nativeHostIdentitySameProcess.stage_results?.host_identity?.missing_proof_kinds
+        ?.includes('device_identity') === true,
+    ],
+    [
+      'stage_host_runtime_observed',
+      nativeHostIdentityStageObligations.stage_results?.host_identity?.runtime_observed === true,
+    ],
+    [
+      'stage_device_missing',
+      nativeHostIdentityStageObligations.stage_results?.host_identity?.missing_proof_kinds
+        ?.includes('device_identity') === true,
+    ],
+    [
+      'stage_gap_remains',
+      nativeHostIdentityStageObligations.blocking_gaps
+        .includes('host_identity_device_identity_missing'),
+    ],
+    ['stage_not_accepted', nativeHostIdentityStageObligations.accepted === false],
+  ].filter(([, passed]) => !passed).map(([name]) => name);
+  if (nativeHostIdentitySelfCheckFailures.length > 0) {
+    throw new Error(
+      `native host identity breadcrumbs must remain non-authoritative without full proof: ${
+        nativeHostIdentitySelfCheckFailures.join(',')
+      }`,
+    );
   }
   const placeholderNativeEligibility = realRocmRuntimeEligibilityFacet({
     nativeBoundary: { observed: true },
