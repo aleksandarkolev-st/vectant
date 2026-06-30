@@ -14,6 +14,7 @@ const {
   controlPlane: {
     listProjects: vi.fn(),
     createProject: vi.fn(),
+    getEvents: vi.fn(),
     getControlState: vi.fn(),
     recordTransactionWrite: vi.fn(),
     validateTransaction: vi.fn(),
@@ -158,6 +159,28 @@ describe('CodeSite catch-all route', () => {
       decision: { ok: true, reasonCodes: ['serializable_validation_passed'] },
     });
     expect(controlPlane.validateTransaction).toHaveBeenCalledWith('acme', 'txn-1');
+  });
+
+  it('streams project events as server-sent events', async () => {
+    controlPlane.getEvents.mockResolvedValueOnce([
+      { id: 'evt-1', eventType: 'flight_plan_filed', displayCallsign: 'ATLAS-1' },
+    ]);
+    const controller = new AbortController();
+
+    const response = await GET(
+      new Request('http://test/api/workspace/acme/codesite/projects/proj-1/events/stream', { signal: controller.signal }),
+      params(['projects', 'proj-1', 'events', 'stream']),
+    );
+    const reader = response.body.getReader();
+    const chunk = await reader.read();
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    const text = new TextDecoder().decode(chunk.value);
+
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(text).toContain('event: flight_plan_filed');
+    expect(text).toContain('data:');
+    expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null);
   });
 
   it('rejects unauthenticated read access before dispatch', async () => {

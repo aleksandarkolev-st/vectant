@@ -78,12 +78,12 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'events' && route[3] === 'stream') {
-      const events = await getEvents(slug, route[1], new URL(request.url).searchParams.get('since'));
-      return new Response(events.map((event) => `event: ${event.eventType}\ndata: ${JSON.stringify(event)}\n\n`).join(''), {
-        headers: {
-          'content-type': 'text/event-stream; charset=utf-8',
-          'cache-control': 'no-store',
-        },
+      return eventStreamResponse({
+        signal: request.signal,
+        initialSince: new URL(request.url).searchParams.get('since'),
+        load: (since) => getEvents(slug, route[1], since),
+        eventName: (event) => event.eventType || 'codesite_event',
+        idOf: (event) => event.id,
       });
     }
 
@@ -116,6 +116,15 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
       return okJson(await validateTransaction(slug, route[1]));
+    }
+
+    if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] === 'stream') {
+      return eventStreamResponse({
+        signal: request.signal,
+        load: () => getAgentInbox(slug, route[1]),
+        eventName: () => 'codesite_inbox',
+        idOf: (item) => item.eventId || item.id,
+      });
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox') {
@@ -278,6 +287,67 @@ export async function POST(request, { params }) {
     return handleCodesiteError(error);
   }
 }
+
+function eventStreamResponse({ signal, initialSince = null, load, eventName, idOf }) {
+  const encoder = new TextEncoder();
+  let since = initialSince || null;
+  const seen = new Set();
+  let timer = null;
+  let closed = false;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      async function send() {
+        if (closed) return;
+        try {
+          const items = await load(since);
+          let emitted = 0;
+          for (const item of Array.isArray(items) ? items : []) {
+            const id = idOf(item);
+            if (id && seen.has(id)) continue;
+            if (id) {
+              seen.add(id);
+              since = id;
+            }
+            controller.enqueue(encoder.encode(`id: ${id || Date.now()}\nevent: ${eventName(item)}\ndata: ${JSON.stringify(item)}\n\n`));
+            emitted += 1;
+          }
+          if (!emitted) controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+        } catch (error) {
+          controller.enqueue(encoder.encode(`event: codesite_stream_error\ndata: ${JSON.stringify({ error: error?.message || 'stream_failed' })}\n\n`));
+        }
+      }
+
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (timer) windowClearInterval(timer);
+        try {
+          controller.close();
+        } catch (_) {}
+      };
+
+      signal?.addEventListener('abort', close, { once: true });
+      await send();
+      timer = windowSetInterval(send, 1500);
+    },
+    cancel() {
+      closed = true;
+      if (timer) windowClearInterval(timer);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store, no-transform',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+const windowSetInterval = globalThis.setInterval.bind(globalThis);
+const windowClearInterval = globalThis.clearInterval.bind(globalThis);
 
 export function PUT() {
   return methodNotAllowed('PUT');
