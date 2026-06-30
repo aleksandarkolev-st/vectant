@@ -10,6 +10,16 @@ class CodeSiteFSDeniedError extends Error {
   }
 }
 
+class CodeSiteCommitBlockedError extends Error {
+  constructor(message, details = {}) {
+    super(message || 'codesite_commit_blocked');
+    this.name = 'CodeSiteCommitBlockedError';
+    this.code = 'CODESITE_COMMIT_BLOCKED';
+    this.status = 409;
+    this.details = details;
+  }
+}
+
 function normalizeRepoRelativePath(input) {
   if (!input || typeof input !== 'string') {
     throw new Error('path_required');
@@ -269,6 +279,52 @@ async function recordCodeSiteWriteAttempt(context, result, options = {}) {
   return body;
 }
 
+async function completeCodeSiteCommitProof(context, data = {}, options = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const fetchImpl = options.fetch || global.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('codesite_control_plane_fetch_unavailable');
+  }
+  const baseUrl = resolveControlPlaneBaseUrl(context);
+  if (!baseUrl) {
+    throw new Error('codesite_control_plane_url_required');
+  }
+  const url = `${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/commit`;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const codesite = data.codesite || data.codeSite || {};
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      evidenceRefs: value(data.evidenceRefs, data.evidence_refs, codesite.evidenceRefs, codesite.evidence_refs, []),
+      dojoEvidenceRefs: value(data.dojoEvidenceRefs, data.dojo_evidence_refs, codesite.dojoEvidenceRefs, codesite.dojo_evidence_refs, []),
+      incidentReplayDigest: value(data.incidentReplayDigest, data.incident_replay_digest, codesite.incidentReplayDigest, codesite.incident_replay_digest),
+      commitSha: value(data.commitSha, data.commit_sha, codesite.commitSha, codesite.commit_sha),
+    }),
+  });
+  const body = await readJsonBody(response);
+  if (!response.ok) {
+    throw new CodeSiteCommitBlockedError('codesite_commit_proof_failed', {
+      status: response.status,
+      response: body,
+    });
+  }
+  if (body?.decision && body.decision.ok === false) {
+    throw new CodeSiteCommitBlockedError('codesite_transaction_not_committable', body.decision);
+  }
+  if (!body?.proofBundle) {
+    throw new CodeSiteCommitBlockedError('codesite_proof_bundle_missing', body);
+  }
+  return body;
+}
+
 function resolveControlPlaneBaseUrl(context) {
   const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
   if (explicit) {
@@ -384,7 +440,12 @@ function isCodeSiteDeniedError(error) {
   return error?.code === 'CODESITE_WRITE_DENIED';
 }
 
+function isCodeSiteCommitBlockedError(error) {
+  return error?.code === 'CODESITE_COMMIT_BLOCKED';
+}
+
 module.exports = {
+  CodeSiteCommitBlockedError,
   CodeSiteFSDeniedError,
   assertCodeSiteWriteAllowed,
   assertCodeSiteWritesAllowed,
@@ -393,9 +454,11 @@ module.exports = {
   codeSiteContextFromRequest,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  completeCodeSiteCommitProof,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   evaluateCodeSiteWrite,
+  isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
   normalizeRepoRelativePath,
 };

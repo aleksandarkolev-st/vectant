@@ -7,6 +7,7 @@ const {
   codeSiteContextFromRequest,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  completeCodeSiteCommitProof,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   normalizeRepoRelativePath,
@@ -259,4 +260,59 @@ test('does not duplicate existing CodeSite trailers', () => {
   });
   assert.strictEqual((message.match(/CodeSite-Transaction:/g) || []).length, 1);
   assert.match(message, /CodeSite-Lease: lease-2/);
+});
+
+test('completes transaction proof before proof-carrying commits', async () => {
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({
+      transaction: { id: 'txn-1' },
+      proofBundle: {
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        readSetDigest: 'sha256:read',
+        writeSetDigest: 'sha256:write',
+        bundleDigest: 'sha256:bundle',
+        invariants: ['clearance.diff.inside_route'],
+      },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  const proof = await completeCodeSiteCommitProof(context, {
+    evidenceRefs: ['docker:vitest'],
+  }, { fetch });
+
+  assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/commit');
+  assert.deepStrictEqual(JSON.parse(calls[0].options.body).evidenceRefs, ['docker:vitest']);
+  const message = codeSiteCommitMessage('Land transaction', { codesite: { proofBundle: proof.proofBundle } });
+  assert.match(message, /CodeSite-Transaction: txn-1/);
+  assert.match(message, /CodeSite-Read-Set: sha256:read/);
+  assert.match(message, /CodeSite-Black-Box: sha256:bundle/);
+});
+
+test('blocks proof-carrying commits when transaction validation fails', async () => {
+  const fetch = async () => new Response(JSON.stringify({
+    decision: { ok: false, reasonCodes: ['stale_read_detected'] },
+  }), { status: 200 });
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  await assert.rejects(
+    () => completeCodeSiteCommitProof(context, {}, { fetch }),
+    (error) => error.code === 'CODESITE_COMMIT_BLOCKED'
+      && error.details.reasonCodes.includes('stale_read_detected'),
+  );
 });

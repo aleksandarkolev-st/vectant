@@ -38,8 +38,10 @@ const {
   codeSiteContextFromRequest,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  completeCodeSiteCommitProof,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
+  isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
 } = require('./codesiteFs');
 
@@ -4219,9 +4221,19 @@ const server = http.createServer(async (req, res) => {
                     result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                     break;
                 case 'commit':
+                    const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data);
+                    const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
+                      ? {
+                        ...data,
+                        codesite: {
+                          ...(data.codesite || data.codeSite || {}),
+                          proofBundle: codeSiteCommitProof.proofBundle,
+                        },
+                      }
+                      : data;
                     result = await withTelemetry('git:commit', () => gitService.commit(
                       slug,
-                      codeSiteCommitMessage(data.message, data),
+                      codeSiteCommitMessage(data.message, codeSiteCommitPayload),
                       effectiveUserId,
                       data.amend,
                       commitIdentity,
@@ -4781,6 +4793,15 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
             if (isCodeSiteDeniedError(e)) {
                 writeCodeSiteDenied(res, e);
+                return;
+            }
+            if (isCodeSiteCommitBlockedError(e)) {
+                res.writeHead(e.status || 409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: 'codesite_commit_blocked',
+                    message: e.message,
+                    details: e.details || {},
+                }));
                 return;
             }
             // Handle structured GitError responses
