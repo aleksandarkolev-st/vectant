@@ -20866,6 +20866,25 @@ function randomColdPathRowsForBroadReadiness(rows) {
       ?? row.cold_runtime_boundary_event_manifest_template,
     );
     const authority = firstText(facet.proofAuthority, facet.proof_authority);
+    const profileMode = firstText(
+      facet.profileMode,
+      facet.profile_mode,
+      row.profileMode,
+      row.profile_mode,
+      row.profileId,
+      row.profile_id,
+    );
+    const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
+    const repoPath = firstText(facet.repoPath, facet.repo_path, row.repoPath, row.repo_path);
+    const immutableCommit = firstText(
+      facet.immutableCommit,
+      facet.immutable_commit,
+      row.immutableCommit,
+      row.immutable_commit,
+    );
+    const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
+      && Boolean(immutableCommit)
+      && Boolean(sourceUrl || repoPath);
     const sourceAccepted = firstBool(
       row.sourceTreeIntakeAccepted,
       row.source_tree_intake_accepted,
@@ -20894,6 +20913,7 @@ function randomColdPathRowsForBroadReadiness(rows) {
       || firstBool(template.gpuHmrSuccess, template.gpu_hmr_success) === true
       || firstBool(template.canSatisfyRuntimeProof, template.can_satisfy_runtime_proof) === true;
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
+      && arbitraryColdIntake
       && sourceAccepted
       && buildMetadataAccepted
       && templateAccepted

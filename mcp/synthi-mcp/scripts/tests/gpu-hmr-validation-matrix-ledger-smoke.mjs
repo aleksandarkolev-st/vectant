@@ -7292,15 +7292,24 @@ function refusalMatrixRow(targetId, backend = 'hip') {
   });
 }
 
-function randomColdReadinessMatrixRow(targetId = 'random-cold-readiness-user-project') {
+function randomColdReadinessMatrixRow({
+  targetId = 'random-cold-readiness-user-project',
+  profileMode = 'unprofiled_arbitrary_project_cold_intake',
+  candidateSource = 'direct_source_url_commit',
+  resultStatus = 'unprofiled_arbitrary_project_cold_intake_refused',
+  sourceUrl = 'https://example.invalid/user/project.git',
+  immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
+} = {}) {
   return withQueryRecomputedRowId({
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
     backend: 'webgpu',
     targetId,
     target_id: targetId,
-    profileId: 'unprofiled_arbitrary_project_cold_intake',
-    profile_id: 'unprofiled_arbitrary_project_cold_intake',
+    profileId: profileMode,
+    profile_id: profileMode,
+    profileMode,
+    profile_mode: profileMode,
     proofMode: 'random_large_project_cold_path',
     proof_mode: 'random_large_project_cold_path',
     matrixOutcome: 'refusal_proven',
@@ -7327,10 +7336,18 @@ function randomColdReadinessMatrixRow(targetId = 'random-cold-readiness-user-pro
       gpu_hmr_success: false,
       canSatisfyRuntimeProof: false,
       can_satisfy_runtime_proof: false,
+      profileMode,
+      profile_mode: profileMode,
+      candidateSource,
+      candidate_source: candidateSource,
       candidateId: targetId,
       candidate_id: targetId,
-      resultStatus: 'unprofiled_arbitrary_project_cold_intake_refused',
-      result_status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      sourceUrl,
+      source_url: sourceUrl,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+      resultStatus,
+      result_status: resultStatus,
       failedGates: [],
       failed_gates: [],
     },
@@ -7344,10 +7361,18 @@ function randomColdReadinessMatrixRow(targetId = 'random-cold-readiness-user-pro
       gpu_hmr_success: false,
       canSatisfyRuntimeProof: false,
       can_satisfy_runtime_proof: false,
+      profileMode,
+      profile_mode: profileMode,
+      candidateSource,
+      candidate_source: candidateSource,
       candidateId: targetId,
       candidate_id: targetId,
-      resultStatus: 'unprofiled_arbitrary_project_cold_intake_refused',
-      result_status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      sourceUrl,
+      source_url: sourceUrl,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+      resultStatus,
+      result_status: resultStatus,
       failedGates: [],
       failed_gates: [],
     },
@@ -7415,6 +7440,10 @@ function randomColdReadinessMatrixRow(targetId = 'random-cold-readiness-user-pro
     build_metadata_content_accepted: true,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
     reasons: ['strict_runtime_ledger_missing'],
     openGaps: ['strict_runtime_ledger_missing'],
     open_gaps: ['strict_runtime_ledger_missing'],
@@ -7884,6 +7913,33 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithoutRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_random_large_project_cold_path',
+  ),
+);
+const broadReadinessWithProfiledColdOnlyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    randomColdReadinessMatrixRow({
+      targetId: 'profiled-cold-readiness-large-rocm',
+      profileMode: 'profile_backed_real_rocm_runner',
+      candidateSource: 'configured_candidate_pool',
+      resultStatus: 'runner_timeout_failed_closed',
+      sourceUrl: 'https://example.invalid/profiled/large-rocm.git',
+    }),
+  ],
+});
+assert.equal(broadReadinessWithProfiledColdOnlyQuery.accepted, true);
+assert.equal(
+  broadReadinessWithProfiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithProfiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithProfiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
     'broad_acceptance_requires_random_large_project_cold_path',
   ),
 );
