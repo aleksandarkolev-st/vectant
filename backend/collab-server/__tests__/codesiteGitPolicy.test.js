@@ -46,6 +46,11 @@ test('maps tags, stash refs, and remotes to ref/config attempts', () => {
     kind: 'commit',
     tool: 'git_refs',
   }]);
+  assert.deepEqual(codeSiteGitActionAttempts('push'), [{
+    path: '**',
+    kind: 'push',
+    tool: 'git_refs',
+  }]);
   assert.deepEqual(codeSiteGitActionAttempts('create-tag'), [{
     path: '**',
     kind: 'create-tag',

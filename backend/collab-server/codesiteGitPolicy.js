@@ -34,6 +34,7 @@ const REPO_WORKTREE_ACTIONS = new Set([
 
 const GIT_REF_ACTIONS = new Set([
   'commit',
+  'push',
   'create-tag',
   'delete-tag',
   'push-tag',
