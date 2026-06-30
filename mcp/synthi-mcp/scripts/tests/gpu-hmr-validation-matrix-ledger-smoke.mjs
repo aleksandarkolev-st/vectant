@@ -15373,6 +15373,17 @@ adapterOverlayOnlyClosureReport.runtime_proof_artifact.proofLedgerQuery =
   adapterOverlayOnlyClosureProofLedgerQuery;
 adapterOverlayOnlyClosureReport.runtime_proof_artifact.proof_ledger_query =
   adapterOverlayOnlyClosureProofLedgerQuery;
+const adapterOverlayOnlyClosureAdapterResult = {
+  ...adapterOverlayOnlyClosureReport.real_rocm_runtime_profile_adapter_result,
+  proofLedgerId: adapterOverlayOnlyClosureProofLedger.proofId,
+  proof_ledger_id: adapterOverlayOnlyClosureProofLedger.proofId,
+};
+adapterOverlayOnlyClosureReport.real_rocm_runtime_profile_adapter_result =
+  adapterOverlayOnlyClosureAdapterResult;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.realRocmRuntimeProfileAdapterResult =
+  adapterOverlayOnlyClosureAdapterResult;
+adapterOverlayOnlyClosureReport.runtime_proof_artifact.real_rocm_runtime_profile_adapter_result =
+  adapterOverlayOnlyClosureAdapterResult;
 await writeJson(
   path.join(
     adapterOverlayOnlyClosureDir,
@@ -15391,20 +15402,32 @@ const adapterOverlayOnlyClosureRow =
   adapterOverlayOnlyClosureLedger.rows.find(
     (row) => row.proofMode === 'real_rocm_repo_validation',
   );
-assert.equal(adapterOverlayOnlyClosureRow?.matrixOutcome, 'unproven');
-assert.equal(adapterOverlayOnlyClosureRow.acceptedForGpuHmr, false);
-assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
-  (failure) =>
-    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_transport_kind_missing',
-));
-assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
-  (failure) =>
-    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_dispatch_table_entry_missing',
-));
-assert.ok(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.failedGates.some(
-  (failure) =>
-    failure.code === 'real_rocm_runtime_chain_adapter_overlay_base_output_target_missing',
-));
+assert.equal(adapterOverlayOnlyClosureRow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(adapterOverlayOnlyClosureRow.acceptedForGpuHmr, true);
+assert.equal(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.accepted, true);
+assert.equal(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.adapterBoundaryOverlayAccepted, true);
+assert.deepEqual(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.adapterOverlayClosureGaps, []);
+assert.deepEqual(adapterOverlayOnlyClosureRow.realRocmRuntimeChain.adapterOverlayBaseClosureGaps, []);
+assert.equal(
+  adapterOverlayOnlyClosureRow.realRocmRuntimeChain.selectedLoaderTransport,
+  'ram_bytes',
+);
+assert.equal(
+  adapterOverlayOnlyClosureRow.realRocmRuntimeChain.dispatchTableEntryId,
+  `dispatch-table-entry:${completeAdapterBoundaryBridgeScope}`,
+);
+assert.equal(
+  adapterOverlayOnlyClosureRow.realRocmRuntimeChain.outputTargetId,
+  `output-target:${completeAdapterBoundaryBridgeScope}`,
+);
+assert.equal(
+  adapterOverlayOnlyClosureLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  adapterOverlayOnlyClosureLedger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows,
+  0,
+);
 
 const adapterBoundaryWeakHostIdentityDir = path.join(
   logsRoot,

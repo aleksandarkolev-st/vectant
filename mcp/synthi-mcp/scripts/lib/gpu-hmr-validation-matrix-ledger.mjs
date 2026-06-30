@@ -14318,8 +14318,13 @@ function realRocmRuntimeChainFacet({
     ...adapterResultConflictCodes,
     ...adapterExecutionConflictCodes,
   ]);
-  const adapterOverlayBaseClosureGaps = adapterBoundaryOverlayLineCount > 0
-    ? runtimeChainBaseClosureGaps(baseRecord)
+  const adapterOverlayClosureGaps = adapterBoundaryOverlayLineCount > 0
+    ? runtimeChainBaseClosureGaps(record).map((code) =>
+      code.replace(
+        'real_rocm_runtime_chain_adapter_overlay_base_',
+        'real_rocm_runtime_chain_adapter_overlay_merged_',
+      )
+    )
     : [];
   const loaderEvent = compactObject(record.loaderEvent ?? record.loader_event);
   const epochPublishEvent = compactObject(record.epochPublishEvent ?? record.epoch_publish_event);
@@ -14469,7 +14474,7 @@ function realRocmRuntimeChainFacet({
     record.processRestarted === false || record.process_restarted === false
       ? null
       : 'real_rocm_runtime_chain_process_restart_not_false',
-    ...adapterOverlayBaseClosureGaps,
+    ...adapterOverlayClosureGaps,
     ...adapterOverlayConflictCodes,
   ]);
   const failedGates = failedGateCodes.map((code) => ({ code }));
@@ -14509,8 +14514,10 @@ function realRocmRuntimeChainFacet({
     adapter_boundary_overlay_evidence_refs: adapterBoundaryOverlayEvidenceRefs,
     adapterBoundaryOverlaySources: adapterBoundaryOverlaySources,
     adapter_boundary_overlay_sources: adapterBoundaryOverlaySources,
-    adapterOverlayBaseClosureGaps,
-    adapter_overlay_base_closure_gaps: adapterOverlayBaseClosureGaps,
+    adapterOverlayClosureGaps,
+    adapter_overlay_closure_gaps: adapterOverlayClosureGaps,
+    adapterOverlayBaseClosureGaps: [],
+    adapter_overlay_base_closure_gaps: [],
     failedGates,
     failed_gates: failedGates,
   };
