@@ -193,9 +193,20 @@ function assertCodeSiteWritesAllowed(context, attempts) {
 }
 
 async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
-  const result = assertCodeSiteWriteAllowed(context, attempt);
-  if (result.ok) {
-    await recordCodeSiteWriteAttempt(context, result, options);
+  const result = evaluateCodeSiteWrite(context, attempt);
+  if (context?.active && context.transactionId) {
+    try {
+      await recordCodeSiteWriteAttempt(context, result, {
+        ...options,
+        acceptDenied: options.acceptDenied || !result.ok || context.mode === 'monitor',
+      });
+    } catch (error) {
+      if (result.ok) throw error;
+      result.event.details.persistence_error = error?.message || 'codesite_denied_write_persistence_failed';
+    }
+  }
+  if (!result.ok && context?.mode !== 'monitor') {
+    throw new CodeSiteFSDeniedError(result.event);
   }
   return result;
 }
@@ -239,7 +250,7 @@ async function recordCodeSiteWriteAttempt(context, result, options = {}) {
     }),
   });
   const body = await readJsonBody(response);
-  if (!response.ok || body?.ok === false) {
+  if ((!response.ok || body?.ok === false) && !(options.acceptDenied && body?.ok === false)) {
     throw new CodeSiteFSDeniedError({
       ...result.event,
       type: 'write_denied',

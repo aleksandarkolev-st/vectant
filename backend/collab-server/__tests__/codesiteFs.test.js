@@ -187,6 +187,37 @@ test('enforcement fails closed when persisted transaction policy rejects the wri
   );
 });
 
+test('enforcement records local denied writes before throwing', async () => {
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({
+      ok: false,
+      policyDecision: { reasonCodes: ['outside_clearance_route'] },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['synthi/src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, { path: 'api/auth/signup.ts', tool: 'file_write' }, { fetch }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('outside_clearance_route'),
+  );
+
+  assert.strictEqual(calls.length, 1);
+  const body = JSON.parse(calls[0].options.body);
+  assert.strictEqual(body.path, 'api/auth/signup.ts');
+  assert.strictEqual(body.codesiteFsEvent.type, 'write_denied');
+  assert.deepStrictEqual(body.codesiteFsEvent.details.reason_codes, ['outside_clearance_route']);
+});
+
 test('formats proof-carrying CodeSite commit trailers', () => {
   const message = codeSiteCommitMessage('Implement checkout', {
     codesite: {

@@ -17,6 +17,9 @@ const { prisma } = vi.hoisted(() => ({
       create: vi.fn(),
       findMany: vi.fn(),
     },
+    codeSitePolicyDecision: {
+      create: vi.fn(),
+    },
     codeSiteProofBundle: {
       findFirst: vi.fn(),
     },
@@ -34,7 +37,7 @@ vi.mock('@/lib/prisma', () => ({
   default: prisma,
 }));
 
-import { getIncidentReplay, getProofBundle, validateTransaction } from '../controlPlane.js';
+import { getIncidentReplay, getProofBundle, recordTransactionWrite, validateTransaction } from '../controlPlane.js';
 
 function transactionFixture() {
   return {
@@ -90,6 +93,11 @@ describe('CodeSite control plane transaction validation', () => {
     prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
     prisma.codeSiteEvent.count.mockResolvedValue(1);
     prisma.codeSiteEvent.create.mockResolvedValue({ id: 'event-validation' });
+    prisma.codeSitePolicyDecision.create.mockImplementation(async ({ data }) => ({
+      id: 'decision-1',
+      createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      ...data,
+    }));
   });
 
   it('does not mark a transaction stale because of its own write event', async () => {
@@ -115,6 +123,41 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'validated' }),
+    }));
+  });
+
+  it('records CodeSiteFS denied write evidence before returning a block decision', async () => {
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      tool: 'file_write',
+      codesiteFsEvent: {
+        type: 'write_denied',
+        transaction_id: 'txn-1',
+        path: 'synthi/prisma/schema.prisma',
+        details: {
+          reason_codes: ['outside_clearance_route'],
+          process_ancestry: ['collab-server', 'exec'],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.policyDecision).toMatchObject({
+      decision: 'block',
+      reasonCodes: ['outside_clearance_route'],
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_attempted',
+        detailsJson: expect.stringContaining('codesiteFsEvent'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_denied',
+        actorType: 'codesitefs',
+        detailsJson: expect.stringContaining('outside_clearance_route'),
+      }),
     }));
   });
 

@@ -479,6 +479,10 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   const transaction = await requireTransaction(workspaceSlug, transactionId);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
+  const codesiteFsEvent = body.codesiteFsEvent || body.codesite_fs_event || null;
+  const codesiteFsEventType = ['write_denied', 'write_quarantined'].includes(codesiteFsEvent?.type)
+    ? codesiteFsEvent.type
+    : null;
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const evaluation = evaluatePathMutation({
@@ -494,8 +498,54 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
-    details: { transactionId: transaction.id, path, tool: body.tool || 'file_write', zone: evaluation.zone },
+    details: {
+      transactionId: transaction.id,
+      path,
+      tool: body.tool || 'file_write',
+      zone: evaluation.zone,
+      codesiteFsEvent,
+    },
   });
+
+  if (codesiteFsEventType) {
+    const reasonCodes = codeSiteFsReasonCodes(codesiteFsEvent, evaluation.reasonCodes);
+    const decision = await createPolicyDecision(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      decision: codesiteFsEventType === 'write_quarantined' ? 'quarantine' : 'block',
+      reasonCodes,
+      input: { transactionId, path, tool: body.tool || 'file_write', codesiteFsEvent },
+      decisionJson: {
+        path,
+        zone: evaluation.zone,
+        codesiteFsEvent,
+        towerInstruction: codesiteFsEventType === 'write_quarantined'
+          ? `Write quarantined for ${path}. Review before landing.`
+          : `Write denied for ${path}. File change order or request a new clearance.`,
+      },
+    });
+    await recordEvent(transaction.projectId, {
+      mutationLeaseId: transaction.mutationLeaseId,
+      eventType: codesiteFsEventType,
+      displayCallsign: transaction.mutationLease.displayCallsign,
+      actorType: 'codesitefs',
+      actorId: decision.id,
+      details: {
+        transactionId: transaction.id,
+        path,
+        reasonCodes,
+        policyDecisionId: decision.id,
+        zone: evaluation.zone,
+        codesiteFsEvent,
+      },
+    });
+    return {
+      ok: false,
+      quarantined: codesiteFsEventType === 'write_quarantined',
+      transaction: transactionProjection(transaction),
+      policyDecision: policyDecisionProjection(decision),
+    };
+  }
 
   if (!evaluation.ok) {
     const decision = await createPolicyDecision(transaction.projectId, {
@@ -550,6 +600,16 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     details: { transactionId: transaction.id, path, zone: evaluation.zone, invalidatedAssumptions: invalidated },
   });
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
+}
+
+function codeSiteFsReasonCodes(codesiteFsEvent, fallback = []) {
+  const reasonCodes = asArray(
+    codesiteFsEvent?.details?.reason_codes
+    || codesiteFsEvent?.details?.reasonCodes
+    || codesiteFsEvent?.reason_codes
+    || codesiteFsEvent?.reasonCodes
+  );
+  return reasonCodes.length ? reasonCodes : asArray(fallback);
 }
 
 async function invalidateAssumptionsForPath(projectId, path, invalidatedBy) {
