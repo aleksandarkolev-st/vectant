@@ -1353,6 +1353,7 @@ describe("Dojo therapeutic tomography", () => {
       "access_denied",
       "probe_completed",
       "access_approved",
+      "protected_tool_dispatched",
       "grant_revoked",
     ]));
   });

@@ -401,6 +401,7 @@ export interface TherapeuticAuditRecord {
     | "grant_revoked"
     | "grant_revoke_failed"
     | "tool_bypass_blocked"
+    | "protected_tool_dispatched"
     | "remediation_denied"
     | "remediation_approved"
     | "review_requested"
@@ -1388,12 +1389,22 @@ export function dispatchProtectedTherapeuticTool(input: {
       audit_refs: audit ? [`audit:${audit.audit_id}`] : [],
     };
   }
+  const evidence = appendTherapeuticEvidence(input.store, input.trace.task_id, "access_decision", now, {
+    tool: input.tool,
+    decision: "approved",
+    grant_id: matchingGrant.grant_id,
+  });
+  const audit = appendTherapeuticAudit(input.store, input.trace.task_id, "protected_tool_dispatched", now, {
+    tool: input.tool,
+    grant_id: matchingGrant.grant_id,
+    evidence_id: evidence?.evidence_id,
+  });
   return {
     decision: "approved",
     blocked_by: [],
     grant: matchingGrant,
-    evidence_refs: [],
-    audit_refs: [],
+    evidence_refs: evidence ? [`evidence:${evidence.evidence_id}`] : [],
+    audit_refs: audit ? [`audit:${audit.audit_id}`] : [],
   };
 }
 
