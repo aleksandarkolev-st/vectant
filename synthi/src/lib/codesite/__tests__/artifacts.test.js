@@ -1,5 +1,8 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { buildArtifactProjection, codesiteSchemas } from '../artifacts.js';
+import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from '../artifacts.js';
 import { buildProofBundle, formatCommitTrailers, verifyProofBundle } from '../proof.js';
 
 function projectFixture() {
@@ -25,7 +28,15 @@ function projectFixture() {
     proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], bundleDigest: 'sha256:bundle' }],
     lineProvenance: [{ filePath: 'packages/schemas/auth/signup.ts', lineAnchor: 'L1', displayCallsign: 'CODEX-04', proofBundleId: 'proof-1' }],
     policyDecisions: [],
-    inspectionRuns: [],
+    inspectionRuns: [{
+      id: 'inspect-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'CODEX-04',
+      status: 'passed',
+      changedPaths: ['packages/schemas/auth/signup.ts'],
+      inspectionSignals: [{ type: 'test', status: 'passed' }],
+      evidenceRefs: ['test:auth'],
+    }],
     documents: [],
     counterfactualRuns: [],
     policyDeltas: [],
@@ -42,11 +53,22 @@ describe('CodeSite artifact projection', () => {
     const paths = files.map((file) => file.relativePath);
 
     expect(paths).toContain('manifest.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools).toContain('synthi_codesite_get_radar');
+    expect(paths).toContain('schemas/agent-session.schema.json');
+    expect(paths).toContain('schemas/clearance.schema.json');
     expect(paths).toContain('schemas/execution-plan.schema.json');
+    expect(paths).toContain('schemas/inspection-run.schema.json');
+    expect(paths).toContain('schemas/incident.schema.json');
+    expect(paths).toContain('schemas/incident-replay.schema.json');
     expect(paths).toContain('projects/site_signup_email_verification/events.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/flight-plan.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/clearance.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transaction.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transponder.jsonl');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/landing.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
     expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
+    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
     expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
     expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt');
     expect(paths).toContain('projects/site_signup_email_verification/handover.md');
@@ -58,6 +80,18 @@ describe('CodeSite artifact projection', () => {
       title: 'CodeSite Event',
       required: ['eventType', 'details'],
     });
+    expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
+    expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
+    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
+  });
+
+  it('writes the repo-local artifact tree when an artifact root is available', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-'));
+    const result = await writeArtifactProjection(projectFixture(), null, path.join(root, '.synthi', 'codesite'));
+
+    expect(result.written).toBe(true);
+    expect(result.files).toContain('manifest.json');
+    await expect(fs.readFile(path.join(root, '.synthi', 'codesite', 'manifest.json'), 'utf8')).resolves.toContain('synthi_codesite_get_radar');
   });
 });
 
