@@ -1,11 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { asArray, stableJson } from './json';
+import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 
-const CODESITE_MCP_TOOLS = [
+export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_file_flight_plan',
   'synthi_codesite_request_clearance',
   'synthi_codesite_open_transaction',
@@ -22,6 +23,7 @@ const CODESITE_MCP_TOOLS = [
   'synthi_codesite_get_source_state_since',
   'synthi_codesite_get_radar',
   'synthi_codesite_next_event',
+  'synthi_codesite_get_inbox',
   'synthi_codesite_ack_event',
   'synthi_codesite_predict_collision',
   'synthi_codesite_shadow_merge_simulate',
@@ -106,7 +108,7 @@ export function codesiteSchemas() {
       blocking: { type: 'boolean' },
     }, ['kind', 'status', 'title']),
     'event.schema.json': schema('Event', {
-      eventType: { type: 'string' },
+      eventType: { type: 'string', enum: CODE_SITE_EVENT_TYPES },
       displayCallsign: { type: ['string', 'null'] },
       logicalTime: { type: ['number', 'null'] },
       details: { type: 'object' },

@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CODE_SITE_EVENT_TYPES,
   classifyPath,
   compileZonePolicy,
   evaluateLeaseRequest,
   evaluatePathMutation,
   predictCollisions,
+  validateCodeSiteEventType,
 } from '../policy.js';
 
 describe('CodeSite airspace policy', () => {
+  it('accepts only documented black-box event types', () => {
+    expect(validateCodeSiteEventType('write_denied')).toBe('write_denied');
+    expect(validateCodeSiteEventType(' black_box_closed ')).toBe('black_box_closed');
+    expect(CODE_SITE_EVENT_TYPES).toContain('arbiter_verdict');
+    expect(() => validateCodeSiteEventType('agent_chat_message')).toThrow(/codesite_event_type_invalid:agent_chat_message/);
+  });
+
   it('classifies critical and shared repo airspace from compiled defaults', () => {
     const policy = compileZonePolicy();
 

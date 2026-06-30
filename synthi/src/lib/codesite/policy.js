@@ -105,6 +105,21 @@ export const CODE_SITE_EVENT_TYPES = [
   'black_box_closed',
 ];
 
+const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);
+
+export function validateCodeSiteEventType(input) {
+  const eventType = String(input || '').trim();
+  if (!CODE_SITE_EVENT_TYPE_SET.has(eventType)) {
+    const error = new Error(`codesite_event_type_invalid:${eventType || 'missing'}`);
+    error.code = 'CODESITE_EVENT_TYPE_INVALID';
+    error.status = 422;
+    error.eventType = eventType || null;
+    error.allowedEventTypes = CODE_SITE_EVENT_TYPES;
+    throw error;
+  }
+  return eventType;
+}
+
 export function normalizePath(input) {
   if (typeof input !== 'string') return null;
   const cleaned = input.replace(/\\/g, '/').replace(/^\/+/, '').trim();

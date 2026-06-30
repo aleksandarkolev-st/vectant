@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from '../artifacts.js';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from '../artifacts.js';
 import { buildProofBundle, formatCommitTrailers, verifyProofBundle } from '../proof.js';
 
 function projectFixture() {
@@ -53,8 +53,11 @@ describe('CodeSite artifact projection', () => {
     const paths = files.map((file) => file.relativePath);
 
     expect(paths).toContain('manifest.json');
-    expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools).toContain('synthi_codesite_get_radar');
-    expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools).toContain('synthi_codesite_preflight_write');
+    const manifestTools = JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools;
+    expect(manifestTools).toEqual(CODESITE_MCP_TOOLS);
+    expect(manifestTools).toContain('synthi_codesite_get_radar');
+    expect(manifestTools).toContain('synthi_codesite_preflight_write');
+    expect(manifestTools).toContain('synthi_codesite_get_inbox');
     expect(paths).toContain('schemas/agent-session.schema.json');
     expect(paths).toContain('schemas/clearance.schema.json');
     expect(paths).toContain('schemas/execution-plan.schema.json');
@@ -82,6 +85,8 @@ describe('CodeSite artifact projection', () => {
       title: 'CodeSite Event',
       required: ['eventType', 'details'],
     });
+    expect(codesiteSchemas()['event.schema.json'].properties.eventType.enum).toContain('write_denied');
+    expect(codesiteSchemas()['event.schema.json'].properties.eventType.enum).toContain('black_box_closed');
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');

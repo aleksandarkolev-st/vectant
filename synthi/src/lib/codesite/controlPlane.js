@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import prisma from '@/lib/prisma';
-import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from './artifacts';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import { buildProofBundle as buildPortableProofBundle } from './proof';
 import {
@@ -20,6 +20,7 @@ import {
   normalizePathList,
   pathsForRoute,
   predictCollisions,
+  validateCodeSiteEventType,
 } from './policy';
 import { discoverRepoPolicySignals } from './repoPolicyCompiler';
 import {
@@ -3732,14 +3733,7 @@ export async function getAgentManifest(workspaceSlug, projectId) {
     schemas: 'schemas/',
     inboxRoot: `projects/${projectId}/inbox/`,
     proofBundleRoot: `projects/${projectId}/proof-bundles/`,
-    mcpTools: [
-      'synthi_codesite_next_event',
-      'synthi_codesite_ack_event',
-      'synthi_codesite_open_transaction',
-      'synthi_codesite_validate_transaction',
-      'synthi_codesite_apply_patch',
-      'synthi_codesite_predict_collision',
-    ],
+    mcpTools: CODESITE_MCP_TOOLS,
   };
 }
 
@@ -3963,6 +3957,7 @@ function incidentReplayTimeline(incident, events) {
 }
 
 async function recordEvent(projectId, input) {
+  const eventType = validateCodeSiteEventType(input.eventType);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
     try {
@@ -3970,7 +3965,7 @@ async function recordEvent(projectId, input) {
         data: {
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
-          eventType: input.eventType,
+          eventType,
           displayCallsign: input.displayCallsign || null,
           actorType: input.actorType || null,
           actorId: input.actorId || null,

@@ -104,6 +104,7 @@ import {
   createInspectionRun,
   dryRunTransactionWrites,
   getAgentInbox,
+  getAgentManifest,
   getEvents,
   getIncidentReplay,
   getProofBundle,
@@ -114,6 +115,7 @@ import {
   requestMutationLease,
   validateTransaction,
 } from '../controlPlane.js';
+import { CODESITE_MCP_TOOLS } from '../artifacts.js';
 import { buildReadSnapshotEvidence } from '../repoSnapshot.js';
 
 function transactionFixture() {
@@ -515,6 +517,14 @@ describe('CodeSite control plane transaction validation', () => {
     }));
     prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
 	  });
+
+  it('serves the shared MCP tool contract from the agent manifest', async () => {
+    const manifest = await getAgentManifest('acme', 'project-1');
+
+    expect(manifest.mcpTools).toEqual(CODESITE_MCP_TOOLS);
+    expect(manifest.mcpTools).toContain('synthi_codesite_get_inbox');
+    expect(manifest.inboxRoot).toBe('projects/project-1/inbox/');
+  });
 
   it('bootstraps automatic tower workflow with schema-first holding plans', async () => {
     await createProject('acme', { userId: 'user-1' }, {
