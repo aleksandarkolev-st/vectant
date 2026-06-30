@@ -72,6 +72,11 @@ function setNativeInputValue(element, value) {
   element.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function laneNamed(name) {
+  return [...container.querySelectorAll('[data-testid="codesite-airspace-lane"]')]
+    .find((lane) => lane.textContent.includes(name));
+}
+
 function radarState() {
   return {
     workspaceSlug: 'acme',
@@ -82,7 +87,10 @@ function radarState() {
       request: 'Coordinate checkout mutations',
       status: 'active',
       zonePolicy: {
-        zones: [{ zoneKey: 'api-zone', label: 'API airspace', class: 'B', paths: ['api/checkout/**'], risk: 'medium' }],
+        zones: [
+          { zoneKey: 'api-zone', label: 'API airspace', class: 'B', paths: ['api/checkout/**'], risk: 'medium' },
+          { zoneKey: 'api-check-zone', label: 'Health API airspace', class: 'C', paths: ['api/check/**'], risk: 'low' },
+        ],
         noFlyZones: ['secrets/**'],
       },
       proofBundles: [{
@@ -180,7 +188,7 @@ function radarState() {
       },
       {
         id: 'event-2',
-        eventType: 'mutation_lease_issued',
+        eventType: 'clearance_issued',
         displayCallsign: 'ATLAS-1',
         logicalTime: 8,
         details: { leaseId: 'lease-1', route: 'api/checkout/**' },
@@ -236,15 +244,24 @@ describe('CodeSitePanel', () => {
 	    expect(container.textContent).toContain('pcap-checkout-schema');
 	    expect(container.textContent).toContain('schema.level_2@2026-06-25');
 	    expect(container.textContent).toContain('dojo:evidence:checkride-1');
-	    expect(container.textContent).toContain('Airspace Map');
+    expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
+    const riskCones = container.querySelectorAll('[data-testid="codesite-risk-cone"]');
+    const replayTrace = container.querySelector('[data-testid="codesite-replay-trace"]');
+    const flightBlips = container.querySelectorAll('[data-testid="codesite-flight-blip"]');
+    const holdingPatterns = container.querySelectorAll('[data-testid="codesite-holding-pattern"]');
     expect(container.querySelector('[data-testid="codesite-radar-graph"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-risk-cone"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-replay-trace"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-flight-blip"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-holding-pattern"]')).toBeTruthy();
+    expect(riskCones).toHaveLength(1);
+    expect(riskCones[0].getAttribute('fill')).toBe('#fbbf24');
+    expect(replayTrace.getAttribute('points').trim().split(/\s+/)).toHaveLength(2);
+    expect(flightBlips).toHaveLength(1);
+    expect(holdingPatterns).toHaveLength(1);
     expect(container.textContent).toContain('Landing queue');
+    expect(container.textContent).toContain('QA-1');
+    expect(container.textContent).toContain('passed');
+    expect(laneNamed('API airspace').textContent).toContain('ATLAS-1');
+    expect(laneNamed('Health API airspace').textContent).not.toContain('ATLAS-1');
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');
@@ -265,6 +282,21 @@ describe('CodeSitePanel', () => {
     await flush();
 
     expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
+  });
+
+  it('does not draw a holding pattern for airborne flights', async () => {
+    const state = radarState();
+    state.controlState.activeFlights = state.controlState.activeFlights.map((flight) => ({
+      ...flight,
+      status: 'airborne',
+    }));
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    expect(container.querySelectorAll('[data-testid="codesite-flight-blip"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="codesite-holding-pattern"]')).toHaveLength(0);
   });
 
   it('opens the first project from the empty state', async () => {

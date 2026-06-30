@@ -1,0 +1,145 @@
+{
+  "generatedAt": "2026-06-30T22:13:43.681Z",
+  "route": "/workspace/codesite-radar-proof-1782857554702/codesite",
+  "slug": "codesite-radar-proof-1782857554702",
+  "projectId": "cmr17duur00cvob4t45xujhu4",
+  "controlSummary": {
+    "towerState": "active",
+    "activeFlights": [
+      {
+        "callsign": "SCHEMA-01",
+        "status": "preflight",
+        "route": [
+          "packages/schemas/checkout/**",
+          "api/checkout/**"
+        ]
+      },
+      {
+        "callsign": "API-02",
+        "status": "holding",
+        "route": [
+          "api/checkout/**"
+        ]
+      },
+      {
+        "callsign": "TEST-03",
+        "status": "holding",
+        "route": [
+          "tests/checkout/**"
+        ]
+      }
+    ],
+    "riskLevel": "high",
+    "risks": [
+      {
+        "risk": "contract_collision",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "conflictZone": "api/checkout/**",
+        "overlaps": [
+          [
+            "api/checkout/**",
+            "api/checkout/**"
+          ]
+        ],
+        "recommendedResolution": {
+          "action": "schema_first",
+          "steps": [
+            "Put SCHEMA-01 in holding",
+            "Put API-02 in holding",
+            "Issue schema clearance first",
+            "Reissue downstream clearances after contract landing"
+          ]
+        }
+      }
+    ],
+    "inspectionRuns": [
+      {
+        "callsign": "INSPECT-77",
+        "status": "requested",
+        "changedPaths": [
+          "api/checkout/route.js",
+          "packages/schemas/checkout/order.ts"
+        ]
+      }
+    ]
+  },
+  "eventTypes": [
+    "transponder_update",
+    "flight_plan_filed",
+    "transponder_update",
+    "flight_plan_filed",
+    "transponder_update",
+    "flight_plan_filed",
+    "tower_instruction",
+    "landing_requested"
+  ],
+  "browserProof": {
+    "generatedAt": "2026-06-30T22:36:23.964Z",
+    "captures": [
+      {
+        "viewport": {
+          "name": "desktop",
+          "width": 1440,
+          "height": 980
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png",
+        "consoleErrors": [],
+        "checks": {
+          "radarRect": {
+            "x": 12,
+            "y": 283,
+            "width": 1416,
+            "height": 306
+          },
+          "svgRect": {
+            "x": 26,
+            "y": 297,
+            "width": 631.875,
+            "height": 278
+          },
+          "tracePoints": "44.18,39.50 53.79,66.43 60.53,31.01 31.21,68.79 81.39,48.36 27.16,78.20 50.00,91.14",
+          "holdingPatterns": 3,
+          "riskCones": 1,
+          "flightBlips": 3,
+          "hasLandingQueue": true,
+          "hasRiskLabel": true,
+          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nclear\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspecti"
+        }
+      },
+      {
+        "viewport": {
+          "name": "mobile",
+          "width": 390,
+          "height": 920
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png",
+        "consoleErrors": [],
+        "checks": {
+          "radarRect": {
+            "x": 12,
+            "y": 399,
+            "width": 366,
+            "height": 851.328125
+          },
+          "svgRect": {
+            "x": 26,
+            "y": 413,
+            "width": 338,
+            "height": 278
+          },
+          "tracePoints": "44.18,39.50 53.79,66.43 60.53,31.01 31.21,68.79 81.39,48.36 27.16,78.20 50.00,91.14",
+          "holdingPatterns": 3,
+          "riskCones": 1,
+          "flightBlips": 3,
+          "hasLandingQueue": true,
+          "hasRiskLabel": true,
+          "visibleText": "CodeSite\ncodesite-radar-proof-1782857554702\nactive\nCodeSite project\nRadar UI proof coordination\nRefresh\nExport\nRadar UI proof coordination\nImplement checkout schema and API without overlapping writes\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nRisk\nhigh\nAirspace Map\n54\nSCHEMA-01\nAPI-02\nTEST-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n1 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nclear\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nclear\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nTEST-03\nLanding queue\n1\nINSPECT-77\nrequested\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+2\nRadar layers\nclearance\ntransaction\ninspection\nproof\nCollision Forecast\nhigh\ncontract_collision\nhigh\napi/checkout/**\nFlights\n3\nSCHEMA-01\nschema\nStabilize checkout contract\npackages/schemas/checkout/**\napi/checkout/**\npreflight\nAPI-02\nbackend\nImplement checkout route\napi/checkout/**\nholding\nTEST-03\ninspecti"
+        }
+      }
+    ]
+  }
+}
