@@ -97,6 +97,31 @@ export async function publishWorkspaceProgram(workspaceSlug) {
   return request(`${programsBase(workspaceSlug)}/publish`, { method: 'POST', body: JSON.stringify({}) });
 }
 
+// ── Community-app hosting: submit to review + self-service ──
+
+/** Submit this workspace's recipe (+ optional image ref) to the review gate. */
+export async function submitForReview(workspaceSlug, { sourceImageRef } = {}) {
+  return request(`${programsBase(workspaceSlug)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify(sourceImageRef ? { sourceImageRef } : {}),
+  });
+}
+
+/** List this workspace's submissions + their review status (redacted). */
+export async function fetchMySubmissions(workspaceSlug) {
+  if (!workspaceSlug) return [];
+  const body = await request(`${programsBase(workspaceSlug)}/submissions`);
+  return body.submissions || [];
+}
+
+/** Take a published app down (owner/admin). */
+export async function unpublishProgram(workspaceSlug, packageId) {
+  return request(`${programsBase(workspaceSlug)}/unpublish`, {
+    method: 'POST',
+    body: JSON.stringify({ packageId }),
+  });
+}
+
 /** Browse/search the global published catalog. */
 export async function fetchMarketplace(workspaceSlug, q = '') {
   if (!workspaceSlug) return [];
