@@ -36,6 +36,8 @@ const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
   codeSiteCommitMessage,
   codeSiteContextFromRequest,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   isCodeSiteDeniedError,
@@ -195,7 +197,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
-  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata }) => {
     // Slice 1 (real programs): `container` programs route into the per-workspace
     // Sysbox runtime POD when the backend is on (its own validated, isolated
     // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
@@ -226,7 +228,10 @@ const managedProgramRuntime = createProgramRuntimeManager({
       // headless PTY (DOCKER_HOST is scrubbed there); surface a clear error.
       throw new Error('container_runtime_unavailable');
     }
-    const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
+    const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, {
+      env,
+      codesite: metadata?.codesite || null,
+    });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
     return {
       ...runtime,
@@ -863,6 +868,18 @@ function writeCodeSiteDenied(res, err) {
     message: err.message,
     event: err.event,
   }));
+}
+
+function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
+  return codeSiteContextFromRequest(req, parsed, {
+    workspaceSlug: extra.workspaceSlug,
+    actorUserId: extra.actorUserId || parsed.userId || parsed.actorUserId || '',
+    effectiveUserId: extra.effectiveUserId || parsed.filesystemUserId || parsed.userId || '',
+  });
+}
+
+function runtimeCodeSiteEnv(context, processAncestry) {
+  return codeSiteRuntimeEnv(context, { processAncestry });
 }
 
 /**
@@ -1984,22 +2001,46 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
+      const actorUserId = parsed.userId || '';
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId,
+        effectiveUserId: parsed.filesystemUserId || actorUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      const launchConfig = codeSiteMetadata
+        ? {
+          ...config,
+          env: {
+            ...(config.env || {}),
+            ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'program-runtime:launch-program']),
+          },
+        }
+        : config;
       // Reconcile the working tree from Y-Sweet first: a program's install/launch
       // (docker build ., npm install) reads files from disk, but unsaved editor
       // content lives only in Y-Sweet until flushed. Without this the build sees
       // stale/empty files (e.g. an unsaved Dockerfile or package.json).
-      await flushWorkspaceDocsToDisk(slug, parsed.userId || '').catch((e) =>
+      await flushWorkspaceDocsToDisk(slug, actorUserId).catch((e) =>
         logger.warn('workspace_flush_before_launch_failed', { slug }, e));
       const session = await managedProgramRuntime.launchManagedProgram({
         sessionId,
         workspaceSlug: slug,
-        userId: parsed.userId || '',
+        userId: actorUserId,
         title: parsed.title || null,
-        config,
+        config: launchConfig,
+        metadata: codeSiteMetadata
+          ? {
+            packageId: config.packageId || null,
+            version: config.version || null,
+            source: config.source || null,
+            codesite: codeSiteMetadata,
+          }
+          : null,
       });
       // Container/webGui programs read /workspace from disk for their whole
       // lifetime — keep the editor's content flushed there while this session runs.
-      continuousFlush.registerSession({ sessionId, slug, userId: parsed.userId || '', config });
+      continuousFlush.registerSession({ sessionId, slug, userId: actorUserId, config: launchConfig });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ session }));
     } catch (err) {
@@ -2032,6 +2073,12 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Missing command' }));
       return;
     }
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: parsed.userId || '',
+      effectiveUserId: parsed.filesystemUserId || parsed.userId || '',
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
       const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
         ? await spawner.listActiveRuntimeSessions()
@@ -2042,10 +2089,13 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'runtime_pod_not_ready' }));
         return;
       }
-      const result = await runtimeExecOnce(runtimeScope, command, { timeoutMs: Number(parsed.timeout) || 30000 });
+      const result = await runtimeExecOnce(runtimeScope, command, {
+        timeoutMs: Number(parsed.timeout) || 30000,
+        env: runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'program-runtime:exec']),
+      });
       console.log(`[RuntimeExec] slug=${slug} runtimeScope=${runtimeScope} exit=${result.exitCode} timedOut=${result.timedOut} cmd=${command.slice(0, 120)}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ runtimeScope, ...result }));
+      res.end(JSON.stringify({ runtimeScope, codesite: codeSiteMetadata, ...result }));
     } catch (err) {
       const notReady = err && err.message === 'runtime_pod_not_ready';
       res.writeHead(notReady ? 409 : 500, { 'Content-Type': 'application/json' });
@@ -2241,16 +2291,26 @@ const server = http.createServer(async (req, res) => {
         (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
         terminalUserId;
       const launchEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId: terminalUserId,
+        effectiveUserId: filesystemUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
 
       await managedProgramRuntime.launchManagedSession({
         sessionId,
         workspaceSlug: slug,
         userId: terminalUserId,
         command,
-        env: launchEnv,
+        env: {
+          ...launchEnv,
+          ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec-terminal']),
+        },
         title: parsed.name || null,
         runtimeScope,
         filesystemUserId,
+        metadata: codeSiteMetadata ? { codesite: codeSiteMetadata } : null,
       });
 
       const terminalSession = terminalSessions.get(sessionId);
@@ -2365,6 +2425,7 @@ const server = http.createServer(async (req, res) => {
           sessionId,
           runtimeScope: runtimeScope || null,
           filesystemScoped: Boolean(filesystemUserId),
+          codesite: codeSiteMetadata,
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
@@ -2426,6 +2487,12 @@ const server = http.createServer(async (req, res) => {
       parsed.filesystemUserId ||
       (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
       terminalUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: terminalUserId,
+      effectiveUserId: filesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     let cwd;
     try {
       await ensureRuntimeFilesystem({
@@ -2464,7 +2531,11 @@ const server = http.createServer(async (req, res) => {
     const child = spawn(shell, shellArgs, {
       cwd,
       timeout: timeoutMs,
-      env: { ...process.env, TERM: 'dumb' },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec-pty']),
+      },
       windowsHide: true,
     });
 
@@ -2499,6 +2570,7 @@ const server = http.createServer(async (req, res) => {
         stderr,
         timedOut,
         usedPty: Boolean(targetSession),
+        codesite: codeSiteMetadata,
       }));
     });
 
@@ -2551,6 +2623,12 @@ const server = http.createServer(async (req, res) => {
       parsed.filesystemUserId ||
       (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
       terminalUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: terminalUserId,
+      effectiveUserId: filesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     let cwd;
     try {
       await ensureRuntimeFilesystem({
@@ -2577,7 +2655,11 @@ const server = http.createServer(async (req, res) => {
     const child = spawn(shell, shellArgs, {
       cwd,
       timeout: timeoutMs,
-      env: { ...process.env, TERM: 'dumb' },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec']),
+      },
       windowsHide: true,
     });
 
@@ -2598,7 +2680,7 @@ const server = http.createServer(async (req, res) => {
       clearTimeout(timer);
       console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut }));
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut, codesite: codeSiteMetadata }));
     });
 
     child.on('error', (err) => {

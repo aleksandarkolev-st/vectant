@@ -183,7 +183,15 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   const mgr = createRuntimeManager({ docker });
   await mgr.ensureRuntimeContainer('repo', 'u1');
 
-  const handle = await mgr.execInteractiveShell('repo', 'u1', { cols: 120, rows: 40 });
+  const handle = await mgr.execInteractiveShell('repo', 'u1', {
+    cols: 120,
+    rows: 40,
+    env: {
+      CODESITE_TRANSACTION_ID: 'txn-1',
+      CODESITE_MUTATION_LEASE_ID: 'lease-1',
+      PATH: '/host/bin',
+    },
+  });
 
   // Interactive login shell, in the workspace, as the rootless user, with a TTY.
   assert.deepEqual(execOpts.Cmd, ['/bin/bash', '-l']);
@@ -192,6 +200,9 @@ test('execInteractiveShell opens a bash -l TTY exec in /workspace as rootless an
   assert.equal(execOpts.Tty, true);
   assert.equal(execOpts.AttachStdin, true);
   assert.ok(execOpts.Env.includes('TERM=xterm-256color'), 'TERM must be set for a real terminal');
+  assert.ok(execOpts.Env.includes('CODESITE_TRANSACTION_ID=txn-1'), 'CodeSite transaction id must reach runtime shells');
+  assert.ok(execOpts.Env.includes('CODESITE_MUTATION_LEASE_ID=lease-1'), 'CodeSite lease id must reach runtime shells');
+  assert.ok(!execOpts.Env.includes('PATH=/host/bin'), 'host PATH must stay scrubbed');
 
   // PTY-shaped handle + resize.
   assert.equal(typeof handle.ptyProcess.onData, 'function');

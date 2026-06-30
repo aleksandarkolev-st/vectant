@@ -41,6 +41,11 @@ const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
+const {
+  codeSiteContextFromRequest,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
+} = require('./codesiteFs');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -326,6 +331,33 @@ function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemU
     env.VITE_HOST = bindHost;
   }
   return env;
+}
+
+function codeSitePayloadFromSearch(searchParams) {
+  return {
+    mode: searchParams.get('codesiteMode') || searchParams.get('codeSiteMode'),
+    displayCallsign: searchParams.get('codesiteCallsign') || searchParams.get('codeSiteCallsign'),
+    transactionId: searchParams.get('codesiteTransactionId') || searchParams.get('codeSiteTransactionId') || searchParams.get('transactionId'),
+    leaseId: searchParams.get('codesiteLeaseId') || searchParams.get('codeSiteLeaseId') || searchParams.get('mutationLeaseId'),
+    allowedPaths: searchParams.get('codesiteAllowedPaths') || searchParams.get('codeSiteAllowedPaths'),
+    blockedPaths: searchParams.get('codesiteBlockedPaths') || searchParams.get('codeSiteBlockedPaths'),
+    allowedTools: searchParams.get('codesiteAllowedTools') || searchParams.get('codeSiteAllowedTools'),
+    evidenceRefs: searchParams.get('codesiteEvidenceRefs') || searchParams.get('codeSiteEvidenceRefs'),
+    processAncestry: searchParams.get('codesiteProcessAncestry') || searchParams.get('codeSiteProcessAncestry'),
+    controlPlaneUrl: searchParams.get('codesiteControlPlaneUrl') || searchParams.get('codeSiteControlPlaneUrl'),
+  };
+}
+
+function terminalCodeSiteContext(req, searchParams, { workspaceSlug, actorUserId, filesystemUserId }) {
+  return codeSiteContextFromRequest(req, {
+    codesite: codeSitePayloadFromSearch(searchParams),
+    userId: actorUserId,
+    filesystemUserId,
+  }, {
+    workspaceSlug,
+    actorUserId,
+    effectiveUserId: filesystemUserId,
+  });
 }
 
 async function createTerminalProcess({
@@ -1463,6 +1495,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     workspaceSlug: slug,
     userId,
     filesystemUserId,
+    codesite: options.codesite || null,
     releasePort: runtimeLaunch.releasePort,
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
@@ -1531,6 +1564,15 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
+    const codeSiteContext = terminalCodeSiteContext(req, parsedUrl.searchParams, {
+      workspaceSlug,
+      actorUserId: requestedUserId,
+      filesystemUserId: requestedFilesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    const codeSiteEnv = codeSiteRuntimeEnv(codeSiteContext, {
+      processAncestry: ['collab-server', 'terminal-ws'],
+    });
 
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
@@ -1575,6 +1617,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         workspaceSlug: existingSession.workspaceSlug || workspaceSlug,
         userId: existingSession.userId || requestedUserId,
         filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
+        codesite: existingSession.codesite || codeSiteMetadata,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
         dataDisposable: null,
@@ -1596,6 +1639,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         shell: path.basename(shell),
         cwd,
         pid: ptyProcess.pid,
+        codesite: existingSession.codesite || codeSiteMetadata,
       }));
 
       // Replay buffered output so the user sees what already happened
@@ -1720,7 +1764,9 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId);
         await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId);
         const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
-          cols: initialCols, rows: initialRows,
+          cols: initialCols,
+          rows: initialRows,
+          env: codeSiteEnv,
         });
         ptyProcess = handle.ptyProcess;
         shell = 'bash';
@@ -1743,7 +1789,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
           cwd,
           cols: initialCols,
           rows: initialRows,
-          env: runtimeLaunch.env,
+          env: { ...runtimeLaunch.env, ...codeSiteEnv },
           shellType: requestedShellType,
           workspaceName,
           workspaceSlug,
@@ -1779,6 +1825,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
+      codesite: codeSiteMetadata,
       releasePort: runtimeLaunch?.releasePort || (() => {}),
       unwatchFs,
       dataDisposable: null,
@@ -1796,6 +1843,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       shell: path.basename(shell),
       cwd,
       pid: ptyProcess.pid,
+      codesite: codeSiteMetadata,
     }));
 
     // ── PTY → WebSocket (output hot path) ───────────────────────────────

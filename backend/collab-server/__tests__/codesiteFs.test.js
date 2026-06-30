@@ -5,6 +5,8 @@ const {
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   normalizeRepoRelativePath,
@@ -34,6 +36,62 @@ test('extracts CodeSite context from payload and headers', () => {
   assert.deepStrictEqual(context.allowedPaths, ['synthi/src/**', 'docs/**']);
   assert.deepStrictEqual(context.blockedPaths, ['api/auth/**']);
   assert.strictEqual(context.displayCallsign, 'CODEX-04');
+});
+
+test('derives sanitized CodeSite runtime env and metadata for managed processes', () => {
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-codesite-transaction-id': 'txn-1',
+      'x-codesite-lease-id': 'lease-1',
+      'x-codesite-allowed-paths': 'synthi/src/**',
+      'x-codesite-blocked-paths': 'secrets/**',
+      'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+      'x-codesite-token': 'secret-token',
+      cookie: 'next-auth=secret',
+    },
+  }, {
+    codesite: {
+      displayCallsign: 'ATLAS-1',
+      allowedTools: ['file_write'],
+      evidenceRefs: ['proof:1'],
+      processAncestry: ['collab-server'],
+    },
+  }, {
+    workspaceSlug: 'acme',
+    actorUserId: 'actor-1',
+    effectiveUserId: 'fs-1',
+  });
+
+  const env = codeSiteRuntimeEnv(context, { processAncestry: ['exec'] });
+
+  assert.strictEqual(env.CODESITE_ACTIVE, '1');
+  assert.strictEqual(env.CODESITE_WORKSPACE_SLUG, 'acme');
+  assert.strictEqual(env.CODESITE_TRANSACTION_ID, 'txn-1');
+  assert.strictEqual(env.CODESITE_MUTATION_LEASE_ID, 'lease-1');
+  assert.strictEqual(env.CODESITE_CALLSIGN, 'ATLAS-1');
+  assert.strictEqual(env.CODESITE_ACTOR_USER_ID, 'actor-1');
+  assert.strictEqual(env.CODESITE_EFFECTIVE_USER_ID, 'fs-1');
+  assert.strictEqual(env.CODESITE_ALLOWED_PATHS, JSON.stringify(['synthi/src/**']));
+  assert.strictEqual(env.CODESITE_BLOCKED_PATHS, JSON.stringify(['secrets/**']));
+  assert.strictEqual(env.CODESITE_ALLOWED_TOOLS, JSON.stringify(['file_write']));
+  assert.strictEqual(env.CODESITE_EVIDENCE_REFS, JSON.stringify(['proof:1']));
+  assert.strictEqual(env.CODESITE_PROCESS_ANCESTRY, JSON.stringify(['collab-server', 'exec']));
+  assert.strictEqual(env.SYNTHI_CODESITE_API_BASE_URL, 'http://app.test/api/workspace/acme/codesite');
+  assert.strictEqual(env.SYNTHI_CODESITE_TOKEN, undefined);
+  assert.strictEqual(env.COOKIE, undefined);
+
+  assert.deepStrictEqual(codeSiteRuntimeMetadata(context), {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    displayCallsign: 'ATLAS-1',
+    allowedPaths: ['synthi/src/**'],
+    blockedPaths: ['secrets/**'],
+    allowedTools: ['file_write'],
+    evidenceRefs: ['proof:1'],
+    processAncestry: ['collab-server'],
+  });
 });
 
 test('allows writes inside lease route and blocks no-fly or out-of-route writes', () => {

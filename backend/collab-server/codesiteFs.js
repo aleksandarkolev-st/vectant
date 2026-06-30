@@ -99,6 +99,61 @@ function codeSiteCommitTrailers(payload = {}) {
   ].filter(([, trailerValue]) => trailerValue !== undefined && trailerValue !== null && trailerValue !== '');
 }
 
+function codeSiteRuntimeEnv(context = {}, extra = {}) {
+  if (!context?.active) return {};
+  const ancestry = [
+    ...asArray(context.processAncestry),
+    ...asArray(extra.processAncestry),
+  ].filter(Boolean);
+  const env = {
+    CODESITE_ACTIVE: '1',
+    SYNTHI_CODESITE_ACTIVE: '1',
+  };
+  setEnv(env, 'CODESITE_WORKSPACE_SLUG', context.workspaceSlug);
+  setEnv(env, 'SYNTHI_CODESITE_WORKSPACE', context.workspaceSlug);
+  setEnv(env, 'CODESITE_TRANSACTION_ID', context.transactionId);
+  setEnv(env, 'SYNTHI_CODESITE_TRANSACTION_ID', context.transactionId);
+  setEnv(env, 'CODESITE_MUTATION_LEASE_ID', context.mutationLeaseId);
+  setEnv(env, 'SYNTHI_CODESITE_MUTATION_LEASE_ID', context.mutationLeaseId);
+  setEnv(env, 'CODESITE_CALLSIGN', context.displayCallsign);
+  setEnv(env, 'SYNTHI_CODESITE_CALLSIGN', context.displayCallsign);
+  setEnv(env, 'CODESITE_ACTOR_USER_ID', context.actorUserId);
+  setEnv(env, 'CODESITE_EFFECTIVE_USER_ID', context.effectiveUserId);
+  setEnv(env, 'CODESITE_ALLOWED_PATHS', jsonEnv(context.allowedPaths));
+  setEnv(env, 'CODESITE_BLOCKED_PATHS', jsonEnv(context.blockedPaths));
+  setEnv(env, 'CODESITE_ALLOWED_TOOLS', jsonEnv(context.allowedTools));
+  setEnv(env, 'CODESITE_EVIDENCE_REFS', jsonEnv(context.evidenceRefs));
+  setEnv(env, 'CODESITE_PROCESS_ANCESTRY', jsonEnv(ancestry));
+  setEnv(env, 'SYNTHI_CODESITE_API_BASE_URL', resolveControlPlaneBaseUrl(context));
+  return env;
+}
+
+function codeSiteRuntimeMetadata(context = {}) {
+  if (!context?.active) return null;
+  return {
+    active: true,
+    workspaceSlug: context.workspaceSlug || null,
+    transactionId: context.transactionId || null,
+    mutationLeaseId: context.mutationLeaseId || null,
+    displayCallsign: context.displayCallsign || null,
+    allowedPaths: context.allowedPaths || [],
+    blockedPaths: context.blockedPaths || [],
+    allowedTools: context.allowedTools || [],
+    evidenceRefs: context.evidenceRefs || [],
+    processAncestry: context.processAncestry || [],
+  };
+}
+
+function setEnv(env, key, envValue) {
+  if (envValue === undefined || envValue === null || envValue === '') return;
+  env[key] = String(envValue);
+}
+
+function jsonEnv(envValue) {
+  const values = asArray(envValue);
+  return values.length ? JSON.stringify(values) : '';
+}
+
 function value(...values) {
   return values.find((item) => item !== undefined && item !== null && item !== '');
 }
@@ -325,6 +380,8 @@ module.exports = {
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
   enforceCodeSiteWriteAllowed,
   enforceCodeSiteWritesAllowed,
   evaluateCodeSiteWrite,

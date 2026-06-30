@@ -338,7 +338,7 @@ function parseExecExitCode(status) {
  * timedOut } with stdout/stderr captured separately. Live-validated on a Sysbox
  * cluster (k8s-exec). Throws `runtime_pod_not_ready` if no ready pod.
  */
-async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000 } = {}) {
+async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000, env = {} } = {}) {
   if (!runtimeScope) throw new Error('runtime_pod_not_ready');
   const cmd = String(command || '').trim();
   if (!cmd) throw new Error('command is required');
@@ -357,6 +357,11 @@ async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000 } = {}
 
   const exec = new k8s.Exec(kubeConfig());
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 60000);
+  const script = buildRuntimeShellScript({
+    env,
+    cwd: RUNTIME_POD_WORKSPACE_MOUNT,
+    finalCommand: cmd,
+  });
 
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -370,7 +375,7 @@ async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000 } = {}
     }, cappedTimeout);
 
     exec
-      .exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', cmd], stdoutStream, stderrStream, null, false,
+      .exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', script], stdoutStream, stderrStream, null, false,
         (status) => finish({ stdout, stderr, exitCode: parseExecExitCode(status), timedOut }))
       .then((ws) => {
         wsRef = ws;

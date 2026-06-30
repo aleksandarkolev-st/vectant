@@ -276,7 +276,7 @@ function createRuntimeManager({
    * nothing host-leaked to scrub here; we only set TERM + a friendly PS1.
    * @returns {{ ptyProcess: {onData,onExit,write,kill,resize}, stop } }
    */
-  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24 } = {}) {
+  async function execInteractiveShell(slug, userId, { cols = 80, rows = 24, env = {} } = {}) {
     const s = sessions.get(keyOf(slug, userId));
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
@@ -284,10 +284,18 @@ function createRuntimeManager({
     // ~/<workspace> style prompt parity with the host-shell terminal. /workspace
     // is the mount target; show it as "~/workspace" so the path reads cleanly.
     const PS1 = String.raw`\[\e[36m\]~/workspace\[\e[0m\]$ `;
+    const Env = [
+      'TERM=xterm-256color',
+      'COLORTERM=truecolor',
+      `PS1=${PS1}`,
+      ...Object.entries(env)
+        .filter(([k, v]) => typeof k === 'string' && v != null && !HOST_ENV_DENYLIST.has(k.toUpperCase()))
+        .map(([k, v]) => `${k}=${v}`),
+    ];
     const exec = await docker.getContainer(s.containerId).exec({
       Cmd: ['/bin/bash', '-l'],
       User: 'rootless',
-      Env: ['TERM=xterm-256color', 'COLORTERM=truecolor', `PS1=${PS1}`],
+      Env,
       AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,
