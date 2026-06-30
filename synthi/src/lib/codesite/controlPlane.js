@@ -510,9 +510,22 @@ function nextCallsign(provider) {
 
 function defaultRedactionPolicy() {
   return {
+    acceptsTowerMessages: true,
     redactSecrets: true,
     redactPrivatePrompts: true,
-    allowedDocumentKinds: ['rfi', 'change_order', 'inspection_request', 'inspection_result', 'mayday', 'handoff'],
+    allowAttachments: true,
+    visibleZones: ['**'],
+    allowedDocumentKinds: [
+      'rfi',
+      'change_order',
+      'inspection_request',
+      'inspection_result',
+      'mayday',
+      'handoff',
+      'stop_work',
+      'punch',
+      'tower_instruction',
+    ],
   };
 }
 
@@ -2093,6 +2106,7 @@ function eventTypeForDocument(kind) {
 async function validateDocumentRouting(projectId, body = {}, actor = null) {
   const fromSessionId = body.fromSessionId || body.from_session || body.sourceSessionId || body.source_session || null;
   const targetSessionIds = unique(asArray(body.toSessionId || body.to_session || body.recipients || []));
+  const kind = String(body.kind || body.type || 'rfi');
   const fromSession = fromSessionId
     ? await prisma.codeSiteAgentSession.findFirst({ where: { id: fromSessionId, projectId } })
     : null;
@@ -2110,6 +2124,22 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
   const missingTargetIds = targetSessionIds.filter((id) => !foundTargetIds.has(id));
   if (missingTargetIds.length) {
     throw badRequest('document_recipient_not_in_project', { missingTargetIds });
+  }
+  const blockedRecipients = targetSessions
+    .map((session) => ({
+      session,
+      decision: evaluateRecipientDocumentPolicy(session, { kind, body, fromSession }),
+    }))
+    .filter(({ decision }) => !decision.ok)
+    .map(({ session, decision }) => ({
+      agentSessionId: session.id,
+      displayCallsign: session.displayCallsign,
+      reasonCodes: decision.reasonCodes,
+      affectedZones: decision.affectedZones,
+      visibleZones: decision.visibleZones,
+    }));
+  if (blockedRecipients.length) {
+    throw badRequest('document_recipient_policy_blocked', { blockedRecipients });
   }
   return { fromSession, targetSessions };
 }
@@ -2132,26 +2162,49 @@ function documentProjectRefs(body = {}) {
   };
 }
 
-function redactDocumentBody(body) {
-  return redactValue(body);
+function redactDocumentBody(body, policy = defaultRedactionPolicy()) {
+  return redactValue(body, '', normalizeDocumentPolicy(policy));
 }
 
-function redactValue(input, key = '') {
-  if (isSensitiveKey(key)) return '[redacted]';
-  if (Array.isArray(input)) return input.map((item) => redactValue(item, key));
+function redactValue(input, key = '', policy = defaultRedactionPolicy()) {
+  if (shouldRedactField(key, policy)) return '[redacted]';
+  if (shouldDropField(key, policy)) return undefined;
+  if (Array.isArray(input)) return input.map((item) => redactValue(item, key, policy)).filter((item) => item !== undefined);
   if (!input || typeof input !== 'object') {
-    return isSensitiveValue(input) ? '[redacted]' : input;
+    return isSensitiveValue(input, policy) ? '[redacted]' : input;
   }
   return Object.fromEntries(
-    Object.entries(input).map(([entryKey, value]) => [entryKey, redactValue(value, entryKey)]),
+    Object.entries(input)
+      .map(([entryKey, value]) => [entryKey, redactValue(value, entryKey, policy)])
+      .filter(([, value]) => value !== undefined),
   );
 }
 
-function isSensitiveKey(key) {
-  return /secret|token|password|api[_-]?key|private[_-]?prompt|credential|authorization|cookie/i.test(String(key || ''));
+function shouldRedactField(key, policy) {
+  const name = String(key || '');
+  if (!name) return false;
+  if (policy.redactSecrets !== false && /secret|token|password|api[_-]?key|credential|authorization|cookie/i.test(name)) {
+    return true;
+  }
+  if (policy.redactPrivatePrompts !== false && /private[_-]?prompt|prompt[_-]?transcript|raw[_-]?prompt/i.test(name)) {
+    return true;
+  }
+  return documentPolicyFields(policy, ['redactedFields', 'redacted_fields', 'privateFields', 'private_fields'])
+    .some((field) => normalizedPolicyField(field) === normalizedPolicyField(name));
 }
 
-function isSensitiveValue(value) {
+function shouldDropField(key, policy) {
+  const name = String(key || '');
+  if (!name) return false;
+  if (policy.allowAttachments === false || policy.attachments === false || policy.redactAttachments === true || policy.redact_attachments === true) {
+    if (/^attachments?$|^fileAttachments$|^file_attachments$|^files$/i.test(name)) return true;
+  }
+  return documentPolicyFields(policy, ['droppedFields', 'dropped_fields', 'omittedFields', 'omitted_fields'])
+    .some((field) => normalizedPolicyField(field) === normalizedPolicyField(name));
+}
+
+function isSensitiveValue(value, policy = defaultRedactionPolicy()) {
+  if (policy.redactSecrets === false) return false;
   if (typeof value !== 'string') return false;
   return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/.test(value);
 }
@@ -2160,6 +2213,7 @@ async function routeDocumentToInbox(projectId, document, event, body, targetSess
   const sessions = targetSessions || [];
   const created = [];
   for (const session of sessions) {
+    const recipientBody = redactDocumentBody(parseJson(document.bodyJson, {}), sessionDocumentPolicy(session));
     created.push(await prisma.codeSiteAgentInboxItem.create({
       data: {
         projectId,
@@ -2174,12 +2228,156 @@ async function routeDocumentToInbox(projectId, document, event, body, targetSess
           eventId: event.id,
           kind: document.kind,
           title: document.title,
-          body: parseJson(document.bodyJson, {}),
+          body: recipientBody,
+          redaction: {
+            policyApplied: true,
+            recipientSessionId: session.id,
+          },
         }),
       },
     }));
   }
   return created;
+}
+
+function evaluateRecipientDocumentPolicy(session, { kind, body = {}, fromSession = null } = {}) {
+  const policy = sessionDocumentPolicy(session);
+  const reasonCodes = [];
+  const normalizedKind = String(kind || '').toLowerCase();
+  const allowedKinds = documentPolicyFields(policy, ['allowedDocumentKinds', 'allowed_document_kinds'])
+    .map((entry) => entry.toLowerCase());
+  const affectedZones = documentAffectedZones(body);
+  const visibleZones = recipientVisibleZones(policy);
+  const mutedSenders = documentPolicyFields(policy, [
+    'mutedAgentSessionIds',
+    'muted_agent_session_ids',
+    'blockedAgentSessionIds',
+    'blocked_agent_session_ids',
+    'mutedSenders',
+    'muted_senders',
+  ]);
+
+  if (documentPolicyOptedOut(policy)) reasonCodes.push('recipient_opted_out');
+  if (!allowedKinds.includes(normalizedKind)) reasonCodes.push('document_kind_not_allowed');
+  if (fromSession?.id && mutedSenders.includes(fromSession.id)) reasonCodes.push('sender_muted');
+  if (!affectedZonesVisibleToRecipient(affectedZones, visibleZones)) reasonCodes.push('affected_zone_not_visible');
+
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes,
+    affectedZones,
+    visibleZones,
+  };
+}
+
+function sessionDocumentPolicy(session = {}) {
+  return normalizeDocumentPolicy(parseJson(session.redactionPolicyJson, {}));
+}
+
+function normalizeDocumentPolicy(policy = {}) {
+  const raw = policy && typeof policy === 'object' ? policy : {};
+  const merged = {
+    ...defaultRedactionPolicy(),
+    ...raw,
+  };
+  if (raw.accepts_tower_messages !== undefined && raw.acceptsTowerMessages === undefined) {
+    merged.acceptsTowerMessages = raw.accepts_tower_messages;
+  }
+  if (raw.allowed_document_kinds !== undefined && raw.allowedDocumentKinds === undefined) {
+    merged.allowedDocumentKinds = raw.allowed_document_kinds;
+  }
+  if (raw.visible_zones !== undefined && raw.visibleZones === undefined) {
+    merged.visibleZones = raw.visible_zones;
+  }
+  if (raw.allowedZones !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined) {
+    merged.visibleZones = raw.allowedZones;
+  }
+  if (raw.allowed_zones !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined) {
+    merged.visibleZones = raw.allowed_zones;
+  }
+  if (raw.allowedPaths !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined && raw.allowedZones === undefined && raw.allowed_zones === undefined) {
+    merged.visibleZones = raw.allowedPaths;
+  }
+  if (raw.allowed_paths !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined && raw.allowedZones === undefined && raw.allowed_zones === undefined) {
+    merged.visibleZones = raw.allowed_paths;
+  }
+  if (raw.readableZones !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined && raw.allowedZones === undefined && raw.allowed_zones === undefined && raw.allowedPaths === undefined && raw.allowed_paths === undefined) {
+    merged.visibleZones = raw.readableZones;
+  }
+  if (raw.readable_zones !== undefined && raw.visibleZones === undefined && raw.visible_zones === undefined && raw.allowedZones === undefined && raw.allowed_zones === undefined && raw.allowedPaths === undefined && raw.allowed_paths === undefined) {
+    merged.visibleZones = raw.readable_zones;
+  }
+  if (raw.allowed_zones !== undefined && raw.allowedZones === undefined) {
+    merged.allowedZones = raw.allowed_zones;
+  }
+  if (raw.allowed_paths !== undefined && raw.allowedPaths === undefined) {
+    merged.allowedPaths = raw.allowed_paths;
+  }
+  if (raw.allow_attachments !== undefined && raw.allowAttachments === undefined) {
+    merged.allowAttachments = raw.allow_attachments;
+  }
+  if (raw.redacted_fields !== undefined && raw.redactedFields === undefined) {
+    merged.redactedFields = raw.redacted_fields;
+  }
+  return merged;
+}
+
+function documentPolicyOptedOut(policy = {}) {
+  return policy.acceptsTowerMessages === false
+    || policy.accepts_tower_messages === false
+    || policy.documentInboxEnabled === false
+    || policy.document_inbox_enabled === false
+    || policy.receiveDocuments === false
+    || policy.receive_documents === false
+    || policy.optOut === true
+    || policy.opt_out === true;
+}
+
+function documentPolicyFields(policy = {}, keys = []) {
+  const value = keys.map((key) => policy[key]).find((candidate) => candidate !== undefined && candidate !== null);
+  return unique(asArray(value).map((entry) => String(entry)).filter(Boolean));
+}
+
+function recipientVisibleZones(policy = {}) {
+  const explicit = documentPolicyFields(policy, [
+    'visibleZones',
+    'visible_zones',
+    'allowedZones',
+    'allowed_zones',
+    'allowedPaths',
+    'allowed_paths',
+    'readableZones',
+    'readable_zones',
+  ]);
+  return pathsForRoute(explicit);
+}
+
+function documentAffectedZones(body = {}) {
+  const payload = body.body && typeof body.body === 'object' ? body.body : {};
+  return unique([
+    ...asArray(body.affectedZones || body.affected_zones),
+    ...asArray(body.affectedZone || body.affected_zone),
+    ...asArray(body.affectedZoneKey || body.affected_zone_key),
+    ...asArray(body.zoneKey || body.zone_key),
+    ...asArray(payload.affectedZones || payload.affected_zones),
+    ...asArray(payload.affectedZone || payload.affected_zone),
+    ...asArray(payload.affectedZoneKey || payload.affected_zone_key),
+    ...asArray(payload.zoneKey || payload.zone_key),
+  ].map((entry) => String(entry).replace(/\\/g, '/').replace(/^\/+/, '')).filter(Boolean));
+}
+
+function affectedZonesVisibleToRecipient(affectedZones = [], visibleZones = ['**']) {
+  if (!affectedZones.length) return true;
+  if (visibleZones.includes('**')) return true;
+  if (!visibleZones.length) return false;
+  return affectedZones.every((affectedZone) => visibleZones.some((visibleZone) => (
+    affectedZone === visibleZone
+    || pathPatternsOverlap(affectedZone, visibleZone)
+  )));
+}
+
+function normalizedPolicyField(value) {
+  return String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
 export async function getAgentInbox(workspaceSlug, agentSessionId, actor = null) {

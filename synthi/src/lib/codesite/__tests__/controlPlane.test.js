@@ -1179,6 +1179,148 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('blocks tower documents when recipient policy opts out, mutes sender, or hides affected zones', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ acceptsTowerMessages: false }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['recipient_opted_out'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ mutedAgentSessionIds: ['agent-1'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['sender_muted'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ visibleZones: ['docs/**'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      affectedZones: ['synthi/prisma/**'],
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['affected_zone_not_visible'],
+          affectedZones: ['synthi/prisma/**'],
+          visibleZones: ['docs/**'],
+        })],
+      },
+    });
+
+    expect(prisma.codeSiteDocument.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ title: 'Blocked policy message' }),
+    }));
+  });
+
+  it('applies recipient document kind and payload redaction policy before inbox delivery', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ allowedDocumentKinds: ['rfi'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'change_order',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          reasonCodes: ['document_kind_not_allowed'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        visibleZones: ['synthi/prisma/**'],
+        allowAttachments: false,
+        redactedFields: ['internalNotes'],
+      }),
+    }]);
+
+    const result = await createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      title: 'Schema RFI',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      affectedZones: ['synthi/prisma/**'],
+      body: {
+        question: 'Can this migration land?',
+        internalNotes: 'visible only to tower',
+        attachments: [{ name: 'raw-plan.txt', content: 'local scratchpad' }],
+        nested: {
+          privatePrompt: 'raw prompt transcript',
+        },
+      },
+    }, { userId: 'user-1' });
+    const inboxCreate = prisma.codeSiteAgentInboxItem.create.mock.calls.at(-1)[0];
+    const payload = JSON.parse(inboxCreate.data.redactedPayloadJson);
+
+    expect(result.inboxItems).toHaveLength(1);
+    expect(payload.body.question).toBe('Can this migration land?');
+    expect(payload.body.internalNotes).toBe('[redacted]');
+    expect(payload.body.attachments).toBeUndefined();
+    expect(payload.body.nested.privatePrompt).toBe('[redacted]');
+    expect(payload.redaction).toMatchObject({
+      policyApplied: true,
+      recipientSessionId: 'agent-2',
+    });
+  });
+
   it('rejects cross-agent documents without sender ownership or project references', async () => {
     await expect(createDocument('acme', 'project-1', {
       kind: 'rfi',
