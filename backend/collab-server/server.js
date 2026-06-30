@@ -847,7 +847,7 @@ async function flushDocToDisk(docName, options = {}) {
     kind: 'yjs_flush',
     tool: 'file_write',
     ...codeSiteWriteEvidence(options, derivedLineProvenance),
-  });
+  }, codeSiteEnforceOptions(options.codesiteContext));
   await gitService.safeWriteFile(fullPath, content);
 
   // Update hash cache
@@ -965,6 +965,14 @@ function writeCodeSiteDenied(res, err) {
   }));
 }
 
+function codeSiteEnforceOptions(context, options = {}) {
+  if (!context?.active || context.mode === 'monitor') return options;
+  return {
+    ...options,
+    requireAuthoritativeContext: true,
+  };
+}
+
 function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   return codeSiteContextFromRequest(req, parsed, {
     workspaceSlug: extra.workspaceSlug,
@@ -1065,7 +1073,7 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
     kind: 'yjs_flush',
     tool: 'file_write',
     ...codeSiteWriteEvidence(scope, derivedLineProvenance),
-  });
+  }, codeSiteEnforceOptions(scope.codesiteContext));
   await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
   await fsPromises.writeFile(fullPath, content, 'utf-8');
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -2418,7 +2426,7 @@ const server = http.createServer(async (req, res) => {
           ...codeSiteWriteEvidence({ ...parsed, ...file }, derivedLineProvenance),
         };
       }));
-      await enforceCodeSiteWritesAllowed(codeSiteContext, scaffoldAttempts);
+      await enforceCodeSiteWritesAllowed(codeSiteContext, scaffoldAttempts, codeSiteEnforceOptions(codeSiteContext));
       const result = applyScaffoldFiles(cwd, parsed.files || []);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
@@ -3327,7 +3335,7 @@ const server = http.createServer(async (req, res) => {
           path: normalizedPath,
           kind: 'file-version-restore',
           tool: 'file_write',
-        });
+        }, codeSiteEnforceOptions(codeSiteContext));
         await gitService.safeWriteFile(fullPath, content);
 
         // 2) Pull the CRDT doc onto the restored content so live editors
@@ -4194,6 +4202,7 @@ const server = http.createServer(async (req, res) => {
               actorUserId: userId || null,
               effectiveUserId: effectiveUserId || null,
             });
+            const codeSiteEnforcement = codeSiteEnforceOptions(codeSiteContext);
             const codeSiteNotifyScope = {
               ...notifyScope,
               codesiteContext: codeSiteContext,
@@ -4339,7 +4348,7 @@ const server = http.createServer(async (req, res) => {
 
             const codeSiteGitAttempts = codeSiteGitActionAttempts(action, data);
             if (codeSiteGitAttempts.length) {
-              await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts);
+              await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts, codeSiteEnforcement);
             }
 
             switch (action) {
@@ -4579,7 +4588,7 @@ const server = http.createServer(async (req, res) => {
                       path: data.filePath,
                       kind: 'discard',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
@@ -4595,7 +4604,7 @@ const server = http.createServer(async (req, res) => {
                       path: '**',
                       kind: 'discard-all',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     pauseWatcher(slug);
                     try {
                       result = await gitService.discardAll(slug, effectiveUserId);
@@ -4615,7 +4624,7 @@ const server = http.createServer(async (req, res) => {
                       path: data.filePath,
                       kind: 'resolve-ours',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     result = await gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId);
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
@@ -4627,7 +4636,7 @@ const server = http.createServer(async (req, res) => {
                       path: data.filePath,
                       kind: 'resolve-theirs',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     result = await gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId);
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
@@ -4639,7 +4648,7 @@ const server = http.createServer(async (req, res) => {
                       path: data.filePath,
                       kind: 'mark-resolved',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
                     break;
                 case 'abort-merge':
@@ -4647,7 +4656,7 @@ const server = http.createServer(async (req, res) => {
                       path: '**',
                       kind: 'abort-merge',
                       tool: 'git_worktree',
-                    });
+                    }, codeSiteEnforcement);
                     result = await gitService.abortMerge(slug, effectiveUserId);
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
@@ -4905,7 +4914,7 @@ const server = http.createServer(async (req, res) => {
                       kind: 'write-file',
                       tool: 'file_write',
                       ...codeSiteWriteEvidence(data, derivedLineProvenance),
-                    });
+                    }, codeSiteEnforcement);
 	                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
 	                    result = { success: true };
 	                    broadcastFileTreeChanged(slug, notifyScope);
@@ -4939,7 +4948,7 @@ const server = http.createServer(async (req, res) => {
                           kind: 'apply-shadow-patch',
                           tool: 'shadow_patch',
                           ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
-                        });
+                        }, codeSiteEnforcement);
                         const docName = buildDocName(slug, f.path, notifyScope);
                         const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
                         if (op?.ok) {
@@ -4980,7 +4989,7 @@ const server = http.createServer(async (req, res) => {
                         ...codeSiteWriteEvidence({ ...data, ...file }, derivedLineProvenance),
                       };
                     }));
-                    await enforceCodeSiteWritesAllowed(codeSiteContext, attempts);
+                    await enforceCodeSiteWritesAllowed(codeSiteContext, attempts, codeSiteEnforcement);
                   }
                   result = await gitService.writeFilesBatch(slug, data.files, {
                     syncToGcs: data.syncToGcs !== false,
@@ -4993,7 +5002,7 @@ const server = http.createServer(async (req, res) => {
 	                      kind: 'create-directory',
 	                      tool: 'file_write',
                         ...codeSiteWriteEvidence(data),
-	                    });
+	                    }, codeSiteEnforcement);
                     await gitService.createDirectory(slug, data.path, effectiveUserId);
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -5014,7 +5023,7 @@ const server = http.createServer(async (req, res) => {
 	                      kind: 'delete-item',
 	                      tool: 'file_delete',
                         ...codeSiteWriteEvidence(data, derivedLineProvenance),
-	                    });
+	                    }, codeSiteEnforcement);
                     }
 	                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
                     console.log('[Collab] delete-item result:', result);
@@ -5052,7 +5061,7 @@ const server = http.createServer(async (req, res) => {
                           tool: 'file_rename',
                           ...codeSiteWriteEvidence(data, newPathLineProvenance),
                         },
-                      ]);
+                      ], codeSiteEnforcement);
                     }
 	                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)

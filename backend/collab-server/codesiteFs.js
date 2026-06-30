@@ -319,7 +319,10 @@ async function authoritativeCodeSiteContext(context, options = {}) {
   if (!requiresAuthoritativeContext(context, options) || context?.mode === 'monitor') {
     return context;
   }
-  const base = { ...(context || {}), active: true };
+  const base = { ...(context || {}), active: true, mode: context?.mode || 'enforce' };
+  if (options.requireAuthoritativeContext && !context?.active) {
+    return withHydrationFailure(base, ['codesite_context_required']);
+  }
   if (!base.transactionId) {
     return withHydrationFailure(base, ['codesite_transaction_required']);
   }

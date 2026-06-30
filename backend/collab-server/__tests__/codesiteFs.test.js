@@ -69,6 +69,18 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
   }
 });
 
+test('trusted managed write scopes fail closed when CodeSite context is missing', async () => {
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(null, {
+      path: 'synthi/src/App.jsx',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { requireAuthoritativeContext: true, fetch: async () => new Response('{}') }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('codesite_context_required'),
+  );
+});
+
 test('derives sanitized CodeSite runtime env and metadata for managed processes', () => {
   const context = codeSiteContextFromRequest({
     headers: {
@@ -314,6 +326,46 @@ test('managed agent enforcement hydrates transaction write set instead of trusti
   assert.strictEqual(body.path, 'api/auth/signup.ts');
   assert.strictEqual(body.codesiteFsEvent.type, 'write_denied');
   assert.strictEqual(body.codesiteFsEvent.details.reason_codes.includes('outside_clearance_route'), true);
+});
+
+test('authoritative server enforcement hydrates active non-managed CodeSite writes', async () => {
+  const calls = [];
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/transactions/txn-1')) {
+      return new Response(JSON.stringify({
+        transaction: {
+          id: 'txn-1',
+          status: 'open',
+          writeSet: ['docs/**'],
+          observedWriteSet: [],
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      ok: false,
+      policyDecision: { reasonCodes: ['outside_clearance_route'] },
+    }), { status: 200 });
+  };
+  const context = codeSiteContextFromRequest({
+    headers: {
+      'x-codesite-transaction-id': 'txn-1',
+      'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+      'x-codesite-allowed-paths': 'api/**',
+    },
+  }, {}, { workspaceSlug: 'acme' });
+
+  await assert.rejects(
+    () => enforceCodeSiteWriteAllowed(context, {
+      path: 'api/auth/signup.ts',
+      tool: 'file_write',
+      kind: 'write-file',
+    }, { fetch, requireAuthoritativeContext: true }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('outside_clearance_route'),
+  );
+
+  assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1');
 });
 
 test('managed agent enforcement rejects stale or closed transactions before writes', async () => {
