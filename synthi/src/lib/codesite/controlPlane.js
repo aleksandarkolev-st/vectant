@@ -1102,16 +1102,19 @@ export async function getSchemas() {
   return codesiteSchemas();
 }
 
-export async function previewArtifacts(workspaceSlug, projectId) {
+export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
   const project = await getProject(workspaceSlug, projectId);
   if (!project) throw notFound('project_not_found');
   const controlState = await getControlState(workspaceSlug, projectId);
   const files = buildArtifactProjection(project, controlState);
+  const includeContent = Boolean(options.includeContent || options.include_content);
+  const maxContentBytes = Number.isFinite(options.maxContentBytes) ? Math.max(0, options.maxContentBytes) : 4096;
   return {
     projectId,
     files: files.map((file) => ({
       path: file.relativePath,
       bytes: Buffer.byteLength(file.content, 'utf8'),
+      ...(includeContent ? { contentPreview: file.content.slice(0, maxContentBytes) } : {}),
     })),
   };
 }

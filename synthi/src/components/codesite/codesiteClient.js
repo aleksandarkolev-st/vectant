@@ -125,7 +125,7 @@ export async function fetchCodeSiteEvents(workspaceSlug, projectId) {
 
 export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
-  return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview`);
+  return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview?include=content`);
 }
 
 export async function createCodeSiteProject(workspaceSlug, payload = {}) {

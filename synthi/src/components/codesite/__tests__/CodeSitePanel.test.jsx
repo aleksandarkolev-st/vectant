@@ -81,9 +81,42 @@ function radarState() {
       title: 'Checkout coordination',
       request: 'Coordinate checkout mutations',
       status: 'active',
-      proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1', readSetDigest: 'digest-read' }],
-      incidents: [{ id: 'incident-1', category: 'near_miss', severity: 'medium', affectedZones: ['api/**'] }],
-      inspectionRuns: [{ id: 'inspection-1', displayCallsign: 'QA-1', status: 'passed', changedPaths: ['src/app/page.jsx'] }],
+      zonePolicy: {
+        zones: [{ zoneKey: 'api-zone', label: 'API airspace', class: 'B', paths: ['api/checkout/**'], risk: 'medium' }],
+        noFlyZones: ['secrets/**'],
+      },
+      proofBundles: [{
+        id: 'proof-1',
+        bundleDigest: 'digest-proof-1',
+        readSetDigest: 'digest-read',
+        evidenceRefs: ['test:checkout'],
+        trailers: { 'CodeSite-Transaction': 'txn-1' },
+      }],
+      incidents: [{
+        id: 'incident-1',
+        category: 'near_miss',
+        severity: 'medium',
+        participants: ['ATLAS-1'],
+        affectedZones: ['api/**'],
+        evidenceRefs: ['incident:evidence'],
+        replayDigest: 'sha256:incident',
+      }],
+      inspectionRuns: [{
+        id: 'inspection-1',
+        displayCallsign: 'QA-1',
+        status: 'passed',
+        changedPaths: ['src/app/page.jsx'],
+        inspectionSignals: [{ type: 'test', status: 'passed' }],
+        evidenceRefs: ['test:checkout'],
+      }],
+      lineProvenance: [{
+        id: 'line-1',
+        filePath: 'api/checkout/route.js',
+        lineAnchor: 'L42',
+        displayCallsign: 'ATLAS-1',
+        reasonRef: 'rfi:checkout',
+        evidenceRefs: ['proof-1'],
+      }],
     },
     controlState: {
       projectId: 'proj-1',
@@ -123,7 +156,7 @@ function radarState() {
       displayCallsign: 'ATLAS-1',
       createdAt: '2026-06-29T23:31:00.000Z',
     }],
-    artifactPreview: { files: [{ path: 'projects/proj-1/control-state.json', bytes: 1200 }] },
+    artifactPreview: { files: [{ path: 'projects/proj-1/control-state.json', bytes: 1200, contentPreview: '{\\n  \"towerState\": \"holding\"\\n}\\n' }] },
     selectedProjectId: 'proj-1',
     counts: {
       projects: 1,
@@ -168,8 +201,14 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-panel"]')).toBeTruthy();
     expect(container.textContent).toContain('Checkout coordination');
     expect(container.textContent).toContain('ATLAS-1');
+    expect(container.textContent).toContain('Airspace Map');
+    expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
+    expect(container.textContent).toContain('CodeSite-Transaction');
+    expect(container.textContent).toContain('Line Provenance');
+    expect(container.textContent).toContain('api/checkout/route.js');
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
+    expect(container.textContent).toContain('towerState');
     expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
 
     await act(async () => {

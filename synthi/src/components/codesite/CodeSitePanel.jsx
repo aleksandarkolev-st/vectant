@@ -7,8 +7,11 @@ import {
   CheckCircle2,
   ClipboardCheck,
   FileJson,
+  FileSearch,
   GitCommit,
   Inbox,
+  Layers,
+  Map,
   Plus,
   Radar,
   RefreshCw,
@@ -91,7 +94,7 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 items-center gap-1.5 rounded border px-2.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex h-9 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
         background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
@@ -198,6 +201,95 @@ function LoadingSkeleton() {
   );
 }
 
+function zoneClass(zone) {
+  return compact(zone?.class || zone?.zoneClass || zone?.risk || 'C').toUpperCase();
+}
+
+function zoneName(zone, index) {
+  return compact(zone?.label || zone?.zoneKey || zone?.id || `zone-${index + 1}`);
+}
+
+function zonePaths(zone) {
+  return asArray(zone?.paths || zone?.route || zone?.allowedPaths);
+}
+
+function AirspaceMap({ zones, noFlyZones, flights, risks }) {
+  const lanes = zones.length ? zones : [
+    { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
+  ];
+  const visibleFlights = flights.slice(0, 5);
+
+  return (
+    <div className="space-y-2">
+      <div
+        className="relative overflow-hidden rounded border"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+      >
+        <div className="absolute inset-y-0 left-1/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
+        <div className="absolute inset-y-0 left-2/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
+        <div className="relative space-y-1 p-2">
+          {lanes.slice(0, 5).map((zone, index) => {
+            const relatedFlights = visibleFlights.filter((flight) => {
+              const route = asArray(flight.route);
+              const paths = zonePaths(zone);
+              return route.some((path) => paths.some((zonePath) => path.includes(zonePath.replace('/**', '')) || zonePath.includes(path.replace('/**', ''))));
+            });
+            const hasRisk = risks.some((risk) => compact(risk.conflictZone || risk.path || risk.zoneKey, '').includes(zonePaths(zone)[0]?.replace('/**', '') || zoneName(zone, index)));
+            return (
+              <div
+                key={zone.zoneKey || zone.id || index}
+                className="grid min-h-[46px] grid-cols-[72px_minmax(0,1fr)_minmax(84px,auto)] items-center gap-2 rounded border px-2 py-1.5"
+                style={{
+                  borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
+                  background: hasRisk ? 'color-mix(in srgb, #ff5757 7%, var(--bg-editor))' : 'var(--bg-editor)',
+                }}
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
+                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
+                </div>
+                <PathList paths={zonePaths(zone)} empty="route pending" />
+                <div className="flex justify-end gap-1">
+                  {relatedFlights.length ? relatedFlights.map((flight) => (
+                    <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'animate-pulse' : ''}>
+                      {compact(flight.displayCallsign, 'agent')}
+                    </Pill>
+                  )) : <Pill>clear</Pill>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
+        <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>No-fly zones</div>
+          <div className="mt-1"><PathList paths={noFlyZones} empty="none" /></div>
+        </div>
+        <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>Radar layers</div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {['clearance', 'transaction', 'inspection', 'proof'].map((layer) => <Pill key={layer}>{layer}</Pill>)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JsonPreview({ value, maxLines = 10 }) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2);
+  const lines = text.split('\n').slice(0, maxLines).join('\n');
+  return (
+    <pre
+      className="max-h-44 overflow-auto rounded border p-2 text-[10px] leading-4"
+      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
+    >
+      {lines}
+    </pre>
+  );
+}
+
 export default function CodeSitePanel({ workspaceSlug }) {
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [radarState, setRadarState] = useState(() => createEmptyCodeSiteRadarState(workspaceSlug));
@@ -298,6 +390,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const incidents = asArray(currentProject?.incidents);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-8).reverse();
+  const zones = asArray(currentProject?.zonePolicy?.zones);
+  const noFlyZones = asArray(currentProject?.zonePolicy?.noFlyZones || currentProject?.zonePolicy?.noFly)
+    .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
+    .filter(Boolean);
+  const lineProvenance = asArray(currentProject?.lineProvenance);
+  const artifactContent = artifacts.find((file) => file.contentPreview)?.contentPreview;
+  const artifactContentPath = artifacts.find((file) => file.contentPreview)?.path;
 
   const latestStatus = useMemo(() => {
     if (error?.status === 401) return 'auth';
@@ -411,6 +510,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 </div>
               </div>
 
+              <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
+                <AirspaceMap zones={zones} noFlyZones={noFlyZones} flights={activeFlights} risks={risks} />
+              </Section>
+
               <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(radarState.collisionForecast.riskLevel)}>{compact(radarState.collisionForecast.riskLevel, 'unknown')}</Pill>}>
                 {risks.length === 0 ? (
                   <EmptyLine>No forecasted collisions</EmptyLine>
@@ -496,18 +599,24 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       </Row>
                     ))}
                     {proofBundles.slice(-3).reverse().map((bundle) => (
-                      <Row key={bundle.id}>
-                        <div className="min-w-0">
-                          <div className="truncate font-mono text-[11px]">{bundle.id}</div>
-                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>proof</div>
+                      <div key={bundle.id} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                        <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="truncate font-mono text-[11px]">{bundle.id}</div>
+                            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>proof</div>
+                          </div>
+                          <div className="min-w-0 truncate font-mono text-[11px]" title={bundle.bundleDigest || bundle.readSetDigest}>
+                            {bundle.bundleDigest || bundle.readSetDigest}
+                          </div>
+                          <div className="justify-self-end">
+                            <CheckCircle2 className="h-4 w-4" style={{ color: 'color-mix(in srgb, #4ade80 70%, var(--text-primary))' }} />
+                          </div>
                         </div>
-                        <div className="min-w-0 truncate font-mono text-[11px]" title={bundle.bundleDigest || bundle.readSetDigest}>
-                          {bundle.bundleDigest || bundle.readSetDigest}
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
+                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" />
                         </div>
-                        <div className="justify-self-end">
-                          <CheckCircle2 className="h-4 w-4" style={{ color: 'color-mix(in srgb, #4ade80 70%, var(--text-primary))' }} />
-                        </div>
-                      </Row>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -525,6 +634,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <Pill tone={run.status}>{run.status}</Pill>
                         </div>
                         <div className="mt-1"><PathList paths={run.changedPaths || []} empty="no changed paths" /></div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {asArray(run.inspectionSignals).slice(0, 3).map((signal, index) => (
+                            <Pill key={`${run.id}-signal-${index}`} tone={signal.status || run.status}>
+                              {compact(signal.type || signal.kind, 'signal')}
+                            </Pill>
+                          ))}
+                        </div>
+                        <div className="mt-1"><PathList paths={run.evidenceRefs || []} empty="no evidence refs" /></div>
                       </div>
                     ))}
                     {incidents.slice(-3).reverse().map((incident) => (
@@ -534,6 +651,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <Pill tone={incident.severity}>{incident.severity}</Pill>
                         </div>
                         <div className="mt-1"><PathList paths={incident.affectedZones || []} empty="no affected zones" /></div>
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          <PathList paths={incident.participants || []} empty="no participants" />
+                          <PathList paths={incident.evidenceRefs || []} empty="no evidence refs" />
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          {incident.replayDigest || compact(incident.incidentReplay?.summary, 'no replay digest')}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -550,12 +674,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No artifact preview</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {artifacts.slice(0, 6).map((file) => (
+                    {artifacts.slice(0, 10).map((file) => (
                       <div key={file.path} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <code className="min-w-0 truncate text-[10px]" title={file.path}>{file.path}</code>
                         <span className="shrink-0 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{file.bytes}b</span>
                       </div>
                     ))}
+                    {artifactContent ? (
+                      <div className="pt-2">
+                        <div className="mb-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                          <FileSearch className="h-3.5 w-3.5" />
+                          <span className="min-w-0 truncate">{artifactContentPath}</span>
+                        </div>
+                        <JsonPreview value={artifactContent} maxLines={12} />
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </Section>
@@ -597,6 +730,46 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <Metric label="Events" value={radarState.counts.events} />
                   <Metric label="Proof" value={radarState.counts.proofBundles} />
                 </div>
+              </Section>
+
+              <Section title="Line Provenance" icon={FileSearch} right={<Pill>{lineProvenance.length}</Pill>}>
+                {lineProvenance.length === 0 ? (
+                  <EmptyLine>No line provenance indexed</EmptyLine>
+                ) : (
+                  <div className="space-y-1">
+                    {lineProvenance.slice(-5).reverse().map((row) => (
+                      <div key={row.id || `${row.filePath}-${row.lineAnchor}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
+                          <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
+                        </div>
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          <PathList paths={[row.lineAnchor, row.reasonRef].filter(Boolean)} empty="no anchor" />
+                          <PathList paths={row.evidenceRefs || []} empty="no evidence refs" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Section>
+
+              <Section title="Airspace Zones" icon={Layers} right={<Pill>{zones.length}</Pill>}>
+                {zones.length === 0 ? (
+                  <EmptyLine>No classified zones</EmptyLine>
+                ) : (
+                  <div className="space-y-1">
+                    {zones.slice(0, 6).map((zone, index) => (
+                      <div key={zone.zoneKey || zone.id || index} className="grid min-h-10 grid-cols-[minmax(76px,0.8fr)_minmax(0,1.6fr)_auto] items-center gap-2 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">{zoneName(zone, index)}</div>
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
+                        </div>
+                        <PathList paths={zonePaths(zone)} empty="no paths" />
+                        <Pill tone={zone.risk || 'medium'}>{compact(zone.risk, 'risk')}</Pill>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </Section>
 
               <Section title="Radar Sources" icon={Activity}>

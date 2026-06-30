@@ -96,7 +96,10 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'artifacts' && route[3] === 'preview') {
-      return okJson(await previewArtifacts(slug, route[1]));
+      const search = new URL(request.url).searchParams;
+      return okJson(await previewArtifacts(slug, route[1], {
+        includeContent: search.get('include') === 'content',
+      }));
     }
 
     if (route[0] === 'transactions' && route.length === 2) {
