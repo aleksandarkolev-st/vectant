@@ -9,7 +9,9 @@
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 const AI_ENGINE_BASE = (process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000').replace(/\/$/, '');
-const DEFAULT_THRESHOLD = Number(process.env.PROGRAM_AI_RISK_THRESHOLD) || 0.3;
+// Two thresholds: ≤ low → auto-approve (clean); ≥ high → auto-reject (dangerous).
+const DEFAULT_LOW = Number(process.env.PROGRAM_AI_RISK_THRESHOLD) || 0.3;
+const DEFAULT_HIGH = Number(process.env.PROGRAM_AI_REJECT_THRESHOLD) || 0.7;
 
 /** Scopes that always force a human review even on a low AI score (conservative). */
 export const SENSITIVE_SCOPES = ['network.outbound', 'workspace.files.write', 'ports.expose'];
@@ -43,10 +45,19 @@ export async function assessSubmission({ config, scanSummary = null, sourceImage
   }
 }
 
-/** Conservative auto-approve rule: low risk AND no sensitive scope AND no flags. */
-export function aiDecision({ riskScore, flags = [] }, config, { threshold = DEFAULT_THRESHOLD } = {}) {
+/**
+ * Three-way autonomous decision (precedence: approve → reject → manual).
+ * Auto-approve only when clearly safe; auto-reject when clearly dangerous (high
+ * risk OR a concrete suspicion flag); everything else (the uncertain middle, or
+ * any sensitive scope) is left for a human. The AI is advisory — hard gates +
+ * CVE scan already ran first, and this never overrides a static reject.
+ * @returns {'auto_approve'|'auto_reject'|'manual'}
+ */
+export function aiDecision({ riskScore, flags = [] }, config, { lowThreshold = DEFAULT_LOW, highThreshold = DEFAULT_HIGH } = {}) {
   const perms = Array.isArray(config?.permissions) ? config.permissions : [];
   const hasSensitive = perms.some((p) => SENSITIVE_SCOPES.includes(p));
-  if (riskScore <= threshold && flags.length === 0 && !hasSensitive) return 'auto_approve';
+  const hasFlags = Array.isArray(flags) && flags.length > 0;
+  if (riskScore <= lowThreshold && !hasFlags && !hasSensitive) return 'auto_approve';
+  if (riskScore >= highThreshold || hasFlags) return 'auto_reject';
   return 'manual';
 }

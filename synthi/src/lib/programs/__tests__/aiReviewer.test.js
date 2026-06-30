@@ -26,19 +26,22 @@ describe('assessSubmission', () => {
   });
 });
 
-describe('aiDecision (conservative)', () => {
-  const threshold = 0.3;
+describe('aiDecision (3-way)', () => {
+  const opts = { lowThreshold: 0.3, highThreshold: 0.7 };
   it('auto-approves low risk + safe scopes + no flags', () => {
-    expect(aiDecision({ riskScore: 0.1, flags: [] }, cfg({ permissions: ['program.launch'] }), { threshold })).toBe('auto_approve');
+    expect(aiDecision({ riskScore: 0.1, flags: [] }, cfg({ permissions: ['program.launch'] }), opts)).toBe('auto_approve');
   });
-  it('routes to manual when a sensitive scope is present', () => {
+  it('auto-rejects when risk >= high threshold', () => {
+    expect(aiDecision({ riskScore: 0.9, flags: [] }, cfg(), opts)).toBe('auto_reject');
+  });
+  it('auto-rejects when any flag is present (even at low risk)', () => {
+    expect(aiDecision({ riskScore: 0.0, flags: ['obfuscation'] }, cfg(), opts)).toBe('auto_reject');
+  });
+  it('routes the middle band (no flags) to manual', () => {
+    expect(aiDecision({ riskScore: 0.5, flags: [] }, cfg(), opts)).toBe('manual');
+  });
+  it('routes a sensitive scope (low risk, no flags) to manual', () => {
     expect(SENSITIVE_SCOPES).toContain('network.outbound');
-    expect(aiDecision({ riskScore: 0.1, flags: [] }, cfg({ permissions: ['program.launch', 'network.outbound'] }), { threshold })).toBe('manual');
-  });
-  it('routes to manual when risk exceeds threshold', () => {
-    expect(aiDecision({ riskScore: 0.9, flags: [] }, cfg(), { threshold })).toBe('manual');
-  });
-  it('routes to manual when any flag is present', () => {
-    expect(aiDecision({ riskScore: 0.0, flags: ['obfuscation'] }, cfg(), { threshold })).toBe('manual');
+    expect(aiDecision({ riskScore: 0.1, flags: [] }, cfg({ permissions: ['program.launch', 'network.outbound'] }), opts)).toBe('manual');
   });
 });
