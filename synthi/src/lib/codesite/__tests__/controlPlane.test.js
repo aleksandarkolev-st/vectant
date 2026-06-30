@@ -20,6 +20,7 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteExecutionPlan: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
     },
     codeSiteMutationLease: {
       create: vi.fn(),
@@ -272,6 +273,7 @@ describe('CodeSite control plane transaction validation', () => {
       updatedAt: new Date('2026-06-29T23:00:00.000Z'),
     });
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
     prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
       id: 'lease-created',
       issuedAt: new Date('2026-06-29T23:00:00.000Z'),
@@ -490,6 +492,38 @@ describe('CodeSite control plane transaction validation', () => {
       'dojo_clearance_proof_verified',
       'dojo_public_proof_signature_verified',
     ]));
+  });
+
+  it('holds high-risk collision clearances before issuing active mutation rights', async () => {
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([
+      {
+        ...executionPlanFixture(['synthi/prisma/**']),
+        id: 'plan-schema-active',
+        displayCallsign: 'SCHEMA-01',
+        status: 'airborne',
+      },
+    ]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('holding');
+    expect(lease.policyDecision.decision).toBe('hold');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'collision_avoidance_hold',
+      'contract_collision',
+      'schema_first_recommended',
+    ]));
+    expect(lease.lease.collisionAvoidance.risk).toEqual(expect.objectContaining({
+      risk: 'contract_collision',
+      severity: 'high',
+      conflictZone: 'synthi/prisma/**',
+      recommendedResolution: expect.objectContaining({ action: 'schema_first' }),
+    }));
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    expect(eventTypes).toEqual(expect.arrayContaining(['holding_pattern', 'near_miss']));
   });
 
   it('allows low-risk clearances without Dojo proof', async () => {

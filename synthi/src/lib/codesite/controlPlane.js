@@ -30,6 +30,7 @@ import {
 } from './repoSnapshot';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
+const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
 
 const PROJECT_INCLUDE = {
   agentSessions: true,
@@ -337,7 +338,13 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     requestedAction: body.dojoRequestedAction || body.dojo_requested_action || 'codesite.mutation.clearance',
   });
   const dojoProofSummary = summarizeCodeSiteDojoProof(dojoProof);
-  const clearancePolicy = applyDojoClearanceGate(policy, dojoProof);
+  const collisionAvoidance = await collisionAvoidanceForLeaseRequest({
+    projectId: plan.projectId,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+  });
+  const clearancePolicy = applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance);
   const lease = await prisma.codeSiteMutationLease.create({
     data: {
       projectId: plan.projectId,
@@ -351,6 +358,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
         towerInstruction: clearancePolicy.towerInstruction,
         inspectedZones: clearancePolicy.inspectedZones,
         dojoProofVerification: dojoProofSummary.verification,
+        collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       }),
       dojoProofRef: dojoProof.proofRef,
       dojoLicenseRef: dojoProof.licenseRef,
@@ -372,11 +380,12 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       towerInstruction: clearancePolicy.towerInstruction,
       inspectedZones: clearancePolicy.inspectedZones,
       dojoProof: dojoProofSummary,
+      collisionAvoidance: clearancePolicy.collisionAvoidance || null,
     },
   });
   await recordEvent(plan.projectId, {
     mutationLeaseId: lease.id,
-    eventType: clearancePolicy.decision === 'block' ? 'holding_pattern' : 'clearance_issued',
+    eventType: clearancePolicy.status === 'active' ? 'clearance_issued' : 'holding_pattern',
     displayCallsign: lease.displayCallsign,
     actorType: 'policy_engine',
     actorId: decision.id,
@@ -386,9 +395,79 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       status: clearancePolicy.status,
       reasonCodes: clearancePolicy.reasonCodes,
       towerInstruction: clearancePolicy.towerInstruction,
+      collisionAvoidance: clearancePolicy.collisionAvoidance || null,
     },
   });
+  if (clearancePolicy.collisionAvoidance) {
+    await recordEvent(plan.projectId, {
+      mutationLeaseId: lease.id,
+      eventType: 'near_miss',
+      displayCallsign: lease.displayCallsign,
+      actorType: 'policy_engine',
+      actorId: decision.id,
+      evidenceRefs: [`codesite:policy-decision:${decision.id}`],
+      details: {
+        mutationLeaseId: lease.id,
+        policyDecisionId: decision.id,
+        prevented: true,
+        collisionAvoidance: clearancePolicy.collisionAvoidance,
+      },
+    });
+  }
   return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
+}
+
+async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, requestedLease, zonePolicy }) {
+  const otherPlans = await prisma.codeSiteExecutionPlan.findMany({
+    where: {
+      projectId,
+      id: { not: executionPlan.id },
+      status: { in: ACTIVE_FLIGHT_STATUSES },
+    },
+  });
+  const activeLeases = await prisma.codeSiteMutationLease.findMany({
+    where: { projectId, status: 'active' },
+  });
+  const requestedPlan = {
+    ...executionPlan,
+    route: pathsForRoute(requestedLease.allowedPaths || executionPlan.route),
+  };
+  const forecast = predictCollisions({
+    executionPlans: [requestedPlan, ...otherPlans.map(executionPlanProjection)],
+    leases: activeLeases.map((lease) => mutationLeaseProjection(lease)),
+    zonePolicy,
+  });
+  const currentCallsign = requestedPlan.displayCallsign;
+  const risk = asArray(forecast.risks)
+    .filter((item) => asArray(item.aircraft).includes(currentCallsign))
+    .find((item) => item.severity === 'high');
+  if (!risk) return { forecast, risk: null };
+  return {
+    forecast,
+    risk,
+    decision: 'hold',
+    status: 'holding',
+    reasonCodes: unique(['collision_avoidance_hold', risk.risk, `${risk.recommendedResolution?.action || 'tower_sequence'}_recommended`]),
+    towerInstruction: towerCollisionInstruction(risk),
+  };
+}
+
+function applyTowerCollisionGate(policy, collisionAvoidance = null) {
+  if (!collisionAvoidance?.risk || policy.decision === 'block') return policy;
+  return {
+    ...policy,
+    decision: collisionAvoidance.decision,
+    status: collisionAvoidance.status,
+    reasonCodes: unique([...policy.reasonCodes, ...collisionAvoidance.reasonCodes]),
+    towerInstruction: collisionAvoidance.towerInstruction,
+    collisionAvoidance,
+  };
+}
+
+function towerCollisionInstruction(risk) {
+  const action = risk.recommendedResolution?.action || 'sequence_flights';
+  const aircraft = asArray(risk.aircraft).filter(Boolean).join(' and ') || 'affected flights';
+  return `Hold position: ${risk.risk} risk in ${risk.conflictZone}. Tower recommends ${action} for ${aircraft}.`;
 }
 
 function applyDojoClearanceGate(policy, dojoProof = {}) {
