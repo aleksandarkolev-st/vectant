@@ -13,6 +13,8 @@ const SCHEMA = 'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const AUTHORITY = 'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
 const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
+const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_discovery.v1';
+const BUILD_METADATA_DISCOVERY_AUTHORITY = 'build_metadata_discovery_only_not_gpu_hmr_success';
 
 const DEFAULT_CANDIDATES = [
   {
@@ -567,6 +569,99 @@ function classifySourceListing(files) {
   };
 }
 
+function classifyBuildSystemPath(pathName) {
+  const normalized = String(pathName ?? '').replace(/\\/g, '/');
+  const lower = normalized.toLowerCase();
+  const basename = lower.split('/').pop() ?? lower;
+  const ext = path.extname(lower);
+  if (basename === 'cmakelists.txt') return 'cmake';
+  if (basename === 'cargo.toml') return 'cargo';
+  if (basename === 'build.gn') return 'gn';
+  if (basename === 'sconstruct' || basename === 'sconscript') return 'scons';
+  if (basename === 'makefile') return 'make';
+  if (basename === 'meson.build') return 'meson';
+  if (basename === 'build.bazel' || basename === 'workspace') return 'bazel';
+  if (basename === 'package.json') return 'npm_or_node';
+  if (basename === 'pyproject.toml') return 'python_pyproject';
+  if (basename === 'build.gradle') return 'gradle';
+  if (basename === 'configure.ac') return 'autotools';
+  if (basename === 'xmake.lua') return 'xmake';
+  if (basename === 'premake5.lua') return 'premake';
+  if (['.sln', '.vcxproj', '.vcxproj.filters', '.csproj'].includes(ext)) return 'msbuild';
+  return 'unknown_build_file';
+}
+
+function discoverBuildMetadata({ candidate, files, classification }) {
+  const buildSignals = Array.isArray(classification?.buildSignals)
+    ? classification.buildSignals
+    : [];
+  const families = new Map();
+  for (const pathName of buildSignals) {
+    const family = classifyBuildSystemPath(pathName);
+    if (!families.has(family)) families.set(family, []);
+    const paths = families.get(family);
+    if (paths.length < 20) paths.push(pathName);
+  }
+  const detectedFamilies = [...families.keys()].sort();
+  const rootBuildFiles = buildSignals.filter((pathName) => !String(pathName).includes('/'));
+  const blockingGaps = [];
+  if (detectedFamilies.length === 0) blockingGaps.push('build_metadata_not_detected');
+  const sourceFilesWithKnownBytes = files.filter((file) => Number.isFinite(file.byteLength)).length;
+  const discovery = {
+    schemaVersion: BUILD_METADATA_DISCOVERY_SCHEMA,
+    schema_version: BUILD_METADATA_DISCOVERY_SCHEMA,
+    proofAuthority: BUILD_METADATA_DISCOVERY_AUTHORITY,
+    proof_authority: BUILD_METADATA_DISCOVERY_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    acceptedAsBuildMetadataDiscovery: detectedFamilies.length > 0,
+    accepted_as_build_metadata_discovery: detectedFamilies.length > 0,
+    projectId: candidate.id,
+    project_id: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    detectedBuildSystems: detectedFamilies,
+    detected_build_systems: detectedFamilies,
+    buildSystemSignals: Object.fromEntries([...families.entries()].map(([family, paths]) => [family, paths])),
+    build_system_signals: Object.fromEntries([...families.entries()].map(([family, paths]) => [family, paths])),
+    rootBuildFiles,
+    root_build_files: rootBuildFiles,
+    buildSignalCount: buildSignals.length,
+    build_signal_count: buildSignals.length,
+    sourceFileCount: files.length,
+    source_file_count: files.length,
+    sourceFilesWithKnownBytes,
+    source_files_with_known_bytes: sourceFilesWithKnownBytes,
+    backendCandidates: classification?.backendCandidates ?? [],
+    backend_candidates: classification?.backendCandidates ?? [],
+    remainingVerificationGaps: [
+      'semantic_build_metadata_verification_missing',
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    remaining_verification_gaps: [
+      'semantic_build_metadata_verification_missing',
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+  return {
+    ...discovery,
+    discoveryHash: contentHash(stableJson(discovery)),
+    discovery_hash: contentHash(stableJson(discovery)),
+  };
+}
+
 function parseGitLsTree(text) {
   return String(text ?? '')
     .split(/\r?\n/)
@@ -841,6 +936,7 @@ function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, tra
   }));
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
   const classification = classifySourceListing(files);
+  const buildMetadataDiscovery = discoverBuildMetadata({ candidate, files, classification });
   const blockingGaps = [];
   if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
   if (classification.backendCandidates.length === 0) blockingGaps.push('gpu_backend_signal_not_detected');
@@ -864,6 +960,10 @@ function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, tra
     sample_files: files.slice(0, 80).map((file) => file.path),
     buildSystemHints: candidate.buildSystemHints,
     build_system_hints: candidate.buildSystemHints,
+    buildMetadataDiscovery,
+    build_metadata_discovery: buildMetadataDiscovery,
+    buildMetadataDiscoveryAccepted: buildMetadataDiscovery.acceptedAsBuildMetadataDiscovery === true,
+    build_metadata_discovery_accepted: buildMetadataDiscovery.acceptedAsBuildMetadataDiscovery === true,
     runtimeBoundaryHints: candidate.runtimeBoundaryHints,
     runtime_boundary_hints: candidate.runtimeBoundaryHints,
     oracleHints: candidate.oracleHints,
@@ -1140,9 +1240,12 @@ async function runSelectedCandidate(
       ? await runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs })
       : null;
     const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
+    const buildMetadataDiscoveryAccepted = sourceIntakeEvidence?.buildMetadataDiscoveryAccepted === true;
     const blockingGaps = [
       'runtime_profile_contract_missing',
-      'build_metadata_unverified',
+      buildMetadataDiscoveryAccepted
+        ? 'semantic_build_metadata_verification_missing'
+        : 'build_metadata_unverified',
       'same_process_loader_unproven',
       'epoch_publication_unproven',
       'dispatch_trace_unproven',
@@ -1173,6 +1276,10 @@ async function runSelectedCandidate(
       immutable_commit: candidate.immutableCommit,
       sourceTreeIntakeAccepted,
       source_tree_intake_accepted: sourceTreeIntakeAccepted,
+      buildMetadataDiscoveryAccepted,
+      build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
+      buildMetadataDiscovery: sourceIntakeEvidence?.buildMetadataDiscovery ?? null,
+      build_metadata_discovery: sourceIntakeEvidence?.build_metadata_discovery ?? null,
       sourceIntakeEvidence,
       source_intake_evidence: sourceIntakeEvidence,
       blockingGaps,
@@ -1565,15 +1672,27 @@ async function selfCheck() {
   }
   const parsedListing = parseGitLsTree([
     '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    '100644 blob dddddddddddddddddddddddddddddddddddddddd 78\tcrates/gpu/Cargo.toml',
+    '100644 blob eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 90\tengine/BUILD.gn',
     '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
     '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tsrc/vulkan/shader.comp',
   ].join('\n'));
   const listingClassification = classifySourceListing(parsedListing);
+  const buildDiscovery = discoverBuildMetadata({
+    candidate: candidates[0],
+    files: parsedListing,
+    classification: listingClassification,
+  });
   if (
-    parsedListing.length !== 3
-    || listingClassification.buildSignalCount !== 1
+    parsedListing.length !== 5
+    || listingClassification.buildSignalCount !== 3
     || !listingClassification.backendCandidates.includes('hip_rocm')
     || !listingClassification.backendCandidates.includes('vulkan')
+    || buildDiscovery.acceptedAsBuildMetadataDiscovery !== true
+    || !buildDiscovery.detectedBuildSystems.includes('cmake')
+    || !buildDiscovery.detectedBuildSystems.includes('cargo')
+    || !buildDiscovery.detectedBuildSystems.includes('gn')
+    || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');
   }
@@ -1730,8 +1849,11 @@ async function selfCheck() {
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
     || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || localResult.sourceTreeIntakeAccepted !== true
+    || localResult.buildMetadataDiscoveryAccepted !== true
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
+    || !localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.detectedBuildSystems?.includes('cmake')
     || !localResult.sourceIntakeEvidence?.backendCandidates?.includes('hip_rocm')
+    || !localResult.blockingGaps?.includes('semantic_build_metadata_verification_missing')
     || localResult.acceptedForGpuHmr !== false
     || localResult.gpuHmrSuccess !== false
   ) {
