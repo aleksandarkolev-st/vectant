@@ -13,6 +13,7 @@ import {
   createPolicyDelta,
   createProject,
   dryRunTransactionWrites,
+  eventCursor,
   exportArtifacts,
   getAgentInbox,
   getAgentManifest,
@@ -86,7 +87,7 @@ export async function GET(request, { params }) {
         initialSince: new URL(request.url).searchParams.get('since'),
         load: (since) => getEvents(slug, route[1], since),
         eventName: (event) => event.eventType || 'codesite_event',
-        idOf: (event) => event.id,
+        idOf: eventCursor,
       });
     }
 

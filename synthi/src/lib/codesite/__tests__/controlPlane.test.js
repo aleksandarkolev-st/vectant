@@ -32,6 +32,7 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteEvent: {
       count: vi.fn(),
       create: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
     },
     codeSitePolicyDecision: {
@@ -68,6 +69,7 @@ import {
   createDocument,
   dryRunTransactionWrites,
   getAgentInbox,
+  getEvents,
   getIncidentReplay,
   getProofBundle,
   getSourceStateSince,
@@ -263,6 +265,7 @@ describe('CodeSite control plane transaction validation', () => {
     }));
     prisma.codeSiteEvent.count.mockResolvedValue(1);
     prisma.codeSiteEvent.create.mockResolvedValue({ id: 'event-validation' });
+    prisma.codeSiteEvent.findFirst.mockResolvedValue(null);
     prisma.codeSitePolicyDecision.create.mockImplementation(async ({ data }) => ({
       id: 'decision-1',
       createdAt: new Date('2026-06-29T23:01:00.000Z'),
@@ -432,6 +435,43 @@ describe('CodeSite control plane transaction validation', () => {
     })]);
     expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('resumes project events by logical time instead of lexicographic ids', async () => {
+    prisma.codeSiteEvent.findFirst.mockResolvedValue({
+      id: 'z-last-emitted',
+      logicalTime: 7,
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'a-later-event',
+        projectId: 'project-1',
+        mutationLeaseId: null,
+        eventType: 'inspection_result',
+        displayCallsign: 'INSPECT-1',
+        actorType: 'inspection',
+        actorId: 'inspection-1',
+        detailsJson: JSON.stringify({ status: 'completed' }),
+        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+        logicalTime: 8,
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      },
+    ]);
+
+    const events = await getEvents('acme', 'project-1', 'z-last-emitted');
+
+    expect(events).toEqual([expect.objectContaining({
+      id: 'a-later-event',
+      logicalTime: 8,
+      details: { status: 'completed' },
+    })]);
+    expect(prisma.codeSiteEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        projectId: 'project-1',
+        logicalTime: { gt: 7 },
+      },
+      orderBy: [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    }));
   });
 
   it('records CodeSiteFS denied write evidence before returning a block decision', async () => {

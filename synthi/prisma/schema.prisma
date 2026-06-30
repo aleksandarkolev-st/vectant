@@ -609,6 +609,8 @@ model CodeSiteEvent {
   @@index([displayCallsign])
   @@index([eventType])
   @@index([createdAt])
+  @@index([projectId, logicalTime])
+  @@unique([projectId, logicalTime])
 }
 
 model CodeSiteAgentInboxItem {

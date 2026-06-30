@@ -17,6 +17,7 @@ const {
     createDocument: vi.fn(),
     createProject: vi.fn(),
     dryRunTransactionWrites: vi.fn(),
+    eventCursor: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
     getAgentInbox: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'createPolicyDelta',
     'createProject',
     'dryRunTransactionWrites',
+    'eventCursor',
     'exportArtifacts',
     'getAgentInbox',
     'getAgentManifest',
@@ -106,6 +108,9 @@ describe('CodeSite catch-all route', () => {
     canReadScope.mockResolvedValue(true);
     canWriteScope.mockResolvedValue(true);
     checkLimit.mockReturnValue({ ok: true });
+    controlPlane.eventCursor.mockImplementation((event) => (
+      Number.isSafeInteger(Number(event?.logicalTime)) ? `lt:${Number(event.logicalTime)}` : event?.id
+    ));
   });
 
   it('lists projects through the read-gated projects endpoint', async () => {
@@ -242,7 +247,7 @@ describe('CodeSite catch-all route', () => {
 
   it('streams project events as server-sent events', async () => {
     controlPlane.getEvents.mockResolvedValueOnce([
-      { id: 'evt-1', eventType: 'flight_plan_filed', displayCallsign: 'ATLAS-1' },
+      { id: 'a-later-event', logicalTime: 8, eventType: 'flight_plan_filed', displayCallsign: 'ATLAS-1' },
     ]);
     const controller = new AbortController();
 
@@ -257,6 +262,7 @@ describe('CodeSite catch-all route', () => {
     const text = new TextDecoder().decode(chunk.value);
 
     expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(text).toContain('id: lt:8');
     expect(text).toContain('event: flight_plan_filed');
     expect(text).toContain('data:');
     expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null);

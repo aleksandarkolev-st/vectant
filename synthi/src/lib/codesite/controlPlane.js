@@ -15,6 +15,8 @@ import {
   predictCollisions,
 } from './policy';
 
+const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
+
 const PROJECT_INCLUDE = {
   agentSessions: true,
   executionPlans: true,
@@ -22,7 +24,7 @@ const PROJECT_INCLUDE = {
   mutationTxns: true,
   assumptions: true,
   policyDecisions: true,
-  events: { orderBy: { createdAt: 'asc' } },
+  events: { orderBy: EVENT_ORDER_BY },
   incidents: true,
   inspectionRuns: true,
   proofBundles: true,
@@ -1805,7 +1807,7 @@ export async function getControlState(workspaceSlug, projectId) {
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
     requiredActions,
-    eventsSince: projection.events.at(-1)?.id || null,
+    eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,
     collisionForecast: predictCollisions({
       executionPlans: projection.executionPlans,
@@ -1818,14 +1820,44 @@ export async function getControlState(workspaceSlug, projectId) {
 
 export async function getEvents(workspaceSlug, projectId, since) {
   const project = await requireProject(workspaceSlug, projectId);
+  const where = await eventWhereSince(project.id, since);
   const events = await prisma.codeSiteEvent.findMany({
-    where: {
-      projectId: project.id,
-      ...(since ? { id: { gt: since } } : {}),
-    },
-    orderBy: { createdAt: 'asc' },
+    where,
+    orderBy: EVENT_ORDER_BY,
   });
   return events.map(eventProjection);
+}
+
+export function eventCursor(event) {
+  if (!event) return null;
+  const logicalTime = Number(event.logicalTime);
+  if (Number.isSafeInteger(logicalTime) && logicalTime >= 0) return `lt:${logicalTime}`;
+  return event.id || null;
+}
+
+async function eventWhereSince(projectId, since) {
+  const cursor = parseEventCursor(since);
+  if (!cursor) return { projectId };
+  if (cursor.logicalTime !== null) {
+    return { projectId, logicalTime: { gt: cursor.logicalTime } };
+  }
+  const anchor = await prisma.codeSiteEvent.findFirst({
+    where: { projectId, id: cursor.id },
+    select: { logicalTime: true },
+  });
+  const anchorLogicalTime = Number(anchor?.logicalTime);
+  if (Number.isSafeInteger(anchorLogicalTime) && anchorLogicalTime >= 0) {
+    return { projectId, logicalTime: { gt: anchorLogicalTime } };
+  }
+  return { projectId };
+}
+
+function parseEventCursor(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const logicalMatch = raw.match(/^lt:(\d+)$/i) || raw.match(/^(\d+)$/);
+  if (logicalMatch) return { logicalTime: Number(logicalMatch[1]), id: null };
+  return { logicalTime: null, id: raw };
 }
 
 export async function getAgentManifest(workspaceSlug, projectId) {
@@ -1996,7 +2028,7 @@ export async function getProofBundle(workspaceSlug, bundleId) {
 export async function getIncidentReplay(workspaceSlug, incidentId) {
   const incident = await prisma.codeSiteIncident.findFirst({
     where: { id: incidentId, project: { workspaceSlug } },
-    include: { project: { include: { events: { orderBy: { createdAt: 'asc' } } } } },
+    include: { project: { include: { events: { orderBy: EVENT_ORDER_BY } } } },
   });
   if (!incident) throw notFound('incident_not_found');
   const projectedIncident = incidentProjection(incident);
@@ -2044,20 +2076,37 @@ function incidentReplayTimeline(incident, events) {
 }
 
 async function recordEvent(projectId, input) {
-  const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
-  return prisma.codeSiteEvent.create({
-    data: {
-      projectId,
-      mutationLeaseId: input.mutationLeaseId || null,
-      eventType: input.eventType,
-      displayCallsign: input.displayCallsign || null,
-      actorType: input.actorType || null,
-      actorId: input.actorId || null,
-      detailsJson: stringifyJson(input.details || {}),
-      evidenceRefsJson: stringifyJson(input.evidenceRefs || []),
-      logicalTime: logicalTime + 1,
-    },
-  });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
+    try {
+      return await prisma.codeSiteEvent.create({
+        data: {
+          projectId,
+          mutationLeaseId: input.mutationLeaseId || null,
+          eventType: input.eventType,
+          displayCallsign: input.displayCallsign || null,
+          actorType: input.actorType || null,
+          actorId: input.actorId || null,
+          detailsJson: stringifyJson(input.details || {}),
+          evidenceRefsJson: stringifyJson(input.evidenceRefs || []),
+          logicalTime: logicalTime + 1,
+        },
+      });
+    } catch (error) {
+      if (!isLogicalTimeConflict(error)) throw error;
+    }
+  }
+  throw new Error('codesite_event_logical_time_conflict');
+}
+
+function isLogicalTimeConflict(error) {
+  const targetValue = error?.meta?.target;
+  const target = Array.isArray(targetValue) ? targetValue.join(',') : String(targetValue || '');
+  return error?.code === 'P2002'
+    && (
+      (target.includes('projectId') && target.includes('logicalTime'))
+      || target.includes('CodeSiteEvent_projectId_logicalTime')
+    );
 }
 
 async function createPolicyDecision(projectId, input) {
