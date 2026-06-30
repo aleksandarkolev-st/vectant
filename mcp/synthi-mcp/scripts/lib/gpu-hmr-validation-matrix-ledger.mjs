@@ -20862,9 +20862,16 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
       ?? row.full_runtime_evidence_authority,
     );
     const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+    const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
+    const userOwnedSourceFirst = sourceAuthority === 'direct_source_url_commit'
+      || sourceAuthority === 'direct_local_git_repo_path'
+      || sourceAuthority === 'user_source_files'
+      || sourceAuthority === 'workspace_source_files'
+      || sourceAuthority === 'cli_or_env_direct_source';
     return firstBool(sourceFirst.accepted) === true
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
+      && userOwnedSourceFirst
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false

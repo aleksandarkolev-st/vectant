@@ -7194,6 +7194,7 @@ function acceptedBroadReadinessCandidate({
   acceptanceScope,
   proofMode = 'strict_runtime_ledger',
   oracle = 'compute',
+  sourceFirstSourceAuthority = 'direct_source_url_commit',
 }) {
   const row = acceptedAuthoritativeMatrixRow(targetId, {
     backend,
@@ -7233,6 +7234,11 @@ function acceptedBroadReadinessCandidate({
       .filter((proofId) => !proofId.startsWith('gpu-ledger-proof:sha256:')),
   ];
   row.proof_ids = row.proofIds;
+  row.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+    targetId,
+    sourceAuthority: sourceFirstSourceAuthority,
+  });
+  row.source_first_ingestion = row.sourceFirstIngestion;
   if (oracle === 'visual') {
     row.visual = {
       ...(row.visual ?? {}),
@@ -7259,6 +7265,16 @@ function acceptedBroadReadinessCandidate({
     row.output_oracle_facet = row.outputOracleFacet;
   }
   return withQueryRecomputedRowId(row);
+}
+
+function withSourceFirstSourceAuthority(row, sourceAuthority) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+    targetId: cloned.targetId,
+    sourceAuthority,
+  });
+  cloned.source_first_ingestion = cloned.sourceFirstIngestion;
+  return withQueryRecomputedRowId(cloned);
 }
 
 function withoutSourceFirstVisualSupport(row) {
@@ -8019,6 +8035,32 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithoutSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithProfiledSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withSourceFirstSourceAuthority(row, 'profile_source_files')),
+    randomColdReadinessMatrixRow(),
+  ],
+});
+assert.equal(broadReadinessWithProfiledSourceFirstVisualQuery.accepted, true);
+assert.equal(
+  broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const broadReadinessRowsWithRandomCold = [
