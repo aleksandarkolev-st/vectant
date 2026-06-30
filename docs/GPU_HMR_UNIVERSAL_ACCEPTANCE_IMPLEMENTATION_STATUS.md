@@ -4,6 +4,30 @@ Status date: 2026-06-30
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-06-30 Source-First Compile-Proof Gate And Default Visual Rerun
+
+The source-first agent-split runner now separates a cold compile-proof gate from a runtime GPU HMR acceptance gate. A structured `synthi.gpu_hmr.requested_proof_state_gate.v1` record can accept only the requested `gpu-hmr-compile-proven` boundary from a top-level rejected wait when the structured validation is satisfied, the effective rank is at least compile-proven, the immutable proof id is present, and the proof artifact path is present. The evidence is explicitly non-authoritative for runtime acceptance: `proofAuthority=structured_requested_proof_state_validation_only_not_gpu_hmr_acceptance`, `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. Rejected waits cannot satisfy full-runtime, output-oracle, visual, host-preservation, or hot-device HMR gates.
+
+The self-check covers the exact cold-boundary shape plus hostile cases: timeout status, wait error, rank below the requested state, a forged rejected full-runtime proof state, and missing proof artifact path. This keeps the earlier `gpu-agent-split-1782837031653` default-timeout failure as useful evidence of the bug without turning rejection into GPU HMR success.
+
+After the fix, `proof:agent-split:source-first:realistic-raytrace` passed on the default runner path without `SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS`. The retained workspace is `gpu-agent-split-1782837775261` at `http://localhost:3000/workspace/gpu-agent-split-1782837775261`. It started from profile source files (`src/main.cpp` plus `src/scene_config.h`), produced source-first ingestion proof `agent-split-source-first-ingestion:sha256:4cbb37a7b248720dbd5dc7e3b3be8d3f96f5af23b315a48d4ca7bd0408d4f660`, cold compile proof `gpu-proof:df58b9ddafc02401487992d5dcad3da10e6466174dafbcafc70f9c558456dac5`, hot delta 1 runtime proof `gpu-runtime-proof:sha256:95b7118d8dc6576fce67f86d7544ffc4aab49dcc1ebb71923d7b2b5ac5d01cab` with ledger `gpu-ledger-proof:sha256:878693032ed737890a166adeb4012ace13af23967b3f535362dc32474731cfa6`, and hot delta 2 runtime proof `gpu-runtime-proof:sha256:8fd173b95924f8bfc3e1e1268d4e2c36ea0bf9245059f0164227fcc540199be3` with ledger `gpu-ledger-proof:sha256:be57c47e3d978d5aeb6b59cbb0d7f4ca35de8bb18fcaff14a485c8550aeb6570`.
+
+Visual proof remained byte-backed and frame-gated. Hot delta 1 changed `73.73%` of visible pixels with `mean_abs=18.40`; hot delta 2 changed `99.50%` with `mean_abs=37.25`; both selected frames were captured after epoch dispatch, and the negative ABI edit refused before GPU HMR acceptance. Timings for the latest accepted default run were:
+
+```text
+cold: device_compile_wall_time=20.88ms, runtime_probe_time=9.192s, total_validator_wall_time=9.213s
+hot_delta_1: device_compile_wall_time=14.46ms, runtime_probe_time=4.982s, total_validator_wall_time=4.997s
+hot_delta_2: device_compile_wall_time=30.95ms, runtime_probe_time=3.920s, total_validator_wall_time=3.951s
+```
+
+Verification for this patch and rerun:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check -> passed, including requested proof-state gate adversarial checks
+npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace -> passed, workspace gpu-agent-split-1782837775261, strict visual runtime proofs accepted for hot_delta_1 and hot_delta_2
+```
+
 ## 2026-06-30 Agent-Split Proof Wait Retry And MCP Cleanup
 
 The source-first agent-split runner now has a generic strict-proof finalization retry for `synthi_wait_hmr`. The retry is limited to proof-pending/missing strict-proof cases such as `proof_state_missing`, `proof_ledger_missing`, or `runtime_proof_artifact_missing`; it does not retry terminal rejections, `failed_fast` timeout-intelligence results, malformed errors, CPU/full-rebuild/restart evidence, failed ledger invariants, rejected runtime proof artifacts, or non-strict waits. The second wait reuses the same compile dispatch timestamp, `since_ts`, module, selected generated path, edit id/hash, and required proof contract. It is bounded to one support-only retry by default.
@@ -17,12 +41,12 @@ Verification for this patch:
 ```text
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs -> passed
 npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:self-check -> passed, including proof-finalization retry and MCP startup cleanup self-checks
-npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace without SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS -> failed closed as gpu-agent-split-1782837031653 at the cold source-first compile/apply gate; compile-proven validation was satisfied, but wait status was rejected, so no source-first GPU HMR acceptance or visual proof is claimed from that newest attempt
+npm --prefix mcp/synthi-mcp run proof:agent-split:source-first:realistic-raytrace without SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS -> initially failed closed as gpu-agent-split-1782837031653 at the cold source-first compile/apply gate; this was superseded by the compile-proof gate fix and successful default rerun gpu-agent-split-1782837775261
 ```
 
 ## 2026-06-30 Source-First Visual Proof And MIOpen Bounded Rerun
 
-The source-first realistic raytrace user path was rerun from uncompiled profile source files with a longer strict proof wait window. The runner seeded `src/main.cpp` plus `src/scene_config.h`, preserved the local quoted-include closure through the deterministic splitter, generated explicit module files and device roles under `.synthi/generated/gpu/`, selected worker-detected ROCm arch `gfx1201`, published two hot GPU epochs, and closed strict visual runtime proof for both hot deltas. The retained workspace is `gpu-agent-split-1782834376257` at `http://localhost:3000/workspace/gpu-agent-split-1782834376257`.
+The source-first realistic raytrace user path was rerun from uncompiled profile source files with a longer strict proof wait window. The runner seeded `src/main.cpp` plus `src/scene_config.h`, preserved the local quoted-include closure through the deterministic splitter, generated explicit module files and device roles under `.synthi/generated/gpu/`, selected worker-detected ROCm arch `gfx1201`, published two hot GPU epochs, and closed strict visual runtime proof for both hot deltas. That retained workspace is `gpu-agent-split-1782834376257`; the newer default-timeout accepted workspace is `gpu-agent-split-1782837775261`.
 
 This is the user-facing no-precompiled path, but the claim remains scoped. The accepted row proves generated/profiled ROCm/HIP visual GPU HMR for this source-first workload: source-first ingestion proof `agent-split-source-first-ingestion:sha256:7c1aa01e72f97043b2b5591f931f7c495c3620bbd92da31d6caf09e4b07136a1`, hot delta 1 runtime proof `gpu-runtime-proof:sha256:d30824d8199a012d7752cf15d68dad1ea458dd83e97fd9c3c8af1b8c4a7ed0e5` with ledger `gpu-ledger-proof:sha256:7e9ce98917844018ed6d5dcc7c20434b9f5884f32078d04c48377c24f3b137d4`, and hot delta 2 runtime proof `gpu-runtime-proof:sha256:6219c77c1cebdd3fe2cdb69500655f2309bdeeb853cf3a01267274131ab2384d` with ledger `gpu-ledger-proof:sha256:74272e54e0e8efd1f92a819184d31ec5973c696320216cfed8569451eb1629fc`. Visual proof was byte-backed, not log-backed: before/after/diff PNGs were opened locally and the image evidence is nonblank, visibly raytraced, and scene-level with foreground gems, storefront geometry, reflective surfaces, shadows, and vehicle geometry. Hot visual deltas were `changed=73.72%, mean_abs=18.37` and `changed=99.50%, mean_abs=37.28`; control deltas stayed effectively unchanged. The negative ABI edit still refused before GPU HMR acceptance.
 
