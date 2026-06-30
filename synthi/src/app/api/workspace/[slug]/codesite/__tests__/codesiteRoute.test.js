@@ -246,7 +246,11 @@ describe('CodeSite catch-all route', () => {
     expect(await json(response)).toEqual({
       sourceState: { transactionId: 'txn-1', changedPaths: ['src/app.js'] },
     });
-    expect(controlPlane.getSourceStateSince).toHaveBeenCalledWith('acme', 'txn-1');
+    expect(controlPlane.getSourceStateSince).toHaveBeenCalledWith(
+      'acme',
+      'txn-1',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
     expect(controlPlane.validateTransaction).not.toHaveBeenCalled();
   });
 
