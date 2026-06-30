@@ -779,13 +779,25 @@ async function readBuildFileContent({
   sourceIntakeTimeoutMs,
 }) {
   const pathName = String(file.path ?? '');
-  if (transport === 'local_git_ls_tree_clean_worktree') {
+  if (
+    transport === 'local_git_ls_tree_clean_worktree'
+    || transport === 'local_git_ls_tree_no_size_clean_worktree'
+  ) {
+    const noSizeLocalTransport = transport === 'local_git_ls_tree_no_size_clean_worktree';
+    const lazyBlobFetchAllowed = !noSizeLocalTransport
+      || process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
     const repoPath = transportEvidence?.resolvedTopLevel ?? transportEvidence?.resolved_top_level ?? candidate.localRepoPath;
     const show = await runProcess(
       'git',
       ['-C', path.resolve(repoPath), 'show', `${candidate.immutableCommit}:${pathName}`],
       {
         cwd: REPO_ROOT,
+        env: lazyBlobFetchAllowed
+          ? process.env
+          : {
+            ...process.env,
+            GIT_NO_LAZY_FETCH: '1',
+          },
         timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
         stdoutMax: BUILD_METADATA_CONTENT_MAX_BYTES + 4096,
         stderrMax: 16000,
@@ -798,17 +810,22 @@ async function readBuildFileContent({
         accepted: false,
         status: 'local_git_build_file_read_failed',
         reason: 'local_git_build_file_read_failed',
+        lazyBlobFetchAllowed,
+        lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
         result: show,
       };
     }
     return {
       path: pathName,
       accepted: true,
-      transport: 'local_git_show',
+      transport: noSizeLocalTransport ? 'local_git_no_size_show' : 'local_git_show',
+      lazyBlobFetchAllowed,
+      lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
       content: show.stdout,
     };
   }
   if (transport === 'git_fetch_depth_1_blobless') {
+    const lazyBlobFetchAllowed = process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
     const repoPath = transportEvidence?.resolvedLocalPath
       ?? transportEvidence?.resolved_local_path
       ?? transportEvidence?.localPath
@@ -830,6 +847,12 @@ async function readBuildFileContent({
       ['-C', resolvedRepoPath, 'show', `${candidate.immutableCommit}:${pathName}`],
       {
         cwd: REPO_ROOT,
+        env: lazyBlobFetchAllowed
+          ? process.env
+          : {
+            ...process.env,
+            GIT_NO_LAZY_FETCH: '1',
+          },
         timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
         stdoutMax: BUILD_METADATA_CONTENT_MAX_BYTES + 4096,
         stderrMax: 16000,
@@ -843,6 +866,8 @@ async function readBuildFileContent({
         status: 'git_fetch_build_file_read_failed',
         reason: 'git_fetch_build_file_read_failed',
         transport,
+        lazyBlobFetchAllowed,
+        lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
         result: show,
       };
     }
@@ -850,6 +875,8 @@ async function readBuildFileContent({
       path: pathName,
       accepted: true,
       transport: 'git_fetch_blobless_show',
+      lazyBlobFetchAllowed,
+      lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
       content: show.stdout,
     };
   }
@@ -976,6 +1003,8 @@ async function collectBuildMetadataContentEvidence({
         content_hash: contentHash(content),
         truncated: result.truncated === true || Buffer.byteLength(content) > BUILD_METADATA_CONTENT_MAX_BYTES,
         transport: result.transport,
+        lazyBlobFetchAllowed: result.lazyBlobFetchAllowed === true,
+        lazy_blob_fetch_allowed: result.lazyBlobFetchAllowed === true,
         semanticSummary: summarizeBuildMetadataContent(file.path, content),
         semantic_summary: summarizeBuildMetadataContent(file.path, content),
       });
@@ -1117,14 +1146,15 @@ function parseGitLsTree(text) {
   return String(text ?? '')
     .split(/\r?\n/)
     .map((line) => {
-      const match = line.match(/^(\d+)\s+(\w+)\s+([0-9a-f]{40,64})\s+(-|\d+)\t(.+)$/i);
+      const match = line.match(/^(\d+)\s+(\w+)\s+([0-9a-f]{40,64})(?:\s+(-|\d+))?\t(.+)$/i);
       if (!match) return null;
+      const declaredSize = match[4];
       return {
         mode: match[1],
         type: match[2],
         object: match[3],
-        byteLength: match[4] === '-' ? null : Number(match[4]),
-        byte_length: match[4] === '-' ? null : Number(match[4]),
+        byteLength: declaredSize == null || declaredSize === '-' ? null : Number(declaredSize),
+        byte_length: declaredSize == null || declaredSize === '-' ? null : Number(declaredSize),
         path: match[5],
       };
     })
@@ -1247,6 +1277,7 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   if (!candidate.localRepoPath) return { attempted: false };
   const repoPath = path.resolve(candidate.localRepoPath);
   const startedAt = new Date().toISOString();
+  const noSizeListing = process.env.SYNTHI_GPU_HMR_LOCAL_GIT_NO_SIZE === '1';
   const baseRunOptions = {
     cwd: REPO_ROOT,
     timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
@@ -1342,7 +1373,9 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   }
   const lsTree = await runProcess(
     'git',
-    ['-C', resolvedTopLevel, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
+    noSizeListing
+      ? ['-C', resolvedTopLevel, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit]
+      : ['-C', resolvedTopLevel, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
     baseRunOptions,
   );
   if (lsTree.exitCode !== 0 || lsTree.timedOut || lsTree.error) {
@@ -1366,11 +1399,17 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   return {
     attempted: true,
     accepted: true,
-    transport: 'local_git_ls_tree_clean_worktree',
+    transport: noSizeListing
+      ? 'local_git_ls_tree_no_size_clean_worktree'
+      : 'local_git_ls_tree_clean_worktree',
     repoPath,
     repo_path: repoPath,
     resolvedTopLevel,
     resolved_top_level: resolvedTopLevel,
+    listingMode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
+    listing_mode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
+    byteLengthMode: noSizeListing ? 'unknown_avoids_blob_fetch' : 'declared_from_git_ls_tree_l',
+    byte_length_mode: noSizeListing ? 'unknown_avoids_blob_fetch' : 'declared_from_git_ls_tree_l',
     files: parseGitLsTree(lsTree.stdout),
     startedAt,
     started_at: startedAt,
@@ -1528,6 +1567,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         repo_path: localGitListing.repo_path,
         resolvedTopLevel: localGitListing.resolvedTopLevel,
         resolved_top_level: localGitListing.resolved_top_level,
+        listingMode: localGitListing.listingMode,
+        listing_mode: localGitListing.listing_mode,
+        byteLengthMode: localGitListing.byteLengthMode,
+        byte_length_mode: localGitListing.byte_length_mode,
         startedAt: localGitListing.startedAt,
         started_at: localGitListing.started_at,
         finishedAt: localGitListing.finishedAt,
@@ -1678,7 +1721,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   }
   const lsTree = await runProcess(
     'git',
-    ['-C', localPath, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
+    ['-C', localPath, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit],
     {
       cwd: REPO_ROOT,
       timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
@@ -1710,6 +1753,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     transportEvidence: {
       githubTreeFallback,
       github_tree_fallback: githubTreeFallback,
+      listingMode: 'git_ls_tree_no_size_blobless',
+      listing_mode: 'git_ls_tree_no_size_blobless',
+      byteLengthMode: 'unknown_avoids_blob_fetch',
+      byte_length_mode: 'unknown_avoids_blob_fetch',
       resolvedLocalPath: localPath,
       resolved_local_path: localPath,
       localPath: relativeLocalPath,
@@ -2194,8 +2241,14 @@ async function selfCheck() {
     files: parsedListing,
     classification: listingClassification,
   });
+  const parsedNoSizeListing = parseGitLsTree(
+    '100644 blob ffffffffffffffffffffffffffffffffffffffff\tpackage.json\n',
+  );
   if (
     parsedListing.length !== 5
+    || parsedNoSizeListing.length !== 1
+    || parsedNoSizeListing[0]?.byteLength !== null
+    || parsedNoSizeListing[0]?.path !== 'package.json'
     || listingClassification.buildSignalCount !== 3
     || !listingClassification.backendCandidates.includes('hip_rocm')
     || !listingClassification.backendCandidates.includes('vulkan')
@@ -2391,6 +2444,61 @@ async function selfCheck() {
     || !String(fallbackContentRead.content ?? '').includes('project(local_user_project)')
   ) {
     throw new Error('random large-project cold-path git fallback build-file content self-check failed');
+  }
+  const noSizeLsTree = await runProcess('git', ['-C', localRepoPath, 'ls-tree', '-r', '--full-tree', localCommit], {
+    cwd: REPO_ROOT,
+    timeoutMs: 30000,
+    streamOutput: false,
+  });
+  const noSizeFiles = parseGitLsTree(noSizeLsTree.stdout);
+  const noSizeFallbackBase = {
+    schemaVersion: SOURCE_INTAKE_SCHEMA,
+    schema_version: SOURCE_INTAKE_SCHEMA,
+    proofAuthority: SOURCE_INTAKE_AUTHORITY,
+    proof_authority: SOURCE_INTAKE_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sourceUrl: localCandidate.sourceUrl,
+    source_url: localCandidate.sourceUrl,
+    localRepoPath: localCandidate.localRepoPath,
+    local_repo_path: localCandidate.localRepoPath,
+    immutableCommit: localCandidate.immutableCommit,
+    immutable_commit: localCandidate.immutableCommit,
+    localPath: path.relative(REPO_ROOT, localRepoPath).replace(/\\/g, '/'),
+    local_path: path.relative(REPO_ROOT, localRepoPath).replace(/\\/g, '/'),
+    startedAt: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+  };
+  const noSizeFallbackFacet = await buildAcceptedSourceIntakeFacet({
+    base: noSizeFallbackBase,
+    candidate: localCandidate,
+    files: noSizeFiles,
+    transport: 'git_fetch_depth_1_blobless',
+    transportEvidence: {
+      resolvedLocalPath: localRepoPath,
+      resolved_local_path: localRepoPath,
+      listingMode: 'git_ls_tree_no_size_blobless',
+      listing_mode: 'git_ls_tree_no_size_blobless',
+      byteLengthMode: 'unknown_avoids_blob_fetch',
+      byte_length_mode: 'unknown_avoids_blob_fetch',
+    },
+    sourceIntakeTimeoutMs: 30000,
+  });
+  if (
+    noSizeLsTree.exitCode !== 0
+    || noSizeFallbackFacet.acceptedAsIntakeEvidence !== true
+    || noSizeFallbackFacet.transport !== 'git_fetch_depth_1_blobless'
+    || noSizeFallbackFacet.totalKnownBytes !== 0
+    || noSizeFallbackFacet.buildMetadataDiscoveryAccepted !== true
+    || noSizeFallbackFacet.buildMetadataContentAccepted !== true
+    || noSizeFallbackFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.transport !== 'git_fetch_blobless_show'
+    || noSizeFallbackFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.lazyBlobFetchAllowed !== false
+  ) {
+    throw new Error('random large-project cold-path no-size git fallback facet self-check failed');
   }
   await writeFile(path.join(localRepoPath, 'untracked-dirty.tmp'), 'dirty\n');
   const { manifest: dirtyManifest } = await buildManifest({
