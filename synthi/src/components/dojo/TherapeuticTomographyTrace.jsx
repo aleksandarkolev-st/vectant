@@ -116,7 +116,7 @@ export default function TherapeuticTomographyTrace({
             </section>
 
             <OperationalControlPanel trace={trace} proof={proof} blocked={blocked} approvedDose={approvedDose} reviewRequests={reviewRequests} remediationVerification={latestRemediationVerification} />
-            <EvaluationPanel report={latestCheckride} learningRecords={tomography.policyLearningRecords || []} proofMetrics={tomography.proofMetrics || {}} />
+            <EvaluationPanel report={latestCheckride} learningRecords={tomography.policyLearningRecords || []} proofMetrics={tomography.proofMetrics || {}} outcomeMetrics={tomography.outcomeMetrics || {}} />
 
             <section className="rounded-md border p-4" style={panelStyle} data-testid="tomography-sequence">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -162,7 +162,7 @@ export default function TherapeuticTomographyTrace({
   );
 }
 
-function EvaluationPanel({ report, learningRecords = [], proofMetrics = {} }) {
+function EvaluationPanel({ report, learningRecords = [], proofMetrics = {}, outcomeMetrics = {} }) {
   const results = report?.results || [];
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="tomography-evaluation">
@@ -206,6 +206,12 @@ function EvaluationPanel({ report, learningRecords = [], proofMetrics = {} }) {
         <InfoCard label="Deterministic" value={`${Math.round(proofMetrics.percentDecisionsDeterministic || 0)}%`} detail="Tier 0/1 without LLM/human" />
         <InfoCard label="Human reviewed" value={`${Math.round(proofMetrics.percentDecisionsHumanReviewed || 0)}%`} detail="Tier 2/3 judgment gates" />
         <InfoCard label="Token cost" value={proofMetrics.averageTokensPerAccessDecision || 0} detail="avg tokens per decision" />
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-4">
+        <InfoCard label="Authority efficiency" value={outcomeMetrics.authorityEfficiencyScore || 0} detail="task success / authority cost" />
+        <InfoCard label="Revocation success" value={`${Math.round(outcomeMetrics.revocationSuccessRate || 0)}%`} detail="temporary grants closed" />
+        <InfoCard label="Post-remediation" value={`${Math.round(outcomeMetrics.postRemediationSuccessRate || 0)}%`} detail="verified fix success" />
+        <InfoCard label="Data exposure" value={outcomeMetrics.dataExposureScore || 0} detail="sensitivity-weighted access" />
       </div>
       <div className="mt-4 rounded-md border p-3" style={panelStyle}>
         <h3 className="text-xs font-semibold" style={{ margin: 0, color: 'var(--text-muted)' }}>Policy learning</h3>

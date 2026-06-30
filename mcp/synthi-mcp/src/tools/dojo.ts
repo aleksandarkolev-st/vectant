@@ -156,6 +156,7 @@ import {
   revokeTherapeuticTaskGrants,
   runTherapeuticTomographyCheckrides,
   summarizeProofMetrics,
+  summarizeTherapeuticOutcomeMetrics,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   THERAPEUTIC_DEFAULT_POLICY,
   verifyTherapeuticRemediationPostconditions,
@@ -2932,6 +2933,10 @@ function therapeuticRuntimeView(session: DojoTherapeuticRuntimeSession): Record<
         cache_hit: record.cache_hit,
         probe_bundle_success: record.probe_bundle_success,
       })),
+    }),
+    outcome_metrics: summarizeTherapeuticOutcomeMetrics({
+      trace: session.trace,
+      store: session.store,
     }),
     checkride_reports: session.store.checkride_reports,
     policy_learning_records: session.store.policy_learning_records,

@@ -25,6 +25,7 @@ import {
   scoreTherapeuticAction,
   selectLowestRiskProbe,
   summarizeProofMetrics,
+  summarizeTherapeuticOutcomeMetrics,
   THERAPEUTIC_DEFAULT_POLICY,
   THERAPEUTIC_ML_QUALITY_DROP_PROBES,
   verifyTherapeuticRemediationPostconditions,
@@ -802,6 +803,38 @@ describe("Dojo therapeutic tomography", () => {
     expect(store.audit_records.map((record) => record.event_type)).toContain("postcondition_verified");
   });
 
+  it("summarizes therapeutic outcome metrics from real trace and runtime state", () => {
+    const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
+    const store = createTherapeuticRuntimeStore();
+    const access = enforceTherapeuticAccessRequest({
+      trace,
+      store,
+      request: trace.proof_capsules[0]!.requested_access,
+      proof_capsule: trace.proof_capsules[0],
+      now: "2026-06-29T13:20:00.000Z",
+    });
+    if (access.grant) {
+      revokeTherapeuticGrant({
+        trace,
+        store,
+        grant_id: access.grant.grant_id,
+        reason: "task_end",
+        now: "2026-06-29T13:21:00.000Z",
+      });
+    }
+
+    const metrics = summarizeTherapeuticOutcomeMetrics({ trace, store });
+
+    expect(metrics).toEqual(expect.objectContaining({
+      unnecessary_access_avoided_count: trace.avoided_access.length,
+      proof_valid_escalation_rate: 100,
+      revocation_success_rate: 100,
+      post_remediation_success_rate: 0,
+    }));
+    expect(metrics.machine_verifiable_claim_ratio).toBeGreaterThan(0);
+    expect(metrics.data_exposure_score).toBeGreaterThan(0);
+  });
+
   it("runs therapeutic Dojo/Vivarium checkrides without auto-granting broader future access", () => {
     const trace = buildMlQualityDropTherapeuticDemoTrace("2026-06-28T00:00:00.000Z");
     const store = createTherapeuticRuntimeStore();
@@ -1178,6 +1211,12 @@ describe("Dojo therapeutic tomography", () => {
       percent_decisions_human_reviewed: expect.any(Number),
       cached_proof_hit_rate: expect.any(Number),
       tier_3_escalation_rate: expect.any(Number),
+    }));
+    expect(runtime.runtime.outcome_metrics).toEqual(expect.objectContaining({
+      authority_efficiency_score: expect.any(Number),
+      unnecessary_access_avoided_count: expect.any(Number),
+      revocation_success_rate: expect.any(Number),
+      post_remediation_success_rate: expect.any(Number),
     }));
     expect(runtime.runtime.audit_records.map((record: { event_type: string }) => record.event_type)).toEqual(expect.arrayContaining([
       "tool_bypass_blocked",

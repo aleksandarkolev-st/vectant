@@ -84,6 +84,9 @@ describe('TherapeuticTomographyTrace', () => {
     expect(text).toContain('revalidation: current until 2026-09-27T13:30:00.000Z');
     expect(text).toContain('Proof latency p95');
     expect(text).toContain('Deterministic');
+    expect(text).toContain('Authority efficiency');
+    expect(text).toContain('Revocation success');
+    expect(text).toContain('Post-remediation');
     expect(text).toContain('feature:customer_plan');
     expect(text).toContain('train_serve_skew in customer_plan transformation');
     expect(text).toContain('model_weights');
@@ -336,6 +339,21 @@ function traceFixture() {
       average_tokens_per_access_decision: 0,
       cached_proof_hit_rate: 0,
       tier_3_escalation_rate: 0,
+    },
+    outcome_metrics: {
+      authority_efficiency_score: 0.12,
+      unnecessary_access_avoided_count: 5,
+      minimal_escalation_validity_rate: 100,
+      machine_verifiable_claim_ratio: 0.75,
+      narrative_only_escalation_block_rate: 100,
+      over_escalation_rate: 0,
+      under_escalation_rate: 0,
+      data_exposure_score: 5,
+      probe_information_gain: 7.5,
+      proof_valid_escalation_rate: 100,
+      revocation_success_rate: 100,
+      post_remediation_success_rate: 100,
+      human_override_rate: 25,
     },
   };
 }

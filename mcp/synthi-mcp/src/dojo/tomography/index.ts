@@ -273,6 +273,22 @@ export interface TherapeuticProofMetrics {
   tier_3_escalation_rate: number;
 }
 
+export interface TherapeuticOutcomeMetrics {
+  authority_efficiency_score: number;
+  unnecessary_access_avoided_count: number;
+  minimal_escalation_validity_rate: number;
+  machine_verifiable_claim_ratio: number;
+  narrative_only_escalation_block_rate: number;
+  over_escalation_rate: number;
+  under_escalation_rate: number;
+  data_exposure_score: number;
+  probe_information_gain: number;
+  proof_valid_escalation_rate: number;
+  revocation_success_rate: number;
+  post_remediation_success_rate: number;
+  human_override_rate: number;
+}
+
 export interface TherapeuticProofDecisionRecord {
   decision_id: string;
   task_id: string;
@@ -1688,6 +1704,44 @@ export function summarizeProofMetrics(input: {
   };
 }
 
+export function summarizeTherapeuticOutcomeMetrics(input: {
+  trace: TherapeuticTrace;
+  store?: TherapeuticRuntimeStore;
+}): TherapeuticOutcomeMetrics {
+  const trace = input.trace;
+  const store = input.store;
+  const totalAuthorityCost = trace.authority_doses.reduce((sum, dose) => sum + dose.level + (dose.mutation_allowed ? 4 : 0), 0)
+    + trace.projection_probes.reduce((sum, probe) => sum + probe.privacy_cost, 0);
+  const taskSuccess = trace.final_outcome === "diagnosed" || trace.final_outcome === "remediated" ? 1 : 0;
+  const proofCapsules = trace.proof_capsules;
+  const totalClaims = proofCapsules.reduce((sum, capsule) =>
+    sum + capsule.machine_verifiable_claims.length + capsule.human_reviewed_claims.length + capsule.unverifiable_narrative_claims.length, 0);
+  const machineClaims = proofCapsules.reduce((sum, capsule) => sum + capsule.machine_verifiable_claims.length, 0);
+  const narrativeOnlyDenied = proofCapsules.filter((capsule) => capsule.failed_claims.includes("narrative_only_proof")).length;
+  const grants = store?.grants ?? [];
+  const completedRevocations = grants.filter((grant) =>
+    (grant.status === "revoked" || grant.status === "expired") && grant.revocation_status === "success"
+  ).length;
+  const remediationVerifications = store?.remediation_verifications ?? [];
+  const approvedEscalations = trace.authority_doses.filter((dose) => dose.decision === "approved");
+  const humanReviewedDecisions = store?.proof_decision_records.filter((record) => record.human_reviewed).length ?? 0;
+  return {
+    authority_efficiency_score: totalAuthorityCost > 0 ? roundMetric(taskSuccess / totalAuthorityCost) : taskSuccess,
+    unnecessary_access_avoided_count: trace.avoided_access.length,
+    minimal_escalation_validity_rate: percent(approvedEscalations, (dose) => dose.scope !== "production" && !dose.mutation_allowed),
+    machine_verifiable_claim_ratio: totalClaims > 0 ? roundMetric(machineClaims / totalClaims) : 0,
+    narrative_only_escalation_block_rate: percent(proofCapsules, (capsule) => capsule.failed_claims.includes("narrative_only_proof")),
+    over_escalation_rate: percent(trace.blocked_overreach_attempts, (attempt) => attempt.suggested_alternative.length === 0),
+    under_escalation_rate: trace.under_escalation_flags.length > 0 ? 100 : 0,
+    data_exposure_score: roundMetric(trace.authority_doses.reduce((sum, dose) => sum + dose.permitted_data_classes.length * dose.level, 0)),
+    probe_information_gain: roundMetric(average(trace.projection_probes.map((probe) => probe.actual_information_gain))),
+    proof_valid_escalation_rate: percent(proofCapsules, (capsule) => capsule.approved),
+    revocation_success_rate: grants.length > 0 ? percent(grants, (grant) => (grant.status === "revoked" || grant.status === "expired") && grant.revocation_status === "success") : 100,
+    post_remediation_success_rate: remediationVerifications.length > 0 ? percent(remediationVerifications, (verification) => verification.status === "passed") : 0,
+    human_override_rate: store?.proof_decision_records.length ? roundMetric((humanReviewedDecisions / store.proof_decision_records.length) * 100) : 0,
+  };
+}
+
 export function buildProjectionProbe(input: {
   id: string;
   task_id: string;
@@ -2360,6 +2414,10 @@ function average(values: number[]): number {
 function percent<T>(values: T[], predicate: (value: T) => boolean): number {
   if (values.length === 0) return 0;
   return Number(((values.filter(predicate).length / values.length) * 100).toFixed(3));
+}
+
+function roundMetric(value: number): number {
+  return Number((Number.isFinite(value) ? value : 0).toFixed(3));
 }
 
 function hasApprovedHumanClaim(capsule: Pick<TherapeuticStrictProofCapsule, "human_reviewed_claims"> | undefined): boolean {

@@ -149,6 +149,7 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       reviewRequests: [],
       remediationVerifications: [],
       proofMetrics: {},
+      outcomeMetrics: {},
       metrics: {
         probeCount: 0,
         machineClaimCount: 0,
@@ -1467,6 +1468,7 @@ function normalizeTomographyTrace(state, dojo) {
       reviewRequests: [],
       remediationVerifications: [],
       proofMetrics: {},
+      outcomeMetrics: {},
       metrics: {
         probeCount: 0,
         machineClaimCount: 0,
@@ -1552,6 +1554,22 @@ function normalizeTomographyTrace(state, dojo) {
     averageTokensPerAccessDecision: Number(rawProofMetrics.average_tokens_per_access_decision ?? rawProofMetrics.averageTokensPerAccessDecision ?? 0),
     cachedProofHitRate: Number(rawProofMetrics.cached_proof_hit_rate ?? rawProofMetrics.cachedProofHitRate ?? 0),
     tier3EscalationRate: Number(rawProofMetrics.tier_3_escalation_rate ?? rawProofMetrics.tier3EscalationRate ?? 0),
+  };
+  const rawOutcomeMetrics = raw.outcome_metrics || raw.outcomeMetrics || raw.runtime?.outcome_metrics || raw.runtime?.outcomeMetrics || {};
+  const outcomeMetrics = {
+    authorityEfficiencyScore: Number(rawOutcomeMetrics.authority_efficiency_score ?? rawOutcomeMetrics.authorityEfficiencyScore ?? 0),
+    unnecessaryAccessAvoidedCount: Number(rawOutcomeMetrics.unnecessary_access_avoided_count ?? rawOutcomeMetrics.unnecessaryAccessAvoidedCount ?? 0),
+    minimalEscalationValidityRate: Number(rawOutcomeMetrics.minimal_escalation_validity_rate ?? rawOutcomeMetrics.minimalEscalationValidityRate ?? 0),
+    machineVerifiableClaimRatio: Number(rawOutcomeMetrics.machine_verifiable_claim_ratio ?? rawOutcomeMetrics.machineVerifiableClaimRatio ?? 0),
+    narrativeOnlyEscalationBlockRate: Number(rawOutcomeMetrics.narrative_only_escalation_block_rate ?? rawOutcomeMetrics.narrativeOnlyEscalationBlockRate ?? 0),
+    overEscalationRate: Number(rawOutcomeMetrics.over_escalation_rate ?? rawOutcomeMetrics.overEscalationRate ?? 0),
+    underEscalationRate: Number(rawOutcomeMetrics.under_escalation_rate ?? rawOutcomeMetrics.underEscalationRate ?? 0),
+    dataExposureScore: Number(rawOutcomeMetrics.data_exposure_score ?? rawOutcomeMetrics.dataExposureScore ?? 0),
+    probeInformationGain: Number(rawOutcomeMetrics.probe_information_gain ?? rawOutcomeMetrics.probeInformationGain ?? 0),
+    proofValidEscalationRate: Number(rawOutcomeMetrics.proof_valid_escalation_rate ?? rawOutcomeMetrics.proofValidEscalationRate ?? 0),
+    revocationSuccessRate: Number(rawOutcomeMetrics.revocation_success_rate ?? rawOutcomeMetrics.revocationSuccessRate ?? 0),
+    postRemediationSuccessRate: Number(rawOutcomeMetrics.post_remediation_success_rate ?? rawOutcomeMetrics.postRemediationSuccessRate ?? 0),
+    humanOverrideRate: Number(rawOutcomeMetrics.human_override_rate ?? rawOutcomeMetrics.humanOverrideRate ?? 0),
   };
   const proofCapsules = asArray(raw.proof_capsules || raw.proofCapsules).map((capsule) => ({
     id: capsule.id || capsule.proof_id || capsule.proofId || '',
@@ -1641,6 +1659,7 @@ function normalizeTomographyTrace(state, dojo) {
     reviewRequests,
     remediationVerifications,
     proofMetrics,
+    outcomeMetrics,
     metrics: {
       probeCount: projectionProbes.length,
       machineClaimCount: firstProof.machineClaims?.length || 0,
