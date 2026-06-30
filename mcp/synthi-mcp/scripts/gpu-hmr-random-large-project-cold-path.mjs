@@ -15,6 +15,10 @@ const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
 const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_discovery.v1';
 const BUILD_METADATA_DISCOVERY_AUTHORITY = 'build_metadata_discovery_only_not_gpu_hmr_success';
+const BUILD_METADATA_CONTENT_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_content.v1';
+const BUILD_METADATA_CONTENT_AUTHORITY = 'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const BUILD_METADATA_CONTENT_MAX_FILES = 12;
+const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
 
 const DEFAULT_CANDIDATES = [
   {
@@ -591,7 +595,281 @@ function classifyBuildSystemPath(pathName) {
   return 'unknown_build_file';
 }
 
-function discoverBuildMetadata({ candidate, files, classification }) {
+function summarizeBuildMetadataContent(pathName, text) {
+  const family = classifyBuildSystemPath(pathName);
+  const lines = String(text ?? '').split(/\r?\n/);
+  const summary = {
+    family,
+    nonEmptyLineCount: lines.filter((line) => line.trim()).length,
+    non_empty_line_count: lines.filter((line) => line.trim()).length,
+  };
+  if (family === 'cmake') {
+    const projectMatch = String(text).match(/\bproject\s*\(\s*([A-Za-z0-9_.+-]+)/i);
+    summary.projectName = projectMatch?.[1] ?? null;
+    summary.project_name = projectMatch?.[1] ?? null;
+    summary.addExecutableCount = (String(text).match(/\badd_executable\s*\(/gi) ?? []).length;
+    summary.add_executable_count = summary.addExecutableCount;
+    summary.addLibraryCount = (String(text).match(/\badd_library\s*\(/gi) ?? []).length;
+    summary.add_library_count = summary.addLibraryCount;
+  } else if (family === 'cargo') {
+    summary.hasPackageSection = /^\s*\[package\]\s*$/mi.test(String(text));
+    summary.has_package_section = summary.hasPackageSection;
+    summary.hasWorkspaceSection = /^\s*\[workspace\]\s*$/mi.test(String(text));
+    summary.has_workspace_section = summary.hasWorkspaceSection;
+    summary.dependencySectionCount = (String(text).match(/^\s*\[(?:[\w.-]+\.)?dependencies[.\w-]*\]\s*$/gmi) ?? []).length;
+    summary.dependency_section_count = summary.dependencySectionCount;
+  } else if (family === 'npm_or_node') {
+    try {
+      const parsed = JSON.parse(String(text));
+      summary.packageName = typeof parsed?.name === 'string' ? parsed.name : null;
+      summary.package_name = summary.packageName;
+      summary.scriptNames = parsed?.scripts && typeof parsed.scripts === 'object'
+        ? Object.keys(parsed.scripts).sort().slice(0, 40)
+        : [];
+      summary.script_names = summary.scriptNames;
+    } catch {
+      summary.jsonParseError = true;
+      summary.json_parse_error = true;
+    }
+  } else if (family === 'gn') {
+    summary.targetDefinitionCount = (String(text).match(/\b(?:executable|source_set|static_library|shared_library|group)\s*\(/g) ?? []).length;
+    summary.target_definition_count = summary.targetDefinitionCount;
+  } else if (family === 'scons') {
+    summary.programCallCount = (String(text).match(/\bProgram\s*\(/g) ?? []).length;
+    summary.program_call_count = summary.programCallCount;
+    summary.libraryCallCount = (String(text).match(/\b(?:Library|SharedLibrary|StaticLibrary)\s*\(/g) ?? []).length;
+    summary.library_call_count = summary.libraryCallCount;
+  }
+  return summary;
+}
+
+function selectBuildFilesForContent({ files, classification, maxFiles = BUILD_METADATA_CONTENT_MAX_FILES }) {
+  const byPath = new Map(files.map((file) => [String(file.path), file]));
+  return (classification?.buildSignals ?? [])
+    .map((pathName) => byPath.get(String(pathName)))
+    .filter(Boolean)
+    .slice(0, maxFiles);
+}
+
+async function readBuildFileContent({
+  candidate,
+  file,
+  transport,
+  transportEvidence,
+  sourceIntakeTimeoutMs,
+}) {
+  const pathName = String(file.path ?? '');
+  if (transport === 'local_git_ls_tree_clean_worktree') {
+    const repoPath = transportEvidence?.resolvedTopLevel ?? transportEvidence?.resolved_top_level ?? candidate.localRepoPath;
+    const show = await runProcess(
+      'git',
+      ['-C', path.resolve(repoPath), 'show', `${candidate.immutableCommit}:${pathName}`],
+      {
+        cwd: REPO_ROOT,
+        timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
+        stdoutMax: BUILD_METADATA_CONTENT_MAX_BYTES + 4096,
+        stderrMax: 16000,
+        streamOutput: false,
+      },
+    );
+    if (show.exitCode !== 0 || show.timedOut || show.error) {
+      return {
+        path: pathName,
+        accepted: false,
+        status: 'local_git_build_file_read_failed',
+        reason: 'local_git_build_file_read_failed',
+        result: show,
+      };
+    }
+    return {
+      path: pathName,
+      accepted: true,
+      transport: 'local_git_show',
+      content: show.stdout,
+    };
+  }
+  if (transport === 'github_git_tree_api_recursive') {
+    const parsed = parseGitHubRepoUrl(candidate.sourceUrl);
+    if (!parsed) {
+      return {
+        path: pathName,
+        accepted: false,
+        status: 'github_build_file_blob_repo_unparsed',
+        reason: 'github_build_file_blob_repo_unparsed',
+      };
+    }
+    const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/blobs/${file.object}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(sourceIntakeTimeoutMs, 60000));
+    timer.unref?.();
+    try {
+      const response = await fetch(apiUrl, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'synthi-gpu-hmr-random-cold-intake',
+        },
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        return {
+          path: pathName,
+          accepted: false,
+          status: 'github_build_file_blob_fetch_failed',
+          reason: 'github_build_file_blob_fetch_failed',
+          apiUrl,
+          api_url: apiUrl,
+          httpStatus: response.status,
+          http_status: response.status,
+          bodyTail: tail(text, 1000),
+          body_tail: tail(text, 1000),
+        };
+      }
+      const payload = JSON.parse(text);
+      if (payload?.encoding !== 'base64' || typeof payload?.content !== 'string') {
+        return {
+          path: pathName,
+          accepted: false,
+          status: 'github_build_file_blob_encoding_unsupported',
+          reason: 'github_build_file_blob_encoding_unsupported',
+          apiUrl,
+          api_url: apiUrl,
+        };
+      }
+      const bytes = Buffer.from(payload.content.replace(/\s/g, ''), 'base64');
+      return {
+        path: pathName,
+        accepted: true,
+        transport: 'github_git_blob_api',
+        apiUrl,
+        api_url: apiUrl,
+        content: bytes.toString('utf8', 0, Math.min(bytes.length, BUILD_METADATA_CONTENT_MAX_BYTES)),
+        byteLength: bytes.length,
+        byte_length: bytes.length,
+        truncated: bytes.length > BUILD_METADATA_CONTENT_MAX_BYTES,
+      };
+    } catch (error) {
+      return {
+        path: pathName,
+        accepted: false,
+        status: error?.name === 'AbortError'
+          ? 'github_build_file_blob_timeout'
+          : 'github_build_file_blob_error',
+        reason: error?.name === 'AbortError'
+          ? 'github_build_file_blob_timeout'
+          : 'github_build_file_blob_error',
+        apiUrl,
+        api_url: apiUrl,
+        error: error?.message || String(error),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    path: pathName,
+    accepted: false,
+    status: 'build_file_content_transport_unsupported',
+    reason: 'build_file_content_transport_unsupported',
+    transport,
+  };
+}
+
+async function collectBuildMetadataContentEvidence({
+  candidate,
+  files,
+  classification,
+  transport,
+  transportEvidence,
+  sourceIntakeTimeoutMs,
+}) {
+  const selectedFiles = selectBuildFilesForContent({ files, classification });
+  const startedAt = new Date().toISOString();
+  const buildFiles = [];
+  const failedFiles = [];
+  for (const file of selectedFiles) {
+    // Build file content is support evidence; keep it bounded and sequential to avoid
+    // turning arbitrary project intake into an uncontrolled crawler.
+    const result = await readBuildFileContent({
+      candidate,
+      file,
+      transport,
+      transportEvidence,
+      sourceIntakeTimeoutMs,
+    });
+    if (result.accepted === true) {
+      const content = String(result.content ?? '');
+      buildFiles.push({
+        path: file.path,
+        family: classifyBuildSystemPath(file.path),
+        object: file.object,
+        declaredByteLength: file.byteLength,
+        declared_byte_length: file.byteLength,
+        observedByteLength: Number.isFinite(result.byteLength) ? result.byteLength : Buffer.byteLength(content),
+        observed_byte_length: Number.isFinite(result.byteLength) ? result.byteLength : Buffer.byteLength(content),
+        contentHash: contentHash(content),
+        content_hash: contentHash(content),
+        truncated: result.truncated === true || Buffer.byteLength(content) > BUILD_METADATA_CONTENT_MAX_BYTES,
+        transport: result.transport,
+        semanticSummary: summarizeBuildMetadataContent(file.path, content),
+        semantic_summary: summarizeBuildMetadataContent(file.path, content),
+      });
+    } else {
+      failedFiles.push(result);
+    }
+  }
+  const evidence = {
+    schemaVersion: BUILD_METADATA_CONTENT_SCHEMA,
+    schema_version: BUILD_METADATA_CONTENT_SCHEMA,
+    proofAuthority: BUILD_METADATA_CONTENT_AUTHORITY,
+    proof_authority: BUILD_METADATA_CONTENT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    acceptedAsBuildMetadataContent: buildFiles.length > 0,
+    accepted_as_build_metadata_content: buildFiles.length > 0,
+    completeForSelectedBuildFiles: failedFiles.length === 0 && buildFiles.length === selectedFiles.length,
+    complete_for_selected_build_files: failedFiles.length === 0 && buildFiles.length === selectedFiles.length,
+    selectedBuildFileCount: selectedFiles.length,
+    selected_build_file_count: selectedFiles.length,
+    acceptedBuildFileCount: buildFiles.length,
+    accepted_build_file_count: buildFiles.length,
+    failedBuildFileCount: failedFiles.length,
+    failed_build_file_count: failedFiles.length,
+    maxBuildFiles: BUILD_METADATA_CONTENT_MAX_FILES,
+    max_build_files: BUILD_METADATA_CONTENT_MAX_FILES,
+    maxBytesPerFile: BUILD_METADATA_CONTENT_MAX_BYTES,
+    max_bytes_per_file: BUILD_METADATA_CONTENT_MAX_BYTES,
+    buildFiles,
+    build_files: buildFiles,
+    failedFiles,
+    failed_files: failedFiles,
+    remainingVerificationGaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    remaining_verification_gaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    startedAt,
+    started_at: startedAt,
+    finishedAt: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  };
+  return {
+    ...evidence,
+    contentEvidenceHash: contentHash(stableJson(evidence)),
+    content_evidence_hash: contentHash(stableJson(evidence)),
+  };
+}
+
+function discoverBuildMetadata({ candidate, files, classification, contentEvidence = null }) {
   const buildSignals = Array.isArray(classification?.buildSignals)
     ? classification.buildSignals
     : [];
@@ -640,14 +918,22 @@ function discoverBuildMetadata({ candidate, files, classification }) {
     source_files_with_known_bytes: sourceFilesWithKnownBytes,
     backendCandidates: classification?.backendCandidates ?? [],
     backend_candidates: classification?.backendCandidates ?? [],
+    buildMetadataContentEvidence: contentEvidence,
+    build_metadata_content_evidence: contentEvidence,
+    buildMetadataContentAccepted: contentEvidence?.acceptedAsBuildMetadataContent === true,
+    build_metadata_content_accepted: contentEvidence?.acceptedAsBuildMetadataContent === true,
     remainingVerificationGaps: [
-      'semantic_build_metadata_verification_missing',
+      contentEvidence?.acceptedAsBuildMetadataContent === true
+        ? 'semantic_build_metadata_execution_missing'
+        : 'semantic_build_metadata_verification_missing',
       'build_command_execution_not_observed',
       'compile_database_not_verified',
       'runtime_profile_contract_missing',
     ],
     remaining_verification_gaps: [
-      'semantic_build_metadata_verification_missing',
+      contentEvidence?.acceptedAsBuildMetadataContent === true
+        ? 'semantic_build_metadata_execution_missing'
+        : 'semantic_build_metadata_verification_missing',
       'build_command_execution_not_observed',
       'compile_database_not_verified',
       'runtime_profile_contract_missing',
@@ -928,7 +1214,14 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   };
 }
 
-function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, transportEvidence = {} }) {
+async function buildAcceptedSourceIntakeFacet({
+  base,
+  candidate,
+  files,
+  transport,
+  transportEvidence = {},
+  sourceIntakeTimeoutMs,
+}) {
   const listingIdentity = files.map((file) => ({
     path: file.path,
     object: file.object,
@@ -936,7 +1229,20 @@ function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, tra
   }));
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
   const classification = classifySourceListing(files);
-  const buildMetadataDiscovery = discoverBuildMetadata({ candidate, files, classification });
+  const buildMetadataContentEvidence = await collectBuildMetadataContentEvidence({
+    candidate,
+    files,
+    classification,
+    transport,
+    transportEvidence,
+    sourceIntakeTimeoutMs,
+  });
+  const buildMetadataDiscovery = discoverBuildMetadata({
+    candidate,
+    files,
+    classification,
+    contentEvidence: buildMetadataContentEvidence,
+  });
   const blockingGaps = [];
   if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
   if (classification.backendCandidates.length === 0) blockingGaps.push('gpu_backend_signal_not_detected');
@@ -964,6 +1270,10 @@ function buildAcceptedSourceIntakeFacet({ base, candidate, files, transport, tra
     build_metadata_discovery: buildMetadataDiscovery,
     buildMetadataDiscoveryAccepted: buildMetadataDiscovery.acceptedAsBuildMetadataDiscovery === true,
     build_metadata_discovery_accepted: buildMetadataDiscovery.acceptedAsBuildMetadataDiscovery === true,
+    buildMetadataContentEvidence,
+    build_metadata_content_evidence: buildMetadataContentEvidence,
+    buildMetadataContentAccepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
+    build_metadata_content_accepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
     runtimeBoundaryHints: candidate.runtimeBoundaryHints,
     runtime_boundary_hints: candidate.runtimeBoundaryHints,
     oracleHints: candidate.oracleHints,
@@ -1040,7 +1350,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         local_git_listing: localGitListing,
       });
     }
-    return buildAcceptedSourceIntakeFacet({
+    return await buildAcceptedSourceIntakeFacet({
       base,
       candidate,
       files: localGitListing.files,
@@ -1055,6 +1365,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         finishedAt: localGitListing.finishedAt,
         finished_at: localGitListing.finished_at,
       },
+      sourceIntakeTimeoutMs,
     });
   }
   await rm(localPath, { recursive: true, force: true });
@@ -1100,7 +1411,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
           github_tree: githubTree,
         });
       }
-      return buildAcceptedSourceIntakeFacet({
+      return await buildAcceptedSourceIntakeFacet({
         base,
         candidate,
         files: githubTree.files,
@@ -1113,6 +1424,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
           finishedAt: githubTree.finishedAt,
           finished_at: githubTree.finished_at,
         },
+        sourceIntakeTimeoutMs,
       });
     }
   }
@@ -1204,7 +1516,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   if (files.length === 0) {
     return fail('source_intake_empty_listing', 'source_tree_listing_empty');
   }
-  return buildAcceptedSourceIntakeFacet({
+  return await buildAcceptedSourceIntakeFacet({
     base,
     candidate,
     files,
@@ -1219,6 +1531,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       fetch,
       fetch_result: fetch,
     },
+    sourceIntakeTimeoutMs,
   });
 }
 
@@ -1241,11 +1554,15 @@ async function runSelectedCandidate(
       : null;
     const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
     const buildMetadataDiscoveryAccepted = sourceIntakeEvidence?.buildMetadataDiscoveryAccepted === true;
+    const buildMetadataContentAccepted = sourceIntakeEvidence?.buildMetadataContentAccepted === true;
+    const buildMetadataGap = buildMetadataContentAccepted
+      ? 'semantic_build_metadata_execution_missing'
+      : (buildMetadataDiscoveryAccepted
+        ? 'semantic_build_metadata_verification_missing'
+        : 'build_metadata_unverified');
     const blockingGaps = [
       'runtime_profile_contract_missing',
-      buildMetadataDiscoveryAccepted
-        ? 'semantic_build_metadata_verification_missing'
-        : 'build_metadata_unverified',
+      buildMetadataGap,
       'same_process_loader_unproven',
       'epoch_publication_unproven',
       'dispatch_trace_unproven',
@@ -1278,8 +1595,12 @@ async function runSelectedCandidate(
       source_tree_intake_accepted: sourceTreeIntakeAccepted,
       buildMetadataDiscoveryAccepted,
       build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
+      buildMetadataContentAccepted,
+      build_metadata_content_accepted: buildMetadataContentAccepted,
       buildMetadataDiscovery: sourceIntakeEvidence?.buildMetadataDiscovery ?? null,
       build_metadata_discovery: sourceIntakeEvidence?.build_metadata_discovery ?? null,
+      buildMetadataContentEvidence: sourceIntakeEvidence?.buildMetadataContentEvidence ?? null,
+      build_metadata_content_evidence: sourceIntakeEvidence?.build_metadata_content_evidence ?? null,
       sourceIntakeEvidence,
       source_intake_evidence: sourceIntakeEvidence,
       blockingGaps,
@@ -1692,6 +2013,7 @@ async function selfCheck() {
     || !buildDiscovery.detectedBuildSystems.includes('cmake')
     || !buildDiscovery.detectedBuildSystems.includes('cargo')
     || !buildDiscovery.detectedBuildSystems.includes('gn')
+    || buildDiscovery.buildMetadataContentAccepted !== false
     || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');
@@ -1845,15 +2167,19 @@ async function selfCheck() {
     outputDir: path.join(LOG_DIR, 'self-check'),
   });
   const localResult = localManifest.results[0] ?? {};
+  const localBuildContentFiles = localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
   if (
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
     || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
+    || localResult.buildMetadataContentAccepted !== true
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
     || !localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.detectedBuildSystems?.includes('cmake')
     || !localResult.sourceIntakeEvidence?.backendCandidates?.includes('hip_rocm')
-    || !localResult.blockingGaps?.includes('semantic_build_metadata_verification_missing')
+    || !(localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.acceptedBuildFileCount >= 1)
+    || !localBuildContentFiles.some((file) => file.family === 'cmake' && file.contentHash?.startsWith('sha256:'))
+    || !localResult.blockingGaps?.includes('semantic_build_metadata_execution_missing')
     || localResult.acceptedForGpuHmr !== false
     || localResult.gpuHmrSuccess !== false
   ) {
