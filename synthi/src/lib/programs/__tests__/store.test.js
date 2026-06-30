@@ -571,6 +571,22 @@ describe('listPendingReview / toReviewQueueItem', () => {
     expect(JSON.stringify(item)).not.toContain('SECRET');
     expect(item).not.toHaveProperty('manifestJson');
   });
+
+  it('includes a redacted aiSummary (riskScore + flags) and never raw provider text', () => {
+    const item = toReviewQueueItem({
+      id: 'ver1', version: '1.0.0', reviewState: 'ai_review', submittedByUserId: 'u1',
+      scanReportJson: '{"decisiveCves":[]}',
+      aiRiskJson: '{"riskScore":0.1,"flags":["x"],"rationale":"SENSITIVE-MODEL-TEXT"}',
+      program: { packageId: '@team/tool', publisher: 'team' },
+    });
+    expect(item.aiSummary).toMatchObject({ riskScore: 0.1, flags: ['x'] });
+    expect(JSON.stringify(item)).not.toContain('SENSITIVE-MODEL-TEXT'); // rationale not exposed
+  });
+
+  it('aiSummary is null when there is no aiRiskJson', () => {
+    const item = toReviewQueueItem({ id: 'ver1', reviewState: 'pending_review', program: { packageId: '@team/tool' } });
+    expect(item.aiSummary).toBeNull();
+  });
 });
 
 describe('getReviewVersionById', () => {

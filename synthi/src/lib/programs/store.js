@@ -424,6 +424,12 @@ export function toReviewQueueItem(row) {
     sourceImageRef: row.sourceImageRef ?? null,
     submittedAt: row.submittedAt ?? null,
     scanSummary: parseJsonText(row.scanReportJson, null),
+    aiSummary: (() => {
+      // Redacted: expose only the AI risk score + flags, never the raw provider
+      // rationale text (allow-list serialization, like toPublicInstall).
+      const ai = parseJsonText(row.aiRiskJson, null);
+      return ai ? { riskScore: ai.riskScore ?? null, flags: Array.isArray(ai.flags) ? ai.flags : [] } : null;
+    })(),
     packageId: row.program ? row.program.packageId : null,
     publisher: row.program ? row.program.publisher : null,
     displayName: row.program ? (row.program.displayName ?? null) : null,
