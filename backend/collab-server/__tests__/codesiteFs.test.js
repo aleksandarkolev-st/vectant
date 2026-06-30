@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  CodeSiteFS,
   assertCodeSiteWriteAllowed,
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
@@ -12,6 +13,7 @@ const {
   codeSiteRuntimeMetadata,
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
+  createCodeSiteFS,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
@@ -211,6 +213,181 @@ test('allows writes inside lease route and blocks no-fly or out-of-route writes'
     () => assertCodeSiteWriteAllowed(context, { path: 'synthi/src/app/page.jsx', tool: 'file_write', kind: 'write-file' }),
     (error) => error.code === 'CODESITE_WRITE_DENIED' && error.event.details.reason_codes.includes('outside_clearance_route'),
   );
+});
+
+test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply, and verify', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-boundary-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'app.js'), 'before\n');
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ ok: true, eventId: `event-${calls.length}` }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/**'],
+    allowedTools: ['file_write'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const codesiteFs = new CodeSiteFS(context, { fetch, repoRoot: repo });
+    const prepared = await codesiteFs.prepare({ path: 'src/app.js', tool: 'file_write', kind: 'write-file' });
+    assert.strictEqual(prepared.phase, 'prepared');
+    assert.strictEqual(prepared.ok, true);
+    assert.strictEqual(prepared.disposition, 'write_allowed');
+    assert.strictEqual(prepared.rollbackHint.strategy, 'transaction_abort_or_revert');
+
+    const validated = await codesiteFs.validate(prepared);
+    assert.strictEqual(validated.phase, 'validated');
+
+    const applied = await codesiteFs.apply(validated, async () => {
+      assert.strictEqual(calls.length, 1, 'prewrite event is emitted before real repo mutation');
+      await fs.writeFile(path.join(repo, 'src', 'app.js'), 'after\n');
+      return { bytesWritten: 6 };
+    });
+
+    assert.strictEqual(applied.phase, 'applied');
+    assert.deepStrictEqual(applied.applyResult, { bytesWritten: 6 });
+    assert.strictEqual(applied.verification.ok, true);
+    assert.strictEqual(applied.verification.digest.exists, true);
+    assert.match(applied.verification.digest.digest, /^sha256:/);
+    assert.strictEqual(await fs.readFile(path.join(repo, 'src', 'app.js'), 'utf8'), 'after\n');
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-write');
+    assert.strictEqual(calls[0].body.codesiteFsEvent.type, 'write_allowed');
+  } finally {
+    await fs.rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('CodeSiteFS lifecycle emits denied prewrite evidence and blocks apply outside clearance', async () => {
+  const calls = [];
+  const fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      ok: false,
+      policyDecision: { reasonCodes: ['outside_clearance_route'] },
+    }), { status: 200 });
+  };
+  const codesiteFs = createCodeSiteFS({
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['docs/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  }, { fetch });
+  let applied = false;
+
+  const prepared = await codesiteFs.prepare({ path: 'src/app.js', tool: 'file_write', kind: 'write-file' });
+  assert.strictEqual(prepared.ok, false);
+  assert.strictEqual(prepared.disposition, 'write_denied');
+  assert.strictEqual(prepared.rollbackHint.strategy, 'no_repo_mutation');
+
+  await assert.rejects(
+    () => codesiteFs.apply(prepared, async () => {
+      applied = true;
+    }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.details.reason_codes.includes('outside_clearance_route'),
+  );
+
+  assert.strictEqual(applied, false);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].path, 'src/app.js');
+  assert.strictEqual(calls[0].codesiteFsEvent.type, 'write_denied');
+});
+
+test('CodeSiteFS run validates every attempt before applying a multi-file mutation', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-run-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'a.js'), 'a-before\n');
+  await fs.writeFile(path.join(repo, 'src', 'b.js'), 'b-before\n');
+  const calls = [];
+  const fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const codesiteFs = createCodeSiteFS({
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-run',
+    mutationLeaseId: 'lease-run',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  }, { fetch, repoRoot: repo });
+
+  try {
+    const result = await codesiteFs.run({
+      operation: 'write-files-batch',
+      tool: 'file_write',
+      attempts: [
+        { path: 'src/a.js', kind: 'write-files-batch', tool: 'file_write' },
+        { path: 'src/b.js', kind: 'write-files-batch', tool: 'file_write' },
+      ],
+    }, async ({ attempts }) => {
+      assert.strictEqual(attempts.length, 2);
+      assert.deepStrictEqual(calls.map((call) => call.path), ['src/a.js', 'src/b.js']);
+      await fs.writeFile(path.join(repo, 'src', 'a.js'), 'a-after\n');
+      await fs.writeFile(path.join(repo, 'src', 'b.js'), 'b-after\n');
+      return { written: 2 };
+    });
+
+    assert.strictEqual(result.phase, 'applied');
+    assert.deepStrictEqual(result.applyResult, { written: 2 });
+    assert.strictEqual(result.verification.length, 2);
+    assert.ok(result.verification.every((item) => item.ok && item.digest.exists));
+    assert.deepStrictEqual(result.rollbackHints.map((hint) => hint.strategy), [
+      'transaction_abort_or_revert',
+      'transaction_abort_or_revert',
+    ]);
+    assert.strictEqual(await fs.readFile(path.join(repo, 'src', 'a.js'), 'utf8'), 'a-after\n');
+    assert.strictEqual(await fs.readFile(path.join(repo, 'src', 'b.js'), 'utf8'), 'b-after\n');
+  } finally {
+    await fs.rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('CodeSiteFS run blocks a mixed multi-file mutation before emitting allowed events', async () => {
+  const calls = [];
+  const fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const codesiteFs = createCodeSiteFS({
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-run-denied',
+    mutationLeaseId: 'lease-run-denied',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  }, { fetch });
+  let applied = false;
+
+  await assert.rejects(
+    () => codesiteFs.run({
+      operation: 'write-files-batch',
+      tool: 'file_write',
+      attempts: [
+        { path: 'src/a.js', kind: 'write-files-batch', tool: 'file_write' },
+        { path: 'docs/readme.md', kind: 'write-files-batch', tool: 'file_write' },
+      ],
+    }, async () => {
+      applied = true;
+    }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.path === 'docs/readme.md',
+  );
+
+  assert.strictEqual(applied, false);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].path, 'docs/readme.md');
+  assert.strictEqual(calls[0].codesiteFsEvent.type, 'write_denied');
 });
 
 test('derives ranged line provenance from content changes', () => {

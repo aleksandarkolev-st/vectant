@@ -331,12 +331,245 @@ function assertCodeSiteWritesAllowed(context, attempts) {
   return attempts.map((attempt) => assertCodeSiteWriteAllowed(context, attempt));
 }
 
-async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
-  const effectiveContext = await authoritativeCodeSiteContext(context, options);
-  const result = evaluateCodeSiteWrite(effectiveContext, attempt);
-  const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, options);
-  if (durableFailure && effectiveContext?.mode !== 'monitor') {
-    throw new CodeSiteFSDeniedError({
+class CodeSiteFS {
+  constructor(context = {}, options = {}) {
+    this.context = context || {};
+    this.options = options || {};
+  }
+
+  async prepare(attempt = {}) {
+    const effectiveContext = await authoritativeCodeSiteContext(this.context, this.options);
+    const result = evaluateCodeSiteWrite(effectiveContext, attempt);
+    const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, this.options);
+    const preparedResult = durableFailure
+      ? deniedWithDurableFailure(result, durableFailure)
+      : result;
+    const prepared = {
+      phase: 'prepared',
+      ok: preparedResult.ok,
+      disposition: preparedResult.event.type,
+      path: preparedResult.path,
+      tool: preparedResult.tool,
+      context: effectiveContext,
+      attempt,
+      result: preparedResult,
+      event: preparedResult.event,
+      durableFailure,
+    };
+    prepared.rollbackHint = this.rollbackHint(prepared);
+    return prepared;
+  }
+
+  async validate(preparedOrAttempt = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepare(preparedOrAttempt);
+    if (!prepared.ok && prepared.context?.mode !== 'monitor') {
+      throw new CodeSiteFSDeniedError(prepared.event);
+    }
+    return { ...prepared, phase: 'validated' };
+  }
+
+  async emitEvent(preparedOrAttempt = {}, options = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepare(preparedOrAttempt);
+    if (!prepared.context?.active || !prepared.context.transactionId) {
+      return { ...prepared, phase: 'event_skipped', eventRecord: null };
+    }
+    const emitOptions = {
+      ...this.options,
+      ...options,
+      acceptDenied: options.acceptDenied ?? !prepared.ok,
+    };
+    try {
+      const eventRecord = await recordCodeSiteWriteAttempt(prepared.context, prepared.result, emitOptions);
+      return { ...prepared, phase: 'event_emitted', eventRecord };
+    } catch (error) {
+      if (prepared.ok) throw error;
+      prepared.event.details.persistence_error = error?.message || 'codesite_denied_write_persistence_failed';
+      return {
+        ...prepared,
+        phase: 'event_failed',
+        eventRecord: null,
+        eventRecordError: error?.message || 'codesite_denied_write_persistence_failed',
+      };
+    }
+  }
+
+  async apply(preparedOrAttempt = {}, applyFn = null, options = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepare(preparedOrAttempt);
+    if (!prepared.ok) {
+      await this.emitEvent(prepared, { ...options, acceptDenied: true });
+      await this.validate(prepared);
+    }
+    const validated = await this.validate(prepared);
+    const emitted = await this.emitEvent(validated, options);
+    const applyResult = typeof applyFn === 'function'
+      ? await applyFn(emitted)
+      : null;
+    const verification = await this.verify(emitted, options);
+    return {
+      ...emitted,
+      phase: 'applied',
+      applyResult,
+      verification,
+    };
+  }
+
+  async run(operation = {}, applyFn = null, options = {}) {
+    const attempts = codeSiteFSOperationAttempts(operation);
+    if (!attempts.length) {
+      const applyResult = typeof applyFn === 'function'
+        ? await applyFn({ operation, attempts: [] })
+        : null;
+      return {
+        phase: 'applied',
+        operation,
+        attempts: [],
+        applyResult,
+        verification: [],
+        rollbackHints: [],
+      };
+    }
+
+    const prepared = [];
+    for (const attempt of attempts) {
+      prepared.push(await this.prepare(attempt));
+    }
+
+    const denied = prepared.find((item) => !item.ok);
+    if (denied) {
+      await this.emitEvent(denied, { ...options, acceptDenied: true });
+      await this.validate(denied);
+    }
+
+    const validated = [];
+    for (const item of prepared) {
+      validated.push(await this.validate(item));
+    }
+
+    const emitted = [];
+    for (const item of validated) {
+      emitted.push(await this.emitEvent(item, options));
+    }
+
+    const applyResult = typeof applyFn === 'function'
+      ? await applyFn({ operation, attempts: emitted })
+      : null;
+    const verification = [];
+    for (const item of emitted) {
+      verification.push(await this.verify(item, options));
+    }
+    return {
+      phase: 'applied',
+      operation,
+      attempts: emitted,
+      applyResult,
+      verification,
+      rollbackHints: emitted.map((item) => this.rollbackHint(item)),
+    };
+  }
+
+  async verify(preparedOrAttempt = {}, options = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepare(preparedOrAttempt);
+    const repoRoot = options.repoRoot || this.options.repoRoot;
+    if (!repoRoot || !prepared.path) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: repoRoot ? 'path_unavailable' : 'repo_root_unavailable',
+      };
+    }
+    try {
+      const digest = await fileDigestForRepoPath(repoRoot, prepared.path);
+      return {
+        ok: true,
+        skipped: false,
+        path: prepared.path,
+        digest,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        skipped: false,
+        path: prepared.path,
+        error: error?.message || 'codesitefs_verify_failed',
+      };
+    }
+  }
+
+  rollbackHint(preparedOrResult = {}) {
+    const result = preparedOrResult.result || preparedOrResult;
+    const event = preparedOrResult.event || result.event || {};
+    const eventType = event.type || preparedOrResult.disposition || result.disposition || 'write_allowed';
+    const pathHint = result.path || event.path || preparedOrResult.path || null;
+    if (eventType === 'write_denied') {
+      return {
+        strategy: 'no_repo_mutation',
+        path: pathHint,
+        reasonCodes: asArray(event.details?.reason_codes),
+        instruction: 'The write was blocked before the real repo changed. Request or adjust clearance before retrying.',
+      };
+    }
+    if (eventType === 'write_quarantined') {
+      return {
+        strategy: 'review_quarantine',
+        path: pathHint,
+        quarantineRoot: event.details?.quarantine_root || null,
+        instruction: 'Review the quarantined overlay and replay through an approved transaction before landing.',
+      };
+    }
+    return {
+      strategy: 'transaction_abort_or_revert',
+      path: pathHint,
+      transactionId: event.transaction_id || preparedOrResult.context?.transactionId || null,
+      instruction: 'If verification fails, abort the transaction or revert this path before commit.',
+    };
+  }
+}
+
+function createCodeSiteFS(context = {}, options = {}) {
+  return new CodeSiteFS(context, options);
+}
+
+function isCodeSiteFSPrepared(value) {
+  return Boolean(value && typeof value === 'object' && value.phase && value.result && value.event);
+}
+
+function codeSiteFSOperationAttempts(operation = {}) {
+  const operationBase = {
+    kind: operation.operation || operation.kind,
+    tool: operation.tool,
+    evidenceRefs: operation.evidenceRefs || operation.evidence_refs,
+    processAncestry: operation.processAncestry || operation.process_ancestry,
+    lineProvenance: operation.lineProvenance || operation.line_provenance,
+  };
+  if (Array.isArray(operation.attempts)) {
+    return operation.attempts.map((attempt) => ({
+      ...operationBase,
+      ...attempt,
+      kind: attempt.kind || operationBase.kind,
+      tool: attempt.tool || operationBase.tool,
+    }));
+  }
+  const pathValue = operation.path || operation.filePath || operation.newPath || operation.oldPath;
+  if (!pathValue) return [];
+  return [{
+    ...operationBase,
+    path: pathValue,
+  }];
+}
+
+function deniedWithDurableFailure(result, durableFailure) {
+  return {
+    ...result,
+    ok: false,
+    event: {
       ...result.event,
       type: 'write_denied',
       details: {
@@ -347,23 +580,23 @@ async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
           ...asArray(result.event.details?.reason_codes),
         ],
       },
-    });
+    },
+  };
+}
+
+async function enforceCodeSiteWriteAllowed(context, attempt, options = {}) {
+  const codesiteFs = createCodeSiteFS(context, options);
+  const prepared = await codesiteFs.prepare(attempt);
+  if (prepared.durableFailure && prepared.context?.mode !== 'monitor') {
+    throw new CodeSiteFSDeniedError(prepared.event);
   }
-  if (effectiveContext?.active && effectiveContext.transactionId) {
-    try {
-      await recordCodeSiteWriteAttempt(effectiveContext, result, {
-        ...options,
-        acceptDenied: options.acceptDenied || !result.ok || effectiveContext.mode === 'monitor',
-      });
-    } catch (error) {
-      if (result.ok) throw error;
-      result.event.details.persistence_error = error?.message || 'codesite_denied_write_persistence_failed';
-    }
+  const emitted = await codesiteFs.emitEvent(prepared, {
+    acceptDenied: options.acceptDenied || !prepared.ok || prepared.context?.mode === 'monitor',
+  });
+  if (!emitted.ok && emitted.context?.mode !== 'monitor') {
+    throw new CodeSiteFSDeniedError(emitted.event);
   }
-  if (!result.ok && effectiveContext?.mode !== 'monitor') {
-    throw new CodeSiteFSDeniedError(result.event);
-  }
-  return result;
+  return emitted.result;
 }
 
 async function enforceCodeSiteWritesAllowed(context, attempts, options = {}) {
@@ -656,6 +889,15 @@ async function fileDigestForRepoPath(repoRoot, relPath) {
   }
   try {
     const stat = await fsp.stat(fullPath);
+    if (stat.isDirectory()) {
+      return {
+        path: normalized,
+        digest: null,
+        size: null,
+        exists: true,
+        kind: 'directory',
+      };
+    }
     return {
       path: normalized,
       digest: await digestFile(fullPath),
@@ -1192,6 +1434,7 @@ function isCodeSiteCommitBlockedError(error) {
 }
 
 module.exports = {
+  CodeSiteFS,
   CodeSiteCommitBlockedError,
   CodeSiteFSDeniedError,
   assertCodeSiteWriteAllowed,
@@ -1203,6 +1446,7 @@ module.exports = {
   codeSiteRuntimeMetadata,
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
+  createCodeSiteFS,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,

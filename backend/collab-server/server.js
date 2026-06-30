@@ -40,6 +40,7 @@ const {
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
+  createCodeSiteFS,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
@@ -842,13 +843,16 @@ async function flushDocToDisk(docName, options = {}) {
     promptSummary: 'Yjs save flushed to disk',
     reasonRef: `yjs_flush:${filePath}`,
   });
-  await enforceCodeSiteWriteAllowed(options.codesiteContext, {
-    path: filePath,
-    kind: 'yjs_flush',
+  await runCodeSiteMutationBoundary(options.codesiteContext, {
+    operation: 'yjs_flush',
     tool: 'file_write',
-    ...codeSiteWriteEvidence(options, derivedLineProvenance),
-  }, codeSiteEnforceOptions(options.codesiteContext));
-  await gitService.safeWriteFile(fullPath, content);
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(options, derivedLineProvenance),
+    }],
+  }, async () => gitService.safeWriteFile(fullPath, content), { repoRoot: repoPath });
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -973,6 +977,11 @@ function codeSiteEnforceOptions(context, options = {}) {
   };
 }
 
+async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
+  const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
+  return codesiteFs.run(operation, applyFn, options);
+}
+
 function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   return codeSiteContextFromRequest(req, parsed, {
     workspaceSlug: extra.workspaceSlug,
@@ -1082,14 +1091,19 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
     promptSummary: 'Yjs pre-stage flush to disk',
     reasonRef: `yjs_flush:${filePath}`,
   });
-  await enforceCodeSiteWriteAllowed(scope.codesiteContext, {
-    path: filePath,
-    kind: 'yjs_flush',
+  await runCodeSiteMutationBoundary(scope.codesiteContext, {
+    operation: 'yjs_flush',
     tool: 'file_write',
-    ...codeSiteWriteEvidence(scope, derivedLineProvenance),
-  }, codeSiteEnforceOptions(scope.codesiteContext));
-  await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-  await fsPromises.writeFile(fullPath, content, 'utf-8');
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(scope, derivedLineProvenance),
+    }],
+  }, async () => {
+    await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fsPromises.writeFile(fullPath, content, 'utf-8');
+  }, { repoRoot: repoPath });
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
 }
@@ -2448,8 +2462,12 @@ const server = http.createServer(async (req, res) => {
           ...codeSiteWriteEvidence({ ...parsed, ...file }, derivedLineProvenance),
         };
       }));
-      await enforceCodeSiteWritesAllowed(codeSiteContext, scaffoldAttempts, codeSiteEnforceOptions(codeSiteContext));
-      const result = applyScaffoldFiles(cwd, parsed.files || []);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'program-scaffold',
+        tool: 'file_write',
+        attempts: scaffoldAttempts,
+      }, async () => applyScaffoldFiles(cwd, parsed.files || []), { repoRoot: cwd });
+      const result = boundary.applyResult;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
@@ -3365,12 +3383,15 @@ const server = http.createServer(async (req, res) => {
           actorUserId: userId,
           effectiveUserId: targetUserId,
         });
-        await enforceCodeSiteWriteAllowed(codeSiteContext, {
-          path: normalizedPath,
-          kind: 'file-version-restore',
+        await runCodeSiteMutationBoundary(codeSiteContext, {
+          operation: 'file-version-restore',
           tool: 'file_write',
-        }, codeSiteEnforceOptions(codeSiteContext));
-        await gitService.safeWriteFile(fullPath, content);
+          attempts: [{
+            path: normalizedPath,
+            kind: 'file-version-restore',
+            tool: 'file_write',
+          }],
+        }, async () => gitService.safeWriteFile(fullPath, content), { repoRoot: repoPath });
 
         // 2) Pull the CRDT doc onto the restored content so live editors
         // converge without data loss, then ALWAYS hard-invalidate the doc.
@@ -4943,13 +4964,19 @@ const server = http.createServer(async (req, res) => {
                       promptSummary: 'Direct file write',
                       reasonRef: `write-file:${data.path}`,
                     });
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.path,
-                      kind: 'write-file',
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-file',
                       tool: 'file_write',
-                      ...codeSiteWriteEvidence(data, derivedLineProvenance),
-                    }, codeSiteEnforcement);
-	                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
+                      attempts: [{
+                        path: data.path,
+                        kind: 'write-file',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                      }],
+                    }, async () => withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId)), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
 	                    result = { success: true };
 	                    broadcastFileTreeChanged(slug, notifyScope);
 	                  }
@@ -4977,24 +5004,33 @@ const server = http.createServer(async (req, res) => {
                           promptSummary: 'Apply verified shadow patch',
                           reasonRef: `apply-shadow-patch:${data.universeId || 'universe'}:${f.path}`,
                         });
-                        await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                          path: f.path,
-                          kind: 'apply-shadow-patch',
+                        const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                          operation: 'apply-shadow-patch',
                           tool: 'shadow_patch',
-                          ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
-                        }, codeSiteEnforcement);
-                        const docName = buildDocName(slug, f.path, notifyScope);
-                        const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
-                        if (op?.ok) {
-                          // Persist to disk so git sees the same content.
-                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
-                          result.applied.push({ path: f.path, strategy: op.strategy });
-                        } else {
+                          attempts: [{
+                            path: f.path,
+                            kind: 'apply-shadow-patch',
+                            tool: 'shadow_patch',
+                            ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
+                          }],
+                        }, async () => {
+                          const nonRecordingScope = { ...codeSiteNotifyScope, codesiteContext: null };
+                          const docName = buildDocName(slug, f.path, notifyScope);
+                          const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
+                          if (op?.ok) {
+                            // Persist to disk so git sees the same content.
+                            await flushYjsDocForFile(slug, f.path, nonRecordingScope);
+                            return { strategy: op.strategy };
+                          }
                           // CRDT path failed — fall back to direct write.
-                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
+                          await flushYjsDocForFile(slug, f.path, nonRecordingScope);
                           await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
-                          result.applied.push({ path: f.path, strategy: 'direct-fallback' });
-                        }
+                          return { strategy: 'direct-fallback' };
+                        }, {
+                          ...codeSiteEnforcement,
+                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                        });
+                        result.applied.push({ path: f.path, strategy: boundary.applyResult.strategy });
                       } catch (e) {
                         result.skipped.push({ path: f.path, reason: e?.message || 'apply failed' });
                       }
@@ -5023,21 +5059,34 @@ const server = http.createServer(async (req, res) => {
                         ...codeSiteWriteEvidence({ ...data, ...file }, derivedLineProvenance),
                       };
                     }));
-                    await enforceCodeSiteWritesAllowed(codeSiteContext, attempts, codeSiteEnforcement);
+                    const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-files-batch',
+                      tool: 'file_write',
+                      attempts,
+                    }, async () => gitService.writeFilesBatch(slug, data.files, {
+                      syncToGcs: data.syncToGcs !== false,
+                      userId: effectiveUserId,
+                    }), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
+                    result = boundary.applyResult;
                   }
-                  result = await gitService.writeFilesBatch(slug, data.files, {
-                    syncToGcs: data.syncToGcs !== false,
-                    userId: effectiveUserId,
-                  });
                   break;
                 case 'create-directory':
-	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-	                      path: data.path,
-	                      kind: 'create-directory',
-	                      tool: 'file_write',
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'create-directory',
+                      tool: 'file_write',
+                      attempts: [{
+                        path: data.path,
+                        kind: 'create-directory',
+                        tool: 'file_write',
                         ...codeSiteWriteEvidence(data),
-	                    }, codeSiteEnforcement);
-                    await gitService.createDirectory(slug, data.path, effectiveUserId);
+                      }],
+                    }, async () => gitService.createDirectory(slug, data.path, effectiveUserId), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
@@ -5052,14 +5101,21 @@ const server = http.createServer(async (req, res) => {
                         promptSummary: 'Delete workspace item',
                         reasonRef: `delete-item:${data.path}`,
                       });
-	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-	                      path: data.path,
-	                      kind: 'delete-item',
-	                      tool: 'file_delete',
-                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
-	                    }, codeSiteEnforcement);
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'delete-item',
+                        tool: 'file_delete',
+                        attempts: [{
+                          path: data.path,
+                          kind: 'delete-item',
+                          tool: 'file_delete',
+                          ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                        }],
+                      }, async () => gitService.deleteItem(slug, data.path, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
                     }
-	                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
                       await invalidateDocsForSlug(slug, [data.path], notifyScope);
@@ -5082,22 +5138,29 @@ const server = http.createServer(async (req, res) => {
                         promptSummary: 'Rename destination path',
                         reasonRef: `rename-item:new:${data.newPath}`,
                       });
-                      await enforceCodeSiteWritesAllowed(codeSiteContext, [
-                        {
-                          path: data.oldPath,
-                          kind: 'rename-item:old',
-                          tool: 'file_rename',
-                          ...codeSiteWriteEvidence(data, oldPathLineProvenance),
-                        },
-                        {
-                          path: data.newPath,
-                          kind: 'rename-item:new',
-                          tool: 'file_rename',
-                          ...codeSiteWriteEvidence(data, newPathLineProvenance),
-                        },
-                      ], codeSiteEnforcement);
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'rename-item',
+                        tool: 'file_rename',
+                        attempts: [
+                          {
+                            path: data.oldPath,
+                            kind: 'rename-item:old',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, oldPathLineProvenance),
+                          },
+                          {
+                            path: data.newPath,
+                            kind: 'rename-item:new',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, newPathLineProvenance),
+                          },
+                        ],
+                      }, async () => gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
                     }
-	                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
                       await invalidateDocsForSlug(slug, [data.oldPath], notifyScope);
