@@ -168,6 +168,10 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--count') out.count = argv[++i];
     else if (arg === '--candidate') out.candidateId = argv[++i];
     else if (arg === '--candidates') out.candidatesPath = argv[++i];
+    else if (arg === '--source-url') out.sourceUrl = argv[++i];
+    else if (arg === '--commit' || arg === '--immutable-commit') out.immutableCommit = argv[++i];
+    else if (arg === '--source-id') out.sourceId = argv[++i];
+    else if (arg === '--backend-family') out.backendFamily = argv[++i];
     else if (arg === '--output-dir') out.outputDir = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -180,6 +184,22 @@ function sha256(value) {
 
 function contentHash(value) {
   return `sha256:${sha256(value)}`;
+}
+
+function safeSlug(value, fallback = 'repo') {
+  const slug = String(value ?? '')
+    .trim()
+    .replace(/\.git$/i, '')
+    .split(/[/:\\]+/)
+    .filter(Boolean)
+    .slice(-2)
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '')
+    .replace(/[^a-z0-9]+$/, '')
+    .slice(0, 48);
+  return slug || fallback;
 }
 
 function stableJson(value) {
@@ -231,6 +251,8 @@ function cleanCandidate(raw, index = 0) {
     profilePath: resolvedProfilePath,
     profileMode,
     profile_mode: profileMode,
+    candidateSource: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
+    candidate_source: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
     sourceUrl,
     immutableCommit,
     sizeSignals: candidate.sizeSignals ?? candidate.size_signals ?? {},
@@ -241,6 +263,48 @@ function cleanCandidate(raw, index = 0) {
     oracleHints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
     oracle_hints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
   };
+}
+
+function directCandidateFromInput({
+  sourceUrl,
+  immutableCommit,
+  sourceId,
+  backendFamily,
+} = {}) {
+  const url = String(sourceUrl ?? '').trim();
+  const commit = String(immutableCommit ?? '').trim();
+  if (!url && !commit) return null;
+  if (!url || !commit) {
+    throw new Error('direct cold-path source input requires both --source-url and --commit');
+  }
+  const id = String(sourceId ?? '').trim()
+    || `direct-${safeSlug(url)}-${sha256(`${url}\0${commit}`).slice(0, 12)}`;
+  return cleanCandidate({
+    id,
+    backendFamily: backendFamily || 'unknown_gpu_project',
+    candidateSource: 'direct_source_url_commit',
+    sourceUrl: url,
+    immutableCommit: commit,
+    sizeSignals: {
+      class: 'large_arbitrary_user_project',
+      coldPathKind: 'direct_source_url_commit_cold_intake',
+      inputMode: 'cli_or_env_direct_source',
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['compute_readback', 'deterministic_visual_oracle'],
+    },
+  });
 }
 
 async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
@@ -1140,6 +1204,8 @@ function createManifest({
       backend_family: candidate.backendFamily,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      candidateSource: candidate.candidateSource,
+      candidate_source: candidate.candidateSource,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       immutableCommit: candidate.immutableCommit,
@@ -1161,6 +1227,8 @@ function createManifest({
       profile_path: candidate.profilePath,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      candidateSource: candidate.candidateSource,
+      candidate_source: candidate.candidateSource,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       immutableCommit: candidate.immutableCommit,
@@ -1289,6 +1357,20 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path unprofiled normalization failed');
   }
+  const directCandidate = directCandidateFromInput({
+    sourceUrl: 'https://example.invalid/user/project.git',
+    immutableCommit: '1111111111111111111111111111111111111111',
+    sourceId: 'user-supplied-project',
+  });
+  if (
+    directCandidate.id !== 'user-supplied-project'
+    || directCandidate.profilePath !== null
+    || directCandidate.candidateSource !== 'direct_source_url_commit'
+    || directCandidate.sizeSignals?.coldPathKind !== 'direct_source_url_commit_cold_intake'
+    || directCandidate.oracleHints?.acceptedByDeclaration !== false
+  ) {
+    throw new Error('random large-project cold-path direct source input normalization failed');
+  }
   const parsedListing = parseGitLsTree([
     '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
     '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
@@ -1379,6 +1461,28 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path unprofiled refusal self-check failed');
   }
+  const { manifest: directManifest } = await buildManifest({
+    seed: 'direct-source-self-check-seed',
+    count: 1,
+    candidateId: directCandidate.id,
+    dryRun: false,
+    timeoutMs: 1000,
+    runnerTimeoutMs: 2000,
+    sourceIntake: false,
+    candidates: [directCandidate],
+    outputDir: path.join(LOG_DIR, 'self-check'),
+  });
+  const directResult = directManifest.results[0] ?? {};
+  if (
+    directManifest.candidates[0]?.candidateSource !== 'direct_source_url_commit'
+    || directResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
+    || directResult.sourceTreeIntakeAccepted !== false
+    || !directResult.blockingGaps?.includes('source_tree_intake_missing')
+    || directResult.acceptedForGpuHmr !== false
+    || directResult.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-path direct source refusal self-check failed');
+  }
   console.log('random large-project cold-path self-check passed');
 }
 
@@ -1402,14 +1506,22 @@ async function main() {
     process.env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE_TIMEOUT_MS
       ?? Math.max(timeoutMs, 120000),
   );
-  const candidates = await loadCandidates({
+  const directCandidate = directCandidateFromInput({
+    sourceUrl: args.sourceUrl ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL,
+    immutableCommit: args.immutableCommit ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT,
+    sourceId: args.sourceId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID,
+    backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
+  });
+  const candidates = directCandidate ? [directCandidate] : await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
   });
+  const effectiveCandidateId = directCandidate ? directCandidate.id : candidateId;
+  const effectiveCount = directCandidate ? 1 : count;
   const { manifest, written } = await buildManifest({
     seed,
-    count,
-    candidateId,
+    count: effectiveCount,
+    candidateId: effectiveCandidateId,
     dryRun,
     timeoutMs,
     runnerTimeoutMs,
