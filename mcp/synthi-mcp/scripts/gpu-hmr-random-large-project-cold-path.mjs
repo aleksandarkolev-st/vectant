@@ -17,6 +17,8 @@ const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_disc
 const BUILD_METADATA_DISCOVERY_AUTHORITY = 'build_metadata_discovery_only_not_gpu_hmr_success';
 const BUILD_METADATA_CONTENT_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const BUILD_METADATA_CONTENT_AUTHORITY = 'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const RUNTIME_BOUNDARY_EXPECTATION_SCHEMA = 'synthi.gpu_hmr.cold_runtime_boundary_expectation.v1';
+const RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY = 'runtime_boundary_expectation_only_not_gpu_hmr_success';
 const BUILD_METADATA_CONTENT_MAX_FILES = 12;
 const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
 
@@ -1142,6 +1144,290 @@ function discoverBuildMetadata({ candidate, files, classification, contentEviden
   };
 }
 
+function runtimeRequirementsForBackend(backend) {
+  const commonStages = [
+    'runtime_profile_contract',
+    'artifact_transport',
+    'same_process_loader',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+    'cpu_full_rebuild_restart_firewall',
+    'strict_runtime_ledger',
+  ];
+  const table = {
+    hip_rocm: {
+      backend,
+      artifactKind: 'hsaco_or_hip_module',
+      artifact_kind: 'hsaco_or_hip_module',
+      requiredStages: commonStages,
+      required_stages: commonStages,
+      expectedRuntimeEvents: [
+        'hip_module_load_or_code_object_load',
+        'epoch_publish',
+        'hip_kernel_dispatch',
+        'stream_or_queue_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      expected_runtime_events: [
+        'hip_module_load_or_code_object_load',
+        'epoch_publish',
+        'hip_kernel_dispatch',
+        'stream_or_queue_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      acceptableOracleKinds: ['compute_readback', 'deterministic_visual_oracle'],
+      acceptable_oracle_kinds: ['compute_readback', 'deterministic_visual_oracle'],
+    },
+    opencl: {
+      backend,
+      artifactKind: 'opencl_program',
+      artifact_kind: 'opencl_program',
+      requiredStages: commonStages,
+      required_stages: commonStages,
+      expectedRuntimeEvents: [
+        'program_build_or_load',
+        'epoch_publish',
+        'cl_enqueue_kernel',
+        'command_queue_identity',
+        'cl_enqueue_read_buffer_after_event',
+      ],
+      expected_runtime_events: [
+        'program_build_or_load',
+        'epoch_publish',
+        'cl_enqueue_kernel',
+        'command_queue_identity',
+        'cl_enqueue_read_buffer_after_event',
+      ],
+      acceptableOracleKinds: ['compute_readback'],
+      acceptable_oracle_kinds: ['compute_readback'],
+    },
+    vulkan: {
+      backend,
+      artifactKind: 'spirv_pipeline',
+      artifact_kind: 'spirv_pipeline',
+      requiredStages: commonStages.concat(['pipeline_layout_binding', 'command_buffer_re_record_or_dynamic_binding']),
+      required_stages: commonStages.concat(['pipeline_layout_binding', 'command_buffer_re_record_or_dynamic_binding']),
+      expectedRuntimeEvents: [
+        'shader_module_or_pipeline_create',
+        'pipeline_epoch_publish',
+        'command_buffer_or_dispatch_bind',
+        'queue_device_identity',
+        'readback_or_frame_capture_after_epoch_dispatch',
+      ],
+      expected_runtime_events: [
+        'shader_module_or_pipeline_create',
+        'pipeline_epoch_publish',
+        'command_buffer_or_dispatch_bind',
+        'queue_device_identity',
+        'readback_or_frame_capture_after_epoch_dispatch',
+      ],
+      acceptableOracleKinds: ['deterministic_visual_oracle', 'compute_readback'],
+      acceptable_oracle_kinds: ['deterministic_visual_oracle', 'compute_readback'],
+    },
+    webgpu_wgsl: {
+      backend,
+      artifactKind: 'wgsl_shader_module_or_pipeline',
+      artifact_kind: 'wgsl_shader_module_or_pipeline',
+      requiredStages: commonStages.concat(['pipeline_recreate_or_asset_reload']),
+      required_stages: commonStages.concat(['pipeline_recreate_or_asset_reload']),
+      expectedRuntimeEvents: [
+        'shader_module_create',
+        'pipeline_epoch_publish',
+        'pass_dispatch_or_draw',
+        'device_queue_identity',
+        'mapped_buffer_or_frame_capture_after_epoch_dispatch',
+      ],
+      expected_runtime_events: [
+        'shader_module_create',
+        'pipeline_epoch_publish',
+        'pass_dispatch_or_draw',
+        'device_queue_identity',
+        'mapped_buffer_or_frame_capture_after_epoch_dispatch',
+      ],
+      acceptableOracleKinds: ['mapped_buffer_readback', 'deterministic_visual_oracle'],
+      acceptable_oracle_kinds: ['mapped_buffer_readback', 'deterministic_visual_oracle'],
+    },
+    metal: {
+      backend,
+      artifactKind: 'metal_shader_library_or_pipeline',
+      artifact_kind: 'metal_shader_library_or_pipeline',
+      requiredStages: commonStages.concat(['pipeline_recreate_or_library_reload']),
+      required_stages: commonStages.concat(['pipeline_recreate_or_library_reload']),
+      expectedRuntimeEvents: [
+        'library_or_pipeline_create',
+        'pipeline_epoch_publish',
+        'command_encoder_dispatch_or_draw',
+        'device_queue_identity',
+        'buffer_or_frame_capture_after_epoch_dispatch',
+      ],
+      expected_runtime_events: [
+        'library_or_pipeline_create',
+        'pipeline_epoch_publish',
+        'command_encoder_dispatch_or_draw',
+        'device_queue_identity',
+        'buffer_or_frame_capture_after_epoch_dispatch',
+      ],
+      acceptableOracleKinds: ['deterministic_visual_oracle', 'compute_readback'],
+      acceptable_oracle_kinds: ['deterministic_visual_oracle', 'compute_readback'],
+    },
+    cuda: {
+      backend,
+      artifactKind: 'cuda_cubin_or_ptx',
+      artifact_kind: 'cuda_cubin_or_ptx',
+      requiredStages: commonStages,
+      required_stages: commonStages,
+      expectedRuntimeEvents: [
+        'cuda_module_load_or_jit',
+        'epoch_publish',
+        'cuda_kernel_launch',
+        'stream_context_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      expected_runtime_events: [
+        'cuda_module_load_or_jit',
+        'epoch_publish',
+        'cuda_kernel_launch',
+        'stream_context_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      acceptableOracleKinds: ['compute_readback', 'deterministic_visual_oracle'],
+      acceptable_oracle_kinds: ['compute_readback', 'deterministic_visual_oracle'],
+    },
+    sycl: {
+      backend,
+      artifactKind: 'sycl_bundle_or_device_image',
+      artifact_kind: 'sycl_bundle_or_device_image',
+      requiredStages: commonStages,
+      required_stages: commonStages,
+      expectedRuntimeEvents: [
+        'device_image_or_bundle_load',
+        'epoch_publish',
+        'queue_submit_kernel',
+        'queue_device_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      expected_runtime_events: [
+        'device_image_or_bundle_load',
+        'epoch_publish',
+        'queue_submit_kernel',
+        'queue_device_identity',
+        'readback_or_visual_output_after_dispatch',
+      ],
+      acceptableOracleKinds: ['compute_readback', 'deterministic_visual_oracle'],
+      acceptable_oracle_kinds: ['compute_readback', 'deterministic_visual_oracle'],
+    },
+  };
+  return table[backend] ?? {
+    backend,
+    artifactKind: 'unknown',
+    artifact_kind: 'unknown',
+    requiredStages: commonStages,
+    required_stages: commonStages,
+    expectedRuntimeEvents: [
+      'artifact_load',
+      'epoch_publish',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle_after_dispatch',
+    ],
+    expected_runtime_events: [
+      'artifact_load',
+      'epoch_publish',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle_after_dispatch',
+    ],
+    acceptableOracleKinds: ['compute_readback', 'deterministic_visual_oracle'],
+    acceptable_oracle_kinds: ['compute_readback', 'deterministic_visual_oracle'],
+  };
+}
+
+function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMetadataDiscovery }) {
+  const backendCandidates = Array.isArray(classification?.backendCandidates)
+    ? classification.backendCandidates
+    : [];
+  const perBackendRequirements = backendCandidates.map(runtimeRequirementsForBackend);
+  const requiredBoundaryStages = [
+    ...new Set(perBackendRequirements.flatMap((entry) => entry.requiredStages ?? [])),
+  ].sort();
+  const expectedRuntimeEvents = [
+    ...new Set(perBackendRequirements.flatMap((entry) => entry.expectedRuntimeEvents ?? [])),
+  ].sort();
+  const acceptableOracleKinds = [
+    ...new Set([
+      ...perBackendRequirements.flatMap((entry) => entry.acceptableOracleKinds ?? []),
+      ...(
+        Array.isArray(candidate?.oracleHints?.expectedKinds)
+          ? candidate.oracleHints.expectedKinds
+          : []
+      ),
+    ]),
+  ].sort();
+  const missingRuntimeEvidenceGaps = [
+    'runtime_profile_contract_missing',
+    'artifact_transport_unproven',
+    'same_process_loader_unproven',
+    'epoch_publication_unproven',
+    'dispatch_trace_unproven',
+    'host_identity_unproven',
+    'output_oracle_unproven',
+    'cpu_full_rebuild_restart_firewall_unproven',
+    'strict_runtime_ledger_missing',
+  ];
+  const blockingGaps = [];
+  if (backendCandidates.length === 0) blockingGaps.push('runtime_backend_candidate_missing');
+  if (buildMetadataDiscovery?.acceptedAsBuildMetadataDiscovery !== true) {
+    blockingGaps.push('build_metadata_discovery_missing');
+  }
+  const facet = {
+    schemaVersion: RUNTIME_BOUNDARY_EXPECTATION_SCHEMA,
+    schema_version: RUNTIME_BOUNDARY_EXPECTATION_SCHEMA,
+    proofAuthority: RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    acceptedAsRuntimeBoundaryExpectation: blockingGaps.length === 0,
+    accepted_as_runtime_boundary_expectation: blockingGaps.length === 0,
+    projectId: candidate.id,
+    project_id: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    buildSystems: buildMetadataDiscovery?.detectedBuildSystems ?? [],
+    build_systems: buildMetadataDiscovery?.detectedBuildSystems ?? [],
+    requiredBoundaryStages,
+    required_boundary_stages: requiredBoundaryStages,
+    expectedRuntimeEvents,
+    expected_runtime_events: expectedRuntimeEvents,
+    acceptableOracleKinds,
+    acceptable_oracle_kinds: acceptableOracleKinds,
+    perBackendRequirements,
+    per_backend_requirements: perBackendRequirements,
+    runtimeBoundaryHints: candidate.runtimeBoundaryHints ?? {},
+    runtime_boundary_hints: candidate.runtimeBoundaryHints ?? {},
+    oracleHints: candidate.oracleHints ?? {},
+    oracle_hints: candidate.oracleHints ?? {},
+    missingRuntimeEvidenceGaps,
+    missing_runtime_evidence_gaps: missingRuntimeEvidenceGaps,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+  return {
+    ...facet,
+    expectationHash: contentHash(stableJson(facet)),
+    expectation_hash: contentHash(stableJson(facet)),
+  };
+}
+
 function parseGitLsTree(text) {
   return String(text ?? '')
     .split(/\r?\n/)
@@ -1447,6 +1733,11 @@ async function buildAcceptedSourceIntakeFacet({
     classification,
     contentEvidence: buildMetadataContentEvidence,
   });
+  const runtimeBoundaryExpectation = deriveRuntimeBoundaryExpectation({
+    candidate,
+    classification,
+    buildMetadataDiscovery,
+  });
   const blockingGaps = [];
   if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
   if (classification.backendCandidates.length === 0) blockingGaps.push('gpu_backend_signal_not_detected');
@@ -1478,6 +1769,12 @@ async function buildAcceptedSourceIntakeFacet({
     build_metadata_content_evidence: buildMetadataContentEvidence,
     buildMetadataContentAccepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
     build_metadata_content_accepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
+    runtimeBoundaryExpectation,
+    runtime_boundary_expectation: runtimeBoundaryExpectation,
+    runtimeBoundaryExpectationAccepted:
+      runtimeBoundaryExpectation.acceptedAsRuntimeBoundaryExpectation === true,
+    runtime_boundary_expectation_accepted:
+      runtimeBoundaryExpectation.acceptedAsRuntimeBoundaryExpectation === true,
     runtimeBoundaryHints: candidate.runtimeBoundaryHints,
     runtime_boundary_hints: candidate.runtimeBoundaryHints,
     oracleHints: candidate.oracleHints,
@@ -1792,6 +2089,8 @@ async function runSelectedCandidate(
     const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
     const buildMetadataDiscoveryAccepted = sourceIntakeEvidence?.buildMetadataDiscoveryAccepted === true;
     const buildMetadataContentAccepted = sourceIntakeEvidence?.buildMetadataContentAccepted === true;
+    const runtimeBoundaryExpectationAccepted =
+      sourceIntakeEvidence?.runtimeBoundaryExpectationAccepted === true;
     const buildMetadataGap = buildMetadataContentAccepted
       ? 'semantic_build_metadata_execution_missing'
       : (buildMetadataDiscoveryAccepted
@@ -1838,6 +2137,10 @@ async function runSelectedCandidate(
       build_metadata_discovery: sourceIntakeEvidence?.build_metadata_discovery ?? null,
       buildMetadataContentEvidence: sourceIntakeEvidence?.buildMetadataContentEvidence ?? null,
       build_metadata_content_evidence: sourceIntakeEvidence?.build_metadata_content_evidence ?? null,
+      runtimeBoundaryExpectationAccepted,
+      runtime_boundary_expectation_accepted: runtimeBoundaryExpectationAccepted,
+      runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation ?? null,
+      runtime_boundary_expectation: sourceIntakeEvidence?.runtime_boundary_expectation ?? null,
       sourceIntakeEvidence,
       source_intake_evidence: sourceIntakeEvidence,
       blockingGaps,
@@ -2241,6 +2544,16 @@ async function selfCheck() {
     files: parsedListing,
     classification: listingClassification,
   });
+  const runtimeExpectation = deriveRuntimeBoundaryExpectation({
+    candidate: candidates[0],
+    classification: listingClassification,
+    buildMetadataDiscovery: buildDiscovery,
+  });
+  const noBackendRuntimeExpectation = deriveRuntimeBoundaryExpectation({
+    candidate: candidates[0],
+    classification: { backendCandidates: [] },
+    buildMetadataDiscovery: buildDiscovery,
+  });
   const parsedNoSizeListing = parseGitLsTree(
     '100644 blob ffffffffffffffffffffffffffffffffffffffff\tpackage.json\n',
   );
@@ -2257,6 +2570,13 @@ async function selfCheck() {
     || !buildDiscovery.detectedBuildSystems.includes('cargo')
     || !buildDiscovery.detectedBuildSystems.includes('gn')
     || buildDiscovery.buildMetadataContentAccepted !== false
+    || runtimeExpectation.acceptedAsRuntimeBoundaryExpectation !== true
+    || runtimeExpectation.gpuHmrSuccess !== false
+    || !runtimeExpectation.requiredBoundaryStages.includes('output_oracle')
+    || !runtimeExpectation.expectedRuntimeEvents.includes('hip_kernel_dispatch')
+    || !runtimeExpectation.expectedRuntimeEvents.includes('command_buffer_or_dispatch_bind')
+    || noBackendRuntimeExpectation.acceptedAsRuntimeBoundaryExpectation !== false
+    || !noBackendRuntimeExpectation.blockingGaps.includes('runtime_backend_candidate_missing')
     || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');
@@ -2417,8 +2737,11 @@ async function selfCheck() {
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
     || localResult.buildMetadataContentAccepted !== true
+    || localResult.runtimeBoundaryExpectationAccepted !== true
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
     || !localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.detectedBuildSystems?.includes('cmake')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.requiredBoundaryStages?.includes('same_process_loader')
+    || localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.gpuHmrSuccess !== false
     || !localResult.sourceIntakeEvidence?.backendCandidates?.includes('hip_rocm')
     || !(localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.acceptedBuildFileCount >= 1)
     || !localBuildContentFiles.some((file) => file.family === 'cmake' && file.contentHash?.startsWith('sha256:'))
