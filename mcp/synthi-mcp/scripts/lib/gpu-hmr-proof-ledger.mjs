@@ -513,6 +513,22 @@ function computeOracleArtifactOverlay(options, recordIndex = 0) {
   return null;
 }
 
+function visualOracleArtifactOverlay(options, recordIndex = 0) {
+  const overlays = asObject(options.visualOracleArtifactOverlays ?? options.visual_oracle_artifact_overlays);
+  const list = Array.isArray(options.visualOracleArtifactOverlays)
+    ? options.visualOracleArtifactOverlays
+    : Array.isArray(options.visual_oracle_artifact_overlays)
+      ? options.visual_oracle_artifact_overlays
+      : null;
+  const direct = asObject(options.visualOracleArtifactOverlay ?? options.visual_oracle_artifact_overlay);
+  const indexed = list
+    ? asObject(list[recordIndex])
+    : asObject(overlays[recordIndex] ?? overlays[String(recordIndex)]);
+  if (Object.keys(indexed).length > 0) return indexed;
+  if (recordIndex === 0 && Object.keys(direct).length > 0) return direct;
+  return null;
+}
+
 function mergeComputeOracleArtifactOverlay(artifacts, overlay) {
   const base = asObject(artifacts);
   const resolved = asObject(overlay);
@@ -533,6 +549,34 @@ function mergeComputeOracleArtifactOverlay(artifacts, overlay) {
       base.proof_authority,
       base.proofAuthority,
       'resolved_compute_artifact_overlay_transport_integrity_only',
+    ),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+}
+
+function mergeVisualOracleArtifactOverlay(artifacts, overlay) {
+  const base = asObject(artifacts);
+  const resolved = asObject(overlay);
+  if (Object.keys(resolved).length === 0) return artifacts;
+  return {
+    ...base,
+    ...resolved,
+    proofAuthority: firstText(
+      resolved.proofAuthority,
+      resolved.proof_authority,
+      base.proofAuthority,
+      base.proof_authority,
+      'resolved_visual_artifact_overlay_transport_integrity_only',
+    ),
+    proof_authority: firstText(
+      resolved.proof_authority,
+      resolved.proofAuthority,
+      base.proof_authority,
+      base.proofAuthority,
+      'resolved_visual_artifact_overlay_transport_integrity_only',
     ),
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
@@ -1288,7 +1332,10 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
     );
     if (!retirementStatus) addFailure(failures, 'retirement_proof_missing');
   }
-  const visualArtifacts = visualOracleArtifacts(record.oracleArtifacts, record.outputEvent);
+  const visualArtifacts = mergeVisualOracleArtifactOverlay(
+    visualOracleArtifacts(record.oracleArtifacts, record.outputEvent),
+    visualOracleArtifactOverlay(options),
+  );
   const visualOutput = isVisualOutput(record.outputEvent) || visualArtifacts;
   const visualBackend = VISUAL_OR_ENGINE_BACKENDS.has(record.backend);
   const computeOnlyTargetVerified = computeOnlyOutputTargetVerified(record);
@@ -1751,6 +1798,7 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
         ? evaluateGpuHmrProofLedger(record, {
           modelPolicy: ledgerModelPolicy,
           computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, index),
+          visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, index),
         })
         : {
           schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -1767,6 +1815,7 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
       result: evaluateGpuHmrProofLedger(input, {
         modelPolicy: ledgerModelPolicy,
         computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, 0),
+        visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, 0),
       }),
     }];
   const recomputed = evaluations[evaluations.length - 1].result;

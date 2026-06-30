@@ -11352,6 +11352,10 @@ const acceptedVisualCasRocm = acceptedVisualCasRocmLedger.rows.find(
 );
 assert.equal(acceptedVisualCasRocm?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedVisualCasRocm.acceptedForGpuHmr, true);
+assert.equal(acceptedVisualCasRocm.ledger.gpuHmrSuccess, true);
+assert.equal(acceptedVisualCasRocm.ledger.failedInvariants.length, 0);
+assert.equal(acceptedVisualCasRocm.ledger.visualArtifactCasResolutions[0].accepted, true);
+assert.equal(acceptedVisualCasRocm.ledger.visualArtifactCasResolutions[0].locatorCount, 3);
 assert.equal(acceptedVisualCasRocm.outputOracleFacet.kind, 'visual_oracle');
 assert.equal(acceptedVisualCasRocm.outputOracleFacet.accepted, true);
 assert.equal(acceptedVisualCasRocm.visual.accepted, true);
@@ -11431,13 +11435,20 @@ const forgedVisualCasRocm = forgedVisualCasRocmLedger.rows.find(
 );
 assert.equal(forgedVisualCasRocm?.matrixOutcome, 'unproven');
 assert.equal(forgedVisualCasRocm.acceptedForGpuHmr, false);
-assert.equal(forgedVisualCasRocm.outputOracleFacet.kind, 'visual_oracle');
+assert.equal(forgedVisualCasRocm.outputOracleFacet.kind, 'ledger_rejected');
 assert.equal(forgedVisualCasRocm.outputOracleFacet.accepted, false);
+assert.equal(forgedVisualCasRocm.outputOracleFacet.compute, null);
 assert.ok(forgedVisualCasRocm.visual.failedGates.some(
   (gate) => gate === 'visual_artifact_hash_mismatch'
     || gate.code === 'visual_artifact_hash_mismatch',
 ));
-assert.ok(forgedVisualCasRocm.reasons.includes('visual_oracle_artifacts_not_accepted'));
+assert.ok(forgedVisualCasRocm.ledger.failedInvariants.some(
+  (gate) => gate.code === 'visual_artifact_hash_mismatch'
+    || gate.code === 'visual_artifact_cas_locator_hash_mismatch',
+));
+assert.ok(forgedVisualCasRocm.reasons.includes('visual_artifact_hash_mismatch'));
+assert.ok(forgedVisualCasRocm.reasons.includes('proof_ledger_success_required'));
+assert.ok(forgedVisualCasRocm.reasons.includes('output_or_visual_oracle_proof_missing'));
 assert.ok(forgedVisualCasRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 
 const forgedComputeCasRocmDir = path.join(logsRoot, 'real-rocm-forged-compute-cas');

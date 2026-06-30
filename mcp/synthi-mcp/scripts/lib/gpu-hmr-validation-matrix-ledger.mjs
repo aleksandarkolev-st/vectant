@@ -8581,19 +8581,141 @@ async function computeOracleArtifactOverlayResolutionForLedger(ledger, repoRoot,
   return { overlays, resolutions };
 }
 
-function ledgerFacetFromQuery(ledger, suppliedQuery, query, source, casResolutions = []) {
+function visualOracleArtifactOverlayFromEvidence(visual) {
+  const overlay = {};
+  for (const image of compactObjectList(visual?.images)) {
+    if (image.artifactCasLocatorPresent !== true) continue;
+    if (image.artifactCasLocatorAccepted !== true) continue;
+    if (image.artifactCasHashMatches !== true) continue;
+    const role = normalizedVisualArtifactRole(image.role);
+    const resolvedPath = firstText(
+      image.absolutePath,
+      image.absolute_path,
+      image.artifactCasResolvedPath,
+      image.artifact_cas_resolved_path,
+    );
+    if (!resolvedPath) continue;
+    if (role === 'before') {
+      overlay.before_image = resolvedPath;
+      overlay.beforeImage = resolvedPath;
+    } else if (role === 'after') {
+      overlay.after_image = resolvedPath;
+      overlay.afterImage = resolvedPath;
+    } else if (role === 'diff') {
+      overlay.diff_image = resolvedPath;
+      overlay.diffImage = resolvedPath;
+    }
+  }
+  if (Object.keys(overlay).length === 0) return {};
+  return {
+    ...overlay,
+    proofAuthority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+    proof_authority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+}
+
+async function visualOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir) {
+  const records = ledgerRecordsFromValue(ledger);
+  const overlays = [];
+  const resolutions = [];
+  for (const [index, record] of records.entries()) {
+    const artifacts = ledgerRecordVisualOracleArtifacts(record);
+    if (Object.keys(artifacts).length === 0) continue;
+    const visual = await visualArtifactEvidence(
+      artifacts,
+      repoRoot,
+      baseDir,
+      artifacts,
+      runtimeVisualOracleEvidenceRequirements(),
+    );
+    const locatorCount = Number(visual.artifactCasLocatorCount ?? visual.artifact_cas_locator_count ?? 0);
+    if (locatorCount <= 0) continue;
+    const overlay = visualOracleArtifactOverlayFromEvidence(visual);
+    if (Object.keys(overlay).length > 0) overlays[index] = overlay;
+    const failedGates = compactStringList(visual.failedGates ?? visual.failed_gates);
+    resolutions.push({
+      recordIndex: index,
+      record_index: index,
+      schemaVersion: 'synthi.gpu_hmr.visual_artifact_cas_resolution.v1',
+      schema_version: 'synthi.gpu_hmr.visual_artifact_cas_resolution.v1',
+      proofAuthority: 'visual_artifact_transport_integrity_only',
+      proof_authority: 'visual_artifact_transport_integrity_only',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      accepted: visual.accepted === true,
+      locatorCount,
+      locator_count: locatorCount,
+      acceptedCount: Number(
+        visual.artifactCasLocatorAcceptedCount ?? visual.artifact_cas_locator_accepted_count ?? 0,
+      ),
+      accepted_count: Number(
+        visual.artifactCasLocatorAcceptedCount ?? visual.artifact_cas_locator_accepted_count ?? 0,
+      ),
+      hashMatchedCount: Number(
+        visual.artifactCasHashMatchedCount ?? visual.artifact_cas_hash_matched_count ?? 0,
+      ),
+      hash_matched_count: Number(
+        visual.artifactCasHashMatchedCount ?? visual.artifact_cas_hash_matched_count ?? 0,
+      ),
+      failedGates,
+      failed_gates: failedGates,
+      entries: compactObjectList(visual.images).map((image) => ({
+        role: image.role ?? null,
+        accepted: image.artifactCasLocatorPresent === true
+          && image.artifactCasLocatorAccepted === true
+          && image.artifactCasHashMatches === true,
+        path: firstText(
+          image.absolutePath,
+          image.absolute_path,
+          image.artifactCasResolvedPath,
+          image.artifact_cas_resolved_path,
+        ),
+        contentHash: image.artifactCasContentHash ?? image.artifact_cas_content_hash ?? null,
+        content_hash: image.artifactCasContentHash ?? image.artifact_cas_content_hash ?? null,
+        manifestHash: image.artifactCasManifestHash ?? image.artifact_cas_manifest_hash ?? null,
+        manifest_hash: image.artifactCasManifestHash ?? image.artifact_cas_manifest_hash ?? null,
+        hashMatches: image.hashMatches,
+        hash_matches: image.hash_matches,
+        artifactCasHashMatches: image.artifactCasHashMatches,
+        artifact_cas_hash_matches: image.artifact_cas_hash_matches,
+      })),
+    });
+  }
+  return { overlays, resolutions };
+}
+
+function ledgerFacetFromQuery(
+  ledger,
+  suppliedQuery,
+  query,
+  source,
+  computeCasResolutions = [],
+  visualCasResolutions = [],
+) {
   const invariantFailures = Array.isArray(query?.failedInvariants)
     ? query.failedInvariants
     : Array.isArray(query?.failed_invariants)
       ? query.failed_invariants
       : [];
-  const casFailures = compactObjectList(casResolutions).flatMap((resolution) =>
+  const computeCasFailures = compactObjectList(computeCasResolutions).flatMap((resolution) =>
     compactStringList(resolution.failedGates ?? resolution.failed_gates).map((code) => ({
       code,
       record_index: resolution.record_index ?? resolution.recordIndex ?? 0,
     }))
   );
-  const failures = [...invariantFailures, ...casFailures];
+  const visualCasFailures = compactObjectList(visualCasResolutions).flatMap((resolution) =>
+    compactStringList(resolution.failedGates ?? resolution.failed_gates).map((code) => ({
+      code,
+      record_index: resolution.record_index ?? resolution.recordIndex ?? 0,
+    }))
+  );
+  const failures = [...invariantFailures, ...computeCasFailures, ...visualCasFailures];
   return {
     present: Object.keys(ledger).length > 0,
     source,
@@ -8606,8 +8728,10 @@ function ledgerFacetFromQuery(ledger, suppliedQuery, query, source, casResolutio
     invariantSummary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
     invariant_summary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
     record: compactObject(query?.record),
-    computeArtifactCasResolutions: compactObjectList(casResolutions),
-    compute_artifact_cas_resolutions: compactObjectList(casResolutions),
+    computeArtifactCasResolutions: compactObjectList(computeCasResolutions),
+    compute_artifact_cas_resolutions: compactObjectList(computeCasResolutions),
+    visualArtifactCasResolutions: compactObjectList(visualCasResolutions),
+    visual_artifact_cas_resolutions: compactObjectList(visualCasResolutions),
   };
 }
 
@@ -8616,21 +8740,33 @@ async function ledgerFacetWithComputeArtifactOverlay(json, repoRoot, baseDir) {
   const suppliedQuery = compactObject(json.proofLedgerQuery ?? json.proof_ledger_query ?? ledger.query);
   let query = null;
   let source = 'missing';
-  let resolutions = [];
+  let computeResolutions = [];
+  let visualResolutions = [];
   if (Object.keys(ledger).length > 0) {
-    const overlay = await computeOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir);
-    resolutions = overlay.resolutions;
-    const casOverlayAccepted = resolutions.length > 0
-      && resolutions.every((resolution) => resolution.accepted === true);
+    const computeOverlay = await computeOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir);
+    const visualOverlay = await visualOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, baseDir);
+    computeResolutions = computeOverlay.resolutions;
+    visualResolutions = visualOverlay.resolutions;
+    const allResolutions = [...computeResolutions, ...visualResolutions];
+    const casOverlayAccepted = allResolutions.length > 0
+      && allResolutions.every((resolution) => resolution.accepted === true);
     query = queryGpuHmrLedgerInvariants(ledger, {
-      computeOracleArtifactOverlays: overlay.overlays,
+      computeOracleArtifactOverlays: computeOverlay.overlays,
+      visualOracleArtifactOverlays: visualOverlay.overlays,
       ignoreSuppliedLedgerQueryAndSuccess: casOverlayAccepted,
     });
     source = 'recomputed_ledger';
   } else if (suppliedQuery.schemaVersion || suppliedQuery.schema_version) {
     source = 'supplied_query_ignored_no_ledger';
   }
-  return ledgerFacetFromQuery(ledger, suppliedQuery, query, source, resolutions);
+  return ledgerFacetFromQuery(
+    ledger,
+    suppliedQuery,
+    query,
+    source,
+    computeResolutions,
+    visualResolutions,
+  );
 }
 
 function runtimeProofArtifactFromValue(json) {
@@ -12934,6 +13070,23 @@ function ledgerRecordComputeOracleArtifacts(record) {
     outputOracle.computeOracleArtifacts,
     outputOracleArtifacts.compute_oracle_artifacts,
     outputOracleArtifacts.computeOracleArtifacts,
+  );
+}
+
+function ledgerRecordVisualOracleArtifacts(record) {
+  const outputEvent = compactObject(record.output_event ?? record.outputEvent);
+  const oracleArtifacts = compactObject(record.oracle_artifacts ?? record.oracleArtifacts);
+  const outputOracle = compactObject(outputEvent.output_oracle ?? outputEvent.outputOracle);
+  const outputOracleArtifacts = compactObject(outputOracle.oracle_artifacts ?? outputOracle.oracleArtifacts);
+  return nestedArtifactObject(
+    oracleArtifacts.visual_oracle_artifacts,
+    oracleArtifacts.visualOracleArtifacts,
+    outputEvent.visual_oracle_artifacts,
+    outputEvent.visualOracleArtifacts,
+    outputOracle.visual_oracle_artifacts,
+    outputOracle.visualOracleArtifacts,
+    outputOracleArtifacts.visual_oracle_artifacts,
+    outputOracleArtifacts.visualOracleArtifacts,
   );
 }
 
