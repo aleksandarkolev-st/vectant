@@ -926,8 +926,11 @@ async function readBuildFileContent({
   if (
     transport === 'local_git_ls_tree_clean_worktree'
     || transport === 'local_git_ls_tree_no_size_clean_worktree'
+    || transport === 'local_git_ls_tree_commit_snapshot_dirty_worktree'
   ) {
     const noSizeLocalTransport = transport === 'local_git_ls_tree_no_size_clean_worktree';
+    const dirtyCommitSnapshotTransport =
+      transport === 'local_git_ls_tree_commit_snapshot_dirty_worktree';
     const lazyBlobFetchAllowed = !noSizeLocalTransport
       || process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
     const repoPath = transportEvidence?.resolvedTopLevel ?? transportEvidence?.resolved_top_level ?? candidate.localRepoPath;
@@ -962,7 +965,11 @@ async function readBuildFileContent({
     return {
       path: pathName,
       accepted: true,
-      transport: noSizeLocalTransport ? 'local_git_no_size_show' : 'local_git_show',
+      transport: dirtyCommitSnapshotTransport
+        ? 'local_git_commit_snapshot_show'
+        : noSizeLocalTransport
+          ? 'local_git_no_size_show'
+          : 'local_git_show',
       lazyBlobFetchAllowed,
       lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
       content: show.stdout,
@@ -2129,24 +2136,8 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
       finished_at: new Date().toISOString(),
     };
   }
-  if (dirtyCheck.stdout.trim()) {
-    return {
-      attempted: true,
-      accepted: false,
-      status: 'source_intake_local_git_dirty',
-      reason: 'source_tree_local_worktree_dirty',
-      repoPath,
-      repo_path: repoPath,
-      resolvedTopLevel,
-      resolved_top_level: resolvedTopLevel,
-      dirtyStatusTail: tail(dirtyCheck.stdout, 4000),
-      dirty_status_tail: tail(dirtyCheck.stdout, 4000),
-      startedAt,
-      started_at: startedAt,
-      finishedAt: new Date().toISOString(),
-      finished_at: new Date().toISOString(),
-    };
-  }
+  const dirtyStatus = dirtyCheck.stdout.trim();
+  const dirtyWorktreeObserved = Boolean(dirtyStatus);
   const lsTree = await runProcess(
     'git',
     noSizeListing
@@ -2175,13 +2166,23 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   return {
     attempted: true,
     accepted: true,
-    transport: noSizeListing
-      ? 'local_git_ls_tree_no_size_clean_worktree'
-      : 'local_git_ls_tree_clean_worktree',
+    transport: dirtyWorktreeObserved
+      ? 'local_git_ls_tree_commit_snapshot_dirty_worktree'
+      : noSizeListing
+        ? 'local_git_ls_tree_no_size_clean_worktree'
+        : 'local_git_ls_tree_clean_worktree',
     repoPath,
     repo_path: repoPath,
     resolvedTopLevel,
     resolved_top_level: resolvedTopLevel,
+    sourceSnapshotMode: 'immutable_git_commit_tree',
+    source_snapshot_mode: 'immutable_git_commit_tree',
+    worktreeContentConsumed: false,
+    worktree_content_consumed: false,
+    dirtyWorktreeObserved,
+    dirty_worktree_observed: dirtyWorktreeObserved,
+    dirtyStatusTail: dirtyWorktreeObserved ? tail(dirtyStatus, 4000) : null,
+    dirty_status_tail: dirtyWorktreeObserved ? tail(dirtyStatus, 4000) : null,
     listingMode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
     listing_mode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
     byteLengthMode: noSizeListing ? 'unknown_avoids_blob_fetch' : 'declared_from_git_ls_tree_l',
@@ -2364,6 +2365,14 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         repo_path: localGitListing.repo_path,
         resolvedTopLevel: localGitListing.resolvedTopLevel,
         resolved_top_level: localGitListing.resolved_top_level,
+        sourceSnapshotMode: localGitListing.sourceSnapshotMode,
+        source_snapshot_mode: localGitListing.source_snapshot_mode,
+        worktreeContentConsumed: localGitListing.worktreeContentConsumed,
+        worktree_content_consumed: localGitListing.worktree_content_consumed,
+        dirtyWorktreeObserved: localGitListing.dirtyWorktreeObserved,
+        dirty_worktree_observed: localGitListing.dirty_worktree_observed,
+        dirtyStatusTail: localGitListing.dirtyStatusTail,
+        dirty_status_tail: localGitListing.dirty_status_tail,
         listingMode: localGitListing.listingMode,
         listing_mode: localGitListing.listing_mode,
         byteLengthMode: localGitListing.byteLengthMode,
@@ -3447,14 +3456,29 @@ async function selfCheck() {
     outputDir: path.join(LOG_DIR, 'self-check'),
   });
   const dirtyResult = dirtyManifest.results[0] ?? {};
+  const dirtyTransportEvidence = dirtyResult.sourceIntakeEvidence?.transportEvidence ?? {};
+  const dirtyBuildContentFiles =
+    dirtyResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
   if (
-    dirtyResult.sourceTreeIntakeAccepted !== false
-    || dirtyResult.sourceIntakeEvidence?.status !== 'source_intake_local_git_dirty'
-    || !dirtyResult.blockingGaps?.includes('source_tree_intake_missing')
+    dirtyResult.sourceTreeIntakeAccepted !== true
+    || dirtyResult.buildMetadataContentAccepted !== true
+    || dirtyResult.sourceIntakeEvidence?.status !== 'source_intake_listing_accepted'
+    || dirtyResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_commit_snapshot_dirty_worktree'
+    || dirtyTransportEvidence.dirtyWorktreeObserved !== true
+    || dirtyTransportEvidence.worktreeContentConsumed !== false
+    || dirtyTransportEvidence.sourceSnapshotMode !== 'immutable_git_commit_tree'
+    || !(dirtyResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.acceptedBuildFileCount >= 1)
+    || !dirtyBuildContentFiles.some((file) => file.transport === 'local_git_commit_snapshot_show')
+    || dirtyResult.sourceIntakeEvidence?.sampleFiles?.includes('untracked-dirty.tmp')
+    || dirtyResult.blockingGaps?.includes('source_tree_intake_missing')
+    || !dirtyResult.blockingGaps?.some((gap) =>
+      gap === 'semantic_build_metadata_execution_missing'
+      || gap === 'semantic_build_metadata_verification_missing'
+    )
     || dirtyResult.acceptedForGpuHmr !== false
     || dirtyResult.gpuHmrSuccess !== false
   ) {
-    throw new Error('random large-project cold-path dirty local git refusal self-check failed');
+    throw new Error('random large-project cold-path dirty local git commit-snapshot self-check failed');
   }
   console.log('random large-project cold-path self-check passed');
 }

@@ -1911,7 +1911,16 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   );
   const candidateSource = firstText(candidate.candidateSource, candidate.candidate_source);
   const sourceUrl = firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url);
-  const repoPath = firstText(result.repoPath, result.repo_path, candidate.repoPath, candidate.repo_path);
+  const repoPath = firstText(
+    result.repoPath,
+    result.repo_path,
+    result.localRepoPath,
+    result.local_repo_path,
+    candidate.repoPath,
+    candidate.repo_path,
+    candidate.localRepoPath,
+    candidate.local_repo_path,
+  );
   const immutableCommit = firstText(
     result.immutableCommit,
     result.immutable_commit,
@@ -20943,8 +20952,12 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     randomLargeProjectColdPath.repo_path,
     result.repoPath,
     result.repo_path,
+    result.localRepoPath,
+    result.local_repo_path,
     candidate.repoPath,
     candidate.repo_path,
+    candidate.localRepoPath,
+    candidate.local_repo_path,
   );
   const immutableCommit = firstText(
     randomLargeProjectColdPath.immutableCommit,
@@ -21829,7 +21842,16 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.profile_id,
     );
     const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
-    const repoPath = firstText(facet.repoPath, facet.repo_path, row.repoPath, row.repo_path);
+    const repoPath = firstText(
+      facet.repoPath,
+      facet.repo_path,
+      facet.localRepoPath,
+      facet.local_repo_path,
+      row.repoPath,
+      row.repo_path,
+      row.localRepoPath,
+      row.local_repo_path,
+    );
     const immutableCommit = firstText(
       facet.immutableCommit,
       facet.immutable_commit,
@@ -21985,7 +22007,16 @@ function randomColdPathSourceIdentityHash(row) {
     ?? row.random_large_project_cold_path,
   );
   const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
-  const repoPath = firstText(facet.repoPath, facet.repo_path, row.repoPath, row.repo_path);
+  const repoPath = firstText(
+    facet.repoPath,
+    facet.repo_path,
+    facet.localRepoPath,
+    facet.local_repo_path,
+    row.repoPath,
+    row.repo_path,
+    row.localRepoPath,
+    row.local_repo_path,
+  );
   const immutableCommit = firstText(
     facet.immutableCommit,
     facet.immutable_commit,

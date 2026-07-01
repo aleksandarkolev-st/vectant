@@ -7887,6 +7887,7 @@ function randomColdReadinessMatrixRow({
   candidateSource = 'direct_source_url_commit',
   resultStatus = 'unprofiled_arbitrary_project_cold_intake_refused',
   sourceUrl = 'https://example.invalid/user/project.git',
+  localRepoPath = null,
   immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
   fileCount = 1500,
   totalKnownBytes = 15 * 1024 * 1024,
@@ -7919,6 +7920,7 @@ function randomColdReadinessMatrixRow({
       ? randomColdDirectInputEvidenceFixture({
         candidateSource,
         sourceUrl,
+        repoPath: localRepoPath,
         immutableCommit,
       })
       : directInputEvidence
@@ -7974,6 +7976,12 @@ function randomColdReadinessMatrixRow({
       candidate_id: targetId,
       sourceUrl,
       source_url: sourceUrl,
+      ...(localRepoPath
+        ? {
+          localRepoPath,
+          local_repo_path: localRepoPath,
+        }
+        : {}),
       immutableCommit,
       immutable_commit: immutableCommit,
       fileCount,
@@ -8006,6 +8014,12 @@ function randomColdReadinessMatrixRow({
       candidate_id: targetId,
       sourceUrl,
       source_url: sourceUrl,
+      ...(localRepoPath
+        ? {
+          localRepoPath,
+          local_repo_path: localRepoPath,
+        }
+        : {}),
       immutableCommit,
       immutable_commit: immutableCommit,
       fileCount,
@@ -8113,6 +8127,12 @@ function randomColdReadinessMatrixRow({
       directInputEvidenceFacet ?? { present: false, accepted: false, failed_gates: [] },
     sourceUrl,
     source_url: sourceUrl,
+    ...(localRepoPath
+      ? {
+        localRepoPath,
+        local_repo_path: localRepoPath,
+      }
+      : {}),
     immutableCommit,
     immutable_commit: immutableCommit,
     reasons: ['strict_runtime_ledger_missing'],
@@ -9187,6 +9207,34 @@ assert.ok(
   broadReadinessWithOneRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
     'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
+);
+const directLocalRandomColdRow = randomColdReadinessMatrixRow({
+  targetId: 'direct-local-random-cold-readiness-user-project',
+  candidateSource: 'direct_local_git_repo_path',
+  sourceUrl: 'file:///tmp/arbitrary-local-user-project',
+  localRepoPath: path.join(tmpRoot, 'arbitrary-local-user-project'),
+  immutableCommit: '1212121212121212121212121212121212121212',
+});
+const broadReadinessWithDirectLocalColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    directLocalRandomColdRow,
+  ],
+});
+assert.equal(broadReadinessWithDirectLocalColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDirectLocalColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithDirectLocalColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+assert.deepEqual(
+  broadReadinessWithDirectLocalColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets,
+  ['direct-local-random-cold-readiness-user-project'],
 );
 const repeatedSourceRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
