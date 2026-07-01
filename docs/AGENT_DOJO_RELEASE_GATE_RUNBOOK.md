@@ -995,6 +995,13 @@ database:
 
 ```powershell
 $env:SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED = "1"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_TOKEN = "<runtime bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_SESSION_ID = "<deployed session id>"
+$env:SYNTHI_THERAPEUTIC_PROD_TENANT_ID = "<production tenant id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ORGANIZATION_ID = "<production organization id>"
+$env:SYNTHI_THERAPEUTIC_PROD_WORKSPACE_ID = "<production workspace id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ID = "<production actor id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ROLES = "incident_commander,therapeutic_proof_broker"
 $env:SYNTHI_THERAPEUTIC_PROD_POSTGRES_URL = "<production postgres connection string>"
 $env:SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN = "<store bearer token>"
 $env:SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN = "<probe bearer token>"
@@ -1002,12 +1009,15 @@ $env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_URL = "https://<real-observability-o
 $env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_AUTH_TOKEN = "<upstream bearer token>"
 ```
 
-`SYNTHI_THERAPEUTIC_PROD_STORE_PATH` defaults to
-`/therapeutic/runtime-state`, and `SYNTHI_THERAPEUTIC_PROD_PROBE_PATH` defaults
-to `/therapeutic/incident-response`. The server refuses to enable the
-production endpoints without Postgres, store/probe tokens, and a non-loopback
-HTTPS probe upstream. The state endpoint stores exact JSON text for release
-hash reconstruction and JSONB for database inspection.
+`SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_CONTEXT_PATH` defaults to
+`/therapeutic/runtime-authorization`, `SYNTHI_THERAPEUTIC_PROD_STORE_PATH`
+defaults to `/therapeutic/runtime-state`, and
+`SYNTHI_THERAPEUTIC_PROD_PROBE_PATH` defaults to
+`/therapeutic/incident-response`. The server refuses to enable the production
+endpoints without runtime bearer authorization context, Postgres, store/probe
+tokens, and a non-loopback HTTPS probe upstream. The state endpoint stores
+exact JSON text for release hash reconstruction and JSONB for database
+inspection.
 
 The release artifact must prove:
 

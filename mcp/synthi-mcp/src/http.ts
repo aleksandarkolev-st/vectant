@@ -51,6 +51,14 @@ type HttpMcpConfig = {
 
 type TherapeuticProductionHttpConfig = {
   enabled: boolean;
+  runtimeAuthPath: string;
+  runtimeBearerToken: string;
+  runtimeSessionId: string;
+  tenantId: string;
+  organizationId: string;
+  workspaceId: string;
+  actorId: string;
+  actorRoles: string[];
   storePath: string;
   probePath: string;
   storeBearerToken: string;
@@ -135,6 +143,13 @@ function boolFromEnv(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 
+function parseCsv(value: string | undefined): string[] {
+  return [...new Set((value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean))];
+}
+
 export function resolveConfig(args: Record<string, string | boolean>, env = process.env): HttpMcpConfig {
   const defaultSessionId = stringArg(args, "session")
     ?? stringArg(args, "session-id")
@@ -145,6 +160,17 @@ export function resolveConfig(args: Record<string, string | boolean>, env = proc
   const therapeuticProductionEnabled = boolFromEnv(env["SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED"]);
   const therapeuticProduction: TherapeuticProductionHttpConfig = {
     enabled: therapeuticProductionEnabled,
+    runtimeAuthPath: normalizePath(
+      env["SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_CONTEXT_PATH"],
+      "/therapeutic/runtime-authorization",
+    ),
+    runtimeBearerToken: env["SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_TOKEN"]?.trim() ?? "",
+    runtimeSessionId: env["SYNTHI_THERAPEUTIC_PROD_RUNTIME_SESSION_ID"]?.trim() ?? "",
+    tenantId: env["SYNTHI_THERAPEUTIC_PROD_TENANT_ID"]?.trim() ?? "",
+    organizationId: env["SYNTHI_THERAPEUTIC_PROD_ORGANIZATION_ID"]?.trim() ?? "",
+    workspaceId: env["SYNTHI_THERAPEUTIC_PROD_WORKSPACE_ID"]?.trim() ?? "",
+    actorId: env["SYNTHI_THERAPEUTIC_PROD_ACTOR_ID"]?.trim() ?? "",
+    actorRoles: parseCsv(env["SYNTHI_THERAPEUTIC_PROD_ACTOR_ROLES"]),
     storePath: normalizePath(env["SYNTHI_THERAPEUTIC_PROD_STORE_PATH"], "/therapeutic/runtime-state"),
     probePath: normalizePath(env["SYNTHI_THERAPEUTIC_PROD_PROBE_PATH"], "/therapeutic/incident-response"),
     storeBearerToken: env["SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN"]?.trim() ?? "",
@@ -188,6 +214,7 @@ export function resolveConfig(args: Record<string, string | boolean>, env = proc
     throw new Error("synthi_mcp_http_bearer_token_required_for_non_loopback_host");
   }
   if (config.therapeuticProduction.enabled) {
+    validateProductionRuntimeAuthorizationConfig(config.therapeuticProduction);
     if (!config.therapeuticProduction.postgresUrl) {
       throw new Error("therapeutic_production_http_postgres_url_required");
     }
@@ -202,6 +229,23 @@ export function resolveConfig(args: Record<string, string | boolean>, env = proc
   return config;
 }
 
+function validateProductionRuntimeAuthorizationConfig(config: TherapeuticProductionHttpConfig): void {
+  if (!config.runtimeBearerToken) throw new Error("therapeutic_production_http_runtime_bearer_token_required");
+  for (const [label, value] of [
+    ["runtime_session_id", config.runtimeSessionId],
+    ["tenant_id", config.tenantId],
+    ["organization_id", config.organizationId],
+    ["workspace_id", config.workspaceId],
+    ["actor_id", config.actorId],
+  ] as const) {
+    validateProductionIdentifier(value, label);
+  }
+  if (config.actorRoles.length === 0) throw new Error("therapeutic_production_http_actor_roles_required");
+  if (!config.actorRoles.includes("incident_commander") && !config.actorRoles.includes("therapeutic_proof_broker")) {
+    throw new Error("therapeutic_production_http_actor_roles_insufficient");
+  }
+}
+
 function sendJson(res: ServerResponse, statusCode: number, value: unknown): void {
   if (res.headersSent) return;
   const body = `${JSON.stringify(value)}\n`;
@@ -210,6 +254,29 @@ function sendJson(res: ServerResponse, statusCode: number, value: unknown): void
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+export function therapeuticProductionRuntimeAuthorizationBody(config: TherapeuticProductionHttpConfig): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.therapeuticRuntimeAuthorization.v1",
+    authorized: true,
+    session_id: config.runtimeSessionId,
+    runtime_session_id: config.runtimeSessionId,
+    tenant_id: config.tenantId,
+    organization_id: config.organizationId,
+    workspace_id: config.workspaceId,
+    actor_id: config.actorId,
+    roles: [...config.actorRoles],
+    authorization_context: {
+      session_id: config.runtimeSessionId,
+      tenant_id: config.tenantId,
+      organization_id: config.organizationId,
+      workspace_id: config.workspaceId,
+      actor_id: config.actorId,
+      roles: [...config.actorRoles],
+      source: "synthi_mcp_http_production_runtime",
+    },
+  };
 }
 
 function isAuthorized(req: IncomingMessage, bearerToken: string, bearerHeader: string): boolean {
@@ -298,6 +365,14 @@ function validateExternalHttpsUrl(value: string, label: string): void {
     || host.includes("localhost")
   ) {
     throw new Error(`${label}_must_be_external`);
+  }
+}
+
+function validateProductionIdentifier(value: string, label: string): void {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`therapeutic_production_http_${label}_required`);
+  if (/^(test|demo|local|example)([-_:]|$)/i.test(normalized) || /([-_:])(test|demo|local|example)$/i.test(normalized)) {
+    throw new Error(`therapeutic_production_http_${label}_not_production`);
   }
 }
 
@@ -461,6 +536,28 @@ async function main(): Promise<void> {
           auth_header: config.bearerToken ? config.bearerHeader : null,
           therapeutic_production_endpoints_enabled: config.therapeuticProduction.enabled,
         });
+        return;
+      }
+
+      if (
+        config.therapeuticProduction.enabled
+        && url.pathname === config.therapeuticProduction.runtimeAuthPath
+        && req.method === "GET"
+      ) {
+        if (!requireBearerAuth(
+          req,
+          res,
+          config.therapeuticProduction.runtimeBearerToken,
+          "therapeutic_production_runtime_unauthorized",
+        )) return;
+        const body = therapeuticProductionRuntimeAuthorizationBody(config.therapeuticProduction);
+        res.setHeader("x-synthi-runtime-session-id", config.therapeuticProduction.runtimeSessionId);
+        res.setHeader("x-synthi-tenant-id", config.therapeuticProduction.tenantId);
+        res.setHeader("x-synthi-organization-id", config.therapeuticProduction.organizationId);
+        res.setHeader("x-synthi-workspace-id", config.therapeuticProduction.workspaceId);
+        res.setHeader("x-synthi-actor-id", config.therapeuticProduction.actorId);
+        res.setHeader("x-synthi-roles", config.therapeuticProduction.actorRoles.join(","));
+        sendJson(res, 200, body);
         return;
       }
 
