@@ -248,6 +248,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
           runtimeOptions = {
             codesiteContext,
             codeSiteQuarantineRoot: codeSiteQuarantine?.root || '',
+            codeSiteQuarantineId: codeSiteQuarantine?.root || '',
           };
         }
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId, runtimeOptions);
