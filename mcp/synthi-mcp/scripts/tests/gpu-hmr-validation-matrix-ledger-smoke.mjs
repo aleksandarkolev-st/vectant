@@ -12390,6 +12390,22 @@ assert.ok(coverageById.get('webgpu_runtime_preflight')?.openGaps.includes(
 ));
 assert.equal(coverageById.get('oidn_hip_runtime_preflight')?.status, 'preflight_only');
 assert.ok(coverageById.get('oidn_hip_runtime_preflight')?.openGaps.includes('oidn_output_oracle_not_proven'));
+assert.equal(coverageById.get('oidn_hip_output_oracle_support')?.status, 'preflight_only');
+assert.equal(coverageById.get('oidn_hip_output_oracle_support')?.acceptedForGpuHmr, false);
+assert.equal(coverageById.get('oidn_hip_output_oracle_support')?.gpuHmrSuccess, false);
+assert.equal(
+  coverageById.get('oidn_hip_output_oracle_support')?.proofAuthority,
+  'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+);
+assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.openGaps.includes(
+  'strict_runtime_proof_ledger_required',
+));
+assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
+  row.targetId === 'synthetic-oidn-hip-output-oracle'
+));
+assert.ok(!coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
+  row.targetId === 'synthetic-oidn-hip-output-oracle-forged-file-hash'
+));
 assert.equal(coverageById.get('oidn_hip_output')?.status, 'missing');
 assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('oidn_hip_runtime_proof_required'));
 assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);

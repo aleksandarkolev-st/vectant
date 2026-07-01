@@ -23760,6 +23760,70 @@ function runtimePreflightCoverage({ rows, backend, id, requirement, missingGap }
   });
 }
 
+function oidnOutputOracleSupportCoverage(rows) {
+  const supportRows = preflightOnlyRows(rows, (row) =>
+    row.backend === 'oidn_hip'
+    && row.proofMode === 'runtime_preflight'
+    && row.proofChain === 'runtime_preflight_and_output_oracle_only'
+    && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).accepted === true
+  );
+  const attemptedRows = preflightOnlyRows(rows, (row) =>
+    row.backend === 'oidn_hip'
+    && row.proofMode === 'runtime_preflight'
+    && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).present === true
+  );
+  if (supportRows.length > 0) {
+    return coverageEntry({
+      id: 'oidn_hip_output_oracle_support',
+      requirement: 'OIDN HIP file-backed output-oracle byte evidence without GPU HMR acceptance',
+      status: 'preflight_only',
+      rows: supportRows,
+      openGaps: compactStringList([
+        ...supportRows.flatMap((row) => row.openGaps),
+        'oidn_full_runtime_hmr_ledger_not_proven',
+        'strict_runtime_proof_ledger_required',
+      ]),
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofAuthority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+      proof_authority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+    });
+  }
+  if (attemptedRows.length > 0) {
+    return coverageEntry({
+      id: 'oidn_hip_output_oracle_support',
+      requirement: 'OIDN HIP file-backed output-oracle byte evidence without GPU HMR acceptance',
+      status: 'refused',
+      rows: attemptedRows,
+      openGaps: compactStringList(attemptedRows.flatMap((row) => [
+        ...row.openGaps,
+        ...(compactObject(row.outputOracleFacet ?? row.output_oracle_facet).failedGates ?? [])
+          .map((gate) => firstText(gate?.code, gate)),
+      ])),
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofAuthority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+      proof_authority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+    });
+  }
+  return coverageEntry({
+    id: 'oidn_hip_output_oracle_support',
+    requirement: 'OIDN HIP file-backed output-oracle byte evidence without GPU HMR acceptance',
+    status: 'missing',
+    openGaps: ['oidn_output_oracle_support_evidence_required'],
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+    proof_authority: 'oidn_output_oracle_support_only_not_gpu_hmr_acceptance',
+  });
+}
+
 function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
   const accepted = acceptedRows(rows, acceptedPredicate);
   if (accepted.length > 0) {
@@ -24190,6 +24254,7 @@ function planCoverage(rows) {
       requirement: 'OIDN HIP runtime capability preflight without output-oracle overclaim',
       missingGap: 'oidn_hip_runtime_preflight_required',
     }),
+    oidnOutputOracleSupportCoverage(rows),
     coverageEntry({
       id: 'external_engine_visual_profile',
       requirement: 'At least one larger external engine-style visual profile',
