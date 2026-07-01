@@ -8832,6 +8832,59 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionTargetNameIndependent,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.authority,
+  'matrix_static_source_first_visual_predicate_not_project_name_whitelist',
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.projectNameWhitelist,
+  [],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.specificTargetIdsAllowed,
+  [],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.acceptedSourceAuthorities,
+  [
+    'direct_source_url_commit',
+    'direct_local_git_repo_path',
+    'user_source_files',
+    'workspace_source_files',
+    'cli_or_env_direct_source',
+  ],
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'strict_runtime_visual_authority_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'visual_output_oracle_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.ignoredForAcceptance.includes('target_id_value'),
+);
+assert.ok(
+  /^sha256:[a-f0-9]{64}$/.test(
+    broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+      .sourceFirstVisualSelectionPredicate.predicateHash,
+  ),
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionTargetNameIndependent,
   true,
 );
@@ -8930,6 +8983,64 @@ const nonWhitelistedRandomColdRows = Array.from({ length: 5 }, (_, index) => {
     immutableCommit: sha256Hex(`opaque-arbitrary-cold-commit-${index + 1}`).slice(0, 40),
   });
 });
+const opaqueSourceFirstVisualRows = [
+  acceptedBroadReadinessCandidate({
+    targetId: `opaque-source-first-visual-${sha256Hex('opaque-source-first-hip').slice(0, 12)}`,
+    backend: 'hip',
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    oracle: 'visual',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: `opaque-source-first-compute-${sha256Hex('opaque-source-first-webgpu').slice(0, 12)}`,
+    backend: 'webgpu',
+    acceptanceScope: 'webgpu_declared_compute_readback',
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: `opaque-source-first-compute-${sha256Hex('opaque-source-first-opencl').slice(0, 12)}`,
+    backend: 'opencl',
+    acceptanceScope: 'opencl_declared_compute_readback',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: `opaque-source-first-visual-${sha256Hex('opaque-source-first-vulkan').slice(0, 12)}`,
+    backend: 'vulkan',
+    acceptanceScope: 'vulkan_declared_pipeline_visual',
+    oracle: 'visual',
+  }),
+  ...Array.from({ length: 8 }, (_, index) =>
+    refusalMatrixRow(
+      `opaque-source-first-refusal-${sha256Hex(`opaque-source-first-refusal-${index + 1}`).slice(0, 12)}`,
+    )
+  ),
+];
+const opaqueSourceFirstBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...opaqueSourceFirstVisualRows,
+    ...nonWhitelistedRandomColdRows,
+  ],
+});
+assert.equal(opaqueSourceFirstBroadReadinessQuery.accepted, true);
+assert.equal(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  true,
+);
+assert.deepEqual(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
+  [],
+);
+assert.equal(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSelectionTargetNameIndependent,
+  true,
+);
+assert.deepEqual(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSelectionPredicate.projectNameWhitelist,
+  [],
+);
 const nonWhitelistedBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

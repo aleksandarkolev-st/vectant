@@ -60,6 +60,15 @@ const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
+const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
+const SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES = [
+  'direct_source_url_commit',
+  'direct_local_git_repo_path',
+  'user_source_files',
+  'workspace_source_files',
+  'cli_or_env_direct_source',
+];
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -21378,11 +21387,8 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
     );
     const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
     const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
-    const userOwnedSourceFirst = sourceAuthority === 'direct_source_url_commit'
-      || sourceAuthority === 'direct_local_git_repo_path'
-      || sourceAuthority === 'user_source_files'
-      || sourceAuthority === 'workspace_source_files'
-      || sourceAuthority === 'cli_or_env_direct_source';
+    const userOwnedSourceFirst =
+      SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority);
     return firstBool(sourceFirst.accepted) === true
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
@@ -21417,6 +21423,92 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
         )
       );
   });
+}
+
+function sourceFirstVisualBroadReadinessPredicate() {
+  const predicate = {
+    schemaVersion: SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
+    schema_version: SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
+    authority: 'matrix_static_source_first_visual_predicate_not_project_name_whitelist',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    acceptedSourceAuthorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
+    accepted_source_authorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
+    rejectedSourceAuthoritiesForBroadReadiness: [
+      'profile_source_files',
+      'builtin_fixture_source',
+    ],
+    rejected_source_authorities_for_broad_readiness: [
+      'profile_source_files',
+      'builtin_fixture_source',
+    ],
+    requiredMatrixOutcome: 'full_runtime_gpu_hmr',
+    required_matrix_outcome: 'full_runtime_gpu_hmr',
+    requiredSourceFirstEvidenceSchema: AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION,
+    required_source_first_evidence_schema: AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION,
+    requiredSourceFirstEvidenceAuthority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
+    required_source_first_evidence_authority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
+    requiredAsyncVisualSupportAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    required_async_visual_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    requiredSignals: [
+      'strict_full_runtime_row_accepted',
+      'source_first_ingestion_accepted',
+      'source_first_source_authority_user_owned',
+      'source_first_ingestion_non_authoritative',
+      'async_visual_cas_support_accepted',
+      'async_visual_proof_ready',
+      'async_visual_worker_cas_input_accepted',
+      'native_image_dependency_bound',
+      'visual_artifacts_accepted',
+      'strict_runtime_visual_authority_accepted',
+      'visual_output_oracle_accepted',
+      'no_gpu_hmr_success_claims_from_support_facets',
+    ],
+    required_signals: [
+      'strict_full_runtime_row_accepted',
+      'source_first_ingestion_accepted',
+      'source_first_source_authority_user_owned',
+      'source_first_ingestion_non_authoritative',
+      'async_visual_cas_support_accepted',
+      'async_visual_proof_ready',
+      'async_visual_worker_cas_input_accepted',
+      'native_image_dependency_bound',
+      'visual_artifacts_accepted',
+      'strict_runtime_visual_authority_accepted',
+      'visual_output_oracle_accepted',
+      'no_gpu_hmr_success_claims_from_support_facets',
+    ],
+    ignoredForAcceptance: [
+      'target_id_value',
+      'profile_id_value',
+      'fixture_name',
+      'project_name',
+      'source_path_basename',
+      'visual_scene_name',
+    ],
+    ignored_for_acceptance: [
+      'target_id_value',
+      'profile_id_value',
+      'fixture_name',
+      'project_name',
+      'source_path_basename',
+      'visual_scene_name',
+    ],
+    visualAuthorityRole:
+      'strict_runtime_visual_oracle_and_async_cas_support_only_not_target_name',
+    visual_authority_role:
+      'strict_runtime_visual_oracle_and_async_cas_support_only_not_target_name',
+  };
+  const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
+  return {
+    ...predicate,
+    predicateHash,
+    predicate_hash: predicateHash,
+  };
 }
 
 function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = true } = {}) {
@@ -21722,6 +21814,7 @@ function computeBroadLibraryAgnosticProof(rows) {
   const randomColdPathCandidateSelectionPredicate =
     randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false });
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualSelectionPredicate = sourceFirstVisualBroadReadinessPredicate();
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
@@ -21810,6 +21903,7 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
+    sourceFirstVisualSelectionPredicateHash: sourceFirstVisualSelectionPredicate.predicateHash,
     openGaps,
   });
   return {
@@ -21872,6 +21966,12 @@ function computeBroadLibraryAgnosticProof(rows) {
     source_first_visual_row_ids: sourceFirstVisualRowIds,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
+    sourceFirstVisualSelectionPredicate,
+    source_first_visual_selection_predicate: sourceFirstVisualSelectionPredicate,
+    sourceFirstVisualSelectionTargetNameIndependent:
+      sourceFirstVisualSelectionPredicate.targetNameIndependent === true,
+    source_first_visual_selection_target_name_independent:
+      sourceFirstVisualSelectionPredicate.targetNameIndependent === true,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     minimumBackendCount: BROAD_LIBRARY_MIN_BACKEND_COUNT,
