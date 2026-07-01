@@ -8382,6 +8382,7 @@ function randomColdReadinessMatrixRow({
   immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
   fileCount = 1500,
   totalKnownBytes = 15 * 1024 * 1024,
+  sourceRelevantFileCount = fileCount,
   inputMode = 'cli_or_env_direct_source',
   directInputEvidence = true,
   directInputEvidenceInputChannels = null,
@@ -8507,6 +8508,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
       sizeSignals,
       size_signals: sizeSignals,
       resultStatus,
@@ -8545,6 +8548,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
       sizeSignals,
       size_signals: sizeSignals,
       resultStatus,
@@ -8577,6 +8582,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
     },
     cold_source_tree_intake: {
       present: true,
@@ -8603,6 +8610,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
     },
     coldRuntimeBoundaryEventManifestTemplate: {
       present: true,
@@ -8638,6 +8647,8 @@ function randomColdReadinessMatrixRow({
     source_tree_file_count: fileCount,
     sourceTreeTotalKnownBytes: totalKnownBytes,
     source_tree_total_known_bytes: totalKnownBytes,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
     buildMetadataDiscoveryAccepted,
     build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
     buildMetadataContentAccepted,
@@ -9632,6 +9643,75 @@ assert.equal(
 );
 assert.ok(
   smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('random_large_project_cold_path_large_source_required'),
+);
+const broadReadinessAssetHeavyLowSourceColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `asset-heavy-low-source-cold-readiness-user-project-${index + 1}`,
+    sourceUrl: `https://example.invalid/user/asset-heavy-low-source-${index + 1}.git`,
+    immutableCommit: sha256Hex(`asset-heavy-low-source-cold-readiness-commit-${index + 1}`).slice(0, 40),
+    fileCount: 2500,
+    totalKnownBytes: 128 * 1024 * 1024,
+    sourceRelevantFileCount: 3,
+  })
+);
+const broadReadinessWithAssetHeavyLowSourceColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessAssetHeavyLowSourceColdRows,
+  ],
+});
+assert.equal(broadReadinessWithAssetHeavyLowSourceColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  5,
+);
+assert.ok(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_large_random_project_cold_paths'),
+);
+assert.equal(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .minimumRandomColdPathSourceRelevantFileCount,
+  25,
+);
+assert.equal(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathSelectionPredicate
+    .minimumSourceRelevantFileCountWhenLargeRequired,
+  25,
+);
+const assetHeavyLowSourceColdCoverage = new Map(
+  broadReadinessWithAssetHeavyLowSourceColdQuery.summary.planCoverage.map((entry) => [
+    entry.id,
+    entry,
+  ])
+);
+assert.equal(
+  assetHeavyLowSourceColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'candidate_only',
+);
+assert.equal(
+  assetHeavyLowSourceColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.equal(
+  assetHeavyLowSourceColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
+  5,
+);
+assert.ok(
+  assetHeavyLowSourceColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('random_large_project_cold_path_large_source_required'),
 );
 const broadReadinessWithoutSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
@@ -10634,6 +10714,17 @@ assert.ok(
     .randomColdPathSelectionPredicate.requiredSignals.includes(
       'build_metadata_content_hash_observed',
     ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'source_relevant_file_count_required_for_large_source',
+    ),
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.minimumSourceRelevantFileCountWhenLargeRequired,
+  25,
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof

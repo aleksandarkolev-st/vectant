@@ -58,6 +58,7 @@ const BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT = 8;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
+const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT = 25;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
@@ -22597,8 +22598,32 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       ?? intake.totalKnownBytes
       ?? intake.total_known_bytes,
     ) ?? 0;
-    const largeSourceTree = fileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
+    const sourceRelevantFileCount = finiteNumber(
+      row.sourceRelevantFileCount
+      ?? row.source_relevant_file_count
+      ?? row.sourceOrBuildRelevantFileCount
+      ?? row.source_or_build_relevant_file_count
+      ?? row.gpuSourceFileCount
+      ?? row.gpu_source_file_count
+      ?? facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
+      ?? facet.sourceOrBuildRelevantFileCount
+      ?? facet.source_or_build_relevant_file_count
+      ?? facet.gpuSourceFileCount
+      ?? facet.gpu_source_file_count
+      ?? intake.sourceRelevantFileCount
+      ?? intake.source_relevant_file_count
+      ?? intake.sourceOrBuildRelevantFileCount
+      ?? intake.source_or_build_relevant_file_count
+      ?? intake.gpuSourceFileCount
+      ?? intake.gpu_source_file_count,
+    ) ?? 0;
+    const rawLargeSourceTree =
+      fileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
       || knownBytes >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES;
+    const largeSourceTree =
+      rawLargeSourceTree
+      && sourceRelevantFileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT;
     const forbiddenAuthority = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
       || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
@@ -22863,6 +22888,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
+      'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
@@ -22884,6 +22910,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
+      'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
@@ -22904,6 +22931,12 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       : 0,
     minimum_known_bytes_when_large_required: requireLargeSourceTree === true
       ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES
+      : 0,
+    minimumSourceRelevantFileCountWhenLargeRequired: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT
+      : 0,
+    minimum_source_relevant_file_count_when_large_required: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT
       : 0,
     ignoredForAcceptance: [
       'target_id_value',
@@ -23056,6 +23089,8 @@ function computeBroadLibraryAgnosticProof(rows) {
       randomColdPathCandidateSelectionPredicate.predicateHash,
     randomColdPathFileCountThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
+    randomColdPathSourceRelevantFileCountThreshold:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
     sourceFirstVisualSourceIdentityHashes,
@@ -23177,6 +23212,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     minimum_random_cold_path_file_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
     minimumRandomColdPathKnownBytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     minimum_random_cold_path_known_bytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
+    minimumRandomColdPathSourceRelevantFileCount:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
+    minimum_random_cold_path_source_relevant_file_count:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     minimumSourceFirstVisualFullRuntimeCount: 1,
     minimum_source_first_visual_full_runtime_count: 1,
     openGaps,
@@ -23367,6 +23406,10 @@ function broadLibraryAgnosticReadiness(
     minimum_random_cold_path_file_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
     minimumRandomColdPathKnownBytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     minimum_random_cold_path_known_bytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
+    minimumRandomColdPathSourceRelevantFileCount:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
+    minimum_random_cold_path_source_relevant_file_count:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     minimumRandomColdPathDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_distinct_source_identity_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
