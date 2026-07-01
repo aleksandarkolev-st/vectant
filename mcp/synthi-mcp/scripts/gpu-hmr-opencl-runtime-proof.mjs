@@ -71,6 +71,7 @@ const CFG = {
 const INPUT_VALUES = Object.freeze([1, 2.5, 4, 8, 16, 32, 64, 128]);
 const BEFORE_MULTIPLIER = 2;
 const BEFORE_BIAS = 0.5;
+const OPENCL_OUTPUT_TARGET_ID = 'opencl-buffer:output';
 
 function nowSlugDate() {
   return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
@@ -627,20 +628,20 @@ int main(int argc, char** argv) {
   fprintf(trace, "  \"dispatchEvents\": [\n");
   fprintf(trace, "    {\"id\":\"opencl-dispatch-epoch-1\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":");
   json_escape(trace, before_hash);
-  fprintf(trace, ", \"epoch\":\"1\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]},\n", before.dispatch_ns);
+  fprintf(trace, ", \"epoch\":\"1\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8], \"output_target_id\":\"opencl-buffer:output\"},\n", before.dispatch_ns);
   fprintf(trace, "    {\"id\":\"opencl-dispatch-epoch-2\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":");
   json_escape(trace, after_hash);
-  fprintf(trace, ", \"epoch\":\"2\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]}\n", after.dispatch_ns);
+  fprintf(trace, ", \"epoch\":\"2\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8], \"output_target_id\":\"opencl-buffer:output\"}\n", after.dispatch_ns);
   fprintf(trace, "  ],\n");
   fprintf(trace, "  \"outputEvents\": [\n");
   fprintf(trace, "    {\"id\":\"opencl-output-epoch-1\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-1\", \"artifact_hash\":");
   json_escape(trace, before_hash);
-  fprintf(trace, ", \"epoch\":\"1\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"values\":", before.output_ns);
+  fprintf(trace, ", \"epoch\":\"1\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"output_target_id\":\"opencl-buffer:output\", \"values\":", before.output_ns);
   write_values_json(trace, before.output);
   fprintf(trace, "},\n");
   fprintf(trace, "    {\"id\":\"opencl-output-epoch-2\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-2\", \"artifact_hash\":");
   json_escape(trace, after_hash);
-  fprintf(trace, ", \"epoch\":\"2\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"values\":", after.output_ns);
+  fprintf(trace, ", \"epoch\":\"2\", \"timestamp_monotonic_ns\":%" PRIu64 ", \"output_target_id\":\"opencl-buffer:output\", \"values\":", after.output_ns);
   write_values_json(trace, after.output);
   fprintf(trace, "}\n");
   fprintf(trace, "  ],\n");
@@ -924,12 +925,12 @@ public static class SynthiOpenClWindowsProbe {
     trace.Append("    {\"id\":\"opencl-epoch-2\", \"event\":\"published\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.KernelNs).Append(", \"dispatch_binding\":\"cl_kernel:synthi_opencl_epoch_kernel\"}\n");
     trace.Append("  ],\n");
     trace.Append("  \"dispatchEvents\": [\n");
-    trace.Append("    {\"id\":\"opencl-dispatch-epoch-1\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]},\n");
-    trace.Append("    {\"id\":\"opencl-dispatch-epoch-2\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8]}\n");
+    trace.Append("    {\"id\":\"opencl-dispatch-epoch-1\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8], \"output_target_id\":\"opencl-buffer:output\"},\n");
+    trace.Append("    {\"id\":\"opencl-dispatch-epoch-2\", \"launch_api\":\"clEnqueueNDRangeKernel\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.DispatchNs).Append(", \"kernel_name\":\"synthi_opencl_epoch_kernel\", \"global_work_size\":[8], \"local_work_size\":[8], \"output_target_id\":\"opencl-buffer:output\"}\n");
     trace.Append("  ],\n");
     trace.Append("  \"outputEvents\": [\n");
-    trace.Append("    {\"id\":\"opencl-output-epoch-1\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-1\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.OutputNs).Append(", \"values\":"); AppendValues(trace, before.Output); trace.Append("},\n");
-    trace.Append("    {\"id\":\"opencl-output-epoch-2\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-2\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.OutputNs).Append(", \"values\":"); AppendValues(trace, after.Output); trace.Append("}\n");
+    trace.Append("    {\"id\":\"opencl-output-epoch-1\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-1\", \"artifact_hash\":"); AppendEscaped(trace, beforeHash); trace.Append(", \"epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(before.OutputNs).Append(", \"output_target_id\":\"opencl-buffer:output\", \"values\":"); AppendValues(trace, before.Output); trace.Append("},\n");
+    trace.Append("    {\"id\":\"opencl-output-epoch-2\", \"passed\":true, \"after_dispatch_id\":\"opencl-dispatch-epoch-2\", \"artifact_hash\":"); AppendEscaped(trace, afterHash); trace.Append(", \"epoch\":\"2\", \"timestamp_monotonic_ns\":").Append(after.OutputNs).Append(", \"output_target_id\":\"opencl-buffer:output\", \"values\":"); AppendValues(trace, after.Output); trace.Append("}\n");
     trace.Append("  ],\n");
     trace.Append("  \"retirementEvent\": {\"id\":\"opencl-retire-epoch-1\", \"status\":\"queue_idle_proven\", \"retired_epoch\":\"1\", \"timestamp_monotonic_ns\":").Append(NowNs()).Append(", \"evidence_refs\":[\"runtime:opencl:clFinish\", \"runtime:opencl:clReleaseProgram\"]},\n");
     trace.Append("  \"nativeApiCounts\": {\"clBuildProgram\":2, \"clCreateKernel\":2, \"clEnqueueNDRangeKernel\":2, \"clEnqueueReadBuffer\":2, \"clFinish\":2},\n");
@@ -1117,7 +1118,7 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
   const processId = runtimeTrace.processId ?? 'opencl-runtime-process';
   const outputOracleContract = {
     kind: 'compute',
-    target_id: 'output',
+    target_id: OPENCL_OUTPUT_TARGET_ID,
     epoch: 2,
     readback_resource: 'output',
     expected_output_verified_by: 'raw_float32_readback_schema',
@@ -1212,7 +1213,7 @@ function buildContract({ beforeHash, afterHash, runtimeTrace, runMode }) {
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: 'output',
+      target_id: OPENCL_OUTPUT_TARGET_ID,
       compute_only_target_verified: true,
       evidence_refs: ['runtime:opencl:clEnqueueReadBuffer', 'runtime:opencl:raw-readback'],
     },
@@ -1447,6 +1448,7 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
   const beforeEpoch = '1';
   const dispatchId = runtimeTrace.dispatchEvents?.[1]?.id ?? 'opencl-dispatch-epoch-2';
   const processId = runtimeTrace.processId;
+  const outputTargetId = OPENCL_OUTPUT_TARGET_ID;
   return {
     project_id: CFG.targetId,
     edit_id: runMode.edit_id,
@@ -1489,6 +1491,8 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
       work_dim: 1,
       global_work_size: [8],
       local_work_size: [8],
+      output_target_id: outputTargetId,
+      outputTargetId,
       command_queue: 'opencl-command-queue:same-process',
       command: 'clEnqueueNDRangeKernel',
     },
@@ -1499,6 +1503,8 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
       after_dispatch_id: dispatchId,
       artifact_hash: afterHash,
       epoch: afterEpoch,
+      output_target_id: outputTargetId,
+      outputTargetId,
       timestamp_monotonic_ns: timings.outputTimestampNs,
       process_id: processId,
       output_oracle: {
@@ -1542,7 +1548,7 @@ function buildProofLedgerRecord({ beforeHash, afterHash, runtimeTrace, contract,
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: 'output',
+      target_id: OPENCL_OUTPUT_TARGET_ID,
       compute_only_target_verified: true,
       evidence_refs: [oracleArtifacts.raw_readback_hash, oracleArtifacts.rendered_card_png],
     },
@@ -2102,12 +2108,12 @@ async function selfCheck() {
         { id: 'opencl-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 40 },
       ],
       dispatchEvents: [
-        { id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 50 },
-        { id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 60 },
+        { id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 50, output_target_id: OPENCL_OUTPUT_TARGET_ID },
+        { id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 60, output_target_id: OPENCL_OUTPUT_TARGET_ID },
       ],
       outputEvents: [
-        { id: 'opencl-output-epoch-1', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 70, values: expectedValues(BEFORE_MULTIPLIER, BEFORE_BIAS) },
-        { id: 'opencl-output-epoch-2', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 80, values: expectedValues(CFG.afterMultiplier, CFG.afterBias) },
+        { id: 'opencl-output-epoch-1', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-1', artifact_hash: sha256Text('before'), epoch: '1', timestamp_monotonic_ns: 70, output_target_id: OPENCL_OUTPUT_TARGET_ID, values: expectedValues(BEFORE_MULTIPLIER, BEFORE_BIAS) },
+        { id: 'opencl-output-epoch-2', passed: true, after_dispatch_id: 'opencl-dispatch-epoch-2', artifact_hash: sha256Text('after'), epoch: '2', timestamp_monotonic_ns: 80, output_target_id: OPENCL_OUTPUT_TARGET_ID, values: expectedValues(CFG.afterMultiplier, CFG.afterBias) },
       ],
       retirementEvent: { id: 'opencl-retire-epoch-1', status: 'queue_idle_proven', retired_epoch: '1', timestamp_monotonic_ns: 90 },
       nativeApiCounts: { clBuildProgram: 2, clCreateKernel: 2, clEnqueueNDRangeKernel: 2, clEnqueueReadBuffer: 2, clFinish: 2 },
@@ -2215,6 +2221,21 @@ async function selfCheck() {
         runtimeTimestampProof: row?.runtimeTimestampProof,
         epoch2ArtifactHashProof: row?.epoch2ArtifactHashProof,
         nativeOpenClApiEvidence: row?.nativeOpenClApiEvidence,
+      }, null, 2)}`);
+    }
+    const outputBinding = row.outputOracleFacet?.outputBinding ?? row.outputOracleFacet?.output_binding ?? {};
+    if (
+      row.outputOracleFacet?.accepted !== true
+      || outputBinding.accepted !== true
+      || outputBinding.dispatchOutputTargetId !== OPENCL_OUTPUT_TARGET_ID
+      || outputBinding.oracleOutputTargetId !== OPENCL_OUTPUT_TARGET_ID
+      || contract.output_oracle_target?.target_id !== OPENCL_OUTPUT_TARGET_ID
+      || contract.fission_report?.output_oracle_contract?.target_id !== OPENCL_OUTPUT_TARGET_ID
+    ) {
+      throw new Error(`self-check output target binding rejected: ${JSON.stringify({
+        outputOracleFacet: row.outputOracleFacet,
+        contractOutputTarget: contract.output_oracle_target,
+        fissionOutputOracleContract: contract.fission_report?.output_oracle_contract,
       }, null, 2)}`);
     }
     const forged = JSON.parse(JSON.stringify(proof));
