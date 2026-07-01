@@ -7734,6 +7734,15 @@ function withAsyncVisualSupportAuthorityClaim(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withSerializedOnlyAsyncVisualSupport(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  delete cloned.visualArtifacts;
+  delete cloned.visual_artifacts;
+  delete cloned.asyncVisualProofJob;
+  delete cloned.async_visual_proof_job;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withForgedComputeCardOnlyFlag(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   cloned.computeCardOnlyProofAccepted = true;
@@ -9073,6 +9082,26 @@ const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   ...broadReadinessRandomColdRows,
 ];
+const broadReadinessSerializedAsyncVisualOnlyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: broadReadinessRowsWithRandomCold.map((row) =>
+    withSerializedOnlyAsyncVisualSupport(row)
+  ),
+});
+assert.equal(broadReadinessSerializedAsyncVisualOnlyQuery.accepted, true);
+assert.equal(
+  broadReadinessSerializedAsyncVisualOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessSerializedAsyncVisualOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessSerializedAsyncVisualOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
 const broadReadinessVisualOnlyWithRandomColdQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

@@ -20437,6 +20437,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       allowSingleFrameProof: runMode.metricScope === 'cold',
     }),
   );
+  const asyncVisualProofJob = rawAsyncVisualProofJob(json);
   const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
   const asyncVisualProofJobBindingAccepted =
     asyncVisualCasBundle.asyncVisualProofJobPresent !== true
@@ -20611,6 +20612,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     source_adaptation: sourceAdaptation,
     sourceFirstIngestion,
     source_first_ingestion: sourceFirstIngestion,
+    visualArtifacts,
+    visual_artifacts: visualArtifacts,
+    asyncVisualProofJob,
+    async_visual_proof_job: asyncVisualProofJob,
     asyncVisualCasBundle,
     async_visual_cas_bundle: asyncVisualCasBundle,
     visual,
@@ -21474,7 +21479,8 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
   return rows.filter((row) => {
     if (!acceptedFullRuntimeRow(row)) return false;
     const sourceFirst = sourceFirstIngestionFacet(row);
-    const asyncVisual = compactObject(row.asyncVisualCasBundle ?? row.async_visual_cas_bundle);
+    const serializedAsyncVisual = compactObject(row.asyncVisualCasBundle ?? row.async_visual_cas_bundle);
+    const asyncVisual = asyncVisualCasBundleFacet(row, compactObject(row.visual));
     const runtimeAuthority = compactObject(
       row.fullRuntimeEvidenceAuthority
       ?? row.full_runtime_evidence_authority,
@@ -21503,6 +21509,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       && firstBool(asyncVisual.acceptedForGpuHmr, asyncVisual.accepted_for_gpu_hmr) === false
       && firstBool(asyncVisual.gpuHmrSuccess, asyncVisual.gpu_hmr_success) === false
       && runtimeBoundarySupportAuthorityNeutral(asyncVisual)
+      && runtimeBoundarySupportAuthorityNeutral(serializedAsyncVisual)
       && firstBool(asyncVisual.proofReady, asyncVisual.proof_ready) === true
       && firstBool(asyncVisual.workerCasInputAccepted, asyncVisual.worker_cas_input_accepted) === true
       && firstBool(asyncVisual.nativeImageDependencyBound, asyncVisual.native_image_dependency_bound) === true
