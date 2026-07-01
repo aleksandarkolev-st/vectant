@@ -9360,6 +9360,50 @@ assert.ok(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
+const profiledSourceFirstCoverage = new Map(
+  broadReadinessWithProfiledSourceFirstVisualQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  profiledSourceFirstCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
+const broadReadinessWithImplicitCliSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withSourceFirstSourceAuthority(row, 'cli_or_env_direct_source')),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithImplicitCliSourceFirstVisualQuery.accepted, true);
+assert.equal(
+  broadReadinessWithImplicitCliSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithImplicitCliSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithImplicitCliSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithImplicitCliSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const implicitCliSourceFirstCoverage = new Map(
+  broadReadinessWithImplicitCliSourceFirstVisualQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  implicitCliSourceFirstCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
 const broadReadinessWithDirectSourceFirstMissingIdentityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -9869,6 +9913,24 @@ assert.equal(
   broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
   5,
 );
+assert.equal(
+  broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'accepted',
+);
+assert.equal(
+  broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.sourceIdentityCount,
+  2,
+);
+assert.ok(
+  broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.rows.every((row) =>
+    [
+      'direct_source_url_commit',
+      'direct_local_git_repo_path',
+      'user_source_files',
+      'workspace_source_files',
+    ].includes(row.sourceFirstIngestion?.sourceAuthority)
+  )
+);
 assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
 assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 0);
 assert.equal(broadReadinessQuery.summary.scopedFullRuntimeGpuHmrRows, 4);
@@ -10004,7 +10066,6 @@ assert.deepEqual(
     'direct_local_git_repo_path',
     'user_source_files',
     'workspace_source_files',
-    'cli_or_env_direct_source',
   ],
 );
 assert.deepEqual(
@@ -10014,6 +10075,11 @@ assert.deepEqual(
     'direct_source_url_commit',
     'direct_local_git_repo_path',
   ],
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.rejectedSourceAuthoritiesForBroadReadiness
+    .includes('cli_or_env_direct_source'),
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -12422,7 +12488,7 @@ assert.ok(flowVisualCoverage.rows.some((row) =>
   && row.validationProfileEvidence.source === 'agent_split_profile_runtime_visual_proof'
 ));
 const sourceFirstCoverage = coverageById.get('source_first_uncompiled_project_validation');
-assert.equal(sourceFirstCoverage?.status, 'accepted');
+assert.equal(sourceFirstCoverage?.status, 'missing');
 assert.equal(
   sourceFirstCoverage?.proofAuthority,
   'source_first_ingestion_provenance_only_not_runtime_proof',
@@ -12435,30 +12501,10 @@ assert.equal(
   sourceFirstCoverage?.asyncVisualCasSupportAuthority,
   'async_visual_metrics_and_transport_only',
 );
-assert.ok(sourceFirstCoverage?.rows.length >= 1);
-assert.ok(sourceFirstCoverage.rows.every((row) =>
-  row.matrixOutcome === 'full_runtime_gpu_hmr'
-  && row.sourceFirstIngestion?.accepted === true
-  && row.sourceFirstIngestion?.schemaVersion
-    === 'synthi.gpu.hmr.agent_split_source_first_ingestion.v1'
-  && row.sourceFirstIngestion?.acceptedForGpuHmr === false
-  && row.asyncVisualCasBundle?.accepted === true
-  && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
-  && row.asyncVisualCasBundle?.gpuHmrSuccess === false
-  && row.asyncVisualCasBundle?.proofAuthority === 'async_visual_metrics_and_transport_only'
-  && row.asyncVisualCasBundle?.proofReady === true
-  && row.asyncVisualCasBundle?.offMainThread === true
-  && row.asyncVisualCasBundle?.transportAccepted === true
-  && row.asyncVisualCasBundle?.casHashesMatchDeclaredVisualHashes === true
-  && row.asyncVisualCasBundle?.casHashesMatchMatrixVisualHashes === true
-  && row.asyncVisualCasBundle?.tileEvidenceAccepted === true
-  && row.fullRuntimeEvidenceAuthority?.schemaVersion
-    === 'synthi.gpu_hmr.full_runtime_evidence_authority.v1'
-  && row.fullRuntimeEvidenceAuthority?.proofAuthority
-    === 'matrix_recomputed_full_runtime_evidence_authority_not_row_declared'
-  && row.fullRuntimeEvidenceAuthority?.authority === 'strict_runtime_proof_artifact'
-  && row.fullRuntimeEvidenceAuthority?.accepted === true
-  && row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
+assert.equal(sourceFirstCoverage?.rowCount, 0);
+assert.equal(sourceFirstCoverage?.sourceIdentityCount, 0);
+assert.ok(sourceFirstCoverage?.openGaps.includes(
+  'source_first_full_runtime_visual_or_compute_proof_with_async_cas_support_required',
 ));
 assert.ok(!sourceFirstCoverage.rows.some((row) =>
   row.targetId === 'flow-smuggled-precompiled'

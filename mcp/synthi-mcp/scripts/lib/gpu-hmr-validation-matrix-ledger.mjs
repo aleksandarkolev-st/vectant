@@ -67,7 +67,6 @@ const SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES = [
   'direct_local_git_repo_path',
   'user_source_files',
   'workspace_source_files',
-  'cli_or_env_direct_source',
 ];
 const SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES = new Set([
   'direct_source_url_commit',
@@ -22223,10 +22222,12 @@ function sourceFirstVisualBroadReadinessPredicate() {
     rejectedSourceAuthoritiesForBroadReadiness: [
       'profile_source_files',
       'builtin_fixture_source',
+      'cli_or_env_direct_source',
     ],
     rejected_source_authorities_for_broad_readiness: [
       'profile_source_files',
       'builtin_fixture_source',
+      'cli_or_env_direct_source',
     ],
     requiredMatrixOutcome: 'full_runtime_gpu_hmr',
     required_matrix_outcome: 'full_runtime_gpu_hmr',
@@ -24257,7 +24258,6 @@ function planCoverage(rows) {
   const sourceFirstFullRuntimeRows =
     sourceFirstVisualRowsForBroadReadiness(rows, {
       requireOutputOracleFacet: true,
-      requireUserOwnedSource: false,
     });
   const sourceFirstFullRuntimeSourceIdentities =
     sourceFirstVisualSourceIdentityHashList(sourceFirstFullRuntimeRows);
