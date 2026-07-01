@@ -57,6 +57,7 @@ const WEBGPU_LAUNCH_ARGS = Object.freeze([
   '--disable-gpu-sandbox',
 ]);
 const NUMERIC_DATA_TYPES = new Set(['float32', 'uint32', 'int32']);
+const WEBGPU_COMPUTE_OUTPUT_TARGET_ID = 'webgpu-compute-readback-buffer';
 
 const CFG = {
   slug: process.env.SLUG ?? `webgpu-runtime-compute-${nowSlugDate()}`,
@@ -894,6 +895,8 @@ async function runBrowserCompute(profile) {
           epoch,
           dispatchId,
           artifactHash,
+          outputTargetId: 'webgpu-compute-readback-buffer',
+          output_target_id: 'webgpu-compute-readback-buffer',
           shaderModuleId: `webgpu-compute-shader-module-${epochCounter}-${artifactHash.slice(-12)}`,
           pipelineId: `webgpu-compute-pipeline-${pipelineCounter}-${artifactHash.slice(-12)}`,
           pageInstanceId,
@@ -1243,7 +1246,7 @@ function buildContract({ profile, trace, runMode, processContinuity, oracleArtif
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: 'webgpu-compute-readback-buffer',
+      target_id: WEBGPU_COMPUTE_OUTPUT_TARGET_ID,
       compute_only_target_verified: true,
       evidence_refs: [oracleArtifacts.raw_readback_hash, oracleArtifacts.rendered_card_png],
     },
@@ -1507,6 +1510,9 @@ function buildProofLedgerRecord({
   const afterEpoch = trace.after.epoch;
   const dispatchId = trace.after.dispatchId;
   const processId = processContinuity.processIdAfter;
+  const outputTargetId = trace.after.outputTargetId
+    ?? trace.after.output_target_id
+    ?? WEBGPU_COMPUTE_OUTPUT_TARGET_ID;
   const outputEvent = {
     id: `webgpu-compute-output-${afterEpoch}`,
     kind: 'compute_readback',
@@ -1514,6 +1520,8 @@ function buildProofLedgerRecord({
     after_dispatch_id: dispatchId,
     artifact_hash: profile.afterHash,
     epoch: afterEpoch,
+    output_target_id: outputTargetId,
+    outputTargetId,
     timestamp_monotonic_ns: timings.outputTimestampNs,
     process_id: processId,
     output_oracle: {
@@ -1567,6 +1575,8 @@ function buildProofLedgerRecord({
       dispatch_workgroups: trace.after.dispatchWorkgroups,
       resource_state_hash: profile.pipeline.resourceStateHash,
       runtime_resource_trace: trace.after.resourceTrace,
+      output_target_id: outputTargetId,
+      outputTargetId,
       command: 'GPUComputePassEncoder.dispatchWorkgroups',
     },
     output_event: outputEvent,
@@ -1602,7 +1612,7 @@ function buildProofLedgerRecord({
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: 'webgpu-compute-readback-buffer',
+      target_id: outputTargetId,
       compute_only_target_verified: true,
       evidence_refs: [oracleArtifacts.raw_readback_hash, oracleArtifacts.rendered_card_png],
     },
@@ -2124,13 +2134,14 @@ async function selfCheck() {
     artifact_after_hash: fakeArtifact,
     loader_event: { id: 'loader', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 10, process_id: '100' },
     epoch_publish_event: { id: 'publish', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 20, process_id: '100' },
-    dispatch_event: { id: 'dispatch', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 30, process_id: '100' },
-    output_event: { id: 'output', after_dispatch_id: 'dispatch', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 40, process_id: '100' },
+    dispatch_event: { id: 'dispatch', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 30, process_id: '100', output_target_id: WEBGPU_COMPUTE_OUTPUT_TARGET_ID, outputTargetId: WEBGPU_COMPUTE_OUTPUT_TARGET_ID },
+    output_event: { id: 'output', after_dispatch_id: 'dispatch', artifact_hash: fakeArtifact, epoch: 'epoch-2', timestamp_monotonic_ns: 40, process_id: '100', output_target_id: WEBGPU_COMPUTE_OUTPUT_TARGET_ID, outputTargetId: WEBGPU_COMPUTE_OUTPUT_TARGET_ID },
     retirement_event: { id: 'retire', status: 'queue_idle_proven', timestamp_monotonic_ns: 50, process_id: '100' },
     process_identity: { process_id: '100' },
     device_identity: { device_uuid: 'webgpu-adapter:self-check' },
     output_oracle_target: {
       kind: 'compute',
+      target_id: WEBGPU_COMPUTE_OUTPUT_TARGET_ID,
       compute_only_target_verified: true,
       evidence_refs: ['runtime:self-check'],
     },
@@ -2149,6 +2160,13 @@ async function selfCheck() {
     evidence_refs: ['runtime:self-check'],
   };
   const evaluation = evaluateGpuHmrProofLedger(fakeRecord);
+  if (
+    fakeRecord.dispatch_event.output_target_id !== WEBGPU_COMPUTE_OUTPUT_TARGET_ID
+    || fakeRecord.output_event.output_target_id !== WEBGPU_COMPUTE_OUTPUT_TARGET_ID
+    || fakeRecord.output_oracle_target.target_id !== WEBGPU_COMPUTE_OUTPUT_TARGET_ID
+  ) {
+    throw new Error('self-check failed to bind WebGPU compute output target identity');
+  }
   if (evaluation.gpuHmrSuccess || !evaluation.failedInvariants.some((gate) => gate.code === 'compute_oracle_artifacts_missing')) {
     throw new Error('self-check failed to reject missing compute raw readback artifacts');
   }
