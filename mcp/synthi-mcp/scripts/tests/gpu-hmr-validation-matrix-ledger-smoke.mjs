@@ -7705,6 +7705,21 @@ function withSourceFirstSchemaVersion(row, schemaVersion) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withForgedSourceFirstProofId(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+    proofId: `agent-split-source-first-ingestion:sha256:${sha256Hex(
+      `forged-source-first-proof:${cloned.targetId ?? cloned.target_id ?? 'unknown'}`,
+    )}`,
+  };
+  sourceFirst.proof_id = sourceFirst.proofId;
+  sourceFirst.accepted = true;
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withAsyncVisualSupportAuthorityClaim(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   const asyncVisual = {
@@ -8944,6 +8959,32 @@ const forgedSourceFirstSchemaCoverage = new Map(
 assert.equal(
   forgedSourceFirstSchemaCoverage.get('source_first_uncompiled_project_validation')?.status,
   'missing',
+);
+const broadReadinessWithForgedSourceFirstProofIdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withForgedSourceFirstProofId(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithForgedSourceFirstProofIdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedSourceFirstProofIdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedSourceFirstProofIdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithForgedSourceFirstProofIdQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithForgedSourceFirstProofIdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const broadReadinessWithForgedAsyncVisualAuthorityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

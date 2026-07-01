@@ -21473,7 +21473,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
   } = options;
   return rows.filter((row) => {
     if (!acceptedFullRuntimeRow(row)) return false;
-    const sourceFirst = compactObject(row.sourceFirstIngestion ?? row.source_first_ingestion);
+    const sourceFirst = sourceFirstIngestionFacet(row);
     const asyncVisual = compactObject(row.asyncVisualCasBundle ?? row.async_visual_cas_bundle);
     const runtimeAuthority = compactObject(
       row.fullRuntimeEvidenceAuthority

@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Broad Selector Recompute
+
+Source-first visual broad-readiness selection now recomputes the `synthi.gpu.hmr.agent_split_source_first_ingestion.v1` facet with `sourceFirstIngestionFacet(row)` instead of trusting the serialized `row.sourceFirstIngestion.accepted` fields. This means the broad arbitrary-user visual lane requires the source-first proof id, initial manifest hash, source-purity hashes, generated artifact namespace, sidecar hash, compile manifest hash, target binding, and support-only authority to recompute cleanly before the row can count.
+
+Smoke coverage now forges an accepted-looking source-first visual row by replacing only the source-first proof id while leaving the schema, authority, source authority, visual proof, runtime authority, and output-oracle fields success-shaped. Broad readiness remains closed with `sourceFirstVisualRowCount=0` and `broad_acceptance_requires_source_first_visual_full_runtime_row`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including forged source-first proof-id refusal, latest observed proof gpu-validation-matrix-ledger:sha256:410899a8fc164edb5fad30c250dc0050270d93215c811095105e8588556052d5, rows=66
+```
+
 ## 2026-07-01 Random Cold Direct Source Identity Binding
 
 Random large-project cold-path direct-input evidence is now bound to the row's own source identity instead of being accepted by direct-looking shape alone. The runner emits `sourceIdentityRole=source_identity_hash_bound_to_direct_input_not_whitelist` and hashes the direct source URL or local repo path, immutable commit, candidate source, source kind, and CLI/env input channels. The matrix recomputes that hash from the row context during ingestion and broad-readiness selection; mismatched or replayed direct-input evidence fails with `random_cold_direct_input_source_identity_hash_mismatch` and contributes zero qualifying random cold-path rows.
