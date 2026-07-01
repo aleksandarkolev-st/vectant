@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { pathToFileURL } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Pool } from "pg";
@@ -73,7 +74,7 @@ class HttpError extends Error {
   }
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
+export function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const raw = argv[index] ?? "";
@@ -134,7 +135,7 @@ function boolFromEnv(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 
-function resolveConfig(args: Record<string, string | boolean>, env = process.env): HttpMcpConfig {
+export function resolveConfig(args: Record<string, string | boolean>, env = process.env): HttpMcpConfig {
   const defaultSessionId = stringArg(args, "session")
     ?? stringArg(args, "session-id")
     ?? env["SYNTHI_SESSION_ID"];
@@ -308,7 +309,7 @@ function storeRecordIdFromPath(pathname: string, storePath: string): string | nu
   return decodeURIComponent(suffix);
 }
 
-function parseTherapeuticStateAppend(
+export function parseTherapeuticStateAppend(
   body: unknown,
   headerTenantScope: TherapeuticTenantScope,
 ): {
@@ -630,7 +631,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  process.stderr.write(`synthi-mcp-http fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`synthi-mcp-http fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
