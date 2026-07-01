@@ -242,6 +242,60 @@ assert.equal(acceptedColdRuntimeBoundaryTemplate.eventTemplateCount, 5);
 assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.missingRequiredEventKinds, []);
 assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.failedGates, []);
 
+const sourceDerivedOracleTemplate =
+  coldRuntimeBoundaryEventManifestTemplateFacet(hashedColdRuntimeBoundaryTemplateFacet({
+    acceptableOracleKinds: ['compute_readback'],
+    acceptable_oracle_kinds: ['compute_readback'],
+    sourceDerivedOracleKinds: ['compute_readback'],
+    source_derived_oracle_kinds: ['compute_readback'],
+    candidateDeclaredOracleKinds: ['deterministic_visual_oracle'],
+    candidate_declared_oracle_kinds: ['deterministic_visual_oracle'],
+    candidateOracleHintsUsedForAcceptance: false,
+    candidate_oracle_hints_used_for_acceptance: false,
+    candidateOracleHintAuthority:
+      'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+    candidate_oracle_hint_authority:
+      'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+  }));
+assert.equal(sourceDerivedOracleTemplate.validated, true);
+assert.equal(sourceDerivedOracleTemplate.acceptedAsSupportEvidence, true);
+assert.deepEqual(sourceDerivedOracleTemplate.nonSourceDerivedAcceptableOracleKinds, []);
+
+const forgedOracleHintTemplate =
+  coldRuntimeBoundaryEventManifestTemplateFacet(hashedColdRuntimeBoundaryTemplateFacet({
+    acceptableOracleKinds: ['compute_readback', 'deterministic_visual_oracle'],
+    acceptable_oracle_kinds: ['compute_readback', 'deterministic_visual_oracle'],
+    sourceDerivedOracleKinds: ['compute_readback'],
+    source_derived_oracle_kinds: ['compute_readback'],
+    candidateDeclaredOracleKinds: ['deterministic_visual_oracle'],
+    candidate_declared_oracle_kinds: ['deterministic_visual_oracle'],
+    candidateOracleHintsUsedForAcceptance: true,
+    candidate_oracle_hints_used_for_acceptance: true,
+    candidateOracleHintClaimsAcceptance: true,
+    candidate_oracle_hint_claims_acceptance: true,
+    candidateOracleHintAuthority:
+      'declared_oracle_hint_runtime_authority_forged',
+    candidate_oracle_hint_authority:
+      'declared_oracle_hint_runtime_authority_forged',
+  }));
+assert.equal(forgedOracleHintTemplate.validated, false);
+assert.equal(forgedOracleHintTemplate.acceptedAsSupportEvidence, false);
+assert.ok(
+  forgedOracleHintTemplate.failedGates.includes(
+    'cold_runtime_boundary_event_manifest_template_candidate_oracle_hints_used_for_acceptance',
+  ),
+);
+assert.ok(
+  forgedOracleHintTemplate.failedGates.includes(
+    'cold_runtime_boundary_event_manifest_template_candidate_oracle_hint_claimed_acceptance',
+  ),
+);
+assert.ok(
+  forgedOracleHintTemplate.failedGates.includes(
+    'cold_runtime_boundary_event_manifest_template_oracle_kind_not_source_derived:deterministic_visual_oracle',
+  ),
+);
+
 const forgedColdRuntimeBoundarySuccess =
   coldRuntimeBoundaryEventManifestTemplateFacet(hashedColdRuntimeBoundaryTemplateFacet({
     gpuHmrSuccess: true,

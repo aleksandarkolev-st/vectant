@@ -4,6 +4,22 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Random Cold-Path Oracle-Hint Boundary
+
+Random large-project cold-path runtime-boundary expectation now treats candidate oracle hints as diagnostics only. `synthi.gpu_hmr.cold_runtime_boundary_expectation.v1` derives acceptable oracle kinds from source-derived backend candidates and build metadata evidence, records candidate-declared oracle kinds separately, and sets `candidateOracleHintsUsedForAcceptance=false`. A candidate manifest that claims `oracleHints.acceptedByDeclaration=true` now fails the expectation with `candidate_oracle_hint_acceptance_claim_rejected` instead of enriching the support template.
+
+The emitted cold runtime-boundary event-manifest template carries the same derivation fields, and validation-matrix ingestion rejects fresh templates that use candidate oracle hints for acceptance, claim oracle authority, or include acceptable oracle kinds that are not source-derived. This keeps arbitrary cold-path testing generic: project lists, candidate JSON, profile IDs, and oracle declarations can describe what to look for, but they cannot satisfy visual/compute oracle support or GPU HMR acceptance. Runtime acceptance still requires observed loader, epoch, dispatch, host identity, output oracle bytes, firewall, and strict proof-ledger closure.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:random-large-project:cold:self-check -> passed, including forged candidate oracle-acceptance hint refusal
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including forged non-source-derived oracle-kind template refusal, proof gpu-validation-matrix-ledger:sha256:e18cb92d1a3033b7fdd88dffaa304fa4016f36899cb3b3a704b2c2445d2717c5, rows=66
+```
+
 ## 2026-07-01 OIDN Output Oracle Support Boundary
 
 The OIDN/HIP preflight runner now has a generic file-backed output-oracle manifest path through `SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH` or `--output-oracle-manifest`. The manifest schema is `synthi.gpu_hmr.oidn_output_oracle.v1` with authority `oidn_output_oracle_file_bytes_only_not_gpu_hmr_success`. The runner reads noisy input, denoised output, and optional expected-output files only under approved roots, verifies readable byte lengths and SHA-256 hashes, requires the denoised output to differ from the noisy input, and requires an expected-output hash match before `oidnHipOutputProofAccepted=true` can be recorded.

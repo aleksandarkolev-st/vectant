@@ -1489,16 +1489,23 @@ function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMeta
   const expectedRuntimeEvents = [
     ...new Set(perBackendRequirements.flatMap((entry) => entry.expectedRuntimeEvents ?? [])),
   ].sort();
-  const acceptableOracleKinds = [
-    ...new Set([
-      ...perBackendRequirements.flatMap((entry) => entry.acceptableOracleKinds ?? []),
-      ...(
-        Array.isArray(candidate?.oracleHints?.expectedKinds)
-          ? candidate.oracleHints.expectedKinds
-          : []
-      ),
-    ]),
-  ].sort();
+  const sourceDerivedOracleKinds = uniqueSortedStrings(
+    perBackendRequirements.flatMap((entry) => entry.acceptableOracleKinds ?? []),
+  );
+  const candidateDeclaredOracleKinds = uniqueSortedStrings([
+    ...(Array.isArray(candidate?.oracleHints?.expectedKinds)
+      ? candidate.oracleHints.expectedKinds
+      : []),
+    ...(Array.isArray(candidate?.oracle_hints?.expected_kinds)
+      ? candidate.oracle_hints.expected_kinds
+      : []),
+  ]);
+  const candidateOracleHintClaimsAcceptance =
+    candidate?.oracleHints?.acceptedByDeclaration === true
+    || candidate?.oracleHints?.accepted_by_declaration === true
+    || candidate?.oracle_hints?.acceptedByDeclaration === true
+    || candidate?.oracle_hints?.accepted_by_declaration === true;
+  const acceptableOracleKinds = sourceDerivedOracleKinds;
   const missingRuntimeEvidenceGaps = [
     'runtime_profile_contract_missing',
     'artifact_transport_unproven',
@@ -1514,6 +1521,9 @@ function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMeta
   if (backendCandidates.length === 0) blockingGaps.push('runtime_backend_candidate_missing');
   if (buildMetadataDiscovery?.acceptedAsBuildMetadataDiscovery !== true) {
     blockingGaps.push('build_metadata_discovery_missing');
+  }
+  if (candidateOracleHintClaimsAcceptance) {
+    blockingGaps.push('candidate_oracle_hint_acceptance_claim_rejected');
   }
   const facet = {
     schemaVersion: RUNTIME_BOUNDARY_EXPECTATION_SCHEMA,
@@ -1544,6 +1554,18 @@ function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMeta
     expected_runtime_events: expectedRuntimeEvents,
     acceptableOracleKinds,
     acceptable_oracle_kinds: acceptableOracleKinds,
+    sourceDerivedOracleKinds,
+    source_derived_oracle_kinds: sourceDerivedOracleKinds,
+    candidateDeclaredOracleKinds,
+    candidate_declared_oracle_kinds: candidateDeclaredOracleKinds,
+    candidateOracleHintsUsedForAcceptance: false,
+    candidate_oracle_hints_used_for_acceptance: false,
+    candidateOracleHintAuthority:
+      'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+    candidate_oracle_hint_authority:
+      'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+    candidateOracleHintClaimsAcceptance,
+    candidate_oracle_hint_claims_acceptance: candidateOracleHintClaimsAcceptance,
     perBackendRequirements,
     per_backend_requirements: perBackendRequirements,
     runtimeBoundaryHints: candidate.runtimeBoundaryHints ?? {},
@@ -1822,6 +1844,42 @@ function deriveRuntimeBoundaryEventManifestTemplate({ candidate, runtimeBoundary
     backend_candidates: backendCandidates,
     acceptableOracleKinds,
     acceptable_oracle_kinds: acceptableOracleKinds,
+    sourceDerivedOracleKinds:
+      runtimeBoundaryExpectation?.sourceDerivedOracleKinds
+      ?? runtimeBoundaryExpectation?.source_derived_oracle_kinds
+      ?? [],
+    source_derived_oracle_kinds:
+      runtimeBoundaryExpectation?.sourceDerivedOracleKinds
+      ?? runtimeBoundaryExpectation?.source_derived_oracle_kinds
+      ?? [],
+    candidateDeclaredOracleKinds:
+      runtimeBoundaryExpectation?.candidateDeclaredOracleKinds
+      ?? runtimeBoundaryExpectation?.candidate_declared_oracle_kinds
+      ?? [],
+    candidate_declared_oracle_kinds:
+      runtimeBoundaryExpectation?.candidateDeclaredOracleKinds
+      ?? runtimeBoundaryExpectation?.candidate_declared_oracle_kinds
+      ?? [],
+    candidateOracleHintsUsedForAcceptance:
+      runtimeBoundaryExpectation?.candidateOracleHintsUsedForAcceptance === true
+      || runtimeBoundaryExpectation?.candidate_oracle_hints_used_for_acceptance === true,
+    candidate_oracle_hints_used_for_acceptance:
+      runtimeBoundaryExpectation?.candidateOracleHintsUsedForAcceptance === true
+      || runtimeBoundaryExpectation?.candidate_oracle_hints_used_for_acceptance === true,
+    candidateOracleHintAuthority:
+      runtimeBoundaryExpectation?.candidateOracleHintAuthority
+      ?? runtimeBoundaryExpectation?.candidate_oracle_hint_authority
+      ?? 'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+    candidate_oracle_hint_authority:
+      runtimeBoundaryExpectation?.candidateOracleHintAuthority
+      ?? runtimeBoundaryExpectation?.candidate_oracle_hint_authority
+      ?? 'candidate_oracle_hints_diagnostic_only_not_oracle_contract',
+    candidateOracleHintClaimsAcceptance:
+      runtimeBoundaryExpectation?.candidateOracleHintClaimsAcceptance === true
+      || runtimeBoundaryExpectation?.candidate_oracle_hint_claims_acceptance === true,
+    candidate_oracle_hint_claims_acceptance:
+      runtimeBoundaryExpectation?.candidateOracleHintClaimsAcceptance === true
+      || runtimeBoundaryExpectation?.candidate_oracle_hint_claims_acceptance === true,
     eventObjectTemplates,
     event_object_templates: eventObjectTemplates,
     eventTemplateHashes: eventObjectTemplates.map((entry) => entry.templateHash),
@@ -3036,6 +3094,30 @@ async function selfCheck() {
     candidate: candidates[0],
     runtimeBoundaryExpectation: noBackendRuntimeExpectation,
   });
+  const forgedOracleHintCandidate = cleanCandidate({
+    id: 'forged-oracle-hint-large',
+    sourceUrl: 'https://example.invalid/forged-oracle.git',
+    immutableCommit: '1313131313131313131313131313131313131313',
+    oracleHints: {
+      acceptedByDeclaration: true,
+      expectedKinds: ['deterministic_visual_oracle'],
+    },
+  });
+  const openclOnlyListing = parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.cl',
+  ].join('\n'));
+  const openclOnlyClassification = classifySourceListing(openclOnlyListing);
+  const openclOnlyBuildDiscovery = discoverBuildMetadata({
+    candidate: forgedOracleHintCandidate,
+    files: openclOnlyListing,
+    classification: openclOnlyClassification,
+  });
+  const forgedOracleHintExpectation = deriveRuntimeBoundaryExpectation({
+    candidate: forgedOracleHintCandidate,
+    classification: openclOnlyClassification,
+    buildMetadataDiscovery: openclOnlyBuildDiscovery,
+  });
   const outputOracleTemplate = runtimeEventTemplate.eventObjectTemplates
     ?.find((entry) => entry.eventKind === 'output_oracle');
   const parsedNoSizeListing = parseGitLsTree(
@@ -3072,6 +3154,15 @@ async function selfCheck() {
     || !noBackendRuntimeExpectation.blockingGaps.includes('runtime_backend_candidate_missing')
     || noBackendRuntimeEventTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate !== false
     || !noBackendRuntimeEventTemplate.blockingGaps.includes('runtime_backend_candidate_missing')
+    || forgedOracleHintExpectation.acceptedAsRuntimeBoundaryExpectation !== false
+    || forgedOracleHintExpectation.candidateOracleHintsUsedForAcceptance !== false
+    || forgedOracleHintExpectation.candidateOracleHintClaimsAcceptance !== true
+    || !forgedOracleHintExpectation.blockingGaps.includes(
+      'candidate_oracle_hint_acceptance_claim_rejected',
+    )
+    || !forgedOracleHintExpectation.candidateDeclaredOracleKinds.includes('deterministic_visual_oracle')
+    || forgedOracleHintExpectation.acceptableOracleKinds.includes('deterministic_visual_oracle')
+    || !forgedOracleHintExpectation.acceptableOracleKinds.includes('compute_readback')
     || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');

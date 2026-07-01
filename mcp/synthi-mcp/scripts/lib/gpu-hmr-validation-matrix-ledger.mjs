@@ -971,10 +971,38 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     facet.canSatisfyDispatchProof,
     facet.can_satisfy_dispatch_proof,
   );
+  const candidateOracleHintsUsedForAcceptance = firstBool(
+    facet.candidateOracleHintsUsedForAcceptance,
+    facet.candidate_oracle_hints_used_for_acceptance,
+  );
+  const candidateOracleHintClaimsAcceptance = firstBool(
+    facet.candidateOracleHintClaimsAcceptance,
+    facet.candidate_oracle_hint_claims_acceptance,
+  );
+  const candidateOracleHintAuthority = firstText(
+    facet.candidateOracleHintAuthority,
+    facet.candidate_oracle_hint_authority,
+  );
   const acceptedAsTemplate = firstBool(
     facet.acceptedAsRuntimeBoundaryEventManifestTemplate,
     facet.accepted_as_runtime_boundary_event_manifest_template,
   );
+  const acceptableOracleKinds = compactStringList([
+    ...(Array.isArray(facet.acceptableOracleKinds) ? facet.acceptableOracleKinds : []),
+    ...(Array.isArray(facet.acceptable_oracle_kinds) ? facet.acceptable_oracle_kinds : []),
+  ]).sort();
+  const sourceDerivedOracleKinds = compactStringList([
+    ...(Array.isArray(facet.sourceDerivedOracleKinds) ? facet.sourceDerivedOracleKinds : []),
+    ...(Array.isArray(facet.source_derived_oracle_kinds) ? facet.source_derived_oracle_kinds : []),
+  ]).sort();
+  const candidateDeclaredOracleKinds = compactStringList([
+    ...(Array.isArray(facet.candidateDeclaredOracleKinds) ? facet.candidateDeclaredOracleKinds : []),
+    ...(Array.isArray(facet.candidate_declared_oracle_kinds) ? facet.candidate_declared_oracle_kinds : []),
+  ]).sort();
+  const sourceDerivedOracleKindSet = new Set(sourceDerivedOracleKinds);
+  const nonSourceDerivedAcceptableOracleKinds = sourceDerivedOracleKinds.length > 0
+    ? acceptableOracleKinds.filter((kind) => !sourceDerivedOracleKindSet.has(kind))
+    : [];
   const blockingGaps = compactStringList([
     ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
     ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
@@ -1127,6 +1155,18 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     canSatisfyDispatchProof === true
       ? 'cold_runtime_boundary_event_manifest_template_claimed_dispatch_authority'
       : null,
+    candidateOracleHintsUsedForAcceptance === true
+      ? 'cold_runtime_boundary_event_manifest_template_candidate_oracle_hints_used_for_acceptance'
+      : null,
+    candidateOracleHintClaimsAcceptance === true
+      ? 'cold_runtime_boundary_event_manifest_template_candidate_oracle_hint_claimed_acceptance'
+      : null,
+    candidateOracleHintAuthority
+      && candidateOracleHintAuthority !== 'candidate_oracle_hints_diagnostic_only_not_oracle_contract'
+      ? 'cold_runtime_boundary_event_manifest_template_candidate_oracle_hint_authority_invalid'
+      : null,
+    ...nonSourceDerivedAcceptableOracleKinds
+      .map((kind) => `cold_runtime_boundary_event_manifest_template_oracle_kind_not_source_derived:${kind}`),
     eventTemplates.length === 0
       ? 'cold_runtime_boundary_event_manifest_template_events_missing'
       : null,
@@ -1206,6 +1246,22 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       proofAuthority ?? COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY,
     requiredEventKinds,
     required_event_kinds: requiredEventKinds,
+    acceptableOracleKinds,
+    acceptable_oracle_kinds: acceptableOracleKinds,
+    sourceDerivedOracleKinds,
+    source_derived_oracle_kinds: sourceDerivedOracleKinds,
+    candidateDeclaredOracleKinds,
+    candidate_declared_oracle_kinds: candidateDeclaredOracleKinds,
+    candidateOracleHintsUsedForAcceptance:
+      candidateOracleHintsUsedForAcceptance === true,
+    candidate_oracle_hints_used_for_acceptance:
+      candidateOracleHintsUsedForAcceptance === true,
+    candidateOracleHintClaimsAcceptance:
+      candidateOracleHintClaimsAcceptance === true,
+    candidate_oracle_hint_claims_acceptance:
+      candidateOracleHintClaimsAcceptance === true,
+    nonSourceDerivedAcceptableOracleKinds,
+    non_source_derived_acceptable_oracle_kinds: nonSourceDerivedAcceptableOracleKinds,
     observedEventKinds: eventKinds,
     observed_event_kinds: eventKinds,
     missingRequiredEventKinds: missingRequiredKinds,
