@@ -23785,27 +23785,40 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
 }
 
 export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
+  const includeSafetyInvalidatedRows =
+    options.includeInvalidated === true || options.includeUnproven === true;
   const preliminaryRows = rows.map((row) => rowWithEvaluatedSafety(row));
   const preliminarySelectedRows = options.latestPerTarget === false
     ? preliminaryRows
     : selectBestRows(preliminaryRows);
-  const preliminaryIncludedRows = options.includeUnproven === true
+  const preliminarySafetyAcceptedRows = includeSafetyInvalidatedRows
     ? preliminarySelectedRows
-    : preliminarySelectedRows.filter((row) => row.matrixOutcome !== 'unproven');
+    : preliminarySelectedRows.filter((row) => row.safety?.accepted === true);
+  const preliminaryIncludedRows = options.includeUnproven === true
+    ? preliminarySafetyAcceptedRows
+    : preliminarySafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
   const preliminaryBroadProof = computeBroadLibraryAgnosticProof(preliminaryIncludedRows);
   const safetyEvaluatedRows = rows.map((row) =>
     rowWithEvaluatedSafety(row, { broadProof: preliminaryBroadProof })
   );
   const selectedRows = options.latestPerTarget === false ? safetyEvaluatedRows : selectBestRows(safetyEvaluatedRows);
-  const includedRows = options.includeUnproven === true
+  const safetyAcceptedRows = includeSafetyInvalidatedRows
     ? selectedRows
-    : selectedRows.filter((row) => row.matrixOutcome !== 'unproven');
-  const omittedUnprovenRows = selectedRows.length - includedRows.length;
+    : selectedRows.filter((row) => row.safety?.accepted === true);
+  const includedRows = options.includeUnproven === true
+    ? safetyAcceptedRows
+    : safetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
+  const omittedInvalidatedRows = selectedRows.length - safetyAcceptedRows.length;
+  const omittedUnprovenRows = safetyAcceptedRows.length - includedRows.length;
   includedRows.sort((a, b) => rowKey(a).localeCompare(rowKey(b)));
   const summary = {
     ...coverageSummary(includedRows),
+    includeInvalidated: options.includeInvalidated === true,
+    omittedInvalidatedRows,
+    omitted_invalidated_rows: omittedInvalidatedRows,
     includeUnproven: options.includeUnproven === true,
     omittedUnprovenRows,
+    omitted_unproven_rows: omittedUnprovenRows,
   };
   const attemptHistory = validationAttemptHistory(safetyEvaluatedRows, selectedRows, {
     enabled: options.includeUnproven === true,
@@ -23814,6 +23827,7 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     latestPerTarget: options.latestPerTarget !== false,
+    includeInvalidated: options.includeInvalidated === true,
     includeUnproven: options.includeUnproven === true,
     sourceRoots: options.sourceRoots ?? [],
     summary,
@@ -23860,6 +23874,7 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
   }
   return buildGpuHmrValidationMatrixLedger(rows, {
     latestPerTarget: options.latestPerTarget !== false,
+    includeInvalidated: options.includeInvalidated === true,
     includeUnproven: options.includeUnproven === true,
     sourceRoots: roots.map((root) => relPath(root, repoRoot)),
     generatedAt: options.generatedAt,

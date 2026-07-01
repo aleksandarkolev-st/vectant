@@ -9239,10 +9239,75 @@ assert.equal(
     ?.qualifyingDistinctSourceIdentityCount,
   1,
 );
+const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({
+  targetId: 'stale-unsafe-accepted-source-first-visual',
+  backend: 'hip',
+  acceptanceScope: 'rocm_hip_declared_runtime_profile',
+  oracle: 'visual',
+}));
+const staleUnsafeRandomColdDirectInput = {
+  ...randomColdDirectInputEvidenceFixture({
+    sourceUrl: 'https://example.invalid/stale/random-cold.git',
+    immutableCommit: '4444444444444444444444444444444444444444',
+  }),
+  sourceIdentityRole: 'forged_target_specific_role',
+  source_identity_role: 'forged_target_specific_role',
+};
+const staleUnsafeRandomColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'stale-unsafe-random-cold-missing-direct-input',
+    sourceUrl: 'https://example.invalid/stale/random-cold.git',
+    immutableCommit: '4444444444444444444444444444444444444444',
+    directInputEvidence: staleUnsafeRandomColdDirectInput,
+  });
+  const failedGates = [
+    'random_cold_direct_input_evidence_invalid',
+    'random_cold_direct_input_source_identity_role_invalid',
+  ];
+  row.randomLargeProjectColdPath.failedGates = failedGates;
+  row.randomLargeProjectColdPath.failed_gates = failedGates;
+  row.random_large_project_cold_path.failedGates = failedGates;
+  row.random_large_project_cold_path.failed_gates = failedGates;
+  return row;
+})());
+const staleUnsafeDirectQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    staleUnsafeAcceptedRow,
+    staleUnsafeRandomColdRow,
+  ],
+});
+assert.equal(staleUnsafeDirectQuery.accepted, false);
+assert.ok(staleUnsafeDirectQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_accepted_output_oracle_facet'
+));
+assert.ok(staleUnsafeDirectQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_path_facet_invalid'
+));
 const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   ...broadReadinessRandomColdRows,
 ];
+const broadReadinessWithStaleUnsafeRowsLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRowsWithRandomCold,
+  staleUnsafeAcceptedRow,
+  staleUnsafeRandomColdRow,
+]);
+assert.equal(broadReadinessWithStaleUnsafeRowsLedger.query.accepted, true);
+assert.equal(broadReadinessWithStaleUnsafeRowsLedger.summary.omittedInvalidatedRows, 2);
+assert.equal(broadReadinessWithStaleUnsafeRowsLedger.summary.omitted_invalidated_rows, 2);
+assert.equal(
+  broadReadinessWithStaleUnsafeRowsLedger.rows.some((row) =>
+    row.targetId === 'stale-unsafe-accepted-source-first-visual'
+  ),
+  false,
+);
+assert.equal(
+  broadReadinessWithStaleUnsafeRowsLedger.rows.some((row) =>
+    row.targetId === 'stale-unsafe-random-cold-missing-direct-input'
+  ),
+  false,
+);
 const broadReadinessSerializedAsyncVisualOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRowsWithRandomCold.map((row) =>
