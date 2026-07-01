@@ -14687,6 +14687,82 @@ assert.ok(forgedAcceptedProfileRuntime.validationProfileEvidence.failedGates.inc
 ));
 assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
+const prefixedProfileIdentityDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-prefixed-runtime-identity-profile',
+);
+await writeRgbaPng(path.join(prefixedProfileIdentityDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
+await writeRgbaPng(path.join(prefixedProfileIdentityDir, 'after.png'), 8, 8, (x, y) => [92 + x, 100 + y, 136, 255]);
+await writeRgbaPng(path.join(prefixedProfileIdentityDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const prefixedProfileIdentityVisualArtifacts = visualArtifactSet({
+  before: path.join(prefixedProfileIdentityDir, 'before.png'),
+  after: path.join(prefixedProfileIdentityDir, 'after.png'),
+  diff: path.join(prefixedProfileIdentityDir, 'diff.png'),
+});
+const prefixedProfileIdentityMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
+  projectId: 'flow:runtime-target',
+  visualRoot: prefixedProfileIdentityDir,
+}, prefixedProfileIdentityVisualArtifacts);
+await writeJson(path.join(prefixedProfileIdentityDir, 'hot1-prefixed-runtime-identity-profile.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    prefixedProfileIdentityMaterials.proofLedgerQuery.record.proofId,
+    prefixedProfileIdentityMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...prefixedProfileIdentityMaterials,
+  targetId: 'flow:runtime-target',
+  profileId: 'flow:runtime-target',
+  proofId: 'agent-split-run-mode-proof:sha256:flow-prefixed-runtime-identity-profile',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow',
+    profileClass: 'flow_visual_gpu_path',
+    evidenceRefs: [
+      'evidence:validation-profile:flow:runtime-visual',
+      prefixedProfileIdentityMaterials.proofLedgerQuery.record.proofId,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-prefixed-runtime-identity-profile',
+      prefixedProfileIdentityMaterials.proofLedgerQuery.record.proofId,
+      prefixedProfileIdentityMaterials.runtimeProofArtifact.proofId,
+    ],
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    prefixedProfileIdentityDir,
+    prefixedProfileIdentityVisualArtifacts,
+  ),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-prefixed-runtime-identity-profile',
+    editHash: hashValue('flow-prefixed-runtime-identity-profile'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const prefixedProfileIdentityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [prefixedProfileIdentityDir],
+  generatedAt: '2026-06-09T00:00:01.025Z',
+  includeUnproven: true,
+});
+const prefixedProfileIdentityCoverage = new Map(
+  prefixedProfileIdentityLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const prefixedProfileIdentityRuntime = prefixedProfileIdentityLedger.rows.find((row) =>
+  row.targetId === 'flow:runtime-target'
+);
+assert.equal(prefixedProfileIdentityRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(prefixedProfileIdentityRuntime.validationProfileEvidence.accepted, false);
+assert.ok(prefixedProfileIdentityRuntime.validationProfileEvidence.failedGates.includes(
+  'validation_profile_id_not_bound_to_runtime_identity',
+));
+assert.equal(prefixedProfileIdentityCoverage.get('flow_visual_gpu_path'), undefined);
+
 const substringOnlyProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-substring-only-profile');
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'after.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);

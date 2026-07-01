@@ -5519,11 +5519,7 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   ]);
   const profileIdBoundToRow =
     Boolean(profileId)
-    && rowRuntimeIdentities.some((identity) =>
-      identity === profileId
-      || identity.startsWith(`${profileId}:`)
-      || identity.includes(`:${profileId}:`)
-    );
+    && rowRuntimeIdentities.some((identity) => identity === profileId);
   const evidenceRefsBound = evidenceRefs.filter((ref) =>
     evidenceRefSet.has(ref)
     || visualArtifactHashSet.has(ref)
