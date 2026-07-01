@@ -175,9 +175,12 @@ export function codesiteSchemas() {
     'line-provenance.schema.json': schema('LineProvenance', {
       filePath: { type: 'string' },
       lineAnchor: { type: 'string' },
+      startLine: { type: ['number', 'null'] },
+      endLine: { type: ['number', 'null'] },
       displayCallsign: { type: 'string' },
       reasonRef: { type: 'string' },
       evidenceRefs: { type: 'array', items: { type: 'string' } },
+      dojoSourceRefs: { type: 'array', items: { type: 'string' } },
       proofBundleId: { type: ['string', 'null'] },
       processAncestry: { type: 'array' },
       promptSummary: { type: ['string', 'null'] },

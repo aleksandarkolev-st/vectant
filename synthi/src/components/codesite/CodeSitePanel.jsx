@@ -25,6 +25,7 @@ import {
   createCodeSiteProject,
   createEmptyCodeSiteRadarState,
   exportCodeSiteArtifacts,
+  fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
 } from './codesiteClient';
 
@@ -34,9 +35,57 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function uniqueValues(values) {
+  return [...new Set(asArray(values).filter(Boolean).map((value) => String(value)))];
+}
+
 function compact(value, fallback = 'none') {
   if (value == null || value === '') return fallback;
   return String(value);
+}
+
+function parseLineRange(lineAnchor) {
+  const match = String(lineAnchor || '').match(/#?L(\d+)(?:-L?(\d+))?/i);
+  if (!match) return { startLine: null, endLine: null };
+  const startLine = Math.max(1, Number(match[1]));
+  const endLine = Math.max(startLine, Number(match[2] || match[1]));
+  return { startLine, endLine };
+}
+
+function lineRange(row = {}) {
+  const parsed = parseLineRange(row.lineAnchor);
+  const startLine = Number.isFinite(Number(row.startLine)) ? Number(row.startLine) : parsed.startLine;
+  const endLine = Number.isFinite(Number(row.endLine)) ? Number(row.endLine) : parsed.endLine || startLine;
+  return { startLine, endLine };
+}
+
+function lineRangeLabel(row = {}) {
+  const range = lineRange(row);
+  if (!range.startLine) return compact(row.lineAnchor, 'line');
+  return range.endLine && range.endLine !== range.startLine
+    ? `L${range.startLine}-L${range.endLine}`
+    : `L${range.startLine}`;
+}
+
+function lineProvenanceKey(row) {
+  if (!row) return 'line:none';
+  return row.id || `${row.filePath || 'file'}:${row.lineAnchor || lineRangeLabel(row)}:${row.transactionId || ''}`;
+}
+
+function pathCoversFile(pattern, filePath) {
+  if (!pattern || !filePath) return false;
+  if (pattern === filePath) return true;
+  if (pattern.endsWith('/**')) return filePath.startsWith(pattern.slice(0, -3));
+  if (pattern.includes('*')) return filePath.startsWith(pattern.split('*')[0]);
+  return false;
+}
+
+function inspectionRunRefs(run) {
+  return uniqueValues([
+    ...asArray(run?.evidenceRefs),
+    ...asArray(run?.inspectionSignals).flatMap((signal) => asArray(signal?.evidenceRefs || signal?.evidence_refs)),
+    run?.id ? `codesite:inspection:${run.id}` : null,
+  ]);
 }
 
 function hasEntries(value) {
@@ -153,12 +202,17 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-start gap-1 self-start">
+    <div className="flex min-w-0 max-w-full flex-wrap items-start gap-1 self-start overflow-hidden">
       {visible.map((path) => (
         <code
           key={path}
-          className="inline-block max-w-full truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
+          className="inline-block min-w-0 truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
+          style={{
+            maxWidth: 'min(100%, 18rem)',
+            borderColor: 'var(--border-subtle)',
+            background: 'var(--bg-editor)',
+            color: 'var(--text-secondary)',
+          }}
           title={path}
         >
           {path}
@@ -590,6 +644,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [error, setError] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [exportResult, setExportResult] = useState(null);
+  const [lineInspector, setLineInspector] = useState({ status: 'idle', row: null, rows: [], error: null });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -688,8 +743,68 @@ export default function CodeSitePanel({ workspaceSlug }) {
     .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
     .filter(Boolean);
   const lineProvenance = asArray(currentProject?.lineProvenance);
+  const selectedLineRow = lineInspector.row;
+  const selectedLineTransaction = selectedLineRow
+    ? selectedLineRow.transaction
+      || activeTransactions.find((txn) => txn.id === selectedLineRow.transactionId)
+      || asArray(currentProject?.mutationTxns).find((txn) => txn.id === selectedLineRow.transactionId)
+      || null
+    : null;
+  const selectedLineLease = selectedLineRow
+    ? selectedLineRow.mutationLease
+      || activeLeases.find((lease) => lease.id === selectedLineTransaction?.mutationLeaseId)
+      || asArray(currentProject?.mutationLeases).find((lease) => lease.id === selectedLineTransaction?.mutationLeaseId)
+      || null
+    : null;
+  const selectedLineProof = selectedLineRow
+    ? selectedLineRow.proofBundleId
+      ? asArray(selectedLineRow.proofBundles).find((bundle) => bundle.id === selectedLineRow.proofBundleId)
+        || proofBundles.find((bundle) => bundle.id === selectedLineRow.proofBundleId)
+        || null
+      : asArray(selectedLineRow.proofBundles)[0] || null
+    : null;
+  const selectedLineEvidenceRefs = selectedLineRow ? uniqueValues([
+    ...asArray(selectedLineRow.evidenceRefs),
+    ...asArray(selectedLineProof?.evidenceRefs),
+  ]) : [];
+  const selectedLineInspectionRefs = selectedLineRow ? uniqueValues(inspectionRuns
+    .filter((run) => asArray(run.changedPaths).some((changedPath) => pathCoversFile(changedPath, selectedLineRow.filePath)))
+    .flatMap(inspectionRunRefs)) : [];
+  const selectedLineDojoRefs = selectedLineRow ? uniqueValues([
+    ...asArray(selectedLineRow.dojoSourceRefs),
+    selectedLineLease?.dojoProofRef,
+    selectedLineLease?.dojoLicenseRef,
+    ...asArray(selectedLineLease?.dojoEvidenceRefs),
+  ]) : [];
   const artifactContent = artifacts.find((file) => file.contentPreview)?.contentPreview;
   const artifactContentPath = artifacts.find((file) => file.contentPreview)?.path;
+
+  useEffect(() => {
+    setLineInspector({ status: 'idle', row: null, rows: [], error: null });
+  }, [currentProject?.id]);
+
+  const handleInspectLine = useCallback(async (row) => {
+    if (!row?.filePath) return;
+    const range = lineRange(row);
+    setLineInspector({ status: 'loading', row, rows: [row], error: null });
+    try {
+      const rows = await fetchCodeSiteLineProvenance(workspaceSlug, {
+        projectId: currentProject?.id,
+        filePath: row.filePath,
+        lineAnchor: row.lineAnchor,
+        lineNumber: range.startLine,
+      });
+      const nextRows = rows.length ? rows : [row];
+      setLineInspector({ status: 'ready', row: nextRows[0], rows: nextRows, error: null });
+    } catch (nextError) {
+      setLineInspector({
+        status: 'error',
+        row,
+        rows: [row],
+        error: nextError.message || 'line_provenance_lookup_failed',
+      });
+    }
+  }, [currentProject?.id, workspaceSlug]);
 
   const latestStatus = useMemo(() => {
     if (error?.status === 401) return 'auth';
@@ -1113,22 +1228,113 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 {lineProvenance.length === 0 ? (
                   <EmptyLine>No line provenance indexed</EmptyLine>
                 ) : (
-                  <div className="space-y-1">
-                    {lineProvenance.slice(-5).reverse().map((row) => (
-                      <div key={row.id || `${row.filePath}-${row.lineAnchor}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-                        <div className="flex items-center justify-between gap-2">
-                          <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
-                          <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
+                  <div className="grid min-w-0 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)]">
+                    <div className="min-w-0 space-y-1">
+                      {lineProvenance.slice(-8).reverse().map((row) => {
+                        const selected = lineProvenanceKey(row) === lineProvenanceKey(selectedLineRow);
+                        return (
+                          <button
+                            key={lineProvenanceKey(row)}
+                            type="button"
+                            data-testid="codesite-line-provenance-row"
+                            aria-pressed={selected}
+                            onClick={() => handleInspectLine(row)}
+                            className="block w-full min-w-0 overflow-hidden rounded border px-2 py-1.5 text-left text-xs transition-colors"
+                            style={{
+                              borderColor: selected ? 'color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))' : 'var(--border-subtle)',
+                              background: selected ? 'color-mix(in srgb, var(--accent-primary) 14%, var(--bg-surface))' : 'var(--bg-surface)',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Pill>{lineRangeLabel(row)}</Pill>
+                                <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
+                              </div>
+                            </div>
+                            <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                              <PathList paths={[row.reasonRef, row.proofBundleId].filter(Boolean)} empty="no reason" />
+                              <PathList paths={asArray(row.evidenceRefs)} empty="no evidence refs" maxVisible={5} />
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div
+                      data-testid="codesite-line-inspector"
+                      className="min-h-[168px] min-w-0 overflow-hidden rounded border p-2 text-xs"
+                      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+                    >
+                      {!selectedLineRow ? (
+                        <EmptyLine>Select a changed line</EmptyLine>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium">{lineRangeLabel(selectedLineRow)} causal trace</div>
+                              <code className="mt-0.5 block truncate text-[10px]" title={selectedLineRow.filePath} style={{ color: 'var(--text-muted)' }}>
+                                {selectedLineRow.filePath}
+                              </code>
+                            </div>
+                            <Pill tone={lineInspector.status === 'error' ? 'failed' : 'active'}>
+                              {lineInspector.status === 'loading' ? 'loading' : `${lineInspector.rows.length || 1} rows`}
+                            </Pill>
+                          </div>
+                          <div className="grid gap-1 text-[11px]">
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Transaction</span>
+                              <code className="truncate" title={selectedLineRow.transactionId}>{compact(selectedLineRow.transactionId)}</code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Clearance</span>
+                              <code className="truncate" title={selectedLineLease?.id || selectedLineTransaction?.mutationLeaseId}>
+                                {compact(selectedLineLease?.displayCallsign || selectedLineRow.displayCallsign, 'agent')} / {compact(selectedLineLease?.id || selectedLineTransaction?.mutationLeaseId, 'lease')}
+                              </code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Reason</span>
+                              <code className="truncate" title={selectedLineRow.reasonRef}>{compact(selectedLineRow.reasonRef, 'none')}</code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Proof</span>
+                              <code className="truncate" title={selectedLineProof?.bundleDigest || selectedLineRow.proofBundleId}>
+                                {compact(selectedLineProof?.bundleDigest || selectedLineRow.proofBundleId, 'none')}
+                              </code>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence refs</div>
+                            <PathList paths={selectedLineEvidenceRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Inspection/test approvals</div>
+                            <PathList paths={selectedLineInspectionRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Dojo/source refs</div>
+                            <PathList paths={selectedLineDojoRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Process ancestry</div>
+                            <PathList paths={asArray(selectedLineRow.processAncestry)} empty="none" maxVisible={8} />
+                          </div>
+                          {selectedLineRow.promptSummary ? (
+                            <div>
+                              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Prompt/process</div>
+                              <div className="mt-1 rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                                {selectedLineRow.promptSummary}
+                              </div>
+                            </div>
+                          ) : null}
+                          {lineInspector.error ? (
+                            <div className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', color: 'var(--text-primary)' }}>
+                              {lineInspector.error}
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                          <PathList paths={[row.lineAnchor, row.reasonRef].filter(Boolean)} empty="no anchor" />
-                          <PathList paths={[...asArray(row.evidenceRefs), ...asArray(row.processAncestry)]} empty="no evidence refs" maxVisible={8} />
-                        </div>
-                        {row.promptSummary ? (
-                          <div className="mt-1 truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{row.promptSummary}</div>
-                        ) : null}
+                      )}
                       </div>
-                    ))}
                   </div>
                 )}
               </Section>

@@ -35,8 +35,15 @@ export function buildProofBundle({
     lineProvenance: lineProvenance.map((row) => ({
       filePath: row.filePath,
       lineAnchor: row.lineAnchor,
+      startLine: row.startLine || null,
+      endLine: row.endLine || null,
       displayCallsign: row.displayCallsign,
+      reasonRef: row.reasonRef || null,
+      evidenceRefs: row.evidenceRefs || [],
+      dojoSourceRefs: row.dojoSourceRefs || [],
       proofBundleId: row.proofBundleId,
+      processAncestry: row.processAncestry || [],
+      promptSummary: row.promptSummary || null,
     })),
     createdAt: normalizeProofTimestamp(proofBundle?.createdAt) || new Date().toISOString(),
   };

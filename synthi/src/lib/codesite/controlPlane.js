@@ -1351,9 +1351,24 @@ function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
     ...asArray(body.processAncestry || body.process_ancestry),
     ...asArray(codesiteFsEvent?.details?.process_ancestry || codesiteFsEvent?.details?.processAncestry),
   ].filter(Boolean));
+  const changedLineRanges = strictLineProvenanceRows(
+    body.changedLineRanges
+      || body.changed_line_ranges
+      || body.changedRanges
+      || body.changed_ranges
+      || codesiteFsEvent?.details?.changedLineRanges
+      || codesiteFsEvent?.details?.changed_line_ranges,
+    path,
+  );
+  const dojoSourceRefs = unique([
+    ...asArray(body.dojoSourceRefs || body.dojo_source_refs),
+    ...asArray(codesiteFsEvent?.details?.dojoSourceRefs || codesiteFsEvent?.details?.dojo_source_refs),
+  ].filter(Boolean));
   return {
     ...(lineProvenance.length ? { lineProvenance } : {}),
+    ...(changedLineRanges.length ? { changedLineRanges } : {}),
     ...(evidenceRefs.length ? { evidenceRefs } : {}),
+    ...(dojoSourceRefs.length ? { dojoSourceRefs } : {}),
     ...(processAncestry.length ? { processAncestry } : {}),
   };
 }
@@ -1385,6 +1400,7 @@ function normalizeLineProvenanceInput(value, defaultPath) {
       reasonRef: item.reasonRef || item.reason_ref || null,
       evidenceRefs: asArray(item.evidenceRefs || item.evidence_refs),
       processAncestry: asArray(item.processAncestry || item.process_ancestry),
+      dojoSourceRefs: asArray(item.dojoSourceRefs || item.dojo_source_refs),
       promptSummary: item.promptSummary || item.prompt_summary || null,
     }];
   });
@@ -1893,6 +1909,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       isolation: transaction.isolation,
       reasonCodes: lineProvenanceDecision.reasonCodes,
       missingLineProvenancePaths: lineProvenanceDecision.missingPaths,
+      lineProvenance: lineProvenanceDecision,
       validatedAt: new Date().toISOString(),
     };
     const updated = await prisma.codeSiteMutationTransaction.update({
@@ -2244,16 +2261,37 @@ async function verifyLineProvenanceEvidence(transaction) {
     },
     orderBy: { createdAt: 'asc' },
   });
-  const coveredPaths = new Set(events
+  const transactionEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
-    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
+    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction));
+  const coveredPaths = new Set(transactionEvents
     .flatMap(({ details }) => strictLineProvenanceRows(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
     .map((row) => row.filePath));
+  const uncoveredWriteEvents = transactionEvents
+    .map(({ event, details }) => {
+      const path = normalizePath(details.path);
+      const rows = strictLineProvenanceRows(details.lineProvenance || details.line_provenance, path);
+      const expectedRanges = strictLineProvenanceRows(details.changedLineRanges || details.changed_line_ranges, path);
+      const missingPathCoverage = path && !lineProvenanceRowsCoverPath(rows, path);
+      const missingRangeCoverage = expectedRanges.filter((expectedRange) => (
+        !rows.some((row) => lineProvenanceRowCoversRange(row, expectedRange))
+      ));
+      return {
+        eventId: event.id,
+        path,
+        missingPathCoverage,
+        missingRangeCoverage,
+      };
+    })
+    .filter((item) => item.path && (item.missingPathCoverage || item.missingRangeCoverage.length));
   const missingPaths = paths.filter((filePath) => !lineProvenanceCoversPath(coveredPaths, filePath));
+  const missingEventPaths = unique(uncoveredWriteEvents.map((event) => event.path));
+  const allMissingPaths = unique([...missingPaths, ...missingEventPaths]);
   return {
-    ok: missingPaths.length === 0,
-    reasonCodes: missingPaths.length ? ['line_provenance_required'] : ['line_provenance_verified'],
-    missingPaths,
+    ok: allMissingPaths.length === 0 && uncoveredWriteEvents.length === 0,
+    reasonCodes: allMissingPaths.length || uncoveredWriteEvents.length ? ['line_provenance_required'] : ['line_provenance_verified'],
+    missingPaths: allMissingPaths,
+    uncoveredWriteEvents,
   };
 }
 
@@ -2272,8 +2310,21 @@ function isStrictLineProvenanceRow(row) {
 function lineProvenanceCoversPath(coveredPaths, path) {
   if (coveredPaths.has(path)) return true;
   return [...coveredPaths].some((coveredPath) => (
-    matchPathPattern(coveredPath, path) || matchPathPattern(path, coveredPath)
+    lineProvenanceFileCoversPath(coveredPath, path)
   ));
+}
+
+function lineProvenanceRowsCoverPath(rows, path) {
+  return rows.some((row) => lineProvenanceFileCoversPath(row.filePath, path));
+}
+
+function lineProvenanceFileCoversPath(provenancePath, path) {
+  return provenancePath === path || matchPathPattern(provenancePath, path) || matchPathPattern(path, provenancePath);
+}
+
+function lineProvenanceRowCoversRange(row, expectedRange) {
+  if (!lineProvenanceFileCoversPath(row.filePath, expectedRange.filePath)) return false;
+  return row.startLine <= expectedRange.startLine && row.endLine >= expectedRange.endLine;
 }
 
 async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
@@ -2295,6 +2346,8 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
         transactionId: transaction.id,
         filePath: row.filePath,
         lineAnchor: row.lineAnchor,
+        startLine: row.startLine,
+        endLine: row.endLine,
         displayCallsign: transaction.mutationLease.displayCallsign,
         reasonRef: row.reasonRef || `event:${event.id}`,
         evidenceRefsJson: stringifyJson(unique([
@@ -2304,7 +2357,10 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
           ...asArray(details.evidenceRefs || details.evidence_refs),
           ...asArray(row.evidenceRefs),
         ].filter(Boolean))),
-        dojoSourceRefsJson: stringifyJson([]),
+        dojoSourceRefsJson: stringifyJson(unique([
+          ...asArray(details.dojoSourceRefs || details.dojo_source_refs),
+          ...asArray(row.dojoSourceRefs || row.dojo_source_refs),
+        ].filter(Boolean))),
         proofBundleId: bundle.id,
         processAncestryJson: stringifyJson(unique([
           ...asArray(details.processAncestry || details.process_ancestry),
@@ -3958,14 +4014,58 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
   return result;
 }
 
-export async function getLineProvenance(workspaceSlug, { filePath, lineAnchor } = {}) {
-  const where = {
+export async function getLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
+  const requestedLine = normalizeLineNumber(lineNumber);
+  const baseWhere = {
     project: { workspaceSlug },
+    ...(projectId ? { projectId } : {}),
     ...(filePath ? { filePath: normalizePath(filePath) || filePath } : {}),
     ...(lineAnchor ? { lineAnchor } : {}),
   };
+  const include = {
+    transaction: {
+      include: {
+        mutationLease: {
+          include: { agentSession: true },
+        },
+        agentSession: true,
+        proofBundles: true,
+      },
+    },
+  };
+  if (requestedLine) {
+    const [rangedRows, legacyRows] = await Promise.all([
+      prisma.codeSiteLineProvenance.findMany({
+        where: {
+          ...baseWhere,
+          startLine: { lte: requestedLine },
+          OR: [
+            { endLine: { gte: requestedLine } },
+            { endLine: null },
+          ],
+        },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+      prisma.codeSiteLineProvenance.findMany({
+        where: {
+          ...baseWhere,
+          startLine: null,
+        },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+    ]);
+    return uniqueById([...rangedRows, ...legacyRows])
+      .map(lineProvenanceProjection)
+      .filter((row) => lineProvenanceIncludesLine(row, requestedLine))
+      .slice(0, 50);
+  }
   const rows = await prisma.codeSiteLineProvenance.findMany({
-    where,
+    where: baseWhere,
+    include,
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
@@ -4290,6 +4390,16 @@ function unique(values) {
   return [...new Set(values)];
 }
 
+function uniqueById(rows) {
+  const seen = new Set();
+  return asArray(rows).filter((row) => {
+    const key = row?.id || stableJson(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function projectSummary(project) {
   return {
     id: project.id,
@@ -4518,12 +4628,20 @@ function proofBundleProjection(bundle, context = {}) {
 }
 
 function lineProvenanceProjection(row) {
+  const anchorRange = parsedLineRange(row.lineAnchor);
+  const startLine = row.startLine || anchorRange.startLine;
+  const endLine = row.endLine || anchorRange.endLine;
+  const transaction = row.transaction || null;
+  const mutationLease = transaction?.mutationLease || null;
+  const agentSession = transaction?.agentSession || mutationLease?.agentSession || null;
   return {
     id: row.id,
     projectId: row.projectId,
     transactionId: row.transactionId,
     filePath: row.filePath,
     lineAnchor: row.lineAnchor,
+    startLine,
+    endLine,
     displayCallsign: row.displayCallsign,
     reasonRef: row.reasonRef,
     evidenceRefs: parseJson(row.evidenceRefsJson, []),
@@ -4531,8 +4649,37 @@ function lineProvenanceProjection(row) {
     proofBundleId: row.proofBundleId,
     processAncestry: parseJson(row.processAncestryJson, []),
     promptSummary: row.promptSummary,
+    transaction: transaction ? transactionProjection(transaction) : null,
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    agentSession: agentSession ? sessionProjection(agentSession) : null,
+    proofBundles: asArray(transaction?.proofBundles).map((bundle) => proofBundleProjection(bundle, {
+      transaction,
+      mutationLease,
+    })),
     createdAt: row.createdAt,
   };
+}
+
+function normalizeLineNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.floor(number) : null;
+}
+
+function lineProvenanceIncludesLine(row, lineNumber) {
+  const range = {
+    startLine: row.startLine || parsedLineRange(row.lineAnchor).startLine,
+    endLine: row.endLine || parsedLineRange(row.lineAnchor).endLine,
+  };
+  if (!range.startLine) return false;
+  return lineNumber >= range.startLine && lineNumber <= (range.endLine || range.startLine);
+}
+
+function parsedLineRange(lineAnchor) {
+  const match = String(lineAnchor || '').match(/#?L(\d+)(?:-L?(\d+))?/i);
+  if (!match) return { startLine: null, endLine: null };
+  const startLine = Math.max(1, Number(match[1]));
+  const endLine = Math.max(startLine, Number(match[2] || match[1]));
+  return { startLine, endLine };
 }
 
 function inspectionProjection(run) {

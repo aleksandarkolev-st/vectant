@@ -530,6 +530,8 @@ model CodeSiteLineProvenance {
   transactionId       String
   filePath            String
   lineAnchor          String
+  startLine           Int?
+  endLine             Int?
   displayCallsign     String
   reasonRef           String?
   evidenceRefsJson    String
@@ -545,6 +547,8 @@ model CodeSiteLineProvenance {
   @@index([projectId])
   @@index([transactionId])
   @@index([filePath])
+  @@index([filePath, startLine, endLine])
+  @@index([projectId, filePath, startLine, endLine])
   @@index([displayCallsign])
 }
 

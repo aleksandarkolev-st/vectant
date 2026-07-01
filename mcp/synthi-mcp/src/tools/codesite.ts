@@ -55,6 +55,7 @@ const CONTROL_ARG_KEYS = new Set([
   "file_path",
   "incident_id",
   "line_anchor",
+  "line_number",
   "mutation_lease_id",
   "path",
   "project_id",
@@ -217,9 +218,11 @@ export const CODESITE_TOOLS = [
     callsign: { type: "string" },
   }, []),
   codeSiteTool("synthi_codesite_generate_black_box", "Generate/export the repo-local CodeSite black-box artifact projection.", {}, []),
-  codeSiteTool("synthi_codesite_get_line_provenance", "Read causal line provenance for a workspace file and optional anchor.", {
+  codeSiteTool("synthi_codesite_get_line_provenance", "Read causal line provenance for a workspace file and optional line/range selector.", {
+    project_id: { type: "string" },
     file_path: { type: "string" },
     line_anchor: { type: "string" },
+    line_number: { type: "number" },
   }, ["file_path"]),
 ] as const;
 
@@ -448,8 +451,10 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         method: "GET",
         path: "/provenance/line",
         query: {
+          ...(optionalString(args["project_id"]) ? { projectId: optionalString(args["project_id"]) as string } : {}),
           filePath: requiredString(args, "file_path"),
           ...(optionalString(args["line_anchor"]) ? { lineAnchor: optionalString(args["line_anchor"]) as string } : {}),
+          ...(Number.isFinite(Number(args["line_number"])) ? { lineNumber: String(Number(args["line_number"])) } : {}),
         },
       };
   }

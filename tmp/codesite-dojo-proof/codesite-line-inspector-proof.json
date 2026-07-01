@@ -1,0 +1,535 @@
+{
+  "generatedAt": "2026-07-01T03:37:58.651Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-line-inspector-proof-1782877013843",
+  "project": {
+    "id": "cmr1iy3f100d7ob4te2hmrzic",
+    "title": "Line inspector workflow proof",
+    "route": "/workspace/codesite-line-inspector-proof-1782877013843/codesite"
+  },
+  "plan": {
+    "id": "cmr1iy58t00evob4tb8dpai22",
+    "displayCallsign": "LINE-INSPECT-01"
+  },
+  "lease": {
+    "id": "cmr1iyd2f00f1ob4ttekkp21u",
+    "status": "active",
+    "displayCallsign": "LINE-INSPECT-01"
+  },
+  "transaction": {
+    "id": "cmr1iyf6m00f7ob4tl8x6olkx",
+    "status": "committed",
+    "baseSnapshot": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+    "writeSet": [
+      "docs/checkout-contract.md"
+    ]
+  },
+  "writeResponse": {
+    "ok": true,
+    "invalidatedAssumptions": []
+  },
+  "inspection": {
+    "id": "cmr1iyktb00ffob4tccmazyu6",
+    "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+    "executionPlanId": "cmr1iy58t00evob4tb8dpai22",
+    "displayCallsign": "LINE-INSPECT-01",
+    "status": "completed",
+    "changedPaths": [
+      "docs/checkout-contract.md"
+    ],
+    "inspectionSignals": [
+      {
+        "key": "tests",
+        "status": "passed",
+        "command": {
+          "executable": "node",
+          "args": [
+            "-e",
+            "const fs = require('fs'); const text = fs.readFileSync(\"docs/checkout-contract.md\", 'utf8'); if (!text.includes('accepted RFI requires cancellation reason')) process.exit(1); if (!text.includes('checkout.refund.requested emits proof-backed evidence refs')) process.exit(1);"
+          ],
+          "cwd": ".",
+          "timeoutMs": 30000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 60,
+        "stdoutTail": "",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+        "evidenceRefs": [
+          "test:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+          "artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T03:37:28.383Z",
+        "completedAt": "2026-07-01T03:37:28.443Z"
+      }
+    ],
+    "evidenceRefs": [
+      "runtime:event:line-inspector-proof",
+      "test:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+      "artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59"
+    ],
+    "requestedAt": "2026-07-01T03:37:25.727Z",
+    "completedAt": "2026-07-01T03:37:28.443Z"
+  },
+  "repoState": {
+    "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+    "workspaceSlug": "codesite-line-inspector-proof-1782877013843",
+    "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+    "baseSnapshot": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+    "gitHead": "fe34ebd4a51c9d4e02fdf344312b26ddfa5ee86d",
+    "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktreeDiffDigest": "sha256:ac65107396f0a4792d9d338f83ce35467c09cd4601fe1b44bd10f035bf393f3f",
+    "writeFileDigests": [
+      {
+        "path": "docs/checkout-contract.md",
+        "digest": "sha256:01202e6352646ff2928a45ba2e7b0a35a061facf005e76b50f8c5ef6cf4a385e",
+        "size": 2504,
+        "exists": true
+      }
+    ],
+    "generatedAt": "2026-07-01T03:37:33.608Z",
+    "source": "collab-server",
+    "evidenceDigest": "sha256:f02f64e72a10dee0eaa1d5b1001d703047f16702bbaef6bf09af2fdad482c6e6"
+  },
+  "proofBundle": {
+    "id": "cmr1iyt9100fpob4tl7g3bdh4",
+    "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+    "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+    "commitSha": null,
+    "readSetDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "writeSetDigest": "sha256:8cf7f5f73365c14ca8085ced97c1f57c5074774f37e591f7ca4dc2de69a76acb",
+    "invariants": [
+      "tests:pass"
+    ],
+    "evidenceRefs": [
+      "mcp:audit:line-inspector-commit",
+      "runtime:event:line-inspector-proof",
+      "test:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+      "artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+      "codesite:inspection:cmr1iyktb00ffob4tccmazyu6",
+      "codesite:repo-state:sha256:f02f64e72a10dee0eaa1d5b1001d703047f16702bbaef6bf09af2fdad482c6e6",
+      "codesite:transaction:cmr1iyf6m00f7ob4tl8x6olkx",
+      "codesite:lease:cmr1iyd2f00f1ob4ttekkp21u"
+    ],
+    "dojoEvidenceRefs": [],
+    "repoState": {
+      "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+      "workspaceSlug": "codesite-line-inspector-proof-1782877013843",
+      "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+      "baseSnapshot": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+      "gitHead": "fe34ebd4a51c9d4e02fdf344312b26ddfa5ee86d",
+      "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "worktreeDiffDigest": "sha256:ac65107396f0a4792d9d338f83ce35467c09cd4601fe1b44bd10f035bf393f3f",
+      "writeFileDigests": [
+        {
+          "path": "docs/checkout-contract.md",
+          "digest": "sha256:01202e6352646ff2928a45ba2e7b0a35a061facf005e76b50f8c5ef6cf4a385e",
+          "size": 2504,
+          "exists": true
+        }
+      ],
+      "generatedAt": "2026-07-01T03:37:33.608Z",
+      "source": "collab-server",
+      "evidenceDigest": "sha256:f02f64e72a10dee0eaa1d5b1001d703047f16702bbaef6bf09af2fdad482c6e6"
+    },
+    "incidentReplayDigest": null,
+    "bundleDigest": "sha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946",
+    "createdAt": "2026-07-01T03:37:36.662Z",
+    "trailers": {
+      "CodeSite-Project": "cmr1iy3f100d7ob4te2hmrzic",
+      "CodeSite-Flight": "LINE-INSPECT-01",
+      "CodeSite-Clearance": "cmr1iyd2f00f1ob4ttekkp21u",
+      "CodeSite-Landing": "completed",
+      "CodeSite-Transaction": "cmr1iyf6m00f7ob4tl8x6olkx",
+      "CodeSite-Lease": "cmr1iyd2f00f1ob4ttekkp21u",
+      "CodeSite-Read-Set": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "CodeSite-Write-Set": "sha256:8cf7f5f73365c14ca8085ced97c1f57c5074774f37e591f7ca4dc2de69a76acb",
+      "CodeSite-Invariants": "tests:pass",
+      "CodeSite-Black-Box": "sha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946"
+    }
+  },
+  "lineLookup": {
+    "lineNumber": 42,
+    "count": 1,
+    "rows": [
+      {
+        "id": "cmr1iyt9k00frob4t1m2bytke",
+        "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+        "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+        "filePath": "docs/checkout-contract.md",
+        "lineAnchor": "docs/checkout-contract.md#L42-L44",
+        "startLine": 42,
+        "endLine": 44,
+        "displayCallsign": "LINE-INSPECT-01",
+        "reasonRef": "rfi:checkout-cancellation-contract",
+        "evidenceRefs": [
+          "proof:cmr1iyt9100fpob4tl7g3bdh4",
+          "transaction:cmr1iyf6m00f7ob4tl8x6olkx",
+          "event:cmr1iyiue00fdob4t1arfromx",
+          "mcp:audit:line-inspector-write",
+          "test:run:line-inspector-proof"
+        ],
+        "dojoSourceRefs": [
+          "dojo:source:line-inspector-contract"
+        ],
+        "proofBundleId": "cmr1iyt9100fpob4tl7g3bdh4",
+        "processAncestry": [
+          "tmp-codex-line-inspector",
+          "mcp:synthi_codesite_apply_patch"
+        ],
+        "promptSummary": "Add checkout cancellation contract after RFI approval",
+        "transaction": {
+          "id": "cmr1iyf6m00f7ob4tl8x6olkx",
+          "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+          "mutationLeaseId": "cmr1iyd2f00f1ob4ttekkp21u",
+          "agentSessionId": "cmr1iy50i00erob4tzg1teexd",
+          "baseSnapshot": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+          "baseSnapshotEvidence": {
+            "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+            "status": "empty",
+            "readSet": [],
+            "repoRoot": "/workspace",
+            "fileDigests": [],
+            "missingPaths": [],
+            "skippedPaths": [],
+            "truncated": false,
+            "limits": {
+              "maxFiles": 512,
+              "maxFileBytes": 2097152,
+              "maxScanEntries": 15000
+            },
+            "generatedAt": "2026-07-01T03:37:18.429Z",
+            "source": "codesite_control_plane",
+            "snapshotDigest": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+            "evidenceDigest": "sha256:b0ed8fbee68276e1fa248a755f750bbbba8fb7a60035f803bd971fb5a548296c"
+          },
+          "isolation": "serializable",
+          "status": "committed",
+          "readSet": [],
+          "observedReadSet": [],
+          "writeSet": [
+            "docs/checkout-contract.md"
+          ],
+          "observedWriteSet": [
+            "docs/checkout-contract.md"
+          ],
+          "semanticDependencyRefs": [],
+          "invariants": [
+            "tests:pass"
+          ],
+          "assumptionRefs": [],
+          "commitDecision": {
+            "ok": true,
+            "isolation": "serializable",
+            "reasonCodes": [
+              "serializable_validation_passed"
+            ],
+            "blockedWrites": [],
+            "invalidAssumptions": [],
+            "staleReads": [],
+            "repoSnapshot": {
+              "ok": true,
+              "reasonCodes": [
+                "repo_snapshot_empty_read_set"
+              ],
+              "expected": {
+                "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+                "status": "empty",
+                "readSet": [],
+                "repoRoot": "/workspace",
+                "fileDigests": [],
+                "missingPaths": [],
+                "skippedPaths": [],
+                "truncated": false,
+                "limits": {
+                  "maxFiles": 512,
+                  "maxFileBytes": 2097152,
+                  "maxScanEntries": 15000
+                },
+                "generatedAt": "2026-07-01T03:37:18.429Z",
+                "source": "codesite_control_plane",
+                "snapshotDigest": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+                "evidenceDigest": "sha256:b0ed8fbee68276e1fa248a755f750bbbba8fb7a60035f803bd971fb5a548296c"
+              },
+              "current": null,
+              "driftedPaths": []
+            },
+            "validatedAt": "2026-07-01T03:37:34.067Z"
+          },
+          "proofBundleDigest": "sha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946",
+          "openedAt": "2026-07-01T03:37:18.431Z",
+          "closedAt": "2026-07-01T03:37:36.669Z"
+        },
+        "mutationLease": {
+          "id": "cmr1iyd2f00f1ob4ttekkp21u",
+          "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+          "executionPlanId": "cmr1iy58t00evob4tb8dpai22",
+          "agentSessionId": "cmr1iy50i00erob4tzg1teexd",
+          "displayCallsign": "LINE-INSPECT-01",
+          "status": "active",
+          "lease": {
+            "allowedPaths": [
+              "docs/**"
+            ],
+            "blockedPaths": [
+              "secrets/**"
+            ],
+            "allowedTools": [
+              "file_write",
+              "node"
+            ],
+            "invariants": [
+              "clearance.diff.inside_route",
+              "no.secret.exposure"
+            ],
+            "requiredRadar": [
+              "tests"
+            ],
+            "expiresAt": null,
+            "issuedBy": "codesite_policy_engine",
+            "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+            "inspectedZones": [
+              {
+                "zoneKey": "class_d",
+                "label": "Low-risk support airspace",
+                "class": "D",
+                "paths": [
+                  "docs/**",
+                  "tests/**",
+                  "**/__tests__/**",
+                  "**/*.test.js",
+                  "**/*.test.jsx",
+                  "**/*.test.ts",
+                  "**/*.test.tsx",
+                  "**/*.md"
+                ],
+                "rules": [
+                  "micro_clearance_allowed",
+                  "sample_inspection"
+                ],
+                "risk": "low",
+                "source": "compiled_default",
+                "path": "docs/**"
+              }
+            ],
+            "dojoProofVerification": {
+              "ok": false,
+              "status": "blocked",
+              "checkedAt": "2026-07-01T03:37:10.313Z",
+              "source": "codesite_dojo_public_verifier",
+              "signatureVerified": false,
+              "blockedBy": [
+                "dojo_public_proof_capsule_required",
+                "dojo_public_proof_key_required"
+              ],
+              "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+            },
+            "collisionAvoidance": null
+          },
+          "dojoProofRef": null,
+          "dojoLicenseRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoLedgerCheckpointHash": null,
+          "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+          "implementationStatus": {
+            "executable": false,
+            "productionRuntime": false
+          },
+          "issuedAt": "2026-07-01T03:37:15.687Z",
+          "expiresAt": null,
+          "revokedAt": null
+        },
+        "agentSession": {
+          "id": "cmr1iy50i00erob4tzg1teexd",
+          "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+          "ownerUserId": "codesite-dev-bypass",
+          "agentProvider": "codex",
+          "agentRuntime": "tower-auto-plan",
+          "providerSessionRef": null,
+          "displayCallsign": "LINE-INSPECT-01",
+          "status": "registered",
+          "permissions": [
+            "codesite:mutation",
+            "codesite:inbox"
+          ],
+          "redactionPolicy": {
+            "acceptsTowerMessages": true,
+            "redactSecrets": true,
+            "redactPrivatePrompts": true,
+            "allowAttachments": false,
+            "visibleZones": [
+              "**"
+            ],
+            "allowedDocumentKinds": [
+              "rfi",
+              "change_order",
+              "inspection_request",
+              "inspection_result",
+              "mayday",
+              "handoff",
+              "stop_work",
+              "punch",
+              "tower_instruction"
+            ]
+          },
+          "dojoPilotLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoDecisionDigest": null,
+          "pilotLicenseSnapshot": null,
+          "createdAt": "2026-07-01T03:37:05.250Z",
+          "endedAt": null
+        },
+        "proofBundles": [
+          {
+            "id": "cmr1iyt9100fpob4tl7g3bdh4",
+            "projectId": "cmr1iy3f100d7ob4te2hmrzic",
+            "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+            "commitSha": null,
+            "readSetDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "writeSetDigest": "sha256:8cf7f5f73365c14ca8085ced97c1f57c5074774f37e591f7ca4dc2de69a76acb",
+            "invariants": [
+              "tests:pass"
+            ],
+            "evidenceRefs": [
+              "mcp:audit:line-inspector-commit",
+              "runtime:event:line-inspector-proof",
+              "test:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+              "artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59",
+              "codesite:inspection:cmr1iyktb00ffob4tccmazyu6",
+              "codesite:repo-state:sha256:f02f64e72a10dee0eaa1d5b1001d703047f16702bbaef6bf09af2fdad482c6e6",
+              "codesite:transaction:cmr1iyf6m00f7ob4tl8x6olkx",
+              "codesite:lease:cmr1iyd2f00f1ob4ttekkp21u"
+            ],
+            "dojoEvidenceRefs": [],
+            "repoState": {
+              "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+              "workspaceSlug": "codesite-line-inspector-proof-1782877013843",
+              "transactionId": "cmr1iyf6m00f7ob4tl8x6olkx",
+              "baseSnapshot": "sha256:8e2dceb9eb1574ca63e9ddd0ba480101e7513672d20f47ed131531ed6780365c",
+              "gitHead": "fe34ebd4a51c9d4e02fdf344312b26ddfa5ee86d",
+              "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "worktreeDiffDigest": "sha256:ac65107396f0a4792d9d338f83ce35467c09cd4601fe1b44bd10f035bf393f3f",
+              "writeFileDigests": [
+                {
+                  "path": "docs/checkout-contract.md",
+                  "digest": "sha256:01202e6352646ff2928a45ba2e7b0a35a061facf005e76b50f8c5ef6cf4a385e",
+                  "size": 2504,
+                  "exists": true
+                }
+              ],
+              "generatedAt": "2026-07-01T03:37:33.608Z",
+              "source": "collab-server",
+              "evidenceDigest": "sha256:f02f64e72a10dee0eaa1d5b1001d703047f16702bbaef6bf09af2fdad482c6e6"
+            },
+            "incidentReplayDigest": null,
+            "bundleDigest": "sha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946",
+            "createdAt": "2026-07-01T03:37:36.662Z",
+            "trailers": {
+              "CodeSite-Project": "cmr1iy3f100d7ob4te2hmrzic",
+              "CodeSite-Flight": "LINE-INSPECT-01",
+              "CodeSite-Clearance": "cmr1iyd2f00f1ob4ttekkp21u",
+              "CodeSite-Landing": null,
+              "CodeSite-Transaction": "cmr1iyf6m00f7ob4tl8x6olkx",
+              "CodeSite-Lease": "cmr1iyd2f00f1ob4ttekkp21u",
+              "CodeSite-Read-Set": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "CodeSite-Write-Set": "sha256:8cf7f5f73365c14ca8085ced97c1f57c5074774f37e591f7ca4dc2de69a76acb",
+              "CodeSite-Invariants": "tests:pass",
+              "CodeSite-Black-Box": "sha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946"
+            }
+          }
+        ],
+        "createdAt": "2026-07-01T03:37:36.680Z"
+      }
+    ]
+  },
+  "browserProof": {
+    "captures": [
+      {
+        "viewport": {
+          "name": "desktop",
+          "width": 1440,
+          "height": 1100
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 1440,
+          "documentScrollWidth": 1440,
+          "rowRect": {
+            "x": 12,
+            "y": 515.109375,
+            "width": 741.046875,
+            "height": 168
+          },
+          "inspectorRect": {
+            "x": 761.046875,
+            "y": 515.109375,
+            "width": 666.9375,
+            "height": 513.890625
+          },
+          "inspectorText": "L42-L44 causal tracedocs/checkout-contract.mdloadingTransactioncmr1iyf6m00f7ob4tl8x6olkxClearanceLINE-INSPECT-01 / cmr1iyd2f00f1ob4ttekkp21uReasonrfi:checkout-cancellation-contractProofsha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946Evidence refsproof:cmr1iyt9100fpob4tl7g3bdh4transaction:cmr1iyf6m00f7ob4tl8x6olkxevent:cmr1iyiue00fdob4t1arfromxmcp:audit:line-inspector-writetest:run:line-inspector-proofmcp:audit:line-inspector-commitruntime:event:line-inspector-prooftest:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59+5Inspection/test approvalsruntime:event:line-inspector-prooftest:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59codesite:inspection:cmr1iyktb00ffob4tccmazyu6Dojo/source refsdojo:source:line-inspector-contractProcess ancestrytmp-codex-line-inspectormcp:synthi_codesite_apply_patchPrompt/processAdd checkout cancellation contract after RFI approval",
+          "hasRange": true,
+          "hasTransaction": true,
+          "hasClearance": true,
+          "hasEvidence": true,
+          "hasInspectionApproval": true,
+          "hasDojoSource": true,
+          "hasProcess": true,
+          "hasPrompt": true,
+          "fitsViewport": true
+        }
+      },
+      {
+        "viewport": {
+          "name": "mobile",
+          "width": 390,
+          "height": 980
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 390,
+          "documentScrollWidth": 390,
+          "rowRect": {
+            "x": 0,
+            "y": 272.375,
+            "width": 512.078125,
+            "height": 142
+          },
+          "inspectorRect": {
+            "x": 0,
+            "y": 422.375,
+            "width": 512.078125,
+            "height": 557.21875
+          },
+          "inspectorText": "L42-L44 causal tracedocs/checkout-contract.md1 rowsTransactioncmr1iyf6m00f7ob4tl8x6olkxClearanceLINE-INSPECT-01 / cmr1iyd2f00f1ob4ttekkp21uReasonrfi:checkout-cancellation-contractProofsha256:dd4125c31f46308d5f22cc5c05d34bac4cbc26f38060597aeac8d3d206a78946Evidence refsproof:cmr1iyt9100fpob4tl7g3bdh4transaction:cmr1iyf6m00f7ob4tl8x6olkxevent:cmr1iyiue00fdob4t1arfromxmcp:audit:line-inspector-writetest:run:line-inspector-proofmcp:audit:line-inspector-commitruntime:event:line-inspector-prooftest:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59+5Inspection/test approvalsruntime:event:line-inspector-prooftest:run:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59artifact:sha256:226876b4338257e5b72f1223b5d83b21f8fcc9a0ca1f6db1910af251c97d6f59codesite:inspection:cmr1iyktb00ffob4tccmazyu6Dojo/source refsdojo:source:line-inspector-contractProcess ancestrytmp-codex-line-inspectormcp:synthi_codesite_apply_patchPrompt/processAdd checkout cancellation contract after RFI approval",
+          "hasRange": true,
+          "hasTransaction": true,
+          "hasClearance": true,
+          "hasEvidence": true,
+          "hasInspectionApproval": true,
+          "hasDojoSource": true,
+          "hasProcess": true,
+          "hasPrompt": true,
+          "fitsViewport": true
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "leaseActive": true,
+    "writeAllowed": true,
+    "inspectionExecuted": true,
+    "transactionCommitted": true,
+    "lineRangePersisted": true,
+    "dojoSourcePersisted": true,
+    "apiReturnsCausalContext": true,
+    "proofBundleHasTrailers": true,
+    "desktopInspectorVisible": true,
+    "mobileInspectorVisible": true
+  }
+}

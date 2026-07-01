@@ -23,6 +23,7 @@ const {
     getAgentInbox: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
+    getLineProvenance: vi.fn(),
     getSourceStateSince: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
     validateTransaction: vi.fn(),
@@ -214,6 +215,30 @@ describe('CodeSite catch-all route', () => {
       body,
       expect.objectContaining({ userId: 'user-1' }),
     );
+  });
+
+  it('dispatches line provenance lookups with project and line filters', async () => {
+    controlPlane.getLineProvenance.mockResolvedValue([{
+      id: 'line-1',
+      filePath: 'api/checkout/route.js',
+      startLine: 42,
+    }]);
+
+    const response = await GET(
+      new Request('http://test/api/workspace/acme/codesite/provenance/line?projectId=proj-1&filePath=api%2Fcheckout%2Froute.js&lineNumber=42'),
+      params(['provenance', 'line']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      lineProvenance: [{ id: 'line-1', filePath: 'api/checkout/route.js', startLine: 42 }],
+    });
+    expect(controlPlane.getLineProvenance).toHaveBeenCalledWith('acme', {
+      projectId: 'proj-1',
+      filePath: 'api/checkout/route.js',
+      lineAnchor: null,
+      lineNumber: '42',
+    });
   });
 
   it('previews dry-run patches without dispatching transaction write records', async () => {

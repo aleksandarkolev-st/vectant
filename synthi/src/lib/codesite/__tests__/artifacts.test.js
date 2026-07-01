@@ -98,6 +98,11 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
+    expect(codesiteSchemas()['line-provenance.schema.json'].properties).toMatchObject({
+      startLine: { type: ['number', 'null'] },
+      endLine: { type: ['number', 'null'] },
+      dojoSourceRefs: { type: 'array', items: { type: 'string' } },
+    });
     expect(codesiteSchemas()['proof-bundle.schema.json'].required).toEqual(expect.arrayContaining([
       'schemaVersion',
       'projectId',

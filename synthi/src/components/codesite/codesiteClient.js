@@ -128,6 +128,16 @@ export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
   return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview?include=content`);
 }
 
+export async function fetchCodeSiteLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
+  if (!workspaceSlug || !filePath) return [];
+  const search = new URLSearchParams({ filePath });
+  if (projectId) search.set('projectId', projectId);
+  if (lineAnchor) search.set('lineAnchor', lineAnchor);
+  if (lineNumber) search.set('lineNumber', String(lineNumber));
+  const body = await request(`${codeSiteBase(workspaceSlug)}/provenance/line?${search.toString()}`);
+  return body.lineProvenance || [];
+}
+
 export async function createCodeSiteProject(workspaceSlug, payload = {}) {
   const body = await request(`${codeSiteBase(workspaceSlug)}/projects`, {
     method: 'POST',

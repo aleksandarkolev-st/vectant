@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
+  fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
 }));
 
@@ -38,6 +39,7 @@ vi.mock('../codesiteClient', () => ({
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
+  fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
 }));
 
@@ -143,17 +145,22 @@ function radarState() {
         id: 'inspection-1',
         displayCallsign: 'QA-1',
         status: 'passed',
-        changedPaths: ['src/app/page.jsx'],
+        changedPaths: ['api/checkout/**'],
         inspectionSignals: [{ type: 'test', status: 'passed' }],
-        evidenceRefs: ['test:checkout'],
+        evidenceRefs: ['runtime:event:inspection-1', 'test:checkout'],
       }],
       lineProvenance: [{
         id: 'line-1',
+        transactionId: 'txn-1',
         filePath: 'api/checkout/route.js',
         lineAnchor: 'L42',
+        startLine: 42,
+        endLine: 44,
         displayCallsign: 'ATLAS-1',
         reasonRef: 'rfi:checkout',
         evidenceRefs: ['proof-1', 'hunk:checkout'],
+        dojoSourceRefs: ['dojo:source:checkout-contract'],
+        proofBundleId: 'proof-1',
         processAncestry: ['mcp:synthi_codesite_apply_patch'],
         promptSummary: 'Add checkout route',
       }],
@@ -194,6 +201,7 @@ function radarState() {
       }],
       activeTransactions: [{
         id: 'txn-1',
+        mutationLeaseId: 'lease-1',
         status: 'open',
         writeSet: ['api/checkout/route.js'],
         openedAt: '2026-06-29T23:30:00.000Z',
@@ -250,6 +258,7 @@ describe('CodeSitePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
+    h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -296,9 +305,8 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
     expect(container.textContent).toContain('api/checkout/route.js');
+    expect(container.textContent).toContain('L42-L44');
     expect(container.textContent).toContain('hunk:checkout');
-    expect(container.textContent).toContain('mcp:synthi_codesite_apply_patch');
-    expect(container.textContent).toContain('Add checkout route');
     expect(container.textContent).toContain('Agent Inbox');
     expect(container.textContent).toContain('Need schema owner');
     expect(container.textContent).toContain('logicalTime');
@@ -306,6 +314,34 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
     expect(container.textContent).toContain('towerState');
     expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
+
+    h.fetchCodeSiteLineProvenance.mockResolvedValueOnce([{
+      ...radarState().project.lineProvenance[0],
+      transaction: { id: 'txn-1', mutationLeaseId: 'lease-1' },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1' }],
+    }]);
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-line-provenance-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(h.fetchCodeSiteLineProvenance).toHaveBeenCalledWith('acme', {
+      projectId: 'proj-1',
+      filePath: 'api/checkout/route.js',
+      lineAnchor: 'L42',
+      lineNumber: 42,
+    });
+    const inspector = container.querySelector('[data-testid="codesite-line-inspector"]');
+    expect(inspector.textContent).toContain('L42-L44 causal trace');
+    expect(inspector.textContent).toContain('txn-1');
+    expect(inspector.textContent).toContain('ATLAS-1 / lease-1');
+    expect(inspector.textContent).toContain('rfi:checkout');
+    expect(inspector.textContent).toContain('digest-proof-1');
+    expect(inspector.textContent).toContain('runtime:event:inspection-1');
+    expect(inspector.textContent).toContain('dojo:source:checkout-contract');
+    expect(inspector.textContent).toContain('mcp:synthi_codesite_apply_patch');
+    expect(inspector.textContent).toContain('Add checkout route');
 
     await act(async () => {
       container.querySelector('[data-testid="codesite-export"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));

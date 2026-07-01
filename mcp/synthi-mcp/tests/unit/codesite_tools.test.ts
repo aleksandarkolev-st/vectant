@@ -233,6 +233,26 @@ describe("CodeSite MCP tool surface", () => {
     }));
   });
 
+  it("reads line provenance by project, file, and line number", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      lineProvenance: [{ id: "line-1", filePath: "api/checkout/route.js", startLine: 42 }],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_line_provenance", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "proj-1",
+      file_path: "api/checkout/route.js",
+      line_number: 42,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/provenance/line?projectId=proj-1&filePath=api%2Fcheckout%2Froute.js&lineNumber=42"),
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("maps RFI and mayday tools to structured document and incident routes", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockJsonResponse({ document: { kind: "rfi" } }))

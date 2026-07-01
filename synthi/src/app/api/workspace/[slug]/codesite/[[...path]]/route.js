@@ -140,8 +140,10 @@ export async function GET(request, { params }) {
       const search = new URL(request.url).searchParams;
       return okJson({
         lineProvenance: await getLineProvenance(slug, {
+          projectId: search.get('projectId') || search.get('project_id'),
           filePath: search.get('filePath') || search.get('path'),
           lineAnchor: search.get('lineAnchor'),
+          lineNumber: search.get('lineNumber') || search.get('line'),
         }),
       });
     }
