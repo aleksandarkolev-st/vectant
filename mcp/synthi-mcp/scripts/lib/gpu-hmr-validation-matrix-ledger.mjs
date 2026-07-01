@@ -1313,20 +1313,32 @@ function listCount(value) {
 }
 
 function randomColdManifestResult(json = {}) {
+  return randomColdManifestResults(json)[0] ?? {};
+}
+
+function randomColdManifestResults(json = {}) {
   const results = compactObjectList(json.results);
-  if (results.length === 0) return {};
+  if (results.length === 0) return [{}];
   const selection = compactObject(json.selection);
   const selectedIds = compactStringList([
     ...(Array.isArray(selection.selectedIds) ? selection.selectedIds : []),
     ...(Array.isArray(selection.selected_ids) ? selection.selected_ids : []),
   ]);
   if (selectedIds.length > 0) {
-    const matching = results.find((result) =>
-      selectedIds.includes(firstText(result.candidateId, result.candidate_id))
+    const ordered = [];
+    for (const selectedId of selectedIds) {
+      ordered.push(...results.filter((result) =>
+        firstText(result.candidateId, result.candidate_id) === selectedId
+      ));
+    }
+    const unselected = results.filter((result) =>
+      !selectedIds.includes(firstText(result.candidateId, result.candidate_id))
     );
-    if (matching) return matching;
+    return [...ordered, ...unselected].length > 0
+      ? [...ordered, ...unselected]
+      : [results[0]];
   }
-  return results[0];
+  return results;
 }
 
 function randomColdManifestCandidate(json = {}, result = {}) {
@@ -1923,6 +1935,7 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const dryRun = firstBool(json.dryRun, json.dry_run) === true
     || firstText(result.status) === 'selected_not_executed_dry_run';
   const resultStatus = firstText(result.status) ?? firstText(json.status) ?? 'unknown';
+  const resultCandidateId = firstText(result.candidateId, result.candidate_id);
   const acceptedForGpuHmr = firstBool(json.acceptedForGpuHmr, json.accepted_for_gpu_hmr);
   const gpuHmrSuccess = firstBool(json.gpuHmrSuccess, json.gpu_hmr_success);
   const canSatisfyRuntimeProof = firstBool(
@@ -1994,9 +2007,12 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     resultCanSatisfyRuntimeProof === true
       ? 'random_large_project_cold_path_result_claimed_runtime_authority'
       : null,
-    selectedIds.length > 0 || firstText(result.candidateId, result.candidate_id)
+    selectedIds.length > 0 || resultCandidateId
       ? null
       : 'random_large_project_cold_path_selected_candidate_missing',
+    selectedIds.length > 0 && resultCandidateId && !selectedIds.includes(resultCandidateId)
+      ? 'random_large_project_cold_path_result_not_selected'
+      : null,
     directInputEvidence.present === true && directInputEvidence.accepted !== true
       ? 'random_cold_direct_input_evidence_invalid'
       : null,
@@ -2028,8 +2044,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     selected_candidate_ids: selectedIds,
     selectedCandidateCount: selectedIds.length,
     selected_candidate_count: selectedIds.length,
-    candidateId: firstText(result.candidateId, result.candidate_id, candidate.id),
-    candidate_id: firstText(result.candidateId, result.candidate_id, candidate.id),
+    candidateId: firstText(resultCandidateId, candidate.id),
+    candidate_id: firstText(resultCandidateId, candidate.id),
     candidateSource,
     candidate_source: candidateSource,
     directInputEvidence,
@@ -21343,6 +21359,16 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
 
 function randomLargeProjectColdPathRow(json, filePath, context) {
   const result = randomColdManifestResult(json);
+  return randomLargeProjectColdPathResultRow(json, filePath, context, result);
+}
+
+function randomLargeProjectColdPathRows(json, filePath, context) {
+  return randomColdManifestResults(json).map((result) =>
+    randomLargeProjectColdPathResultRow(json, filePath, context, result)
+  );
+}
+
+function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
   const candidate = randomColdManifestCandidate(json, result);
   const sourceIntake = firstCompactObject(
     result.sourceIntakeEvidence,
@@ -21573,7 +21599,7 @@ async function classifyJsonArtifact(json, filePath, context) {
     return externalProjectRejectionRow(json, filePath, context);
   }
   if (schema === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION) {
-    return randomLargeProjectColdPathRow(json, filePath, context);
+    return randomLargeProjectColdPathRows(json, filePath, context);
   }
   if (
     schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1'
@@ -24601,12 +24627,14 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     const json = await readJson(filePath);
     if (json === null) continue;
     const stat = await fs.stat(filePath);
-    const row = await classifyJsonArtifact(json, filePath, {
+    const classified = await classifyJsonArtifact(json, filePath, {
       repoRoot,
       mcpRoot,
       updatedAt: stat.mtime.toISOString(),
     });
-    if (row) rows.push(row);
+    for (const row of Array.isArray(classified) ? classified : [classified]) {
+      if (row) rows.push(row);
+    }
   }
   return buildGpuHmrValidationMatrixLedger(rows, {
     latestPerTarget: options.latestPerTarget !== false,

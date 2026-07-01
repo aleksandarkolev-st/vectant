@@ -1911,6 +1911,87 @@ assert.ok(
     .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
 
+const multiRandomColdPathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-multi-result-smoke',
+);
+const multiColdCandidateIds = [
+  'direct-random-arbitrary-multi-a',
+  'direct-random-arbitrary-multi-b',
+  'direct-random-arbitrary-multi-c',
+];
+const multiColdUnselectedCandidateId = 'direct-random-arbitrary-multi-unselected';
+const multiColdCandidateManifests = multiColdCandidateIds
+  .concat(multiColdUnselectedCandidateId)
+  .map((candidateId) => randomColdPathManifest({ candidateId }));
+const multiColdSelectionHash = hashValue('direct-random-arbitrary-multi:selection');
+await writeJson(
+  path.join(multiRandomColdPathDir, 'random-cold-multi-result.json'),
+  {
+    ...multiColdCandidateManifests[0],
+    runId: 'direct-random-arbitrary-multi-run',
+    run_id: 'direct-random-arbitrary-multi-run',
+    selection: {
+      ...multiColdCandidateManifests[0].selection,
+      selectedIds: multiColdCandidateIds,
+      selected_ids: multiColdCandidateIds,
+      selectionHash: multiColdSelectionHash,
+      selection_hash: multiColdSelectionHash,
+    },
+    candidates: multiColdCandidateManifests.flatMap((manifest) => manifest.candidates),
+    selectedCandidates: multiColdCandidateManifests
+      .flatMap((manifest) => manifest.selectedCandidates),
+    results: multiColdCandidateManifests.flatMap((manifest) => manifest.results),
+  },
+);
+const multiRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [multiRandomColdPathDir],
+  generatedAt: '2026-06-30T21:01:00.000Z',
+});
+const multiRandomColdRows = multiRandomColdLedger.rows.filter(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(multiRandomColdRows.length, multiColdCandidateIds.length);
+assert.deepEqual(
+  multiRandomColdRows.map((row) => row.targetId).sort(),
+  [...multiColdCandidateIds].sort(),
+);
+assert.ok(multiRandomColdRows.every((row) => row.acceptedForGpuHmr === false));
+assert.ok(multiRandomColdRows.every((row) => row.gpuHmrSuccess === false));
+assert.ok(multiRandomColdRows.every((row) => row.matrixOutcome === 'refusal_proven'));
+const multiRandomColdCoverage = new Map(
+  multiRandomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(
+  multiRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
+  multiColdCandidateIds.length,
+);
+assert.equal(
+  multiRandomColdLedger.summary.omittedInvalidatedRows,
+  1,
+);
+const multiRandomColdAuditLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [multiRandomColdPathDir],
+  generatedAt: '2026-06-30T21:01:00.000Z',
+  includeInvalidated: true,
+});
+const multiRandomColdAuditRows = multiRandomColdAuditLedger.rows.filter(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(multiRandomColdAuditRows.length, multiColdCandidateIds.length + 1);
+const multiRandomColdUnselectedRow = multiRandomColdAuditRows.find(
+  (row) => row.targetId === multiColdUnselectedCandidateId,
+);
+assert.equal(multiRandomColdUnselectedRow?.safety.accepted, false);
+assert.ok(
+  multiRandomColdUnselectedRow?.safety.failedGates
+    .some((gate) => gate.code === 'random_large_project_cold_path_result_not_selected'),
+);
+
 const forgedCandidateBackendDir = path.join(tmpRoot, 'random-large-project-cold-path-backend-forged');
 const forgedBackendSourceUrl = 'https://example.invalid/arbitrary/user-project.git';
 const forgedBackendCommit = '1111111111111111111111111111111111111111';
