@@ -7342,7 +7342,20 @@ function randomColdReadinessMatrixRow({
   immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
   fileCount = 1500,
   totalKnownBytes = 15 * 1024 * 1024,
+  inputMode = 'cli_or_env_direct_source',
 } = {}) {
+  const sizeSignals = inputMode
+    ? {
+      inputMode,
+      input_mode: inputMode,
+      coldPathKind: candidateSource === 'direct_local_git_repo_path'
+        ? 'direct_local_git_repo_cold_intake'
+        : 'direct_source_url_commit_cold_intake',
+      cold_path_kind: candidateSource === 'direct_local_git_repo_path'
+        ? 'direct_local_git_repo_cold_intake'
+        : 'direct_source_url_commit_cold_intake',
+    }
+    : {};
   return withQueryRecomputedRowId({
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
@@ -7393,6 +7406,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sizeSignals,
+      size_signals: sizeSignals,
       resultStatus,
       result_status: resultStatus,
       failedGates: [],
@@ -7422,6 +7437,8 @@ function randomColdReadinessMatrixRow({
       file_count: fileCount,
       totalKnownBytes,
       total_known_bytes: totalKnownBytes,
+      sizeSignals,
+      size_signals: sizeSignals,
       resultStatus,
       result_status: resultStatus,
       failedGates: [],
@@ -8039,6 +8056,40 @@ assert.equal(
 assert.ok(
   broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const broadReadinessForgedDirectSourceRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `forged-direct-source-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/forged-direct/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`forged-direct-source-commit-${index + 1}`).slice(0, 40),
+    inputMode: null,
+  })
+);
+const broadReadinessWithForgedDirectSourceQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessForgedDirectSourceRows,
+  ],
+});
+assert.equal(broadReadinessWithForgedDirectSourceQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedDirectSourceQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedDirectSourceQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithForgedDirectSourceQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithForgedDirectSourceQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({

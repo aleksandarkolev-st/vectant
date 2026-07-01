@@ -1529,6 +1529,18 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     candidate_id: firstText(result.candidateId, result.candidate_id, candidate.id),
     candidateSource: firstText(candidate.candidateSource, candidate.candidate_source),
     candidate_source: firstText(candidate.candidateSource, candidate.candidate_source),
+    sizeSignals: firstCompactObject(
+      result.sizeSignals,
+      result.size_signals,
+      candidate.sizeSignals,
+      candidate.size_signals,
+    ),
+    size_signals: firstCompactObject(
+      result.sizeSignals,
+      result.size_signals,
+      candidate.sizeSignals,
+      candidate.size_signals,
+    ),
     profileMode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
     profile_mode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
     sourceUrl: firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url),
@@ -20939,6 +20951,13 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.candidateSource,
       row.candidate_source,
     );
+    const sizeSignals = firstCompactObject(
+      facet.sizeSignals,
+      facet.size_signals,
+      row.sizeSignals,
+      row.size_signals,
+    );
+    const inputMode = firstText(sizeSignals.inputMode, sizeSignals.input_mode);
     const immutableCommit = firstText(
       facet.immutableCommit,
       facet.immutable_commit,
@@ -20947,8 +20966,10 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
     );
     const directUserColdInput = candidateSource === 'direct_source_url_commit'
       || candidateSource === 'direct_local_git_repo_path';
+    const directInputModeProven = inputMode === 'cli_or_env_direct_source';
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
+      && directInputModeProven
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
     const sourceAccepted = firstBool(
@@ -21034,6 +21055,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     requiredAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     required_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     requiredSignals: [
+      'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
       'source_tree_intake_accepted',
@@ -21042,6 +21064,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
     required_signals: [
+      'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
       'source_tree_intake_accepted',
