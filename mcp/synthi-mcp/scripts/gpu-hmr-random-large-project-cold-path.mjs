@@ -194,6 +194,8 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--count') out.count = argv[++i];
     else if (arg === '--candidate') out.candidateId = argv[++i];
     else if (arg === '--candidates') out.candidatesPath = argv[++i];
+    else if (arg === '--require-direct-source') out.requireDirectSource = true;
+    else if (arg === '--sample-pool') out.samplePool = true;
     else if (arg === '--source-url') out.sourceUrl = argv[++i];
     else if (arg === '--repo-path') out.repoPath = argv[++i];
     else if (arg === '--commit' || arg === '--immutable-commit') out.immutableCommit = argv[++i];
@@ -471,6 +473,25 @@ function directInputChannelsFromArgsEnv(args = {}, env = process.env) {
   pushChannel('source_id', args.sourceId, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID');
   pushChannel('backend_family', args.backendFamily, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY');
   return channels;
+}
+
+function samplePoolModeRequested(args = {}, env = process.env) {
+  return args.samplePool === true
+    || env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SAMPLE_POOL === '1';
+}
+
+function directSourceRequired(args = {}, env = process.env) {
+  return (
+    args.requireDirectSource === true
+    || env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_REQUIRE_DIRECT_SOURCE === '1'
+  ) && !samplePoolModeRequested(args, env);
+}
+
+function assertDirectSourceRequirement({ requireDirectSource = false, directCandidate = null } = {}) {
+  if (!requireDirectSource || directCandidate) return;
+  throw new Error(
+    'random large-project cold-path direct source mode requires --source-url or --repo-path plus --commit; use --sample-pool for configured diagnostic candidates',
+  );
 }
 
 async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
@@ -2997,6 +3018,25 @@ async function selfCheck() {
   if (stableJson(first) !== stableJson(second) || first.length !== 2) {
     throw new Error('random large-project cold-path selection is not deterministic');
   }
+  if (
+    parseArgs(['--require-direct-source']).requireDirectSource !== true
+    || parseArgs(['--sample-pool']).samplePool !== true
+    || directSourceRequired(
+      { requireDirectSource: true },
+      { SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SAMPLE_POOL: '1' },
+    ) !== false
+  ) {
+    throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
+  }
+  let rejectedMissingDirectSource = false;
+  try {
+    assertDirectSourceRequirement({ requireDirectSource: true, directCandidate: null });
+  } catch {
+    rejectedMissingDirectSource = true;
+  }
+  if (!rejectedMissingDirectSource) {
+    throw new Error('random large-project cold-path direct-source requirement accepted sample-pool input');
+  }
   const { manifest: multiResultManifest } = await buildManifest({
     seed: 'multi-result-self-check-seed',
     count: 3,
@@ -3534,6 +3574,7 @@ async function main() {
     process.env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE_TIMEOUT_MS
       ?? Math.max(timeoutMs, 120000),
   );
+  const requireDirectSource = directSourceRequired(args);
   const directCandidate = directCandidateFromInput({
     sourceUrl: args.sourceUrl ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL,
     repoPath: args.repoPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_REPO_PATH,
@@ -3542,6 +3583,7 @@ async function main() {
     backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
     inputChannels: directInputChannelsFromArgsEnv(args),
   });
+  assertDirectSourceRequirement({ requireDirectSource, directCandidate });
   const candidates = directCandidate ? [directCandidate] : await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
@@ -3565,6 +3607,7 @@ async function main() {
     schemaVersion: SCHEMA,
     manifestPath: written.filePath,
     manifestHash: written.hash,
+    sourceMode: directCandidate ? 'direct_user_source' : 'configured_sample_pool',
     selectedIds: manifest.selection.selectedIds,
     dryRun,
     resultStatuses: manifest.results.map((result) => result.status),
