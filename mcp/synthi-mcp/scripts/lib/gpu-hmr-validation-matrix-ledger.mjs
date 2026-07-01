@@ -58,6 +58,8 @@ const BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT = 8;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
+const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -21008,6 +21010,84 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
   });
 }
 
+function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true } = {}) {
+  const predicate = {
+    schemaVersion: RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
+    schema_version: RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
+    authority: 'matrix_static_predicate_not_project_name_whitelist',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    acceptedCandidateSources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
+    accepted_candidate_sources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
+    requiredProfileMode: 'unprofiled_arbitrary_project_cold_intake',
+    required_profile_mode: 'unprofiled_arbitrary_project_cold_intake',
+    requiredProofMode: 'random_large_project_cold_path',
+    required_proof_mode: 'random_large_project_cold_path',
+    requiredMatrixOutcome: 'refusal_proven',
+    required_matrix_outcome: 'refusal_proven',
+    requiredAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
+    required_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
+    requiredSignals: [
+      'immutable_commit_present',
+      'source_url_or_repo_path_present',
+      'source_tree_intake_accepted',
+      'build_metadata_discovery_or_content_accepted',
+      'runtime_boundary_event_manifest_template_validated',
+      'no_gpu_hmr_runtime_or_dispatch_authority_claims',
+    ],
+    required_signals: [
+      'immutable_commit_present',
+      'source_url_or_repo_path_present',
+      'source_tree_intake_accepted',
+      'build_metadata_discovery_or_content_accepted',
+      'runtime_boundary_event_manifest_template_validated',
+      'no_gpu_hmr_runtime_or_dispatch_authority_claims',
+    ],
+    largeSourceTreeRequired: requireLargeSourceTree === true,
+    large_source_tree_required: requireLargeSourceTree === true,
+    minimumFileCountWhenLargeRequired: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
+      : 0,
+    minimum_file_count_when_large_required: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
+      : 0,
+    minimumKnownBytesWhenLargeRequired: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES
+      : 0,
+    minimum_known_bytes_when_large_required: requireLargeSourceTree === true
+      ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES
+      : 0,
+    ignoredForAcceptance: [
+      'target_id_value',
+      'candidate_id_value',
+      'repository_name',
+      'source_url_host_or_path_value',
+      'profile_id_value',
+      'sample_pool_membership',
+    ],
+    ignored_for_acceptance: [
+      'target_id_value',
+      'candidate_id_value',
+      'repository_name',
+      'source_url_host_or_path_value',
+      'profile_id_value',
+      'sample_pool_membership',
+    ],
+  };
+  const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
+  return {
+    ...predicate,
+    predicateHash,
+    predicate_hash: predicateHash,
+  };
+}
+
 function computeBroadLibraryAgnosticProof(rows) {
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const refusalRowsForReadiness = rows.filter((row) =>
@@ -21018,6 +21098,9 @@ function computeBroadLibraryAgnosticProof(rows) {
   const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
     requireLargeSourceTree: false,
   });
+  const randomColdPathSelectionPredicate = randomColdPathBroadReadinessPredicate();
+  const randomColdPathCandidateSelectionPredicate =
+    randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false });
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
@@ -21091,6 +21174,9 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathRowIds,
     randomColdPathCandidateTargets,
     randomColdPathCandidateRowIds,
+    randomColdPathSelectionPredicateHash: randomColdPathSelectionPredicate.predicateHash,
+    randomColdPathCandidateSelectionPredicateHash:
+      randomColdPathCandidateSelectionPredicate.predicateHash,
     randomColdPathFileCountThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     sourceFirstVisualTargets,
@@ -21137,6 +21223,14 @@ function computeBroadLibraryAgnosticProof(rows) {
     random_cold_path_row_ids: randomColdPathRowIds,
     randomColdPathTargets,
     random_cold_path_targets: randomColdPathTargets,
+    randomColdPathSelectionPredicate,
+    random_cold_path_selection_predicate: randomColdPathSelectionPredicate,
+    randomColdPathCandidateSelectionPredicate,
+    random_cold_path_candidate_selection_predicate: randomColdPathCandidateSelectionPredicate,
+    randomColdPathSelectionTargetNameIndependent:
+      randomColdPathSelectionPredicate.targetNameIndependent === true,
+    random_cold_path_selection_target_name_independent:
+      randomColdPathSelectionPredicate.targetNameIndependent === true,
     sourceFirstVisualRows: sourceFirstVisualRows.length,
     source_first_visual_rows: sourceFirstVisualRows.length,
     sourceFirstVisualRowIds,

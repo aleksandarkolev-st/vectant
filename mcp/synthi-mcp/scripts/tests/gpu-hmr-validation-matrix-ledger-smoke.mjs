@@ -8207,6 +8207,37 @@ assert.equal(
     .sourceFirstVisualRows,
   2,
 );
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionTargetNameIndependent,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.authority,
+  'matrix_static_predicate_not_project_name_whitelist',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.sourceIdentityRole,
+  'identity_presence_and_immutable_commit_only_not_whitelist',
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.projectNameWhitelist,
+  [],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.specificTargetIdsAllowed,
+  [],
+);
+assert.ok(
+  /^sha256:[a-f0-9]{64}$/.test(
+    broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+      .randomColdPathSelectionPredicate.predicateHash,
+  ),
+);
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathTargets,
@@ -8246,6 +8277,16 @@ assert.equal(
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   5,
+);
+assert.equal(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathSelectionTargetNameIndependent,
+  true,
+);
+assert.deepEqual(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathSelectionPredicate.projectNameWhitelist,
+  [],
 );
 assert.deepEqual(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
