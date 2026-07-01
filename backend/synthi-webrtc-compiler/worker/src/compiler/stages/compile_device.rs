@@ -134,6 +134,7 @@ pub struct DeviceCompileProofMetadata {
 ///
 ///   - the `gpu-hmr` feature is disabled at build time, or
 ///   - `device_source` is empty, or
+///   - no explicit generated device source filename is supplied, or
 ///   - the manifest has no `gpu` block (the orchestrator shouldn't call
 ///     us in that case, but we guard rather than panic).
 ///
@@ -157,6 +158,16 @@ pub async fn compile_device_phase0(
         eprintln!("[compile-device] manifest has no gpu block — falling through");
         return Ok(None);
     };
+    if source_filename_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        eprintln!(
+            "[compile-device] skipping - explicit generated device source filename is required"
+        );
+        return Ok(None);
+    }
 
     #[cfg(not(feature = "gpu-hmr"))]
     {
@@ -205,13 +216,19 @@ async fn compile_device_inner(
     // owns the dispatch; we resolve to the canonical name here so the
     // log lines name the actual binary the worker spawned.
     let compiler_exe = manifest.select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
-    let (default_source_filename, artifact_ext) = match gpu.vendor {
-        DeviceVendor::Cuda => (DEVICE_CU_FILENAME, "cubin"),
-        DeviceVendor::Rocm => (DEVICE_HIP_FILENAME, "hsaco"),
+    let artifact_ext = match gpu.vendor {
+        DeviceVendor::Cuda => "cubin",
+        DeviceVendor::Rocm => "hsaco",
     };
-    let source_filename = source_filename_override
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(default_source_filename);
+    let Some(source_filename) = source_filename_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        eprintln!(
+            "[compile-device] skipping - explicit generated device source filename is required"
+        );
+        return Ok(None);
+    };
 
     let source_path = workspace_dir.join(source_filename);
     if let Some(parent) = source_path.parent() {
@@ -3396,6 +3413,38 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         .await
         .unwrap();
         assert!(out.is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn explicit_source_filename_is_required_for_device_compile() {
+        let mut manifest = CompileManifest::generic_fallback();
+        manifest.gpu = Some(rocm_block());
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = compile_device_phase0(
+            tmp.path(),
+            tmp.path(),
+            1,
+            "extern \"C\" __global__ void k(float* x) { x[0] = 1.0f; }",
+            None,
+            &manifest,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            out.is_none(),
+            "device compile must require an explicit manifest/generated source filename"
+        );
+        assert!(
+            !tmp.path().join(DEVICE_HIP_FILENAME).exists(),
+            "vendor default device.hip must not be materialized"
+        );
+        assert!(
+            !tmp.path().join(DEVICE_CU_FILENAME).exists(),
+            "vendor default device.cu must not be materialized"
+        );
     }
 
     #[cfg(not(feature = "gpu-hmr"))]
