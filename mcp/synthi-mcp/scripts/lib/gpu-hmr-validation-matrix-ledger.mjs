@@ -21417,17 +21417,9 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
       && rowHasAcceptedVisualEvidence(row)
       && firstBool(runtimeAuthority.accepted) === true
       && firstBool(runtimeAuthority.visualOracleAccepted, runtimeAuthority.visual_oracle_accepted) === true
-      && (
-        Object.keys(outputOracle).length === 0
-        || (
-          firstBool(outputOracle.accepted) === true
-          && (
-            firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind) === null
-            || firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
-              === 'visual_oracle'
-          )
-        )
-      );
+      && firstBool(outputOracle.accepted) === true
+      && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
+        === 'visual_oracle';
   });
 }
 

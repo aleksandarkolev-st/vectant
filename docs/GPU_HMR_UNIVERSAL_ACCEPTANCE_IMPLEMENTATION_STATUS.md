@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Output-Oracle Boundary
+
+The source-first visual broad-readiness selector now requires an accepted `outputOracleFacet` with `kind=visual_oracle`. It no longer counts a row that has accepted visual pixels, async visual/CAS support, and strict runtime visual authority when the output-oracle facet is absent or not explicitly visual. This aligns the implementation with the retained predicate signal `visual_output_oracle_accepted`.
+
+The smoke matrix now removes the output-oracle facet from otherwise accepted source-first visual rows. The matrix query remains a valid audit artifact, but broad readiness closes with `sourceFirstVisualRowCount=0` and `broad_acceptance_requires_source_first_visual_full_runtime_row`. This prevents screenshot/diff evidence or runtime visual flags from bypassing the ledger-bound output oracle.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including missing source-first visual output-oracle facet refusal, proof gpu-validation-matrix-ledger:sha256:11e4b1b306b99c676b6355596e3775bbbe302bff8430d8f6f15b2df31249520e, rows=66
+```
+
 ## 2026-07-01 Source-First Visual Support-Authority Boundary
 
 The source-first visual broad-readiness predicate is now enforced against support-facet authority claims, not just recorded in the broad proof. A row can satisfy the source-first visual broad lane only when the source-first ingestion and async visual/CAS support facets remain non-authoritative: no `acceptedForGpuHmr`, no `gpuHmrSuccess`, no `canSatisfyRuntimeProof`, and no `canSatisfyDispatchProof` claims. The async visual support facet now emits explicit false runtime/dispatch authority fields alongside its existing false GPU HMR success fields.

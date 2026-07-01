@@ -7689,6 +7689,13 @@ function withAsyncVisualSupportAuthorityClaim(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withoutOutputOracleFacet(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  delete cloned.outputOracleFacet;
+  delete cloned.output_oracle_facet;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutSourceFirstVisualSupport(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   delete cloned.sourceFirstIngestion;
@@ -8766,6 +8773,32 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithoutVisualOutputOracleFacetQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withoutOutputOracleFacet(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithoutVisualOutputOracleFacetQuery.accepted, true);
+assert.equal(
+  broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const broadReadinessRowsWithOneRandomCold = [
