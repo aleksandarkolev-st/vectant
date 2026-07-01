@@ -102,6 +102,8 @@ export const CODE_SITE_EVENT_TYPES = [
   'arbiter_verdict',
   'near_miss',
   'policy_delta_proposed',
+  'policy_delta_promoted',
+  'policy_delta_rejected',
   'black_box_closed',
 ];
 

@@ -223,7 +223,7 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ strategies }),
   });
-  const simulatorDelta = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/policy-deltas`, {
+  const proposedSimulatorDelta = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/policy-deltas`, {
     method: 'POST',
     body: JSON.stringify({
       learnedFromIncidents: ['near-miss-signup-contract-001'],
@@ -236,8 +236,18 @@ async function main() {
       triggerConditions: [{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }],
       expectedRiskReduction: 0.6,
       confidence: 0.95,
-      promotionState: 'active',
-      replayRefs: [before.shadowJobRef],
+      replayRefs: [`shadow:job:${before.shadowJobRef}`],
+    }),
+  })).policyDelta;
+  const simulatorDelta = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/policy-deltas/${encodeURIComponent(proposedSimulatorDelta.id)}/promote`, {
+    method: 'POST',
+    body: JSON.stringify({
+      targetState: 'active',
+      validation: {
+        status: 'passed',
+        replayRefs: [`shadow:job:${before.shadowJobRef}`],
+        evidenceRefs: ['replay:evidence:counterfactual-memory-simulator'],
+      },
     }),
   })).policyDelta;
   const after = await api(`/projects/${encodeURIComponent(simulationProject.id)}/shadow-merge-simulate`, {
@@ -246,7 +256,7 @@ async function main() {
   });
 
   const { project: leaseProject, plan } = await createLeaseGateProject(api);
-  const leaseDelta = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/policy-deltas`, {
+  const proposedLeaseDelta = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/policy-deltas`, {
     method: 'POST',
     body: JSON.stringify({
       learnedFromIncidents: ['near-miss-ui-contract-rfi-001'],
@@ -260,8 +270,18 @@ async function main() {
       triggerConditions: [{ path: 'src/components/**' }],
       expectedRiskReduction: 0.3,
       confidence: 0.9,
-      promotionState: 'active',
-      replayRefs: [after.shadowJobRef],
+      replayRefs: [`shadow:job:${after.shadowJobRef}`],
+    }),
+  })).policyDelta;
+  const leaseDelta = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/policy-deltas/${encodeURIComponent(proposedLeaseDelta.id)}/promote`, {
+    method: 'POST',
+    body: JSON.stringify({
+      targetState: 'active',
+      validation: {
+        status: 'passed',
+        replayRefs: [`shadow:job:${after.shadowJobRef}`],
+        evidenceRefs: ['replay:evidence:counterfactual-memory-lease'],
+      },
     }),
   })).policyDelta;
   const lease = (await api(`/execution-plans/${encodeURIComponent(plan.id)}/mutation-leases`, {
@@ -281,6 +301,10 @@ async function main() {
     afterReasonExplainsLearning: after.reason.reasonCodes.includes('counterfactual_policy_delta_applied')
       && after.reason.reasonCodes.includes('learned_policy_delta_preferred_strategy'),
     simulatorEvidenceReferencesDelta: after.evidenceRefs.includes(`codesite:policy-delta:${simulatorDelta.id}`),
+    governedPromotionActivatedMemory: proposedSimulatorDelta.promotionState === 'proposed'
+      && simulatorDelta.promotionState === 'active'
+      && simulatorDelta.ruleCandidate?.promotion?.validationStatus === 'passed'
+      && leaseDelta.ruleCandidate?.promotion?.validationStatus === 'passed',
     explicitAvoidWasNotNeutralizedByFallback: after.universes
       .find((universe) => universe.strategy === 'schema-first')
       ?.reasonCodes.includes('learned_policy_delta_avoided_strategy') === true

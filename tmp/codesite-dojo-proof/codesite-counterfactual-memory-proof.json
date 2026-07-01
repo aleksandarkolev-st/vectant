@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-07-01T05:27:05.158Z",
+  "generatedAt": "2026-07-01T06:01:56.925Z",
   "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-counterfactual-memory-proof-1782883513859",
+  "slug": "codesite-counterfactual-memory-proof-1782885591326",
   "simulationProject": {
-    "id": "cmr1mtrb70000ob4tki7f0oz4",
+    "id": "cmr1o27bc0000ob4twnhfmi0g",
     "title": "Counterfactual ATC memory proof"
   },
   "simulatorDelta": {
-    "id": "cmr1mu2vj000xob4t5rnjn4eu",
-    "projectId": "cmr1mtrb70000ob4tki7f0oz4",
+    "id": "cmr1o2luf000xob4t65z2yqz5",
+    "projectId": "cmr1o27bc0000ob4twnhfmi0g",
     "learnedFromIncidents": [
       "near-miss-signup-contract-001"
     ],
@@ -24,7 +24,20 @@
       ],
       "requiredTowerActions": [
         "run_owned_tests_before_landing"
-      ]
+      ],
+      "promotion": {
+        "reviewedBy": "codesite-dev-bypass",
+        "targetState": "active",
+        "validationStatus": "passed",
+        "replayRefs": [
+          "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+        ],
+        "evidenceRefs": [
+          "replay:evidence:counterfactual-memory-simulator"
+        ],
+        "reasonCodes": [],
+        "promotedAt": "2026-07-01T06:00:33.960Z"
+      }
     },
     "triggerConditions": [
       {
@@ -38,18 +51,18 @@
     "confidence": 0.95,
     "promotionState": "active",
     "replayRefs": [
-      "codesite-shadow:sha256:264937ae07e4a3924c7988dbc9dd6cf8aeb3b21659b27c3e5aa6080a35c0a19f"
+      "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
     ],
-    "createdAt": "2026-07-01T05:25:54.319Z",
-    "promotedAt": "2026-07-01T05:25:54.317Z"
+    "createdAt": "2026-07-01T06:00:31.768Z",
+    "promotedAt": "2026-07-01T06:00:33.960Z"
   },
   "leaseProject": {
-    "id": "cmr1mva9l0016ob4tz62pjpw0",
+    "id": "cmr1o40z00018ob4tm2dt9j8n",
     "title": "Counterfactual lease gate proof"
   },
   "leaseDelta": {
-    "id": "cmr1mvi3n0035ob4ttnrp0x78",
-    "projectId": "cmr1mva9l0016ob4tz62pjpw0",
+    "id": "cmr1o4b8h0037ob4tyba2h6l4",
+    "projectId": "cmr1o40z00018ob4tm2dt9j8n",
     "learnedFromIncidents": [
       "near-miss-ui-contract-rfi-001"
     ],
@@ -62,7 +75,20 @@
       ],
       "requiredTowerActions": [
         "sequence_after_contract_response"
-      ]
+      ],
+      "promotion": {
+        "reviewedBy": "codesite-dev-bypass",
+        "targetState": "active",
+        "validationStatus": "passed",
+        "replayRefs": [
+          "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+        ],
+        "evidenceRefs": [
+          "replay:evidence:counterfactual-memory-lease"
+        ],
+        "reasonCodes": [],
+        "promotedAt": "2026-07-01T06:01:53.012Z"
+      }
     },
     "triggerConditions": [
       {
@@ -73,10 +99,10 @@
     "confidence": 0.9,
     "promotionState": "active",
     "replayRefs": [
-      "codesite-shadow:sha256:87f7c4c7c3226e007afa1c779dda19e349fea97859d5a62e1b474fc5deffba05"
+      "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
     ],
-    "createdAt": "2026-07-01T05:27:00.708Z",
-    "promotedAt": "2026-07-01T05:27:00.706Z"
+    "createdAt": "2026-07-01T06:01:51.329Z",
+    "promotedAt": "2026-07-01T06:01:53.012Z"
   },
   "before": {
     "selected": "schema-first",
@@ -246,11 +272,11 @@
         }
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:264937ae07e4a3924c7988dbc9dd6cf8aeb3b21659b27c3e5aa6080a35c0a19f",
-    "baseSnapshot": "repo@sha256:824c94fda1eb93a440879447a9330f2b932d49ffe75c39c8fa9fe20607a02589",
+    "shadowJobRef": "codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0",
+    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:6ab6011e84cdf5fac9c09432a4026b6b08d9214e90b4e9beaf197c70c4a3d4be",
+      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
       "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa"
     ],
     "policyDeltaCandidates": [],
@@ -279,7 +305,7 @@
   "after": {
     "selected": "test-first",
     "appliedPolicyDeltas": [
-      "cmr1mu2vj000xob4t5rnjn4eu"
+      "cmr1o2luf000xob4t65z2yqz5"
     ],
     "reason": {
       "reasonCodes": [
@@ -314,7 +340,7 @@
         "signalStrength": "moderate"
       },
       "learnedPolicyDeltaRefs": [
-        "cmr1mu2vj000xob4t5rnjn4eu"
+        "cmr1o2luf000xob4t65z2yqz5"
       ]
     },
     "universes": [
@@ -345,7 +371,7 @@
           "learned_policy_delta_avoided_strategy"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1mu2vj000xob4t5rnjn4eu"
+          "cmr1o2luf000xob4t65z2yqz5"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -392,7 +418,7 @@
           "learned_policy_delta_avoided_strategy"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1mu2vj000xob4t5rnjn4eu"
+          "cmr1o2luf000xob4t65z2yqz5"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -440,7 +466,7 @@
           "learned_policy_delta_preferred_strategy"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1mu2vj000xob4t5rnjn4eu"
+          "cmr1o2luf000xob4t65z2yqz5"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -462,13 +488,13 @@
         }
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:87f7c4c7c3226e007afa1c779dda19e349fea97859d5a62e1b474fc5deffba05",
-    "baseSnapshot": "repo@sha256:824c94fda1eb93a440879447a9330f2b932d49ffe75c39c8fa9fe20607a02589",
+    "shadowJobRef": "codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c",
+    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:6ab6011e84cdf5fac9c09432a4026b6b08d9214e90b4e9beaf197c70c4a3d4be",
+      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
       "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
-      "codesite:policy-delta:cmr1mu2vj000xob4t5rnjn4eu"
+      "codesite:policy-delta:cmr1o2luf000xob4t65z2yqz5"
     ],
     "policyDeltaCandidates": [],
     "repoSignals": {
@@ -501,7 +527,7 @@
     ],
     "counterfactualPolicy": {
       "appliedPolicyDeltas": [
-        "cmr1mvi3n0035ob4ttnrp0x78"
+        "cmr1o4b8h0037ob4tyba2h6l4"
       ],
       "reasonCodes": [
         "counterfactual_policy_delta_applied",
@@ -518,9 +544,9 @@
       "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
     },
     "policyDecision": {
-      "id": "cmr1mvjl3003bob4tf7df1bq2",
-      "projectId": "cmr1mva9l0016ob4tz62pjpw0",
-      "mutationLeaseId": "cmr1mvjkl0039ob4t2s1l01p4",
+      "id": "cmr1o4eb5003fob4trq1oi4d9",
+      "projectId": "cmr1o40z00018ob4tm2dt9j8n",
+      "mutationLeaseId": "cmr1o4eat003dob4tt2y24g36",
       "displayCallsign": "UI-GATE-01",
       "decision": "hold",
       "reasonCodes": [
@@ -528,7 +554,7 @@
         "counterfactual_policy_delta_applied",
         "counterfactual_policy_delta_hold"
       ],
-      "inputDigest": "sha256:b1cd6c460ad9177efffc7b1995ccf77ad650781cb732a2dfa5bab0b3eae92eb3",
+      "inputDigest": "sha256:88d9455b59154faa3aa262c57be2b7cecf04e3382e4a19b1a2871650422b105e",
       "decisionBody": {
         "status": "holding",
         "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.",
@@ -561,7 +587,7 @@
           "verification": {
             "ok": false,
             "status": "blocked",
-            "checkedAt": "2026-07-01T05:27:02.394Z",
+            "checkedAt": "2026-07-01T06:01:55.071Z",
             "source": "codesite_dojo_public_verifier",
             "signatureVerified": false,
             "blockedBy": [
@@ -574,7 +600,7 @@
         "collisionAvoidance": null,
         "counterfactualPolicy": {
           "appliedPolicyDeltas": [
-            "cmr1mvi3n0035ob4ttnrp0x78"
+            "cmr1o4b8h0037ob4tyba2h6l4"
           ],
           "reasonCodes": [
             "counterfactual_policy_delta_applied",
@@ -591,7 +617,7 @@
           "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
         }
       },
-      "createdAt": "2026-07-01T05:27:02.632Z"
+      "createdAt": "2026-07-01T06:01:55.313Z"
     }
   },
   "assertions": {
@@ -599,6 +625,7 @@
     "promotedDeltaChangedTowerSelection": true,
     "afterReasonExplainsLearning": true,
     "simulatorEvidenceReferencesDelta": true,
+    "governedPromotionActivatedMemory": true,
     "explicitAvoidWasNotNeutralizedByFallback": true,
     "learnedLeaseGateHeldClearance": true,
     "learnedLeaseGateAugmentedRadar": true

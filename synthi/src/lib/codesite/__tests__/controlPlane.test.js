@@ -85,7 +85,9 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSitePolicyDelta: {
       create: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteMutationZone: {
       upsert: vi.fn(),
@@ -110,6 +112,7 @@ import {
   createIncident,
   createDocument,
   createInspectionRun,
+  createPolicyDelta,
   dryRunTransactionWrites,
   getAgentInbox,
   getAgentManifest,
@@ -121,6 +124,7 @@ import {
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
+  promotePolicyDelta,
   recordTransactionWrite,
   requestMutationLease,
   shadowMergeSimulate,
@@ -541,7 +545,22 @@ describe('CodeSite control plane transaction validation', () => {
       promotedAt: null,
       ...data,
     }));
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValue(null);
     prisma.codeSitePolicyDelta.findMany.mockResolvedValue([]);
+    prisma.codeSitePolicyDelta.update.mockImplementation(async ({ data }) => ({
+      id: 'delta-updated',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify([]),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({}),
+      triggerConditionsJson: JSON.stringify([]),
+      expectedRiskReduction: 0.3,
+      confidence: 0.9,
+      replayRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+      ...data,
+    }));
 	  });
 
   it('serves the shared MCP tool contract from the agent manifest', async () => {
@@ -2919,6 +2938,103 @@ describe('CodeSite control plane transaction validation', () => {
     const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
     expect(schemaUniverse.reasonCodes).toContain('learned_policy_delta_avoided_strategy');
     expect(schemaUniverse.reasonCodes).not.toContain('learned_policy_delta_preferred_strategy');
+  });
+
+  it('requires policy deltas to start proposed before promotion governance', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+
+    await expect(createPolicyDelta('acme', 'project-1', {
+      promotionState: 'active',
+      ruleCandidate: { rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] },
+      confidence: 0.9,
+    })).rejects.toMatchObject({
+      code: 'policy_delta_create_must_start_proposed',
+      status: 400,
+    });
+    expect(prisma.codeSitePolicyDelta.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks policy delta promotion without replay validation evidence', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValueOnce({
+      id: 'delta-1',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify([]),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({ rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] }),
+      triggerConditionsJson: JSON.stringify([]),
+      expectedRiskReduction: 0.4,
+      confidence: 0.9,
+      promotionState: 'proposed',
+      replayRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+    });
+
+    await expect(promotePolicyDelta('acme', 'project-1', 'delta-1', {}, { userId: 'reviewer-1' }))
+      .rejects.toMatchObject({
+        code: 'policy_delta_promotion_not_validated',
+        status: 400,
+        detail: {
+          reasonCodes: expect.arrayContaining([
+            'policy_delta_replay_validation_required',
+            'policy_delta_replay_ref_required',
+            'policy_delta_validation_evidence_required',
+          ]),
+        },
+      });
+    expect(prisma.codeSitePolicyDelta.update).not.toHaveBeenCalled();
+  });
+
+  it('promotes policy deltas only after replay validation and reviewer attribution', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValueOnce({
+      id: 'delta-1',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify(['near-miss-1']),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({ rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] }),
+      triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }]),
+      expectedRiskReduction: 0.4,
+      confidence: 0.9,
+      promotionState: 'proposed',
+      replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-1']),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+    });
+
+    const result = await promotePolicyDelta('acme', 'project-1', 'delta-1', {
+      targetState: 'active',
+      validation: {
+        status: 'passed',
+        evidenceRefs: ['replay:evidence:delta-1'],
+      },
+    }, { userId: 'reviewer-1' });
+
+    expect(result.promotionState).toBe('active');
+    const update = prisma.codeSitePolicyDelta.update.mock.calls[0][0];
+    expect(update.data.promotionState).toBe('active');
+    expect(JSON.parse(update.data.replayRefsJson)).toContain('codesite:counterfactual-run:cfr-1');
+    expect(JSON.parse(update.data.ruleCandidateJson).promotion).toMatchObject({
+      reviewedBy: 'reviewer-1',
+      validationStatus: 'passed',
+      evidenceRefs: ['replay:evidence:delta-1'],
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'policy_delta_promoted',
+        actorId: 'delta-1',
+      }),
+    }));
   });
 
   it('holds matching lease requests when active counterfactual policy requires sequencing', async () => {

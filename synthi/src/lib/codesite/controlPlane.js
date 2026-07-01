@@ -3991,7 +3991,13 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
 
 export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
-  const promotionState = String(body.promotionState || body.promotion_state || 'proposed').toLowerCase();
+  const requestedPromotionState = String(body.promotionState || body.promotion_state || 'proposed').toLowerCase();
+  if (requestedPromotionState !== 'proposed') {
+    throw badRequest('policy_delta_create_must_start_proposed', {
+      requestedPromotionState,
+      instruction: 'Create the policy delta as proposed, then promote it with replay validation evidence.',
+    });
+  }
   const ruleCandidate = normalizePolicyDeltaRuleCandidate(body.ruleCandidate || body.rule_candidate || body);
   const delta = await prisma.codeSitePolicyDelta.create({
     data: {
@@ -4002,9 +4008,9 @@ export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
       triggerConditionsJson: stringifyJson(body.triggerConditions || body.trigger_conditions || []),
       expectedRiskReduction: typeof body.expectedRiskReduction === 'number' ? body.expectedRiskReduction : body.expected_risk_reduction,
       confidence: typeof body.confidence === 'number' ? body.confidence : 0.5,
-      promotionState,
+      promotionState: 'proposed',
       replayRefsJson: stringifyJson(body.replayRefs || body.replay_refs || []),
-      promotedAt: PROMOTED_POLICY_DELTA_STATES.has(promotionState) ? (body.promotedAt ? new Date(body.promotedAt) : new Date()) : null,
+      promotedAt: null,
     },
   });
   await recordEvent(project.id, {
@@ -4014,6 +4020,151 @@ export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
     details: { policyDeltaId: delta.id, affectedZoneKey: delta.affectedZoneKey, confidence: delta.confidence },
   });
   return policyDeltaProjection(delta);
+}
+
+export async function promotePolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId);
+  const delta = await prisma.codeSitePolicyDelta.findFirst({
+    where: { id: policyDeltaId, projectId: project.id },
+  });
+  if (!delta) throw notFound('policy_delta_not_found');
+  const targetState = String(body.targetState || body.target_state || body.promotionState || body.promotion_state || 'active').toLowerCase();
+  if (!PROMOTED_POLICY_DELTA_STATES.has(targetState)) {
+    throw badRequest('policy_delta_invalid_promotion_state', { targetState });
+  }
+  const validation = validatePolicyDeltaPromotion(delta, body, actor);
+  if (!validation.ok) {
+    throw badRequest('policy_delta_promotion_not_validated', validation);
+  }
+  const currentRuleCandidate = parseJson(delta.ruleCandidateJson, {});
+  const promotedAt = new Date();
+  const promotedRuleCandidate = {
+    ...currentRuleCandidate,
+    promotion: {
+      reviewedBy: validation.reviewedBy,
+      targetState,
+      validationStatus: validation.validationStatus,
+      replayRefs: validation.replayRefs,
+      evidenceRefs: validation.evidenceRefs,
+      reasonCodes: validation.reasonCodes,
+      promotedAt: promotedAt.toISOString(),
+    },
+  };
+  const updated = await prisma.codeSitePolicyDelta.update({
+    where: { id: delta.id },
+    data: {
+      promotionState: targetState,
+      promotedAt,
+      replayRefsJson: stringifyJson(validation.replayRefs),
+      ruleCandidateJson: stringifyJson(promotedRuleCandidate),
+    },
+  });
+  await recordEvent(project.id, {
+    eventType: 'policy_delta_promoted',
+    actorType: 'policy_delta',
+    actorId: delta.id,
+    evidenceRefs: validation.evidenceRefs,
+    details: {
+      policyDeltaId: delta.id,
+      targetState,
+      reviewedBy: validation.reviewedBy,
+      validationStatus: validation.validationStatus,
+      replayRefs: validation.replayRefs,
+      reasonCodes: validation.reasonCodes,
+    },
+  });
+  return policyDeltaProjection(updated);
+}
+
+export async function rejectPolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId);
+  const delta = await prisma.codeSitePolicyDelta.findFirst({
+    where: { id: policyDeltaId, projectId: project.id },
+  });
+  if (!delta) throw notFound('policy_delta_not_found');
+  const reviewedBy = body.reviewedBy || body.reviewed_by || body.reviewerId || body.reviewer_id || actor?.userId || actor?.workspaceUserId || null;
+  const reason = body.reason || body.rationale || 'policy_delta_rejected';
+  const replayRefs = unique([
+    ...asArray(parseJson(delta.replayRefsJson, [])),
+    ...asArray(body.replayRefs || body.replay_refs),
+  ]);
+  const updated = await prisma.codeSitePolicyDelta.update({
+    where: { id: delta.id },
+    data: {
+      promotionState: 'rejected',
+      replayRefsJson: stringifyJson(replayRefs),
+      promotedAt: null,
+    },
+  });
+  await recordEvent(project.id, {
+    eventType: 'policy_delta_rejected',
+    actorType: 'policy_delta',
+    actorId: delta.id,
+    evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+    details: {
+      policyDeltaId: delta.id,
+      reviewedBy,
+      reason,
+      replayRefs,
+    },
+  });
+  return policyDeltaProjection(updated);
+}
+
+function validatePolicyDeltaPromotion(delta, body = {}, actor = null) {
+  const projection = policyDeltaProjection(delta);
+  const validation = body.validation || body.replayValidation || body.replay_validation || {};
+  const validationStatus = String(
+    body.validationStatus ||
+    body.validation_status ||
+    body.replayValidationStatus ||
+    body.replay_validation_status ||
+    validation.status ||
+    validation.result ||
+    '',
+  ).toLowerCase();
+  const replayRefs = unique([
+    ...asArray(projection.replayRefs),
+    ...asArray(body.replayRefs || body.replay_refs),
+    ...asArray(validation.replayRefs || validation.replay_refs),
+    ...asArray(body.validatedReplayRefs || body.validated_replay_refs),
+  ].map(String).filter(Boolean));
+  const evidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+    ...asArray(validation.evidenceRefs || validation.evidence_refs),
+  ].map(String).filter(Boolean));
+  const reviewedBy = body.reviewedBy ||
+    body.reviewed_by ||
+    body.reviewerId ||
+    body.reviewer_id ||
+    body.approvedBy ||
+    body.approved_by ||
+    actor?.userId ||
+    actor?.workspaceUserId ||
+    null;
+  const reasonCodes = [];
+  const confidence = Number(projection.confidence || 0);
+  if (confidence < 0.65) reasonCodes.push('policy_delta_confidence_below_threshold');
+  if (!reviewedBy) reasonCodes.push('policy_delta_reviewer_required');
+  if (!['ok', 'pass', 'passed', 'valid', 'validated', 'accepted', 'approved'].includes(validationStatus)) {
+    reasonCodes.push('policy_delta_replay_validation_required');
+  }
+  if (!replayRefs.some((ref) => /^(codesite:counterfactual-run:|shadow:job:|replay:|incident:)/.test(String(ref)))) {
+    reasonCodes.push('policy_delta_replay_ref_required');
+  }
+  if (!evidenceRefs.length) reasonCodes.push('policy_delta_validation_evidence_required');
+  if (!projection.ruleCandidate || !Object.keys(projection.ruleCandidate).length) {
+    reasonCodes.push('policy_delta_rule_candidate_required');
+  }
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes,
+    replayRefs,
+    evidenceRefs,
+    reviewedBy,
+    validationStatus,
+    confidence,
+  };
 }
 
 async function persistCounterfactualPolicyDeltaCandidates(projectId, run, arbiterVerdict, context = {}) {

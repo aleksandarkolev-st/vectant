@@ -35,7 +35,9 @@ import {
   recordTransactionWrite,
   requestMutationLease,
   previewArtifacts,
+  promotePolicyDelta,
   revokeMutationLease,
+  rejectPolicyDelta,
   shadowMergeSimulate,
   updateControlPlan,
   updateZonePolicy,
@@ -266,6 +268,14 @@ export async function POST(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'incident-replays') {
       return okJson({ incident: await createIncident(slug, route[1], body) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'policy-deltas' && route[4] === 'promote') {
+      return okJson({ policyDelta: await promotePolicyDelta(slug, route[1], route[3], body, access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'policy-deltas' && route[4] === 'reject') {
+      return okJson({ policyDelta: await rejectPolicyDelta(slug, route[1], route[3], body, access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'policy-deltas') {
