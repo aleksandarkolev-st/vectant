@@ -10,11 +10,15 @@ import {
   runtimeProofArtifactStrictGates,
   strictProofGateFailures,
 } from './lib/gpu-hmr-proof-strict-gates.mjs';
-import { buildGpuHmrProofLedger } from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from './lib/gpu-hmr-proof-ledger.mjs';
 import {
   evaluateGpuHmrAcceptanceContract,
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
 } from './lib/gpu-hmr-acceptance-contract.mjs';
+import { writeArtifactToCas } from './lib/gpu-hmr-artifact-cas.mjs';
 
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -25,7 +29,9 @@ const SELF_CHECK_ARTIFACT_DIR = path.join(
   '.gpu-hmr-test-logs',
   'strict-gates-self-check',
 );
+const SELF_CHECK_CAS_ROOT = path.join(SELF_CHECK_ARTIFACT_DIR, 'cas');
 mkdirSync(SELF_CHECK_ARTIFACT_DIR, { recursive: true });
+mkdirSync(SELF_CHECK_CAS_ROOT, { recursive: true });
 
 function sha256Bytes(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
@@ -72,6 +78,26 @@ const VISUAL_INVALID = writeVisualArtifact('invalid-frame.bin', [0x89, 0x50, 0x4
 const corruptPngBytes = Buffer.from(readFileSync(VISUAL_BEFORE.path));
 corruptPngBytes[corruptPngBytes.length - 1] ^= 0xff;
 const VISUAL_CORRUPT = writeVisualArtifact('corrupt-frame.png', corruptPngBytes);
+
+async function visualCasLocator(artifact, role) {
+  return writeArtifactToCas(readFileSync(artifact.path), {
+    artifactRoot: SELF_CHECK_CAS_ROOT,
+    artifactKind: 'visual_frame',
+    mediaType: 'image/png',
+    role,
+    producer: {
+      name: 'strict_gates_self_check',
+      kind: 'visual_proof_worker',
+    },
+    producerSubsystem: 'strict_visual_self_check',
+    sessionNamespace: 'strict_gates',
+    transportKind: 'cas_shared_volume',
+  });
+}
+
+const VISUAL_BEFORE_CAS = await visualCasLocator(VISUAL_BEFORE, 'before_frame');
+const VISUAL_AFTER_CAS = await visualCasLocator(VISUAL_AFTER, 'after_frame');
+const VISUAL_DIFF_CAS = await visualCasLocator(VISUAL_DIFF, 'diff_frame');
 
 function modelAvailabilityFields() {
   return {
@@ -235,6 +261,40 @@ function byteBackedVisualOracleArtifacts(overrides = {}) {
       metrics_verified: true,
     },
     ...overrides,
+  });
+}
+
+function casOnlyVisualOracleArtifacts(overrides = {}) {
+  const artifactCasLocators = overrides.artifactCasLocators
+    ?? overrides.artifact_cas_locators
+    ?? [VISUAL_BEFORE_CAS, VISUAL_AFTER_CAS, VISUAL_DIFF_CAS];
+  return visualOracleArtifacts({
+    before_image: null,
+    beforeImage: null,
+    before_image_hash: VISUAL_BEFORE.hash,
+    beforeImageHash: VISUAL_BEFORE.hash,
+    after_image: null,
+    afterImage: null,
+    after_image_hash: VISUAL_AFTER.hash,
+    afterImageHash: VISUAL_AFTER.hash,
+    diff_image: null,
+    diffImage: null,
+    diff_image_hash: VISUAL_DIFF.hash,
+    diffImageHash: VISUAL_DIFF.hash,
+    swapchain_size: [2, 2],
+    swapchainSize: [2, 2],
+    visual_pixel_verification: {
+      before_image_hash: VISUAL_BEFORE.hash,
+      after_image_hash: VISUAL_AFTER.hash,
+      diff_image_hash: VISUAL_DIFF.hash,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+    },
+    ...overrides,
+    artifactCasLocators,
+    artifact_cas_locators: artifactCasLocators,
   });
 }
 
@@ -574,6 +634,35 @@ const byteBackedVisualArtifact = runtimeArtifact({
   proofLedgerQuery: byteBackedVisualLedger.query,
   deterministicVisualModeEvaluation: { accepted: true },
 });
+const casOnlyVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts(),
+  },
+}));
+const casOnlyVisualOverlay = [{
+  before_image: VISUAL_BEFORE_CAS.storage.localPath,
+  beforeImage: VISUAL_BEFORE_CAS.storage.localPath,
+  after_image: VISUAL_AFTER_CAS.storage.localPath,
+  afterImage: VISUAL_AFTER_CAS.storage.localPath,
+  diff_image: VISUAL_DIFF_CAS.storage.localPath,
+  diffImage: VISUAL_DIFF_CAS.storage.localPath,
+  proofAuthority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+  proof_authority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+}];
+const casOnlyVisualQuery = queryGpuHmrLedgerInvariants(casOnlyVisualLedger, {
+  visualOracleArtifactOverlays: casOnlyVisualOverlay,
+  ignoreSuppliedLedgerQueryAndSuccess: true,
+});
+const casOnlyVisualArtifact = runtimeArtifact({
+  proofId: 'strict-visual-runtime-proof-artifact:cas-only-pass',
+  proofLedger: casOnlyVisualLedger,
+  proofLedgerQuery: casOnlyVisualQuery,
+  deterministicVisualModeEvaluation: { accepted: true },
+});
 
 assert.equal(adversarialPreflightStrictGate(passingPreflight).status, 'pass');
 assert.equal(runtimeProofArtifactStrictGate(passingArtifact).status, 'pass');
@@ -582,6 +671,38 @@ assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
   proofLedgerQuery: webgpuComputeOnlyLedger.query,
 })).status, 'pass');
 assert.equal(runtimeProofArtifactStrictGate(byteBackedVisualArtifact).status, 'pass');
+const casOnlyStrictGate = runtimeProofArtifactStrictGate(casOnlyVisualArtifact, {
+  visualArtifactRoots: [SELF_CHECK_CAS_ROOT],
+});
+assert.equal(
+  casOnlyStrictGate.status,
+  'pass',
+  `${casOnlyStrictGate.detail} cas_query=${JSON.stringify(casOnlyVisualQuery.failedInvariants)}`,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...casOnlyVisualArtifact,
+    proofId: 'strict-visual-runtime-proof-artifact:cas-only-stale-query-refused',
+    proofLedgerQuery: casOnlyVisualLedger.query,
+  }, { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /proof_ledger_query_(mismatch|rejected)/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...casOnlyVisualArtifact,
+    proofId: 'strict-visual-runtime-proof-artifact:cas-only-false-query-refused',
+    proofLedgerQuery: { gpuHmrSuccess: false, failedInvariants: [] },
+  }, { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /proof_ledger_query_(mismatch|rejected)/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate({
+    ...casOnlyVisualArtifact,
+    proofId: 'strict-visual-runtime-proof-artifact:cas-only-forged-query-refused',
+    proofLedgerQuery: { gpuHmrSuccess: true, failedInvariants: [{ code: 'forged' }] },
+  }, { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /proof_ledger_query_mismatch/,
+);
 assert.equal(strictProofGateFailures([
   adversarialPreflightStrictGate(passingPreflight),
   runtimeProofArtifactStrictGate(passingArtifact),
@@ -835,6 +956,157 @@ assert.match(
     deterministicVisualModeEvaluation: { accepted: true },
   })).detail,
   /visual_oracle_before_image_dimensions_mismatch/,
+);
+const successClaimCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      artifactCasLocators: [
+        { ...VISUAL_BEFORE_CAS, acceptedForGpuHmr: true },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:success-claim-cas-refused',
+    proofLedger: successClaimCasLedger,
+    proofLedgerQuery: successClaimCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_before_image_cas_locator_invalid/,
+);
+const duplicateSuccessClaimCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      artifactCasLocators: [
+        VISUAL_BEFORE_CAS,
+        { ...VISUAL_BEFORE_CAS, acceptedForGpuHmr: true },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:duplicate-success-claim-cas-refused',
+    proofLedger: duplicateSuccessClaimCasLedger,
+    proofLedgerQuery: duplicateSuccessClaimCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_artifact_cas_locator_invalid/,
+);
+const wrongSchemaSuccessClaimCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      artifactCasLocators: [
+        VISUAL_BEFORE_CAS,
+        {
+          ...VISUAL_BEFORE_CAS,
+          schemaVersion: 'synthi.cas.artifact_locator.v0',
+          acceptedForGpuHmr: true,
+          manifestHash: undefined,
+        },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:wrong-schema-success-claim-cas-refused',
+    proofLedger: wrongSchemaSuccessClaimCasLedger,
+    proofLedgerQuery: wrongSchemaSuccessClaimCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_artifact_cas_locator_invalid/,
+);
+const wrongByteLengthCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      artifactCasLocators: [
+        {
+          ...VISUAL_BEFORE_CAS,
+          byteLength: VISUAL_BEFORE_CAS.byteLength + 1,
+          manifestHash: undefined,
+        },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:wrong-byte-length-cas-refused',
+    proofLedger: wrongByteLengthCasLedger,
+    proofLedgerQuery: wrongByteLengthCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_before_image_cas_locator_invalid/,
+);
+const wrongUriCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      artifactCasLocators: [
+        {
+          ...VISUAL_BEFORE_CAS,
+          artifactUri: `synthi-cas://strict_gates/sha256/${VISUAL_AFTER.hash.slice('sha256:'.length)}`,
+          manifestHash: undefined,
+        },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:wrong-uri-cas-refused',
+    proofLedger: wrongUriCasLedger,
+    proofLedgerQuery: wrongUriCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_before_image_cas_locator_invalid/,
+);
+const forgedHashCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: casOnlyVisualOracleArtifacts({
+      before_image_hash: VISUAL_AFTER.hash,
+      beforeImageHash: VISUAL_AFTER.hash,
+      artifactCasLocators: [
+        {
+          ...VISUAL_BEFORE_CAS,
+          contentHash: VISUAL_AFTER.hash,
+          artifactId: `artifact:${VISUAL_AFTER.hash}`,
+          manifestHash: undefined,
+        },
+        VISUAL_AFTER_CAS,
+        VISUAL_DIFF_CAS,
+      ],
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_AFTER.hash,
+        after_image_hash: VISUAL_AFTER.hash,
+        diff_image_hash: VISUAL_DIFF.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:forged-hash-cas-refused',
+    proofLedger: forgedHashCasLedger,
+    proofLedgerQuery: forgedHashCasLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  }), { visualArtifactRoots: [SELF_CHECK_CAS_ROOT] }).detail,
+  /visual_oracle_before_image_cas_locator_invalid/,
 );
 const forgedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
   oracle_artifacts: {
