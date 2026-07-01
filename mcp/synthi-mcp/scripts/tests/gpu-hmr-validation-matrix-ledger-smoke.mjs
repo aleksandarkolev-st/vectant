@@ -8966,6 +8966,36 @@ const broadReadinessVisualOnlyRows = [
     refusalMatrixRow(`broad-readiness-visual-only-refusal-${index + 1}`)
   ),
 ];
+const broadReadinessVisualArtifactComputeOracleRows = [
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-artifact-compute-oracle-hip',
+    backend: 'hip',
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-artifact-compute-oracle-webgpu',
+    backend: 'webgpu',
+    acceptanceScope: 'webgpu_declared_compute_readback',
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-artifact-compute-oracle-opencl',
+    backend: 'opencl',
+    acceptanceScope: 'opencl_declared_compute_readback',
+    oracle: 'compute',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-artifact-compute-oracle-vulkan',
+    backend: 'vulkan',
+    acceptanceScope: 'vulkan_declared_pipeline_visual',
+    oracle: 'compute',
+  }),
+  ...Array.from({ length: 8 }, (_, index) =>
+    refusalMatrixRow(`broad-readiness-visual-artifact-compute-oracle-refusal-${index + 1}`)
+  ),
+];
 const broadReadinessRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `random-cold-readiness-user-project-${index + 1}`,
@@ -10029,6 +10059,37 @@ assert.equal(
 assert.ok(
   broadReadinessVisualOnlyWithRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_compute_oracle_rows'),
+);
+const broadReadinessVisualArtifactsComputeOracleQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessVisualArtifactComputeOracleRows,
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessVisualArtifactsComputeOracleQuery.accepted, true);
+assert.equal(
+  broadReadinessVisualArtifactsComputeOracleQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessVisualArtifactsComputeOracleQuery.summary.broadLibraryAgnosticReadiness
+    .visualOracleTargetCount,
+  0,
+);
+assert.equal(
+  broadReadinessVisualArtifactsComputeOracleQuery.summary.broadLibraryAgnosticReadiness
+    .computeOracleTargetCount,
+  4,
+);
+assert.deepEqual(
+  broadReadinessVisualArtifactsComputeOracleQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.visualTargets,
+  [],
+);
+assert.ok(
+  broadReadinessVisualArtifactsComputeOracleQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_visual_oracle_rows'),
 );
 const broadReadinessForgedComputeCardOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

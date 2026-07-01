@@ -22922,7 +22922,7 @@ function computeBroadLibraryAgnosticProof(rows) {
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
   const visualTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedVisualEvidence).map((row) => row.targetId),
+    fullRuntimeRows.filter(rowHasAcceptedVisualOutputOracle).map((row) => row.targetId),
   );
   const computeTargets = compactStringList(
     fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
@@ -23206,7 +23206,7 @@ function broadLibraryAgnosticReadiness(
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
   const visualTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedVisualEvidence).map((row) => row.targetId),
+    fullRuntimeRows.filter(rowHasAcceptedVisualOutputOracle).map((row) => row.targetId),
   );
   const computeTargets = compactStringList(
     fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
