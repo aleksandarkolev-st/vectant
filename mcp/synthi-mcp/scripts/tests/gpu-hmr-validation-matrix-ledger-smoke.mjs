@@ -9592,6 +9592,51 @@ assert.ok(
   broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
 );
+const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `forged-content-identity-source-random-cold-readiness-${index + 1}`,
+    sourceUrl: 'https://example.invalid/replayed/content-identity-large-project.git',
+    immutableCommit: '6666666666666666666666666666666666666666',
+    sourceListingHash: hashValue(`forged-content-identity:listing:${index + 1}`),
+    sourceIntakeFacetHash: hashValue(`forged-content-identity:intake:${index + 1}`),
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
+      targetId: `forged-content-identity-build-${index + 1}`,
+    }),
+  })
+);
+const broadReadinessWithForgedContentIdentitySameSourceColdQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows,
+      ...replayedSourceWithForgedContentIdentitiesRows,
+    ],
+  });
+assert.equal(broadReadinessWithForgedContentIdentitySameSourceColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceContentIdentityCount,
+  5,
+);
+assert.ok(
+  broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
+);
 const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({
   targetId: 'stale-unsafe-accepted-source-first-visual',
   backend: 'hip',
