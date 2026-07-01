@@ -2997,6 +2997,37 @@ async function selfCheck() {
   if (stableJson(first) !== stableJson(second) || first.length !== 2) {
     throw new Error('random large-project cold-path selection is not deterministic');
   }
+  const { manifest: multiResultManifest } = await buildManifest({
+    seed: 'multi-result-self-check-seed',
+    count: 3,
+    dryRun: true,
+    timeoutMs: 1,
+    runnerTimeoutMs: 1,
+    sourceIntake: false,
+    sourceIntakeTimeoutMs: 1,
+    candidates,
+    outputDir: path.join(LOG_DIR, 'self-check'),
+    runCandidate: async (candidate) => ({
+      candidateId: candidate.id,
+      status: 'selected_not_executed_dry_run',
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    }),
+  });
+  const multiResultSelectedIds = Array.isArray(multiResultManifest.selection?.selectedIds)
+    ? multiResultManifest.selection.selectedIds
+    : [];
+  const multiResultIds = Array.isArray(multiResultManifest.results)
+    ? multiResultManifest.results.map((result) => result.candidateId)
+    : [];
+  if (
+    multiResultSelectedIds.length !== 3
+    || multiResultIds.length !== multiResultSelectedIds.length
+    || stableJson([...multiResultIds].sort()) !== stableJson([...multiResultSelectedIds].sort())
+  ) {
+    throw new Error('random large-project cold-path multi-result manifest did not preserve one result per selected candidate');
+  }
   let rejectedMissingCommit = false;
   try {
     cleanCandidate({
