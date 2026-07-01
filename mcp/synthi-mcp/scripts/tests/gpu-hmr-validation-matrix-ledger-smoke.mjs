@@ -5134,6 +5134,32 @@ function acceptedRealRocmSidecarRuntimeConsistency(scope, overrides = {}) {
     sidecar_backend: overrides.sidecar_backend ?? overrides.sidecarBackend ?? 'hip',
     runtimeBackendCandidates: overrides.runtimeBackendCandidates ?? ['hip'],
     runtime_backend_candidates: overrides.runtime_backend_candidates ?? ['hip'],
+    runtimeBoundBackendCandidates: overrides.runtimeBoundBackendCandidates
+      ?? overrides.runtime_bound_backend_candidates
+      ?? ['hip'],
+    runtime_bound_backend_candidates: overrides.runtime_bound_backend_candidates
+      ?? overrides.runtimeBoundBackendCandidates
+      ?? ['hip'],
+    runtimeBackendEvidenceAuthority: overrides.runtimeBackendEvidenceAuthority
+      ?? overrides.runtime_backend_evidence_authority
+      ?? 'strict_runtime_proof_backend_evidence',
+    runtime_backend_evidence_authority: overrides.runtime_backend_evidence_authority
+      ?? overrides.runtimeBackendEvidenceAuthority
+      ?? 'strict_runtime_proof_backend_evidence',
+    runtimeBackendRuntimeEvidenceAccepted: overrides.runtimeBackendRuntimeEvidenceAccepted
+      ?? overrides.runtime_backend_runtime_evidence_accepted
+      ?? true,
+    runtime_backend_runtime_evidence_accepted: overrides.runtime_backend_runtime_evidence_accepted
+      ?? overrides.runtimeBackendRuntimeEvidenceAccepted
+      ?? true,
+    backendConsistencySource: overrides.backendConsistencySource
+      ?? overrides.backend_consistency_source
+      ?? 'strict_runtime_proof_backend',
+    backend_consistency_source: overrides.backend_consistency_source
+      ?? overrides.backendConsistencySource
+      ?? 'strict_runtime_proof_backend',
+    backendHintConsistent: overrides.backendHintConsistent ?? overrides.backend_hint_consistent ?? true,
+    backend_hint_consistent: overrides.backend_hint_consistent ?? overrides.backendHintConsistent ?? true,
     backendConsistent: overrides.backendConsistent ?? true,
     backend_consistent: overrides.backend_consistent ?? true,
     sidecarEvidenceComplete: true,
@@ -15450,8 +15476,12 @@ async function writeForgedRealRocmAcceptanceGateCase({
   assert.equal(row.gpuHmrSuccess, false);
   assert.equal(row.runtimeProofArtifact.accepted, true);
   assert.equal(row.ledger.gpuHmrSuccess, true);
-  for (const reason of expectedReasons) assert.ok(row.reasons.includes(reason), reason);
-  for (const gap of expectedOpenGaps) assert.ok(row.openGaps.includes(gap), gap);
+  for (const reason of expectedReasons) {
+    assert.ok(row.reasons.includes(reason), `${reason} actual=${stableJson(row.reasons)}`);
+  }
+  for (const gap of expectedOpenGaps) {
+    assert.ok(row.openGaps.includes(gap), `${gap} actual=${stableJson(row.openGaps)}`);
+  }
   return row;
 }
 
@@ -15551,6 +15581,72 @@ const forgedMissingSidecarRocm = await writeForgedRealRocmAcceptanceGateCase({
   expectedOpenGaps: ['real_rocm_sidecar_runtime_consistency_required'],
 });
 assert.equal(forgedMissingSidecarRocm.realRocmSidecarRuntimeConsistencyGate.accepted, false);
+
+const forgedHintOnlySidecarRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'hint-only-sidecar-consistency',
+  mutateMaterials(materials) {
+    const hintOnlySidecarConsistency = {
+      ...materials.runtimeProofArtifact.realRocmSidecarRuntimeConsistency,
+      status: 'sidecar_runtime_backend_hint_consistent_not_runtime_proof',
+      proofAuthority: 'sidecar_backend_hint_only_not_runtime_authority',
+      proof_authority: 'sidecar_backend_hint_only_not_runtime_authority',
+      runtimeBoundBackendCandidates: [],
+      runtime_bound_backend_candidates: [],
+      runtimeBackendEvidenceAuthority: 'diagnostic_backend_hints_only_not_runtime_authority',
+      runtime_backend_evidence_authority: 'diagnostic_backend_hints_only_not_runtime_authority',
+      runtimeBackendRuntimeEvidenceAccepted: false,
+      runtime_backend_runtime_evidence_accepted: false,
+      backendConsistencySource: 'profile_build_compiler_hint',
+      backend_consistency_source: 'profile_build_compiler_hint',
+      backendHintConsistent: true,
+      backend_hint_consistent: true,
+      backendConsistent: true,
+      backend_consistent: true,
+      accepted: true,
+      runtimeConsistencyAccepted: true,
+      runtime_consistency_accepted: true,
+      notApplicable: false,
+      not_applicable: false,
+      canSatisfyRuntimeProof: true,
+      can_satisfy_runtime_proof: true,
+      sidecarBackend: 'hip',
+      sidecar_backend: 'hip',
+      runtimeBackendCandidates: ['hip'],
+      runtime_backend_candidates: ['hip'],
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+    materials.realRocmSidecarRuntimeConsistency = hintOnlySidecarConsistency;
+    materials.real_rocm_sidecar_runtime_consistency = hintOnlySidecarConsistency;
+    materials.runtimeProofArtifact.realRocmSidecarRuntimeConsistency = hintOnlySidecarConsistency;
+    materials.runtimeProofArtifact.real_rocm_sidecar_runtime_consistency = hintOnlySidecarConsistency;
+    materials.runtime_proof_artifact.realRocmSidecarRuntimeConsistency = hintOnlySidecarConsistency;
+    materials.runtime_proof_artifact.real_rocm_sidecar_runtime_consistency = hintOnlySidecarConsistency;
+  },
+  expectedReasons: [
+    'real_rocm_sidecar_runtime_consistency_not_proven',
+    'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_runtime_evidence_missing',
+    'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_evidence_not_runtime_bound',
+  ],
+  expectedOpenGaps: [
+    'real_rocm_sidecar_runtime_consistency_required',
+    'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_runtime_evidence_missing',
+    'real_rocm_sidecar_runtime_consistency:sidecar_runtime_backend_evidence_not_runtime_bound',
+  ],
+});
+assert.equal(forgedHintOnlySidecarRocm.realRocmSidecarRuntimeConsistencyGate.accepted, false);
+assert.equal(
+  forgedHintOnlySidecarRocm.realRocmSidecarRuntimeConsistencyGate.runtimeBackendEvidenceAuthority,
+  'diagnostic_backend_hints_only_not_runtime_authority',
+);
+assert.equal(
+  forgedHintOnlySidecarRocm.realRocmSidecarRuntimeConsistencyGate.runtimeBackendRuntimeEvidenceAccepted,
+  false,
+);
+assert.equal(
+  forgedHintOnlySidecarRocm.realRocmSidecarRuntimeConsistencyGate.backendConsistencySource,
+  'profile_build_compiler_hint',
+);
 
 async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) {
   const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);

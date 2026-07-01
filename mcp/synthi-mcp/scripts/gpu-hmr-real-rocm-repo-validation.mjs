@@ -18239,6 +18239,7 @@ function realRocmRuntimeEligibilityFacet({
   ]);
   const sourceDialects = compactStringList(sourcePaths.map(sourceDialectFromPath));
   const candidateCompiler = compiler ?? compilerFromCmakeArgs(CFG.cmakeArgs);
+  const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
   const backendCandidates = inferRuntimeBackendCandidates({
     gpuMode: CFG.gpuMode,
     cmakeArgs: CFG.cmakeArgs,
@@ -18246,9 +18247,17 @@ function realRocmRuntimeEligibilityFacet({
     runtimeCapabilityPreflight,
     compiler: candidateCompiler,
   });
+  const runtimeBoundBackendCandidates = fullRuntimeProven
+    ? inferRuntimeBackendCandidates({ gpuMode: runtimeBackend })
+    : [];
+  const runtimeBackendEvidenceAuthority = runtimeBoundBackendCandidates.length > 0
+    ? 'strict_runtime_proof_backend_evidence'
+    : 'diagnostic_backend_hints_only_not_runtime_authority';
+  const runtimeBackendEvidenceSources = runtimeBoundBackendCandidates.length > 0
+    ? ['strict_runtime_proof_backend']
+    : [];
   const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
   const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
-  const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
   const synthiDispatchObserved = Number(runtimeDispatch.success_count ?? 0) > 0;
   const artifactTransportObserved = Number(runtimeArtifactTransport.total_count ?? 0) > 0;
   const epochObserved = Number(epochEvidence.total_count ?? 0) > 0
@@ -18331,6 +18340,14 @@ function realRocmRuntimeEligibilityFacet({
     backend_candidates: backendCandidates,
     runtimeBackendCandidates: backendCandidates,
     runtime_backend_candidates: backendCandidates,
+    runtimeBoundBackendCandidates: runtimeBoundBackendCandidates,
+    runtime_bound_backend_candidates: runtimeBoundBackendCandidates,
+    runtimeBackendEvidenceAuthority,
+    runtime_backend_evidence_authority: runtimeBackendEvidenceAuthority,
+    runtimeBackendEvidenceSources,
+    runtime_backend_evidence_sources: runtimeBackendEvidenceSources,
+    runtimeBackendRuntimeEvidenceAccepted: runtimeBoundBackendCandidates.length > 0,
+    runtime_backend_runtime_evidence_accepted: runtimeBoundBackendCandidates.length > 0,
     sourceLanguage: sourceDialects.length === 1 ? sourceDialects[0] : 'mixed_or_unknown',
     source_language: sourceDialects.length === 1 ? sourceDialects[0] : 'mixed_or_unknown',
     sourceDialects,
@@ -18401,6 +18418,19 @@ function realRocmSidecarRuntimeConsistencyFacet({
     ...(Array.isArray(eligibility.runtimeBackendCandidates) ? eligibility.runtimeBackendCandidates : []),
     ...(Array.isArray(eligibility.runtime_backend_candidates) ? eligibility.runtime_backend_candidates : []),
   ]).map((value) => value.toLowerCase());
+  const runtimeBoundBackendCandidates = compactStringList([
+    ...(Array.isArray(eligibility.runtimeBoundBackendCandidates) ? eligibility.runtimeBoundBackendCandidates : []),
+    ...(Array.isArray(eligibility.runtime_bound_backend_candidates) ? eligibility.runtime_bound_backend_candidates : []),
+  ]).map((value) => value.toLowerCase());
+  const runtimeBackendEvidenceAuthority = String(
+    eligibility.runtimeBackendEvidenceAuthority
+    ?? eligibility.runtime_backend_evidence_authority
+    ?? '',
+  ).trim();
+  const runtimeBackendRuntimeEvidenceAccepted =
+    eligibility.runtimeBackendRuntimeEvidenceAccepted === true
+    || eligibility.runtime_backend_runtime_evidence_accepted === true
+    || runtimeBackendEvidenceAuthority === 'strict_runtime_proof_backend_evidence';
   const sidecarEvidenceComplete =
     sidecar.contractEvidenceComplete === true
     || sidecar.contract_evidence_complete === true;
@@ -18427,13 +18457,20 @@ function realRocmSidecarRuntimeConsistencyFacet({
   if (!runtimeObserved || runtimeBackendCandidates.length === 0) {
     blockingGaps.push('sidecar_runtime_backend_candidates_missing');
   }
-  const backendConsistent =
+  const backendHintConsistent =
     sidecarBackend
     && runtimeBackendCandidates.includes(sidecarBackend);
+  const backendConsistent =
+    sidecarBackend
+    && runtimeBoundBackendCandidates.includes(sidecarBackend)
+    && runtimeBackendRuntimeEvidenceAccepted;
+  if (sidecarPresent && sidecarBackend && runtimeBoundBackendCandidates.length === 0) {
+    blockingGaps.push('sidecar_runtime_backend_runtime_evidence_missing');
+  }
   if (
     sidecarPresent
     && sidecarBackend
-    && runtimeBackendCandidates.length > 0
+    && runtimeBoundBackendCandidates.length > 0
     && !backendConsistent
   ) {
     blockingGaps.push('sidecar_runtime_backend_mismatch');
@@ -18461,7 +18498,9 @@ function realRocmSidecarRuntimeConsistencyFacet({
       ? 'sidecar_runtime_consistency_proven'
       : backendConsistent
         ? 'sidecar_runtime_backend_consistent_not_runtime_proof'
-        : 'sidecar_runtime_backend_inconsistent_or_unproven';
+        : backendHintConsistent
+          ? 'sidecar_runtime_backend_hint_consistent_not_runtime_proof'
+          : 'sidecar_runtime_backend_inconsistent_or_unproven';
   const evidenceRefs = compactStringList([
     ...(Array.isArray(sidecar.evidenceRefs) ? sidecar.evidenceRefs : []),
     ...(Array.isArray(sidecar.evidence_refs) ? sidecar.evidence_refs : []),
@@ -18471,6 +18510,9 @@ function realRocmSidecarRuntimeConsistencyFacet({
   const contractHash = `sha256:${createHash('sha256').update(stableJson({
     sidecarBackend,
     runtimeBackendCandidates,
+    runtimeBoundBackendCandidates,
+    runtimeBackendEvidenceAuthority,
+    runtimeBackendRuntimeEvidenceAccepted,
     sidecarEvidenceComplete,
     sidecarRuntimeObservationComplete,
     runtimeObserved,
@@ -18501,6 +18543,16 @@ function realRocmSidecarRuntimeConsistencyFacet({
     sidecar_backend: sidecarBackend || null,
     runtimeBackendCandidates,
     runtime_backend_candidates: runtimeBackendCandidates,
+    runtimeBoundBackendCandidates,
+    runtime_bound_backend_candidates: runtimeBoundBackendCandidates,
+    runtimeBackendEvidenceAuthority,
+    runtime_backend_evidence_authority: runtimeBackendEvidenceAuthority,
+    runtimeBackendRuntimeEvidenceAccepted,
+    runtime_backend_runtime_evidence_accepted: runtimeBackendRuntimeEvidenceAccepted,
+    backendHintConsistent: Boolean(backendHintConsistent),
+    backend_hint_consistent: Boolean(backendHintConsistent),
+    backendConsistencySource: backendConsistent ? 'strict_runtime_proof_backend' : null,
+    backend_consistency_source: backendConsistent ? 'strict_runtime_proof_backend' : null,
     backendConsistent: Boolean(backendConsistent),
     backend_consistent: Boolean(backendConsistent),
     sidecarEvidenceComplete,
@@ -25048,6 +25100,9 @@ int main()
     runtimeEligibility: {
       observed: true,
       backend_candidates: ['hip'],
+      runtime_bound_backend_candidates: ['hip'],
+      runtime_backend_evidence_authority: 'strict_runtime_proof_backend_evidence',
+      runtime_backend_runtime_evidence_accepted: true,
     },
   });
   const sidecarRuntimeMismatch = realRocmSidecarRuntimeConsistencyFacet({
@@ -25058,6 +25113,16 @@ int main()
     runtimeEligibility: {
       observed: true,
       backend_candidates: ['hip'],
+      runtime_bound_backend_candidates: ['hip'],
+      runtime_backend_evidence_authority: 'strict_runtime_proof_backend_evidence',
+      runtime_backend_runtime_evidence_accepted: true,
+    },
+  });
+  const sidecarRuntimeHintOnly = realRocmSidecarRuntimeConsistencyFacet({
+    deviceSidecarContract: sidecarRuntimeProofFacet,
+    runtimeEligibility: {
+      observed: true,
+      backend_candidates: ['hip'],
     },
   });
   const sidecarRuntimeAccepted = realRocmSidecarRuntimeConsistencyFacet({
@@ -25065,6 +25130,9 @@ int main()
     runtimeEligibility: {
       observed: true,
       backend_candidates: ['hip'],
+      runtime_bound_backend_candidates: ['hip'],
+      runtime_backend_evidence_authority: 'strict_runtime_proof_backend_evidence',
+      runtime_backend_runtime_evidence_accepted: true,
     },
   });
   if (
@@ -25075,6 +25143,11 @@ int main()
     || sidecarRuntimeMismatch.status !== 'sidecar_runtime_backend_inconsistent_or_unproven'
     || sidecarRuntimeMismatch.backend_consistent !== false
     || !sidecarRuntimeMismatch.blocking_gaps.includes('sidecar_runtime_backend_mismatch')
+    || sidecarRuntimeHintOnly.status !== 'sidecar_runtime_backend_hint_consistent_not_runtime_proof'
+    || sidecarRuntimeHintOnly.backend_hint_consistent !== true
+    || sidecarRuntimeHintOnly.backend_consistent !== false
+    || sidecarRuntimeHintOnly.can_satisfy_runtime_proof !== false
+    || !sidecarRuntimeHintOnly.blocking_gaps.includes('sidecar_runtime_backend_runtime_evidence_missing')
     || sidecarRuntimeAccepted.status !== 'sidecar_runtime_consistency_proven'
     || sidecarRuntimeAccepted.can_satisfy_runtime_proof !== true
     || sidecarRuntimeAccepted.accepted !== true

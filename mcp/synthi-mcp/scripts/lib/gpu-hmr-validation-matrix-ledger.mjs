@@ -8225,6 +8225,30 @@ function realRocmSidecarRuntimeConsistencyGate(input = {}) {
   ]);
   const acceptedFlag = firstBool(facet.accepted, facet.runtimeConsistencyAccepted);
   const backendConsistent = firstBool(facet.backendConsistent, facet.backend_consistent);
+  const sidecarBackend = firstText(facet.sidecarBackend, facet.sidecar_backend);
+  const runtimeBoundBackendCandidates = compactStringList([
+    ...(Array.isArray(facet.runtimeBoundBackendCandidates) ? facet.runtimeBoundBackendCandidates : []),
+    ...(Array.isArray(facet.runtime_bound_backend_candidates) ? facet.runtime_bound_backend_candidates : []),
+  ]).map((value) => value.toLowerCase());
+  const runtimeBackendEvidenceAuthority = firstText(
+    facet.runtimeBackendEvidenceAuthority,
+    facet.runtime_backend_evidence_authority,
+  );
+  const backendConsistencySource = firstText(
+    facet.backendConsistencySource,
+    facet.backend_consistency_source,
+  );
+  const runtimeBackendRuntimeEvidenceAccepted = firstBool(
+    facet.runtimeBackendRuntimeEvidenceAccepted,
+    facet.runtime_backend_runtime_evidence_accepted,
+  );
+  const runtimeBoundBackendConsistent =
+    Boolean(sidecarBackend)
+    && runtimeBoundBackendCandidates.includes(sidecarBackend.toLowerCase());
+  const runtimeBackendEvidenceAccepted =
+    runtimeBackendRuntimeEvidenceAccepted === true
+    && runtimeBackendEvidenceAuthority === 'strict_runtime_proof_backend_evidence'
+    && backendConsistencySource === 'strict_runtime_proof_backend';
   const canSatisfyRuntimeProof = firstBool(
     facet.canSatisfyRuntimeProof,
     facet.can_satisfy_runtime_proof,
@@ -8240,6 +8264,15 @@ function realRocmSidecarRuntimeConsistencyGate(input = {}) {
       : null,
     ...blockingGaps,
     !notApplicable && backendConsistent !== true ? 'sidecar_runtime_backend_consistency_not_proven' : null,
+    !notApplicable && runtimeBoundBackendCandidates.length === 0
+      ? 'sidecar_runtime_backend_runtime_evidence_missing'
+      : null,
+    !notApplicable && sidecarBackend && runtimeBoundBackendCandidates.length > 0 && !runtimeBoundBackendConsistent
+      ? 'sidecar_runtime_backend_runtime_evidence_mismatch'
+      : null,
+    !notApplicable && runtimeBackendEvidenceAccepted !== true
+      ? 'sidecar_runtime_backend_evidence_not_runtime_bound'
+      : null,
     !notApplicable && acceptedFlag !== true && canSatisfyRuntimeProof !== true
       ? 'sidecar_runtime_not_explicitly_accepted'
       : null,
@@ -8254,6 +8287,18 @@ function realRocmSidecarRuntimeConsistencyGate(input = {}) {
     status: status ?? null,
     blockingGaps,
     blocking_gaps: blockingGaps,
+    sidecarBackend,
+    sidecar_backend: sidecarBackend,
+    runtimeBoundBackendCandidates,
+    runtime_bound_backend_candidates: runtimeBoundBackendCandidates,
+    runtimeBackendEvidenceAuthority,
+    runtime_backend_evidence_authority: runtimeBackendEvidenceAuthority,
+    runtimeBackendRuntimeEvidenceAccepted,
+    runtime_backend_runtime_evidence_accepted: runtimeBackendRuntimeEvidenceAccepted,
+    backendConsistencySource,
+    backend_consistency_source: backendConsistencySource,
+    runtimeBoundBackendConsistent,
+    runtime_bound_backend_consistent: runtimeBoundBackendConsistent,
     failedGates,
     failed_gates: failedGates,
   };
