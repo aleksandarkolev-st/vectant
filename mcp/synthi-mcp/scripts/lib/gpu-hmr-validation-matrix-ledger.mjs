@@ -23258,7 +23258,7 @@ function planCoverage(rows) {
   );
   const sourceFirstFullRuntimeRows =
     sourceFirstVisualRowsForBroadReadiness(rows, {
-      requireOutputOracleFacet: false,
+      requireOutputOracleFacet: true,
       requireUserOwnedSource: false,
     });
   const fissionRows = deterministicFissionRows(rows, () => true);
