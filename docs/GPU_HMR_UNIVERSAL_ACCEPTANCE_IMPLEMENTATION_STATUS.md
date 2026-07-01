@@ -4,6 +4,22 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 OIDN Output Oracle Support Boundary
+
+The OIDN/HIP preflight runner now has a generic file-backed output-oracle manifest path through `SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH` or `--output-oracle-manifest`. The manifest schema is `synthi.gpu_hmr.oidn_output_oracle.v1` with authority `oidn_output_oracle_file_bytes_only_not_gpu_hmr_success`. The runner reads noisy input, denoised output, and optional expected-output files only under approved roots, verifies readable byte lengths and SHA-256 hashes, requires the denoised output to differ from the noisy input, and requires an expected-output hash match before `oidnHipOutputProofAccepted=true` can be recorded.
+
+This is deliberately not GPU HMR acceptance. The output-oracle facet always records `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`. Validation-matrix ingestion now recomputes the OIDN output-oracle facet shape before honoring any serialized `acceptedForOidnHipOutputProof=true`; a boolean output-success claim without schema-correct, evidence-only, internally consistent output bytes falls back to preflight-only/missing-output status. Even when the OIDN output oracle is accepted, the matrix keeps the row `preflight_only` with `proofChain=runtime_preflight_and_output_oracle_only` and explicit gaps for `oidn_full_runtime_hmr_ledger_not_proven` and `strict_runtime_proof_ledger_required`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-oidn-preflight.mjs -> passed
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check -> passed, including accepted file-backed output oracle and forged success/hash-mismatch refusals
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, proof gpu-validation-matrix-ledger:sha256:0d6eabd97f62b2f6c3a818c501a56e7f8a3c9723c3648ecfc5e25146a5ccd4af, rows=66
+```
+
 ## 2026-07-01 Packaged Proof Runner Coverage
 
 The MCP package proof-runner allowlist is now derived and tested generically instead of relying on remembered individual script entries. `proof:real-rocm:package-scripts:self-check` scans non-test `proof:*` npm commands, extracts direct `node scripts/*.mjs` runners and `node -e import('./scripts/*.mjs')` runners, and fails if any exposed proof runner is missing from the package `files` list.

@@ -2,14 +2,29 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const args = new Set(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
+const args = new Set(rawArgs);
+
+const OIDN_OUTPUT_ORACLE_SCHEMA = 'synthi.gpu_hmr.oidn_output_oracle.v1';
+const OIDN_OUTPUT_ORACLE_AUTHORITY = 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success';
+
+function argValue(name) {
+  const eq = `${name}=`;
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
+    if (arg === name) return rawArgs[index + 1] ?? '';
+    if (arg.startsWith(eq)) return arg.slice(eq.length);
+  }
+  return '';
+}
 
 const CFG = {
   workerContainer: process.env.SYNTHI_OIDN_WORKER_CONTAINER
@@ -26,6 +41,10 @@ const CFG = {
   seed: process.env.SYNTHI_OIDN_RNG_SEED ?? '12345',
   requireHip: process.env.SYNTHI_OIDN_REQUIRE_HIP === '1',
   allowRejected: process.env.SYNTHI_OIDN_ALLOW_REJECTED === '1',
+  outputOracleManifestPath: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH
+    ?? argValue('--output-oracle-manifest')
+    ?? '',
+  outputOracleAllowedRoots: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_ALLOWED_ROOTS ?? '',
 };
 
 function failConfig(message) {
@@ -52,6 +71,285 @@ function stableJson(value) {
 
 function sha256Json(value) {
   return createHash('sha256').update(JSON.stringify(stableJson(value))).digest('hex');
+}
+
+function sha256Buffer(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function normalizeSha256(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  const match = /^(?:sha256:)?([0-9a-f]{64})$/.exec(text);
+  return match ? `sha256:${match[1]}` : null;
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function authorityClaimsSuccess(object) {
+  if (!object || typeof object !== 'object') return false;
+  return object.acceptedForGpuHmr === true
+    || object.accepted_for_gpu_hmr === true
+    || object.gpuHmrSuccess === true
+    || object.gpu_hmr_success === true
+    || object.canSatisfyRuntimeProof === true
+    || object.can_satisfy_runtime_proof === true;
+}
+
+function isPathInside(child, root) {
+  const rel = path.relative(root, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+async function safeRealpath(value) {
+  try {
+    return await realpath(value);
+  } catch {
+    return null;
+  }
+}
+
+async function outputOracleAllowedRoots(manifestPath) {
+  const configured = CFG.outputOracleAllowedRoots
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const roots = [
+    path.dirname(path.resolve(manifestPath)),
+    path.resolve(CFG.outputDir),
+    ...configured.map((entry) => path.resolve(entry)),
+  ];
+  const resolved = [];
+  for (const root of roots) {
+    const real = await safeRealpath(root);
+    if (real && !resolved.includes(real)) resolved.push(real);
+  }
+  return resolved;
+}
+
+async function resolveOutputOraclePath(manifestPath, value, allowedRoots) {
+  const text = firstText(value);
+  if (!text) {
+    return { path: null, resolvedPath: null, accepted: false, failedGates: ['oidn_output_oracle_path_missing'] };
+  }
+  const candidate = path.isAbsolute(text)
+    ? text
+    : path.resolve(path.dirname(path.resolve(manifestPath)), text);
+  const resolved = await safeRealpath(candidate);
+  if (!resolved) {
+    return { path: candidate, resolvedPath: null, accepted: false, failedGates: ['oidn_output_oracle_file_unreadable'] };
+  }
+  const inside = allowedRoots.some((root) => isPathInside(resolved, root));
+  if (!inside) {
+    return { path: candidate, resolvedPath: resolved, accepted: false, failedGates: ['oidn_output_oracle_path_outside_allowed_roots'] };
+  }
+  return { path: candidate, resolvedPath: resolved, accepted: true, failedGates: [] };
+}
+
+async function verifyOutputOracleFile({ role, manifestPath, value, declaredSha256, allowedRoots }) {
+  const resolved = await resolveOutputOraclePath(manifestPath, value, allowedRoots);
+  if (!resolved.accepted) {
+    return {
+      role,
+      ...resolved,
+      byteLength: 0,
+      sha256: null,
+      declaredSha256: normalizeSha256(declaredSha256),
+      accepted: false,
+      failedGates: resolved.failedGates.map((code) => `${role}:${code}`),
+    };
+  }
+  try {
+    const bytes = await readFile(resolved.resolvedPath);
+    const sha256 = `sha256:${sha256Buffer(bytes)}`;
+    const declared = normalizeSha256(declaredSha256);
+    const failedGates = [];
+    if (bytes.length <= 0) failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+    if (declared && declared !== sha256) failedGates.push(`${role}:oidn_output_oracle_hash_mismatch`);
+    return {
+      role,
+      path: resolved.path,
+      resolvedPath: resolved.resolvedPath,
+      resolved_path: resolved.resolvedPath,
+      byteLength: bytes.length,
+      byte_length: bytes.length,
+      sha256,
+      declaredSha256: declared,
+      declared_sha256: declared,
+      accepted: failedGates.length === 0,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  } catch {
+    return {
+      role,
+      path: resolved.path,
+      resolvedPath: resolved.resolvedPath,
+      resolved_path: resolved.resolvedPath,
+      byteLength: 0,
+      byte_length: 0,
+      sha256: null,
+      declaredSha256: normalizeSha256(declaredSha256),
+      declared_sha256: normalizeSha256(declaredSha256),
+      accepted: false,
+      failedGates: [`${role}:oidn_output_oracle_file_unreadable`],
+      failed_gates: [`${role}:oidn_output_oracle_file_unreadable`],
+    };
+  }
+}
+
+async function buildOidnOutputOracleEvidence(manifestPath) {
+  if (!manifestPath) return null;
+  const resolvedManifestPath = path.resolve(manifestPath);
+  const failedGates = [];
+  let manifest;
+  let manifestBytes;
+  try {
+    manifestBytes = await readFile(resolvedManifestPath);
+    manifest = JSON.parse(manifestBytes.toString('utf8'));
+  } catch {
+    return {
+      schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+      proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+      accepted: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      manifestPath: resolvedManifestPath,
+      manifest_path: resolvedManifestPath,
+      failedGates: ['oidn_output_oracle_manifest_unreadable'],
+      failed_gates: ['oidn_output_oracle_manifest_unreadable'],
+    };
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    failedGates.push('oidn_output_oracle_manifest_not_object');
+    manifest = {};
+  }
+  const schema = firstText(manifest.schemaVersion, manifest.schema_version, manifest.schema);
+  if (schema !== OIDN_OUTPUT_ORACLE_SCHEMA) failedGates.push('oidn_output_oracle_schema_mismatch');
+  const authority = firstText(manifest.proofAuthority, manifest.proof_authority);
+  if (authority && authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
+    failedGates.push('oidn_output_oracle_authority_mismatch');
+  }
+  if (authorityClaimsSuccess(manifest)) failedGates.push('oidn_output_oracle_claims_gpu_hmr_success');
+  const backend = firstText(manifest.backend, manifest.backendFamily, manifest.backend_family);
+  if (backend && backend !== 'oidn_hip') failedGates.push('oidn_output_oracle_backend_mismatch');
+  const device = firstText(manifest.device, manifest.runtimeDevice, manifest.runtime_device);
+  if (device && device !== 'hip') failedGates.push('oidn_output_oracle_device_mismatch');
+  const allowedRoots = await outputOracleAllowedRoots(resolvedManifestPath);
+  const noisy = await verifyOutputOracleFile({
+    role: 'noisy_input',
+    manifestPath: resolvedManifestPath,
+    value: firstText(
+      manifest.noisyInputPath,
+      manifest.noisy_input_path,
+      manifest.inputNoisyPath,
+      manifest.input_noisy_path,
+      manifest.inputPath,
+      manifest.input_path,
+    ),
+    declaredSha256: firstText(
+      manifest.noisyInputSha256,
+      manifest.noisy_input_sha256,
+      manifest.inputNoisySha256,
+      manifest.input_noisy_sha256,
+      manifest.inputSha256,
+      manifest.input_sha256,
+    ),
+    allowedRoots,
+  });
+  const denoised = await verifyOutputOracleFile({
+    role: 'denoised_output',
+    manifestPath: resolvedManifestPath,
+    value: firstText(
+      manifest.denoisedOutputPath,
+      manifest.denoised_output_path,
+      manifest.outputPath,
+      manifest.output_path,
+      manifest.afterPath,
+      manifest.after_path,
+    ),
+    declaredSha256: firstText(
+      manifest.denoisedOutputSha256,
+      manifest.denoised_output_sha256,
+      manifest.outputSha256,
+      manifest.output_sha256,
+      manifest.afterSha256,
+      manifest.after_sha256,
+    ),
+    allowedRoots,
+  });
+  const expectedPath = firstText(manifest.expectedOutputPath, manifest.expected_output_path);
+  const expectedSha256 = normalizeSha256(firstText(
+    manifest.expectedOutputSha256,
+    manifest.expected_output_sha256,
+  ));
+  const expected = expectedPath
+    ? await verifyOutputOracleFile({
+      role: 'expected_output',
+      manifestPath: resolvedManifestPath,
+      value: expectedPath,
+      declaredSha256: expectedSha256,
+      allowedRoots,
+    })
+    : null;
+  failedGates.push(...noisy.failedGates, ...denoised.failedGates, ...(expected?.failedGates ?? []));
+  const outputDistinctFromInput = Boolean(noisy.sha256 && denoised.sha256 && noisy.sha256 !== denoised.sha256);
+  if (!outputDistinctFromInput) failedGates.push('oidn_output_oracle_output_equals_input');
+  const expectedHash = expected?.sha256 ?? expectedSha256;
+  if (!expectedHash) {
+    failedGates.push('oidn_expected_output_hash_missing');
+  } else if (denoised.sha256 && denoised.sha256 !== expectedHash) {
+    failedGates.push('oidn_expected_output_hash_mismatch');
+  }
+  const accepted = failedGates.length === 0;
+  const evidenceRefs = accepted
+    ? [
+      `oidn-output-oracle-manifest:sha256:${sha256Buffer(manifestBytes)}`,
+      `oidn-output-oracle-noisy:${noisy.sha256}`,
+      `oidn-output-oracle-denoised:${denoised.sha256}`,
+      `oidn-output-oracle-expected:${expectedHash}`,
+    ]
+    : [];
+  const facetBase = {
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    schema_version: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    proof_authority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    backend: 'oidn_hip',
+    device: 'hip',
+    manifestPath: resolvedManifestPath,
+    manifest_path: resolvedManifestPath,
+    manifestSha256: `sha256:${sha256Buffer(manifestBytes)}`,
+    manifest_sha256: `sha256:${sha256Buffer(manifestBytes)}`,
+    allowedRoots,
+    allowed_roots: allowedRoots,
+    files: [noisy, denoised, ...(expected ? [expected] : [])],
+    outputDistinctFromInput,
+    output_distinct_from_input: outputDistinctFromInput,
+    expectedOutputMatched: accepted,
+    expected_output_matched: accepted,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: [...new Set(failedGates)].map((code) => ({ code })),
+    failed_gates: [...new Set(failedGates)].map((code) => ({ code })),
+  };
+  return {
+    ...facetBase,
+    outputOracleHash: `sha256:${sha256Json(facetBase)}`,
+    output_oracle_hash: `sha256:${sha256Json(facetBase)}`,
+  };
 }
 
 function execDockerShell(command, timeoutMs = CFG.timeoutMs) {
@@ -255,7 +553,7 @@ function missingLibrariesFromLdd(text) {
   return [...missing].sort();
 }
 
-function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
+function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null, outputOracle = null }) {
   const hipTests = tests.filter((test) => test.device === 'hip');
   const cpuTests = tests.filter((test) => test.device === 'cpu');
   const hipTestsPassed = hipTests.length > 0 && hipTests.every((test) => test.passed);
@@ -280,18 +578,25 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
   for (const gate of pathIntegrity?.failedGates ?? pathIntegrity?.failed_gates ?? []) {
     unsupportedReasons.push(gate);
   }
-  const outputProofGaps = ['oidn_output_oracle_not_proven'];
+  const outputOracleAccepted = outputOracle?.accepted === true;
+  const outputProofGaps = outputOracleAccepted
+    ? []
+    : ['oidn_output_oracle_not_proven'];
   const openGaps = oidnHipRuntimePreflightAccepted
-    ? outputProofGaps
+    ? (outputOracleAccepted ? ['oidn_full_runtime_hmr_ledger_not_proven'] : outputProofGaps)
     : [...new Set(unsupportedReasons)].sort();
   return {
     oidnHipRuntimePreflightAccepted,
-    oidnHipOutputProofAccepted: false,
-    oidnHipOutputOracleProven: false,
+    oidnHipOutputProofAccepted: oidnHipRuntimePreflightAccepted && outputOracleAccepted,
+    oidnHipOutputOracleProven: oidnHipRuntimePreflightAccepted && outputOracleAccepted,
     oidnHipTestsPassed: hipTestsPassed,
     oidnCpuDiagnosticsPassed: cpuPassed,
     resultState: oidnHipRuntimePreflightAccepted
-      ? 'oidn-hip-runtime-preflight-accepted'
+      ? (
+        outputOracleAccepted
+          ? 'oidn-hip-output-oracle-accepted-preflight-only'
+          : 'oidn-hip-runtime-preflight-accepted'
+      )
       : 'oidn-hip-rejected',
     unsupportedReasons: [...new Set(unsupportedReasons)].sort(),
     outputProofGaps,
@@ -299,6 +604,8 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null }) {
     openGaps,
     open_gaps: openGaps,
     missingLibraries: missingLibs,
+    outputOracleAccepted,
+    output_oracle_accepted: outputOracleAccepted,
   };
 }
 
@@ -361,11 +668,13 @@ async function buildProof() {
     tests.push(await runOidnTest(toolProbe.tool, 'buffer read/write', 'cpu'));
   }
   const ldd = await runLdd(libraryProbe.library);
+  const outputOracle = await buildOidnOutputOracleEvidence(CFG.outputOracleManifestPath);
   const classification = classifyPreflight({
     oidnTool: toolProbe.tool,
     tests,
     ldd,
     pathIntegrity,
+    outputOracle,
   });
   const ended = process.hrtime.bigint();
   const proofBase = {
@@ -392,17 +701,23 @@ async function buildProof() {
       ldd,
       pathIntegrity,
     }),
+    outputOracle,
+    output_oracle: outputOracle,
     classification,
     acceptance: {
       acceptedForOidnHipRuntimePreflight: classification.oidnHipRuntimePreflightAccepted,
-      acceptedForHipOutputProof: false,
-      acceptedForOidnHipOutputProof: false,
-      outputOracleProven: false,
-      output_oracle_proven: false,
+      acceptedForHipOutputProof: classification.oidnHipOutputProofAccepted,
+      acceptedForOidnHipOutputProof: classification.oidnHipOutputProofAccepted,
+      outputOracleProven: classification.oidnHipOutputOracleProven,
+      output_oracle_proven: classification.oidnHipOutputOracleProven,
       gpuHmrSuccess: false,
-      reason: classification.oidnHipRuntimePreflightAccepted
-        ? 'preflight_only_oidn_output_oracle_still_required'
-        : 'oidn_hip_runtime_preflight_rejected',
+      reason: classification.oidnHipOutputProofAccepted
+        ? 'preflight_output_oracle_only_full_runtime_hmr_ledger_still_required'
+        : (
+          classification.oidnHipRuntimePreflightAccepted
+            ? 'preflight_only_oidn_output_oracle_still_required'
+            : 'oidn_hip_runtime_preflight_rejected'
+        ),
       openGaps: classification.openGaps,
       open_gaps: classification.openGaps,
       cpuDiagnosticOnly:
@@ -429,6 +744,8 @@ async function writeProof(proof) {
     `hip_device_library=${proof.hipDeviceLibrary ?? 'missing'}`,
     `oidn_hip_runtime_preflight_accepted=${proof.classification.oidnHipRuntimePreflightAccepted}`,
     `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
+    `oidn_output_oracle_manifest=${proof.outputOracle?.manifestPath ?? 'none'}`,
+    `oidn_output_oracle_accepted=${proof.outputOracle?.accepted ?? false}`,
     `oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`,
     `open_gaps=${proof.classification.openGaps.join(',') || 'none'}`,
     `missing_libraries=${proof.classification.missingLibraries.join(',') || 'none'}`,
@@ -480,6 +797,26 @@ function runSelfCheck() {
   assert(accepted.resultState === 'oidn-hip-runtime-preflight-accepted', 'runtime preflight state not classified');
   assert(accepted.oidnHipRuntimePreflightAccepted === true, 'HIP runtime preflight should be accepted');
   assert(accepted.oidnHipOutputProofAccepted === false, 'OIDN HIP runtime preflight must not imply output proof');
+  const outputAccepted = classifyPreflight({
+    oidnTool: './bin/oidnTest',
+    tests: [
+      { name: 'device creation', device: 'hip', passed: true },
+      { name: 'buffer read/write', device: 'hip', passed: true },
+      { name: 'device creation', device: 'cpu', passed: true },
+      { name: 'buffer read/write', device: 'cpu', passed: true },
+    ],
+    ldd: { missingLibraries: [] },
+    outputOracle: { accepted: true },
+  });
+  assert(
+    outputAccepted.resultState === 'oidn-hip-output-oracle-accepted-preflight-only',
+    'accepted output oracle state not classified',
+  );
+  assert(outputAccepted.oidnHipOutputProofAccepted === true, 'accepted output oracle should satisfy OIDN output proof');
+  assert(
+    outputAccepted.openGaps.includes('oidn_full_runtime_hmr_ledger_not_proven'),
+    'accepted OIDN output proof must still require full runtime ledger',
+  );
   const shimRejected = classifyPreflight({
     oidnTool: './bin/oidnTest',
     tests: [
@@ -501,11 +838,62 @@ function runSelfCheck() {
     shimRejected.unsupportedReasons.includes('oidn_wrapper_or_shim_detected'),
     'shim rejection reason absent',
   );
-  console.log('[ok] OIDN preflight self-check passed');
+  return runOutputOracleSelfCheck().then(() => {
+    console.log('[ok] OIDN preflight self-check passed');
+  });
+}
+
+async function runOutputOracleSelfCheck() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'synthi-oidn-oracle-'));
+  const noisyPath = path.join(dir, 'noisy.bin');
+  const denoisedPath = path.join(dir, 'denoised.bin');
+  const expectedPath = path.join(dir, 'expected.bin');
+  await writeFile(noisyPath, Buffer.from([0, 1, 2, 3, 4, 5]));
+  await writeFile(denoisedPath, Buffer.from([0, 2, 4, 6, 8, 10]));
+  await writeFile(expectedPath, Buffer.from([0, 2, 4, 6, 8, 10]));
+  const denoisedHash = normalizeSha256(sha256Buffer(await readFile(denoisedPath)));
+  const manifestPath = path.join(dir, 'oracle.json');
+  await writeFile(manifestPath, JSON.stringify({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    backend: 'oidn_hip',
+    device: 'hip',
+    noisyInputPath: noisyPath,
+    denoisedOutputPath: denoisedPath,
+    expectedOutputPath: expectedPath,
+    expectedOutputSha256: denoisedHash,
+  }, null, 2));
+  const accepted = await buildOidnOutputOracleEvidence(manifestPath);
+  assert(accepted.accepted === true, `OIDN output oracle should accept: ${JSON.stringify(accepted.failedGates)}`);
+  assert(accepted.acceptedForGpuHmr === false, 'OIDN output oracle cannot claim GPU HMR acceptance');
+  assert(accepted.gpuHmrSuccess === false, 'OIDN output oracle cannot claim GPU HMR success');
+
+  const forgedPath = path.join(dir, 'forged.json');
+  await writeFile(forgedPath, JSON.stringify({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    backend: 'oidn_hip',
+    device: 'hip',
+    noisyInputPath: noisyPath,
+    denoisedOutputPath: denoisedPath,
+    expectedOutputSha256: `sha256:${'0'.repeat(64)}`,
+    gpuHmrSuccess: true,
+  }, null, 2));
+  const forged = await buildOidnOutputOracleEvidence(forgedPath);
+  const forgedGates = forged.failedGates.map((gate) => gate.code);
+  assert(forged.accepted === false, 'forged OIDN output oracle should reject');
+  assert(
+    forgedGates.includes('oidn_output_oracle_claims_gpu_hmr_success'),
+    `forged success gate missing: ${forgedGates.join(',')}`,
+  );
+  assert(
+    forgedGates.includes('oidn_expected_output_hash_mismatch'),
+    `forged expected hash gate missing: ${forgedGates.join(',')}`,
+  );
 }
 
 if (args.has('--self-check')) {
-  runSelfCheck();
+  await runSelfCheck();
 } else {
   const proof = await buildProof();
   const paths = await writeProof(proof);

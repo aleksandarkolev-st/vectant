@@ -15438,15 +15438,100 @@ function preflightRuntimeOnlyOpenGaps(backend) {
   return ['runtime_preflight_output_oracle_not_proven'];
 }
 
+function oidnOutputOracleEvidenceFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const failedGates = [];
+  if (!present) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      failedGates: [{ code: 'oidn_output_oracle_facet_missing' }],
+      failed_gates: [{ code: 'oidn_output_oracle_facet_missing' }],
+    };
+  }
+  const schema = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  if (schema !== 'synthi.gpu_hmr.oidn_output_oracle.v1') {
+    failedGates.push('oidn_output_oracle_schema_mismatch');
+  }
+  const authority = firstText(facet.proofAuthority, facet.proof_authority);
+  if (authority !== 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success') {
+    failedGates.push('oidn_output_oracle_authority_mismatch');
+  }
+  if (
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+    || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+    || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+  ) {
+    failedGates.push('oidn_output_oracle_claims_gpu_hmr_success');
+  }
+  if (firstText(facet.backend) !== 'oidn_hip') failedGates.push('oidn_output_oracle_backend_mismatch');
+  if (firstText(facet.device) !== 'hip') failedGates.push('oidn_output_oracle_device_mismatch');
+  if (facet.accepted !== true) failedGates.push('oidn_output_oracle_not_accepted');
+  const nestedFailed = compactStringList((facet.failedGates ?? facet.failed_gates ?? [])
+    .map((gate) => firstText(gate?.code, gate)));
+  failedGates.push(...nestedFailed);
+  if (firstBool(facet.outputDistinctFromInput, facet.output_distinct_from_input) !== true) {
+    failedGates.push('oidn_output_oracle_output_equals_input');
+  }
+  if (firstBool(facet.expectedOutputMatched, facet.expected_output_matched) !== true) {
+    failedGates.push('oidn_output_oracle_expected_output_not_matched');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/i.test(firstText(facet.manifestSha256, facet.manifest_sha256))) {
+    failedGates.push('oidn_output_oracle_manifest_hash_missing');
+  }
+  const files = Array.isArray(facet.files) ? facet.files : [];
+  const roles = new Map(files.map((file) => [firstText(file?.role), file]));
+  for (const role of ['noisy_input', 'denoised_output']) {
+    const file = compactObject(roles.get(role));
+    if (Object.keys(file).length === 0) {
+      failedGates.push(`${role}:oidn_output_oracle_file_missing`);
+      continue;
+    }
+    if (file.accepted !== true) failedGates.push(`${role}:oidn_output_oracle_file_not_accepted`);
+    if (!/^sha256:[0-9a-f]{64}$/i.test(firstText(file.sha256))) {
+      failedGates.push(`${role}:oidn_output_oracle_hash_missing`);
+    }
+    const byteLength = finiteNumber(file.byteLength ?? file.byte_length);
+    if (!Number.isFinite(byteLength) || byteLength <= 0) {
+      failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+    }
+  }
+  const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
+  if (evidenceRefs.length === 0) failedGates.push('oidn_output_oracle_evidence_refs_missing');
+  const uniqueFailedGates = compactStringList(failedGates);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+    present: true,
+    accepted: uniqueFailedGates.length === 0,
+    proofAuthority: authority || null,
+    proof_authority: authority || null,
+    manifestSha256: firstText(facet.manifestSha256, facet.manifest_sha256) || null,
+    manifest_sha256: firstText(facet.manifestSha256, facet.manifest_sha256) || null,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: uniqueFailedGates.map((code) => ({ code })),
+    failed_gates: uniqueFailedGates.map((code) => ({ code })),
+  };
+}
+
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
   const backendEvidence = preflightBackendEvidenceFacet(json);
   const backend = backendEvidence.accepted ? backendEvidence.backend : 'unknown';
   const acceptance = compactObject(json.acceptance);
   const classification = compactObject(json.classification);
-  const proofAccepted = backendEvidence.accepted
+  const serializedProofAccepted = backendEvidence.accepted
     ? preflightAcceptedField(backend, acceptance)
     : false;
+  const oidnOutputOracleFacet = backend === 'oidn_hip'
+    ? oidnOutputOracleEvidenceFacet(json.outputOracle ?? json.output_oracle)
+    : null;
+  const proofAccepted = backend === 'oidn_hip'
+    ? serializedProofAccepted && oidnOutputOracleFacet?.accepted === true
+    : serializedProofAccepted;
+  const preflightOutputProofOnly = proofAccepted === true;
   const runtimeOnlyAccepted = backendEvidence.accepted
     ? preflightRuntimeOnlyAccepted(backend, acceptance)
     : false;
@@ -15470,8 +15555,8 @@ async function preflightRow(json, filePath, context) {
     {},
     false,
   );
-  const matrixOutcome = proofAccepted
-    ? 'unproven'
+  const matrixOutcome = preflightOutputProofOnly
+    ? 'preflight_only'
     : runtimeOnlyAccepted
       ? 'preflight_only'
       : refusalProven
@@ -15491,6 +15576,8 @@ async function preflightRow(json, filePath, context) {
       : 'runtime_preflight_refusal',
     backendEvidence,
     backend_evidence: backendEvidence,
+    outputOracleFacet: oidnOutputOracleFacet ?? compactObject(json.outputOracle ?? json.output_oracle),
+    output_oracle_facet: oidnOutputOracleFacet ?? compactObject(json.outputOracle ?? json.output_oracle),
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -15498,7 +15585,7 @@ async function preflightRow(json, filePath, context) {
     refusalProven,
     proofChainAccepted: matrixOutcome === 'preflight_only' || refusalProven,
     proofChain: matrixOutcome === 'preflight_only'
-      ? 'runtime_preflight_only'
+      ? (preflightOutputProofOnly ? 'runtime_preflight_and_output_oracle_only' : 'runtime_preflight_only')
       : refusalProven
         ? 'structured_runtime_refusal'
         : 'preflight_unproven',
@@ -15525,12 +15612,22 @@ async function preflightRow(json, filePath, context) {
     reasons: compactStringList([
       backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',
       ...backendEvidence.failedGates.map((gate) => gate.code),
+      ...(backend === 'oidn_hip' && serializedProofAccepted
+        ? (oidnOutputOracleFacet?.failedGates ?? []).map((gate) => gate.code)
+        : []),
       ...unsupportedReasons,
       acceptance.reason,
-      proofAccepted ? 'preflight_does_not_prove_required_output_or_pipeline' : null,
+      preflightOutputProofOnly ? 'preflight_output_oracle_does_not_prove_gpu_hmr' : null,
     ]),
     openGaps: matrixOutcome === 'preflight_only'
-      ? preflightRuntimeOnlyOpenGaps(backend)
+      ? (
+        preflightOutputProofOnly
+          ? compactStringList([
+            backend === 'oidn_hip' ? 'oidn_full_runtime_hmr_ledger_not_proven' : null,
+            'strict_runtime_proof_ledger_required',
+          ])
+          : preflightRuntimeOnlyOpenGaps(backend)
+      )
       : refusalProven
         ? compactStringList([
           backendEvidence.accepted ? null : 'preflight_typed_backend_evidence_required',

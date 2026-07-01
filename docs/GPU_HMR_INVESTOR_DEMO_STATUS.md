@@ -84,6 +84,14 @@ The npm package proof-runner allowlist now has a generic coverage gate: non-test
 This only makes proof tooling reproducible from the package. It does not turn OIDN preflight, package presence, script existence, or a dry-run tarball into GPU HMR acceptance. OIDN output still needs its own same-process loader, epoch, dispatch, host identity, output oracle, firewall, and strict ledger proof before it can be accepted.
 ```
 
+OIDN output-oracle note:
+
+```text
+The OIDN/HIP preflight runner can now consume a generic `synthi.gpu_hmr.oidn_output_oracle.v1` file-backed manifest. It verifies noisy input bytes, denoised output bytes, expected-output hash agreement, and no GPU-HMR authority claims before recording OIDN output-oracle support.
+
+This is still preflight/output-oracle support only. The validation matrix refuses to treat OIDN output bytes as GPU HMR success without full runtime ledger proof, and accepted OIDN output support remains `preflight_only` with `strict_runtime_proof_ledger_required`.
+```
+
 Best demo surfaces:
 
 1. ROCm/HIP realistic raytrace preview: deterministic generated visual workload with a faceted diamond scene, smaller stones, wall/awning geometry, glossy car geometry, slab lighting, hot delta 1, hot delta 2 with a different edit, negative edit refusal, image-tool-inspected before/after/diff PNGs, and strict runtime-ledger artifacts.
