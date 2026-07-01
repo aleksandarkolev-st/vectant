@@ -43,6 +43,15 @@ function productionArtifact(overrides: Record<string, any> = {}) {
       status: 200,
       response_headers_sha256: "a".repeat(64),
       response_body_sha256: "b".repeat(64),
+      authorization_context: {
+        session_id: "session-prod-001",
+        tenant_id: "tenant-prod-001",
+        organization_id: "org-prod-001",
+        workspace_id: "workspace-prod-001",
+        actor_id: "agent-prod-001",
+        roles: ["incident_commander", "therapeutic_proof_broker"],
+        source: "hosted_runtime_authorization_response",
+      },
     },
     tenant_scope: {
       tenant_id: "tenant-prod-001",
@@ -50,7 +59,7 @@ function productionArtifact(overrides: Record<string, any> = {}) {
       workspace_id: "workspace-prod-001",
       actor_id: "agent-prod-001",
       roles: ["incident_commander", "therapeutic_proof_broker"],
-      source: "production_environment",
+      source: "production_runtime_authorization",
     },
     task_id: "production_incident_response_001",
     deployed_probe_adapter: {
@@ -201,6 +210,7 @@ describe("therapeutic tomography production release evidence gate", () => {
     expect(staleValidation.errors).toEqual(expect.arrayContaining([
       "schema_version_invalid",
       "hosted_runtime_url_not_production_https",
+      "hosted_runtime_authorization_context_missing",
       "durable_store_not_external_control_plane",
       "proof_signing_provider_not_external",
       "proof_signature_algorithm_not_ed25519",
@@ -234,6 +244,37 @@ describe("therapeutic tomography production release evidence gate", () => {
       "production_probe_http_observation_missing:blast_radius_summary",
       "durable_store_read_response_sha256_missing",
     ]));
+  });
+
+  it("requires tenant and RBAC context to come from hosted runtime authorization", async () => {
+    const { validateProductionTherapeuticTomographyEvidence } = await releaseModulePromise;
+    const missingContext = validateProductionTherapeuticTomographyEvidence(productionArtifact({
+      hosted_runtime: {
+        ...productionArtifact().hosted_runtime,
+        authorization_context: undefined,
+      },
+      tenant_scope: {
+        ...productionArtifact().tenant_scope,
+        source: "production_environment",
+      },
+    }));
+    expect(missingContext.ok).toBe(false);
+    expect(missingContext.errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_authorization_context_missing",
+      "tenant_scope_not_from_production_runtime_authorization",
+    ]));
+
+    const mismatchedContext = validateProductionTherapeuticTomographyEvidence(productionArtifact({
+      hosted_runtime: {
+        ...productionArtifact().hosted_runtime,
+        authorization_context: {
+          ...productionArtifact().hosted_runtime.authorization_context,
+          workspace_id: "workspace-prod-other",
+        },
+      },
+    }));
+    expect(mismatchedContext.ok).toBe(false);
+    expect(mismatchedContext.errors).toContain("tenant_scope_runtime_context_mismatch");
   });
 
   it("does not allow local/demo transports to satisfy production evidence", async () => {

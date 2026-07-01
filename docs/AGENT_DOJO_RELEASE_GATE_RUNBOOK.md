@@ -963,10 +963,16 @@ $env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = '["--json"]'
 $env:SYNTHI_DOJO_PROOF_SIGNING_TIMEOUT_MS = "5000"
 ```
 
-The hosted runtime URL is called with `GET` and bearer authorization. The probe
-service is called with the existing therapeutic HTTPS probe adapter using
-`POST` JSON requests and must return shape-valid aggregate probe results for
-`service_health_rollup` and `blast_radius_summary`.
+The hosted runtime URL is called with `GET` and bearer authorization. The
+runtime response must prove the deployed session authorization context by
+returning `session_id`, `tenant_id`, `organization_id`, `workspace_id`,
+`actor_id`, and `roles` either as JSON fields, nested authorization fields, or
+`X-Synthi-*` response headers. Those values must match the production env
+inputs, and the release artifact's tenant/RBAC section is sourced from that
+runtime authorization response. The probe service is called with the existing
+therapeutic HTTPS probe adapter using `POST` JSON requests and must return
+shape-valid aggregate probe results for `service_health_rollup` and
+`blast_radius_summary`.
 
 The production evidence records response fingerprints for every external
 dependency. Runtime authorization must include response header and body SHA-256

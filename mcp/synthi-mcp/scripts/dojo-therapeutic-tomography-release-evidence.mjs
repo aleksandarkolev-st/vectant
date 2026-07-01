@@ -281,10 +281,8 @@ export async function runTherapeuticTomographyProductionReleaseEvidence({
     scope: "production deployed therapeutic tomography release evidence",
     hosted_runtime: runtimeObservation,
     tenant_scope: {
-      ...config.tenant_scope,
-      organization_id: config.organization_id,
-      roles: config.actor_roles,
-      source: "production_environment",
+      ...runtimeObservation.authorization_context,
+      source: "production_runtime_authorization",
     },
     task_id: taskId,
     deployed_probe_adapter: {
@@ -427,6 +425,18 @@ export function validateProductionTherapeuticTomographyEvidence(artifact) {
   if (!artifact?.hosted_runtime?.authorization_observed_at) errors.push("hosted_runtime_authorization_missing");
   if (!isSha256Hex(artifact?.hosted_runtime?.response_headers_sha256)) errors.push("hosted_runtime_response_headers_sha256_missing");
   if (!isSha256Hex(artifact?.hosted_runtime?.response_body_sha256)) errors.push("hosted_runtime_response_body_sha256_missing");
+  const runtimeContext = artifact?.hosted_runtime?.authorization_context;
+  if (!runtimeContext) {
+    errors.push("hosted_runtime_authorization_context_missing");
+  } else {
+    if (runtimeContext.session_id !== artifact?.hosted_runtime?.session_id) errors.push("hosted_runtime_session_context_mismatch");
+    if (!runtimeContext.tenant_id || !runtimeContext.organization_id || !runtimeContext.workspace_id || !runtimeContext.actor_id) {
+      errors.push("hosted_runtime_authorization_context_incomplete");
+    }
+    if (!Array.isArray(runtimeContext.roles) || runtimeContext.roles.length === 0) {
+      errors.push("hosted_runtime_authorization_roles_missing");
+    }
+  }
   const probeUrl = safeUrl(artifact?.deployed_probe_adapter?.endpoint_url);
   if (!probeUrl || !isProductionHttpsUrl(probeUrl)) errors.push("probe_endpoint_not_production_https");
   if (artifact?.deployed_probe_adapter?.transport !== "fetch") errors.push("probe_transport_not_real_fetch");
@@ -457,9 +467,20 @@ export function validateProductionTherapeuticTomographyEvidence(artifact) {
   if (!artifact?.tenant_scope?.tenant_id || !artifact?.tenant_scope?.workspace_id || !artifact?.tenant_scope?.actor_id) {
     errors.push("tenant_scope_missing");
   }
-  if (artifact?.tenant_scope?.source !== "production_environment") errors.push("tenant_scope_not_from_production_environment");
+  if (artifact?.tenant_scope?.source !== "production_runtime_authorization") errors.push("tenant_scope_not_from_production_runtime_authorization");
   if (!Array.isArray(artifact?.tenant_scope?.roles) || artifact.tenant_scope.roles.length === 0) {
     errors.push("tenant_rbac_roles_missing");
+  }
+  if (
+    runtimeContext
+    && (
+      artifact?.tenant_scope?.tenant_id !== runtimeContext.tenant_id
+      || artifact?.tenant_scope?.organization_id !== runtimeContext.organization_id
+      || artifact?.tenant_scope?.workspace_id !== runtimeContext.workspace_id
+      || artifact?.tenant_scope?.actor_id !== runtimeContext.actor_id
+    )
+  ) {
+    errors.push("tenant_scope_runtime_context_mismatch");
   }
   if (artifact?.production_durable_store?.kind !== "external_control_plane") errors.push("durable_store_not_external_control_plane");
   const storeUrl = safeUrl(artifact?.production_durable_store?.endpoint_url);
@@ -522,6 +543,11 @@ async function observeHostedRuntimeAuthorization({ config, now, fetchImpl }) {
     throw new Error(`therapeutic_production_runtime_authorization_failed:${response.status}`);
   }
   const text = await readResponseText(response);
+  const authorizationContext = extractRuntimeAuthorizationContext({
+    response,
+    body: parseResponseBody(text),
+    config,
+  });
   return {
     authorized: true,
     session_id: config.runtime_session_id,
@@ -531,7 +557,68 @@ async function observeHostedRuntimeAuthorization({ config, now, fetchImpl }) {
     status: response.status,
     response_headers_sha256: sha256(JSON.stringify(Object.fromEntries(response.headers.entries()))),
     response_body_sha256: sha256(text),
+    authorization_context: authorizationContext,
   };
+}
+
+function extractRuntimeAuthorizationContext({ response, body, config }) {
+  const context = {
+    session_id: firstString(
+      header(response, "x-synthi-runtime-session-id"),
+      body?.session_id,
+      body?.runtime_session_id,
+      body?.authorization?.session_id,
+      body?.authorization_context?.session_id,
+    ),
+    tenant_id: firstString(
+      header(response, "x-synthi-tenant-id"),
+      body?.tenant_id,
+      body?.tenant_scope?.tenant_id,
+      body?.authorization?.tenant_id,
+      body?.authorization_context?.tenant_id,
+    ),
+    organization_id: firstString(
+      header(response, "x-synthi-organization-id"),
+      body?.organization_id,
+      body?.tenant_scope?.organization_id,
+      body?.authorization?.organization_id,
+      body?.authorization_context?.organization_id,
+    ),
+    workspace_id: firstString(
+      header(response, "x-synthi-workspace-id"),
+      body?.workspace_id,
+      body?.tenant_scope?.workspace_id,
+      body?.authorization?.workspace_id,
+      body?.authorization_context?.workspace_id,
+    ),
+    actor_id: firstString(
+      header(response, "x-synthi-actor-id"),
+      body?.actor_id,
+      body?.tenant_scope?.actor_id,
+      body?.authorization?.actor_id,
+      body?.authorization_context?.actor_id,
+    ),
+    roles: firstStringArray(
+      header(response, "x-synthi-roles"),
+      body?.roles,
+      body?.tenant_scope?.roles,
+      body?.authorization?.roles,
+      body?.authorization_context?.roles,
+    ),
+    source: "hosted_runtime_authorization_response",
+  };
+  const mismatches = [];
+  if (context.session_id !== config.runtime_session_id) mismatches.push("session_id");
+  if (context.tenant_id !== config.tenant_scope.tenant_id) mismatches.push("tenant_id");
+  if (context.organization_id !== config.organization_id) mismatches.push("organization_id");
+  if (context.workspace_id !== config.tenant_scope.workspace_id) mismatches.push("workspace_id");
+  if (context.actor_id !== config.tenant_scope.actor_id) mismatches.push("actor_id");
+  const missingRoles = config.actor_roles.filter((role) => !context.roles.includes(role));
+  if (missingRoles.length > 0) mismatches.push(`roles:${missingRoles.join("|")}`);
+  if (mismatches.length > 0) {
+    throw new Error(`therapeutic_production_runtime_authorization_context_mismatch:${mismatches.join(",")}`);
+  }
+  return context;
 }
 
 async function persistAndReconstructProductionState({ config, taskId, runtimeState, now, fetchImpl }) {
@@ -631,6 +718,35 @@ function parseResponseBody(text) {
   } catch {
     return text;
   }
+}
+
+function header(response, name) {
+  if (typeof response?.headers?.get === "function") return response.headers.get(name) ?? "";
+  const entries = typeof response?.headers?.entries === "function"
+    ? Object.fromEntries(response.headers.entries())
+    : {};
+  return entries[name] ?? entries[name.toLowerCase()] ?? "";
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function firstStringArray(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const parsed = value.map((item) => String(item).trim()).filter(Boolean);
+      if (parsed.length > 0) return [...new Set(parsed)];
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = parseCsv(value);
+      if (parsed.length > 0) return parsed;
+    }
+  }
+  return [];
 }
 
 function redactProbeRequestBody(body) {
