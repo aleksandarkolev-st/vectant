@@ -5813,8 +5813,8 @@ function attachLinkedRunModeSupportRows({ rowsByTarget, fullRuntimeRowsByTarget,
 }
 
 function broadLibraryAgnosticScopeProven(row = {}, context = {}) {
-  // Matrix-level broad readiness can be accepted from a portfolio of strict rows,
-  // but that must not rewrite a scoped row into row-local arbitrary-project proof.
+  // Matrix-level generalization can be computed from a portfolio of strict rows,
+  // but broad readiness still requires row-local arbitrary-project proof.
   const proof = compactObject(context.broadLibraryAgnosticProof ?? context.broadProof);
   if (proof.accepted !== true) return false;
   const rowIds = new Set(compactStringList(proof.broadRuntimeRowIds ?? proof.broad_runtime_row_ids));
