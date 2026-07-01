@@ -16,6 +16,24 @@ function projectFixture() {
       zones: [{ zoneKey: 'class_b', class: 'B', paths: ['packages/schemas/**'], rules: ['change_order_for_mutation'] }],
       noFlyZones: ['infra/prod/**'],
       classRules: { B: ['change_order_for_mutation'] },
+      semanticGraph: {
+        sourceDigest: 'sha256:compiler-source',
+        importEdges: [{ from: 'components/auth/SignupForm.tsx', imports: ['packages/schemas/auth/signup.ts'] }],
+        testOwnership: [],
+      },
+      policySources: { repoSignals: 1, importEdges: 1 },
+      policyDigest: 'sha256:policy',
+      compiler: {
+        compilerVersion: '2026-07-01.1',
+        repoRoot: '/repo',
+        sourceDigest: 'sha256:compiler-source',
+        policyDigest: 'sha256:policy',
+        compiledAt: '2026-07-01T00:00:00.000Z',
+        fileCount: 42,
+        maxFiles: 12000,
+        truncated: false,
+        source: 'repo_policy_compiler',
+      },
     },
     controlPlan: { selectedStrategy: 'schema-first' },
     agentSessions: [{ id: 'ags-1', displayCallsign: 'CODEX-04', ownerUserId: 'user-1' }],
@@ -53,11 +71,25 @@ describe('CodeSite artifact projection', () => {
     const paths = files.map((file) => file.relativePath);
 
     expect(paths).toContain('manifest.json');
-    const manifestTools = JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content).mcp_tools;
+    const manifest = JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content);
+    const manifestTools = manifest.mcp_tools;
     expect(manifestTools).toEqual(CODESITE_MCP_TOOLS);
     expect(manifestTools).toContain('synthi_codesite_get_radar');
     expect(manifestTools).toContain('synthi_codesite_preflight_write');
     expect(manifestTools).toContain('synthi_codesite_get_inbox');
+    expect(manifest.compiler_output).toBe('airspace/compiler-output.json');
+    expect(paths).toContain('airspace/compiler-output.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'airspace/compiler-output.json').content)).toMatchObject({
+      schemaVersion: 'synthi.codesite.repoPolicyCompilerOutput.v1',
+      policyDigest: 'sha256:policy',
+      compiler: {
+        compilerVersion: '2026-07-01.1',
+        repoRoot: '/repo',
+        sourceDigest: 'sha256:compiler-source',
+        fileCount: 42,
+      },
+      semanticGraph: expect.objectContaining({ sourceDigest: 'sha256:compiler-source' }),
+    });
     expect(paths).toContain('schemas/agent-session.schema.json');
     expect(paths).toContain('schemas/clearance.schema.json');
     expect(paths).toContain('schemas/execution-plan.schema.json');

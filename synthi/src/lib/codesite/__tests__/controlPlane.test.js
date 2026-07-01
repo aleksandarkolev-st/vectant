@@ -120,6 +120,7 @@ import {
   recordTransactionWrite,
   requestMutationLease,
   shadowMergeSimulate,
+  updateZonePolicy,
   validateTransaction,
 } from '../controlPlane.js';
 import { CODESITE_MCP_TOOLS } from '../artifacts.js';
@@ -581,6 +582,59 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: expect.stringContaining('Hold position until schema-first route lands'),
       }),
     }));
+  });
+
+  it('preserves repo policy compiler provenance across policy updates', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-policy-root-'));
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await fs.mkdir(path.join(root, 'packages/contracts/src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages/contracts/package.json'), JSON.stringify({
+      name: '@acme/contracts',
+      exports: { '.': './src/index.ts' },
+    }));
+    await fs.writeFile(path.join(root, 'packages/contracts/src/index.ts'), 'export type Signup = { email: string };\n');
+
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Policy provenance',
+      request: 'Compile repo policy',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({
+        zones: [],
+        compiler: {
+          repoRoot: root,
+          sourceDigest: 'sha256:previous-source',
+          policyDigest: 'sha256:previous-policy',
+          compilerVersion: 'previous',
+          fileCount: 3,
+          maxFiles: 12000,
+          truncated: false,
+        },
+      }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+
+    await updateZonePolicy('acme', 'project-1', {
+      zones: [{ zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], risk: 'low' }],
+    });
+
+    const storedPolicy = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.zonePolicyJson);
+    expect(storedPolicy.compiler).toMatchObject({
+      repoRoot: root,
+      compilerVersion: '2026-07-01.1',
+      maxFiles: 12000,
+      truncated: false,
+      source: 'repo_policy_compiler',
+    });
+    expect(storedPolicy.compiler.sourceDigest).toMatch(/^sha256:/);
+    expect(storedPolicy.compiler.policyDigest).toMatch(/^sha256:/);
+    expect(storedPolicy.policyDigest).toBe(storedPolicy.compiler.policyDigest);
+    expect(storedPolicy.compiler.fileCount).toBeGreaterThan(0);
+    expect(storedPolicy.compiler.compiledAt).toEqual(expect.any(String));
+    await fs.rm(root, { recursive: true, force: true });
   });
 
   it('persists Dojo pilot license refs on agent sessions', async () => {

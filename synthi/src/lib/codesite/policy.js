@@ -164,7 +164,7 @@ export function compileZonePolicy(overrides = {}) {
     ...normalizePatternList(overrides?.noFlyZones || overrides?.no_fly_zones || []),
   ]);
 
-  return {
+  const compiled = {
     version: 1,
     generatedAt: new Date().toISOString(),
     zones,
@@ -186,6 +186,10 @@ export function compileZonePolicy(overrides = {}) {
       pastIncidents: repoSignals.pastIncidents.length,
       secretPatterns: noFlyZones.length,
     },
+  };
+  return {
+    ...compiled,
+    policyDigest: digest(policyDigestPayload(compiled)),
   };
 }
 
@@ -228,6 +232,10 @@ export function normalizeRepoSignals(input = {}) {
     pastIncidents,
     repoRoot: input.repoRoot || input.repo_root || null,
     source: input.source || 'repo_policy_signals',
+    compilerVersion: input.compilerVersion || input.compiler_version || null,
+    maxFiles: input.maxFiles ?? input.max_files ?? null,
+    fileCount: input.fileCount ?? input.file_count ?? files.length,
+    truncated: Boolean(input.truncated),
     digest: input.digest || digest({
       files,
       codeowners,
@@ -241,6 +249,17 @@ export function normalizeRepoSignals(input = {}) {
       secretPatterns,
       pastIncidents,
     }),
+  };
+}
+
+function policyDigestPayload(policy) {
+  return {
+    version: policy.version,
+    zones: policy.zones,
+    noFlyZones: policy.noFlyZones,
+    classRules: policy.classRules,
+    semanticGraph: policy.semanticGraph,
+    policySources: policy.policySources,
   };
 }
 

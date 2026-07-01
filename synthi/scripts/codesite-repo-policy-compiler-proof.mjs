@@ -193,12 +193,17 @@ async function main() {
   });
   const project = projectResponse.project;
   const fetchedProject = await api(`/projects/${encodeURIComponent(project.id)}`);
+  const artifactPreview = await api(`/projects/${encodeURIComponent(project.id)}/artifacts/preview?include=content`);
   const apiPolicy = fetchedProject.project.zonePolicy;
   const openapiZone = apiPolicy.zones.find((zone) => zone.source === 'repo_openapi');
   const packageImportEdge = apiPolicy.semanticGraph.importEdges.find((edge) => edge.from === 'apps/web/signup/SignupForm.tsx');
   const apiImportEdge = apiPolicy.semanticGraph.importEdges.find((edge) => edge.from === 'app/api/auth/signup/route.ts');
   const testOwner = apiPolicy.semanticGraph.testOwnership.find((owner) => owner.testPath === 'apps/web/signup/SignupForm.test.tsx');
   const contractZones = apiPolicy.zones.filter((zone) => ['repo_openapi', 'repo_package_exports', 'repo_prisma_migration', 'repo_past_incident'].includes(zone.source));
+  const compilerArtifact = (artifactPreview.files || []).find((file) => file.path === 'airspace/compiler-output.json');
+  const manifestArtifact = (artifactPreview.files || []).find((file) => file.path === 'manifest.json');
+  const compilerArtifactContent = compilerArtifact?.contentPreview ? JSON.parse(compilerArtifact.contentPreview) : null;
+  const manifestContent = manifestArtifact?.contentPreview ? JSON.parse(manifestArtifact.contentPreview) : null;
 
   const assertions = {
     packageNameImportResolved: packageImportEdge?.imports?.includes('packages/contracts/src/index.ts') === true
@@ -216,6 +221,10 @@ async function main() {
     apiProjectUsedCompiler: fetchedProject.project.id === project.id
       && apiPolicy.policySources.packageExports === 1
       && apiPolicy.policySources.openapi === 1,
+    compilerArtifactExported: manifestContent?.compiler_output === 'airspace/compiler-output.json'
+      && compilerArtifactContent?.schemaVersion === 'synthi.codesite.repoPolicyCompilerOutput.v1'
+      && compilerArtifactContent?.compiler?.sourceDigest === apiPolicy.compiler?.sourceDigest
+      && compilerArtifactContent?.compiler?.policyDigest === apiPolicy.compiler?.policyDigest,
   };
 
   for (const [key, value] of Object.entries(assertions)) {
@@ -234,6 +243,11 @@ async function main() {
     },
     signals: apiPolicy.semanticGraph,
     policy: apiPolicy,
+    artifactPreview: {
+      compilerOutputPath: compilerArtifact?.path || null,
+      compilerOutput: compilerArtifactContent,
+      manifest: manifestContent,
+    },
     contractZones,
     assertions,
   };

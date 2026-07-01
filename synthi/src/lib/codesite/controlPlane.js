@@ -22,7 +22,7 @@ import {
   predictCollisions,
   validateCodeSiteEventType,
 } from './policy';
-import { discoverRepoPolicySignals } from './repoPolicyCompiler';
+import { discoverRepoPolicySignals, REPO_POLICY_COMPILER_VERSION } from './repoPolicyCompiler';
 import {
   buildReadSnapshotEvidence,
   normalizeReadSnapshotEvidence,
@@ -458,16 +458,28 @@ export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
 
 function compileProjectZonePolicy(input = {}, body = {}) {
   const requested = input || {};
+  const previousCompiler = requested.compiler || {};
+  const repoRoot = body.repoRoot
+    || body.repo_root
+    || requested.repoRoot
+    || requested.repo_root
+    || previousCompiler.repoRoot
+    || null;
   const repoSignals = requested.repoSignals
     || requested.repo_signals
     || body.repoSignals
     || body.repo_signals
     || (body.repoPolicyCompiler === false || body.repo_policy_compiler === false
       ? null
-      : safeDiscoverRepoPolicySignals(body.repoRoot || body.repo_root || requested.repoRoot || requested.repo_root));
-  return compileZonePolicy({
+      : safeDiscoverRepoPolicySignals(repoRoot));
+  const compiled = compileZonePolicy({
     ...requested,
     ...(repoSignals ? { repoSignals } : {}),
+  });
+  return attachRepoPolicyCompilerMetadata(compiled, {
+    repoSignals,
+    repoRoot,
+    previousCompiler,
   });
 }
 
@@ -479,8 +491,43 @@ function safeDiscoverRepoPolicySignals(root) {
       source: 'repo_policy_compiler_error',
       error: error?.message || String(error),
       files: [],
+      repoRoot: root || null,
+      compilerVersion: REPO_POLICY_COMPILER_VERSION,
+      maxFiles: null,
+      fileCount: 0,
+      truncated: false,
+      digest: digest({ source: 'repo_policy_compiler_error', root: root || null, error: error?.message || String(error) }),
     };
   }
+}
+
+function attachRepoPolicyCompilerMetadata(policy, { repoSignals, repoRoot, previousCompiler } = {}) {
+  const sourceDigest = repoSignals?.digest || policy?.semanticGraph?.sourceDigest || previousCompiler?.sourceDigest || null;
+  const resolvedRepoRoot = repoSignals?.repoRoot || repoRoot || previousCompiler?.repoRoot || null;
+  const compilerVersion = repoSignals?.compilerVersion || previousCompiler?.compilerVersion || REPO_POLICY_COMPILER_VERSION;
+  return {
+    ...policy,
+    compiler: {
+      compilerVersion,
+      repoRoot: resolvedRepoRoot,
+      maxFiles: repoSignals?.maxFiles ?? previousCompiler?.maxFiles ?? null,
+      sourceDigest,
+      policyDigest: policy.policyDigest || digest({
+        zones: policy.zones,
+        noFlyZones: policy.noFlyZones,
+        classRules: policy.classRules,
+        semanticGraph: policy.semanticGraph,
+        policySources: policy.policySources,
+      }),
+      compiledAt: new Date().toISOString(),
+      fileCount: repoSignals
+        ? (repoSignals.fileCount ?? asArray(repoSignals.files).length)
+        : (previousCompiler?.fileCount ?? 0),
+      truncated: Boolean(repoSignals?.truncated ?? previousCompiler?.truncated ?? false),
+      source: repoSignals?.source || previousCompiler?.source || 'repo_policy_compiler',
+      error: repoSignals?.error || null,
+    },
+  };
 }
 
 export async function updateControlPlan(workspaceSlug, projectId, body = {}) {

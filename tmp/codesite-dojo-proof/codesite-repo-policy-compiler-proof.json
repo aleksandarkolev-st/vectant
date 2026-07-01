@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-07-01T04:09:38.841Z",
+  "generatedAt": "2026-07-01T04:18:27.110Z",
   "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-repo-policy-compiler-proof-1782878969619",
-  "fixtureRepo": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782878969619",
+  "slug": "codesite-repo-policy-compiler-proof-1782879473249",
+  "fixtureRepo": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782879473249",
   "project": {
-    "id": "cmr1k3zes0000ob4t893my5bm",
+    "id": "cmr1kf4h10000ob4tamp14btn",
     "title": "Repo policy compiler proof",
-    "route": "/workspace/codesite-repo-policy-compiler-proof-1782878969619/codesite"
+    "route": "/workspace/codesite-repo-policy-compiler-proof-1782879473249/codesite"
   },
   "signals": {
     "files": [
@@ -68,11 +68,11 @@
     "deploymentConfig": [
       "infra/prod/kustomization.yaml"
     ],
-    "sourceDigest": "sha256:20e0c56aed5b5ed9915772f1af733748bf0e75321eec11a5ac840f4c71c25ffc"
+    "sourceDigest": "sha256:7933aa7e134ec7081c505fde5909637f88c2433143ab3342d9578c6d3059780d"
   },
   "policy": {
     "version": 1,
-    "generatedAt": "2026-07-01T04:09:37.425Z",
+    "generatedAt": "2026-07-01T04:18:17.176Z",
     "zones": [
       {
         "zoneKey": "class_a",
@@ -401,7 +401,7 @@
       "deploymentConfig": [
         "infra/prod/kustomization.yaml"
       ],
-      "sourceDigest": "sha256:20e0c56aed5b5ed9915772f1af733748bf0e75321eec11a5ac840f4c71c25ffc"
+      "sourceDigest": "sha256:7933aa7e134ec7081c505fde5909637f88c2433143ab3342d9578c6d3059780d"
     },
     "policySources": {
       "defaults": 4,
@@ -417,6 +417,155 @@
       "deployment": 1,
       "pastIncidents": 1,
       "secretPatterns": 6
+    },
+    "policyDigest": "sha256:8e241387df43c7a95aafeee2d7e822115c55c10c5b44fe65895d348cc3d5809f",
+    "compiler": {
+      "compilerVersion": "2026-07-01.1",
+      "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782879473249",
+      "maxFiles": 12000,
+      "sourceDigest": "sha256:7933aa7e134ec7081c505fde5909637f88c2433143ab3342d9578c6d3059780d",
+      "policyDigest": "sha256:8e241387df43c7a95aafeee2d7e822115c55c10c5b44fe65895d348cc3d5809f",
+      "compiledAt": "2026-07-01T04:18:17.177Z",
+      "fileCount": 13,
+      "truncated": false,
+      "source": "repo_policy_compiler",
+      "error": null
+    }
+  },
+  "artifactPreview": {
+    "compilerOutputPath": "airspace/compiler-output.json",
+    "compilerOutput": {
+      "schemaVersion": "synthi.codesite.repoPolicyCompilerOutput.v1",
+      "compiler": {
+        "compilerVersion": "2026-07-01.1",
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782879473249",
+        "maxFiles": 12000,
+        "sourceDigest": "sha256:7933aa7e134ec7081c505fde5909637f88c2433143ab3342d9578c6d3059780d",
+        "policyDigest": "sha256:8e241387df43c7a95aafeee2d7e822115c55c10c5b44fe65895d348cc3d5809f",
+        "compiledAt": "2026-07-01T04:18:17.177Z",
+        "fileCount": 13,
+        "truncated": false,
+        "source": "repo_policy_compiler",
+        "error": null
+      },
+      "policyDigest": "sha256:8e241387df43c7a95aafeee2d7e822115c55c10c5b44fe65895d348cc3d5809f",
+      "policySources": {
+        "defaults": 4,
+        "repoSignals": 8,
+        "custom": 0,
+        "codeowners": 2,
+        "openapi": 1,
+        "prismaSchemas": 1,
+        "prismaMigrations": 1,
+        "packageExports": 1,
+        "importEdges": 3,
+        "testOwnership": 1,
+        "deployment": 1,
+        "pastIncidents": 1,
+        "secretPatterns": 6
+      },
+      "semanticGraph": {
+        "files": [
+          ".env.example",
+          "package.json",
+          "synthi/prisma/schema.prisma",
+          "synthi/prisma/migrations/202607010001_auth/migration.sql",
+          "packages/contracts/package.json",
+          "packages/contracts/src/index.ts",
+          "openapi/auth.yaml",
+          "infra/prod/kustomization.yaml",
+          "apps/web/signup/SignupForm.test.tsx",
+          "apps/web/signup/SignupForm.tsx",
+          "app/api/auth/signup/route.ts",
+          ".synthi/codesite/proof/incidents/auth-near-miss.json",
+          ".github/CODEOWNERS"
+        ],
+        "importEdges": [
+          {
+            "from": "apps/web/signup/SignupForm.test.tsx",
+            "imports": [
+              "apps/web/signup/SignupForm.tsx"
+            ]
+          },
+          {
+            "from": "apps/web/signup/SignupForm.tsx",
+            "imports": [
+              "packages/contracts/src/index.ts"
+            ]
+          },
+          {
+            "from": "app/api/auth/signup/route.ts",
+            "imports": [
+              "packages/contracts/src/index.ts"
+            ]
+          }
+        ],
+        "testOwnership": [
+          {
+            "testPath": "apps/web/signup/SignupForm.test.tsx",
+            "covers": [
+              "apps/web/signup/SignupForm.tsx"
+            ]
+          }
+        ],
+        "packageExports": [
+          {
+            "packageName": "@acme/contracts",
+            "root": "packages/contracts",
+            "exports": [
+              "packages/contracts/src/index.ts"
+            ]
+          }
+        ],
+        "generatedClients": [],
+        "migrationLocks": [
+          "synthi/prisma/migrations"
+        ],
+        "deploymentConfig": [
+          "infra/prod/kustomization.yaml"
+        ],
+        "sourceDigest": "sha256:7933aa7e134ec7081c505fde5909637f88c2433143ab3342d9578c6d3059780d"
+      }
+    },
+    "manifest": {
+      "version": 1,
+      "project_id": "cmr1kf4h10000ob4tamp14btn",
+      "workspace_slug": "codesite-repo-policy-compiler-proof-1782879473249",
+      "control_state": "projects/cmr1kf4h10000ob4tamp14btn/control-state.json",
+      "events": "projects/cmr1kf4h10000ob4tamp14btn/events.jsonl",
+      "schemas": "schemas/",
+      "compiler_output": "airspace/compiler-output.json",
+      "inbox_root": "projects/cmr1kf4h10000ob4tamp14btn/inbox/",
+      "proof_bundle_root": "projects/cmr1kf4h10000ob4tamp14btn/proof-bundles/",
+      "mcp_tools": [
+        "synthi_codesite_file_flight_plan",
+        "synthi_codesite_request_clearance",
+        "synthi_codesite_open_transaction",
+        "synthi_codesite_get_transaction_status",
+        "synthi_codesite_preview_transaction",
+        "synthi_codesite_dry_run_patch",
+        "synthi_codesite_preflight_write",
+        "synthi_codesite_apply_patch",
+        "synthi_codesite_record_assumption",
+        "synthi_codesite_record_read",
+        "synthi_codesite_record_write",
+        "synthi_codesite_validate_transaction",
+        "synthi_codesite_request_commit",
+        "synthi_codesite_get_source_state_since",
+        "synthi_codesite_get_radar",
+        "synthi_codesite_next_event",
+        "synthi_codesite_get_inbox",
+        "synthi_codesite_ack_event",
+        "synthi_codesite_predict_collision",
+        "synthi_codesite_shadow_merge_simulate",
+        "synthi_codesite_report_counterfactual_run",
+        "synthi_codesite_file_rfi",
+        "synthi_codesite_file_change_order",
+        "synthi_codesite_declare_mayday",
+        "synthi_codesite_request_landing",
+        "synthi_codesite_generate_black_box",
+        "synthi_codesite_get_line_provenance"
+      ]
     }
   },
   "contractZones": [
@@ -514,6 +663,7 @@
     "prismaMigrationLockCompiled": true,
     "pastIncidentCompiled": true,
     "codeownersAndSecretsCompiled": true,
-    "apiProjectUsedCompiler": true
+    "apiProjectUsedCompiler": true,
+    "compilerArtifactExported": true
   }
 }

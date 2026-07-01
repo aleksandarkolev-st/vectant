@@ -52,6 +52,10 @@ describe('CodeSite repo policy compiler', () => {
     const signals = discoverRepoPolicySignals({ root });
 
     expect(signals.repoRoot).toBe(root);
+    expect(signals.compilerVersion).toBe('2026-07-01.1');
+    expect(signals.fileCount).toBeGreaterThan(0);
+    expect(signals.maxFiles).toBe(12000);
+    expect(signals.truncated).toBe(false);
     expect(signals.codeowners).toEqual(expect.arrayContaining([
       expect.objectContaining({ pattern: 'api/auth/**', owners: ['@security'] }),
     ]));

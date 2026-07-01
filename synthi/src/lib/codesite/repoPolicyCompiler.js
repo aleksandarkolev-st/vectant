@@ -16,11 +16,13 @@ const SKIP_DIRS = new Set([
 const SOURCE_EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
 const TEST_PATTERN = /(^|\/)(__tests__|tests?)\/|(\.|-)(test|spec)\.[cm]?[jt]sx?$/i;
 const OPENAPI_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace']);
+export const REPO_POLICY_COMPILER_VERSION = '2026-07-01.1';
 
 export function discoverRepoPolicySignals(options = {}) {
   const repoRoot = detectRepoRoot(options.root || process.env.SYNTHI_CODESITE_REPO_ROOT || process.cwd());
   const maxFiles = Number(options.maxFiles || process.env.SYNTHI_CODESITE_REPO_SCAN_MAX_FILES || 12000);
   const files = listRepoFiles(repoRoot, { maxFiles });
+  const truncated = files.length >= maxFiles;
   const fileSet = new Set(files);
   const codeowners = discoverCodeowners(repoRoot, fileSet);
   const openapi = discoverOpenApiContracts(repoRoot, files);
@@ -46,10 +48,15 @@ export function discoverRepoPolicySignals(options = {}) {
     pastIncidents,
     secretPatterns,
     source: 'repo_policy_compiler',
+    compilerVersion: REPO_POLICY_COMPILER_VERSION,
+    maxFiles,
+    fileCount: files.length,
+    truncated,
   };
   return {
     ...signals,
     digest: digest({
+      compilerVersion: REPO_POLICY_COMPILER_VERSION,
       files,
       codeowners,
       openapi,
@@ -61,6 +68,8 @@ export function discoverRepoPolicySignals(options = {}) {
       testOwnership,
       pastIncidents,
       secretPatterns,
+      maxFiles,
+      truncated,
     }),
   };
 }

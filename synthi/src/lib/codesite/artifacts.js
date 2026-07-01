@@ -221,6 +221,7 @@ export function buildArtifactProjection(project, controlState = null) {
       control_state: `${projectDir}/control-state.json`,
       events: `${projectDir}/events.jsonl`,
       schemas: 'schemas/',
+      compiler_output: 'airspace/compiler-output.json',
       inbox_root: `${projectDir}/inbox/`,
       proof_bundle_root: `${projectDir}/proof-bundles/`,
       mcp_tools: CODESITE_MCP_TOOLS,
@@ -228,6 +229,7 @@ export function buildArtifactProjection(project, controlState = null) {
     jsonFile('airspace/zones.json', project.zonePolicy?.zones || []),
     jsonFile('airspace/no-fly-zones.json', project.zonePolicy?.noFlyZones || []),
     jsonFile('airspace/class-rules.json', project.zonePolicy?.classRules || {}),
+    jsonFile('airspace/compiler-output.json', compilerOutput(project.zonePolicy || {})),
     jsonFile(`${projectDir}/tower-plan.json`, project.controlPlan || {}),
     jsonFile(`${projectDir}/control-state.json`, controlState || minimalControlState(project)),
     jsonFile(`${projectDir}/radar-snapshot.json`, controlState || minimalControlState(project)),
@@ -344,6 +346,16 @@ export function buildArtifactProjection(project, controlState = null) {
   }
 
   return files;
+}
+
+function compilerOutput(zonePolicy = {}) {
+  return {
+    schemaVersion: 'synthi.codesite.repoPolicyCompilerOutput.v1',
+    compiler: zonePolicy.compiler || null,
+    policyDigest: zonePolicy.policyDigest || zonePolicy.compiler?.policyDigest || null,
+    policySources: zonePolicy.policySources || {},
+    semanticGraph: zonePolicy.semanticGraph || {},
+  };
 }
 
 function minimalControlState(project) {
