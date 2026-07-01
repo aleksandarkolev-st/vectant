@@ -8380,6 +8380,7 @@ function acceptedBroadReadinessCandidate({
   proofMode = 'strict_runtime_ledger',
   oracle = 'compute',
   sourceFirstSourceAuthority = 'direct_source_url_commit',
+  updatedAt = '2026-06-30T21:00:00.000Z',
 }) {
   const row = acceptedAuthoritativeMatrixRow(targetId, {
     backend,
@@ -8449,7 +8450,16 @@ function acceptedBroadReadinessCandidate({
     };
     row.output_oracle_facet = row.outputOracleFacet;
   }
+  row.updatedAt = updatedAt;
+  row.updated_at = updatedAt;
   return withQueryRecomputedRowId(row);
+}
+
+function withUpdatedAt(row, updatedAt) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.updatedAt = updatedAt;
+  cloned.updated_at = updatedAt;
+  return withQueryRecomputedRowId(cloned);
 }
 
 function withSourceFirstSourceAuthority(row, sourceAuthority) {
@@ -8632,6 +8642,8 @@ function refusalMatrixRow(targetId, backend = 'hip') {
     proof_chain_accepted: true,
     proofChain: 'adversarial_refusal_fixture',
     proof_chain: 'adversarial_refusal_fixture',
+    updatedAt: '2026-06-30T21:00:00.000Z',
+    updated_at: '2026-06-30T21:00:00.000Z',
     reasons: ['adversarial_refusal_fixture'],
     openGaps: [],
     open_gaps: [],
@@ -10807,6 +10819,62 @@ assert.equal(
 assert.ok(
   staleRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.freshnessGaps
     .includes('random_cold_path_freshness_row_too_old_for_current_matrix'),
+);
+const staleBroadReadinessContributorRows = broadReadinessRows.map((row) =>
+  withUpdatedAt(row, '2026-06-01T00:00:00.000Z')
+);
+const broadReadinessWithStaleContributorLedger = buildGpuHmrValidationMatrixLedger([
+  ...staleBroadReadinessContributorRows,
+  ...broadReadinessRandomColdRows,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithStaleContributorLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.acceptedFullRuntimeRows,
+  0,
+);
+assert.equal(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.fullRuntimeCandidateRows,
+  4,
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_fresh_full_runtime_rows'),
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_fresh_adversarial_refusals'),
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_fresh_source_first_visual_full_runtime_row'),
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .fullRuntimeFreshnessGaps
+    .includes('full_runtime:broad_readiness_freshness_row_too_old_for_current_matrix'),
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .refusalFreshnessGaps
+    .includes('adversarial_refusal:broad_readiness_freshness_row_too_old_for_current_matrix'),
+);
+assert.ok(
+  broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualFreshnessGaps
+    .includes('source_first_visual:broad_readiness_freshness_row_too_old_for_current_matrix'),
 );
 const broadReadinessWithMixedFreshStaleColdLedger = buildGpuHmrValidationMatrixLedger([
   ...broadReadinessRows,

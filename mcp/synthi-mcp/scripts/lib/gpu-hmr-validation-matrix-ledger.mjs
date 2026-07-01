@@ -22617,6 +22617,129 @@ function rowUpdatedAtMs(row) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function broadReadinessFreshnessPolicy(options = {}) {
+  const enforced =
+    firstBool(
+      options.enforceBroadReadinessFreshness,
+      options.enforce_broad_readiness_freshness,
+      options.enforceRandomColdPathFreshness,
+      options.enforce_random_cold_path_freshness,
+      options.enforced,
+    ) === true;
+  const generatedAt = firstText(options.generatedAt, options.generated_at);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.broad_readiness_contributor_freshness_policy.v1',
+    schema_version: 'synthi.gpu_hmr.broad_readiness_contributor_freshness_policy.v1',
+    authority: 'collector_mtime_broad_readiness_policy_not_gpu_hmr_success',
+    proofAuthority: 'collector_mtime_broad_readiness_policy_not_gpu_hmr_success',
+    proof_authority: 'collector_mtime_broad_readiness_policy_not_gpu_hmr_success',
+    enforced,
+    maxCollectionAgeMs: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS,
+    max_collection_age_ms: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS,
+    maxFutureSkewMs: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS,
+    max_future_skew_ms: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS,
+    generatedAt: generatedAt ?? null,
+    generated_at: generatedAt ?? null,
+    requiredFor: 'broad_library_agnostic_readiness_contributor_rows',
+    required_for: 'broad_library_agnostic_readiness_contributor_rows',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
+function broadReadinessContributorFreshness(row, context = {}, role = 'contributor') {
+  const suppliedPolicy = compactObject(
+    context.broadReadinessFreshnessPolicy
+    ?? context.broad_readiness_freshness_policy,
+  );
+  const policy = broadReadinessFreshnessPolicy({
+    ...suppliedPolicy,
+    generatedAt: firstText(
+      context.generatedAt,
+      context.generated_at,
+      suppliedPolicy.generatedAt,
+      suppliedPolicy.generated_at,
+    ),
+    enforceBroadReadinessFreshness: firstBool(
+      context.enforceBroadReadinessFreshness,
+      context.enforce_broad_readiness_freshness,
+      context.enforceRandomColdPathFreshness,
+      context.enforce_random_cold_path_freshness,
+      suppliedPolicy.enforced,
+    ) === true,
+  });
+  const rowUpdatedAt = firstText(row.updatedAt, row.updated_at);
+  if (policy.enforced !== true) {
+    return {
+      ...policy,
+      accepted: true,
+      role,
+      rowUpdatedAt: rowUpdatedAt ?? null,
+      row_updated_at: rowUpdatedAt ?? null,
+      ageMs: null,
+      age_ms: null,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const generatedAtMs = Date.parse(String(policy.generatedAt ?? ''));
+  const rowUpdatedAtMsValue = Date.parse(String(rowUpdatedAt ?? ''));
+  const maxCollectionAgeMs =
+    finiteNumber(policy.maxCollectionAgeMs ?? policy.max_collection_age_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS;
+  const maxFutureSkewMs =
+    finiteNumber(policy.maxFutureSkewMs ?? policy.max_future_skew_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS;
+  const ageMs = Number.isFinite(generatedAtMs) && Number.isFinite(rowUpdatedAtMsValue)
+    ? generatedAtMs - rowUpdatedAtMsValue
+    : null;
+  const openGaps = compactStringList([
+    Number.isFinite(generatedAtMs)
+      ? null
+      : 'broad_readiness_freshness_generated_at_missing_or_invalid',
+    rowUpdatedAt
+      ? null
+      : 'broad_readiness_freshness_row_updated_at_missing',
+    rowUpdatedAt && Number.isFinite(rowUpdatedAtMsValue)
+      ? null
+      : 'broad_readiness_freshness_row_updated_at_invalid',
+    ageMs !== null && ageMs < -maxFutureSkewMs
+      ? 'broad_readiness_freshness_row_updated_at_after_matrix_generated_at'
+      : null,
+    ageMs !== null && ageMs > maxCollectionAgeMs
+      ? 'broad_readiness_freshness_row_too_old_for_current_matrix'
+      : null,
+  ]);
+  return {
+    ...policy,
+    accepted: openGaps.length === 0,
+    role,
+    rowUpdatedAt: rowUpdatedAt ?? null,
+    row_updated_at: rowUpdatedAt ?? null,
+    ageMs,
+    age_ms: ageMs,
+    openGaps,
+    open_gaps: openGaps,
+  };
+}
+
+function broadReadinessFreshRows(rows, context = {}, role = 'contributor') {
+  return rows.filter((row) =>
+    broadReadinessContributorFreshness(row, context, role).accepted === true
+  );
+}
+
+function broadReadinessFreshnessGaps(rows, context = {}, role = 'contributor') {
+  return compactStringList(rows.flatMap((row) =>
+    (broadReadinessContributorFreshness(row, context, role).openGaps ?? [])
+      .map((gap) => `${role}:${gap}`)
+  ));
+}
+
 function randomColdPathFreshnessPolicy(options = {}) {
   const enforced =
     firstBool(
@@ -23825,10 +23948,20 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
 }
 
 function computeBroadLibraryAgnosticProof(rows, context = {}) {
-  const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
-  const refusalRowsForReadiness = rows.filter((row) =>
+  const fullRuntimeCandidateRows = rows.filter(acceptedFullRuntimeRow);
+  const fullRuntimeRows = broadReadinessFreshRows(
+    fullRuntimeCandidateRows,
+    context,
+    'full_runtime',
+  );
+  const refusalCandidateRowsForReadiness = rows.filter((row) =>
     row.matrixOutcome === 'refusal_proven'
       && row.proofMode !== 'random_large_project_cold_path'
+  );
+  const refusalRowsForReadiness = broadReadinessFreshRows(
+    refusalCandidateRowsForReadiness,
+    context,
+    'adversarial_refusal',
   );
   const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows, context);
   const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
@@ -23840,8 +23973,20 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false, ...context });
   const randomColdPathFreshnessGaps =
     randomColdPathBroadReadinessFreshnessGaps(rows, context);
-  const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualRows = broadReadinessFreshRows(
+    sourceFirstVisualCandidateRows,
+    context,
+    'source_first_visual',
+  );
   const sourceFirstVisualSelectionPredicate = sourceFirstVisualBroadReadinessPredicate();
+  const broadReadinessFreshnessPolicyValue = broadReadinessFreshnessPolicy(context);
+  const fullRuntimeFreshnessGaps =
+    broadReadinessFreshnessGaps(fullRuntimeCandidateRows, context, 'full_runtime');
+  const refusalFreshnessGaps =
+    broadReadinessFreshnessGaps(refusalCandidateRowsForReadiness, context, 'adversarial_refusal');
+  const sourceFirstVisualFreshnessGaps =
+    broadReadinessFreshnessGaps(sourceFirstVisualCandidateRows, context, 'source_first_visual');
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
@@ -23877,18 +24022,32 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const sourceFirstVisualSourceIdentityHashes =
     sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
   const openGaps = compactStringList([
-    fullRuntimeRows.length > 0 ? null : 'broad_runtime_rows_missing',
+    fullRuntimeRows.length > 0
+      ? null
+      : fullRuntimeCandidateRows.length > 0
+        ? 'broad_acceptance_requires_fresh_full_runtime_rows'
+        : 'broad_runtime_rows_missing',
     backends.length >= BROAD_LIBRARY_MIN_BACKEND_COUNT
       ? null
       : 'broad_acceptance_requires_more_backend_families',
     acceptanceScopes.length >= BROAD_LIBRARY_MIN_ACCEPTANCE_SCOPE_COUNT
       ? null
       : 'broad_acceptance_requires_more_acceptance_scopes',
-    visualTargets.length > 0 ? null : 'broad_acceptance_requires_visual_oracle_rows',
-    computeTargets.length > 0 ? null : 'broad_acceptance_requires_compute_oracle_rows',
+    visualTargets.length > 0
+      ? null
+      : fullRuntimeCandidateRows.some(rowHasAcceptedVisualOutputOracle)
+        ? 'broad_acceptance_requires_fresh_visual_oracle_rows'
+        : 'broad_acceptance_requires_visual_oracle_rows',
+    computeTargets.length > 0
+      ? null
+      : fullRuntimeCandidateRows.some(rowHasAcceptedComputeEvidence)
+        ? 'broad_acceptance_requires_fresh_compute_oracle_rows'
+        : 'broad_acceptance_requires_compute_oracle_rows',
     refusalRowsForReadiness.length >= BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT
       ? null
-      : 'broad_acceptance_requires_adversarial_refusals',
+      : refusalCandidateRowsForReadiness.length >= BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT
+        ? 'broad_acceptance_requires_fresh_adversarial_refusals'
+        : 'broad_acceptance_requires_adversarial_refusals',
     randomColdPathDistinctSourceIdentityHashes.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
       && randomColdPathDistinctSourceContentOnlyIdentityHashes.length
         >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
@@ -23908,6 +24067,9 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT
       ? null
       : sourceFirstVisualRows.length === 0
+        && sourceFirstVisualCandidateRows.length > 0
+        ? 'broad_acceptance_requires_fresh_source_first_visual_full_runtime_row'
+        : sourceFirstVisualRows.length === 0
         ? 'broad_acceptance_requires_source_first_visual_full_runtime_row'
         : 'broad_acceptance_requires_distinct_source_first_visual_full_runtime_sources',
   ]);
@@ -23941,6 +24103,13 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     backends,
     acceptanceScopes,
     proofModes,
+    fullRuntimeCandidateRowCount: fullRuntimeCandidateRows.length,
+    refusalCandidateRowCount: refusalCandidateRowsForReadiness.length,
+    sourceFirstVisualCandidateRowCount: sourceFirstVisualCandidateRows.length,
+    broadReadinessFreshnessPolicy: broadReadinessFreshnessPolicyValue,
+    fullRuntimeFreshnessGaps,
+    refusalFreshnessGaps,
+    sourceFirstVisualFreshnessGaps,
     visualTargets,
     computeTargets,
     refusalTargets,
@@ -24080,6 +24249,20 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     random_cold_path_freshness_policy: randomColdPathSelectionPredicate.freshnessPolicy,
     randomColdPathFreshnessGaps,
     random_cold_path_freshness_gaps: randomColdPathFreshnessGaps,
+    broadReadinessFreshnessPolicy: broadReadinessFreshnessPolicyValue,
+    broad_readiness_freshness_policy: broadReadinessFreshnessPolicyValue,
+    fullRuntimeCandidateRows: fullRuntimeCandidateRows.length,
+    full_runtime_candidate_rows: fullRuntimeCandidateRows.length,
+    refusalCandidateRows: refusalCandidateRowsForReadiness.length,
+    refusal_candidate_rows: refusalCandidateRowsForReadiness.length,
+    sourceFirstVisualCandidateRows: sourceFirstVisualCandidateRows.length,
+    source_first_visual_candidate_rows: sourceFirstVisualCandidateRows.length,
+    fullRuntimeFreshnessGaps,
+    full_runtime_freshness_gaps: fullRuntimeFreshnessGaps,
+    refusalFreshnessGaps,
+    refusal_freshness_gaps: refusalFreshnessGaps,
+    sourceFirstVisualFreshnessGaps,
+    source_first_visual_freshness_gaps: sourceFirstVisualFreshnessGaps,
     randomColdPathSelectionTargetNameIndependent:
       randomColdPathSelectionPredicate.targetNameIndependent === true,
     random_cold_path_selection_target_name_independent:
@@ -24171,19 +24354,34 @@ function broadLibraryAgnosticReadiness(
   broadProof = computeBroadLibraryAgnosticProof(rows),
   context = {},
 ) {
-  const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
+  const fullRuntimeCandidateRows = rows.filter(acceptedFullRuntimeRow);
+  const fullRuntimeRows = broadReadinessFreshRows(
+    fullRuntimeCandidateRows,
+    context,
+    'full_runtime',
+  );
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
   const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
-  const refusalRowsForReadiness = rows.filter((row) =>
+  const refusalCandidateRowsForReadiness = rows.filter((row) =>
     row.matrixOutcome === 'refusal_proven'
       && row.proofMode !== 'random_large_project_cold_path'
+  );
+  const refusalRowsForReadiness = broadReadinessFreshRows(
+    refusalCandidateRowsForReadiness,
+    context,
+    'adversarial_refusal',
   );
   const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows, context);
   const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
     requireLargeSourceTree: false,
     ...context,
   });
-  const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualRows = broadReadinessFreshRows(
+    sourceFirstVisualCandidateRows,
+    context,
+    'source_first_visual',
+  );
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
@@ -24220,6 +24418,25 @@ function broadLibraryAgnosticReadiness(
   const attemptFreshness = broadReadinessAttemptFreshness(
     context.attemptHistory ?? context.attempt_history,
   );
+  const broadReadinessFreshnessPolicyValue = broadReadinessFreshnessPolicy(context);
+  const fullRuntimeFreshnessGaps =
+    compactStringList(
+      broadProof.fullRuntimeFreshnessGaps
+      ?? broadProof.full_runtime_freshness_gaps
+      ?? broadReadinessFreshnessGaps(fullRuntimeCandidateRows, context, 'full_runtime'),
+    );
+  const refusalFreshnessGaps =
+    compactStringList(
+      broadProof.refusalFreshnessGaps
+      ?? broadProof.refusal_freshness_gaps
+      ?? broadReadinessFreshnessGaps(refusalCandidateRowsForReadiness, context, 'adversarial_refusal'),
+    );
+  const sourceFirstVisualFreshnessGaps =
+    compactStringList(
+      broadProof.sourceFirstVisualFreshnessGaps
+      ?? broadProof.source_first_visual_freshness_gaps
+      ?? broadReadinessFreshnessGaps(sourceFirstVisualCandidateRows, context, 'source_first_visual'),
+    );
   const randomColdPathFreshnessGaps =
     compactStringList(
       broadProof.randomColdPathFreshnessGaps
@@ -24270,6 +24487,20 @@ function broadLibraryAgnosticReadiness(
     random_cold_path_freshness_policy: randomColdPathFreshnessPolicy(context),
     randomColdPathFreshnessGaps,
     random_cold_path_freshness_gaps: randomColdPathFreshnessGaps,
+    broadReadinessFreshnessPolicy: broadReadinessFreshnessPolicyValue,
+    broad_readiness_freshness_policy: broadReadinessFreshnessPolicyValue,
+    fullRuntimeFreshnessGaps,
+    full_runtime_freshness_gaps: fullRuntimeFreshnessGaps,
+    refusalFreshnessGaps,
+    refusal_freshness_gaps: refusalFreshnessGaps,
+    sourceFirstVisualFreshnessGaps,
+    source_first_visual_freshness_gaps: sourceFirstVisualFreshnessGaps,
+    fullRuntimeCandidateRows: fullRuntimeCandidateRows.length,
+    full_runtime_candidate_rows: fullRuntimeCandidateRows.length,
+    refusalCandidateRows: refusalCandidateRowsForReadiness.length,
+    refusal_candidate_rows: refusalCandidateRowsForReadiness.length,
+    sourceFirstVisualCandidateRows: sourceFirstVisualCandidateRows.length,
+    source_first_visual_candidate_rows: sourceFirstVisualCandidateRows.length,
     matrixGeneralizationRuntimeRows,
     matrix_generalization_runtime_rows: matrixGeneralizationRuntimeRows,
     scopedRuntimeRows: scopedRuntimeRows.length,
