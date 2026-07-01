@@ -68,6 +68,15 @@ const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
     frame_end: 9,
     metric: { value: 'window_mean_delta' },
     sample_count: 7,
+    frame_hashes: [
+      'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+      'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      'sha256:5555555555555555555555555555555555555555555555555555555555555555',
+      'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+      'sha256:7777777777777777777777777777777777777777777777777777777777777777',
+    ],
     metric_delta: 12.5,
     convergence_proven: true,
     evidence_refs: ['visual-window:post-epoch-frames'],
@@ -75,6 +84,35 @@ const convergenceWindow = evaluateGpuHmrDeterministicVisualMode({
 });
 assert.equal(convergenceWindow.accepted, true);
 assert.equal(convergenceWindow.proofMode, 'convergence_window');
+
+const convergenceWindowWithDeclaredCountOnly = evaluateGpuHmrDeterministicVisualMode({
+  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  seed_policy_fixed: true,
+  frozen_camera: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+  temporal_accumulation_present: true,
+  taa_present: true,
+  denoiser_present: true,
+  convergence_window: {
+    frame_start: 3,
+    frame_end: 9,
+    metric: { value: 'window_mean_delta' },
+    sample_count: 7,
+    metric_delta: 12.5,
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
+  },
+});
+assert.equal(convergenceWindowWithDeclaredCountOnly.accepted, false);
+assert.ok(
+  convergenceWindowWithDeclaredCountOnly.failedGates.some((gate) =>
+    gate.code === 'convergence_window_sample_evidence_missing'
+  ),
+  `expected convergence_window_sample_evidence_missing, got ${convergenceWindowWithDeclaredCountOnly.failedGates.map((g) => g.code).join(',')}`,
+);
 
 const convergenceWindowWithoutSamples = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
@@ -104,6 +142,80 @@ assert.ok(
   `expected convergence_window_sample_evidence_missing, got ${convergenceWindowWithoutSamples.failedGates.map((g) => g.code).join(',')}`,
 );
 
+const artifactHashUsedAsConvergenceSample = evaluateGpuHmrDeterministicVisualMode({
+  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  seed_policy_fixed: true,
+  frozen_camera: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+  temporal_accumulation_present: true,
+  taa_present: true,
+  denoiser_present: true,
+  convergence_window: {
+    frame_start: 1,
+    frame_end: 2,
+    metric: { value: 'per_frame_delta' },
+    samples: [
+      {
+        frame: 1,
+        metric_value: 11,
+        artifact_hash: 'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+        after_epoch_dispatch: true,
+      },
+      {
+        frame: 2,
+        metric_value: 12,
+        artifact_hash: 'sha256:9999999999999999999999999999999999999999999999999999999999999999',
+        after_epoch_dispatch: true,
+      },
+    ],
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
+  },
+});
+assert.equal(artifactHashUsedAsConvergenceSample.accepted, false);
+assert.ok(
+  artifactHashUsedAsConvergenceSample.failedGates.some((gate) =>
+    gate.code === 'convergence_window_artifact_hash_not_frame_evidence'
+  ),
+  `expected convergence_window_artifact_hash_not_frame_evidence, got ${artifactHashUsedAsConvergenceSample.failedGates.map((g) => g.code).join(',')}`,
+);
+
+const runtimeArtifactHashUsedAsFrameHash = evaluateGpuHmrDeterministicVisualMode({
+  schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
+  artifact_hash_after: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  seed_policy_fixed: true,
+  frozen_camera: true,
+  fixed_resolution: true,
+  fixed_swapchain_image_count: true,
+  frame_capture_after_epoch_dispatch: true,
+  presentation_fence_or_frame_boundary: true,
+  temporal_accumulation_present: true,
+  taa_present: true,
+  denoiser_present: true,
+  convergence_window: {
+    frame_start: 1,
+    frame_end: 2,
+    metric: { value: 'per_frame_delta' },
+    frame_hashes: [
+      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    ],
+    metric_delta: 12.5,
+    convergence_proven: true,
+    evidence_refs: ['visual-window:post-epoch-frames'],
+  },
+});
+assert.equal(runtimeArtifactHashUsedAsFrameHash.accepted, false);
+assert.ok(
+  runtimeArtifactHashUsedAsFrameHash.failedGates.some((gate) =>
+    gate.code === 'convergence_window_frame_hash_matches_gpu_artifact_hash'
+  ),
+  `expected convergence_window_frame_hash_matches_gpu_artifact_hash, got ${runtimeArtifactHashUsedAsFrameHash.failedGates.map((g) => g.code).join(',')}`,
+);
+
 const convergenceWindowWithoutSeed = evaluateGpuHmrDeterministicVisualMode({
   schema_version: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
   frozen_camera: true,
@@ -119,8 +231,18 @@ const convergenceWindowWithoutSeed = evaluateGpuHmrDeterministicVisualMode({
     frame_end: 4,
     metric: { value: 'per_frame_delta' },
     samples: [
-      { frame: 3, metric_value: 10.0, after_epoch_dispatch: true },
-      { frame: 4, metric_value: 12.0, after_epoch_dispatch: true },
+      {
+        frame: 3,
+        metric_value: 10.0,
+        frame_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        after_epoch_dispatch: true,
+      },
+      {
+        frame: 4,
+        metric_value: 12.0,
+        frame_hash: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        after_epoch_dispatch: true,
+      },
     ],
     convergence_proven: true,
     evidence_refs: ['visual-window:post-epoch-frames'],
@@ -534,7 +656,10 @@ console.log(JSON.stringify({
     'single_frame_deterministic',
     'swapchain_rejection',
     'convergence_window',
+    'convergence_window_declared_count_only_rejection',
     'convergence_window_sample_rejection',
+    'convergence_window_artifact_hash_rejection',
+    'convergence_window_runtime_artifact_hash_collision_rejection',
     'convergence_window_seed_rejection',
     'mcp_frame_gate_derived',
     'mcp_screenshot_args_derived',

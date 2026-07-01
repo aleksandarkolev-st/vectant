@@ -198,19 +198,30 @@ function normalizeFrameHashes(...values) {
 function normalizeConvergenceSamples(value) {
   return (Array.isArray(value) ? value : [])
     .filter((sample) => isObject(sample))
-    .map((sample) => ({
-      frame: finiteNumberOrNull(sample.frame ?? sample.frame_index ?? sample.frameIndex),
-      epoch: textOrNull(sample.epoch ?? sample.epoch_id ?? sample.epochId),
-      metric_value: finiteNumberOrNull(
-        sample.metric_value ?? sample.metricValue ?? sample.value,
-      ),
-      artifact_hash: textOrNull(
-        sample.artifact_hash ?? sample.artifactHash ?? sample.frame_hash ?? sample.frameHash,
-      ),
-      after_epoch_dispatch: boolOrNull(
-        sample.after_epoch_dispatch ?? sample.afterEpochDispatch,
-      ),
-    }));
+    .map((sample) => {
+      const frameHash = textOrNull(
+        sample.frame_hash
+        ?? sample.frameHash
+        ?? sample.image_hash
+        ?? sample.imageHash
+        ?? sample.source_frame_hash
+        ?? sample.sourceFrameHash,
+      );
+      const artifactHash = textOrNull(sample.artifact_hash ?? sample.artifactHash);
+      return {
+        frame: finiteNumberOrNull(sample.frame ?? sample.frame_index ?? sample.frameIndex),
+        epoch: textOrNull(sample.epoch ?? sample.epoch_id ?? sample.epochId),
+        metric_value: finiteNumberOrNull(
+          sample.metric_value ?? sample.metricValue ?? sample.value,
+        ),
+        frame_hash: frameHash,
+        artifact_hash: artifactHash,
+        hash_source: frameHash ? 'frame_hash' : artifactHash ? 'artifact_hash' : null,
+        after_epoch_dispatch: boolOrNull(
+          sample.after_epoch_dispatch ?? sample.afterEpochDispatch,
+        ),
+      };
+    });
 }
 
 function addGate(failedGates, code, detail = {}) {
@@ -240,6 +251,14 @@ function normalizeConvergenceWindow(value = {}) {
   const sampleCount = finiteNumberOrNull(window.sample_count ?? window.sampleCount)
     ?? (samples.length > 0 ? samples.length : null)
     ?? (frameHashes.length > 0 ? frameHashes.length : null);
+  const sampleFrameHashes = compactStringList(samples.map((sample) => sample.frame_hash));
+  const artifactHashes = compactStringList([
+    ...(Array.isArray(window.artifact_hashes) ? window.artifact_hashes : []),
+    ...(Array.isArray(window.artifactHashes) ? window.artifactHashes : []),
+    window.artifact_hash,
+    window.artifactHash,
+    ...samples.map((sample) => sample.artifact_hash),
+  ]);
   return {
     frame_start: frameStart,
     frame_end: frameEnd,
@@ -249,9 +268,11 @@ function normalizeConvergenceWindow(value = {}) {
       ?? (frameStart !== null && frameEnd !== null ? Math.max(0, frameEnd - frameStart + 1) : null),
     sample_count: sampleCount,
     samples,
+    sample_frame_hashes: sampleFrameHashes,
     frame_hashes: frameHashes,
     pre_epoch_frame_hashes: preEpochFrameHashes,
     post_epoch_frame_hashes: postEpochFrameHashes,
+    artifact_hashes: artifactHashes,
     metric_value: finiteNumberOrNull(window.metric_value ?? window.metricValue),
     metric_delta: finiteNumberOrNull(
       window.metric_delta
@@ -293,9 +314,7 @@ function convergenceWindowAccepted(window) {
     && window.frame_end >= window.frame_start;
   if (!frameRangeValid || !CONVERGENCE_METRICS.has(metric)) return false;
   const requiredSamples = Math.max(2, finiteNumberOrNull(window.min_frames) ?? 2);
-  const observedSamples = finiteNumberOrNull(window.sample_count) ?? 0;
-  const hasSampleEvidence = observedSamples >= requiredSamples
-    || window.samples.length >= requiredSamples
+  const hasSampleEvidence = window.sample_frame_hashes.length >= requiredSamples
     || window.frame_hashes.length >= requiredSamples
     || window.post_epoch_frame_hashes.length >= requiredSamples;
   const hasMetricEvidence =
@@ -304,6 +323,7 @@ function convergenceWindowAccepted(window) {
     || window.samples.some((sample) => sample.metric_value !== null);
   return hasSampleEvidence
     && hasMetricEvidence
+    && window.artifact_hashes.length === 0
     && window.convergence_proven === true
     && window.evidence_refs.length > 0;
 }
@@ -630,6 +650,16 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
   const convergenceWindow = normalizeConvergenceWindow(
     mode.convergence_window ?? mode.convergenceWindow,
   );
+  const nonVisualArtifactHashes = compactStringList([
+    mode.artifact_hash,
+    mode.artifactHash,
+    mode.artifact_hash_after,
+    mode.artifactHashAfter,
+    mode.changed_artifact_hash,
+    mode.changedArtifactHash,
+    mode.gpu_artifact_hash,
+    mode.gpuArtifactHash,
+  ]);
   return {
     schema_version:
       textOrNull(mode.schema_version ?? mode.schemaVersion)
@@ -660,6 +690,7 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
       boolOrNull(mode.presentation_fence_or_frame_boundary ?? mode.presentationFenceOrFrameBoundary),
     warmup_frames: finiteNumberOrNull(mode.warmup_frames ?? mode.warmupFrames),
     convergence_window: convergenceWindow,
+    non_visual_artifact_hashes: nonVisualArtifactHashes,
   };
 }
 
@@ -711,20 +742,37 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
     const window = mode.convergence_window;
     const requiredSamples = Math.max(2, finiteNumberOrNull(window.min_frames) ?? 2);
     const observedSamples = finiteNumberOrNull(window.sample_count) ?? 0;
+    const frameEvidenceHashes = compactStringList([
+      ...window.sample_frame_hashes,
+      ...window.frame_hashes,
+      ...window.pre_epoch_frame_hashes,
+      ...window.post_epoch_frame_hashes,
+    ]);
     if (window.metric?.value && !CONVERGENCE_METRICS.has(window.metric.value)) {
       addGate(failedGates, 'convergence_window_metric_unsupported', {
         metric: window.metric.value,
       });
     }
     if (
-      observedSamples < requiredSamples
-      && window.samples.length < requiredSamples
+      window.sample_frame_hashes.length < requiredSamples
       && window.frame_hashes.length < requiredSamples
       && window.post_epoch_frame_hashes.length < requiredSamples
     ) {
       addGate(failedGates, 'convergence_window_sample_evidence_missing', {
         requiredSamples,
         observedSamples,
+      });
+    }
+    if (window.artifact_hashes.length > 0) {
+      addGate(failedGates, 'convergence_window_artifact_hash_not_frame_evidence', {
+        artifactHashCount: window.artifact_hashes.length,
+      });
+    }
+    const leakedArtifactHashes = mode.non_visual_artifact_hashes
+      .filter((hash) => frameEvidenceHashes.includes(hash));
+    if (leakedArtifactHashes.length > 0) {
+      addGate(failedGates, 'convergence_window_frame_hash_matches_gpu_artifact_hash', {
+        hashes: leakedArtifactHashes.slice(0, 3),
       });
     }
     if (

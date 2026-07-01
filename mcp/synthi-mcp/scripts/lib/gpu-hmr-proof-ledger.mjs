@@ -1517,7 +1517,10 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       }
     }
     const deterministicVisualModeEvaluation =
-      evaluateGpuHmrDeterministicVisualMode(record.deterministicVisualMode);
+      evaluateGpuHmrDeterministicVisualMode({
+        ...asObject(record.deterministicVisualMode),
+        artifact_hash_after: artifactAfterHash,
+      });
     if (deterministicVisualModeEvaluation.accepted !== true) {
       addFailure(failures, 'visual_output_without_deterministic_mode', {
         failedGates: deterministicVisualModeEvaluation.failedGates,

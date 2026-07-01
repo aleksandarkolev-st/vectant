@@ -13704,12 +13704,24 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
-  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
+  const visualArtifactAfterHash = firstText(
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    ledgerRecord.artifact_after_hash,
+    ledgerRecord.artifactAfterHash,
+    runtimeProofArtifact.artifact_hash_after,
+    runtimeProofArtifact.artifactHashAfter,
+  );
+  const deterministicVisualMode = compactObject(
     json.deterministicVisualMode
     ?? json.deterministic_visual_mode
     ?? runtimeProofArtifact.deterministicVisualMode
     ?? runtimeProofArtifact.deterministic_visual_mode,
   );
+  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode({
+    ...deterministicVisualMode,
+    artifact_hash_after: visualArtifactAfterHash,
+  });
   const sourceAdaptation = sourceAdaptationProofFacet(
     json,
     json.runtimeProofArtifact,
@@ -14609,7 +14621,15 @@ async function vulkanRuntimeRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
   );
-  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
+  const artifactAfterHash = firstText(
+    json.compiler?.afterShaderModuleHash,
+    json.compiler?.after_shader_module_hash,
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    ledgerRecord.artifact_after_hash,
+    ledgerRecord.artifactAfterHash,
+  );
+  const deterministicVisualMode = compactObject(
     json.deterministicVisualMode
     ?? json.deterministic_visual_mode
     ?? runtimeProofArtifact.deterministicVisualMode
@@ -14617,6 +14637,10 @@ async function vulkanRuntimeRow(json, filePath, context) {
     ?? ledgerRecord.deterministicVisualMode
     ?? ledgerRecord.deterministic_visual_mode,
   );
+  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode({
+    ...deterministicVisualMode,
+    artifact_hash_after: artifactAfterHash,
+  });
   const supportedPipelineScope = firstText(
     vulkanContract.supported_pipeline_scope,
     vulkanContract.supportedPipelineScope,
@@ -14631,14 +14655,6 @@ async function vulkanRuntimeRow(json, filePath, context) {
     backendContract: vulkanContract,
     profile: json.profile,
   });
-  const artifactAfterHash = firstText(
-    json.compiler?.afterShaderModuleHash,
-    json.compiler?.after_shader_module_hash,
-    contract.artifact_hash_after,
-    contract.artifactHashAfter,
-    ledgerRecord.artifact_after_hash,
-    ledgerRecord.artifactAfterHash,
-  );
   const loaderEvent = compactObject(ledgerRecord.loader_event ?? ledgerRecord.loaderEvent);
   const epochPublishEvent = compactObject(ledgerRecord.epoch_publish_event ?? ledgerRecord.epochPublishEvent);
   const dispatchEvent = compactObject(ledgerRecord.dispatch_event ?? ledgerRecord.dispatchEvent);

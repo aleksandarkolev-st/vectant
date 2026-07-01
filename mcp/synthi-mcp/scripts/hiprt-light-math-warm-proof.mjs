@@ -2299,7 +2299,7 @@ function modelProvenance() {
   };
 }
 
-function deterministicVisualModeForLedger({ proof, artifactHashAfter, dispatchId, epoch }) {
+function deterministicVisualModeForLedger({ proof, dispatchId, epoch }) {
   const mode = CFG.deterministicVisualMode ?? {};
   const fixedSeed = mode.fixedSeed ?? mode.fixed_seed ?? true;
   return {
@@ -2339,19 +2339,20 @@ function deterministicVisualModeForLedger({ proof, artifactHashAfter, dispatchId
           frame: 0,
           epoch: 'baseline',
           metric_value: 0,
-          artifact_hash: proof.baseline.contentHash,
+          frame_hash: proof.baseline.contentHash,
           after_epoch_dispatch: false,
         },
         {
           frame: 1,
           epoch,
           metric_value: proof.diff.meanAbsDelta8bit,
-          artifact_hash: artifactHashAfter,
+          frame_hash: proof.changed.contentHash,
           after_epoch_dispatch: true,
         },
       ],
+      frame_hashes: [proof.baseline.contentHash, proof.changed.contentHash],
       pre_epoch_frame_hashes: [proof.baseline.contentHash],
-      post_epoch_frame_hashes: [proof.changed.contentHash, artifactHashAfter],
+      post_epoch_frame_hashes: [proof.changed.contentHash],
     },
   };
 }
@@ -2494,7 +2495,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       })
     : null;
   const deterministicVisualMode = artifactHashAfter
-    ? deterministicVisualModeForLedger({ proof, artifactHashAfter, dispatchId, epoch })
+    ? deterministicVisualModeForLedger({ proof, dispatchId, epoch })
     : null;
   const deterministicVisualModeEvaluation = deterministicVisualMode
     ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
