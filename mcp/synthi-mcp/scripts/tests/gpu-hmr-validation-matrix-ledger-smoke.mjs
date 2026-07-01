@@ -7675,6 +7675,20 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withAsyncVisualSupportAuthorityClaim(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const asyncVisual = {
+    ...(cloned.asyncVisualCasBundle ?? cloned.async_visual_cas_bundle ?? {}),
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+  };
+  cloned.asyncVisualCasBundle = asyncVisual;
+  cloned.async_visual_cas_bundle = asyncVisual;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutSourceFirstVisualSupport(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   delete cloned.sourceFirstIngestion;
@@ -8726,6 +8740,32 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithForgedAsyncVisualAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withAsyncVisualSupportAuthorityClaim(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithForgedAsyncVisualAuthorityQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const broadReadinessRowsWithOneRandomCold = [

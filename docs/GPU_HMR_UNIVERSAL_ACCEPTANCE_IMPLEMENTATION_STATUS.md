@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Support-Authority Boundary
+
+The source-first visual broad-readiness predicate is now enforced against support-facet authority claims, not just recorded in the broad proof. A row can satisfy the source-first visual broad lane only when the source-first ingestion and async visual/CAS support facets remain non-authoritative: no `acceptedForGpuHmr`, no `gpuHmrSuccess`, no `canSatisfyRuntimeProof`, and no `canSatisfyDispatchProof` claims. The async visual support facet now emits explicit false runtime/dispatch authority fields alongside its existing false GPU HMR success fields.
+
+The smoke matrix now forges an otherwise accepted source-first visual lane by setting runtime/dispatch authority on async visual support. The aggregate matrix query still succeeds as an audit query, but broad readiness closes with `sourceFirstVisualRowCount=0` and `broad_acceptance_requires_source_first_visual_full_runtime_row`. This keeps visual proof support from becoming a hidden runtime-proof shortcut.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including forged async visual support runtime/dispatch authority refusal, proof gpu-validation-matrix-ledger:sha256:be52ea90a57d057410b29225e95a71c2c825e5738ac29f4b5084e20da758040b, rows=66
+```
+
 ## 2026-07-01 Broad Readiness Row-Scope Boundary
 
 Validation-matrix broad readiness now keeps aggregate generalization proof separate from row-local broad acceptance. A scoped HIP/OpenCL/Vulkan/WebGPU runtime row can contribute to the recomputed `synthi.gpu_hmr.broad_library_agnostic_matrix_proof.v1`, but it is not rewritten into `broad_library_agnostic` row scope. Only rows with explicit row-local broad scope and matching broad-scope proof may count as broad full-runtime rows; the current matrix has none.

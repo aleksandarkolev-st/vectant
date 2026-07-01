@@ -4464,6 +4464,10 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
     proofAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
     proof_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
     asyncVisualProofAccepted: asyncMetricsAccepted,
@@ -21396,6 +21400,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false
+      && runtimeBoundarySupportAuthorityNeutral(sourceFirst)
       && firstBool(
         asyncVisual.accepted,
         asyncVisual.acceptedAsSupportEvidence,
@@ -21405,6 +21410,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
         === ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY
       && firstBool(asyncVisual.acceptedForGpuHmr, asyncVisual.accepted_for_gpu_hmr) === false
       && firstBool(asyncVisual.gpuHmrSuccess, asyncVisual.gpu_hmr_success) === false
+      && runtimeBoundarySupportAuthorityNeutral(asyncVisual)
       && firstBool(asyncVisual.proofReady, asyncVisual.proof_ready) === true
       && firstBool(asyncVisual.workerCasInputAccepted, asyncVisual.worker_cas_input_accepted) === true
       && firstBool(asyncVisual.nativeImageDependencyBound, asyncVisual.native_image_dependency_bound) === true
