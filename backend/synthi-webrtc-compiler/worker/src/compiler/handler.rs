@@ -7231,15 +7231,53 @@ fn is_device_source_request(filename: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn normalize_manifest_path_for_compare(path: &str) -> String {
+    path.trim()
+        .trim_start_matches("./")
+        .replace('\\', "/")
+}
+
+fn compile_manifest_has_device_request_evidence(
+    manifest: Option<&CompileManifest>,
+    filename: &str,
+) -> bool {
+    let Some(request_path) = normalized_request_filename(filename) else {
+        return false;
+    };
+    let request_path = normalize_manifest_path_for_compare(&request_path);
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    if manifest
+        .device_source_filename()
+        .map(normalize_manifest_path_for_compare)
+        .as_deref()
+        == Some(request_path.as_str())
+    {
+        return true;
+    }
+    manifest.gpu.as_ref().is_some_and(|gpu| {
+        gpu.device_roles.iter().any(|role| {
+            normalize_manifest_path_for_compare(&role.path) == request_path
+                || role
+                    .source_files
+                    .iter()
+                    .any(|source| normalize_manifest_path_for_compare(source) == request_path)
+        })
+    })
+}
+
 fn prefer_deterministic_gpu_edit(
     is_adapted: bool,
     prefer_gpu_pipeline: bool,
     filename: &str,
     force_gpu_ai_delta: bool,
+    has_explicit_device_evidence: bool,
 ) -> bool {
     is_adapted
         && prefer_gpu_pipeline
         && !force_gpu_ai_delta
+        && has_explicit_device_evidence
         && (is_device_source_request(filename) || is_device_header_request(filename))
 }
 
@@ -8975,6 +9013,10 @@ pub async fn handle_compile_request(
         req.prefer_gpu_pipeline,
         &req.filename,
         req.force_gpu_ai_delta,
+        compile_manifest_has_device_request_evidence(
+            request_compile_manifest.as_ref(),
+            &req.filename,
+        ),
     );
     let classifier_user_requested_ai =
         req.user_requested_ai && !prefer_deterministic_gpu_edit_flag && !req.force_gpu_ai_delta;
@@ -16237,23 +16279,58 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         )
         .with_split_hash("hash1".into());
         let flags = crate::hmr::rollout_flags::RolloutFlags::new_defaults();
+        let source_manifest = fixture_rocm_manifest("src/gpu/flow.hip");
+        let mut header_manifest = fixture_rocm_manifest(".synthi/generated/gpu/device.hip");
+        if let Some(gpu) = header_manifest.gpu.as_mut() {
+            gpu.device_roles.push(crate::hmr::compile_manifest::GpuDeviceRole {
+                id: "device.flow".to_string(),
+                path: ".synthi/generated/gpu/device.hip".to_string(),
+                source_files: vec!["src/gpu/flow_template.hpp".to_string()],
+                compiler: None,
+                arch: Vec::new(),
+                requires_rdc: false,
+            });
+        }
+
+        assert!(!compile_manifest_has_device_request_evidence(
+            None,
+            "src/gpu/flow.hip"
+        ));
+        assert!(compile_manifest_has_device_request_evidence(
+            Some(&source_manifest),
+            "src/gpu/flow.hip"
+        ));
+        assert!(compile_manifest_has_device_request_evidence(
+            Some(&header_manifest),
+            "src/gpu/flow_template.hpp"
+        ));
 
         assert!(prefer_deterministic_gpu_edit(
             true,
             true,
             "src/gpu/flow.hip",
-            false
+            false,
+            true
         ));
         assert!(prefer_deterministic_gpu_edit(
             true,
             true,
             "src/gpu/flow_template.hpp",
+            false,
+            true
+        ));
+        assert!(!prefer_deterministic_gpu_edit(
+            true,
+            true,
+            "src/gpu/unmapped.hip",
+            false,
             false
         ));
         assert!(!prefer_deterministic_gpu_edit(
             true,
             true,
             "src/gpu/flow_template.hpp",
+            true,
             true
         ));
 
