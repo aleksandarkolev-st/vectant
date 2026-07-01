@@ -787,7 +787,7 @@ use crate::hmr::adapter_trait::{
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 use crate::hmr::compile_enrichment::CompileEnrichment;
-use crate::hmr::compile_manifest::{CompileManifest, DeviceVendor, ModuleKind};
+use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::deterministic_compile::{
     determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
     DeterministicRebuildScope,
@@ -1820,13 +1820,6 @@ async fn clang_ast_abi_extraction(
         &command_display,
         evidence_id,
     ))
-}
-
-fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
-    match vendor {
-        DeviceVendor::Cuda => "device.cu",
-        DeviceVendor::Rocm => "device.hip",
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -11469,95 +11462,100 @@ pub async fn handle_compile_request(
             eprintln!("[compile-device] skipping — GPU pipeline disabled by compile request");
         }
         None
-    } else if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
-        let device_filename = compile_manifest
+    } else if compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()).is_some() {
+        let declared_device_filename = compile_manifest
             .as_ref()
             .and_then(|m| m.device_source_filename())
-            .unwrap_or_else(|| device_filename_for_vendor(gpu.vendor));
-        let from_split = split_data
-            .get("device")
+            .and_then(normalized_request_filename);
+        let split_device_role = split_data.get("device");
+        let split_device_filename = split_device_role
+            .and_then(|v| v.get("filename"))
+            .and_then(|v| v.as_str())
+            .and_then(normalized_request_filename);
+        let explicit_device_filename = declared_device_filename
+            .as_deref()
+            .or(split_device_filename.as_deref());
+        let from_split_role = split_device_role
             .and_then(|v| v.get("content"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| {
+            .map(|s| s.to_string());
+        let from_split = from_split_role.or_else(|| {
+            explicit_device_filename.and_then(|device_filename| {
                 split_data
                     .get(device_filename)
                     .and_then(|v| v.get("content"))
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| s.to_string())
-            });
-        if let Some(src) = from_split {
-            let split_device_filename = split_data
-                .get("device")
-                .and_then(|v| v.get("filename"))
-                .or_else(|| {
-                    split_data
-                        .get(device_filename)
-                        .and_then(|v| v.get("filename"))
-                })
-                .and_then(|v| v.as_str())
-                .and_then(normalized_request_filename)
-                .unwrap_or_else(|| device_filename.to_string());
-            let full_symbols =
-                device_mapping_symbols_for_generated(&split_data, &split_device_filename);
-            let partial_request = split_partial_device_source(&split_data);
-            let (
-                partial_source,
-                partial_filename,
-                partial_symbols,
-                partial_source_paths,
-                partial_required,
-                partial_artifact_kind,
-                partial_fallback_reason,
-                partial_fission_candidate,
-            ) = partial_request
-                .map(|partial| {
-                    (
-                        Some(partial.source),
-                        Some(partial.filename),
-                        partial.symbols,
-                        partial.source_paths,
-                        partial.required,
-                        partial.artifact_kind,
-                        partial.fallback_reason,
-                        partial.fission_candidate,
-                    )
-                })
-                .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None, None));
-            eprintln!(
-                "[compile-device] source resolved from split_data file={} bytes={} mapped_symbols={} partial={} partial_required={}",
-                split_device_filename,
-                src.len(),
-                if full_symbols.is_empty() {
-                    "-".to_string()
-                } else {
-                    full_symbols.join(",")
-                },
-                partial_source
-                    .as_ref()
-                    .map(|source| source.len().to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-                partial_required
-            );
-            Some(DeviceCompileSources {
-                full_source: src,
-                full_filename: Some(split_device_filename),
-                full_symbols,
-                direct_workspace_source: false,
-                partial_source,
-                partial_filename,
-                partial_symbols,
-                partial_source_paths,
-                partial_required,
-                partial_artifact_kind,
-                partial_fallback_reason,
-                partial_fission_candidate,
-                source_baseline_contents: source_baseline_contents.clone(),
-                launch_mapping_sources: launch_mapping_sources.clone(),
             })
-        } else {
+        });
+        if let Some(src) = from_split {
+            if let Some(split_device_filename) = explicit_device_filename {
+                let full_symbols =
+                    device_mapping_symbols_for_generated(&split_data, split_device_filename);
+                let partial_request = split_partial_device_source(&split_data);
+                let (
+                    partial_source,
+                    partial_filename,
+                    partial_symbols,
+                    partial_source_paths,
+                    partial_required,
+                    partial_artifact_kind,
+                    partial_fallback_reason,
+                    partial_fission_candidate,
+                ) = partial_request
+                    .map(|partial| {
+                        (
+                            Some(partial.source),
+                            Some(partial.filename),
+                            partial.symbols,
+                            partial.source_paths,
+                            partial.required,
+                            partial.artifact_kind,
+                            partial.fallback_reason,
+                            partial.fission_candidate,
+                        )
+                    })
+                    .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None, None));
+                eprintln!(
+                    "[compile-device] source resolved from split_data file={} bytes={} mapped_symbols={} partial={} partial_required={}",
+                    split_device_filename,
+                    src.len(),
+                    if full_symbols.is_empty() {
+                        "-".to_string()
+                    } else {
+                        full_symbols.join(",")
+                    },
+                    partial_source
+                        .as_ref()
+                        .map(|source| source.len().to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    partial_required
+                );
+                Some(DeviceCompileSources {
+                    full_source: src,
+                    full_filename: Some(split_device_filename.to_string()),
+                    full_symbols,
+                    direct_workspace_source: false,
+                    partial_source,
+                    partial_filename,
+                    partial_symbols,
+                    partial_source_paths,
+                    partial_required,
+                    partial_artifact_kind,
+                    partial_fallback_reason,
+                    partial_fission_candidate,
+                    source_baseline_contents: source_baseline_contents.clone(),
+                    launch_mapping_sources: launch_mapping_sources.clone(),
+                })
+            } else {
+                eprintln!(
+                    "[compile-device] skipping - split device content has no explicit filename or manifest device role"
+                );
+                None
+            }
+        } else if let Some(device_filename) = declared_device_filename.as_deref() {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
                 Ok(src) if !src.trim().is_empty() => {
                     let full_symbols = extract_device_kernel_symbols(&src);
@@ -11600,6 +11598,11 @@ pub async fn handle_compile_request(
                     None
                 }
             }
+        } else {
+            eprintln!(
+                "[compile-device] skipping - gpu block has no explicit module_files.device role or split device filename"
+            );
+            None
         }
     } else {
         None
@@ -12652,7 +12655,12 @@ pub async fn handle_compile_request(
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
             let gpu_language = gpu.vendor.as_str();
-            let device_filename = device_filename_for_vendor(gpu.vendor);
+            let device_filename = device_outcome
+                .proof_metadata
+                .source_filename
+                .as_deref()
+                .or_else(|| manifest.device_source_filename())
+                .unwrap_or("explicit-device-role-unavailable");
             let mut device_dirty_units = dirty_units.clone();
             if !device_dirty_units.iter().any(|u| u == device_filename) {
                 device_dirty_units.push(device_filename.to_string());
