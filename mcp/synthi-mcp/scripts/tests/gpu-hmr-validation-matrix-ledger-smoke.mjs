@@ -20,6 +20,7 @@ import {
   GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
 } from '../lib/gpu-hmr-generated-split-granularity.mjs';
 import {
+  bindGpuHmrRunModeCoverageSupport,
   buildGpuHmrProofLedger,
   buildGpuHmrRunModeCoverageSupport,
   evaluateGpuHmrProofLedger,
@@ -2746,21 +2747,77 @@ const flowHot2VisualProfileEvidence = validationProfileEvidenceFor({
   ],
 });
 
+const flowColdRunMode = {
+  metricClock: 'monotonic_ns',
+  metricScope: 'cold',
+  cacheState: 'clean',
+  editId: 'initial-ai-split',
+  editHash: hashValue('cold-split'),
+};
+const flowColdRunModeCoverageSupport = bindGpuHmrRunModeCoverageSupport(
+  flowRunModeCoverageSupport,
+  { runMode: flowColdRunMode },
+);
+
 await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   proofId: 'agent-split-run-mode-proof:sha256:cold',
   coldRuntimeInitialProven: true,
   cold_runtime_initial_proven: true,
-  runModeCoverageSupport: flowRunModeCoverageSupport,
+  runModeCoverageSupport: flowColdRunModeCoverageSupport,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: flowColdRunMode,
+});
+
+const forgedFailedSupportColdRunMode = {
+  metricClock: 'monotonic_ns',
+  metricScope: 'cold',
+  cacheState: 'clean',
+  editId: 'initial-ai-split:forged-failed-support',
+  editHash: hashValue('cold-split-forged-failed-support'),
+};
+await writeJson(path.join(visualDir, 'run-mode-cold-forged-failed-support.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-failed-support-cold',
+  profileId: 'flow-forged-failed-support-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  runModeCoverageSupport: {
+    ...bindGpuHmrRunModeCoverageSupport(
+      flowRunModeCoverageSupport,
+      { runMode: forgedFailedSupportColdRunMode },
+    ),
+    proofLedgerSuccess: false,
+    proof_ledger_success: false,
+    runtimeProofArtifactGpuHmrSuccess: false,
+    runtime_proof_artifact_gpu_hmr_success: false,
+    runtimeProofArtifactFullRuntimeProven: false,
+    runtime_proof_artifact_full_runtime_proven: false,
+  },
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: forgedFailedSupportColdRunMode,
+});
+
+await writeJson(path.join(visualDir, 'run-mode-cold-forged-borrowed-support.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+  proofId: 'agent-split-run-mode-proof:sha256:forged-borrowed-support-cold',
+  profileId: 'flow-forged-borrowed-support-cold',
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
+  runModeCoverageSupport: flowColdRunModeCoverageSupport,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'cold',
     cacheState: 'clean',
-    editId: 'initial-ai-split',
-    editHash: hashValue('cold-split'),
+    editId: 'initial-ai-split:forged-borrowed-support',
+    editHash: hashValue('cold-split-forged-borrowed-support'),
   },
 });
 
@@ -3856,7 +3913,15 @@ await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
   backend: 'hip',
   targetId: 'flow',
   profileId: 'flow',
-  runModeCoverageSupport: flowRunModeCoverageSupport,
+  runModeCoverageSupport: bindGpuHmrRunModeCoverageSupport(
+    flowRunModeCoverageSupport,
+    {
+      runMode: {
+        metricScope: 'hot_delta_2',
+        editHash: `sha256:${'9'.repeat(64)}`,
+      },
+    },
+  ),
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   cpuHmrUsed: false,
@@ -13580,6 +13645,12 @@ assert.ok(flowRunModeTarget.rows.some((row) =>
 assert.ok(!flowRunModeTarget.rows.some((row) =>
   row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-unlinked-flow-cold')
 ));
+assert.ok(!flowRunModeTarget.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-failed-support-cold')
+));
+assert.ok(!flowRunModeTarget.rows.some((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-borrowed-support-cold')
+));
 assert.ok(coverageById.get('per_target_run_modes')?.unlinkedSupportRowCount >= 1);
 const optedOutHiprtRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
@@ -14005,6 +14076,30 @@ assert.ok(forgedUnlinkedFlowCold.runModeCoverageSupport.failedGates.includes(
   'run_mode_support_parent_proof_id_missing',
 ));
 
+const forgedFailedSupportCold = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-failed-support-cold')
+);
+assert.equal(forgedFailedSupportCold?.matrixOutcome, 'cold_split_proven');
+assert.equal(forgedFailedSupportCold.runModeCoverageSupport.accepted, false);
+assert.ok(forgedFailedSupportCold.runModeCoverageSupport.failedGates.includes(
+  'run_mode_support_proof_ledger_not_successful',
+));
+assert.ok(forgedFailedSupportCold.runModeCoverageSupport.failedGates.includes(
+  'run_mode_support_runtime_artifact_gpu_hmr_success_false',
+));
+assert.ok(forgedFailedSupportCold.runModeCoverageSupport.failedGates.includes(
+  'run_mode_support_runtime_artifact_full_runtime_not_proven',
+));
+
+const forgedBorrowedSupportCold = ledger.rows.find((row) =>
+  row.proofIds?.includes('agent-split-run-mode-proof:sha256:forged-borrowed-support-cold')
+);
+assert.equal(forgedBorrowedSupportCold?.matrixOutcome, 'cold_split_proven');
+assert.equal(forgedBorrowedSupportCold.runModeCoverageSupport.accepted, false);
+assert.ok(forgedBorrowedSupportCold.runModeCoverageSupport.failedGates.includes(
+  'run_mode_support_not_bound_to_current_run_mode_artifact',
+));
+
 const reverseArtifactNamespaceDir = path.join(
   logsRoot,
   'agent-split-artifacts',
@@ -14060,7 +14155,15 @@ await writeJson(path.join(reverseArtifactNamespaceDir, 'cold.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-reverse-cold',
   coldRuntimeInitialProven: true,
   cold_runtime_initial_proven: true,
-  runModeCoverageSupport: reverseArtifactNamespaceSupport,
+  runModeCoverageSupport: bindGpuHmrRunModeCoverageSupport(
+    reverseArtifactNamespaceSupport,
+    {
+      runMode: {
+        metricScope: 'cold',
+        editHash: hashValue('artifact-namespace-reverse-cold'),
+      },
+    },
+  ),
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   visualArtifacts: visualArtifactSet({
@@ -14149,7 +14252,15 @@ await writeJson(path.join(mismatchedArtifactNamespaceDir, 'cold.json'), {
   proofId: 'agent-split-run-mode-proof:sha256:artifact-namespace-mismatch-cold',
   coldRuntimeInitialProven: true,
   cold_runtime_initial_proven: true,
-  runModeCoverageSupport: mismatchedArtifactNamespaceSupport,
+  runModeCoverageSupport: bindGpuHmrRunModeCoverageSupport(
+    mismatchedArtifactNamespaceSupport,
+    {
+      runMode: {
+        metricScope: 'cold',
+        editHash: hashValue('artifact-namespace-mismatch-cold'),
+      },
+    },
+  ),
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   visualArtifacts: visualArtifactSet({

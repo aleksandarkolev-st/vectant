@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import {
+  bindGpuHmrRunModeCoverageSupport,
   buildGpuHmrProofLedger,
   buildGpuHmrRunModeCoverageSupport,
   evaluateGpuHmrProofLedger,
@@ -1691,6 +1692,9 @@ async function writeColdRuntimeRunModeProof({
   const runMode = coldRuntimeRunModeMetadata(profile);
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
+  const boundRunModeCoverageSupport = runModeCoverageSupport
+    ? bindGpuHmrRunModeCoverageSupport(runModeCoverageSupport, { runMode })
+    : null;
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1733,9 +1737,9 @@ async function writeColdRuntimeRunModeProof({
     source_proof_id: proof.proofId,
     evidenceKind: 'cold_runtime_initial_visual_oracle',
     evidence_kind: 'cold_runtime_initial_visual_oracle',
-    ...(runModeCoverageSupport ? {
-      runModeCoverageSupport,
-      run_mode_coverage_support: runModeCoverageSupport,
+    ...(boundRunModeCoverageSupport ? {
+      runModeCoverageSupport: boundRunModeCoverageSupport,
+      run_mode_coverage_support: boundRunModeCoverageSupport,
     } : {}),
     coverageObligations,
     coverage_obligations: coverageObligations,
@@ -2038,6 +2042,9 @@ async function writeWebgpuNegativeEditRefusal({
     differentEdit: true,
   };
   const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
+  const boundRunModeCoverageSupport = runModeCoverageSupport
+    ? bindGpuHmrRunModeCoverageSupport(runModeCoverageSupport, { runMode: negativeRunMode })
+    : null;
   const seed = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
     backend: 'webgpu',
@@ -2086,9 +2093,9 @@ async function writeWebgpuNegativeEditRefusal({
     source_proof_id: proof.proofId,
     evidenceKind: 'negative_edit',
     evidence_kind: 'negative_edit',
-    ...(runModeCoverageSupport ? {
-      runModeCoverageSupport,
-      run_mode_coverage_support: runModeCoverageSupport,
+    ...(boundRunModeCoverageSupport ? {
+      runModeCoverageSupport: boundRunModeCoverageSupport,
+      run_mode_coverage_support: boundRunModeCoverageSupport,
     } : {}),
     coverageObligations: webgpuRunModeCoverageObligations(profile),
     coverage_obligations: webgpuRunModeCoverageObligations(profile),

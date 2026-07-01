@@ -40,6 +40,7 @@ import {
   GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
 } from './lib/gpu-hmr-generated-split-granularity.mjs';
 import {
+  bindGpuHmrRunModeCoverageSupport,
   buildGpuHmrRunModeCoverageSupport,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
@@ -6761,6 +6762,14 @@ async function writeRunModeProofArtifact(name, proof) {
     schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
     ...proof,
   };
+  if (seed.runModeCoverageSupport || seed.run_mode_coverage_support) {
+    const boundSupport = bindGpuHmrRunModeCoverageSupport(
+      seed.runModeCoverageSupport ?? seed.run_mode_coverage_support,
+      { runMode: seed.runMode ?? seed.run_mode },
+    );
+    seed.runModeCoverageSupport = boundSupport;
+    seed.run_mode_coverage_support = boundSupport;
+  }
   const claimsRuntimeSuccess =
     seed.acceptedForGpuHmr === true ||
     seed.accepted_for_gpu_hmr === true ||
@@ -6796,6 +6805,14 @@ async function writeNegativeEditRefusalArtifact(name, proof) {
     firewall_evidence_source: 'static_refusal_before_gpu_load',
     ...proof,
   };
+  if (seed.runModeCoverageSupport || seed.run_mode_coverage_support) {
+    const boundSupport = bindGpuHmrRunModeCoverageSupport(
+      seed.runModeCoverageSupport ?? seed.run_mode_coverage_support,
+      { runMode: seed.runMode ?? seed.run_mode },
+    );
+    seed.runModeCoverageSupport = boundSupport;
+    seed.run_mode_coverage_support = boundSupport;
+  }
   const withProofId = {
     ...seed,
     proofId: negativeEditProofId(seed),

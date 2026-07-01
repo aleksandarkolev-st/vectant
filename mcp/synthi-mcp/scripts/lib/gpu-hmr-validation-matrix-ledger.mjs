@@ -5876,6 +5876,10 @@ function rawRunModeCoverageSupport(row = {}) {
 
 function runModeCoverageSupportFacet(row = {}) {
   const supplied = rawRunModeCoverageSupport(row);
+  const rowRunMode = compactObject(row.runMode ?? row.run_mode);
+  const rowMetricScope = firstText(rowRunMode.metricScope, rowRunMode.metric_scope);
+  const rowEditHash = firstText(rowRunMode.editHash, rowRunMode.edit_hash);
+  const rowProofIds = proofIdsFrom(row.proofId, row.proof_id, row.proofIds, row.proof_ids);
   const parentProofIds = compactStringList([
     ...(Array.isArray(supplied.parentProofIds) ? supplied.parentProofIds : []),
     ...(Array.isArray(supplied.parent_proof_ids) ? supplied.parent_proof_ids : []),
@@ -5891,10 +5895,56 @@ function runModeCoverageSupportFacet(row = {}) {
     supplied.artifactHash,
     supplied.artifact_hash,
   );
+  const proofLedgerSuccess = firstBool(supplied.proofLedgerSuccess, supplied.proof_ledger_success);
+  const runtimeProofArtifactGpuHmrSuccess = firstBool(
+    supplied.runtimeProofArtifactGpuHmrSuccess,
+    supplied.runtime_proof_artifact_gpu_hmr_success,
+  );
+  const runtimeProofArtifactFullRuntimeProven = firstBool(
+    supplied.runtimeProofArtifactFullRuntimeProven,
+    supplied.runtime_proof_artifact_full_runtime_proven,
+  );
+  const proofLedgerId = firstText(supplied.proofLedgerId, supplied.proof_ledger_id);
+  const runModeMetricScope = firstText(
+    supplied.runModeMetricScope,
+    supplied.run_mode_metric_scope,
+    supplied.metricScope,
+    supplied.metric_scope,
+  );
+  const runModeEditHash = firstText(
+    supplied.runModeEditHash,
+    supplied.run_mode_edit_hash,
+    supplied.editHash,
+    supplied.edit_hash,
+  );
+  const runModeProofIds = compactStringList([
+    ...(Array.isArray(supplied.runModeProofIds) ? supplied.runModeProofIds : []),
+    ...(Array.isArray(supplied.run_mode_proof_ids) ? supplied.run_mode_proof_ids : []),
+    ...(Array.isArray(supplied.currentRunModeProofIds) ? supplied.currentRunModeProofIds : []),
+    ...(Array.isArray(supplied.current_run_mode_proof_ids) ? supplied.current_run_mode_proof_ids : []),
+    ...(Array.isArray(supplied.supportedRunModeProofIds) ? supplied.supportedRunModeProofIds : []),
+    ...(Array.isArray(supplied.supported_run_mode_proof_ids) ? supplied.supported_run_mode_proof_ids : []),
+  ]);
+  const runModeProofIdBound =
+    runModeProofIds.length === 0
+    || runModeProofIds.some((proofId) => rowProofIds.includes(proofId));
+  const rowLocalBindingAccepted =
+    runModeMetricScope === rowMetricScope
+    && runModeEditHash === rowEditHash
+    && runModeProofIdBound;
   const failedGates = compactStringList([
     parentProofIds.length > 0 ? null : 'run_mode_support_parent_proof_id_missing',
     contentAddressedSha256(contractHash) ? null : 'run_mode_support_contract_hash_missing_or_not_content_addressed',
     contentAddressedArtifactHash(artifactAfterHash) ? null : 'run_mode_support_artifact_hash_missing_or_not_content_addressed',
+    rowLocalBindingAccepted ? null : 'run_mode_support_not_bound_to_current_run_mode_artifact',
+    proofLedgerSuccess === true ? null : 'run_mode_support_proof_ledger_not_successful',
+    proofLedgerId ? null : 'run_mode_support_proof_ledger_id_missing',
+    runtimeProofArtifactGpuHmrSuccess === true
+      ? null
+      : 'run_mode_support_runtime_artifact_gpu_hmr_success_false',
+    runtimeProofArtifactFullRuntimeProven === true
+      ? null
+      : 'run_mode_support_runtime_artifact_full_runtime_not_proven',
   ]);
   return {
     present: Object.keys(supplied).length > 0,
@@ -5905,6 +5955,28 @@ function runModeCoverageSupportFacet(row = {}) {
     contract_hash: contractHash,
     artifactAfterHash,
     artifact_after_hash: artifactAfterHash,
+    rowMetricScope,
+    row_metric_scope: rowMetricScope,
+    rowEditHash,
+    row_edit_hash: rowEditHash,
+    runModeMetricScope,
+    run_mode_metric_scope: runModeMetricScope,
+    runModeEditHash,
+    run_mode_edit_hash: runModeEditHash,
+    runModeProofIds,
+    run_mode_proof_ids: runModeProofIds,
+    rowProofIds,
+    row_proof_ids: rowProofIds,
+    rowLocalBindingAccepted,
+    row_local_binding_accepted: rowLocalBindingAccepted,
+    proofLedgerSuccess: proofLedgerSuccess === true,
+    proof_ledger_success: proofLedgerSuccess === true,
+    proofLedgerId: proofLedgerId ?? null,
+    proof_ledger_id: proofLedgerId ?? null,
+    runtimeProofArtifactGpuHmrSuccess: runtimeProofArtifactGpuHmrSuccess === true,
+    runtime_proof_artifact_gpu_hmr_success: runtimeProofArtifactGpuHmrSuccess === true,
+    runtimeProofArtifactFullRuntimeProven: runtimeProofArtifactFullRuntimeProven === true,
+    runtime_proof_artifact_full_runtime_proven: runtimeProofArtifactFullRuntimeProven === true,
     failedGates,
     failed_gates: failedGates,
   };
@@ -5913,6 +5985,19 @@ function runModeCoverageSupportFacet(row = {}) {
 function rowHasLinkedRunModeCoverageSupport(row, fullRuntimeRows) {
   const support = compactObject(row.runModeCoverageSupport ?? row.run_mode_coverage_support);
   if (support.accepted !== true) return false;
+  const rowRunMode = compactObject(row.runMode ?? row.run_mode);
+  const rowMetricScope = firstText(rowRunMode.metricScope, rowRunMode.metric_scope);
+  const rowEditHash = firstText(rowRunMode.editHash, rowRunMode.edit_hash);
+  const supportMetricScope = firstText(support.runModeMetricScope, support.run_mode_metric_scope);
+  const supportEditHash = firstText(support.runModeEditHash, support.run_mode_edit_hash);
+  if (!rowMetricScope || !rowEditHash) return false;
+  if (supportMetricScope !== rowMetricScope || supportEditHash !== rowEditHash) return false;
+  const supportRunModeProofIds = compactStringList(support.runModeProofIds ?? support.run_mode_proof_ids);
+  const rowProofIds = proofIdsFrom(row.proofId, row.proof_id, row.proofIds, row.proof_ids);
+  if (supportRunModeProofIds.length > 0
+    && !supportRunModeProofIds.some((proofId) => rowProofIds.includes(proofId))) {
+    return false;
+  }
   const supportParentProofIds = compactStringList(support.parentProofIds ?? support.parent_proof_ids);
   const supportContractHash = firstText(support.contractHash, support.contract_hash);
   const supportArtifactAfterHash = firstText(support.artifactAfterHash, support.artifact_after_hash);

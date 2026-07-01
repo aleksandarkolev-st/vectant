@@ -1944,8 +1944,19 @@ export function buildGpuHmrRunModeCoverageSupport({
   proofLedgerQuery = null,
   runtimeProofArtifact = null,
   parentProofIds = [],
+  runMode = null,
+  runModeProofIds = [],
 } = {}) {
   const runtimeArtifact = asObject(runtimeProofArtifact);
+  const runModeRecord = asObject(runMode);
+  const runModeMetricScope = firstText(
+    runModeRecord.metricScope,
+    runModeRecord.metric_scope,
+  );
+  const runModeEditHash = firstText(
+    runModeRecord.editHash,
+    runModeRecord.edit_hash,
+  );
   const embeddedLedger = proofLedger ?? runtimeArtifact.proofLedger ?? runtimeArtifact.proof_ledger;
   const ledger = asObject(embeddedLedger);
   const suppliedQuery = asObject(proofLedgerQuery);
@@ -1954,6 +1965,18 @@ export function buildGpuHmrRunModeCoverageSupport({
     : Object.keys(ledger).length > 0
       ? queryGpuHmrLedgerInvariants(ledger)
       : {};
+  const failedInvariants = Array.isArray(recomputed.failedInvariants)
+    ? recomputed.failedInvariants
+    : [];
+  const proofLedgerSuccess =
+    recomputed.gpuHmrSuccess === true
+    && failedInvariants.length === 0;
+  const runtimeProofArtifactGpuHmrSuccess =
+    runtimeArtifact.gpuHmrSuccess === true
+    || runtimeArtifact.gpu_hmr_success === true;
+  const runtimeProofArtifactFullRuntimeProven =
+    runtimeArtifact.fullRuntimeProven === true
+    || runtimeArtifact.full_runtime_proven === true;
   const record = asObject(
     recomputed.record
       ?? recomputed.ledgerRecord
@@ -1966,6 +1989,14 @@ export function buildGpuHmrRunModeCoverageSupport({
   const artifactAfterHash = firstText(record.artifactAfterHash, record.artifact_after_hash);
   if (!contractHash || !artifactAfterHash) return null;
   const artifactBeforeHash = firstText(record.artifactBeforeHash, record.artifact_before_hash);
+  const proofLedgerId = firstText(
+    recomputed.proofId,
+    recomputed.proof_id,
+    ledger.proofId,
+    ledger.proof_id,
+    record.proofId,
+    record.proof_id,
+  );
   const linkedParentProofIds = [...new Set(compactStringList([
     ...parentProofIds,
     recomputed.proofId,
@@ -1977,6 +2008,7 @@ export function buildGpuHmrRunModeCoverageSupport({
     runtimeArtifact.proofId,
     runtimeArtifact.proof_id,
   ]))];
+  const linkedRunModeProofIds = [...new Set(compactStringList(runModeProofIds))];
   return {
     schemaVersion: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
     schema_version: 'synthi.gpu.hmr.run_mode_coverage_support.v1',
@@ -1988,6 +2020,55 @@ export function buildGpuHmrRunModeCoverageSupport({
     artifact_before_hash: artifactBeforeHash,
     artifactAfterHash,
     artifact_after_hash: artifactAfterHash,
+    runModeMetricScope,
+    run_mode_metric_scope: runModeMetricScope,
+    runModeEditHash,
+    run_mode_edit_hash: runModeEditHash,
+    runModeProofIds: linkedRunModeProofIds,
+    run_mode_proof_ids: linkedRunModeProofIds,
+    proofLedgerSuccess,
+    proof_ledger_success: proofLedgerSuccess,
+    proofLedgerId: proofLedgerId ?? null,
+    proof_ledger_id: proofLedgerId ?? null,
+    runtimeProofArtifactGpuHmrSuccess,
+    runtime_proof_artifact_gpu_hmr_success: runtimeProofArtifactGpuHmrSuccess,
+    runtimeProofArtifactFullRuntimeProven,
+    runtime_proof_artifact_full_runtime_proven: runtimeProofArtifactFullRuntimeProven,
+  };
+}
+
+export function bindGpuHmrRunModeCoverageSupport(support, {
+  runMode = null,
+  proofIds = [],
+} = {}) {
+  const source = asObject(support);
+  if (Object.keys(source).length === 0) return null;
+  const runModeRecord = asObject(runMode);
+  const runModeMetricScope = firstText(
+    runModeRecord.metricScope,
+    runModeRecord.metric_scope,
+    source.runModeMetricScope,
+    source.run_mode_metric_scope,
+  );
+  const runModeEditHash = firstText(
+    runModeRecord.editHash,
+    runModeRecord.edit_hash,
+    source.runModeEditHash,
+    source.run_mode_edit_hash,
+  );
+  const linkedRunModeProofIds = [...new Set(compactStringList([
+    ...(Array.isArray(source.runModeProofIds) ? source.runModeProofIds : []),
+    ...(Array.isArray(source.run_mode_proof_ids) ? source.run_mode_proof_ids : []),
+    ...proofIds,
+  ]))];
+  return {
+    ...source,
+    runModeMetricScope,
+    run_mode_metric_scope: runModeMetricScope,
+    runModeEditHash,
+    run_mode_edit_hash: runModeEditHash,
+    runModeProofIds: linkedRunModeProofIds,
+    run_mode_proof_ids: linkedRunModeProofIds,
   };
 }
 
