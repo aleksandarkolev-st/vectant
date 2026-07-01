@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import {
@@ -69,6 +69,9 @@ const VISUAL_DIFF = writeVisualArtifact(
   await rgbaPng(2, 2, () => [255, 255, 255, 255]),
 );
 const VISUAL_INVALID = writeVisualArtifact('invalid-frame.bin', [0x89, 0x50, 0x4e, 0x47, 1]);
+const corruptPngBytes = Buffer.from(readFileSync(VISUAL_BEFORE.path));
+corruptPngBytes[corruptPngBytes.length - 1] ^= 0xff;
+const VISUAL_CORRUPT = writeVisualArtifact('corrupt-frame.png', corruptPngBytes);
 
 function modelAvailabilityFields() {
   return {
@@ -220,6 +223,8 @@ function byteBackedVisualOracleArtifacts(overrides = {}) {
     diffImage: VISUAL_DIFF.path,
     diff_image_hash: VISUAL_DIFF.hash,
     diffImageHash: VISUAL_DIFF.hash,
+    swapchain_size: [2, 2],
+    swapchainSize: [2, 2],
     visual_pixel_verification: {
       before_image_hash: VISUAL_BEFORE.hash,
       after_image_hash: VISUAL_AFTER.hash,
@@ -785,6 +790,51 @@ assert.match(
     deterministicVisualModeEvaluation: { accepted: true },
   })).detail,
   /visual_oracle_before_image_png_invalid/,
+);
+const corruptPngLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      before_image: VISUAL_CORRUPT.path,
+      beforeImage: VISUAL_CORRUPT.path,
+      before_image_hash: VISUAL_CORRUPT.hash,
+      beforeImageHash: VISUAL_CORRUPT.hash,
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_CORRUPT.hash,
+        after_image_hash: VISUAL_AFTER.hash,
+        diff_image_hash: VISUAL_DIFF.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:corrupt-png-refused',
+    proofLedger: corruptPngLedger,
+    proofLedgerQuery: corruptPngLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_before_image_png_invalid/,
+);
+const mismatchedDimensionsLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      swapchain_size: [640, 480],
+      swapchainSize: [640, 480],
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:dimension-mismatch-refused',
+    proofLedger: mismatchedDimensionsLedger,
+    proofLedgerQuery: mismatchedDimensionsLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_before_image_dimensions_mismatch/,
 );
 const forgedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
   oracle_artifacts: {

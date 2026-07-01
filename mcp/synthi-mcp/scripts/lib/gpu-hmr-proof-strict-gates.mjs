@@ -46,6 +46,18 @@ const DEFAULT_VISUAL_ARTIFACT_ROOTS = [
   path.resolve(MODULE_DIR, '../../../..'),
 ];
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNK_TYPE_PATTERN = /^[A-Za-z]{4}$/u;
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < table.length; i += 1) {
+    let crc = i;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+    }
+    table[i] = crc >>> 0;
+  }
+  return table;
+})();
 
 function sortedCodes(values) {
   return compactStrings((Array.isArray(values) ? values : [])
@@ -215,35 +227,123 @@ function sha256Bytes(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
 }
 
+function crc32(buffer, start, end) {
+  let crc = 0xffffffff;
+  for (let index = start; index < end; index += 1) {
+    crc = CRC32_TABLE[(crc ^ buffer[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function positiveInteger(value) {
+  const numeric = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function dimensionsFromValue(value) {
+  if (Array.isArray(value) && value.length >= 2) {
+    const width = positiveInteger(value[0]);
+    const height = positiveInteger(value[1]);
+    return width && height ? { width, height } : null;
+  }
+  if (!isObject(value)) return null;
+  const width = positiveInteger(value.width ?? value.w);
+  const height = positiveInteger(value.height ?? value.h);
+  return width && height ? { width, height } : null;
+}
+
+function sameDimensions(left, right) {
+  return Boolean(left && right && left.width === right.width && left.height === right.height);
+}
+
 function pngHeaderEvidence(buffer) {
   const failedGates = [];
   let width = null;
   let height = null;
-  if (!Buffer.isBuffer(buffer) || buffer.length < 33) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < PNG_SIGNATURE.length) {
     failedGates.push('png_header_too_short');
-  } else {
-    if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-      failedGates.push('png_signature_mismatch');
-    }
-    const ihdrLength = buffer.readUInt32BE(8);
-    const chunkType = buffer.subarray(12, 16).toString('ascii');
-    width = buffer.readUInt32BE(16);
-    height = buffer.readUInt32BE(20);
-    const bitDepth = buffer[24];
-    const colorType = buffer[25];
-    const compression = buffer[26];
-    const filter = buffer[27];
-    const interlace = buffer[28];
-    if (ihdrLength !== 13) failedGates.push('png_ihdr_length_invalid');
-    if (chunkType !== 'IHDR') failedGates.push('png_ihdr_missing');
-    if (!Number.isFinite(width) || width <= 0) failedGates.push('png_width_invalid');
-    if (!Number.isFinite(height) || height <= 0) failedGates.push('png_height_invalid');
-    if (![1, 2, 4, 8, 16].includes(bitDepth)) failedGates.push('png_bit_depth_invalid');
-    if (![0, 2, 3, 4, 6].includes(colorType)) failedGates.push('png_color_type_invalid');
-    if (compression !== 0) failedGates.push('png_compression_method_invalid');
-    if (filter !== 0) failedGates.push('png_filter_method_invalid');
-    if (interlace !== 0 && interlace !== 1) failedGates.push('png_interlace_method_invalid');
+    return { accepted: false, width, height, failedGates };
   }
+  if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    failedGates.push('png_signature_mismatch');
+    return { accepted: false, width, height, failedGates };
+  }
+  if (buffer.length < 33) {
+    failedGates.push('png_header_too_short');
+  }
+  let offset = PNG_SIGNATURE.length;
+  let chunkIndex = 0;
+  let seenIhdr = false;
+  let seenIdat = false;
+  let seenIend = false;
+  while (offset < buffer.length) {
+    if (offset + 12 > buffer.length) {
+      failedGates.push('png_chunk_header_truncated');
+      break;
+    }
+    const length = buffer.readUInt32BE(offset);
+    const typeStart = offset + 4;
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const crcOffset = dataEnd;
+    const nextOffset = crcOffset + 4;
+    const chunkType = buffer.subarray(typeStart, typeStart + 4).toString('ascii');
+    if (!PNG_CHUNK_TYPE_PATTERN.test(chunkType)) {
+      failedGates.push('png_chunk_type_invalid');
+    }
+    if (nextOffset > buffer.length) {
+      failedGates.push('png_chunk_data_truncated');
+      break;
+    }
+    const expectedCrc = buffer.readUInt32BE(crcOffset);
+    const actualCrc = crc32(buffer, typeStart, dataEnd);
+    if (expectedCrc !== actualCrc) {
+      failedGates.push('png_chunk_crc_mismatch');
+    }
+    if (chunkIndex === 0 && chunkType !== 'IHDR') {
+      failedGates.push('png_ihdr_not_first');
+    }
+    if (!seenIhdr && chunkType !== 'IHDR') {
+      failedGates.push('png_chunk_before_ihdr');
+    }
+    if (chunkType === 'IHDR') {
+      if (seenIhdr) {
+        failedGates.push('png_ihdr_duplicate');
+      }
+      seenIhdr = true;
+      if (length !== 13) failedGates.push('png_ihdr_length_invalid');
+      if (length >= 13) {
+        width = buffer.readUInt32BE(dataStart);
+        height = buffer.readUInt32BE(dataStart + 4);
+        const bitDepth = buffer[dataStart + 8];
+        const colorType = buffer[dataStart + 9];
+        const compression = buffer[dataStart + 10];
+        const filter = buffer[dataStart + 11];
+        const interlace = buffer[dataStart + 12];
+        if (!Number.isFinite(width) || width <= 0) failedGates.push('png_width_invalid');
+        if (!Number.isFinite(height) || height <= 0) failedGates.push('png_height_invalid');
+        if (![1, 2, 4, 8, 16].includes(bitDepth)) failedGates.push('png_bit_depth_invalid');
+        if (![0, 2, 3, 4, 6].includes(colorType)) failedGates.push('png_color_type_invalid');
+        if (compression !== 0) failedGates.push('png_compression_method_invalid');
+        if (filter !== 0) failedGates.push('png_filter_method_invalid');
+        if (interlace !== 0 && interlace !== 1) failedGates.push('png_interlace_method_invalid');
+      }
+    } else if (chunkType === 'IDAT') {
+      seenIdat = true;
+    } else if (chunkType === 'IEND') {
+      if (length !== 0) failedGates.push('png_iend_length_invalid');
+      seenIend = true;
+      if (nextOffset !== buffer.length) {
+        failedGates.push('png_trailing_bytes_after_iend');
+      }
+      break;
+    }
+    offset = nextOffset;
+    chunkIndex += 1;
+  }
+  if (!seenIhdr) failedGates.push('png_ihdr_missing');
+  if (!seenIdat) failedGates.push('png_idat_missing');
+  if (!seenIend) failedGates.push('png_iend_missing');
   return {
     accepted: failedGates.length === 0,
     width,
@@ -381,11 +481,97 @@ function visualArtifactHashForRole(object, role) {
   );
 }
 
+function visualArtifactDimensions(object) {
+  if (!isObject(object)) return null;
+  return dimensionsFromValue(firstArray(
+    object.swapchain_size,
+    object.swapchainSize,
+    object.framebuffer_size,
+    object.framebufferSize,
+    object.capture_size,
+    object.captureSize,
+    object.image_size,
+    object.imageSize,
+    object.dimensions,
+    object.size,
+    object.resolution,
+  )) ?? dimensionsFromValue(firstObject(
+    object.swapchain_size,
+    object.swapchainSize,
+    object.framebuffer_size,
+    object.framebufferSize,
+    object.capture_size,
+    object.captureSize,
+    object.image_size,
+    object.imageSize,
+    object.dimensions,
+    object.size,
+    object.resolution,
+  )) ?? dimensionsFromValue(object);
+}
+
+function visualArtifactDimensionsForRole(object, role) {
+  if (!isObject(object)) return null;
+  if (role === 'before') {
+    return dimensionsFromValue(firstArray(
+      object.before_image_size,
+      object.beforeImageSize,
+      object.before_image_dimensions,
+      object.beforeImageDimensions,
+      object.before_dimensions,
+      object.beforeDimensions,
+    )) ?? dimensionsFromValue(firstObject(
+      object.before_image_size,
+      object.beforeImageSize,
+      object.before_image_dimensions,
+      object.beforeImageDimensions,
+      object.before_dimensions,
+      object.beforeDimensions,
+    ));
+  }
+  if (role === 'after') {
+    return dimensionsFromValue(firstArray(
+      object.after_image_size,
+      object.afterImageSize,
+      object.after_image_dimensions,
+      object.afterImageDimensions,
+      object.after_dimensions,
+      object.afterDimensions,
+    )) ?? dimensionsFromValue(firstObject(
+      object.after_image_size,
+      object.afterImageSize,
+      object.after_image_dimensions,
+      object.afterImageDimensions,
+      object.after_dimensions,
+      object.afterDimensions,
+    ));
+  }
+  if (role === 'diff') {
+    return dimensionsFromValue(firstArray(
+      object.diff_image_size,
+      object.diffImageSize,
+      object.diff_image_dimensions,
+      object.diffImageDimensions,
+      object.diff_dimensions,
+      object.diffDimensions,
+    )) ?? dimensionsFromValue(firstObject(
+      object.diff_image_size,
+      object.diffImageSize,
+      object.diff_image_dimensions,
+      object.diffImageDimensions,
+      object.diff_dimensions,
+      object.diffDimensions,
+    ));
+  }
+  return null;
+}
+
 function visualArtifactEntriesFromValue(value) {
   if (Array.isArray(value)) {
     return value.flatMap((entry) => visualArtifactEntriesFromValue(entry));
   }
   if (!isObject(value)) return [];
+  const sharedDimensions = visualArtifactDimensions(value);
   const directPath = firstString(
     value.path,
     value.sourcePath,
@@ -406,13 +592,19 @@ function visualArtifactEntriesFromValue(value) {
       role,
       path: directPath,
       hash: visualArtifactHashForRole(value, role),
+      declaredDimensions: visualArtifactDimensionsForRole(value, role) ?? sharedDimensions,
     });
   }
   const pushRole = (role, pathValues, hashValues) => {
     const rolePath = firstString(...pathValues);
     const hash = firstString(...hashValues);
     if (!rolePath && !hash) return;
-    entries.push({ role, path: rolePath, hash });
+    entries.push({
+      role,
+      path: rolePath,
+      hash,
+      declaredDimensions: visualArtifactDimensionsForRole(value, role) ?? sharedDimensions,
+    });
   };
   pushRole('before', [value.before_image, value.beforeImage], [value.before_image_hash, value.beforeImageHash]);
   pushRole('after', [value.after_image, value.afterImage], [value.after_image_hash, value.afterImageHash]);
@@ -453,6 +645,7 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
     if (hashedEntries.length === 0) return [];
     const validations = hashedEntries.map((entry) => ({
       expectedHash: normalizeSha256(entry.hash),
+      declaredDimensions: entry.declaredDimensions,
       actual: visualArtifactByteHash(entry, roots),
     }));
     const readable = validations.filter((validation) => validation.actual);
@@ -463,10 +656,20 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
       validation.expectedHash === validation.actual.hash
       && validation.actual.pngHeader?.accepted === true
     );
+    const declaredDimensionChecks = readable.filter((validation) =>
+      validation.expectedHash === validation.actual.hash
+      && validation.actual.pngHeader?.accepted === true
+      && validation.declaredDimensions
+    );
+    const dimensionsMatched = declaredDimensionChecks.length === 0
+      || declaredDimensionChecks.some((validation) =>
+        sameDimensions(validation.declaredDimensions, validation.actual.pngHeader)
+      );
     return compactStrings([
       readable.length > 0 ? null : `visual_oracle_${role}_image_bytes_unreadable`,
       matched ? null : `visual_oracle_${role}_image_hash_mismatch`,
       matched && !matchedPng ? `visual_oracle_${role}_image_png_invalid` : null,
+      matchedPng && !dimensionsMatched ? `visual_oracle_${role}_image_dimensions_mismatch` : null,
     ]);
   });
   return compactStrings([
@@ -705,6 +908,7 @@ export function runtimeProofArtifactStrictGates(records, options = {}) {
     ];
   }
   return list.map((record, index) => runtimeProofArtifactStrictGate(record, {
+    ...options,
     name: `${options.namePrefix ?? 'strict runtime proof artifact acceptance'} ${proofArtifactLabel(record, index)}`,
   }));
 }

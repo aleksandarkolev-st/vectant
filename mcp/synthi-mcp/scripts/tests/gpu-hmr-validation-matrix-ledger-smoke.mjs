@@ -449,7 +449,19 @@ function fileHashForPath(filePath) {
   return hashBuffer(fsSync.readFileSync(filePath));
 }
 
+function pngDimensionsForPath(filePath) {
+  if (!filePath || !fsSync.existsSync(filePath)) return null;
+  const bytes = fsSync.readFileSync(filePath);
+  if (bytes.length < 24 || !bytes.subarray(0, PNG_HEADER.length).equals(PNG_HEADER)) return null;
+  return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
+}
+
 function visualArtifactSet({ before, after, diff, diagnosticScreenshot } = {}, extra = {}) {
+  const dimensions = extra.swapchain_size
+    ?? extra.swapchainSize
+    ?? pngDimensionsForPath(after)
+    ?? pngDimensionsForPath(before)
+    ?? pngDimensionsForPath(diff);
   return {
     ...(before
       ? {
@@ -475,6 +487,7 @@ function visualArtifactSet({ before, after, diff, diagnosticScreenshot } = {}, e
           diagnosticScreenshotHash: fileHashForPath(diagnosticScreenshot),
         }
       : {}),
+    ...(dimensions ? { swapchain_size: dimensions, swapchainSize: dimensions } : {}),
     ...extra,
   };
 }
@@ -747,6 +760,10 @@ function visualOracleArtifacts(scope, visualRoot = visualDir) {
   const beforePath = path.join(visualRoot, 'before-hmr-first.png');
   const afterPath = path.join(visualRoot, 'after-hmr-first.png');
   const diffPath = path.join(visualRoot, 'before-after-diff.png');
+  const dimensions = pngDimensionsForPath(afterPath)
+    ?? pngDimensionsForPath(beforePath)
+    ?? pngDimensionsForPath(diffPath)
+    ?? [800, 600];
   const existingMaterializedPngHashOrFallback = (filePath, fallbackSeed) =>
     fsSync.existsSync(filePath) && fsSync.statSync(filePath).size > PNG_HEADER.length
       ? fileHashForPath(filePath)
@@ -765,7 +782,7 @@ function visualOracleArtifacts(scope, visualRoot = visualDir) {
     same_frame_rejection: true,
     new_epoch_watermark_or_trace: `epoch=epoch:${scope} dispatch=dispatch:${scope} artifact=${hashValue(`artifact-after:${scope}`)}`,
     camera_state_hash: hashValue(`camera:${scope}`),
-    swapchain_size: [800, 600],
+    swapchain_size: dimensions,
     capture_backend: 'mcp_decoded_frame',
     frame_number: scope === 'hot_delta_2' ? 42 : 24,
     timestamp_after_dispatch: 4000,
@@ -7221,17 +7238,7 @@ const forgedWebGpuVisualArtifacts = visualArtifactSet({
   diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
 });
 Object.assign(forgedWebGpuVisualArtifacts, {
-  ...visualOracleArtifacts('hot_delta_1', forgedWebGpuVisualDir),
-  before_image: forgedWebGpuVisualArtifacts.beforeImage,
-  before_image_hash: forgedWebGpuVisualArtifacts.beforeImageHash,
-  before_image_hash_verified: true,
-  after_image: forgedWebGpuVisualArtifacts.afterImage,
-  after_image_hash: forgedWebGpuVisualArtifacts.afterImageHash,
-  after_image_hash_verified: true,
-  diff_image: forgedWebGpuVisualArtifacts.diffImage,
-  diff_image_hash: forgedWebGpuVisualArtifacts.diffImageHash,
-  diff_image_hash_verified: true,
-  pixel_metrics_verified: true,
+  ...completeVisualOracleArtifacts('hot_delta_1', forgedWebGpuVisualDir, forgedWebGpuVisualArtifacts),
 });
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-visual-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
@@ -7344,17 +7351,7 @@ const hiprtAcceptedVisualArtifactsHot1 = visualArtifactSet({
   diff: hiprtAcceptedDiff,
 });
 Object.assign(hiprtAcceptedVisualArtifactsHot1, {
-  ...visualOracleArtifacts('hot_delta_1', hiprtDir),
-  before_image: hiprtAcceptedVisualArtifactsHot1.beforeImage,
-  before_image_hash: hiprtAcceptedVisualArtifactsHot1.beforeImageHash,
-  before_image_hash_verified: true,
-  after_image: hiprtAcceptedVisualArtifactsHot1.afterImage,
-  after_image_hash: hiprtAcceptedVisualArtifactsHot1.afterImageHash,
-  after_image_hash_verified: true,
-  diff_image: hiprtAcceptedVisualArtifactsHot1.diffImage,
-  diff_image_hash: hiprtAcceptedVisualArtifactsHot1.diffImageHash,
-  diff_image_hash_verified: true,
-  pixel_metrics_verified: true,
+  ...completeVisualOracleArtifacts('hot_delta_1', hiprtDir, hiprtAcceptedVisualArtifactsHot1),
 });
 await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProofArtifact({
   slug: 'accepted-hiprt-recomputed-oracle',
