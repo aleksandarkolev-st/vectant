@@ -190,6 +190,10 @@ const RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY =
   'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
+const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -1443,6 +1447,150 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   };
 }
 
+function randomColdDirectSourceInputEvidenceFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedFlag = firstBool(
+    facet.acceptedAsDirectInputEvidence,
+    facet.accepted_as_direct_input_evidence,
+    facet.accepted,
+  );
+  const inputMode = firstText(facet.inputMode, facet.input_mode);
+  const candidateSource = firstText(facet.candidateSource, facet.candidate_source);
+  const sourceKind = firstText(facet.sourceKind, facet.source_kind);
+  const sourceIdentityRole = firstText(facet.sourceIdentityRole, facet.source_identity_role);
+  const inputChannels = compactStringList([
+    ...(Array.isArray(facet.inputChannels) ? facet.inputChannels : []),
+    ...(Array.isArray(facet.input_channels) ? facet.input_channels : []),
+  ]);
+  const projectNameWhitelistPresent = Array.isArray(facet.projectNameWhitelist)
+    || Array.isArray(facet.project_name_whitelist);
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(facet.projectNameWhitelist) ? facet.projectNameWhitelist : []),
+    ...(Array.isArray(facet.project_name_whitelist) ? facet.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowedPresent = Array.isArray(facet.specificTargetIdsAllowed)
+    || Array.isArray(facet.specific_target_ids_allowed);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
+    ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
+  ]);
+  const sourceIdentityHash = normalizeSha256(firstText(
+    facet.sourceIdentityHash,
+    facet.source_identity_hash,
+    facet.evidenceHash,
+    facet.evidence_hash,
+  ));
+  const suppliedBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const cliOrEnvChannelObserved = inputChannels.some((channel) =>
+    /^cli_arg[_:]/.test(channel) || /^env[_:]/.test(channel)
+  );
+  const expectedSourceKind = candidateSource === 'direct_local_git_repo_path'
+    ? 'local_repo_path_commit'
+    : candidateSource === 'direct_source_url_commit'
+      ? 'source_url_commit'
+      : null;
+  const failedGates = compactStringList([
+    present ? null : 'random_cold_direct_input_evidence_missing',
+    present && schemaVersion !== RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION
+      ? 'random_cold_direct_input_evidence_schema_invalid'
+      : null,
+    present && proofAuthority !== RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY
+      ? 'random_cold_direct_input_evidence_authority_invalid'
+      : null,
+    present && acceptedFlag !== true
+      ? 'random_cold_direct_input_evidence_not_accepted'
+      : null,
+    present && inputMode !== 'cli_or_env_direct_source'
+      ? 'random_cold_direct_input_mode_not_direct_cli_or_env'
+      : null,
+    present
+      && candidateSource !== 'direct_source_url_commit'
+      && candidateSource !== 'direct_local_git_repo_path'
+      ? 'random_cold_direct_input_candidate_source_not_direct'
+      : null,
+    present && sourceKind !== expectedSourceKind
+      ? 'random_cold_direct_input_source_kind_mismatch'
+      : null,
+    present && cliOrEnvChannelObserved !== true
+      ? 'random_cold_direct_input_cli_or_env_channel_missing'
+      : null,
+    present && sourceIdentityRole !== 'identity_presence_and_immutable_commit_only_not_whitelist'
+      ? 'random_cold_direct_input_source_identity_role_invalid'
+      : null,
+    present && firstBool(facet.targetNameIndependent, facet.target_name_independent) !== true
+      ? 'random_cold_direct_input_not_target_name_independent'
+      : null,
+    present && projectNameWhitelistPresent !== true
+      ? 'random_cold_direct_input_project_whitelist_field_missing'
+      : null,
+    present && projectNameWhitelist.length > 0
+      ? 'random_cold_direct_input_project_whitelist_not_empty'
+      : null,
+    present && specificTargetIdsAllowedPresent !== true
+      ? 'random_cold_direct_input_target_whitelist_field_missing'
+      : null,
+    present && specificTargetIdsAllowed.length > 0
+      ? 'random_cold_direct_input_target_whitelist_not_empty'
+      : null,
+    present && !/^sha256:[a-f0-9]{64}$/i.test(sourceIdentityHash ?? '')
+      ? 'random_cold_direct_input_hash_missing'
+      : null,
+    present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'random_cold_direct_input_claimed_gpu_hmr_acceptance'
+      : null,
+    present && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'random_cold_direct_input_claimed_gpu_hmr_success'
+      : null,
+    present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'random_cold_direct_input_claimed_runtime_authority'
+      : null,
+    ...suppliedBlockingGaps,
+  ]);
+  const accepted = present && failedGates.length === 0;
+  return {
+    present,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
+    accepted,
+    acceptedAsDirectInputEvidence: accepted,
+    accepted_as_direct_input_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    inputMode,
+    input_mode: inputMode,
+    inputChannels,
+    input_channels: inputChannels,
+    candidateSource,
+    candidate_source: candidateSource,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceIdentityRole,
+    source_identity_role: sourceIdentityRole,
+    targetNameIndependent: firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    target_name_independent: firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
   const selectedIds = compactStringList([
@@ -1470,6 +1618,14 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     result.canSatisfyRuntimeProof,
     result.can_satisfy_runtime_proof,
   );
+  const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
+    candidate.directInputEvidence,
+    candidate.direct_input_evidence,
+    result.directInputEvidence,
+    result.direct_input_evidence,
+    json.directInputEvidence,
+    json.direct_input_evidence,
+  ));
   const failedGates = compactStringList([
     schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION
       ? null
@@ -1498,6 +1654,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     selectedIds.length > 0 || firstText(result.candidateId, result.candidate_id)
       ? null
       : 'random_large_project_cold_path_selected_candidate_missing',
+    directInputEvidence.present === true && directInputEvidence.accepted !== true
+      ? 'random_cold_direct_input_evidence_invalid'
+      : null,
+    ...(directInputEvidence.present === true ? directInputEvidence.failedGates : []),
   ]);
   return {
     present: true,
@@ -1529,6 +1689,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     candidate_id: firstText(result.candidateId, result.candidate_id, candidate.id),
     candidateSource: firstText(candidate.candidateSource, candidate.candidate_source),
     candidate_source: firstText(candidate.candidateSource, candidate.candidate_source),
+    directInputEvidence,
+    direct_input_evidence: directInputEvidence,
     sizeSignals: firstCompactObject(
       result.sizeSignals,
       result.size_signals,
@@ -20251,6 +20413,10 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
       };
   const randomLargeProjectColdPath =
     randomColdPathSupportFacet(json, result, candidate);
+  const randomColdPathDirectInputEvidence =
+    randomLargeProjectColdPath.directInputEvidence
+    ?? randomLargeProjectColdPath.direct_input_evidence
+    ?? randomColdDirectSourceInputEvidenceFacet();
   const dryRun = randomLargeProjectColdPath.dryRun === true;
   const eventType = firstText(randomLargeProjectColdPath.eventType);
   const resultStatus = firstText(randomLargeProjectColdPath.resultStatus);
@@ -20340,6 +20506,8 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     refusal_proven: matrixOutcome === 'refusal_proven',
     randomLargeProjectColdPath,
     random_large_project_cold_path: randomLargeProjectColdPath,
+    randomColdPathDirectInputEvidence,
+    random_cold_path_direct_input_evidence: randomColdPathDirectInputEvidence,
     coldSourceTreeIntake,
     cold_source_tree_intake: coldSourceTreeIntake,
     coldRuntimeBoundaryEventManifestTemplate,
@@ -20934,6 +21102,12 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.coldRuntimeBoundaryEventManifestTemplate
       ?? row.cold_runtime_boundary_event_manifest_template,
     );
+    const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
+      facet.directInputEvidence,
+      facet.direct_input_evidence,
+      row.randomColdPathDirectInputEvidence,
+      row.random_cold_path_direct_input_evidence,
+    ));
     const authority = firstText(facet.proofAuthority, facet.proof_authority);
     const profileMode = firstText(
       facet.profileMode,
@@ -20967,9 +21141,17 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
     const directUserColdInput = candidateSource === 'direct_source_url_commit'
       || candidateSource === 'direct_local_git_repo_path';
     const directInputModeProven = inputMode === 'cli_or_env_direct_source';
+    const directInputEvidenceAccepted =
+      directInputEvidence.acceptedAsDirectInputEvidence === true
+      && directInputEvidence.inputMode === 'cli_or_env_direct_source'
+      && directInputEvidence.candidateSource === candidateSource
+      && directInputEvidence.targetNameIndependent === true
+      && directInputEvidence.projectNameWhitelist.length === 0
+      && directInputEvidence.specificTargetIdsAllowed.length === 0;
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
       && directInputModeProven
+      && directInputEvidenceAccepted
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
     const sourceAccepted = firstBool(
@@ -21020,7 +21202,16 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
       || firstBool(template.acceptedForGpuHmr, template.accepted_for_gpu_hmr) === true
       || firstBool(template.gpuHmrSuccess, template.gpu_hmr_success) === true
-      || firstBool(template.canSatisfyRuntimeProof, template.can_satisfy_runtime_proof) === true;
+      || firstBool(template.canSatisfyRuntimeProof, template.can_satisfy_runtime_proof) === true
+      || firstBool(
+        directInputEvidence.acceptedForGpuHmr,
+        directInputEvidence.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(directInputEvidence.gpuHmrSuccess, directInputEvidence.gpu_hmr_success) === true
+      || firstBool(
+        directInputEvidence.canSatisfyRuntimeProof,
+        directInputEvidence.can_satisfy_runtime_proof,
+      ) === true;
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
       && arbitraryColdIntake
       && sourceAccepted
@@ -21054,7 +21245,12 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     required_matrix_outcome: 'refusal_proven',
     requiredAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     required_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
+    requiredDirectInputEvidenceSchema: RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    required_direct_input_evidence_schema: RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    requiredDirectInputEvidenceAuthority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
+    required_direct_input_evidence_authority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
     requiredSignals: [
+      'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
@@ -21064,6 +21260,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
     required_signals: [
+      'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
@@ -21468,6 +21665,8 @@ function rowRefs(rows) {
     real_rocm_external_header_prerequisites: row.realRocmExternalHeaderPrerequisites,
     randomLargeProjectColdPath: row.randomLargeProjectColdPath,
     random_large_project_cold_path: row.randomLargeProjectColdPath,
+    randomColdPathDirectInputEvidence: row.randomColdPathDirectInputEvidence,
+    random_cold_path_direct_input_evidence: row.randomColdPathDirectInputEvidence,
     coldSourceTreeIntake: row.coldSourceTreeIntake,
     cold_source_tree_intake: row.coldSourceTreeIntake,
     coldRuntimeBoundaryEventManifestTemplate:

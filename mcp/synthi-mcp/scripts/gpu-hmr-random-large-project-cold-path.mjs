@@ -11,6 +11,9 @@ const LOG_DIR = path.join(MCP_ROOT, '.gpu-hmr-test-logs', 'random-large-project-
 const SOURCE_INTAKE_DIR = path.join(LOG_DIR, 'source-intake');
 const SCHEMA = 'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const AUTHORITY = 'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_INPUT_SCHEMA = 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
+const DIRECT_SOURCE_INPUT_AUTHORITY =
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
 const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
 const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_discovery.v1';
@@ -243,7 +246,11 @@ function uniqueSortedStrings(values) {
   )].sort();
 }
 
-function cleanCandidate(raw, index = 0, { candidateSource = 'configured_candidate_pool' } = {}) {
+function cleanCandidate(
+  raw,
+  index = 0,
+  { candidateSource = 'configured_candidate_pool', directInputEvidence = null } = {},
+) {
   const candidate = raw && typeof raw === 'object' ? raw : {};
   const id = String(candidate.id ?? '').trim();
   const backendFamily = String(
@@ -290,6 +297,8 @@ function cleanCandidate(raw, index = 0, { candidateSource = 'configured_candidat
     profile_mode: profileMode,
     candidateSource,
     candidate_source: candidateSource,
+    directInputEvidence,
+    direct_input_evidence: directInputEvidence,
     sourceUrl,
     localRepoPath: localRepoPath ? path.resolve(localRepoPath) : null,
     local_repo_path: localRepoPath ? path.resolve(localRepoPath) : null,
@@ -304,12 +313,87 @@ function cleanCandidate(raw, index = 0, { candidateSource = 'configured_candidat
   };
 }
 
+function directSourceInputEvidence({
+  candidateSource,
+  sourceUrl,
+  repoPath,
+  immutableCommit,
+  inputChannels = [],
+} = {}) {
+  const channels = uniqueSortedStrings(inputChannels);
+  const sourceKind = candidateSource === 'direct_local_git_repo_path'
+    ? 'local_repo_path_commit'
+    : candidateSource === 'direct_source_url_commit'
+      ? 'source_url_commit'
+      : 'unknown';
+  const seed = {
+    schemaVersion: DIRECT_SOURCE_INPUT_SCHEMA,
+    candidateSource,
+    sourceKind,
+    hasSourceUrl: Boolean(String(sourceUrl ?? '').trim()),
+    hasRepoPath: Boolean(String(repoPath ?? '').trim()),
+    immutableCommit: String(immutableCommit ?? '').trim(),
+    inputChannels: channels,
+  };
+  const sourceIdentityHash = contentHash(stableJson(seed));
+  const hasCliOrEnvChannel = channels.some((channel) =>
+    /^cli_arg[_:]/.test(channel) || /^env[_:]/.test(channel)
+  );
+  const blockingGaps = [
+    candidateSource === 'direct_source_url_commit' || candidateSource === 'direct_local_git_repo_path'
+      ? null
+      : 'direct_source_input_candidate_source_not_direct',
+    hasCliOrEnvChannel ? null : 'direct_source_input_cli_or_env_channel_missing',
+    seed.immutableCommit ? null : 'direct_source_input_commit_missing',
+    seed.hasSourceUrl || seed.hasRepoPath ? null : 'direct_source_input_source_identity_missing',
+  ].filter(Boolean);
+  const accepted = blockingGaps.length === 0;
+  return {
+    schemaVersion: DIRECT_SOURCE_INPUT_SCHEMA,
+    schema_version: DIRECT_SOURCE_INPUT_SCHEMA,
+    proofAuthority: DIRECT_SOURCE_INPUT_AUTHORITY,
+    proof_authority: DIRECT_SOURCE_INPUT_AUTHORITY,
+    accepted,
+    acceptedAsDirectInputEvidence: accepted,
+    accepted_as_direct_input_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    inputMode: 'cli_or_env_direct_source',
+    input_mode: 'cli_or_env_direct_source',
+    inputChannels: channels,
+    input_channels: channels,
+    candidateSource,
+    candidate_source: candidateSource,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    evidenceHash: sourceIdentityHash,
+    evidence_hash: sourceIdentityHash,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function directCandidateFromInput({
   sourceUrl,
   repoPath,
   immutableCommit,
   sourceId,
   backendFamily,
+  inputChannels = [],
 } = {}) {
   const url = String(sourceUrl ?? '').trim();
   const repo = String(repoPath ?? '').trim();
@@ -322,6 +406,14 @@ function directCandidateFromInput({
   const effectiveSourceUrl = url || pathToFileURL(resolvedRepo).href;
   const id = String(sourceId ?? '').trim()
     || `direct-${safeSlug(url || resolvedRepo)}-${sha256(`${effectiveSourceUrl}\0${commit}`).slice(0, 12)}`;
+  const candidateSource = resolvedRepo ? 'direct_local_git_repo_path' : 'direct_source_url_commit';
+  const directInputEvidence = directSourceInputEvidence({
+    candidateSource,
+    sourceUrl: effectiveSourceUrl,
+    repoPath: resolvedRepo,
+    immutableCommit: commit,
+    inputChannels,
+  });
   return cleanCandidate(
     {
       id,
@@ -353,9 +445,24 @@ function directCandidateFromInput({
     },
     0,
     {
-      candidateSource: resolvedRepo ? 'direct_local_git_repo_path' : 'direct_source_url_commit',
+      candidateSource,
+      directInputEvidence,
     },
   );
+}
+
+function directInputChannelsFromArgsEnv(args = {}, env = process.env) {
+  const channels = [];
+  const pushChannel = (argName, argValue, envName) => {
+    if (String(argValue ?? '').trim()) channels.push(`cli_arg_${argName}`);
+    else if (String(env[envName] ?? '').trim()) channels.push(`env_${envName}`);
+  };
+  pushChannel('source_url', args.sourceUrl, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL');
+  pushChannel('repo_path', args.repoPath, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_REPO_PATH');
+  pushChannel('commit', args.immutableCommit, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT');
+  pushChannel('source_id', args.sourceId, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID');
+  pushChannel('backend_family', args.backendFamily, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY');
+  return channels;
 }
 
 async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
@@ -2697,6 +2804,8 @@ function createManifest({
       profile_mode: candidate.profileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
+      directInputEvidence: candidate.directInputEvidence,
+      direct_input_evidence: candidate.directInputEvidence,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       localRepoPath: candidate.localRepoPath,
@@ -2722,6 +2831,8 @@ function createManifest({
       profile_mode: candidate.profileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
+      directInputEvidence: candidate.directInputEvidence,
+      direct_input_evidence: candidate.directInputEvidence,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       localRepoPath: candidate.localRepoPath,
@@ -2856,12 +2967,16 @@ async function selfCheck() {
     sourceUrl: 'https://example.invalid/user/project.git',
     immutableCommit: '1111111111111111111111111111111111111111',
     sourceId: 'user-supplied-project',
+    inputChannels: ['cli_arg_source_url', 'cli_arg_commit', 'cli_arg_source_id'],
   });
   if (
     directCandidate.id !== 'user-supplied-project'
     || directCandidate.profilePath !== null
     || directCandidate.candidateSource !== 'direct_source_url_commit'
     || directCandidate.sizeSignals?.coldPathKind !== 'direct_source_url_commit_cold_intake'
+    || directCandidate.directInputEvidence?.acceptedAsDirectInputEvidence !== true
+    || directCandidate.directInputEvidence?.proofAuthority !== DIRECT_SOURCE_INPUT_AUTHORITY
+    || directCandidate.directInputEvidence?.projectNameWhitelist?.length !== 0
     || directCandidate.oracleHints?.acceptedByDeclaration !== false
   ) {
     throw new Error('random large-project cold-path direct source input normalization failed');
@@ -2872,6 +2987,12 @@ async function selfCheck() {
         id: 'spoofed-direct-candidate',
         candidateSource: 'direct_source_url_commit',
         candidate_source: 'direct_source_url_commit',
+        directInputEvidence: directSourceInputEvidence({
+          candidateSource: 'direct_source_url_commit',
+          sourceUrl: 'https://example.invalid/spoofed-direct.git',
+          immutableCommit: '1212121212121212121212121212121212121212',
+          inputChannels: ['cli_arg_source_url', 'cli_arg_commit'],
+        }),
         sourceUrl: 'https://example.invalid/spoofed-direct.git',
         immutableCommit: '1212121212121212121212121212121212121212',
       },
@@ -2880,6 +3001,7 @@ async function selfCheck() {
   if (
     spoofedDirectPool[0]?.candidateSource !== 'configured_candidate_pool'
     || spoofedDirectPool[0]?.candidate_source !== 'configured_candidate_pool'
+    || spoofedDirectPool[0]?.directInputEvidence !== null
   ) {
     throw new Error('random large-project cold-path candidate JSON was allowed to forge direct source authority');
   }
@@ -3044,6 +3166,8 @@ async function selfCheck() {
   const directResult = directManifest.results[0] ?? {};
   if (
     directManifest.candidates[0]?.candidateSource !== 'direct_source_url_commit'
+    || directManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
+    || !directManifest.candidates[0]?.directInputEvidence?.inputChannels?.includes('cli_arg_source_url')
     || directResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || directResult.sourceTreeIntakeAccepted !== false
     || !directResult.blockingGaps?.includes('source_tree_intake_missing')
@@ -3094,6 +3218,7 @@ async function selfCheck() {
     repoPath: localRepoPath,
     immutableCommit: localCommit,
     sourceId: 'local-user-project',
+    inputChannels: ['cli_arg_repo_path', 'cli_arg_commit', 'cli_arg_source_id'],
   });
   const { manifest: localManifest } = await buildManifest({
     seed: 'local-source-self-check-seed',
@@ -3111,6 +3236,8 @@ async function selfCheck() {
   const localBuildContentFiles = localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
   if (
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
+    || localManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
+    || localManifest.candidates[0]?.directInputEvidence?.sourceKind !== 'local_repo_path_commit'
     || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
@@ -3259,6 +3386,7 @@ async function main() {
     immutableCommit: args.immutableCommit ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT,
     sourceId: args.sourceId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID,
     backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
+    inputChannels: directInputChannelsFromArgsEnv(args),
   });
   const candidates = directCandidate ? [directCandidate] : await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,

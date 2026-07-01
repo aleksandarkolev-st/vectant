@@ -1403,6 +1403,65 @@ const logsRoot = path.join(mcpRoot, '.gpu-hmr-test-logs');
 const artifactsRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts');
 const casRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts-cas');
 
+function randomColdDirectInputEvidenceFixture({
+  candidateSource = 'direct_source_url_commit',
+  sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
+  repoPath = null,
+  immutableCommit = '1111111111111111111111111111111111111111',
+} = {}) {
+  const sourceKind = candidateSource === 'direct_local_git_repo_path'
+    ? 'local_repo_path_commit'
+    : 'source_url_commit';
+  const inputChannels = candidateSource === 'direct_local_git_repo_path'
+    ? ['cli_arg_repo_path', 'cli_arg_commit']
+    : ['cli_arg_source_url', 'cli_arg_commit'];
+  const sourceIdentityHash = hashValue(JSON.stringify({
+    candidateSource,
+    sourceKind,
+    sourceUrlPresent: Boolean(sourceUrl),
+    repoPathPresent: Boolean(repoPath),
+    immutableCommit,
+    inputChannels,
+  }));
+  return {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
+    proofAuthority: 'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
+    proof_authority: 'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsDirectInputEvidence: true,
+    accepted_as_direct_input_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    inputMode: 'cli_or_env_direct_source',
+    input_mode: 'cli_or_env_direct_source',
+    inputChannels,
+    input_channels: inputChannels,
+    candidateSource,
+    candidate_source: candidateSource,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    evidenceHash: sourceIdentityHash,
+    evidence_hash: sourceIdentityHash,
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+}
+
 function randomColdPathManifest({
   candidateId = 'direct-random-arbitrary-cold',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
@@ -1411,6 +1470,7 @@ function randomColdPathManifest({
 } = {}) {
   const sourceUrl = 'https://example.invalid/arbitrary/user-project.git';
   const immutableCommit = '1111111111111111111111111111111111111111';
+  const directInputEvidence = randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit });
   const sourceIntakeEvidence = {
     proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
     proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
@@ -1594,6 +1654,8 @@ function randomColdPathManifest({
       profile_mode: 'unprofiled_arbitrary_project_cold_intake',
       candidateSource: 'direct_source_url_commit',
       candidate_source: 'direct_source_url_commit',
+      directInputEvidence,
+      direct_input_evidence: directInputEvidence,
       sourceUrl,
       source_url: sourceUrl,
       immutableCommit,
@@ -1607,6 +1669,8 @@ function randomColdPathManifest({
       profile_mode: 'unprofiled_arbitrary_project_cold_intake',
       candidateSource: 'direct_source_url_commit',
       candidate_source: 'direct_source_url_commit',
+      directInputEvidence,
+      direct_input_evidence: directInputEvidence,
       sourceUrl,
       source_url: sourceUrl,
       immutableCommit,
@@ -1648,6 +1712,11 @@ assert.equal(randomColdRow?.matrixOutcome, 'refusal_proven');
 assert.equal(randomColdRow.acceptedForGpuHmr, false);
 assert.equal(randomColdRow.gpuHmrSuccess, false);
 assert.equal(randomColdRow.safety.accepted, true);
+assert.equal(randomColdRow.randomColdPathDirectInputEvidence.acceptedAsDirectInputEvidence, true);
+assert.equal(
+  randomColdRow.randomLargeProjectColdPath.directInputEvidence.proofAuthority,
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
+);
 assert.equal(randomColdRow.coldSourceTreeIntake.accepted, true);
 assert.equal(randomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, true);
 assert.equal(
@@ -7343,6 +7412,7 @@ function randomColdReadinessMatrixRow({
   fileCount = 1500,
   totalKnownBytes = 15 * 1024 * 1024,
   inputMode = 'cli_or_env_direct_source',
+  directInputEvidence = true,
 } = {}) {
   const sizeSignals = inputMode
     ? {
@@ -7354,6 +7424,22 @@ function randomColdReadinessMatrixRow({
       cold_path_kind: candidateSource === 'direct_local_git_repo_path'
         ? 'direct_local_git_repo_cold_intake'
         : 'direct_source_url_commit_cold_intake',
+    }
+    : {};
+  const directInputEvidenceFacet = directInputEvidence
+    && inputMode
+    && (candidateSource === 'direct_source_url_commit'
+      || candidateSource === 'direct_local_git_repo_path')
+    ? randomColdDirectInputEvidenceFixture({
+      candidateSource,
+      sourceUrl,
+      immutableCommit,
+    })
+    : null;
+  const directInputEvidenceFields = directInputEvidenceFacet
+    ? {
+      directInputEvidence: directInputEvidenceFacet,
+      direct_input_evidence: directInputEvidenceFacet,
     }
     : {};
   return withQueryRecomputedRowId({
@@ -7396,6 +7482,7 @@ function randomColdReadinessMatrixRow({
       profile_mode: profileMode,
       candidateSource,
       candidate_source: candidateSource,
+      ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
       sourceUrl,
@@ -7427,6 +7514,7 @@ function randomColdReadinessMatrixRow({
       profile_mode: profileMode,
       candidateSource,
       candidate_source: candidateSource,
+      ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
       sourceUrl,
@@ -7520,6 +7608,10 @@ function randomColdReadinessMatrixRow({
     build_metadata_content_accepted: true,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
+    randomColdPathDirectInputEvidence:
+      directInputEvidenceFacet ?? { present: false, accepted: false, failedGates: [] },
+    random_cold_path_direct_input_evidence:
+      directInputEvidenceFacet ?? { present: false, accepted: false, failed_gates: [] },
     sourceUrl,
     source_url: sourceUrl,
     immutableCommit,
@@ -8091,6 +8183,40 @@ assert.ok(
   broadReadinessWithForgedDirectSourceQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessMissingDirectInputEvidenceRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `missing-direct-input-evidence-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/missing-direct-input/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`missing-direct-input-evidence-commit-${index + 1}`).slice(0, 40),
+    directInputEvidence: false,
+  })
+);
+const broadReadinessWithMissingDirectInputEvidenceQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessMissingDirectInputEvidenceRows,
+  ],
+});
+assert.equal(broadReadinessWithMissingDirectInputEvidenceQuery.accepted, true);
+assert.equal(
+  broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `small-random-cold-readiness-user-project-${index + 1}`,
@@ -8272,6 +8398,17 @@ assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.sourceIdentityRole,
   'identity_presence_and_immutable_commit_only_not_whitelist',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredDirectInputEvidenceAuthority,
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'direct_source_input_evidence_accepted',
+    ),
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
