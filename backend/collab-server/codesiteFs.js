@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const MAX_INLINE_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_DIFF_BYTES = 64 * 1024;
 const MAX_TEXT_DIFF_LINES = 160;
+const QUARANTINE_MANIFEST_SCHEMA_VERSION = 'synthi.codesitefs.quarantineManifest.v1';
+const DEFAULT_QUARANTINE_BASE_DIR = path.join(os.tmpdir(), 'synthi-codesitefs-quarantine');
 
 class CodeSiteFSDeniedError extends Error {
   constructor(event) {
@@ -1031,11 +1033,13 @@ async function fileDigestForRepoPath(repoRoot, relPath) {
 
 async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
   if (!context?.active || !context.transactionId || !cwd) return null;
+  const baseDir = options.baseDir || DEFAULT_QUARANTINE_BASE_DIR;
+  const quarantineId = options.quarantineId || `qtn-${safeSegment(context.transactionId)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const root = path.join(
-    options.baseDir || path.join(os.tmpdir(), 'synthi-codesitefs-quarantine'),
+    baseDir,
     safeSegment(context.workspaceSlug || 'workspace'),
     safeSegment(context.transactionId),
-    `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+    quarantineId,
   );
   await fsp.mkdir(root, { recursive: true });
   await fsp.cp(cwd, root, {
@@ -1043,13 +1047,105 @@ async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
     dereference: false,
     filter: (src) => !shouldSkipQuarantinePath(src, cwd),
   });
-  return {
+  const symlinkSanitization = await sanitizeCodeSiteQuarantineSymlinks(root);
+  const quarantine = {
+    quarantineId,
     cwd: root,
     originalCwd: cwd,
     root,
+    baseDir,
+    manifestPath: codeSiteQuarantineManifestPath(baseDir, context.workspaceSlug, quarantineId),
     operation: options.operation || 'raw_terminal',
+    symlinkSanitization,
     before: await snapshotTree(root),
   };
+  await writeCodeSiteQuarantineManifest(quarantine, {
+    schemaVersion: QUARANTINE_MANIFEST_SCHEMA_VERSION,
+    quarantineId,
+    workspaceSlug: context.workspaceSlug || null,
+    transactionId: context.transactionId || null,
+    mutationLeaseId: context.mutationLeaseId || null,
+    displayCallsign: context.displayCallsign || null,
+    actorUserId: context.actorUserId || null,
+    effectiveUserId: context.effectiveUserId || null,
+    operation: quarantine.operation,
+    status: 'open',
+    root,
+    originalCwd: cwd,
+    createdAt: new Date().toISOString(),
+    finalizedAt: null,
+    cleanup: null,
+    changes: [],
+    recorded: [],
+    symlinkSanitization,
+    evidenceRefs: asArray(context.evidenceRefs),
+    processAncestry: asArray(context.processAncestry),
+  });
+  return quarantine;
+}
+
+async function sanitizeCodeSiteQuarantineSymlinks(root) {
+  const rootRealPath = await fsp.realpath(root).catch(() => path.resolve(root));
+  const sanitized = [];
+  const preserved = [];
+
+  async function walk(current) {
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      const relPath = path.relative(root, fullPath).replace(/\\/g, '/');
+      if (entry.isSymbolicLink()) {
+        let target = '';
+        try {
+          target = await fsp.readlink(fullPath);
+        } catch (_) {
+          target = '';
+        }
+        const lexicalTarget = path.resolve(path.dirname(fullPath), target);
+        const realTarget = await fsp.realpath(fullPath).catch(() => null);
+        const targetForContainment = realTarget || lexicalTarget;
+        if (realTarget && isPathWithin(rootRealPath, realTarget)) {
+          preserved.push({ path: relPath, target });
+          continue;
+        }
+        await fsp.rm(fullPath, { force: true }).catch(() => {});
+        await fsp.writeFile(
+          fullPath,
+          [
+            'CodeSite quarantine replaced an unsafe symlink before command execution.',
+            `path: ${relPath}`,
+            `target: ${target}`,
+            `resolvedTarget: ${targetForContainment}`,
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        sanitized.push({
+          path: relPath,
+          target,
+          resolvedTarget: targetForContainment,
+          reason: 'quarantine_symlink_escape_replaced',
+        });
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      }
+    }
+  }
+
+  await walk(root);
+  return { sanitized, preserved };
+}
+
+function isPathWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options = {}) {
@@ -1057,10 +1153,14 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
   const after = await snapshotTree(quarantine.root);
   const changes = diffSnapshots(quarantine.before || new Map(), after);
   const recorded = [];
+  const changesWithEvidence = [];
   for (const change of changes) {
     const beforeEntry = (quarantine.before || new Map()).get(change.path) || null;
     const afterEntry = after.get(change.path) || null;
     const quarantineEvidence = buildQuarantineChangeEvidence(change, beforeEntry, afterEntry);
+    quarantineEvidence.quarantineId = quarantine.quarantineId || null;
+    const changeWithEvidence = { ...change, quarantineId: quarantine.quarantineId || null, quarantineEvidence };
+    changesWithEvidence.push(changeWithEvidence);
     const result = {
       ok: false,
       path: change.path,
@@ -1074,6 +1174,7 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
         `Raw terminal ${change.kind} quarantined for ${change.path}`,
       ),
     };
+    result.event.details.quarantine_id = quarantine.quarantineId || null;
     result.event.details.quarantine_root = quarantine.root;
     result.event.details.original_cwd = quarantine.originalCwd;
     result.event.details.change_kind = change.kind;
@@ -1089,18 +1190,109 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
         ...options,
         acceptDenied: true,
       });
-      recorded.push({ ...change, ok: true, response });
+      recorded.push({ ...changeWithEvidence, ok: true, response });
     } catch (error) {
-      recorded.push({ ...change, ok: false, error: error?.message || 'record_failed' });
+      recorded.push({ ...changeWithEvidence, ok: false, error: error?.message || 'record_failed' });
     }
   }
+  const previousManifest = await readCodeSiteQuarantineManifestByPath(quarantine.manifestPath).catch(() => null);
+  const manifestChanges = [...asArray(previousManifest?.changes), ...changesWithEvidence];
+  const manifestRecorded = [...asArray(previousManifest?.recorded), ...recorded];
   if (options.cleanup !== false) {
     await fsp.rm(quarantine.root, { recursive: true, force: true }).catch(() => {});
   }
   if (options.resetBaseline === true && options.cleanup === false) {
     quarantine.before = after;
   }
-  return { changes, recorded };
+  if (quarantine.manifestPath) {
+    await writeCodeSiteQuarantineManifest(quarantine, {
+      ...(previousManifest || {}),
+      schemaVersion: QUARANTINE_MANIFEST_SCHEMA_VERSION,
+      quarantineId: quarantine.quarantineId || previousManifest?.quarantineId || null,
+      workspaceSlug: context.workspaceSlug || previousManifest?.workspaceSlug || null,
+      transactionId: context.transactionId || previousManifest?.transactionId || null,
+      mutationLeaseId: context.mutationLeaseId || previousManifest?.mutationLeaseId || null,
+      displayCallsign: context.displayCallsign || previousManifest?.displayCallsign || null,
+      actorUserId: context.actorUserId || previousManifest?.actorUserId || null,
+      effectiveUserId: context.effectiveUserId || previousManifest?.effectiveUserId || null,
+      operation: quarantine.operation || previousManifest?.operation || 'raw_terminal',
+      status: manifestChanges.length ? 'reviewable' : (previousManifest?.status || 'empty'),
+      root: quarantine.root,
+      originalCwd: quarantine.originalCwd,
+      finalizedAt: new Date().toISOString(),
+      cleanup: {
+        overlayRemoved: options.cleanup !== false,
+        resetBaseline: options.resetBaseline === true,
+      },
+      symlinkSanitization: quarantine.symlinkSanitization || previousManifest?.symlinkSanitization || { sanitized: [], preserved: [] },
+      changes: manifestChanges,
+      recorded: manifestRecorded,
+      evidenceRefs: unique([
+        ...asArray(previousManifest?.evidenceRefs),
+        ...asArray(context.evidenceRefs),
+        ...manifestChanges.flatMap((item) => [
+          item.quarantineEvidence?.evidenceRef,
+          ...(asArray(item.quarantineEvidence?.evidenceRefs)),
+        ]),
+      ]),
+      processAncestry: unique([
+        ...asArray(previousManifest?.processAncestry),
+        ...asArray(context.processAncestry),
+      ]),
+    });
+  }
+  return { changes: changesWithEvidence, recorded };
+}
+
+function codeSiteQuarantineManifestPath(baseDir, workspaceSlug, quarantineId) {
+  const safeWorkspace = safeSegment(workspaceSlug || 'workspace');
+  const safeId = safeSegment(quarantineId || 'unknown');
+  return path.join(baseDir || DEFAULT_QUARANTINE_BASE_DIR, safeWorkspace, '_records', `${safeId}.json`);
+}
+
+async function writeCodeSiteQuarantineManifest(quarantine, record) {
+  if (!quarantine?.manifestPath) return null;
+  const next = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+  };
+  await fsp.mkdir(path.dirname(quarantine.manifestPath), { recursive: true });
+  await fsp.writeFile(quarantine.manifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return next;
+}
+
+async function readCodeSiteQuarantineManifestByPath(manifestPath) {
+  const text = await fsp.readFile(manifestPath, 'utf8');
+  return JSON.parse(text);
+}
+
+async function readCodeSiteQuarantineManifest(baseDir, workspaceSlug, quarantineId) {
+  return readCodeSiteQuarantineManifestByPath(codeSiteQuarantineManifestPath(baseDir, workspaceSlug, quarantineId));
+}
+
+async function listCodeSiteQuarantineManifests(baseDir, workspaceSlug, filters = {}) {
+  const dir = path.dirname(codeSiteQuarantineManifestPath(baseDir, workspaceSlug, 'placeholder'));
+  let entries = [];
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const record = await readCodeSiteQuarantineManifestByPath(path.join(dir, entry.name));
+      if (filters.transactionId && record.transactionId !== filters.transactionId) continue;
+      if (filters.status && record.status !== filters.status) continue;
+      records.push(record);
+    } catch (_) {
+      // Ignore partial records written by interrupted processes.
+    }
+  }
+  return records.sort((a, b) => String(b.updatedAt || b.finalizedAt || b.createdAt || '')
+    .localeCompare(String(a.updatedAt || a.finalizedAt || a.createdAt || '')));
 }
 
 function shouldSkipQuarantinePath(src, root) {
@@ -1235,6 +1427,12 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
     beforeSize: change.beforeSize ?? beforeEntry?.size ?? null,
     afterSize: change.afterSize ?? afterEntry?.size ?? null,
   };
+  if (typeof beforeEntry?.text === 'string') {
+    evidence.beforeText = beforeEntry.text;
+  }
+  if (typeof afterEntry?.text === 'string') {
+    evidence.afterText = afterEntry.text;
+  }
   const textDiff = buildSmallTextDiff(beforeEntry?.text, afterEntry?.text);
   if (textDiff) {
     evidence.textDiff = textDiff;
@@ -1242,6 +1440,92 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
   evidence.digest = digestJson(evidence);
   evidence.evidenceRef = `codesitefs:quarantine:${evidence.digest}`;
   return evidence;
+}
+
+function codeSiteQuarantineReplayPlan(changes = []) {
+  const planned = [];
+  const rejected = [];
+  for (const [index, raw] of asArray(changes).entries()) {
+    try {
+      const change = codeSiteQuarantineReplayChange(raw, index);
+      if (change.ok) planned.push(change);
+      else rejected.push(change);
+    } catch (error) {
+      rejected.push({
+        ok: false,
+        index,
+        path: raw?.path || raw?.quarantineEvidence?.path || raw?.quarantine_evidence?.path || null,
+        reasonCodes: [error?.code || 'quarantine_replay_change_invalid'],
+        error: error?.message || 'quarantine_replay_change_invalid',
+      });
+    }
+  }
+  return {
+    ok: planned.length > 0 && rejected.length === 0,
+    changes: planned,
+    rejected,
+  };
+}
+
+function codeSiteQuarantineReplayChange(raw = {}, index = 0) {
+  const evidence = raw.quarantineEvidence
+    || raw.quarantine_evidence
+    || raw.evidence
+    || {};
+  const relPath = normalizeRepoRelativePath(raw.path || evidence.path);
+  const kind = raw.kind || evidence.kind || 'modified';
+  const afterText = firstString(raw.afterText, raw.after_text, raw.content, evidence.afterText, evidence.after_text);
+  const beforeText = firstStringOrNull(raw.beforeText, raw.before_text, evidence.beforeText, evidence.before_text);
+  const quarantineId = raw.quarantineId || raw.quarantine_id || evidence.quarantineId || evidence.quarantine_id || null;
+  const evidenceRef = raw.evidenceRef || raw.evidence_ref || evidence.evidenceRef || evidence.evidence_ref || null;
+  const evidenceDigest = raw.evidenceDigest || raw.evidence_digest || evidence.digest || null;
+  const evidenceRefs = unique([
+    evidenceRef,
+    ...(evidenceDigest ? [`codesitefs:quarantine:${evidenceDigest}`] : []),
+    ...asArray(raw.evidenceRefs || raw.evidence_refs),
+  ]);
+  if (String(kind).toLowerCase() === 'deleted') {
+    return {
+      ok: false,
+      index,
+      path: relPath,
+      kind,
+      reasonCodes: ['quarantine_deleted_replay_requires_delete_adapter'],
+    };
+  }
+  if (typeof afterText !== 'string') {
+    return {
+      ok: false,
+      index,
+      path: relPath,
+      kind,
+      reasonCodes: ['quarantine_after_text_required'],
+    };
+  }
+  return {
+    ok: true,
+    index,
+    path: relPath,
+    kind,
+    quarantineId,
+    beforeText,
+    afterText,
+    beforeDigest: raw.beforeDigest || raw.before_digest || evidence.beforeDigest || evidence.before_digest || null,
+    afterDigest: raw.afterDigest || raw.after_digest || evidence.afterDigest || evidence.after_digest || null,
+    evidenceRef,
+    evidenceDigest,
+    evidenceRefs,
+    textDiff: raw.textDiff || raw.text_diff || evidence.textDiff || evidence.text_diff || null,
+  };
+}
+
+function firstString(...values) {
+  return values.find((value) => typeof value === 'string');
+}
+
+function firstStringOrNull(...values) {
+  const found = firstString(...values);
+  return typeof found === 'string' ? found : null;
 }
 
 function buildSmallTextDiff(beforeText, afterText) {
@@ -1554,6 +1838,7 @@ module.exports = {
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
+  codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   collectCodeSiteRepoState,
@@ -1567,6 +1852,8 @@ module.exports = {
   finalizeCodeSiteQuarantineWorkspace,
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
+  listCodeSiteQuarantineManifests,
   normalizeRepoRelativePath,
+  readCodeSiteQuarantineManifest,
   resolveCodeSiteRepoPath,
 };

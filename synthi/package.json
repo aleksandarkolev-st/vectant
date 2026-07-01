@@ -14,6 +14,7 @@
     "codesite:proof:verify": "node scripts/codesite-proof-verify.mjs",
     "codesite:proof:full-workflow": "node scripts/codesite-full-workflow-proof.mjs",
     "codesite:proof:runway-occupancy": "node scripts/codesite-runway-occupancy-proof.mjs",
+    "codesite:proof:quarantine-review": "node scripts/codesite-quarantine-review-proof.mjs",
     "test:ai-primitives": "node scripts/test-ai-primitives.mjs",
     "build:polyfills": "node scripts/build-node-polyfills.js",
     "build:polyfills:min": "node scripts/build-node-polyfills.js --minify",

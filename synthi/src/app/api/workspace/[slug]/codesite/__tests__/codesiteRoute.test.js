@@ -28,6 +28,7 @@ const {
     getSourceStateSince: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
     validateTransaction: vi.fn(),
+    recordTransactionQuarantineEvent: vi.fn(),
   },
 }));
 
@@ -84,6 +85,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'recordPolicyDecision',
     'recordAssumption',
     'recordTransactionRead',
+    'recordTransactionQuarantineEvent',
     'recordTransactionWrite',
     'requestMutationLease',
     'previewArtifacts',
@@ -183,6 +185,38 @@ describe('CodeSite catch-all route', () => {
       'acme',
       'txn-1',
       { path: 'api/auth/signup.ts' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('dispatches transaction quarantine lifecycle events to the control plane', async () => {
+    controlPlane.recordTransactionQuarantineEvent.mockResolvedValue({
+      id: 'event-quarantine-applied',
+      eventType: 'quarantine_applied',
+    });
+    const body = {
+      eventType: 'quarantine_applied',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+    };
+    const request = new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/quarantine-events', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'quarantine-events']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      event: {
+        id: 'event-quarantine-applied',
+        eventType: 'quarantine_applied',
+      },
+    });
+    expect(controlPlane.recordTransactionQuarantineEvent).toHaveBeenCalledWith(
+      'acme',
+      'txn-1',
+      body,
       expect.objectContaining({ userId: 'user-1' }),
     );
   });

@@ -1359,6 +1359,43 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
 }
 
+const QUARANTINE_TRANSACTION_EVENT_TYPES = new Set([
+  'quarantine_reviewed',
+  'quarantine_replayed',
+  'quarantine_applied',
+]);
+
+export async function recordTransactionQuarantineEvent(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
+  const eventType = String(body.eventType || body.event_type || '').trim();
+  if (!QUARANTINE_TRANSACTION_EVENT_TYPES.has(eventType)) {
+    throw badRequest('invalid_quarantine_event_type', {
+      eventType: eventType || null,
+      allowedEventTypes: [...QUARANTINE_TRANSACTION_EVENT_TYPES],
+    });
+  }
+  const quarantineId = body.quarantineId || body.quarantine_id || null;
+  const paths = asArray(body.paths || body.changedPaths || body.changed_paths)
+    .map((item) => normalizePath(item))
+    .filter(Boolean);
+  const event = await recordEvent(transaction.projectId, {
+    mutationLeaseId: transaction.mutationLeaseId,
+    eventType,
+    displayCallsign: transaction.mutationLease.displayCallsign,
+    actorType: 'codesitefs',
+    actorId: quarantineId || transaction.id,
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+    details: {
+      ...(body.details && typeof body.details === 'object' ? body.details : {}),
+      transactionId: transaction.id,
+      quarantineId,
+      paths,
+      rejected: asArray(body.rejected),
+    },
+  });
+  return eventProjection(event);
+}
+
 export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}, actor = null) {
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });

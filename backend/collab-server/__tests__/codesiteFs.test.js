@@ -9,6 +9,7 @@ const {
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
+  codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   collectCodeSiteRepoState,
@@ -19,7 +20,9 @@ const {
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   finalizeCodeSiteQuarantineWorkspace,
+  listCodeSiteQuarantineManifests,
   normalizeRepoRelativePath,
+  readCodeSiteQuarantineManifest,
   resolveCodeSiteRepoPath,
 } = require('../codesiteFs');
 
@@ -991,19 +994,130 @@ test('quarantines raw terminal workspace changes and records them as evidence', 
     const result = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, { fetch });
 
     assert.deepStrictEqual(result.changes.map((change) => change.path), ['src/app.js', 'src/new.js']);
+    assert.match(quarantine.quarantineId, /^qtn-/);
     assert.strictEqual(calls.length, 2);
     const firstBody = JSON.parse(calls[0].options.body);
     assert.strictEqual(firstBody.codesiteFsEvent.type, 'write_quarantined');
+    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_id, quarantine.quarantineId);
     assert.deepStrictEqual(firstBody.codesiteFsEvent.details.reason_codes, ['raw_terminal_quarantine']);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_root, /codesite-quarantine/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.beforeDigest, /^sha256:/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.afterDigest, /^sha256:/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
+    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_evidence.beforeText, 'before\n');
+    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_evidence.afterText, 'after\n');
     assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '-before'));
     assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '+after'));
+    assert.strictEqual(result.changes[0].quarantineEvidence.beforeText, 'before\n');
+    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'after\n');
+    assert.match(result.recorded[0].quarantineEvidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
+    assert.strictEqual(result.recorded[0].quarantineId, quarantine.quarantineId);
+    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', quarantine.quarantineId);
+    assert.strictEqual(manifest.schemaVersion, 'synthi.codesitefs.quarantineManifest.v1');
+    assert.strictEqual(manifest.status, 'reviewable');
+    assert.strictEqual(manifest.quarantineId, quarantine.quarantineId);
+    assert.deepStrictEqual(manifest.changes.map((change) => change.path), ['src/app.js', 'src/new.js']);
+    assert.strictEqual(manifest.changes[0].quarantineEvidence.afterText, 'after\n');
+    const listed = await listCodeSiteQuarantineManifests(baseDir, 'acme', { transactionId: 'txn-1' });
+    assert.deepStrictEqual(listed.map((item) => item.quarantineId), [quarantine.quarantineId]);
     assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
   } finally {
     await fs.rm(source, { recursive: true, force: true });
+    await fs.rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('normalizes replayable quarantine text changes and rejects unsupported evidence', () => {
+  const plan = codeSiteQuarantineReplayPlan([{
+    path: 'src/app.js',
+    kind: 'modified',
+    quarantineEvidence: {
+      path: 'src/app.js',
+      kind: 'modified',
+      beforeText: 'before\n',
+      afterText: 'after\n',
+      quarantineId: 'qtn-1',
+      beforeDigest: 'sha256:before',
+      afterDigest: 'sha256:after',
+      evidenceRef: 'codesitefs:quarantine:sha256:evidence',
+      textDiff: { format: 'line-window-v1', lines: ['-before', '+after'] },
+    },
+  }]);
+
+  assert.strictEqual(plan.ok, true);
+  assert.strictEqual(plan.rejected.length, 0);
+  assert.strictEqual(plan.changes[0].path, 'src/app.js');
+  assert.strictEqual(plan.changes[0].quarantineId, 'qtn-1');
+  assert.strictEqual(plan.changes[0].beforeText, 'before\n');
+  assert.strictEqual(plan.changes[0].afterText, 'after\n');
+  assert.deepStrictEqual(plan.changes[0].evidenceRefs, ['codesitefs:quarantine:sha256:evidence']);
+
+  const missingText = codeSiteQuarantineReplayPlan([{
+    path: 'src/app.js',
+    kind: 'modified',
+    quarantineEvidence: { path: 'src/app.js', kind: 'modified' },
+  }]);
+  assert.strictEqual(missingText.ok, false);
+  assert.deepStrictEqual(missingText.rejected[0].reasonCodes, ['quarantine_after_text_required']);
+
+  const deleted = codeSiteQuarantineReplayPlan([{
+    path: 'src/old.js',
+    kind: 'deleted',
+    quarantineEvidence: { path: 'src/old.js', kind: 'deleted', beforeText: 'old\n' },
+  }]);
+  assert.strictEqual(deleted.ok, false);
+  assert.deepStrictEqual(deleted.rejected[0].reasonCodes, ['quarantine_deleted_replay_requires_delete_adapter']);
+});
+
+test('raw terminal quarantine replaces symlink escapes before command execution', async () => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-src-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-outside-'));
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-quarantine-'));
+  const outsideTarget = path.join(outside, 'outside.txt');
+  await fs.mkdir(path.join(source, 'src'), { recursive: true });
+  await fs.writeFile(outsideTarget, 'outside-before\n');
+  await fs.symlink(outsideTarget, path.join(source, 'src', 'escape-link.txt'));
+  const recordedBodies = [];
+  const fetch = async (_url, options) => {
+    recordedBodies.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      ok: false,
+      quarantined: true,
+      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-symlink',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
+      baseDir,
+      operation: 'exec',
+    });
+    assert.deepStrictEqual(quarantine.symlinkSanitization.sanitized.map((item) => item.path), ['src/escape-link.txt']);
+    const overlayLinkPath = path.join(quarantine.cwd, 'src', 'escape-link.txt');
+    const overlayStat = await fs.lstat(overlayLinkPath);
+    assert.strictEqual(overlayStat.isSymbolicLink(), false);
+
+    await fs.writeFile(overlayLinkPath, 'overlay-only\n');
+    const result = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, { fetch });
+
+    assert.strictEqual(await fs.readFile(outsideTarget, 'utf8'), 'outside-before\n');
+    assert.deepStrictEqual(result.changes.map((change) => change.path), ['src/escape-link.txt']);
+    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'overlay-only\n');
+    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', quarantine.quarantineId);
+    assert.deepStrictEqual(manifest.symlinkSanitization.sanitized.map((item) => item.path), ['src/escape-link.txt']);
+    assert.strictEqual(manifest.changes[0].path, 'src/escape-link.txt');
+    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.quarantine_evidence.afterText, 'overlay-only\n');
+  } finally {
+    await fs.rm(source, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
     await fs.rm(baseDir, { recursive: true, force: true });
   }
 });

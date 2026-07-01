@@ -40,6 +40,7 @@ const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
   codeSiteCommitMessage,
   codeSiteContextFromRequest,
+  codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
@@ -51,6 +52,9 @@ const {
   finalizeCodeSiteQuarantineWorkspace,
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
+  listCodeSiteQuarantineManifests,
+  normalizeRepoRelativePath,
+  readCodeSiteQuarantineManifest,
 } = require('./codesiteFs');
 
 function queueHeadlessCommandStart(ptyProcess, command) {
@@ -496,6 +500,10 @@ function arrayValue(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function uniqueArray(values) {
+  return [...new Set(arrayValue(values).filter(Boolean))];
+}
+
 function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
   const explicitLineProvenance = arrayValue(
     payload.lineProvenance
@@ -509,6 +517,214 @@ function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
     evidenceRefs: arrayValue(payload.evidenceRefs || payload.evidence_refs),
     processAncestry: arrayValue(payload.processAncestry || payload.process_ancestry),
   };
+}
+
+function sha256TextDigest(value) {
+  return `sha256:${crypto.createHash('sha256').update(Buffer.from(String(value ?? ''))).digest('hex')}`;
+}
+
+async function workspaceFileExists(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    await fsPromises.stat(path.join(repoRoot, relPath));
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return false;
+    }
+    return false;
+  }
+}
+
+function validateQuarantineReplayBase(change, currentContent, currentExists) {
+  const currentDigest = sha256TextDigest(currentContent);
+  const afterDigest = sha256TextDigest(change.afterText);
+  if (change.afterDigest && change.afterDigest !== afterDigest) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (typeof change.beforeText === 'string') {
+    return currentContent === change.beforeText
+      ? { ok: true, currentDigest, afterDigest }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256TextDigest(change.beforeText),
+        afterDigest,
+      };
+  }
+  if (change.beforeDigest) {
+    return currentDigest === change.beforeDigest
+      ? { ok: true, currentDigest, afterDigest }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: change.beforeDigest,
+        afterDigest,
+      };
+  }
+  if (String(change.kind || '').toLowerCase() === 'created' && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  return { ok: true, currentDigest, afterDigest };
+}
+
+function selectedQuarantineChanges(manifest, parsed = {}) {
+  if (Array.isArray(parsed.changes) || Array.isArray(parsed.quarantineChanges) || Array.isArray(parsed.quarantine_changes)) {
+    return parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes;
+  }
+  const requestedPaths = new Set(arrayValue(parsed.paths || parsed.selectedPaths || parsed.selected_paths)
+    .map((item) => {
+      try { return normalizeRepoRelativePath(item); } catch (_) { return null; }
+    })
+    .filter(Boolean));
+  const changes = arrayValue(manifest?.changes);
+  return requestedPaths.size
+    ? changes.filter((change) => requestedPaths.has(change.path || change.quarantineEvidence?.path))
+    : changes;
+}
+
+async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason) {
+  await ensureRuntimeFilesystem({
+    workspaceSlug: slug,
+    filesystemUserId,
+    runtimeScope,
+    reason,
+  });
+  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const baseDir = codeSiteRuntimeQuarantineBaseDir(cwd)
+    || path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
+  return {
+    cwd,
+    baseDir,
+    repoRoot: gitService.getEffectiveRepoPath(slug, filesystemUserId),
+  };
+}
+
+async function prepareCodeSiteQuarantineReplayPlan({
+  slug,
+  changes,
+  repoRoot,
+  effectiveUserId,
+  evidenceRefs = [],
+  processAncestry = [],
+  ancestryLabel = 'collab-server:codesitefs-quarantine-replay',
+}) {
+  const replayPlan = codeSiteQuarantineReplayPlan(changes);
+  const rejected = [...replayPlan.rejected];
+  const prepared = [];
+  if (!replayPlan.changes.length && !rejected.length) {
+    rejected.push({
+      ok: false,
+      index: null,
+      path: null,
+      reasonCodes: ['quarantine_replay_no_changes_selected'],
+    });
+  }
+  if (rejected.length) {
+    return { replayPlan, prepared, rejected };
+  }
+  for (const change of replayPlan.changes) {
+    const currentContent = await readWorkspaceFileForLineProvenance(slug, change.path, effectiveUserId);
+    const currentExists = await workspaceFileExists(repoRoot, change.path);
+    const validation = validateQuarantineReplayBase(change, currentContent, currentExists);
+    const changeEvidenceRefs = uniqueArray([
+      ...arrayValue(evidenceRefs),
+      ...arrayValue(change.evidenceRefs),
+      change.evidenceRef,
+    ]);
+    const changeProcessAncestry = uniqueArray([
+      ...arrayValue(processAncestry),
+      ancestryLabel,
+    ]);
+    if (!validation.ok) {
+      rejected.push({
+        ok: false,
+        index: change.index,
+        path: change.path,
+        kind: change.kind,
+        reasonCodes: validation.reasonCodes,
+        currentDigest: validation.currentDigest,
+        expectedDigest: validation.expectedDigest || change.beforeDigest || null,
+        afterDigest: validation.afterDigest || change.afterDigest || null,
+        evidenceRef: change.evidenceRef,
+        quarantineId: change.quarantineId || null,
+      });
+      continue;
+    }
+    const lineProvenance = deriveLineProvenanceFromContentChange(change.path, currentContent, change.afterText, {
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+      promptSummary: 'Apply reviewed CodeSiteFS quarantine change',
+      reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+    });
+    prepared.push({
+      change,
+      currentContent,
+      currentExists,
+      validation,
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+      lineProvenance,
+    });
+  }
+  return { replayPlan, prepared, rejected };
+}
+
+function codeSiteControlPlaneBaseUrl(context = {}) {
+  const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
+  if (explicit) return String(explicit).replace(/\/+$/, '');
+  const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
+  if (!appBase || !context.workspaceSlug) return null;
+  return `${String(appBase).replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
+}
+
+async function recordCodeSiteQuarantineTimelineEvent(context, eventType, body = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const baseUrl = codeSiteControlPlaneBaseUrl(context);
+  if (!baseUrl || typeof fetch !== 'function') return null;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/quarantine-events`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...body,
+      eventType,
+    }),
+  });
+  const text = await response.text().catch(() => '');
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch (_) {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: parsed.error || parsed.message || 'codesite_quarantine_event_failed',
+    };
+  }
+  return parsed.event || parsed;
 }
 
 async function readWorkspaceFileForLineProvenance(slug, filePath, userId) {
@@ -2556,6 +2772,400 @@ const server = http.createServer(async (req, res) => {
       const code = err?.message === 'path_escape' ? 400 : 500;
       res.writeHead(code, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
+    }
+    return;
+  }
+
+  const quarantineCollectionMatch = /^\/codesitefs\/quarantines\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineCollectionMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(quarantineCollectionMatch[1]);
+    const actorUserId = programRuntimeUrl.searchParams.get('userId') || (req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '');
+    const effectiveUserId = programRuntimeUrl.searchParams.get('filesystemUserId')
+      || (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '')
+      || actorUserId;
+    const runtimeScope = programRuntimeUrl.searchParams.get('runtimeScope') || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list');
+      const quarantines = await listCodeSiteQuarantineManifests(storage.baseDir, slug, {
+        transactionId: programRuntimeUrl.searchParams.get('transactionId') || null,
+        status: programRuntimeUrl.searchParams.get('status') || null,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, quarantines }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err?.message || 'codesite_quarantine_list_failed' }));
+    }
+    return;
+  }
+
+  const quarantineRecordMatch = /^\/codesitefs\/quarantines\/([^/]+)\/([^/]+)(?:\/(replay|apply))?$/.exec(programRuntimeUrl.pathname);
+  if (quarantineRecordMatch) {
+    const slug = decodeURIComponent(quarantineRecordMatch[1]);
+    const quarantineId = decodeURIComponent(quarantineRecordMatch[2]);
+    const action = quarantineRecordMatch[3] || null;
+    let parsed = {};
+    if (req.method !== 'GET') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { parsed = JSON.parse(body || '{}'); } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+    }
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope
+      || programRuntimeUrl.searchParams.get('runtimeScope')
+      || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || programRuntimeUrl.searchParams.get('userId') || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      programRuntimeUrl.searchParams.get('filesystemUserId') ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`);
+      const quarantine = await readCodeSiteQuarantineManifest(storage.baseDir, slug, quarantineId);
+      if (!action && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, quarantine }));
+        return;
+      }
+      if (!['replay', 'apply'].includes(action) || req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
+        return;
+      }
+      if (action === 'apply' && (!codeSiteContext.active || !codeSiteContext.transactionId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'codesite_transaction_required',
+          message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      if (action === 'apply' && requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+        return;
+      }
+
+      const selected = selectedQuarantineChanges(quarantine, parsed);
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: selected,
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: [
+          ...arrayValue(parsed.evidenceRefs || parsed.evidence_refs),
+          ...arrayValue(quarantine.evidenceRefs),
+        ],
+        processAncestry: [
+          ...arrayValue(parsed.processAncestry || parsed.process_ancestry),
+          ...arrayValue(quarantine.processAncestry),
+        ],
+        ancestryLabel: action === 'apply'
+          ? 'collab-server:codesitefs-quarantine-apply'
+          : 'collab-server:codesitefs-quarantine-replay',
+      });
+
+      if (action === 'replay') {
+        const reviewedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_reviewed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+          },
+        });
+        const replayedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_replayed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+          },
+        });
+        res.writeHead(replay.rejected.length ? 409 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: replay.rejected.length === 0,
+          mode: 'replay',
+          quarantine: {
+            quarantineId,
+            status: quarantine.status,
+            transactionId: quarantine.transactionId,
+          },
+          replay: replay.prepared.map((item) => ({
+            path: item.change.path,
+            kind: item.change.kind,
+            beforeDigest: item.validation.currentDigest,
+            afterDigest: item.validation.afterDigest,
+            evidenceRef: item.change.evidenceRef,
+            lineProvenanceCount: item.lineProvenance.length,
+          })),
+          rejected: replay.rejected,
+          timelineEvents: {
+            reviewed: reviewedEvent,
+            replayed: replayedEvent,
+          },
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      const attempts = replay.prepared.map((item) => ({
+        path: item.change.path,
+        kind: 'quarantine-review-apply',
+        tool: 'file_write',
+        evidenceRefs: item.evidenceRefs,
+        processAncestry: item.processAncestry,
+        lineProvenance: item.lineProvenance,
+      }));
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await withTelemetry('fs:write', () => gitService.writeFile(
+            slug,
+            item.change.path,
+            item.change.afterText,
+            effectiveUserId,
+          ));
+          applied.push({
+            path: item.change.path,
+            kind: item.change.kind,
+            beforeDigest: item.validation.currentDigest,
+            afterDigest: item.validation.afterDigest,
+            evidenceRef: item.change.evidenceRef,
+            lineProvenanceCount: item.lineProvenance.length,
+          });
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: quarantine.evidenceRefs,
+        details: {
+          quarantineId,
+          applied,
+          boundaryPhase: boundary.phase,
+        },
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        quarantine: { quarantineId, status: quarantine.status, transactionId: quarantine.transactionId },
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      const notFound = err?.code === 'ENOENT';
+      console.error('[CodeSiteFS Quarantine] failed:', err?.message || err);
+      res.writeHead(notFound ? 404 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: notFound ? 'codesite_quarantine_not_found' : 'codesite_quarantine_failed',
+        message: err?.message || 'CodeSite quarantine operation failed',
+        codesite: codeSiteMetadata,
+      }));
+    }
+    return;
+  }
+
+  // Compatibility endpoint for callers that already have explicit quarantine
+  // evidence packets but not a stored manifest id.
+  const quarantineApplyMatch = /^\/codesitefs\/quarantine\/apply\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineApplyMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(quarantineApplyMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    if (!codeSiteContext.active || !codeSiteContext.transactionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_transaction_required',
+        message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+        codesite: codeSiteMetadata,
+      }));
+      return;
+    }
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+      return;
+    }
+
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantine-apply');
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes || parsed.files || [],
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        processAncestry: parsed.processAncestry || parsed.process_ancestry,
+        ancestryLabel: 'collab-server:codesitefs-quarantine-apply',
+      });
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      const attempts = replay.prepared.map((item) => ({
+        path: item.change.path,
+        kind: 'quarantine-review-apply',
+        tool: 'file_write',
+        evidenceRefs: item.evidenceRefs,
+        processAncestry: item.processAncestry,
+        lineProvenance: item.lineProvenance,
+      }));
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await withTelemetry('fs:write', () => gitService.writeFile(slug, item.change.path, item.change.afterText, effectiveUserId));
+          applied.push({
+            path: item.change.path,
+            kind: item.change.kind,
+            beforeDigest: item.validation.currentDigest,
+            afterDigest: item.validation.afterDigest,
+            evidenceRef: item.change.evidenceRef,
+            lineProvenanceCount: item.lineProvenance.length,
+          });
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId: replay.prepared[0]?.change?.quarantineId || null,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        details: { applied, boundaryPhase: boundary.phase },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      console.error('[CodeSiteFS Quarantine Apply] failed:', err?.message || err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_quarantine_apply_failed',
+        message: err?.message || 'CodeSite quarantine apply failed',
+        codesite: codeSiteMetadata,
+      }));
     }
     return;
   }

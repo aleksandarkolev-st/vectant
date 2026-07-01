@@ -32,6 +32,7 @@ import {
   preflightCodeSiteFsWrite,
   recordPolicyDecision,
   recordAssumption,
+  recordTransactionQuarantineEvent,
   recordTransactionRead,
   recordTransactionWrite,
   requestMutationLease,
@@ -223,6 +224,10 @@ export async function POST(request, { params }) {
       return okJson(await recordTransactionWrite(slug, route[1], body, access.actor));
     }
 
+    if (route[0] === 'transactions' && route[2] === 'quarantine-events') {
+      return okJson({ event: await recordTransactionQuarantineEvent(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
     if (route[0] === 'transactions' && route[2] === 'assumptions') {
       return okJson({ assumption: await recordAssumption(slug, route[1], body, access.actor) }, { status: 201 });
     }
@@ -321,6 +326,7 @@ function postAccessMode(route) {
   if (route[0] === 'transactions' && [
     'record-read',
     'record-write',
+    'quarantine-events',
     'assumptions',
     'validate',
     'preview',

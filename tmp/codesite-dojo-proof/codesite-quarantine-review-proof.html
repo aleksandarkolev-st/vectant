@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CodeSite Quarantine Review Proof</title>
+<style>
+:root { color-scheme: dark; --bg: #07090d; --panel: #11151f; --panel2: #0b0f16; --line: #2b3548; --text: #f5f7fb; --muted: #aeb8ce; --pass: #35d07f; --warn: #ffd166; --accent: #9cc7ff; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+main { width: min(1220px, calc(100vw - 56px)); margin: 24px auto 48px; }
+.hero { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 22px 24px; }
+.badge { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 4px; background: #0d3b24; color: #bdffd8; font-size: 12px; font-weight: 800; }
+h1 { margin: 8px 0 10px; font-size: 30px; line-height: 1.1; }
+p { margin: 0; max-width: 86ch; color: var(--muted); font-size: 16px; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 16px 0 20px; }
+.metric { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-height: 86px; padding: 13px; }
+.metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.metric strong { display: block; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
+h2 { margin: 22px 0 10px; font-size: 21px; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #05070b; }
+th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 14px; }
+th { background: var(--panel2); color: var(--accent); font-size: 12px; text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #dce5ff; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dce5ff; overflow-wrap: anywhere; }
+.twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.panel { border: 1px solid var(--line); border-radius: 8px; background: #05070b; padding: 13px; }
+@media (max-width: 940px) { main { width: min(100% - 28px, 760px); } .grid { grid-template-columns: 1fr 1fr; } .twocol { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <span class="badge">PASS</span>
+    <h1>CodeSite Quarantine Review Proof</h1>
+    <p>Docker-backed workflow: a raw terminal wrote four paths in an active CodeSite context, including a symlink escape attempt; the real repo stayed unchanged, the manifest was listed and replayed, and one selected path was applied through the transaction boundary with ordered timeline evidence.</p>
+  </section>
+  <section class="grid">
+    <div class="metric"><span>Workspace</span><strong>codesite-quarantine-review-proof-1782897068265</strong></div>
+    <div class="metric"><span>Quarantine ID</span><strong>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</strong></div>
+    <div class="metric"><span>Manifest changes</span><strong>4</strong></div>
+    <div class="metric"><span>Applied paths</span><strong>docs/review.md</strong></div>
+    <div class="metric"><span>Stale replay</span><strong>409</strong></div>
+  </section>
+  <h2>Symlink Escape Guard</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Target</th><th>Disposition</th></tr></thead>
+    <tbody><tr>
+      <td>docs/escape-link.txt</td>
+      <td><code>/tmp/codesite-quarantine-review-proof-1782897068265-outside-target.txt</code></td>
+      <td><code>quarantine_symlink_escape_replaced</code></td>
+    </tr></tbody>
+  </table>
+  <h2>Quarantine Manifest</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Kind</th><th>Evidence</th><th>Diff</th></tr></thead>
+    <tbody><tr>
+      <td>docs/escape-link.txt</td>
+      <td>modified</td>
+      <td><code>codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114</code></td>
+      <td><pre>-CodeSite quarantine replaced an unsafe symlink before command execution.
+-path: docs/escape-link.txt
+-target: /tmp/codesite-quarantine-review-proof-1782897068265-outside-target.txt
+-resolvedTarget: /tmp/codesite-quarantine-review-proof-1782897068265-outside-target.txt
++escape attempt from quarantine
+ </pre></td>
+    </tr>
+<tr>
+      <td>docs/notes.md</td>
+      <td>created</td>
+      <td><code>codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b</code></td>
+      <td><pre>+unselected quarantined note
+ </pre></td>
+    </tr>
+<tr>
+      <td>docs/review.md</td>
+      <td>modified</td>
+      <td><code>codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b</code></td>
+      <td><pre> baseline
++reviewed through quarantine
+ </pre></td>
+    </tr>
+<tr>
+      <td>src/outside.txt</td>
+      <td>created</td>
+      <td><code>codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+      <td><pre>+outside quarantined source
+ </pre></td>
+    </tr></tbody>
+  </table>
+  <h2>Replay Dry Run</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Current Digest</th><th>After Digest</th><th>Line Evidence</th></tr></thead>
+    <tbody><tr>
+      <td>docs/review.md</td>
+      <td><code>sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e</code></td>
+      <td><code>sha256:4ea58124a7495bd9fb74d3cfa7feeda299c193689995f460ba4fa0f332e5efed</code></td>
+      <td>1</td>
+    </tr></tbody>
+  </table>
+  <h2>Applied Through Transaction Boundary</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Evidence</th><th>Line Evidence</th></tr></thead>
+    <tbody><tr>
+      <td>docs/review.md</td>
+      <td><code>codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b</code></td>
+      <td>1</td>
+    </tr></tbody>
+  </table>
+  <div class="twocol">
+    <section>
+      <h2>Workspace Before Apply</h2>
+      <div class="panel"><pre>target=baseline
+notes=absent
+outside=absent
+escape_link=symlink
+escape_target=outside-before
+</pre></div>
+    </section>
+    <section>
+      <h2>Workspace After Apply</h2>
+      <div class="panel"><pre>target=baseline
+reviewed through quarantine
+notes=absent
+outside=absent
+escape_link=symlink
+escape_target=outside-before
+</pre></div>
+    </section>
+  </div>
+  <h2>Control Plane Timeline</h2>
+  <table>
+    <thead><tr><th>Event</th><th>Path / Quarantine</th><th>Evidence</th></tr></thead>
+    <tbody><tr>
+      <td>write_quarantined</td>
+      <td>docs/escape-link.txt</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114</code></td>
+    </tr>
+<tr>
+      <td>write_quarantined</td>
+      <td>docs/notes.md</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b</code></td>
+    </tr>
+<tr>
+      <td>write_quarantined</td>
+      <td>docs/review.md</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b</code></td>
+    </tr>
+<tr>
+      <td>write_quarantined</td>
+      <td>src/outside.txt</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr>
+<tr>
+      <td>quarantine_reviewed</td>
+      <td>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr>
+<tr>
+      <td>quarantine_replayed</td>
+      <td>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr>
+<tr>
+      <td>write_allowed</td>
+      <td>docs/review.md</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e, codesitefs:quarantine:sha256:1c22c2cdf91b171174a82bc8cf88d4290f76f4c93c8c840b7175f2f812665971</code></td>
+    </tr>
+<tr>
+      <td>quarantine_applied</td>
+      <td>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr>
+<tr>
+      <td>quarantine_reviewed</td>
+      <td>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr>
+<tr>
+      <td>quarantine_replayed</td>
+      <td>qtn-cmr1uwnf600npob5bnuaezdgg-1782897115135-8532ec96</td>
+      <td><code>proof:quarantine-review-live-api, codesitefs:quarantine:sha256:9992dcfaa599132aed7e09c7dcded049deb0a6b000423ac7c919ceb46a914114, codesitefs:quarantine:sha256:f8e5e84915c8d202ce9869ecb55ec23f8c83a6b86b4e2b835f017337b667d35b, codesitefs:quarantine:sha256:3cb70b07b4792aee52a4e05c8681898385aaebd23513641f0a77951c8f1f3d3b, codesitefs:quarantine:sha256:88d4d8c85e57692cd5d811f8fb5a9d5c0e801558b027a6f964d0b94d69f2774e</code></td>
+    </tr></tbody>
+  </table>
+  <h2>Assertions</h2>
+  <div class="panel"><pre>{
+  &quot;dockerCollabExecUsed&quot;: true,
+  &quot;clearanceIssued&quot;: true,
+  &quot;transactionOpened&quot;: true,
+  &quot;rawTerminalSucceeded&quot;: true,
+  &quot;stableQuarantineIdReturned&quot;: true,
+  &quot;rawQuarantineCapturedAllPaths&quot;: true,
+  &quot;realWorkspaceUnchangedBeforeApply&quot;: true,
+  &quot;manifestListedById&quot;: true,
+  &quot;manifestHasReplayText&quot;: true,
+  &quot;manifestRecordedSymlinkSanitization&quot;: true,
+  &quot;replayDryRunSelectedOnly&quot;: true,
+  &quot;applySelectedOnly&quot;: true,
+  &quot;realWorkspaceAppliedOnlyTarget&quot;: true,
+  &quot;staleReplayRejectedAfterApply&quot;: true,
+  &quot;controlPlaneRecordedQuarantine&quot;: true,
+  &quot;controlPlaneRecordedReview&quot;: true,
+  &quot;controlPlaneRecordedReplay&quot;: true,
+  &quot;controlPlaneRecordedApply&quot;: true,
+  &quot;controlPlaneRecordedWriteAllowed&quot;: true,
+  &quot;transactionObservedSelectedWrite&quot;: true
+}</pre></div>
+</main>
+</body>
+</html>

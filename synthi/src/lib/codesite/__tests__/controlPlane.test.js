@@ -125,6 +125,7 @@ import {
   openTransaction,
   preflightCodeSiteFsWrite,
   promotePolicyDelta,
+  recordTransactionQuarantineEvent,
   recordTransactionWrite,
   requestMutationLease,
   shadowMergeSimulate,
@@ -1370,6 +1371,39 @@ describe('CodeSite control plane transaction validation', () => {
       }),
     });
     expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('records transaction-scoped quarantine lifecycle events', async () => {
+    const event = await recordTransactionQuarantineEvent('acme', 'txn-1', {
+      eventType: 'quarantine_replayed',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+      evidenceRefs: ['codesitefs:quarantine:sha256:evidence'],
+      details: { replayableChangeCount: 1 },
+    });
+
+    expect(event.eventType).toBe('quarantine_replayed');
+    expect(event.actorType).toBe('codesitefs');
+    expect(event.actorId).toBe('qtn-1');
+    expect(event.mutationLeaseId).toBe('lease-1');
+    expect(event.evidenceRefs).toEqual(['codesitefs:quarantine:sha256:evidence']);
+    expect(event.details).toEqual(expect.objectContaining({
+      transactionId: 'txn-1',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+      replayableChangeCount: 1,
+    }));
+  });
+
+  it('rejects unsupported quarantine lifecycle event types', async () => {
+    await expect(recordTransactionQuarantineEvent('acme', 'txn-1', {
+      eventType: 'write_allowed',
+      quarantineId: 'qtn-1',
+    })).rejects.toMatchObject({
+      code: 'invalid_quarantine_event_type',
+      status: 400,
+    });
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
   });
 
