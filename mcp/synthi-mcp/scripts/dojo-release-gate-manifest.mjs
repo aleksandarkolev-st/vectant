@@ -135,6 +135,9 @@ import {
   DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
 } from "./dojo-time-machine-debugger-self-check.mjs";
 import {
+  THERAPEUTIC_TOMOGRAPHY_PRODUCTION_REQUIRED_ENV,
+} from "./dojo-therapeutic-tomography-release-evidence.mjs";
+import {
   DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
   DOJO_VIVARIUM_RUNTIME_TEST_FILES,
 } from "./dojo-vivarium-runtime-self-check.mjs";
@@ -1535,6 +1538,59 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_therapeutic_tomography_production_release",
+    tier: "T6",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:therapeutic-tomography:release-evidence",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:therapeutic-tomography:release-evidence",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.therapeuticTomographyReleaseEvidence.v2",
+    default_evidence_path: "docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json",
+    artifact_requirements: {
+      require_deployed_hosted_runtime_url: true,
+      require_deployed_probe_endpoint: true,
+      require_production_tenant_rbac: true,
+      require_external_control_plane_store: true,
+      require_state_reconstruction: true,
+      require_external_or_managed_signing: true,
+      require_unauthorized_bypass_denied: true,
+      require_scoped_broker_grant: true,
+      require_dispatch_only_while_grant_active: true,
+      require_revocation_denies_dispatch: true,
+      require_narrative_only_broad_access_denied: true,
+      require_no_loopback_or_demo_transport: true,
+    },
+    requires_env: [...THERAPEUTIC_TOMOGRAPHY_PRODUCTION_REQUIRED_ENV],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_THERAPEUTIC_PROD_RUNTIME_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["https"],
+      },
+      {
+        env: "SYNTHI_THERAPEUTIC_PROD_PROBE_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["https"],
+      },
+      {
+        env: "SYNTHI_THERAPEUTIC_PROD_STORE_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["https"],
+      },
+      {
+        env: "SYNTHI_DOJO_PROOF_SIGNING_PROVIDER",
+        type: "not_in",
+        disallowed_values: ["hmac-local", "ed25519-local"],
+        case_sensitive: false,
+      },
+      {
+        env: "SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS",
+        type: "json_array",
+      },
+    ],
+  },
+  {
     id: "security_abuse_suite",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1813,6 +1869,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_checkride_license_self_check",
   "dojo_case_law_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
+  "dojo_therapeutic_tomography_production_release",
   "security_abuse_suite",
   "compliance_export_suite",
   "privacy_redaction_suite",
@@ -4223,6 +4280,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
+  assert(manifest.release_gate_ids.includes("dojo_therapeutic_tomography_production_release"));
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));
   assert(manifest.release_gate_ids.includes("compliance_export_suite"));
   assert(manifest.release_gate_ids.includes("privacy_redaction_suite"));
@@ -4234,6 +4292,10 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.enterprise_release_gate_ids.includes("dojo_live_chaos"));
   assert(manifest.enterprise_release_gate_ids.includes("dojo_soak_performance_self_check"));
   assert(manifest.enterprise_release_gate_ids.includes("soak_performance"));
+  const tomographyGate = manifest.gates.find((gate) => gate.id === "dojo_therapeutic_tomography_production_release");
+  assert.equal(tomographyGate?.package_script, "proof:dojo:therapeutic-tomography:release-evidence");
+  assert.deepEqual(tomographyGate?.requires_env, THERAPEUTIC_TOMOGRAPHY_PRODUCTION_REQUIRED_ENV);
+  assert.equal(tomographyGate?.artifact_requirements?.require_no_loopback_or_demo_transport, true);
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_live_chaos" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_soak_performance_self_check" && gate.tier === "T8"));
