@@ -38,6 +38,7 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
     projects: [],
     project: null,
     controlState: null,
+    metrics: null,
     events: [],
     artifactPreview: null,
     selectedProjectId: null,
@@ -64,6 +65,7 @@ export function normalizeCodeSiteRadarState({
   projects = [],
   project = null,
   controlState = null,
+  metrics = null,
   events = [],
   artifactPreview = null,
   selectedProjectId = null,
@@ -79,6 +81,7 @@ export function normalizeCodeSiteRadarState({
     projects: normalizedProjects,
     project: normalizedProject,
     controlState: normalizedControl,
+    metrics,
     events: normalizedEvents,
     artifactPreview,
     selectedProjectId: selectedProjectId || normalizedProject?.id || normalizedControl?.projectId || normalizedProjects[0]?.id || null,
@@ -121,6 +124,12 @@ export async function fetchCodeSiteEvents(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return [];
   const body = await request(`${projectBase(workspaceSlug, projectId)}/events`);
   return body.events || [];
+}
+
+export async function fetchCodeSiteMetrics(workspaceSlug, projectId) {
+  if (!workspaceSlug || !projectId) return null;
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/metrics`);
+  return body.metrics || null;
 }
 
 export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
@@ -174,10 +183,11 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     return normalizeCodeSiteRadarState({ workspaceSlug, projects });
   }
 
-  const [project, controlState, events, artifactPreview] = await Promise.all([
+  const [project, controlState, events, metrics, artifactPreview] = await Promise.all([
     fetchCodeSiteProject(workspaceSlug, projectId),
     fetchCodeSiteControlState(workspaceSlug, projectId),
     fetchCodeSiteEvents(workspaceSlug, projectId),
+    fetchCodeSiteMetrics(workspaceSlug, projectId).catch(() => null),
     fetchCodeSiteArtifactPreview(workspaceSlug, projectId).catch(() => null),
   ]);
 
@@ -186,6 +196,7 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     projects,
     project,
     controlState,
+    metrics,
     events,
     artifactPreview,
     selectedProjectId: projectId,

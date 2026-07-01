@@ -20,6 +20,7 @@ const {
     eventCursor: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
+    getCodeSiteMetrics: vi.fn(),
     getAgentInbox: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
@@ -67,6 +68,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'exportArtifacts',
     'getAgentInbox',
     'getAgentManifest',
+    'getCodeSiteMetrics',
     'getControlState',
     'getEvents',
     'getIncidentReplay',
@@ -183,6 +185,28 @@ describe('CodeSite catch-all route', () => {
       { path: 'api/auth/signup.ts' },
       expect.objectContaining({ userId: 'user-1' }),
     );
+  });
+
+  it('reads project success metrics through the read-gated metrics endpoint', async () => {
+    controlPlane.getCodeSiteMetrics.mockResolvedValue({
+      schemaVersion: 'synthi.codesite.metrics.v1',
+      projectId: 'proj-1',
+      summary: { collisionsAvoided: 2 },
+      sections: { atc: [] },
+    });
+
+    const response = await GET(new Request('http://test/api/workspace/acme/codesite/projects/proj-1/metrics'), params(['projects', 'proj-1', 'metrics']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      metrics: {
+        schemaVersion: 'synthi.codesite.metrics.v1',
+        projectId: 'proj-1',
+        summary: { collisionsAvoided: 2 },
+        sections: { atc: [] },
+      },
+    });
+    expect(controlPlane.getCodeSiteMetrics).toHaveBeenCalledWith('acme', 'proj-1');
   });
 
   it('dispatches CodeSiteFS preflight events before external adapters mutate files', async () => {

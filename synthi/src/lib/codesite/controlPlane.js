@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma';
 import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
+import { buildCodeSiteMetrics } from './metrics';
 import {
   buildCodeSiteDojoProofInput,
   summarizeCodeSiteDojoProof,
@@ -1335,7 +1336,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     semanticDependencyRefs,
     invalidatedBy: transaction.mutationLease.displayCallsign,
   });
-  await recordEvent(transaction.projectId, {
+  const allowedEvent = await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'write_allowed',
     displayCallsign: transaction.mutationLease.displayCallsign,
@@ -1350,6 +1351,10 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       invalidatedAssumptions: invalidated,
       ...writeEvidence,
     },
+  });
+  await persistAllowedWriteLineProvenance(transaction, allowedEvent, {
+    ...writeEvidence,
+    path,
   });
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
 }
@@ -2567,6 +2572,41 @@ function lineProvenanceFileCoversPath(provenancePath, path) {
 function lineProvenanceRowCoversRange(row, expectedRange) {
   if (!lineProvenanceFileCoversPath(row.filePath, expectedRange.filePath)) return false;
   return row.startLine <= expectedRange.startLine && row.endLine >= expectedRange.endLine;
+}
+
+async function persistAllowedWriteLineProvenance(transaction, event, writeEvidence = {}) {
+  const defaultPath = normalizePath(writeEvidence.path);
+  const rows = strictLineProvenanceRows(writeEvidence.lineProvenance || writeEvidence.line_provenance, defaultPath);
+  for (const row of rows) {
+    await prisma.codeSiteLineProvenance.create({
+      data: {
+        projectId: transaction.projectId,
+        transactionId: transaction.id,
+        filePath: row.filePath,
+        lineAnchor: row.lineAnchor,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        displayCallsign: transaction.mutationLease.displayCallsign,
+        reasonRef: row.reasonRef || `event:${event.id}`,
+        evidenceRefsJson: stringifyJson(unique([
+          `transaction:${transaction.id}`,
+          `event:${event.id}`,
+          ...asArray(writeEvidence.evidenceRefs || writeEvidence.evidence_refs),
+          ...asArray(row.evidenceRefs),
+        ].filter(Boolean))),
+        dojoSourceRefsJson: stringifyJson(unique([
+          ...asArray(writeEvidence.dojoSourceRefs || writeEvidence.dojo_source_refs),
+          ...asArray(row.dojoSourceRefs || row.dojo_source_refs),
+        ].filter(Boolean))),
+        processAncestryJson: stringifyJson(unique([
+          ...asArray(writeEvidence.processAncestry || writeEvidence.process_ancestry),
+          ...asArray(row.processAncestry),
+        ].filter(Boolean))),
+        promptSummary: row.promptSummary || writeEvidence.promptSummary || writeEvidence.prompt_summary || 'CodeSite allowed write',
+      },
+    });
+  }
+  return rows.length;
 }
 
 async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
@@ -4333,6 +4373,17 @@ export async function getControlState(workspaceSlug, projectId) {
   if (!project) throw notFound('project_not_found');
   const projection = projectProjection(project);
   return buildControlState(workspaceSlug, projection);
+}
+
+export async function getCodeSiteMetrics(workspaceSlug, projectId) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!project) throw notFound('project_not_found');
+  const projection = projectProjection(project);
+  const controlState = buildControlState(workspaceSlug, projection);
+  return buildCodeSiteMetrics({ project: projection, controlState, workspaceSlug });
 }
 
 function buildControlState(workspaceSlug, projection) {

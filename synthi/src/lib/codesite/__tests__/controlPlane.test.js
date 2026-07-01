@@ -1854,6 +1854,20 @@ describe('CodeSite control plane transaction validation', () => {
       evidenceRefs: ['hunk:evidence'],
       promptSummary: 'Update schema field',
     })]);
+    expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        filePath: 'synthi/prisma/schema.prisma',
+        lineAnchor: 'synthi/prisma/schema.prisma#L7',
+        startLine: 7,
+        endLine: 9,
+        displayCallsign: 'ATLAS-1',
+        evidenceRefsJson: expect.stringContaining('event:'),
+        processAncestryJson: expect.stringContaining('mcp:synthi_codesite_apply_patch'),
+        promptSummary: 'Update schema field',
+      }),
+    });
   });
 
   it('previews transaction writes without mutating write sets, events, or policy decisions', async () => {

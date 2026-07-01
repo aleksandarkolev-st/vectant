@@ -3,6 +3,7 @@ import path from 'path';
 import { asArray, stableJson } from './json';
 import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
+import { buildCodeSiteMetrics } from './metrics';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
@@ -36,6 +37,7 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_request_landing',
   'synthi_codesite_generate_black_box',
   'synthi_codesite_get_line_provenance',
+  'synthi_codesite_get_metrics',
 ];
 
 export function codesiteSchemas() {
@@ -199,6 +201,15 @@ export function codesiteSchemas() {
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
+    'metrics.schema.json': schema('Metrics', {
+      schemaVersion: { type: 'string' },
+      projectId: { type: ['string', 'null'] },
+      workspaceSlug: { type: ['string', 'null'] },
+      generatedAt: { type: 'string' },
+      sections: { type: 'object' },
+      summary: { type: 'object' },
+      evidence: { type: 'object' },
+    }, ['schemaVersion', 'projectId', 'sections', 'summary']),
   };
 }
 
@@ -215,12 +226,14 @@ function schema(title, properties, required) {
 
 export function buildArtifactProjection(project, controlState = null) {
   const projectDir = `projects/${project.id}`;
+  const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
   const files = [
     jsonFile('manifest.json', {
       version: CODESITE_ARTIFACT_VERSION,
       project_id: project.id,
       workspace_slug: project.workspaceSlug,
       control_state: `${projectDir}/control-state.json`,
+      metrics: `${projectDir}/metrics.json`,
       events: `${projectDir}/events.jsonl`,
       schemas: 'schemas/',
       compiler_output: 'airspace/compiler-output.json',
@@ -236,6 +249,7 @@ export function buildArtifactProjection(project, controlState = null) {
     jsonFile(`${projectDir}/control-state.json`, controlState || minimalControlState(project)),
     jsonFile(`${projectDir}/radar-snapshot.json`, controlState || minimalControlState(project)),
     jsonFile(`${projectDir}/collision-forecast.json`, controlState?.collisionForecast || {}),
+    jsonFile(`${projectDir}/metrics.json`, metrics),
     {
       relativePath: `${projectDir}/events.jsonl`,
       content: asArray(project.events).map((event) => stableJson(event)).join('\n') + (project.events?.length ? '\n' : ''),

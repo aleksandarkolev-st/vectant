@@ -56,6 +56,32 @@ describe("CodeSite MCP tool surface", () => {
     }));
   });
 
+  it("reads success metrics from the configured control-plane API", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      metrics: {
+        schemaVersion: "synthi.codesite.metrics.v1",
+        summary: { codeSiteFsBlockedWrites: 1 },
+      },
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_metrics", {});
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://codesite.test/api/workspace/workspace-env/codesite/projects/project-env/metrics"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_get_metrics",
+      response: expect.objectContaining({
+        metrics: expect.objectContaining({
+          schemaVersion: "synthi.codesite.metrics.v1",
+        }),
+      }),
+    }));
+  });
+
   it("records write paths with product-language arguments", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
       ok: true,

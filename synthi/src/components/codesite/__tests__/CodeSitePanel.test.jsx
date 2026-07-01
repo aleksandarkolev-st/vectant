@@ -18,6 +18,7 @@ function emptyState(workspaceSlug = 'acme') {
     projects: [],
     project: null,
     controlState: null,
+    metrics: null,
     events: [],
     artifactPreview: null,
     selectedProjectId: null,
@@ -312,6 +313,34 @@ function radarState() {
         risks: [{ risk: 'write_overlap', severity: 'medium', conflictZone: 'api/checkout/**' }],
       },
     },
+    metrics: {
+      schemaVersion: 'synthi.codesite.metrics.v1',
+      projectId: 'proj-1',
+      status: 'measured',
+      summary: {
+        collisionsAvoided: 2,
+        codeSiteFsBlockedWrites: 1,
+        lineProvenanceCoverage: 0.67,
+        blackBoxCompletenessScore: 0.82,
+      },
+      sections: {
+        atc: [
+          { key: 'collisionsPredicted', label: 'Collisions predicted', unit: 'count', value: 3, status: 'measured', sampleSize: 3 },
+          { key: 'collisionsAvoided', label: 'Collisions avoided', unit: 'count', value: 2, status: 'measured', sampleSize: 2 },
+        ],
+        transaction: [
+          { key: 'codeSiteFsBlockedWrites', label: 'CodeSiteFS blocked writes', unit: 'count', value: 1, status: 'measured', sampleSize: 1 },
+          { key: 'lineProvenanceCoverage', label: 'Lines with causal provenance coverage', unit: 'ratio', value: 0.67, status: 'measured', sampleSize: 1 },
+        ],
+        quality: [
+          { key: 'testsRedAtLanding', label: 'Tests red at landing', unit: 'count', value: 0, status: 'measured', sampleSize: 0 },
+        ],
+        trust: [
+          { key: 'blackBoxCompletenessScore', label: 'Black-box completeness score', unit: 'ratio', value: 0.82, status: 'measured', sampleSize: 1 },
+          { key: 'humanReviewTimeSavedMs', label: 'Human review time saved', unit: 'duration_ms', value: null, status: 'not_instrumented', sampleSize: 0 },
+        ],
+      },
+    },
     events: [
       {
         id: 'event-1',
@@ -403,6 +432,13 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Airspace Map');
+    expect(container.textContent).toContain('Success Metrics');
+    expect(container.textContent).toContain('Collisions avoided');
+    expect(container.textContent).toContain('CodeSiteFS blocked writes');
+    expect(container.textContent).toContain('Line coverage');
+    expect(container.textContent).toContain('67%');
+    expect(container.textContent).toContain('Black box');
+    expect(container.textContent).toContain('82%');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
     expect(container.textContent).toContain('Tower Simulator');

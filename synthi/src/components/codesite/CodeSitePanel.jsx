@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ClipboardCheck,
   FileJson,
@@ -49,6 +50,32 @@ function formatPercent(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '0%';
   return `${Math.round(numeric * 100)}%`;
+}
+
+function formatDurationMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '0s';
+  if (numeric < 1000) return `${Math.round(numeric)}ms`;
+  const seconds = numeric / 1000;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function formatMetricValue(metric) {
+  if (!metric || metric.value == null) return 'n/a';
+  if (metric.unit === 'ratio') return formatPercent(metric.value);
+  if (metric.unit === 'duration_ms') return formatDurationMs(metric.value);
+  return String(metric.value);
+}
+
+function metricTone(metric) {
+  if (!metric || metric.status === 'not_instrumented') return 'pending';
+  const value = Number(metric.value);
+  if (!Number.isFinite(value)) return 'idle';
+  if (/blocked|violation|abort|goAround|red|rollback|drift/i.test(metric.key || '')) return value > 0 ? 'holding' : 'active';
+  return value > 0 ? 'active' : 'idle';
 }
 
 function parseLineRange(lineAnchor) {
@@ -217,6 +244,38 @@ function Metric({ label, value, tone = null, testId }) {
           {value}
         </div>
         {tone ? <span className="h-2 w-2 rounded-full" style={riskTone(tone)} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function MetricRow({ metric }) {
+  return (
+    <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="min-w-0">
+        <div className="truncate text-xs font-medium" title={metric.label} style={{ color: 'var(--text-primary)' }}>{metric.label}</div>
+        <div className="mt-0.5 truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>
+          {metric.status === 'not_instrumented' ? 'needs instrumentation' : `${metric.sampleSize || 0} evidence refs`}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-sm tabular-nums" title={formatMetricValue(metric)} style={{ color: 'var(--text-primary)' }}>
+          {formatMetricValue(metric)}
+        </span>
+        <span className="h-2 w-2 rounded-full" style={riskTone(metricTone(metric))} />
+      </div>
+    </div>
+  );
+}
+
+function MetricsGroup({ title, rows }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-[11px] font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>{title}</div>
+      <div className="min-w-0">
+        {asArray(rows).map((metric) => (
+          <MetricRow key={metric.key} metric={metric} />
+        ))}
       </div>
     </div>
   );
@@ -776,6 +835,9 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
   const currentProject = radarState.project;
   const controlState = radarState.controlState;
+  const metrics = radarState.metrics;
+  const metricSections = metrics?.sections || {};
+  const metricSummary = metrics?.summary || {};
   const hasProjects = radarState.projects.length > 0;
   const risks = radarState.collisionForecast.risks;
   const activeFlights = asArray(controlState?.activeFlights);
@@ -926,7 +988,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       {loading && !currentProject && !error ? (
         <LoadingSkeleton />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto" tabIndex={0} aria-label="CodeSite evidence sections">
+        <div className="min-h-0 flex-1 overflow-y-auto pb-16" tabIndex={0} aria-label="CodeSite evidence sections">
           {error ? (
             <div className="m-3 rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 38%, var(--border-subtle))', color: 'var(--text-primary)' }}>
               {error.status ? `${error.status}: ` : null}{error.message}
@@ -980,6 +1042,31 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <Metric label="Risk" value={compact(radarState.collisionForecast.riskLevel, 'unknown')} tone={radarState.collisionForecast.riskLevel} />
                 </div>
               </div>
+
+              <Section title="Success Metrics" icon={BarChart3} right={<Pill tone={metrics?.status || 'pending'}>{metrics ? 'measured' : 'no data'}</Pill>}>
+                {metrics ? (
+                  <div data-testid="codesite-success-metrics" className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                    <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+                      <MetricsGroup title="ATC" rows={metricSections.atc} />
+                      <MetricsGroup title="Transaction" rows={metricSections.transaction} />
+                    </div>
+                    <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-1">
+                      <MetricsGroup title="Quality" rows={metricSections.quality} />
+                      <MetricsGroup title="Trust" rows={metricSections.trust} />
+                    </div>
+                    <div className="min-w-0 lg:col-span-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
+                        <Metric label="Avoided" value={compact(metricSummary.collisionsAvoided, '0')} tone={metricSummary.collisionsAvoided ? 'active' : 'idle'} />
+                        <Metric label="Blocked" value={compact(metricSummary.codeSiteFsBlockedWrites, '0')} tone={metricSummary.codeSiteFsBlockedWrites ? 'holding' : 'idle'} />
+                        <Metric label="Line coverage" value={formatPercent(metricSummary.lineProvenanceCoverage || 0)} tone={metricSummary.lineProvenanceCoverage ? 'active' : 'pending'} />
+                        <Metric label="Black box" value={metricSummary.blackBoxCompletenessScore == null ? 'n/a' : formatPercent(metricSummary.blackBoxCompletenessScore)} tone={metricSummary.blackBoxCompletenessScore ? 'active' : 'pending'} />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyLine>No success metrics exported yet</EmptyLine>
+                )}
+              </Section>
 
               <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
                 <AirspaceMap

@@ -83,9 +83,11 @@ describe('CodeSite artifact projection', () => {
     const manifestTools = manifest.mcp_tools;
     expect(manifestTools).toEqual(CODESITE_MCP_TOOLS);
     expect(manifestTools).toContain('synthi_codesite_get_radar');
+    expect(manifestTools).toContain('synthi_codesite_get_metrics');
     expect(manifestTools).toContain('synthi_codesite_preflight_write');
     expect(manifestTools).toContain('synthi_codesite_get_inbox');
     expect(manifest.compiler_output).toBe('airspace/compiler-output.json');
+    expect(manifest.metrics).toBe('projects/site_signup_email_verification/metrics.json');
     expect(paths).toContain('airspace/compiler-output.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'airspace/compiler-output.json').content)).toMatchObject({
       schemaVersion: 'synthi.codesite.repoPolicyCompilerOutput.v1',
@@ -104,6 +106,21 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('schemas/inspection-run.schema.json');
     expect(paths).toContain('schemas/incident.schema.json');
     expect(paths).toContain('schemas/incident-replay.schema.json');
+    expect(paths).toContain('schemas/metrics.schema.json');
+    expect(paths).toContain('projects/site_signup_email_verification/metrics.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/metrics.json').content)).toMatchObject({
+      schemaVersion: 'synthi.codesite.metrics.v1',
+      summary: expect.objectContaining({
+        collisionsPredicted: expect.any(Number),
+        lineProvenanceCoverage: expect.any(Number),
+      }),
+      sections: expect.objectContaining({
+        atc: expect.any(Array),
+        transaction: expect.any(Array),
+        quality: expect.any(Array),
+        trust: expect.any(Array),
+      }),
+    });
     expect(paths).toContain('projects/site_signup_email_verification/events.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/flight-plan.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/clearance.json');
@@ -138,6 +155,7 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
+	    expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
     expect(codesiteSchemas()['line-provenance.schema.json'].properties).toMatchObject({
@@ -162,6 +180,7 @@ describe('CodeSite artifact projection', () => {
     expect(result.written).toBe(true);
     expect(result.files).toContain('manifest.json');
     await expect(fs.readFile(path.join(root, '.synthi', 'codesite', 'manifest.json'), 'utf8')).resolves.toContain('synthi_codesite_get_radar');
+    await expect(fs.readFile(path.join(root, '.synthi', 'codesite', 'projects/site_signup_email_verification/metrics.json'), 'utf8')).resolves.toContain('synthi.codesite.metrics.v1');
   });
 
   it('atomically refreshes the repo-local artifact tree and removes stale projected files', async () => {

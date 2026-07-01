@@ -16,6 +16,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_request_commit",
   "synthi_codesite_get_source_state_since",
   "synthi_codesite_get_radar",
+  "synthi_codesite_get_metrics",
   "synthi_codesite_next_event",
   "synthi_codesite_get_inbox",
   "synthi_codesite_ack_event",
@@ -179,6 +180,7 @@ export const CODESITE_TOOLS = [
     transaction_id: { type: "string" },
   }, ["transaction_id"]),
   codeSiteTool("synthi_codesite_get_radar", "Read machine-readable CodeSite radar/control state.", {}, []),
+  codeSiteTool("synthi_codesite_get_metrics", "Read CodeSite ATC, transaction, software quality, and trust success metrics for the project.", {}, []),
   codeSiteTool("synthi_codesite_next_event", "Poll the next CodeSite event after an optional event id.", {
     since: { type: "string" },
   }, []),
@@ -380,6 +382,11 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
       return {
         method: "GET",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/control-state`,
+      };
+    case "synthi_codesite_get_metrics":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/metrics`,
       };
     case "synthi_codesite_next_event":
       return {

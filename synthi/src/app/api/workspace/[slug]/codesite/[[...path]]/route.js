@@ -21,6 +21,7 @@ import {
   getEvents,
   getIncidentReplay,
   getLineProvenance,
+  getCodeSiteMetrics,
   getProofBundle,
   getProject,
   getSchemas,
@@ -77,6 +78,10 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'control-state') {
       return okJson(await getControlState(slug, route[1]));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'metrics') {
+      return okJson({ metrics: await getCodeSiteMetrics(slug, route[1]) });
     }
 
     if (route[0] === 'projects' && route[2] === 'events' && route[3] !== 'stream') {
