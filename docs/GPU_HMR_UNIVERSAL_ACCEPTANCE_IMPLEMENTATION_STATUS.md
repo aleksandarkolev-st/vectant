@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Random Cold-Path Coverage Boundary
+
+The `random_large_arbitrary_project_cold_path` plan coverage entry no longer reports `refused` for every random cold-path refusal. It now reports `refused` only when at least one row also satisfies the direct large arbitrary-project cold selector: direct CLI/env source input, unprofiled arbitrary cold intake, immutable source identity, source-derived backend candidates, content-backed build metadata, validated support-only runtime-boundary template, no success/runtime/dispatch authority claims, and the large-source threshold. Sub-threshold direct rows report `candidate_only`; configured-pool, profile-backed, or otherwise non-qualifying refusal rows report `diagnostic_only`; preflight-only rows remain `preflight_only`.
+
+Smoke coverage now proves all three shapes: a single non-qualifying direct row is diagnostic-only, configured/profile-backed rows are diagnostic-only with `qualifying_direct_random_large_project_cold_path_required`, small direct rows are candidate-only with `random_large_project_cold_path_large_source_required`, and five qualifying direct large rows report `refused` with `qualifyingRowCount=5`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including random cold-path coverage status tiers, latest observed proof gpu-validation-matrix-ledger:sha256:a57bfada39801c07ce1f4ca2fe43bc04e8aa6138a5335ee2398d562a8ae40d47, rows=66
+```
+
 ## 2026-07-01 Source-First Visual Coverage Boundary
 
 The `source_first_uncompiled_project_validation` plan coverage entry now uses the same source-first visual selector family as broad readiness, with only the broad-only source-authority and explicit output-oracle-facet requirements relaxed. It still requires typed source-first ingestion, support-only async visual/CAS evidence, accepted visual artifacts, schema-bound matrix-recomputed full-runtime authority, `authority=strict_runtime_proof_artifact`, and strict runtime visual authority. The old coverage path could count a row through a weaker compute/output fallback; that shortcut is removed.

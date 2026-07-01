@@ -1865,10 +1865,25 @@ assert.ok(randomColdRow.openGaps.includes('strict_runtime_ledger_missing'));
 const randomColdCoverage = new Map(
   randomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
-assert.equal(randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status, 'refused');
+assert.equal(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'diagnostic_only',
+);
+assert.equal(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.equal(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
+  0,
+);
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
   1,
+);
+assert.ok(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
 
 const forgedCandidateBackendDir = path.join(tmpRoot, 'random-large-project-cold-path-backend-forged');
@@ -8506,6 +8521,21 @@ assert.ok(
     'broad_acceptance_requires_random_large_project_cold_path',
   ),
 );
+const profiledColdOnlyCoverage = new Map(
+  broadReadinessWithProfiledColdOnlyQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  profiledColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'diagnostic_only',
+);
+assert.equal(
+  profiledColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.ok(
+  profiledColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
 const broadReadinessWithConfiguredUnprofiledColdOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -8532,6 +8562,23 @@ assert.equal(
 assert.ok(
   broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const configuredColdOnlyCoverage = new Map(
+  broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  configuredColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'diagnostic_only',
+);
+assert.equal(
+  configuredColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.ok(
+  configuredColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
 const broadReadinessForgedDirectSourceRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
@@ -8708,6 +8755,25 @@ assert.equal(
 assert.ok(
   broadReadinessWithSmallRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_large_random_project_cold_paths'),
+);
+const smallRandomColdCoverage = new Map(
+  broadReadinessWithSmallRandomColdQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'candidate_only',
+);
+assert.equal(
+  smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.equal(
+  smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
+  5,
+);
+assert.ok(
+  smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('random_large_project_cold_path_large_source_required'),
 );
 const broadReadinessWithoutSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -8888,6 +8954,21 @@ const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
   rows: broadReadinessRowsWithRandomCold,
 });
 assert.equal(broadReadinessQuery.accepted, true);
+const broadReadinessCoverage = new Map(
+  broadReadinessQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'refused',
+);
+assert.equal(
+  broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
+  5,
+);
 assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
 assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 0);
 assert.equal(broadReadinessQuery.summary.scopedFullRuntimeGpuHmrRows, 4);

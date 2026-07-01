@@ -23134,6 +23134,10 @@ function planCoverage(rows) {
     row.proofMode === 'random_large_project_cold_path'
   );
   const randomColdRows = [...randomColdRefusalRows, ...randomColdPreflightRows];
+  const qualifyingRandomColdRows = randomColdPathRowsForBroadReadiness(rows);
+  const candidateRandomColdRows = randomColdPathRowsForBroadReadiness(rows, {
+    requireLargeSourceTree: false,
+  });
 
   return [
     coverageEntry({
@@ -23163,15 +23167,33 @@ function planCoverage(rows) {
     coverageEntry({
       id: 'random_large_arbitrary_project_cold_path',
       requirement: 'Random large arbitrary-project cold-path intake with immutable source, build metadata, runtime-boundary expectation, and fail-closed proof gaps',
-      status: randomColdRefusalRows.length > 0
+      status: qualifyingRandomColdRows.length > 0
         ? 'refused'
-        : randomColdPreflightRows.length > 0
-          ? 'preflight_only'
-          : 'missing',
+        : candidateRandomColdRows.length > 0
+          ? 'candidate_only'
+          : randomColdRefusalRows.length > 0
+            ? 'diagnostic_only'
+            : randomColdPreflightRows.length > 0
+              ? 'preflight_only'
+              : 'missing',
       rows: randomColdRows,
-      openGaps: randomColdRows.length > 0
+      openGaps: qualifyingRandomColdRows.length > 0
         ? compactStringList(randomColdRows.flatMap((row) => row.openGaps))
-        : ['random_large_project_cold_path_required'],
+        : candidateRandomColdRows.length > 0
+          ? [
+            'random_large_project_cold_path_large_source_required',
+            ...compactStringList(randomColdRows.flatMap((row) => row.openGaps)),
+          ]
+          : randomColdRows.length > 0
+            ? [
+              'qualifying_direct_random_large_project_cold_path_required',
+              ...compactStringList(randomColdRows.flatMap((row) => row.openGaps)),
+            ]
+            : ['random_large_project_cold_path_required'],
+      qualifyingRowCount: qualifyingRandomColdRows.length,
+      qualifying_row_count: qualifyingRandomColdRows.length,
+      candidateRowCount: candidateRandomColdRows.length,
+      candidate_row_count: candidateRandomColdRows.length,
       refusalRowCount: randomColdRefusalRows.length,
       refusal_row_count: randomColdRefusalRows.length,
       preflightRowCount: randomColdPreflightRows.length,
