@@ -83,6 +83,10 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteCounterfactualRun: {
       create: vi.fn(),
     },
+    codeSitePolicyDelta: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
     codeSiteMutationZone: {
       upsert: vi.fn(),
     },
@@ -531,6 +535,13 @@ describe('CodeSite control plane transaction validation', () => {
       ...data,
     }));
     prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
+    prisma.codeSitePolicyDelta.create.mockImplementation(async ({ data }) => ({
+      id: 'delta-created',
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValue([]);
 	  });
 
   it('serves the shared MCP tool contract from the agent manifest', async () => {
@@ -2786,6 +2797,178 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: expect.stringContaining('schema-first'),
       }),
     }));
+  });
+
+  it('applies promoted counterfactual policy deltas to future tower simulation', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['packages/schemas/auth.ts', 'app/signup/page.tsx', 'tests/auth/signup.test.ts'],
+        importEdges: [{ from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] }],
+        testOwnership: [{ testPath: 'tests/auth/signup.test.ts', covers: ['packages/schemas/auth.ts', 'app/signup/page.tsx'] }],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: [],
+      },
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned coordination',
+      request: 'Coordinate signup schema and UI',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change signup contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-ui',
+          projectId: 'project-1',
+          agentSessionId: 'agent-ui',
+          displayCallsign: 'UI-02',
+          mission: 'Build signup UI',
+          domain: 'frontend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['app/signup/page.tsx']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-test-first',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-signup-1']),
+        affectedZoneKey: null,
+        ruleCandidateJson: JSON.stringify({
+          rule: 'contract_churn_requires_owned_tests',
+          preferredStrategies: ['test-first'],
+          avoidStrategies: ['schema-first', 'frontend-backend-parallel'],
+          requiredTowerActions: ['run_owned_tests_before_landing'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }]),
+        expectedRiskReduction: 0.6,
+        confidence: 0.95,
+        promotionState: 'promoted',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-old']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+      {
+        id: 'delta-proposed-ignored',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify([]),
+        affectedZoneKey: null,
+        ruleCandidateJson: JSON.stringify({ preferredStrategies: ['single-fullstack-agent'] }),
+        triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }]),
+        expectedRiskReduction: 0.6,
+        confidence: 0.95,
+        promotionState: 'proposed',
+        replayRefsJson: JSON.stringify([]),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: null,
+      },
+    ]);
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-learned',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema-first', 'frontend-backend-parallel', 'test-first'],
+    });
+
+    expect(result.selected).toBe('test-first');
+    expect(result.appliedPolicyDeltas).toEqual(['delta-test-first']);
+    expect(result.evidenceRefs).toContain('codesite:policy-delta:delta-test-first');
+    const testUniverse = result.universes.find((universe) => universe.strategy === 'test-first');
+    expect(testUniverse.reasonCodes).toEqual(expect.arrayContaining([
+      'learned_policy_delta_preferred_strategy',
+      'counterfactual_policy_delta_applied',
+    ]));
+    expect(testUniverse.learnedPolicyDeltaRefs).toEqual(['delta-test-first']);
+    expect(testUniverse.sourceSignals.learnedPolicyDeltas).toBe(1);
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(schemaUniverse.reasonCodes).toContain('learned_policy_delta_avoided_strategy');
+    expect(schemaUniverse.reasonCodes).not.toContain('learned_policy_delta_preferred_strategy');
+  });
+
+  it('holds matching lease requests when active counterfactual policy requires sequencing', async () => {
+    const plan = executionPlanFixture(['src/components/SignupForm.tsx']);
+    plan.domain = 'frontend';
+    plan.project.zonePolicyJson = JSON.stringify({
+      zones: [
+        { zoneKey: 'signup-ui', class: 'C', label: 'Signup UI', paths: ['src/components/**'], rules: [], risk: 'medium' },
+      ],
+      noFlyZones: ['secrets/**'],
+    });
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValueOnce(plan);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-sequence-ui',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-ui-1']),
+        affectedZoneKey: 'Signup-UI',
+        ruleCandidateJson: JSON.stringify({
+          rule: 'sequence_frontend_after_contract_rfi',
+          decision: 'hold',
+          requiredRadar: ['visual'],
+          requiredTowerActions: ['sequence_after_contract_response'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ path: 'src/components/**' }]),
+        expectedRiskReduction: 0.3,
+        confidence: 0.9,
+        promotionState: 'active',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-ui']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+    ]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['src/components/SignupForm.tsx'],
+      allowedTools: ['file_write'],
+      requiredRadar: ['tests'],
+    }, { userId: 'user-1' });
+
+    expect(lease.status).toBe('holding');
+    expect(lease.lease.requiredRadar).toEqual(expect.arrayContaining(['tests', 'visual']));
+    expect(lease.lease.counterfactualPolicy).toMatchObject({
+      appliedPolicyDeltas: ['delta-sequence-ui'],
+      reasonCodes: expect.arrayContaining(['counterfactual_policy_delta_hold']),
+    });
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'counterfactual_policy_delta_applied',
+      'counterfactual_policy_delta_hold',
+    ]));
   });
 
   it('treats migration-only simulator pressure as a single runway problem', async () => {

@@ -44,6 +44,7 @@ const DEFAULT_TOWER_SIMULATION_STRATEGIES = [
   'single-fullstack-agent',
   'test-first',
 ];
+const PROMOTED_POLICY_DELTA_STATES = new Set(['accepted', 'active', 'promoted', 'validated']);
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -697,7 +698,24 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     requestedLease,
     zonePolicy,
   });
-  const clearancePolicy = applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance);
+  const counterfactualPolicy = await counterfactualPolicyGateForLeaseRequest({
+    workspaceSlug,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+    collisionAvoidance,
+  });
+  const clearancePolicy = applyCounterfactualPolicyGate(
+    applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
+    counterfactualPolicy,
+  );
+  const finalRequestedLease = {
+    ...requestedLease,
+    requiredRadar: unique([
+      ...asArray(requestedLease.requiredRadar),
+      ...asArray(counterfactualPolicy.requiredRadar),
+    ]),
+  };
   const lease = await prisma.codeSiteMutationLease.create({
     data: {
       projectId: plan.projectId,
@@ -706,12 +724,13 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       displayCallsign: plan.displayCallsign,
       status: clearancePolicy.status,
       leaseJson: stringifyJson({
-        ...requestedLease,
+        ...finalRequestedLease,
         issuedBy: 'codesite_policy_engine',
         towerInstruction: clearancePolicy.towerInstruction,
         inspectedZones: clearancePolicy.inspectedZones,
         dojoProofVerification: dojoProofSummary.verification,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+        counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
       }),
       dojoProofRef: dojoProof.proofRef,
       dojoLicenseRef: dojoProof.licenseRef,
@@ -727,13 +746,14 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     displayCallsign: lease.displayCallsign,
     decision: clearancePolicy.decision,
     reasonCodes: clearancePolicy.reasonCodes,
-    input: { executionPlan, requestedLease, dojoProof: dojoProofSummary },
+    input: { executionPlan, requestedLease: finalRequestedLease, dojoProof: dojoProofSummary },
     decisionJson: {
       status: clearancePolicy.status,
       towerInstruction: clearancePolicy.towerInstruction,
       inspectedZones: clearancePolicy.inspectedZones,
       dojoProof: dojoProofSummary,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+      counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
   });
   await recordEvent(plan.projectId, {
@@ -749,6 +769,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       reasonCodes: clearancePolicy.reasonCodes,
       towerInstruction: clearancePolicy.towerInstruction,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+      counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
   });
   if (clearancePolicy.collisionAvoidance) {
@@ -852,6 +873,105 @@ function towerCollisionInstruction(risk) {
   const action = risk.recommendedResolution?.action || 'sequence_flights';
   const aircraft = asArray(risk.aircraft).filter(Boolean).join(' and ') || 'affected flights';
   return `Hold position: ${risk.risk} risk in ${risk.conflictZone}. Tower recommends ${action} for ${aircraft}.`;
+}
+
+async function counterfactualPolicyGateForLeaseRequest({ workspaceSlug, executionPlan, requestedLease, zonePolicy, collisionAvoidance }) {
+  const learnedDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
+  if (!learnedDeltas.length) {
+    return emptyCounterfactualPolicyGate();
+  }
+  const route = pathsForRoute(requestedLease.allowedPaths || executionPlan.route);
+  const semanticGraph = zonePolicy?.semanticGraph || zonePolicy?.repoSignals || {};
+  const footprint = towerRouteFootprint({
+    plan: { ...executionPlan, route },
+    zonePolicy,
+    semanticGraph,
+    priorIncidents: [],
+    inspectionRuns: [],
+  });
+  const collisionRisks = asArray(collisionAvoidance?.risks || collisionAvoidance?.risk)
+    .map((risk) => (typeof risk === 'string' ? { risk } : risk))
+    .filter(Boolean);
+  const signals = {
+    footprints: [footprint],
+    forecast: { risks: collisionRisks },
+    migrationLocks: asArray(semanticGraph.migrationLocks).filter((lock) =>
+      route.some((pattern) => towerPathsOverlap(lock, pattern))),
+    packageExports: footprint.packageExports,
+  };
+  const applied = [];
+  const requiredRadar = [];
+  const requiredTowerActions = [];
+  for (const delta of learnedDeltas) {
+    if (!learnedPolicyDeltaApplies(delta, signals)) continue;
+    const candidate = delta.ruleCandidate || {};
+    applied.push(delta);
+    requiredRadar.push(...asArray(candidate.requiredRadar || candidate.required_radar || candidate.radar));
+    requiredTowerActions.push(...asArray(candidate.requiredTowerActions || candidate.required_tower_actions || candidate.actions));
+  }
+  const hold = applied.some((delta) => learnedPolicyDeltaHoldsLease(delta));
+  return {
+    appliedPolicyDeltas: applied.map((delta) => delta.id).filter(Boolean),
+    reasonCodes: unique([
+      ...(applied.length ? ['counterfactual_policy_delta_applied'] : []),
+      ...(hold ? ['counterfactual_policy_delta_hold'] : []),
+    ]),
+    requiredRadar: unique(requiredRadar.map(String).filter(Boolean)),
+    requiredTowerActions: unique(requiredTowerActions.map(String).filter(Boolean)),
+    status: hold ? 'holding' : null,
+    decision: hold ? 'hold' : null,
+    towerInstruction: hold
+      ? `Hold position: learned counterfactual policy requires tower sequencing for ${route.join(', ')}.`
+      : null,
+  };
+}
+
+function emptyCounterfactualPolicyGate() {
+  return {
+    appliedPolicyDeltas: [],
+    reasonCodes: [],
+    requiredRadar: [],
+    requiredTowerActions: [],
+    status: null,
+    decision: null,
+    towerInstruction: null,
+  };
+}
+
+function applyCounterfactualPolicyGate(policy, counterfactualPolicy = {}) {
+  if (policy.decision === 'block' || !asArray(counterfactualPolicy.appliedPolicyDeltas).length) return policy;
+  const reasonCodes = unique([
+    ...asArray(policy.reasonCodes),
+    ...asArray(counterfactualPolicy.reasonCodes),
+  ]);
+  const towerInstruction = counterfactualPolicy.towerInstruction || policy.towerInstruction;
+  if (counterfactualPolicy.decision === 'hold') {
+    return {
+      ...policy,
+      decision: 'hold',
+      status: 'holding',
+      reasonCodes,
+      towerInstruction,
+      counterfactualPolicy,
+    };
+  }
+  return {
+    ...policy,
+    reasonCodes,
+    towerInstruction,
+    counterfactualPolicy,
+  };
+}
+
+function learnedPolicyDeltaHoldsLease(delta) {
+  const candidate = delta.ruleCandidate || {};
+  const text = learnedRuleText(candidate);
+  const actions = asArray(candidate.requiredTowerActions || candidate.required_tower_actions || candidate.actions)
+    .map((action) => String(action || '').toLowerCase());
+  return candidate.hold === true
+    || ['hold', 'holding'].includes(String(candidate.decision || candidate.enforcement || '').toLowerCase())
+    || actions.some((action) => /(^|[_ -])(hold|wait|sequence|gate)([_ -]|$)/.test(action))
+    || /(^|[_ -])(hold|wait|sequence|gate)([_ -]|$)/.test(text);
 }
 
 function applyDojoClearanceGate(policy, dojoProof = {}) {
@@ -3842,6 +3962,9 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
     },
   });
+  await persistCounterfactualPolicyDeltaCandidates(project.id, run, arbiterVerdict, {
+    evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+  });
   await recordEvent(project.id, {
     eventType: 'shadow_run',
     actorType: 'counterfactual',
@@ -3868,17 +3991,20 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
 
 export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
   const project = await requireProject(workspaceSlug, projectId);
+  const promotionState = String(body.promotionState || body.promotion_state || 'proposed').toLowerCase();
+  const ruleCandidate = normalizePolicyDeltaRuleCandidate(body.ruleCandidate || body.rule_candidate || body);
   const delta = await prisma.codeSitePolicyDelta.create({
     data: {
       projectId: project.id,
       learnedFromIncidentsJson: stringifyJson(body.learnedFromIncidents || body.learned_from_incidents || []),
       affectedZoneKey: body.affectedZoneKey || body.affected_zone_key || null,
-      ruleCandidateJson: stringifyJson(body.ruleCandidate || body.rule_candidate || {}),
+      ruleCandidateJson: stringifyJson(ruleCandidate),
       triggerConditionsJson: stringifyJson(body.triggerConditions || body.trigger_conditions || []),
       expectedRiskReduction: typeof body.expectedRiskReduction === 'number' ? body.expectedRiskReduction : body.expected_risk_reduction,
       confidence: typeof body.confidence === 'number' ? body.confidence : 0.5,
-      promotionState: body.promotionState || body.promotion_state || 'proposed',
+      promotionState,
       replayRefsJson: stringifyJson(body.replayRefs || body.replay_refs || []),
+      promotedAt: PROMOTED_POLICY_DELTA_STATES.has(promotionState) ? (body.promotedAt ? new Date(body.promotedAt) : new Date()) : null,
     },
   });
   await recordEvent(project.id, {
@@ -3888,6 +4014,81 @@ export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
     details: { policyDeltaId: delta.id, affectedZoneKey: delta.affectedZoneKey, confidence: delta.confidence },
   });
   return policyDeltaProjection(delta);
+}
+
+async function persistCounterfactualPolicyDeltaCandidates(projectId, run, arbiterVerdict, context = {}) {
+  const candidates = uniquePolicyDeltaCandidates(asArray(arbiterVerdict?.policyDeltaCandidates || arbiterVerdict?.policy_delta_candidates));
+  if (!candidates.length) return [];
+  const created = [];
+  for (const candidate of candidates) {
+    const ruleCandidate = normalizePolicyDeltaRuleCandidate(candidate);
+    const triggerConditions = asArray(candidate.triggerConditions || candidate.trigger_conditions || candidate.affectedRoutes || candidate.affected_routes)
+      .map((item) => (typeof item === 'string' ? { path: item } : item))
+      .filter(Boolean);
+    const delta = await prisma.codeSitePolicyDelta.create({
+      data: {
+        projectId,
+        learnedFromIncidentsJson: stringifyJson(candidate.learnedFromIncidents || candidate.learned_from_incidents || candidate.affectedIncidents || candidate.affected_incidents || []),
+        affectedZoneKey: candidate.affectedZoneKey || candidate.affected_zone_key || null,
+        ruleCandidateJson: stringifyJson(ruleCandidate),
+        triggerConditionsJson: stringifyJson(triggerConditions),
+        expectedRiskReduction: typeof candidate.expectedRiskReduction === 'number' ? candidate.expectedRiskReduction : candidate.expected_risk_reduction,
+        confidence: typeof candidate.confidence === 'number' ? candidate.confidence : 0.5,
+        promotionState: 'proposed',
+        replayRefsJson: stringifyJson(unique([
+          `codesite:counterfactual-run:${run.id}`,
+          run.shadowJobRef && `shadow:job:${run.shadowJobRef}`,
+          ...asArray(context.evidenceRefs),
+        ].filter(Boolean))),
+        promotedAt: null,
+      },
+    });
+    created.push(delta);
+    await recordEvent(projectId, {
+      eventType: 'policy_delta_proposed',
+      actorType: 'counterfactual',
+      actorId: run.id,
+      evidenceRefs: context.evidenceRefs,
+      details: {
+        policyDeltaId: delta.id,
+        counterfactualRunId: run.id,
+        shadowJobRef: run.shadowJobRef,
+        promotionState: 'proposed',
+        confidence: delta.confidence,
+        ruleCandidate,
+      },
+    });
+  }
+  return created.map(policyDeltaProjection);
+}
+
+function uniquePolicyDeltaCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    const key = stableJson(normalizePolicyDeltaRuleCandidate(candidate));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizePolicyDeltaRuleCandidate(candidate = {}) {
+  const preferredStrategies = unique(asArray(candidate.preferredStrategies || candidate.preferred_strategies || candidate.preferredStrategy || candidate.preferred_strategy || candidate.strategy)
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  const avoidStrategies = unique(asArray(candidate.avoidStrategies || candidate.avoid_strategies || candidate.avoidStrategy || candidate.avoid_strategy || candidate.blockedStrategies || candidate.blocked_strategies)
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  return {
+    ...candidate,
+    rule: candidate.rule || candidate.candidate || candidate.name || 'counterfactual_policy_delta',
+    ...(preferredStrategies.length ? { preferredStrategies } : {}),
+    ...(avoidStrategies.length ? { avoidStrategies } : {}),
+    ...(candidate.requiredTowerActions || candidate.required_tower_actions
+      ? { requiredTowerActions: asArray(candidate.requiredTowerActions || candidate.required_tower_actions).map(String).filter(Boolean) }
+      : {}),
+  };
 }
 
 export async function getControlState(workspaceSlug, projectId) {
@@ -4063,6 +4264,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const executionPlans = project.executionPlans.map(executionPlanProjection);
   const mutationLeases = project.mutationLeases.map(mutationLeaseProjection);
+  const learnedPolicyDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
   const forecast = predictCollisions({
     executionPlans,
     leases: mutationLeases,
@@ -4085,6 +4287,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
     mutationLeases,
     forecast,
     zonePolicy,
+    learnedPolicyDeltas,
   });
   const universes = strategySet.map((strategy) => scoreTowerStrategy(strategy, towerSignals));
   const selected = universes.slice().sort((a, b) => {
@@ -4112,10 +4315,12 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
     `codesite:collision-forecast:${digest(forecast)}`,
     ...towerSignals.priorIncidents.map((incident) => `codesite:incident:${incident.id}`).filter(Boolean),
     ...towerSignals.inspectionRuns.map((run) => `codesite:inspection:${run.id}`).filter(Boolean),
+    ...towerSignals.learnedPolicyDeltas.map((delta) => `codesite:policy-delta:${delta.id}`).filter(Boolean),
   ]);
   const policyDeltaCandidates = buildTowerPolicyDeltaCandidates(towerSignals, selected);
   const result = {
     selected: selected.strategy,
+    appliedPolicyDeltas: selected.learnedPolicyDeltaRefs || [],
     reason: {
       reasonCodes: selected.reasonCodes,
       staleAssumptions: selected.staleAssumptions,
@@ -4123,6 +4328,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
       predictedCollisionRisk: selected.predictedCollisionRisk,
       riskLevel: forecast.riskLevel,
       sourceSignals: selected.sourceSignals,
+      learnedPolicyDeltaRefs: selected.learnedPolicyDeltaRefs || [],
     },
     universes,
     shadowJobRef,
@@ -4142,10 +4348,11 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
   return result;
 }
 
-function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, forecast, zonePolicy }) {
+function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, forecast, zonePolicy, learnedPolicyDeltas = [] }) {
   const semanticGraph = zonePolicy?.semanticGraph || {};
   const priorIncidents = asArray(project.incidents).map(towerIncidentSignal);
   const inspectionRuns = asArray(project.inspectionRuns).map(towerInspectionSignal);
+  const learnedDeltas = asArray(learnedPolicyDeltas).map(normalizeLearnedPolicyDelta).filter(Boolean);
   const activeLeases = mutationLeases.filter((lease) => lease.status === 'active');
   const footprints = executionPlans.map((plan) => towerRouteFootprint({
     plan,
@@ -4184,6 +4391,12 @@ function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, 
     routeDigest,
     incidents: priorIncidents.map((incident) => incident.id),
     inspections: inspectionRuns.map((run) => run.id),
+    learnedPolicyDeltas: learnedDeltas.map((delta) => ({
+      id: delta.id,
+      ruleCandidate: delta.ruleCandidate,
+      triggerConditions: delta.triggerConditions,
+      confidence: delta.confidence,
+    })),
   });
   const summary = {
     signalStrength: sourceSignalStrength({ semanticGraph, priorIncidents, inspectionRuns }),
@@ -4202,6 +4415,7 @@ function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, 
     migrationLocks: migrationLocks.length,
     packageExports: packageExports.length,
     priorIncidents: priorIncidents.length,
+    learnedPolicyDeltas: learnedDeltas.length,
     activeLeaseLocks: unique(activeLeaseLocks).length,
     inspectionRuns: inspectionRuns.length,
   };
@@ -4222,6 +4436,7 @@ function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, 
     forecast,
     footprints,
     priorIncidents,
+    learnedPolicyDeltas: learnedDeltas,
     inspectionRuns,
     activeLeases,
     semanticGraph,
@@ -4396,6 +4611,7 @@ function scoreTowerStrategy(strategy, signals) {
     costDelta: 2,
     reasonCodes: ['custom_strategy_scored_from_repo_signals'],
   };
+  const learnedMemory = learnedPolicyMemoryForStrategy(normalized, signals);
   const riskResolution = resolveTowerStrategyRisks(normalized, signals, {
     hasSchemaContractPressure,
     hasMigrationPressure,
@@ -4403,9 +4619,9 @@ function scoreTowerStrategy(strategy, signals) {
   });
   const adjustedRisk = Math.max(0, baseRisk * profile.riskMultiplier);
   const unresolvedRiskPenalty = riskResolution.unresolvedRisks.length * 0.18;
-  const predictedCollisionRisk = clamp(roundTo((adjustedRisk / 28) + unresolvedRiskPenalty, 3), 0, 1);
-  const staleAssumptions = Math.max(0, Math.round(staleBase * profile.staleMultiplier));
-  const inspectionCost = Math.max(1, Math.round(costBase + profile.costDelta + (predictedCollisionRisk * 4)));
+  const predictedCollisionRisk = clamp(roundTo((adjustedRisk / 28) + unresolvedRiskPenalty + learnedMemory.riskDelta, 3), 0, 1);
+  const staleAssumptions = Math.max(0, Math.round((staleBase * profile.staleMultiplier) + learnedMemory.staleDelta));
+  const inspectionCost = Math.max(1, Math.round(costBase + profile.costDelta + learnedMemory.costDelta + (predictedCollisionRisk * 4)));
   const reworkRiskReduction = roundTo(Math.max(0, 1 - (adjustedRisk / Math.max(1, baseRisk || adjustedRisk || 1))), 3);
   const result = riskResolution.unresolvedRisks.length > 0
     ? (predictedCollisionRisk <= 0.55 ? 'review' : 'risk')
@@ -4428,7 +4644,9 @@ function scoreTowerStrategy(strategy, signals) {
       ...(signals.summary.migrationLocks ? ['migration_lock_weighted'] : []),
       ...(signals.summary.importGraphEdges ? ['import_graph_weighted'] : []),
       ...(signals.summary.testOwners ? ['test_ownership_weighted'] : []),
+      ...learnedMemory.reasonCodes,
     ]),
+    learnedPolicyDeltaRefs: learnedMemory.policyDeltaRefs,
     sourceSignals,
   };
 }
@@ -4512,10 +4730,178 @@ function strategySourceSignals(signals) {
     migrationLocks: signals.summary.migrationLocks,
     packageExports: signals.summary.packageExports,
     priorIncidents: signals.summary.priorIncidents,
+    learnedPolicyDeltas: signals.summary.learnedPolicyDeltas,
     activeLeaseLocks: signals.summary.activeLeaseLocks,
     inspectionRuns: signals.summary.inspectionRuns,
     signalStrength: signals.summary.signalStrength,
   };
+}
+
+async function promotedPolicyDeltasForWorkspace(workspaceSlug) {
+  const rows = await prisma.codeSitePolicyDelta.findMany({
+    where: {
+      project: { workspaceSlug },
+      promotionState: { in: [...PROMOTED_POLICY_DELTA_STATES] },
+      confidence: { gte: 0.65 },
+    },
+    orderBy: [{ promotedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 50,
+  });
+  return rows.map(normalizeLearnedPolicyDelta).filter(Boolean);
+}
+
+function normalizeLearnedPolicyDelta(delta) {
+  if (!delta) return null;
+  const projection = delta.ruleCandidate ? delta : policyDeltaProjection(delta);
+  const promotionState = String(projection.promotionState || '').toLowerCase();
+  const confidence = Number(projection.confidence || 0);
+  if (!PROMOTED_POLICY_DELTA_STATES.has(promotionState) || confidence < 0.65) return null;
+  return {
+    id: projection.id,
+    projectId: projection.projectId,
+    learnedFromIncidents: asArray(projection.learnedFromIncidents),
+    affectedZoneKey: projection.affectedZoneKey || null,
+    ruleCandidate: normalizePolicyDeltaRuleCandidate(projection.ruleCandidate || {}),
+    triggerConditions: asArray(projection.triggerConditions),
+    expectedRiskReduction: typeof projection.expectedRiskReduction === 'number' ? projection.expectedRiskReduction : 0.12,
+    confidence,
+    promotionState,
+    replayRefs: asArray(projection.replayRefs),
+  };
+}
+
+function learnedPolicyMemoryForStrategy(strategy, signals) {
+  const memory = {
+    riskDelta: 0,
+    staleDelta: 0,
+    costDelta: 0,
+    reasonCodes: [],
+    policyDeltaRefs: [],
+  };
+  for (const delta of asArray(signals.learnedPolicyDeltas)) {
+    if (!learnedPolicyDeltaApplies(delta, signals)) continue;
+    const policy = learnedPolicyStrategyPolicy(delta);
+    if (!policy.preferredStrategies.length && !policy.avoidStrategies.length) continue;
+    const confidence = clamp(Number(delta.confidence || 0.5), 0, 1);
+    const riskReduction = clamp(Number(delta.expectedRiskReduction || 0.12), 0.02, 0.6) * confidence;
+    if (policy.preferredStrategies.includes(strategy)) {
+      memory.riskDelta -= riskReduction;
+      memory.staleDelta -= Math.max(1, Math.round(confidence * 2));
+      memory.costDelta -= Math.max(1, Math.round(confidence * 3));
+      memory.reasonCodes.push('learned_policy_delta_preferred_strategy');
+      memory.policyDeltaRefs.push(delta.id);
+    }
+    if (policy.avoidStrategies.includes(strategy)) {
+      memory.riskDelta += riskReduction;
+      memory.staleDelta += Math.max(1, Math.round(confidence * 2));
+      memory.costDelta += Math.max(1, Math.round(confidence * 2));
+      memory.reasonCodes.push('learned_policy_delta_avoided_strategy');
+      memory.policyDeltaRefs.push(delta.id);
+    }
+  }
+  return {
+    riskDelta: roundTo(memory.riskDelta, 3),
+    staleDelta: memory.staleDelta,
+    costDelta: memory.costDelta,
+    reasonCodes: unique([
+      ...(memory.policyDeltaRefs.length ? ['counterfactual_policy_delta_applied'] : []),
+      ...memory.reasonCodes,
+    ]),
+    policyDeltaRefs: unique(memory.policyDeltaRefs),
+  };
+}
+
+function learnedPolicyStrategyPolicy(delta) {
+  const candidate = delta.ruleCandidate || {};
+  const explicitPreferred = unique([
+    ...asArray(candidate.preferredStrategy || candidate.preferred_strategy || candidate.strategy),
+    ...asArray(candidate.preferredStrategies || candidate.preferred_strategies),
+  ].map(normalizeTowerStrategyName).filter(Boolean));
+  const explicitAvoid = unique([
+    ...asArray(candidate.avoidStrategy || candidate.avoid_strategy),
+    ...asArray(candidate.avoidStrategies || candidate.avoid_strategies),
+    ...asArray(candidate.blockedStrategies || candidate.blocked_strategies),
+  ].map(normalizeTowerStrategyName).filter(Boolean));
+  const fallbackPreferred = fallbackPreferredStrategiesForRule(candidate)
+    .map(normalizeTowerStrategyName)
+    .filter((strategy) => strategy && !explicitAvoid.includes(strategy));
+  const preferredStrategies = unique([...explicitPreferred, ...fallbackPreferred]);
+  const fallbackAvoid = fallbackAvoidStrategiesForRule(candidate)
+    .map(normalizeTowerStrategyName)
+    .filter((strategy) => strategy && !explicitPreferred.includes(strategy) && !preferredStrategies.includes(strategy));
+  const avoidStrategies = unique([...explicitAvoid, ...fallbackAvoid]);
+  return { preferredStrategies, avoidStrategies };
+}
+
+function fallbackPreferredStrategiesForRule(candidate = {}) {
+  const text = learnedRuleText(candidate);
+  if (/test[_ -]?first|require[_ -]?test[_ -]?owner|radar[_ -]?first/.test(text)) return ['test-first'];
+  if (/single[_ -]?migration[_ -]?runway|single[_ -]?writer/.test(text)) return ['single-fullstack-agent'];
+  if (/schema[_ -]?first|refresh[_ -]?downstream[_ -]?assumptions|contract/.test(text)) return ['schema-first'];
+  return [];
+}
+
+function fallbackAvoidStrategiesForRule(candidate = {}) {
+  const text = learnedRuleText(candidate);
+  if (/hold[_ -]?parallel|avoid[_ -]?parallel|parallel.*contract|contract.*parallel/.test(text)) return ['frontend-backend-parallel'];
+  if (/schema[_ -]?first|refresh[_ -]?downstream[_ -]?assumptions/.test(text)) return ['frontend-backend-parallel'];
+  return [];
+}
+
+function learnedRuleText(candidate = {}) {
+  return [
+    candidate.rule,
+    candidate.candidate,
+    candidate.name,
+    candidate.reason,
+    candidate.rationale,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+}
+
+function learnedPolicyDeltaApplies(delta, signals) {
+  const surface = learnedPolicySurface(signals);
+  const affectedZoneKey = String(delta.affectedZoneKey || '').toLowerCase();
+  if (affectedZoneKey && !surface.some((entry) => entry.includes(affectedZoneKey))) return false;
+  const conditions = asArray(delta.triggerConditions);
+  if (!conditions.length) return true;
+  return conditions.every((condition) => learnedTriggerMatches(condition, surface));
+}
+
+function learnedTriggerMatches(condition, surface) {
+  if (typeof condition === 'string') {
+    const value = condition.toLowerCase();
+    return surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value));
+  }
+  if (!condition || typeof condition !== 'object') return true;
+  const values = [
+    condition.path,
+    condition.route,
+    condition.zone,
+    condition.zoneKey,
+    condition.zone_key,
+    condition.risk,
+    condition.domain,
+    condition.packageName,
+    condition.package_name,
+  ].flatMap((value) => asArray(value)).map((value) => String(value || '').toLowerCase()).filter(Boolean);
+  if (!values.length) return true;
+  return values.every((value) => surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value)));
+}
+
+function learnedPolicySurface(signals) {
+  return unique([
+    ...asArray(signals.footprints).flatMap((footprint) => [
+      footprint.domain,
+      ...asArray(footprint.route),
+      ...asArray(footprint.routeFiles),
+      ...asArray(footprint.schemaOwners),
+      ...asArray(footprint.packageExports),
+      ...asArray(footprint.zones).flatMap((zone) => [zone.zoneKey, zone.label, zone.class, ...asArray(zone.paths)]),
+    ]),
+    ...asArray(signals.forecast?.risks).flatMap((risk) => [risk.risk, risk.type, risk.conflictZone, risk.recommendedResolution?.action]),
+    ...asArray(signals.migrationLocks),
+    ...asArray(signals.packageExports),
+  ].map((entry) => String(entry || '').toLowerCase()).filter(Boolean));
 }
 
 function buildTowerPolicyDeltaCandidates(signals, selected) {

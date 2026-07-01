@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Counterfactual Memory Proof</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#07090d;color:#f4f7fb}
+body{margin:0;padding:28px;background:#07090d}
+main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
+.hero,.card{border:1px solid #273044;border-radius:8px;background:#10141d;padding:18px}
+.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
+h1{font-size:25px;margin:8px 0 6px;letter-spacing:0}
+h2{font-size:16px;margin:0 0 10px;letter-spacing:0}
+p{margin:0;color:#aeb7c8;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.label{font-size:12px;color:#98a2b8}
+.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-top:1px solid #273044;padding:8px;text-align:left;vertical-align:top}
+th{color:#aeb7c8;font-weight:600}
+pre{white-space:pre-wrap;border:1px solid #273044;border-radius:8px;background:#05060a;padding:14px;color:#cbd1e3;font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<span class="pass">PASS</span>
+<h1>CodeSite Counterfactual ATC Memory Proof</h1>
+<p>Live Docker workflow proving persisted counterfactual policy deltas influence future tower simulation and live clearance decisions without bypassing hard safety gates.</p>
+</section>
+<section class="grid">
+<div class="card"><div class="label">Workspace</div><div class="value">codesite-counterfactual-memory-proof-1782883513859</div></div>
+<div class="card"><div class="label">Simulation project</div><div class="value">cmr1mtrb70000ob4tki7f0oz4</div></div>
+<div class="card"><div class="label">Simulator delta</div><div class="value">cmr1mu2vj000xob4t5rnjn4eu</div></div>
+<div class="card"><div class="label">Lease delta</div><div class="value">cmr1mvi3n0035ob4ttnrp0x78</div></div>
+</section>
+<section class="card"><h2>Before And After Tower Decision</h2><table><thead><tr><th>Run</th><th>Selected</th><th>Applied deltas</th><th>Reason codes</th></tr></thead><tbody>
+<tr><td>Before memory</td><td>schema-first</td><td>none</td><td>schema_airspace_first, downstream_assumptions_refresh_after_contract, semantic_collision_mitigated, import_graph_weighted, test_ownership_weighted</td></tr>
+<tr><td>After promoted delta</td><td>test-first</td><td>cmr1mu2vj000xob4t5rnjn4eu</td><td>test_ownership_before_landing, inspection_radar_runs_before_mutation, semantic_collision_mitigated, import_graph_weighted, test_ownership_weighted, counterfactual_policy_delta_applied, learned_policy_delta_preferred_strategy</td></tr>
+</tbody></table></section>
+<section class="card"><h2>Lease Gate</h2><pre>{
+  &quot;status&quot;: &quot;holding&quot;,
+  &quot;requiredRadar&quot;: [
+    &quot;tests&quot;,
+    &quot;visual&quot;
+  ],
+  &quot;counterfactualPolicy&quot;: {
+    &quot;appliedPolicyDeltas&quot;: [
+      &quot;cmr1mvi3n0035ob4ttnrp0x78&quot;
+    ],
+    &quot;reasonCodes&quot;: [
+      &quot;counterfactual_policy_delta_applied&quot;,
+      &quot;counterfactual_policy_delta_hold&quot;
+    ],
+    &quot;requiredRadar&quot;: [
+      &quot;visual&quot;
+    ],
+    &quot;requiredTowerActions&quot;: [
+      &quot;sequence_after_contract_response&quot;
+    ],
+    &quot;status&quot;: &quot;holding&quot;,
+    &quot;decision&quot;: &quot;hold&quot;,
+    &quot;towerInstruction&quot;: &quot;Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.&quot;
+  },
+  &quot;policyDecision&quot;: {
+    &quot;id&quot;: &quot;cmr1mvjl3003bob4tf7df1bq2&quot;,
+    &quot;projectId&quot;: &quot;cmr1mva9l0016ob4tz62pjpw0&quot;,
+    &quot;mutationLeaseId&quot;: &quot;cmr1mvjkl0039ob4t2s1l01p4&quot;,
+    &quot;displayCallsign&quot;: &quot;UI-GATE-01&quot;,
+    &quot;decision&quot;: &quot;hold&quot;,
+    &quot;reasonCodes&quot;: [
+      &quot;route_inside_clearance&quot;,
+      &quot;counterfactual_policy_delta_applied&quot;,
+      &quot;counterfactual_policy_delta_hold&quot;
+    ],
+    &quot;inputDigest&quot;: &quot;sha256:b1cd6c460ad9177efffc7b1995ccf77ad650781cb732a2dfa5bab0b3eae92eb3&quot;,
+    &quot;decisionBody&quot;: {
+      &quot;status&quot;: &quot;holding&quot;,
+      &quot;towerInstruction&quot;: &quot;Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.&quot;,
+      &quot;inspectedZones&quot;: [
+        {
+          &quot;zoneKey&quot;: &quot;component-ui&quot;,
+          &quot;label&quot;: &quot;Component UI&quot;,
+          &quot;class&quot;: &quot;C&quot;,
+          &quot;paths&quot;: [
+            &quot;src/components/**&quot;
+          ],
+          &quot;rules&quot;: [
+            &quot;landing_inspection_required&quot;
+          ],
+          &quot;risk&quot;: &quot;medium&quot;,
+          &quot;source&quot;: &quot;custom&quot;,
+          &quot;path&quot;: &quot;src/components/SignupForm.tsx&quot;
+        }
+      ],
+      &quot;dojoProof&quot;: {
+        &quot;proofRef&quot;: null,
+        &quot;licenseRef&quot;: null,
+        &quot;evidenceRefs&quot;: [],
+        &quot;ledgerCheckpointHash&quot;: null,
+        &quot;decisionDigest&quot;: &quot;sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a&quot;,
+        &quot;implementationStatus&quot;: {
+          &quot;executable&quot;: false,
+          &quot;productionRuntime&quot;: false
+        },
+        &quot;verification&quot;: {
+          &quot;ok&quot;: false,
+          &quot;status&quot;: &quot;blocked&quot;,
+          &quot;checkedAt&quot;: &quot;2026-07-01T05:27:02.394Z&quot;,
+          &quot;source&quot;: &quot;codesite_dojo_public_verifier&quot;,
+          &quot;signatureVerified&quot;: false,
+          &quot;blockedBy&quot;: [
+            &quot;dojo_public_proof_capsule_required&quot;,
+            &quot;dojo_public_proof_key_required&quot;
+          ],
+          &quot;digest&quot;: &quot;sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a&quot;
+        }
+      },
+      &quot;collisionAvoidance&quot;: null,
+      &quot;counterfactualPolicy&quot;: {
+        &quot;appliedPolicyDeltas&quot;: [
+          &quot;cmr1mvi3n0035ob4ttnrp0x78&quot;
+        ],
+        &quot;reasonCodes&quot;: [
+          &quot;counterfactual_policy_delta_applied&quot;,
+          &quot;counterfactual_policy_delta_hold&quot;
+        ],
+        &quot;requiredRadar&quot;: [
+          &quot;visual&quot;
+        ],
+        &quot;requiredTowerActions&quot;: [
+          &quot;sequence_after_contract_response&quot;
+        ],
+        &quot;status&quot;: &quot;holding&quot;,
+        &quot;decision&quot;: &quot;hold&quot;,
+        &quot;towerInstruction&quot;: &quot;Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.&quot;
+      }
+    },
+    &quot;createdAt&quot;: &quot;2026-07-01T05:27:02.632Z&quot;
+  }
+}</pre></section>
+<section><pre>{
+  &quot;baselineHadNoAppliedPolicyDelta&quot;: true,
+  &quot;promotedDeltaChangedTowerSelection&quot;: true,
+  &quot;afterReasonExplainsLearning&quot;: true,
+  &quot;simulatorEvidenceReferencesDelta&quot;: true,
+  &quot;explicitAvoidWasNotNeutralizedByFallback&quot;: true,
+  &quot;learnedLeaseGateHeldClearance&quot;: true,
+  &quot;learnedLeaseGateAugmentedRadar&quot;: true
+}</pre></section>
+</main>
+</body>
+</html>
