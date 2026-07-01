@@ -1520,22 +1520,26 @@ fn device_compiler_env_fingerprint(
 fn gpu_sdk_version_fingerprint(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> String {
     match gpu.vendor {
         DeviceVendor::Rocm => {
-            let root = std::env::var("ROCM_PATH")
-                .or_else(|_| std::env::var("ROCM_HOME"))
-                .unwrap_or_else(|_| "/opt/rocm".to_string());
-            let version_file = PathBuf::from(root).join(".info/version");
-            std::fs::read_to_string(&version_file)
-                .map(|raw| format!("rocm:{}", raw.trim()))
-                .unwrap_or_else(|_| "rocm:unavailable".to_string())
+            match std::env::var("ROCM_PATH").or_else(|_| std::env::var("ROCM_HOME")) {
+                Ok(root) => {
+                    let version_file = PathBuf::from(root).join(".info/version");
+                    std::fs::read_to_string(&version_file)
+                        .map(|raw| format!("rocm:{}", raw.trim()))
+                        .unwrap_or_else(|_| "rocm:unavailable".to_string())
+                }
+                Err(_) => "rocm:unavailable:sdk_root_unproven".to_string(),
+            }
         }
         DeviceVendor::Cuda => {
-            let root = std::env::var("CUDA_HOME")
-                .or_else(|_| std::env::var("CUDA_PATH"))
-                .unwrap_or_else(|_| "/usr/local/cuda".to_string());
-            let version_file = PathBuf::from(root).join("version.txt");
-            std::fs::read_to_string(&version_file)
-                .map(|raw| format!("cuda:{}", raw.trim()))
-                .unwrap_or_else(|_| "cuda:unavailable".to_string())
+            match std::env::var("CUDA_HOME").or_else(|_| std::env::var("CUDA_PATH")) {
+                Ok(root) => {
+                    let version_file = PathBuf::from(root).join("version.txt");
+                    std::fs::read_to_string(&version_file)
+                        .map(|raw| format!("cuda:{}", raw.trim()))
+                        .unwrap_or_else(|_| "cuda:unavailable".to_string())
+                }
+                Err(_) => "cuda:unavailable:sdk_root_unproven".to_string(),
+            }
         }
     }
 }
@@ -2381,7 +2385,14 @@ async fn inspect_device_artifact_exported_symbols(
 ) -> Vec<String> {
     let mut candidates = Vec::new();
     if vendor == DeviceVendor::Rocm {
-        candidates.push("/opt/rocm/llvm/bin/llvm-readobj".to_string());
+        if let Ok(root) = std::env::var("ROCM_PATH").or_else(|_| std::env::var("ROCM_HOME")) {
+            candidates.push(
+                PathBuf::from(root)
+                    .join("llvm/bin/llvm-readobj")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
     }
     candidates.push("llvm-readobj".to_string());
 
