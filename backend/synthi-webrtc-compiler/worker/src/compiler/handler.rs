@@ -581,8 +581,6 @@ fn is_editing_adapted_module_or_device(
                 .to_string(),
         );
     }
-    candidates.push("device.cu".to_string());
-    candidates.push("device.hip".to_string());
     candidates
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(&req_name))
@@ -16955,6 +16953,38 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(normalized_request_filename("/workspace/src/device/kernel.hip").is_none());
         assert!(normalized_request_filename(r"\\server\share\kernel.hip").is_none());
         assert!(normalized_request_filename("../src/device/kernel.hip").is_none());
+    }
+
+    #[test]
+    fn adapted_device_edit_requires_manifest_declared_device_role() {
+        let workspace = std::path::Path::new("/workspace/project");
+        let status = AdaptedProjectStatus::adapted_full(
+            workspace.join(".synthi/generated/gpu/core.cpp"),
+            workspace.join(".synthi/generated/gpu/gui.cpp"),
+            Some(workspace.join(".synthi/generated/gpu/shared.h")),
+            workspace.join(".synthi/generated/gpu/host_runner.cpp"),
+            false,
+        );
+        let manifest = fixture_rocm_manifest("device.hip");
+
+        assert!(!is_editing_adapted_module_or_device(
+            "device.hip",
+            &status,
+            workspace,
+            None,
+        ));
+        assert!(is_editing_adapted_module_or_device(
+            "device.hip",
+            &status,
+            workspace,
+            Some(&manifest),
+        ));
+        assert!(is_editing_adapted_module_or_device(
+            ".synthi/generated/gpu/core.cpp",
+            &status,
+            workspace,
+            None,
+        ));
     }
 
     fn compile_request_with_file_refs(

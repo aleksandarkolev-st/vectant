@@ -535,15 +535,13 @@ impl CompileManifest {
         .filter(|s| !s.trim().is_empty())
     }
 
-    /// Device source path, falling back to the canonical extension for the
-    /// selected vendor when the manifest predates `module_files.device`.
+    /// Device source path declared by the manifest.
+    ///
+    /// A GPU vendor block proves compiler/runtime intent, not source-file
+    /// identity. Device HMR must therefore require an explicit device module
+    /// role instead of inferring `device.hip` or `device.cu` from the vendor.
     pub fn device_source_filename(&self) -> Option<&str> {
-        self.module_file(ModuleKind::Device).or_else(|| {
-            self.gpu.as_ref().map(|gpu| match gpu.vendor {
-                DeviceVendor::Cuda => "device.cu",
-                DeviceVendor::Rocm => "device.hip",
-            })
-        })
+        self.module_file(ModuleKind::Device)
     }
 
     /// Whether this manifest requires process-restart on hot-reload (either
@@ -1004,6 +1002,46 @@ mod tests {
         assert_eq!(gpu.vendor, DeviceVendor::Rocm);
         assert_eq!(gpu.device_compiler, DeviceCompiler::Hipcc);
         assert_eq!(gpu.snapshot_mode, SnapshotMode::Userspace);
+    }
+
+    #[test]
+    fn gpu_vendor_block_does_not_infer_device_source_filename() {
+        let m: CompileManifest = serde_json::from_str(CUDA_MANIFEST_JSON).unwrap();
+        assert!(m.gpu.is_some());
+        assert_eq!(m.device_source_filename(), None);
+    }
+
+    #[test]
+    fn device_source_filename_requires_explicit_module_role() {
+        let json = r#"{
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "module_files": {
+                "device": "src/kernels/reloadable_device.hip"
+            },
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx90a"],
+                "device_flags": [],
+                "runtime_libs": ["amdhip64"],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module"
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            m.device_source_filename(),
+            Some("src/kernels/reloadable_device.hip")
+        );
     }
 
     #[test]
