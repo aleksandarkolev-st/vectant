@@ -7669,6 +7669,9 @@ function randomColdReadinessMatrixRow({
   totalKnownBytes = 15 * 1024 * 1024,
   inputMode = 'cli_or_env_direct_source',
   directInputEvidence = true,
+  buildMetadataDiscoveryAccepted = true,
+  buildMetadataContentAccepted = true,
+  buildMetadataContentHash = hashValue(`random-cold-build-content:${targetId}`),
 } = {}) {
   const sizeSignals = inputMode
     ? {
@@ -7793,10 +7796,12 @@ function randomColdReadinessMatrixRow({
       accepted: true,
       acceptedAsIntakeEvidence: true,
       accepted_as_intake_evidence: true,
-      buildMetadataDiscoveryAccepted: true,
-      build_metadata_discovery_accepted: true,
-      buildMetadataContentAccepted: true,
-      build_metadata_content_accepted: true,
+      buildMetadataDiscoveryAccepted,
+      build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
+      buildMetadataContentAccepted,
+      build_metadata_content_accepted: buildMetadataContentAccepted,
+      buildMetadataContentHash,
+      build_metadata_content_hash: buildMetadataContentHash,
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
@@ -7811,10 +7816,12 @@ function randomColdReadinessMatrixRow({
       accepted: true,
       acceptedAsIntakeEvidence: true,
       accepted_as_intake_evidence: true,
-      buildMetadataDiscoveryAccepted: true,
-      build_metadata_discovery_accepted: true,
-      buildMetadataContentAccepted: true,
-      build_metadata_content_accepted: true,
+      buildMetadataDiscoveryAccepted,
+      build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
+      buildMetadataContentAccepted,
+      build_metadata_content_accepted: buildMetadataContentAccepted,
+      buildMetadataContentHash,
+      build_metadata_content_hash: buildMetadataContentHash,
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
@@ -7858,10 +7865,12 @@ function randomColdReadinessMatrixRow({
     source_tree_file_count: fileCount,
     sourceTreeTotalKnownBytes: totalKnownBytes,
     source_tree_total_known_bytes: totalKnownBytes,
-    buildMetadataDiscoveryAccepted: true,
-    build_metadata_discovery_accepted: true,
-    buildMetadataContentAccepted: true,
-    build_metadata_content_accepted: true,
+    buildMetadataDiscoveryAccepted,
+    build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
+    buildMetadataContentAccepted,
+    build_metadata_content_accepted: buildMetadataContentAccepted,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
     randomColdPathDirectInputEvidence:
@@ -8473,6 +8482,42 @@ assert.ok(
   broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessDiscoveryOnlyBuildRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `discovery-only-build-metadata-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/discovery-only-build/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`discovery-only-build-metadata-commit-${index + 1}`).slice(0, 40),
+    buildMetadataDiscoveryAccepted: true,
+    buildMetadataContentAccepted: false,
+    buildMetadataContentHash: null,
+  })
+);
+const broadReadinessWithDiscoveryOnlyBuildQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessDiscoveryOnlyBuildRows,
+  ],
+});
+assert.equal(broadReadinessWithDiscoveryOnlyBuildQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDiscoveryOnlyBuildQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDiscoveryOnlyBuildQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDiscoveryOnlyBuildQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDiscoveryOnlyBuildQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `small-random-cold-readiness-user-project-${index + 1}`,
@@ -8664,6 +8709,18 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredSignals.includes(
       'direct_source_input_evidence_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'build_metadata_content_evidence_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'build_metadata_content_hash_observed',
     ),
 );
 assert.deepEqual(

@@ -21374,14 +21374,27 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       intake.acceptedAsIntakeEvidence,
       intake.accepted_as_intake_evidence,
     ) === true;
-    const buildMetadataAccepted = firstBool(
+    const buildMetadataDiscoveryAccepted = firstBool(
       row.buildMetadataDiscoveryAccepted,
       row.build_metadata_discovery_accepted,
       intake.buildMetadataDiscoveryAccepted,
       intake.build_metadata_discovery_accepted,
+    ) === true;
+    const buildMetadataContentAccepted = firstBool(
       intake.buildMetadataContentAccepted,
       intake.build_metadata_content_accepted,
+      row.buildMetadataContentAccepted,
+      row.build_metadata_content_accepted,
     ) === true;
+    const buildMetadataContentHash = normalizeSha256(firstText(
+      intake.buildMetadataContentHash,
+      intake.build_metadata_content_hash,
+      row.buildMetadataContentHash,
+      row.build_metadata_content_hash,
+    ));
+    const buildMetadataAccepted = buildMetadataDiscoveryAccepted
+      && buildMetadataContentAccepted
+      && Boolean(buildMetadataContentHash);
     const templateAccepted = firstBool(
       row.runtimeBoundaryEventManifestTemplateAccepted,
       row.runtime_boundary_event_manifest_template_accepted,
@@ -21472,7 +21485,9 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'source_derived_backend_candidates_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
-      'build_metadata_discovery_or_content_accepted',
+      'build_metadata_discovery_accepted',
+      'build_metadata_content_evidence_accepted',
+      'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
@@ -21484,7 +21499,9 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'source_derived_backend_candidates_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
-      'build_metadata_discovery_or_content_accepted',
+      'build_metadata_discovery_accepted',
+      'build_metadata_content_evidence_accepted',
+      'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
