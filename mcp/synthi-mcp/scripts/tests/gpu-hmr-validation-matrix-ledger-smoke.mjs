@@ -9886,6 +9886,52 @@ assert.equal(
   ),
   false,
 );
+const broadReadinessRowsWithNewerWeakAttempt = JSON.parse(JSON.stringify(broadReadinessRowsWithRandomCold));
+broadReadinessRowsWithNewerWeakAttempt[0].attemptKey = 'generic-broad-readiness-rerun-attempt';
+broadReadinessRowsWithNewerWeakAttempt[0].attempt_key = 'generic-broad-readiness-rerun-attempt';
+const newerWeakBroadReadinessAttempt = {
+  ...JSON.parse(JSON.stringify(broadReadinessRowsWithNewerWeakAttempt[0])),
+  rowId: `gpu-validation-matrix-row:sha256:${sha256Hex('generic-broad-readiness-rerun-newer-weak')}`,
+  row_id: `gpu-validation-matrix-row:sha256:${sha256Hex('generic-broad-readiness-rerun-newer-weak')}`,
+  matrixOutcome: 'unproven',
+  matrix_outcome: 'unproven',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  proofChainAccepted: false,
+  proof_chain_accepted: false,
+  updatedAt: '2999-01-01T00:00:00.000Z',
+  updated_at: '2999-01-01T00:00:00.000Z',
+  artifactPath: 'generic-broad-readiness-rerun-newer-weak.json',
+  artifact_path: 'generic-broad-readiness-rerun-newer-weak.json',
+  reasons: ['newer_rerun_missing_runtime_proof'],
+  openGaps: ['newer_rerun_missing_runtime_proof'],
+  open_gaps: ['newer_rerun_missing_runtime_proof'],
+};
+const broadReadinessWithNewerWeakAttemptLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRowsWithNewerWeakAttempt,
+  newerWeakBroadReadinessAttempt,
+]);
+assert.equal(broadReadinessWithNewerWeakAttemptLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithNewerWeakAttemptLedger.attemptHistory.latestUnselectedAttemptWarning,
+  true,
+);
+assert.equal(
+  broadReadinessWithNewerWeakAttemptLedger.summary.broadLibraryAgnosticReadiness
+    .latestAttemptUnselectedBlocksReadiness,
+  true,
+);
+assert.equal(
+  broadReadinessWithNewerWeakAttemptLedger.summary.broadLibraryAgnosticReadiness
+    .latestUnselectedAttemptCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithNewerWeakAttemptLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('latest_attempt_unselected_by_priority_selection'),
+);
 const broadReadinessSerializedAsyncVisualOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRowsWithRandomCold.map((row) =>
@@ -21189,6 +21235,19 @@ assert.equal(completenessSelectionLedger.attemptHistory.latestUnselectedAttemptC
 assert.equal(completenessSelectionLedger.attemptHistory.latestUnselectedAttemptWarning, true);
 assert.ok(
   completenessSelectionLedger.attemptHistory.warningGaps
+    .includes('latest_attempt_unselected_by_priority_selection'),
+);
+assert.equal(
+  completenessSelectionLedger.summary.broadLibraryAgnosticReadiness
+    .latestAttemptUnselectedBlocksReadiness,
+  true,
+);
+assert.equal(
+  completenessSelectionLedger.summary.broadLibraryAgnosticReadiness.latestUnselectedAttemptCount,
+  1,
+);
+assert.ok(
+  completenessSelectionLedger.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('latest_attempt_unselected_by_priority_selection'),
 );
 

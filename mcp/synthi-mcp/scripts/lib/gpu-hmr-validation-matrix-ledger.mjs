@@ -23088,7 +23088,43 @@ function computeBroadLibraryAgnosticProof(rows) {
   };
 }
 
-function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgnosticProof(rows)) {
+function broadReadinessAttemptFreshness(attemptHistory = {}) {
+  const latestUnselectedAttemptCount =
+    finiteNumber(
+      attemptHistory.latestUnselectedAttemptCount
+      ?? attemptHistory.latest_unselected_attempt_count,
+    ) ?? 0;
+  const warningGaps = compactStringList([
+    ...(Array.isArray(attemptHistory.warningGaps) ? attemptHistory.warningGaps : []),
+    ...(Array.isArray(attemptHistory.warning_gaps) ? attemptHistory.warning_gaps : []),
+  ]);
+  const latestUnselectedAttemptWarning =
+    firstBool(
+      attemptHistory.latestUnselectedAttemptWarning,
+      attemptHistory.latest_unselected_attempt_warning,
+    ) === true
+    || latestUnselectedAttemptCount > 0
+    || warningGaps.includes('latest_attempt_unselected_by_priority_selection');
+  const openGaps = latestUnselectedAttemptWarning
+    ? ['latest_attempt_unselected_by_priority_selection']
+    : [];
+  return {
+    latestUnselectedAttemptCount,
+    latest_unselected_attempt_count: latestUnselectedAttemptCount,
+    latestUnselectedAttemptWarning,
+    latest_unselected_attempt_warning: latestUnselectedAttemptWarning,
+    latestAttemptUnselectedBlocksReadiness: latestUnselectedAttemptWarning,
+    latest_attempt_unselected_blocks_readiness: latestUnselectedAttemptWarning,
+    openGaps,
+    open_gaps: openGaps,
+  };
+}
+
+function broadLibraryAgnosticReadiness(
+  rows,
+  broadProof = computeBroadLibraryAgnosticProof(rows),
+  context = {},
+) {
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
   const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
@@ -23130,17 +23166,23 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
   const broadRuntimeRowsMissing = matrixGeneralizationRuntimeRows === 0;
   const rowLocalBroadRuntimeRowsMissing = broadRuntimeRows.length === 0;
   const matrixGeneralizationAccepted = broadProof.accepted === true;
+  const attemptFreshness = broadReadinessAttemptFreshness(
+    context.attemptHistory ?? context.attempt_history,
+  );
   const openGaps = compactStringList([
     matrixGeneralizationAccepted
       ? null
       : 'matrix_level_broad_generalization_proof_not_present',
     broadRuntimeRowsMissing ? 'broad_runtime_rows_missing' : null,
     rowLocalBroadRuntimeRowsMissing ? 'row_local_broad_runtime_rows_missing' : null,
+    ...attemptFreshness.openGaps,
     ...(matrixGeneralizationAccepted
       ? []
       : (Array.isArray(broadProof.openGaps) ? broadProof.openGaps : [])),
   ]);
-  const accepted = matrixGeneralizationAccepted && !rowLocalBroadRuntimeRowsMissing;
+  const accepted = matrixGeneralizationAccepted
+    && !rowLocalBroadRuntimeRowsMissing
+    && attemptFreshness.latestAttemptUnselectedBlocksReadiness !== true;
   return {
     schemaVersion: 'synthi.gpu_hmr.broad_library_agnostic_readiness.v1',
     authority: 'matrix_computed_not_row_declared',
@@ -23159,6 +23201,14 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     broad_runtime_rows_missing: broadRuntimeRowsMissing,
     rowLocalBroadRuntimeRowsMissing,
     row_local_broad_runtime_rows_missing: rowLocalBroadRuntimeRowsMissing,
+    latestUnselectedAttemptCount: attemptFreshness.latestUnselectedAttemptCount,
+    latest_unselected_attempt_count: attemptFreshness.latestUnselectedAttemptCount,
+    latestUnselectedAttemptWarning: attemptFreshness.latestUnselectedAttemptWarning,
+    latest_unselected_attempt_warning: attemptFreshness.latestUnselectedAttemptWarning,
+    latestAttemptUnselectedBlocksReadiness:
+      attemptFreshness.latestAttemptUnselectedBlocksReadiness,
+    latest_attempt_unselected_blocks_readiness:
+      attemptFreshness.latestAttemptUnselectedBlocksReadiness,
     matrixGeneralizationRuntimeRows,
     matrix_generalization_runtime_rows: matrixGeneralizationRuntimeRows,
     scopedRuntimeRows: scopedRuntimeRows.length,
@@ -23230,7 +23280,7 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
   };
 }
 
-function coverageSummary(rows) {
+function coverageSummary(rows, context = {}) {
   const byOutcome = {};
   const byBackend = {};
   for (const row of rows) {
@@ -23273,7 +23323,7 @@ function coverageSummary(rows) {
     preflightOnlyTargets: compactStringList(preflightRows.map((row) => row.targetId)),
     unprovenRows: unprovenRows.length,
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
-    broadLibraryAgnosticReadiness: broadLibraryAgnosticReadiness(rows, broadProof),
+    broadLibraryAgnosticReadiness: broadLibraryAgnosticReadiness(rows, broadProof, context),
     planCoverage: planCoverage(rows),
   };
 }
@@ -24574,8 +24624,11 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
       },
     };
   });
-  const recomputedSummary = coverageSummary(summaryRows);
   const suppliedSummary = compactObject(ledger.summary);
+  const suppliedAttemptHistory = compactObject(ledger.attemptHistory ?? ledger.attempt_history);
+  const recomputedSummary = coverageSummary(summaryRows, {
+    attemptHistory: suppliedAttemptHistory,
+  });
   if (Object.keys(suppliedSummary).length > 0) {
     const suppliedRowDerivedSummary = rowDerivedSummaryFields(suppliedSummary);
     if (stableJson(suppliedRowDerivedSummary) !== stableJson(recomputedSummary)) {
@@ -24589,7 +24642,6 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   const summaryForProofId = Object.keys(suppliedSummary).length > 0
     ? ledger.summary
     : recomputedSummary;
-  const suppliedAttemptHistory = compactObject(ledger.attemptHistory ?? ledger.attempt_history);
   const recomputedProofId = proofIdFor('gpu-validation-matrix-ledger', {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     rows: rows.map((row) => row.rowId),
@@ -24640,9 +24692,12 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     : safetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
   const omittedInvalidatedRows = selectedRows.length - safetyAcceptedRows.length;
   const omittedUnprovenRows = safetyAcceptedRows.length - includedRows.length;
+  const attemptHistory = validationAttemptHistory(safetyEvaluatedRows, selectedRows, {
+    enabled: options.includeUnproven === true,
+  });
   includedRows.sort((a, b) => rowKey(a).localeCompare(rowKey(b)));
   const summary = {
-    ...coverageSummary(includedRows),
+    ...coverageSummary(includedRows, { attemptHistory }),
     includeInvalidated: options.includeInvalidated === true,
     omittedInvalidatedRows,
     omitted_invalidated_rows: omittedInvalidatedRows,
@@ -24650,9 +24705,6 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     omittedUnprovenRows,
     omitted_unproven_rows: omittedUnprovenRows,
   };
-  const attemptHistory = validationAttemptHistory(safetyEvaluatedRows, selectedRows, {
-    enabled: options.includeUnproven === true,
-  });
   const seed = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
