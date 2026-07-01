@@ -1520,6 +1520,79 @@ function randomColdDirectInputEvidenceFixture({
   };
 }
 
+function randomColdBuildMetadataContentEvidenceFixture({
+  targetId = 'random-cold-readiness-user-project',
+  accepted = true,
+  schemaVersion = 'synthi.gpu_hmr.cold_build_metadata_content.v1',
+  proofAuthority = 'build_metadata_content_bytes_only_not_gpu_hmr_success',
+  acceptedForGpuHmr = false,
+  gpuHmrSuccess = false,
+  canSatisfyRuntimeProof = false,
+  canSatisfyDispatchProof = false,
+  contentEvidenceHashOverride = null,
+} = {}) {
+  const buildFiles = accepted
+    ? [
+      {
+        path: 'CMakeLists.txt',
+        contentHash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
+        content_hash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
+        byteLength: 4096,
+        byte_length: 4096,
+        transport: 'git_show_immutable_commit',
+      },
+    ]
+    : [];
+  const evidence = {
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    acceptedForGpuHmr,
+    accepted_for_gpu_hmr: acceptedForGpuHmr,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    canSatisfyRuntimeProof,
+    can_satisfy_runtime_proof: canSatisfyRuntimeProof,
+    canSatisfyDispatchProof,
+    can_satisfy_dispatch_proof: canSatisfyDispatchProof,
+    acceptedAsBuildMetadataContent: accepted,
+    accepted_as_build_metadata_content: accepted,
+    completeForSelectedBuildFiles: accepted,
+    complete_for_selected_build_files: accepted,
+    selectedBuildFileCount: buildFiles.length,
+    selected_build_file_count: buildFiles.length,
+    acceptedBuildFileCount: buildFiles.length,
+    accepted_build_file_count: buildFiles.length,
+    failedBuildFileCount: 0,
+    failed_build_file_count: 0,
+    buildFiles,
+    build_files: buildFiles,
+    failedFiles: [],
+    failed_files: [],
+    remainingVerificationGaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    remaining_verification_gaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'runtime_profile_contract_missing',
+    ],
+    startedAt: '2026-07-01T00:00:00.000Z',
+    started_at: '2026-07-01T00:00:00.000Z',
+    finishedAt: '2026-07-01T00:00:01.000Z',
+    finished_at: '2026-07-01T00:00:01.000Z',
+  };
+  const contentEvidenceHash = contentEvidenceHashOverride ?? contentHashFor(evidence);
+  return {
+    ...evidence,
+    contentEvidenceHash,
+    content_evidence_hash: contentEvidenceHash,
+  };
+}
+
 function randomColdPathManifest({
   candidateId = 'direct-random-arbitrary-cold',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
@@ -7671,7 +7744,10 @@ function randomColdReadinessMatrixRow({
   directInputEvidence = true,
   buildMetadataDiscoveryAccepted = true,
   buildMetadataContentAccepted = true,
-  buildMetadataContentHash = hashValue(`random-cold-build-content:${targetId}`),
+  buildMetadataContentEvidence = buildMetadataContentAccepted
+    ? randomColdBuildMetadataContentEvidenceFixture({ targetId, accepted: true })
+    : null,
+  buildMetadataContentHash = buildMetadataContentEvidence?.contentEvidenceHash ?? null,
 } = {}) {
   const sizeSignals = inputMode
     ? {
@@ -7802,6 +7878,8 @@ function randomColdReadinessMatrixRow({
       build_metadata_content_accepted: buildMetadataContentAccepted,
       buildMetadataContentHash,
       build_metadata_content_hash: buildMetadataContentHash,
+      buildMetadataContentEvidence,
+      build_metadata_content_evidence: buildMetadataContentEvidence,
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
@@ -7822,6 +7900,8 @@ function randomColdReadinessMatrixRow({
       build_metadata_content_accepted: buildMetadataContentAccepted,
       buildMetadataContentHash,
       build_metadata_content_hash: buildMetadataContentHash,
+      buildMetadataContentEvidence,
+      build_metadata_content_evidence: buildMetadataContentEvidence,
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
@@ -7871,6 +7951,8 @@ function randomColdReadinessMatrixRow({
     build_metadata_content_accepted: buildMetadataContentAccepted,
     buildMetadataContentHash,
     build_metadata_content_hash: buildMetadataContentHash,
+    buildMetadataContentEvidence,
+    build_metadata_content_evidence: buildMetadataContentEvidence,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
     randomColdPathDirectInputEvidence:
@@ -8518,6 +8600,43 @@ assert.ok(
   broadReadinessWithDiscoveryOnlyBuildQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessDeclaredOnlyBuildContentRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `declared-only-build-content-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/declared-only-build-content/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`declared-only-build-content-commit-${index + 1}`).slice(0, 40),
+    buildMetadataDiscoveryAccepted: true,
+    buildMetadataContentAccepted: true,
+    buildMetadataContentHash: hashValue(`declared-only-build-content:${index + 1}`),
+    buildMetadataContentEvidence: null,
+  })
+);
+const broadReadinessWithDeclaredOnlyBuildContentQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessDeclaredOnlyBuildContentRows,
+  ],
+});
+assert.equal(broadReadinessWithDeclaredOnlyBuildContentQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `small-random-cold-readiness-user-project-${index + 1}`,
@@ -8705,6 +8824,16 @@ assert.equal(
     .randomColdPathSelectionPredicate.requiredDirectInputEvidenceAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredBuildMetadataContentEvidenceSchema,
+  'synthi.gpu_hmr.cold_build_metadata_content.v1',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredBuildMetadataContentEvidenceAuthority,
+  'build_metadata_content_bytes_only_not_gpu_hmr_success',
+);
 assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredSignals.includes(
@@ -8715,6 +8844,18 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredSignals.includes(
       'build_metadata_content_evidence_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'build_metadata_content_schema_authority_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'build_metadata_content_byte_hashes_observed',
     ),
 );
 assert.ok(

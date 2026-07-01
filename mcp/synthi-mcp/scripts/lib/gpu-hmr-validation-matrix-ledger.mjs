@@ -194,6 +194,10 @@ const RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
+const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_build_metadata_content.v1';
+const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
+  'build_metadata_content_bytes_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -1390,6 +1394,7 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ?? result.buildMetadataContentEvidence
     ?? result.build_metadata_content_evidence,
   );
+  const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(buildContent);
   const runtimeBoundaryExpectation = compactObject(
     facet.runtimeBoundaryExpectation
     ?? facet.runtime_boundary_expectation
@@ -1488,30 +1493,12 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       result.buildMetadataDiscoveryAccepted,
       result.build_metadata_discovery_accepted,
     ) === true,
-    buildMetadataContentAccepted: firstBool(
-      facet.buildMetadataContentAccepted,
-      facet.build_metadata_content_accepted,
-      result.buildMetadataContentAccepted,
-      result.build_metadata_content_accepted,
-    ) === true,
-    build_metadata_content_accepted: firstBool(
-      facet.buildMetadataContentAccepted,
-      facet.build_metadata_content_accepted,
-      result.buildMetadataContentAccepted,
-      result.build_metadata_content_accepted,
-    ) === true,
-    buildMetadataContentHash: normalizeSha256(firstText(
-      buildContent.contentEvidenceHash,
-      buildContent.content_evidence_hash,
-      buildContent.facetHash,
-      buildContent.facet_hash,
-    )),
-    build_metadata_content_hash: normalizeSha256(firstText(
-      buildContent.contentEvidenceHash,
-      buildContent.content_evidence_hash,
-      buildContent.facetHash,
-      buildContent.facet_hash,
-    )),
+    buildMetadataContentAccepted: buildContentEvidence.acceptedAsBuildMetadataContent === true,
+    build_metadata_content_accepted: buildContentEvidence.acceptedAsBuildMetadataContent === true,
+    buildMetadataContentHash: buildContentEvidence.contentEvidenceHash,
+    build_metadata_content_hash: buildContentEvidence.contentEvidenceHash,
+    buildMetadataContentEvidence: buildContentEvidence,
+    build_metadata_content_evidence: buildContentEvidence,
     runtimeBoundaryExpectationAccepted: firstBool(
       facet.runtimeBoundaryExpectationAccepted,
       facet.runtime_boundary_expectation_accepted,
@@ -1532,6 +1519,153 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       runtimeBoundaryExpectation.expectationHash,
       runtimeBoundaryExpectation.expectation_hash,
     )),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdBuildMetadataContentEvidenceHashSeed(facet) {
+  const seed = JSON.parse(JSON.stringify(compactObject(facet)));
+  delete seed.contentEvidenceHash;
+  delete seed.content_evidence_hash;
+  return seed;
+}
+
+function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedFlag = firstBool(
+    facet.acceptedAsBuildMetadataContent,
+    facet.accepted_as_build_metadata_content,
+    facet.accepted,
+  );
+  const acceptedBuildFileCount = finiteNumber(
+    facet.acceptedBuildFileCount
+    ?? facet.accepted_build_file_count,
+  ) ?? 0;
+  const buildFiles = compactObjectList(facet.buildFiles ?? facet.build_files);
+  const normalizedBuildFiles = buildFiles.map((file) => {
+    const contentHash = normalizeSha256(firstText(file.contentHash, file.content_hash));
+    return {
+      path: firstText(file.path, file.relativePath, file.relative_path) ?? null,
+      contentHash,
+      content_hash: contentHash,
+      byteLength: finiteNumber(file.byteLength ?? file.byte_length),
+      byte_length: finiteNumber(file.byteLength ?? file.byte_length),
+      transport: firstText(file.transport) ?? null,
+    };
+  });
+  const buildFileHashCount = normalizedBuildFiles.filter((file) =>
+    typeof file.path === 'string'
+      && file.path.length > 0
+      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+  ).length;
+  const suppliedContentEvidenceHash = normalizeSha256(firstText(
+    facet.contentEvidenceHash,
+    facet.content_evidence_hash,
+  ));
+  const suppliedRecomputedContentEvidenceHash = normalizeSha256(firstText(
+    facet.recomputedContentEvidenceHash,
+    facet.recomputed_content_evidence_hash,
+  ));
+  const normalizedMatrixEvidence = present
+    && firstBool(facet.present) === true
+    && suppliedRecomputedContentEvidenceHash !== null;
+  const rawRecomputedContentEvidenceHash = present
+    ? normalizeSha256(`sha256:${
+      sha256Hex(stableJson(randomColdBuildMetadataContentEvidenceHashSeed(facet)))
+    }`)
+    : null;
+  const recomputedContentEvidenceHash = normalizedMatrixEvidence
+    ? suppliedRecomputedContentEvidenceHash
+    : rawRecomputedContentEvidenceHash;
+  const contentHashMatches = present
+    && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
+    && recomputedContentEvidenceHash === suppliedContentEvidenceHash;
+  const suppliedBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const failedGates = compactStringList([
+    present ? null : 'random_cold_build_metadata_content_evidence_missing',
+    present && schemaVersion !== RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION
+      ? 'random_cold_build_metadata_content_schema_invalid'
+      : null,
+    present && proofAuthority !== RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY
+      ? 'random_cold_build_metadata_content_authority_invalid'
+      : null,
+    present && acceptedFlag !== true
+      ? 'random_cold_build_metadata_content_not_accepted'
+      : null,
+    present && acceptedBuildFileCount < 1
+      ? 'random_cold_build_metadata_content_file_count_missing'
+      : null,
+    present && buildFiles.length < 1
+      ? 'random_cold_build_metadata_content_files_missing'
+      : null,
+    present && buildFileHashCount < 1
+      ? 'random_cold_build_metadata_content_file_hash_missing'
+      : null,
+    present && !/^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
+      ? 'random_cold_build_metadata_content_hash_missing'
+      : null,
+    present
+      && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
+      && !contentHashMatches
+      ? 'random_cold_build_metadata_content_hash_mismatch'
+      : null,
+    present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'random_cold_build_metadata_content_claimed_gpu_hmr_acceptance'
+      : null,
+    present && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'random_cold_build_metadata_content_claimed_gpu_hmr_success'
+      : null,
+    present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'random_cold_build_metadata_content_claimed_runtime_authority'
+      : null,
+    present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_build_metadata_content_claimed_dispatch_authority'
+      : null,
+    ...suppliedBlockingGaps,
+  ]);
+  const accepted = present && failedGates.length === 0;
+  return {
+    present,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
+    accepted,
+    acceptedAsBuildMetadataContent: accepted,
+    accepted_as_build_metadata_content: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedBuildFileCount,
+    accepted_build_file_count: acceptedBuildFileCount,
+    buildFileHashCount,
+    build_file_hash_count: buildFileHashCount,
+    buildFiles: normalizedBuildFiles,
+    build_files: normalizedBuildFiles,
+    contentEvidenceHash: accepted ? suppliedContentEvidenceHash : null,
+    content_evidence_hash: accepted ? suppliedContentEvidenceHash : null,
+    recomputedContentEvidenceHash,
+    recomputed_content_evidence_hash: recomputedContentEvidenceHash,
+    contentEvidenceHashVerificationMode: normalizedMatrixEvidence
+      ? 'matrix_normalized_content_evidence_hash'
+      : 'raw_content_evidence_hash_recomputed',
+    content_evidence_hash_verification_mode: normalizedMatrixEvidence
+      ? 'matrix_normalized_content_evidence_hash'
+      : 'raw_content_evidence_hash_recomputed',
     failedGates,
     failed_gates: failedGates,
   };
@@ -21306,6 +21440,14 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.randomColdPathDirectInputEvidence,
       row.random_cold_path_direct_input_evidence,
     ));
+    const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
+      intake.buildMetadataContentEvidence,
+      intake.build_metadata_content_evidence,
+      row.buildMetadataContentEvidence,
+      row.build_metadata_content_evidence,
+      facet.buildMetadataContentEvidence,
+      facet.build_metadata_content_evidence,
+    ));
     const authority = firstText(facet.proofAuthority, facet.proof_authority);
     const profileMode = firstText(
       facet.profileMode,
@@ -21380,18 +21522,9 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       intake.buildMetadataDiscoveryAccepted,
       intake.build_metadata_discovery_accepted,
     ) === true;
-    const buildMetadataContentAccepted = firstBool(
-      intake.buildMetadataContentAccepted,
-      intake.build_metadata_content_accepted,
-      row.buildMetadataContentAccepted,
-      row.build_metadata_content_accepted,
-    ) === true;
-    const buildMetadataContentHash = normalizeSha256(firstText(
-      intake.buildMetadataContentHash,
-      intake.build_metadata_content_hash,
-      row.buildMetadataContentHash,
-      row.build_metadata_content_hash,
-    ));
+    const buildMetadataContentAccepted =
+      buildContentEvidence.acceptedAsBuildMetadataContent === true;
+    const buildMetadataContentHash = buildContentEvidence.contentEvidenceHash;
     const buildMetadataAccepted = buildMetadataDiscoveryAccepted
       && buildMetadataContentAccepted
       && Boolean(buildMetadataContentHash);
@@ -21437,6 +21570,19 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       || firstBool(
         directInputEvidence.canSatisfyRuntimeProof,
         directInputEvidence.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        buildContentEvidence.acceptedForGpuHmr,
+        buildContentEvidence.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(buildContentEvidence.gpuHmrSuccess, buildContentEvidence.gpu_hmr_success) === true
+      || firstBool(
+        buildContentEvidence.canSatisfyRuntimeProof,
+        buildContentEvidence.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        buildContentEvidence.canSatisfyDispatchProof,
+        buildContentEvidence.can_satisfy_dispatch_proof,
       ) === true;
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
       && arbitraryColdIntake
@@ -21477,6 +21623,14 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     required_direct_input_evidence_schema: RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
     requiredDirectInputEvidenceAuthority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
     required_direct_input_evidence_authority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
+    requiredBuildMetadataContentEvidenceSchema:
+      RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION,
+    required_build_metadata_content_evidence_schema:
+      RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION,
+    requiredBuildMetadataContentEvidenceAuthority:
+      RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY,
+    required_build_metadata_content_evidence_authority:
+      RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY,
     requiredSignals: [
       'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
@@ -21487,6 +21641,8 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'source_tree_intake_accepted',
       'build_metadata_discovery_accepted',
       'build_metadata_content_evidence_accepted',
+      'build_metadata_content_schema_authority_accepted',
+      'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
@@ -21501,6 +21657,8 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'source_tree_intake_accepted',
       'build_metadata_discovery_accepted',
       'build_metadata_content_evidence_accepted',
+      'build_metadata_content_schema_authority_accepted',
+      'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
