@@ -21013,6 +21013,15 @@ const completenessSelectionRow = completenessSelectionLedger.rows.find(
 assert.ok(completenessSelectionRow?.artifactPath.endsWith('real-rocm-complete-refusal.json'));
 assert.equal(completenessSelectionRow.attemptCompleteness.score, 80);
 assert.equal(completenessSelectionRow.attemptCompleteness.upstreamLifecycleAcceptedAsRefusalEvidence, true);
+assert.equal(completenessSelectionLedger.attemptHistory.enabled, false);
+assert.equal(completenessSelectionLedger.attemptHistory.latestAttemptCount, 1);
+assert.equal(completenessSelectionLedger.attemptHistory.attemptCount, 0);
+assert.equal(completenessSelectionLedger.attemptHistory.latestUnselectedAttemptCount, 1);
+assert.equal(completenessSelectionLedger.attemptHistory.latestUnselectedAttemptWarning, true);
+assert.ok(
+  completenessSelectionLedger.attemptHistory.warningGaps
+    .includes('latest_attempt_unselected_by_priority_selection'),
+);
 
 const completenessSelectionLedgerWithHistory = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,

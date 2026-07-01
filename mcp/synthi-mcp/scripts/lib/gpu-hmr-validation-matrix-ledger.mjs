@@ -21942,43 +21942,56 @@ function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
   for (const row of selectedRows) {
     selectedByAttemptKey.set(row.attemptKey ?? rowAttemptKey(row), row);
   }
-  const attempts = enabled
-    ? selectLatestAttemptRows(rows)
-      .map((latestRow) => {
-        const attemptKey = latestRow.attemptKey ?? rowAttemptKey(latestRow);
-        const selectedRow = selectedByAttemptKey.get(attemptKey) ?? null;
-        const latestSelected = Boolean(selectedRow && selectedRow.rowId === latestRow.rowId);
-        return compactObject({
-          attemptKey,
-          attempt_key: attemptKey,
-          selectedIsLatest: latestSelected,
-          selected_is_latest: latestSelected,
-          latestAttemptIsUnselected: Boolean(selectedRow && !latestSelected),
-          latest_attempt_is_unselected: Boolean(selectedRow && !latestSelected),
-          latest: attemptHistoryRowRef(latestRow),
-          selected: attemptHistoryRowRef(selectedRow),
-        });
+  const latestAttemptRows = selectLatestAttemptRows(rows);
+  const allAttempts = latestAttemptRows
+    .map((latestRow) => {
+      const attemptKey = latestRow.attemptKey ?? rowAttemptKey(latestRow);
+      const selectedRow = selectedByAttemptKey.get(attemptKey) ?? null;
+      const latestSelected = Boolean(selectedRow && selectedRow.rowId === latestRow.rowId);
+      return compactObject({
+        attemptKey,
+        attempt_key: attemptKey,
+        selectedIsLatest: latestSelected,
+        selected_is_latest: latestSelected,
+        latestAttemptIsUnselected: Boolean(selectedRow && !latestSelected),
+        latest_attempt_is_unselected: Boolean(selectedRow && !latestSelected),
+        latest: attemptHistoryRowRef(latestRow),
+        selected: attemptHistoryRowRef(selectedRow),
       })
-      .sort((left, right) => String(left.attemptKey).localeCompare(String(right.attemptKey)))
-    : [];
-  const latestUnselectedAttemptCount = attempts.filter((attempt) =>
+    })
+    .sort((left, right) => String(left.attemptKey).localeCompare(String(right.attemptKey)));
+  const attempts = enabled ? allAttempts : [];
+  const latestUnselectedAttemptCount = allAttempts.filter((attempt) =>
     attempt.latestAttemptIsUnselected === true
   ).length;
+  const latestUnselectedAttemptWarning = latestUnselectedAttemptCount > 0;
   return {
     schemaVersion: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
     schema_version: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
     enabled,
-    authority: enabled ? 'collector_file_mtime' : 'disabled_without_unproven_rows',
+    authority: enabled
+      ? 'collector_file_mtime'
+      : 'collector_file_mtime_counts_only_without_unproven_row_details',
     selectionPolicy:
       'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
     selection_policy:
       'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
     latestPolicy: 'updated_at_then_artifact_path',
     latest_policy: 'updated_at_then_artifact_path',
+    latestAttemptCount: allAttempts.length,
+    latest_attempt_count: allAttempts.length,
     attemptCount: attempts.length,
     attempt_count: attempts.length,
     latestUnselectedAttemptCount,
     latest_unselected_attempt_count: latestUnselectedAttemptCount,
+    latestUnselectedAttemptWarning,
+    latest_unselected_attempt_warning: latestUnselectedAttemptWarning,
+    warningGaps: latestUnselectedAttemptWarning
+      ? ['latest_attempt_unselected_by_priority_selection']
+      : [],
+    warning_gaps: latestUnselectedAttemptWarning
+      ? ['latest_attempt_unselected_by_priority_selection']
+      : [],
     attempts,
   };
 }
