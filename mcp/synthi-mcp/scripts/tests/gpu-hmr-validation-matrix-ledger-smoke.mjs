@@ -7340,6 +7340,8 @@ function randomColdReadinessMatrixRow({
   resultStatus = 'unprofiled_arbitrary_project_cold_intake_refused',
   sourceUrl = 'https://example.invalid/user/project.git',
   immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f',
+  fileCount = 1500,
+  totalKnownBytes = 15 * 1024 * 1024,
 } = {}) {
   return withQueryRecomputedRowId({
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -7387,6 +7389,10 @@ function randomColdReadinessMatrixRow({
       source_url: sourceUrl,
       immutableCommit,
       immutable_commit: immutableCommit,
+      fileCount,
+      file_count: fileCount,
+      totalKnownBytes,
+      total_known_bytes: totalKnownBytes,
       resultStatus,
       result_status: resultStatus,
       failedGates: [],
@@ -7412,6 +7418,10 @@ function randomColdReadinessMatrixRow({
       source_url: sourceUrl,
       immutableCommit,
       immutable_commit: immutableCommit,
+      fileCount,
+      file_count: fileCount,
+      totalKnownBytes,
+      total_known_bytes: totalKnownBytes,
       resultStatus,
       result_status: resultStatus,
       failedGates: [],
@@ -7430,6 +7440,10 @@ function randomColdReadinessMatrixRow({
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
       detected_build_systems: ['cargo', 'npm_or_node'],
+      fileCount,
+      file_count: fileCount,
+      totalKnownBytes,
+      total_known_bytes: totalKnownBytes,
     },
     cold_source_tree_intake: {
       present: true,
@@ -7444,6 +7458,10 @@ function randomColdReadinessMatrixRow({
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
       detected_build_systems: ['cargo', 'npm_or_node'],
+      fileCount,
+      file_count: fileCount,
+      totalKnownBytes,
+      total_known_bytes: totalKnownBytes,
     },
     coldRuntimeBoundaryEventManifestTemplate: {
       present: true,
@@ -7475,6 +7493,10 @@ function randomColdReadinessMatrixRow({
     },
     sourceTreeIntakeAccepted: true,
     source_tree_intake_accepted: true,
+    sourceTreeFileCount: fileCount,
+    source_tree_file_count: fileCount,
+    sourceTreeTotalKnownBytes: totalKnownBytes,
+    source_tree_total_known_bytes: totalKnownBytes,
     buildMetadataDiscoveryAccepted: true,
     build_metadata_discovery_accepted: true,
     buildMetadataContentAccepted: true,
@@ -8017,6 +8039,41 @@ assert.equal(
 assert.ok(
   broadReadinessWithConfiguredUnprofiledColdOnlyQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `small-random-cold-readiness-user-project-${index + 1}`,
+    sourceUrl: `https://example.invalid/user/small-project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`small-random-cold-readiness-commit-${index + 1}`).slice(0, 40),
+    fileCount: 3,
+    totalKnownBytes: 4096,
+  })
+);
+const broadReadinessWithSmallRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessSmallRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithSmallRandomColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithSmallRandomColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithSmallRandomColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithSmallRandomColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  5,
+);
+assert.ok(
+  broadReadinessWithSmallRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_large_random_project_cold_paths'),
 );
 const broadReadinessWithoutSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

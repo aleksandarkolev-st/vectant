@@ -56,6 +56,8 @@ const BROAD_LIBRARY_MIN_BACKEND_COUNT = 4;
 const BROAD_LIBRARY_MIN_ACCEPTANCE_SCOPE_COUNT = 4;
 const BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT = 8;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
+const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
+const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -20905,7 +20907,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
   });
 }
 
-function randomColdPathRowsForBroadReadiness(rows) {
+function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = true } = {}) {
   return rows.filter((row) => {
     if (row.proofMode !== 'random_large_project_cold_path') return false;
     if (row.matrixOutcome !== 'refusal_proven') return false;
@@ -20968,6 +20970,28 @@ function randomColdPathRowsForBroadReadiness(rows) {
       template.acceptedAsSupportEvidence,
       template.accepted_as_support_evidence,
     ) === true;
+    const fileCount = finiteNumber(
+      row.sourceTreeFileCount
+      ?? row.source_tree_file_count
+      ?? row.fileCount
+      ?? row.file_count
+      ?? facet.fileCount
+      ?? facet.file_count
+      ?? intake.fileCount
+      ?? intake.file_count,
+    ) ?? 0;
+    const knownBytes = finiteNumber(
+      row.sourceTreeTotalKnownBytes
+      ?? row.source_tree_total_known_bytes
+      ?? row.totalKnownBytes
+      ?? row.total_known_bytes
+      ?? facet.totalKnownBytes
+      ?? facet.total_known_bytes
+      ?? intake.totalKnownBytes
+      ?? intake.total_known_bytes,
+    ) ?? 0;
+    const largeSourceTree = fileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
+      || knownBytes >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES;
     const forbiddenAuthority = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
       || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
@@ -20979,6 +21003,7 @@ function randomColdPathRowsForBroadReadiness(rows) {
       && sourceAccepted
       && buildMetadataAccepted
       && templateAccepted
+      && (!requireLargeSourceTree || largeSourceTree)
       && !forbiddenAuthority;
   });
 }
@@ -20990,6 +21015,9 @@ function computeBroadLibraryAgnosticProof(rows) {
       && row.proofMode !== 'random_large_project_cold_path'
   );
   const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
+  const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
+    requireLargeSourceTree: false,
+  });
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
@@ -21003,6 +21031,12 @@ function computeBroadLibraryAgnosticProof(rows) {
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
   const randomColdPathRowIds = compactStringList(randomColdPathRows.map((row) => row.rowId));
+  const randomColdPathCandidateTargets = compactStringList(
+    randomColdPathCandidateRows.map((row) => row.targetId),
+  );
+  const randomColdPathCandidateRowIds = compactStringList(
+    randomColdPathCandidateRows.map((row) => row.rowId),
+  );
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualRowIds = compactStringList(sourceFirstVisualRows.map((row) => row.rowId));
   const openGaps = compactStringList([
@@ -21020,9 +21054,11 @@ function computeBroadLibraryAgnosticProof(rows) {
       : 'broad_acceptance_requires_adversarial_refusals',
     randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
       ? null
-      : randomColdPathRows.length === 0
+      : randomColdPathCandidateRows.length === 0
         ? 'broad_acceptance_requires_random_large_project_cold_path'
-        : 'broad_acceptance_requires_more_random_large_project_cold_paths',
+        : randomColdPathRows.length === 0
+          ? 'broad_acceptance_requires_large_random_project_cold_paths'
+          : 'broad_acceptance_requires_more_random_large_project_cold_paths',
     sourceFirstVisualRows.length > 0
       ? null
       : 'broad_acceptance_requires_source_first_visual_full_runtime_row',
@@ -21038,6 +21074,7 @@ function computeBroadLibraryAgnosticProof(rows) {
     ...compactStringList(broadRuntimeRows.flatMap((row) => row.proofIds ?? row.proof_ids)),
     ...compactStringList(refusalRowsForReadiness.map((row) => row.rowId)),
     ...randomColdPathRowIds,
+    ...randomColdPathCandidateRowIds,
     ...sourceFirstVisualRowIds,
   ]);
   const proofId = proofIdFor('gpu-hmr-broad-library-agnostic-proof', {
@@ -21052,6 +21089,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     refusalTargets,
     randomColdPathTargets,
     randomColdPathRowIds,
+    randomColdPathCandidateTargets,
+    randomColdPathCandidateRowIds,
+    randomColdPathFileCountThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
+    randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
     openGaps,
@@ -21086,6 +21127,12 @@ function computeBroadLibraryAgnosticProof(rows) {
     refusal_targets: refusalTargets,
     randomColdPathRows: randomColdPathRows.length,
     random_cold_path_rows: randomColdPathRows.length,
+    randomColdPathCandidateRows: randomColdPathCandidateRows.length,
+    random_cold_path_candidate_rows: randomColdPathCandidateRows.length,
+    randomColdPathCandidateRowIds,
+    random_cold_path_candidate_row_ids: randomColdPathCandidateRowIds,
+    randomColdPathCandidateTargets,
+    random_cold_path_candidate_targets: randomColdPathCandidateTargets,
     randomColdPathRowIds,
     random_cold_path_row_ids: randomColdPathRowIds,
     randomColdPathTargets,
@@ -21106,6 +21153,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     minimum_adversarial_refusal_count: BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT,
     minimumRandomColdPathCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumRandomColdPathFileCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
+    minimum_random_cold_path_file_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
+    minimumRandomColdPathKnownBytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
+    minimum_random_cold_path_known_bytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     minimumSourceFirstVisualFullRuntimeCount: 1,
     minimum_source_first_visual_full_runtime_count: 1,
     openGaps,
@@ -21122,6 +21173,9 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
       && row.proofMode !== 'random_large_project_cold_path'
   );
   const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
+  const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
+    requireLargeSourceTree: false,
+  });
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
@@ -21168,6 +21222,8 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     refusalTargetCount: refusalTargets.length,
     randomColdPathRowCount: randomColdPathRows.length,
     random_cold_path_row_count: randomColdPathRows.length,
+    randomColdPathCandidateRowCount: randomColdPathCandidateRows.length,
+    random_cold_path_candidate_row_count: randomColdPathCandidateRows.length,
     sourceFirstVisualRowCount: sourceFirstVisualRows.length,
     source_first_visual_row_count: sourceFirstVisualRows.length,
     backends,
@@ -21178,6 +21234,10 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     refusalTargets,
     randomColdPathTargets,
     random_cold_path_targets: randomColdPathTargets,
+    minimumRandomColdPathFileCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
+    minimum_random_cold_path_file_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
+    minimumRandomColdPathKnownBytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
+    minimum_random_cold_path_known_bytes: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
     openGaps,
