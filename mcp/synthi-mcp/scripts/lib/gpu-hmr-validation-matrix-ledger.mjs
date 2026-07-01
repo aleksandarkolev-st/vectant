@@ -22295,6 +22295,218 @@ function backendRunModeCoverage({ rows, backend, id, requirement, missingGap }) 
   });
 }
 
+function hiprtVisualProfileRows(rows) {
+  return visualProfileRows(rows, (row) => {
+    const runtimeProbe = compactObject(row.runtimeProbeInstrumentation ?? row.runtime_probe_instrumentation);
+    const disclosure = compactObject(runtimeProbe.disclosure);
+    return row.backend === 'hiprt'
+      && rowHasAcceptedVisualEvidence(row)
+      && runtimeProbe.accepted === true
+      && (
+        row.acceptanceScope === 'hiprt_declared_visual_profile'
+        || runtimeProbe.scope === 'hiprt_declared_visual_profile'
+        || disclosure.acceptanceScope === 'hiprt_declared_visual_profile'
+        || disclosure.acceptance_scope === 'hiprt_declared_visual_profile'
+      );
+  });
+}
+
+function hiprtVisualPathCoverage({ rows, fullRuntimeRows }) {
+  if (fullRuntimeRows.length > 0) {
+    return coverageEntry({
+      id: 'hiprt_visual_path',
+      requirement: 'HIPRT same-process ray-traced visual path',
+      status: 'accepted',
+      rows: fullRuntimeRows,
+    });
+  }
+  const profileRows = hiprtVisualProfileRows(rows);
+  if (profileRows.length > 0) {
+    return coverageEntry({
+      id: 'hiprt_visual_path',
+      requirement: 'HIPRT same-process ray-traced visual path',
+      status: 'visual_profile_only',
+      rows: profileRows,
+      openGaps: compactStringList([
+        ...profileRows.flatMap((row) => row.openGaps),
+        'hiprt_no_shim_full_runtime_boundary_required',
+      ]),
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofAuthority: 'hiprt_visual_profile_diagnostic_only_not_gpu_hmr_acceptance',
+      proof_authority: 'hiprt_visual_profile_diagnostic_only_not_gpu_hmr_acceptance',
+    });
+  }
+  return coverageEntry({
+    id: 'hiprt_visual_path',
+    requirement: 'HIPRT same-process ray-traced visual path',
+    status: 'missing',
+    openGaps: ['hiprt_visual_runtime_proof_required'],
+  });
+}
+
+function runModeTargetCoverageForRows({ rowsByTarget, statusPrefix }) {
+  const openGaps = [];
+  const targetCoverage = [];
+  for (const [targetKey, targetRows] of rowsByTarget) {
+    const targetGaps = [];
+    for (const requiredMode of REQUIRED_FULL_TARGET_RUN_MODES) {
+      const hasMode = targetRows.some((row) =>
+        row.runMode?.accepted === true && row.runMode.metricScope === requiredMode
+      );
+      if (!hasMode) targetGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
+    }
+
+    const hotDelta1EditHashes = new Set(targetRows
+      .filter((row) => row.runMode?.accepted === true && row.runMode.metricScope === 'hot_delta_1')
+      .map((row) => text(row.runMode?.editHash ?? row.runMode?.edit_hash))
+      .filter(Boolean));
+    const hasHotDelta2DifferentEdit = targetRows.some((row) =>
+      row.runMode?.accepted === true
+      && row.runMode.metricScope === 'hot_delta_2'
+      && hotDelta1EditHashes.size > 0
+      && text(row.runMode.editHash ?? row.runMode.edit_hash)
+      && !hotDelta1EditHashes.has(text(row.runMode.editHash ?? row.runMode.edit_hash))
+      && (
+        row.runMode.differentEdit === true
+        || row.runMode.different_edit === true
+        || row.runMode.editKind === 'different_gpu_edit'
+        || row.runMode.edit_kind === 'different_gpu_edit'
+      )
+    );
+    if (!hasHotDelta2DifferentEdit) {
+      targetGaps.push(`${targetKey}:hot_delta_2_different_edit_evidence_missing`);
+    }
+
+    const hasNegativeEditRefusal = targetRows.some((row) =>
+      row.matrixOutcome === 'refusal_proven'
+      && (
+        row.proofMode === 'negative_edit'
+        || row.evidenceKind === 'negative_edit'
+        || row.runMode?.editKind === 'negative_edit'
+        || row.runMode?.edit_kind === 'negative_edit'
+        || row.runMode?.metricScope === 'negative_edit'
+      )
+    );
+    if (!hasNegativeEditRefusal) {
+      targetGaps.push(`${targetKey}:negative_edit_refusal_evidence_missing`);
+    }
+
+    openGaps.push(...targetGaps);
+    const [targetBackend, ...targetIdParts] = targetKey.split(':');
+    targetCoverage.push({
+      targetKey,
+      backend: targetBackend,
+      targetId: targetIdParts.join(':'),
+      status: targetGaps.length === 0 ? `${statusPrefix}_complete` : `${statusPrefix}_partial`,
+      rowCount: targetRows.length,
+      rows: rowRefs(targetRows),
+      openGaps: compactStringList(targetGaps),
+    });
+  }
+  return {
+    openGaps,
+    targetCoverage,
+    acceptedTargetCount: targetCoverage.filter((entry) => entry.status === `${statusPrefix}_complete`).length,
+    incompleteTargetCount: targetCoverage.filter((entry) => entry.status !== `${statusPrefix}_complete`).length,
+  };
+}
+
+function hiprtRunModeCoverage({ rows, id, requirement, missingGap }) {
+  const fullRuntimeCoverage = backendRunModeCoverage({
+    rows,
+    backend: 'hiprt',
+    id,
+    requirement,
+    missingGap,
+  });
+  if (fullRuntimeCoverage.status !== 'missing') return fullRuntimeCoverage;
+
+  const profileRows = hiprtVisualProfileRows(rows);
+  if (profileRows.length === 0) return fullRuntimeCoverage;
+
+  const profileTargetKeys = new Set(profileRows.map((row) => targetKeyForCoverageRow(row)));
+  const rowsByTarget = new Map();
+  const profileRowIds = new Set(profileRows.map((row) => row.rowId));
+  for (const row of profileRows) appendTargetRow(rowsByTarget, row);
+
+  const supportRows = rows.filter((row) =>
+    row.backend === 'hiprt'
+    && !profileRowIds.has(row.rowId)
+    && profileTargetKeys.has(targetKeyForCoverageRow(row))
+    && (
+      row.runMode?.accepted === true
+      || row.matrixOutcome === 'refusal_proven'
+    )
+  );
+  for (const row of supportRows) appendTargetRow(rowsByTarget, row);
+
+  const coverage = runModeTargetCoverageForRows({
+    rowsByTarget,
+    statusPrefix: 'visual_profile',
+  });
+  const sourceAdaptedGaps = compactStringList(profileRows.flatMap((row) => row.openGaps));
+  const openGaps = compactStringList([
+    ...coverage.openGaps,
+    ...sourceAdaptedGaps,
+    'hiprt_no_shim_full_runtime_run_modes_required',
+  ]);
+
+  return coverageEntry({
+    id,
+    requirement,
+    status: coverage.openGaps.length === 0 ? 'visual_profile_only' : 'visual_profile_partial',
+    rows: [...new Set([...profileRows, ...supportRows])],
+    openGaps,
+    targetCoverage: coverage.targetCoverage,
+    acceptedTargetCount: coverage.acceptedTargetCount,
+    incompleteTargetCount: coverage.incompleteTargetCount,
+    unlinkedSupportRowCount: 0,
+    unlinked_support_row_count: 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'hiprt_visual_profile_run_modes_diagnostic_only_not_gpu_hmr_acceptance',
+    proof_authority: 'hiprt_visual_profile_run_modes_diagnostic_only_not_gpu_hmr_acceptance',
+  });
+}
+
+function runtimePreflightCoverage({ rows, backend, id, requirement, missingGap }) {
+  const preflightRows = preflightOnlyRows(rows, (row) => row.backend === backend);
+  const refusedRows = refusalRows(rows, (row) =>
+    row.backend === backend
+    && row.proofMode === 'runtime_preflight'
+  );
+  const coverageRows = [...new Set([...preflightRows, ...refusedRows])];
+  if (preflightRows.length > 0) {
+    return coverageEntry({
+      id,
+      requirement,
+      status: 'preflight_only',
+      rows: coverageRows,
+      openGaps: compactStringList(coverageRows.flatMap((row) => row.openGaps)),
+    });
+  }
+  if (refusedRows.length > 0) {
+    return coverageEntry({
+      id,
+      requirement,
+      status: 'refused',
+      rows: refusedRows,
+      openGaps: compactStringList(refusedRows.flatMap((row) => row.openGaps)),
+    });
+  }
+  return coverageEntry({
+    id,
+    requirement,
+    status: 'missing',
+    openGaps: [missingGap],
+  });
+}
+
 function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
   const accepted = acceptedRows(rows, acceptedPredicate);
   if (accepted.length > 0) {
@@ -22571,7 +22783,6 @@ function planCoverage(rows) {
     && row.runtimeResourceTrace?.bindGroupCount > 0
     && row.runtimeResourceTrace?.vertexBufferCount > 0
   );
-  const oidnHipPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'oidn_hip');
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
   const externalVisualRows = visualProfileRows(rows, (row) =>
     rowHasAcceptedVisualEvidence(row)
@@ -22647,16 +22858,9 @@ function planCoverage(rows) {
       proofAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
       proof_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     }),
-    coverageEntry({
-      id: 'hiprt_visual_path',
-      requirement: 'HIPRT same-process ray-traced visual path',
-      status: hiprtRows.length > 0 ? 'accepted' : 'missing',
-      rows: hiprtRows,
-      openGaps: hiprtRows.length > 0 ? [] : ['hiprt_visual_runtime_proof_required'],
-    }),
-    backendRunModeCoverage({
+    hiprtVisualPathCoverage({ rows, fullRuntimeRows: hiprtRows }),
+    hiprtRunModeCoverage({
       rows,
-      backend: 'hiprt',
       id: 'hiprt_run_modes',
       requirement: 'HIPRT cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
       missingGap: 'hiprt_run_mode_proof_required',
@@ -22698,14 +22902,12 @@ function planCoverage(rows) {
         ? compactStringList(webgpuPreflightRows.flatMap((row) => row.openGaps))
         : ['webgpu_runtime_preflight_required'],
     }),
-    coverageEntry({
+    runtimePreflightCoverage({
+      rows,
+      backend: 'oidn_hip',
       id: 'oidn_hip_runtime_preflight',
       requirement: 'OIDN HIP runtime capability preflight without output-oracle overclaim',
-      status: oidnHipPreflightRows.length > 0 ? 'preflight_only' : 'missing',
-      rows: oidnHipPreflightRows,
-      openGaps: oidnHipPreflightRows.length > 0
-        ? compactStringList(oidnHipPreflightRows.flatMap((row) => row.openGaps))
-        : ['oidn_hip_runtime_preflight_required'],
+      missingGap: 'oidn_hip_runtime_preflight_required',
     }),
     coverageEntry({
       id: 'external_engine_visual_profile',

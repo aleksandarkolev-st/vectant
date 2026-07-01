@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 HIPRT/OIDN Plan-Coverage Diagnostic Boundary
+
+Validation-matrix plan coverage now distinguishes non-authoritative evidence from missing evidence for HIPRT and OIDN/HIP. Source-adapted HIPRT visual-profile rows can make `hiprt_visual_path` report `visual_profile_only` and `hiprt_run_modes` report `visual_profile_partial` when cold/hot support is present, but those entries explicitly keep `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and diagnostic-only authority. They still require a no-shim same-process runtime boundary, loader, epoch, dispatch, host identity, visual oracle, firewall, and strict ledger before any HIPRT GPU HMR acceptance.
+
+OIDN/HIP runtime-preflight refusals now surface as `refused` coverage for `oidn_hip_runtime_preflight` instead of looking absent when the backend evidence is schema-correct but failed closed. This does not turn preflight or output bytes into GPU HMR proof; OIDN output still needs full runtime ledger closure before acceptance. The smoke suite covers a source-adapted HIPRT visual/run-mode diagnostic path and an OIDN/HIP runtime-preflight refusal, while retaining the forged preflight-success rejection.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including HIPRT visual_profile_only/visual_profile_partial diagnostics and OIDN runtime-preflight refusal coverage, proof gpu-validation-matrix-ledger:sha256:5569cc65f34bd87ed830fa49678ddf5c55b72c5d25673327bc7f1184263cb275, rows=66
+```
+
 ## 2026-07-01 Random Cold-Path Backend Declaration Boundary
 
 Validation-matrix ingestion now records `randomColdBackendEvidence` for `synthi.gpu_hmr.random_large_project_cold_path.v1` rows. The row backend is selected only from source-intake/backend candidates derived from the source listing, build metadata discovery, and runtime-boundary expectation. Candidate-declared `backend`, `backendFamily`, and `backendCandidates` fields are preserved as diagnostics with `candidateBackendUsedForAcceptance=false` and authority `candidate_backend_declaration_diagnostic_only_not_backend_contract`.

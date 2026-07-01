@@ -9145,6 +9145,55 @@ const forgedPreflightBackendCoverage = new Map(
 );
 assert.equal(forgedPreflightBackendCoverage.get('opencl_dispatch_readback')?.status, 'missing');
 
+const oidnHipRefusedPreflightCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
+    artifactPath: 'synthetic/refused-oidn-hip-preflight.json',
+    updatedAt: '2026-06-09T00:00:00.060Z',
+    backend: 'oidn_hip',
+    targetId: 'refused-oidn-hip-preflight',
+    profileId: 'refused-oidn-hip-preflight',
+    proofMode: 'runtime_preflight',
+    evidenceKind: 'runtime_preflight_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'structured_runtime_refusal',
+    proofIds: ['oidn-preflight-proof:sha256:refused'],
+    backendEvidence: {
+      accepted: true,
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+      failedGates: [],
+    },
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: ['runtime_preflight_failed'],
+    },
+    reasons: ['oidn_runtime_preflight_failed'],
+    openGaps: ['oidn_runtime_preflight_failed'],
+  })],
+});
+const oidnHipRefusedPreflightCoverage = new Map(
+  oidnHipRefusedPreflightCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(oidnHipRefusedPreflightCoverage.get('oidn_hip_runtime_preflight')?.status, 'refused');
+assert.ok(oidnHipRefusedPreflightCoverage.get('oidn_hip_runtime_preflight')?.openGaps.includes(
+  'oidn_runtime_preflight_failed',
+));
+assert.equal(oidnHipRefusedPreflightCoverage.get('oidn_hip_output')?.status, 'refused');
+assert.ok(oidnHipRefusedPreflightCoverage.get('oidn_hip_output')?.openGaps.includes(
+  'oidn_runtime_preflight_failed',
+));
+
 const forgedOidnHipOutputBroadRow = withQueryRecomputedRowId({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
   artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
@@ -11001,12 +11050,23 @@ const optedOutHiprtRunModeTarget = coverageById.get('per_target_run_modes')?.tar
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
 );
 assert.equal(optedOutHiprtRunModeTarget, undefined);
-assert.equal(coverageById.get('hiprt_run_modes')?.status, 'missing');
+assert.equal(coverageById.get('hiprt_visual_path')?.status, 'visual_profile_only');
+assert.ok(coverageById.get('hiprt_visual_path')?.openGaps.includes(
+  'source_adapted_profile_not_no_shim_gpu_hmr',
+));
+assert.equal(coverageById.get('hiprt_visual_path')?.acceptedForGpuHmr, false);
+assert.equal(coverageById.get('hiprt_run_modes')?.status, 'visual_profile_partial');
 const hiprtRunModeTarget = coverageById.get('hiprt_run_modes')?.targetCoverage?.find(
   (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
 );
-assert.equal(hiprtRunModeTarget, undefined);
-assert.ok(coverageById.get('hiprt_run_modes')?.openGaps.includes('hiprt_run_mode_proof_required'));
+assert.equal(hiprtRunModeTarget?.status, 'visual_profile_partial');
+assert.ok(hiprtRunModeTarget.openGaps.includes(
+  'hiprt:accepted-hiprt-recomputed-oracle:negative_edit_refusal_evidence_missing',
+));
+assert.ok(coverageById.get('hiprt_run_modes')?.openGaps.includes(
+  'hiprt_no_shim_full_runtime_run_modes_required',
+));
+assert.equal(coverageById.get('hiprt_run_modes')?.acceptedForGpuHmr, false);
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:cold_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_1_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));
