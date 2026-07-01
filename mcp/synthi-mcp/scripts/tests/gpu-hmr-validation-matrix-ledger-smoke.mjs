@@ -1771,6 +1771,13 @@ assert.equal(randomColdRow.acceptedForGpuHmr, false);
 assert.equal(randomColdRow.gpuHmrSuccess, false);
 assert.equal(randomColdRow.safety.accepted, true);
 assert.equal(randomColdRow.randomColdPathDirectInputEvidence.acceptedAsDirectInputEvidence, true);
+assert.equal(randomColdRow.backend, 'vulkan');
+assert.equal(randomColdRow.randomColdBackendEvidence.backendSource, 'source_tree_intake_backend_candidates');
+assert.equal(randomColdRow.randomColdBackendEvidence.candidateBackendUsedForAcceptance, false);
+assert.deepEqual(
+  randomColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
+  ['vulkan', 'webgpu_wgsl'],
+);
 assert.equal(
   randomColdRow.randomLargeProjectColdPath.directInputEvidence.proofAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
@@ -1790,6 +1797,74 @@ assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
   1,
 );
+
+const forgedCandidateBackendDir = path.join(tmpRoot, 'random-large-project-cold-path-backend-forged');
+const forgedBackendSourceUrl = 'https://example.invalid/arbitrary/user-project.git';
+const forgedBackendCommit = '1111111111111111111111111111111111111111';
+const forgedBackendDirectInput = randomColdDirectInputEvidenceFixture({
+  sourceUrl: forgedBackendSourceUrl,
+  immutableCommit: forgedBackendCommit,
+});
+const forgedBackendCandidate = {
+  id: 'direct-random-arbitrary-forged-backend',
+  backend: 'hip',
+  backendFamily: 'real_rocm',
+  backend_family: 'real_rocm',
+  backendCandidates: ['hip_rocm'],
+  backend_candidates: ['hip_rocm'],
+  profileMode: 'unprofiled_arbitrary_project_cold_intake',
+  profile_mode: 'unprofiled_arbitrary_project_cold_intake',
+  candidateSource: 'direct_source_url_commit',
+  candidate_source: 'direct_source_url_commit',
+  directInputEvidence: forgedBackendDirectInput,
+  direct_input_evidence: forgedBackendDirectInput,
+  sourceUrl: forgedBackendSourceUrl,
+  source_url: forgedBackendSourceUrl,
+  immutableCommit: forgedBackendCommit,
+  immutable_commit: forgedBackendCommit,
+};
+await writeJson(
+  path.join(forgedCandidateBackendDir, 'random-cold-forged-backend.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-forged-backend',
+    resultOverrides: {
+      backend: 'hip',
+      backendFamily: 'real_rocm',
+      backend_family: 'real_rocm',
+      backendCandidates: ['hip_rocm'],
+      backend_candidates: ['hip_rocm'],
+    },
+    topLevelOverrides: {
+      candidates: [forgedBackendCandidate],
+      selectedCandidates: [forgedBackendCandidate],
+      selected_candidates: [forgedBackendCandidate],
+    },
+  }),
+);
+const forgedBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedCandidateBackendDir],
+  generatedAt: '2026-06-30T21:00:00.500Z',
+  includeUnproven: true,
+});
+const forgedBackendColdRow = forgedBackendColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedBackendColdRow?.backend, 'vulkan');
+assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateDeclaredBackend, 'hip');
+assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateDeclaredBackendFamily, 'real_rocm');
+assert.deepEqual(
+  forgedBackendColdRow.randomColdBackendEvidence.candidateDeclaredBackendCandidates,
+  ['hip_rocm'],
+);
+assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateBackendUsedForAcceptance, false);
+assert.deepEqual(
+  forgedBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
+  ['vulkan', 'webgpu_wgsl'],
+);
+assert.equal(forgedBackendColdRow.acceptedForGpuHmr, false);
+assert.equal(forgedBackendColdRow.gpuHmrSuccess, false);
 
 const forgedRuntimeEventsTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
 forgedRuntimeEventsTemplateSeed.manifestTemplate = {

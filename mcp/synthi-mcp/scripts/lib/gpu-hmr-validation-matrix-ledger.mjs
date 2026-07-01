@@ -1317,29 +1317,63 @@ function randomColdManifestCandidate(json = {}, result = {}) {
     ?? {};
 }
 
-function randomColdBackendFromEvidence({ result = {}, candidate = {}, sourceIntake = {} } = {}) {
-  const directBackend = firstText(result.backend, candidate.backend);
-  if (directBackend) return directBackend;
-  const backendFamily = firstText(
+function normalizeRandomColdBackend(backend) {
+  if (backend === 'hip_rocm') return 'hip';
+  if (backend === 'webgpu_wgsl') return 'webgpu';
+  return backend;
+}
+
+function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sourceIntake = {} } = {}) {
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(sourceIntake.backendCandidates) ? sourceIntake.backendCandidates : []),
+    ...(Array.isArray(sourceIntake.backend_candidates) ? sourceIntake.backend_candidates : []),
+  ]);
+  const candidateDeclaredBackend = firstText(result.backend, candidate.backend);
+  const candidateDeclaredBackendFamily = firstText(
     result.backendFamily,
     result.backend_family,
     candidate.backendFamily,
     candidate.backend_family,
   );
-  if (backendFamily === 'real_rocm') return 'hip';
-  const backendCandidates = compactStringList([
-    ...(Array.isArray(sourceIntake.backendCandidates) ? sourceIntake.backendCandidates : []),
-    ...(Array.isArray(sourceIntake.backend_candidates) ? sourceIntake.backend_candidates : []),
+  const candidateDeclaredBackendCandidates = compactStringList([
+    ...(Array.isArray(result.backendCandidates) ? result.backendCandidates : []),
+    ...(Array.isArray(result.backend_candidates) ? result.backend_candidates : []),
     ...(Array.isArray(candidate.backendCandidates) ? candidate.backendCandidates : []),
     ...(Array.isArray(candidate.backend_candidates) ? candidate.backend_candidates : []),
   ]);
   const preferred = ['hip_rocm', 'hip', 'hiprt', 'opencl', 'vulkan', 'webgpu_wgsl', 'cuda', 'sycl'];
   const selected = preferred.find((backend) => backendCandidates.includes(backend));
-  if (selected === 'hip_rocm') return 'hip';
-  if (selected === 'webgpu_wgsl') return 'webgpu';
-  if (selected) return selected;
-  if (backendCandidates.length > 1) return 'mixed_gpu';
-  return firstText(backendFamily) ?? 'unknown';
+  const backend = selected
+    ? normalizeRandomColdBackend(selected)
+    : (backendCandidates.length > 1 ? 'mixed_gpu' : 'unknown');
+  const backendSource = backend === 'unknown'
+    ? 'source_tree_intake_backend_unknown'
+    : 'source_tree_intake_backend_candidates';
+  return {
+    backend,
+    backend_source: backendSource,
+    backendSource,
+    sourceDerivedBackendCandidates: backendCandidates,
+    source_derived_backend_candidates: backendCandidates,
+    candidateDeclaredBackend: candidateDeclaredBackend ?? null,
+    candidate_declared_backend: candidateDeclaredBackend ?? null,
+    candidateDeclaredBackendFamily: candidateDeclaredBackendFamily ?? null,
+    candidate_declared_backend_family: candidateDeclaredBackendFamily ?? null,
+    candidateDeclaredBackendCandidates,
+    candidate_declared_backend_candidates: candidateDeclaredBackendCandidates,
+    candidateBackendUsedForAcceptance: false,
+    candidate_backend_used_for_acceptance: false,
+    candidateBackendAuthority:
+      'candidate_backend_declaration_diagnostic_only_not_backend_contract',
+    candidate_backend_authority:
+      'candidate_backend_declaration_diagnostic_only_not_backend_contract',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+  };
 }
 
 function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
@@ -20592,7 +20626,12 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     candidate.immutableCommit,
     candidate.immutable_commit,
   );
-  const backend = randomColdBackendFromEvidence({ result, candidate, sourceIntake });
+  const randomColdBackendEvidence = randomColdBackendEvidenceFromSource({
+    result,
+    candidate,
+    sourceIntake: coldSourceTreeIntake,
+  });
+  const backend = randomColdBackendEvidence.backend;
   const resultBlockingGaps = compactStringList([
     ...(Array.isArray(result.blockingGaps) ? result.blockingGaps : []),
     ...(Array.isArray(result.blocking_gaps) ? result.blocking_gaps : []),
@@ -20661,6 +20700,8 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     random_large_project_cold_path: randomLargeProjectColdPath,
     randomColdPathDirectInputEvidence,
     random_cold_path_direct_input_evidence: randomColdPathDirectInputEvidence,
+    randomColdBackendEvidence,
+    random_cold_backend_evidence: randomColdBackendEvidence,
     coldSourceTreeIntake,
     cold_source_tree_intake: coldSourceTreeIntake,
     coldRuntimeBoundaryEventManifestTemplate,
@@ -21255,6 +21296,10 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.coldRuntimeBoundaryEventManifestTemplate
       ?? row.cold_runtime_boundary_event_manifest_template,
     );
+    const backendEvidence = compactObject(
+      row.randomColdBackendEvidence
+      ?? row.random_cold_backend_evidence,
+    );
     const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
       facet.directInputEvidence,
       facet.direct_input_evidence,
@@ -21307,6 +21352,21 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       && directInputEvidenceAccepted
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
+    const sourceDerivedBackendCandidates = compactStringList([
+      ...(Array.isArray(backendEvidence.sourceDerivedBackendCandidates)
+        ? backendEvidence.sourceDerivedBackendCandidates
+        : []),
+      ...(Array.isArray(backendEvidence.source_derived_backend_candidates)
+        ? backendEvidence.source_derived_backend_candidates
+        : []),
+      ...(Array.isArray(intake.backendCandidates) ? intake.backendCandidates : []),
+      ...(Array.isArray(intake.backend_candidates) ? intake.backend_candidates : []),
+    ]);
+    const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
+    const candidateBackendUsedForAcceptance = firstBool(
+      backendEvidence.candidateBackendUsedForAcceptance,
+      backendEvidence.candidate_backend_used_for_acceptance,
+    ) === true;
     const sourceAccepted = firstBool(
       row.sourceTreeIntakeAccepted,
       row.source_tree_intake_accepted,
@@ -21367,6 +21427,8 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       ) === true;
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
       && arbitraryColdIntake
+      && sourceDerivedBackendObserved
+      && !candidateBackendUsedForAcceptance
       && sourceAccepted
       && buildMetadataAccepted
       && templateAccepted
@@ -21407,6 +21469,8 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
+      'source_derived_backend_candidates_observed',
+      'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
       'build_metadata_discovery_or_content_accepted',
       'runtime_boundary_event_manifest_template_validated',
@@ -21417,6 +21481,8 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_cli_or_env_input_mode_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
+      'source_derived_backend_candidates_observed',
+      'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
       'build_metadata_discovery_or_content_accepted',
       'runtime_boundary_event_manifest_template_validated',
@@ -21452,6 +21518,10 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'profile_id_value',
       'sample_pool_membership',
     ],
+    backendIdentityRole: 'source_tree_intake_backend_candidates_only_not_candidate_declaration',
+    backend_identity_role: 'source_tree_intake_backend_candidates_only_not_candidate_declaration',
+    candidateBackendDeclarationsDiagnosticOnly: true,
+    candidate_backend_declarations_diagnostic_only: true,
   };
   const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
   return {
