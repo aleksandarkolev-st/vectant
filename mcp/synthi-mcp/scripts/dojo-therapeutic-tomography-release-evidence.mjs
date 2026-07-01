@@ -127,6 +127,7 @@ export async function runTherapeuticTomographyProductionReleaseEvidence({
   const blastRadiusContract = contracts.find((probe) => probe.name === "blast_radius_summary");
   if (!healthContract || !blastRadiusContract) throw new Error("release_probe_contract_missing");
 
+  const probeHttpObservations = [];
   const probeAdapter = createHttpTherapeuticProbeAdapter({
     endpoint_url: config.probe_url,
     headers: {
@@ -136,6 +137,24 @@ export async function runTherapeuticTomographyProductionReleaseEvidence({
       "X-Synthi-Actor-Id": config.tenant_scope.actor_id,
       "X-Synthi-Roles": config.actor_roles.join(","),
       "X-Synthi-Runtime-Session-Id": config.runtime_session_id,
+    },
+    transport: async (input) => {
+      const response = await fetchImpl(input.url, {
+        method: "POST",
+        headers: input.headers,
+        body: JSON.stringify(input.body),
+      });
+      const text = await readResponseText(response);
+      const body = parseResponseBody(text);
+      probeHttpObservations.push({
+        probe_name: String(input.body?.probe_name ?? ""),
+        url: input.url,
+        status: response.status,
+        request_body_sha256: sha256(JSON.stringify(redactProbeRequestBody(input.body))),
+        response_body_sha256: sha256(text),
+        observed_at: now,
+      });
+      return { status: response.status, body };
     },
   });
 
@@ -275,6 +294,7 @@ export async function runTherapeuticTomographyProductionReleaseEvidence({
       transport: "fetch",
       probes_completed: [healthProbe.probe?.name, blastProbe.probe?.name].filter(Boolean),
       evidence_refs: [...healthProbe.evidence_refs, ...blastProbe.evidence_refs],
+      http_observations: probeHttpObservations,
     },
     production_durable_store: durableObservation,
     proof_signing: {
@@ -405,11 +425,34 @@ export function validateProductionTherapeuticTomographyEvidence(artifact) {
   if (!runtimeUrl || !isProductionHttpsUrl(runtimeUrl)) errors.push("hosted_runtime_url_not_production_https");
   if (artifact?.hosted_runtime?.authorized !== true) errors.push("hosted_runtime_not_authorized");
   if (!artifact?.hosted_runtime?.authorization_observed_at) errors.push("hosted_runtime_authorization_missing");
+  if (!isSha256Hex(artifact?.hosted_runtime?.response_headers_sha256)) errors.push("hosted_runtime_response_headers_sha256_missing");
+  if (!isSha256Hex(artifact?.hosted_runtime?.response_body_sha256)) errors.push("hosted_runtime_response_body_sha256_missing");
   const probeUrl = safeUrl(artifact?.deployed_probe_adapter?.endpoint_url);
   if (!probeUrl || !isProductionHttpsUrl(probeUrl)) errors.push("probe_endpoint_not_production_https");
   if (artifact?.deployed_probe_adapter?.transport !== "fetch") errors.push("probe_transport_not_real_fetch");
   if (!Array.isArray(artifact?.deployed_probe_adapter?.probes_completed) || artifact.deployed_probe_adapter.probes_completed.length < 2) {
     errors.push("production_probe_evidence_incomplete");
+  }
+  const probeObservations = Array.isArray(artifact?.deployed_probe_adapter?.http_observations)
+    ? artifact.deployed_probe_adapter.http_observations
+    : [];
+  if (probeObservations.length < 2) {
+    errors.push("production_probe_http_observations_missing");
+  }
+  for (const name of ["service_health_rollup", "blast_radius_summary"]) {
+    const observation = probeObservations.find((item) => item?.probe_name === name);
+    if (!observation) {
+      errors.push(`production_probe_http_observation_missing:${name}`);
+      continue;
+    }
+    const observationUrl = safeUrl(observation.url);
+    if (!observationUrl || !isProductionHttpsUrl(observationUrl)) errors.push(`production_probe_http_observation_url_invalid:${name}`);
+    if (!Number.isInteger(observation.status) || observation.status < 200 || observation.status >= 300) {
+      errors.push(`production_probe_http_observation_status_invalid:${name}`);
+    }
+    if (!isSha256Hex(observation.request_body_sha256)) errors.push(`production_probe_request_sha256_missing:${name}`);
+    if (!isSha256Hex(observation.response_body_sha256)) errors.push(`production_probe_response_sha256_missing:${name}`);
+    if (!observation.observed_at) errors.push(`production_probe_observed_at_missing:${name}`);
   }
   if (!artifact?.tenant_scope?.tenant_id || !artifact?.tenant_scope?.workspace_id || !artifact?.tenant_scope?.actor_id) {
     errors.push("tenant_scope_missing");
@@ -423,6 +466,16 @@ export function validateProductionTherapeuticTomographyEvidence(artifact) {
   if (!storeUrl || !isProductionHttpsUrl(storeUrl)) errors.push("durable_store_endpoint_not_production_https");
   if (artifact?.production_durable_store?.reconstruction_verified !== true) errors.push("durable_state_reconstruction_unverified");
   if (!artifact?.production_durable_store?.record_id) errors.push("durable_store_record_id_missing");
+  const readbackUrl = safeUrl(artifact?.production_durable_store?.readback_url);
+  if (!readbackUrl || !isProductionHttpsUrl(readbackUrl)) errors.push("durable_store_readback_url_not_production_https");
+  if (!Number.isInteger(artifact?.production_durable_store?.append_status) || artifact.production_durable_store.append_status < 200 || artifact.production_durable_store.append_status >= 300) {
+    errors.push("durable_store_append_status_invalid");
+  }
+  if (!Number.isInteger(artifact?.production_durable_store?.read_status) || artifact.production_durable_store.read_status < 200 || artifact.production_durable_store.read_status >= 300) {
+    errors.push("durable_store_read_status_invalid");
+  }
+  if (!isSha256Hex(artifact?.production_durable_store?.append_response_body_sha256)) errors.push("durable_store_append_response_sha256_missing");
+  if (!isSha256Hex(artifact?.production_durable_store?.read_response_body_sha256)) errors.push("durable_store_read_response_sha256_missing");
   if (artifact?.proof_signing?.signing_provider !== "managed-key-service" && artifact?.proof_signing?.signing_provider !== "external-command") {
     errors.push("proof_signing_provider_not_external");
   }
@@ -448,6 +501,10 @@ export function validateProductionTherapeuticTomographyEvidence(artifact) {
   return { ok: errors.length === 0, errors };
 }
 
+function isSha256Hex(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
 async function observeHostedRuntimeAuthorization({ config, now, fetchImpl }) {
   const response = await fetchImpl(config.runtime_url, {
     method: "GET",
@@ -464,6 +521,7 @@ async function observeHostedRuntimeAuthorization({ config, now, fetchImpl }) {
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`therapeutic_production_runtime_authorization_failed:${response.status}`);
   }
+  const text = await readResponseText(response);
   return {
     authorized: true,
     session_id: config.runtime_session_id,
@@ -472,6 +530,7 @@ async function observeHostedRuntimeAuthorization({ config, now, fetchImpl }) {
     authorization_observed_at: now,
     status: response.status,
     response_headers_sha256: sha256(JSON.stringify(Object.fromEntries(response.headers.entries()))),
+    response_body_sha256: sha256(text),
   };
 }
 
@@ -499,7 +558,8 @@ async function persistAndReconstructProductionState({ config, taskId, runtimeSta
   if (appendResponse.status < 200 || appendResponse.status >= 300) {
     throw new Error(`therapeutic_production_store_append_failed:${appendResponse.status}`);
   }
-  const appendBody = await appendResponse.json();
+  const appendText = await readResponseText(appendResponse);
+  const appendBody = parseResponseBody(appendText);
   const recordId = String(appendBody.record_id ?? appendBody.id ?? "").trim();
   if (!recordId) throw new Error("therapeutic_production_store_record_id_missing");
 
@@ -519,7 +579,8 @@ async function persistAndReconstructProductionState({ config, taskId, runtimeSta
   if (readResponse.status < 200 || readResponse.status >= 300) {
     throw new Error(`therapeutic_production_store_readback_failed:${readResponse.status}`);
   }
-  const readBody = await readResponse.json();
+  const readText = await readResponseText(readResponse);
+  const readBody = parseResponseBody(readText);
   const reconstructed = readBody.state ?? readBody.record?.state ?? readBody;
   const reconstructedSha256 = String(
     readBody.state_sha256 ?? readBody.record?.state_sha256 ?? sha256(JSON.stringify(reconstructed))
@@ -537,9 +598,14 @@ async function persistAndReconstructProductionState({ config, taskId, runtimeSta
   return {
     kind: "external_control_plane",
     endpoint_url: config.store_url,
+    readback_url: readUrl,
     record_id: recordId,
     state_sha256: stateSha256,
     persisted_at: now,
+    append_status: appendResponse.status,
+    append_response_body_sha256: sha256(appendText),
+    read_status: readResponse.status,
+    read_response_body_sha256: sha256(readText),
     evidence_records: runtimeState.store.evidence_records.length,
     audit_records: runtimeState.store.audit_records.length,
     grant_records: runtimeState.store.grants.length,
@@ -549,6 +615,31 @@ async function persistAndReconstructProductionState({ config, taskId, runtimeSta
     reconstructed_evidence_records: reconstructed.store.evidence_records.length,
     reconstructed_audit_records: reconstructed.store.audit_records.length,
     reconstruction_verified: true,
+  };
+}
+
+async function readResponseText(response) {
+  if (typeof response.text === "function") return await response.text();
+  if (typeof response.json === "function") return JSON.stringify(await response.json());
+  return "";
+}
+
+function parseResponseBody(text) {
+  if (!String(text ?? "").trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function redactProbeRequestBody(body) {
+  return {
+    schema_version: body?.schema_version,
+    task_id: body?.task_id,
+    task_class: body?.task_class,
+    probe_name: body?.probe_name,
+    allowed_output_shape: body?.allowed_output_shape,
   };
 }
 

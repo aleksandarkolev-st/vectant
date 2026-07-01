@@ -41,7 +41,8 @@ function productionArtifact(overrides: Record<string, any> = {}) {
       loopback: false,
       authorization_observed_at: "2026-07-01T00:00:00.000Z",
       status: 200,
-      response_headers_sha256: "abc",
+      response_headers_sha256: "a".repeat(64),
+      response_body_sha256: "b".repeat(64),
     },
     tenant_scope: {
       tenant_id: "tenant-prod-001",
@@ -59,13 +60,36 @@ function productionArtifact(overrides: Record<string, any> = {}) {
       transport: "fetch",
       probes_completed: ["service_health_rollup", "blast_radius_summary"],
       evidence_refs: ["evidence:probe-1", "evidence:probe-2"],
+      http_observations: [
+        {
+          probe_name: "service_health_rollup",
+          url: "https://probe.prod.synthi.ai/therapeutic/incident-response",
+          status: 200,
+          request_body_sha256: "1".repeat(64),
+          response_body_sha256: "2".repeat(64),
+          observed_at: "2026-07-01T00:00:00.000Z",
+        },
+        {
+          probe_name: "blast_radius_summary",
+          url: "https://probe.prod.synthi.ai/therapeutic/incident-response",
+          status: 200,
+          request_body_sha256: "3".repeat(64),
+          response_body_sha256: "4".repeat(64),
+          observed_at: "2026-07-01T00:00:00.000Z",
+        },
+      ],
     },
     production_durable_store: {
       kind: "external_control_plane",
       endpoint_url: "https://control.prod.synthi.ai/therapeutic/runtime-state",
+      readback_url: "https://control.prod.synthi.ai/therapeutic/runtime-state/record-prod-001",
       record_id: "record-prod-001",
-      state_sha256: "state-sha",
+      state_sha256: "5".repeat(64),
       persisted_at: "2026-07-01T00:00:00.000Z",
+      append_status: 201,
+      append_response_body_sha256: "6".repeat(64),
+      read_status: 200,
+      read_response_body_sha256: "7".repeat(64),
       evidence_records: 8,
       audit_records: 7,
       grant_records: 1,
@@ -185,6 +209,33 @@ describe("therapeutic tomography production release evidence gate", () => {
     expect(validateProductionTherapeuticTomographyEvidence(productionArtifact()).ok).toBe(true);
   });
 
+  it("requires response fingerprints for runtime, probe, and durable store observations", async () => {
+    const { validateProductionTherapeuticTomographyEvidence } = await releaseModulePromise;
+    const validation = validateProductionTherapeuticTomographyEvidence(productionArtifact({
+      hosted_runtime: {
+        ...productionArtifact().hosted_runtime,
+        response_body_sha256: undefined,
+      },
+      deployed_probe_adapter: {
+        ...productionArtifact().deployed_probe_adapter,
+        http_observations: [],
+      },
+      production_durable_store: {
+        ...productionArtifact().production_durable_store,
+        read_response_body_sha256: undefined,
+      },
+    }));
+
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_response_body_sha256_missing",
+      "production_probe_http_observations_missing",
+      "production_probe_http_observation_missing:service_health_rollup",
+      "production_probe_http_observation_missing:blast_radius_summary",
+      "durable_store_read_response_sha256_missing",
+    ]));
+  });
+
   it("does not allow local/demo transports to satisfy production evidence", async () => {
     const { validateProductionTherapeuticTomographyEvidence } = await releaseModulePromise;
 
@@ -226,4 +277,3 @@ describe("therapeutic tomography production release evidence gate", () => {
     ]));
   });
 });
-

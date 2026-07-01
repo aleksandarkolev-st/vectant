@@ -968,6 +968,13 @@ service is called with the existing therapeutic HTTPS probe adapter using
 `POST` JSON requests and must return shape-valid aggregate probe results for
 `service_health_rollup` and `blast_radius_summary`.
 
+The production evidence records response fingerprints for every external
+dependency. Runtime authorization must include response header and body SHA-256
+hashes. Each probe call must include the probe name, production HTTPS URL, 2xx
+status, redacted request body SHA-256, response body SHA-256, and observation
+timestamp. The durable store append and readback calls must include 2xx status
+codes, response body SHA-256 hashes, and the production HTTPS readback URL.
+
 The durable control-plane store must implement:
 
 - `POST $env:SYNTHI_THERAPEUTIC_PROD_STORE_URL` with a
