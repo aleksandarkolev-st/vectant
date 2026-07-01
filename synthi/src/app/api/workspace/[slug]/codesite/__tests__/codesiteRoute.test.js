@@ -120,6 +120,8 @@ describe('CodeSite catch-all route', () => {
     controlPlane.eventCursor.mockImplementation((event) => (
       Number.isSafeInteger(Number(event?.logicalTime)) ? `lt:${Number(event.logicalTime)}` : event?.id
     ));
+    delete process.env.COLLAB_SERVER_URL;
+    delete process.env.SYNTHI_CODESITE_API_BASE_URL;
   });
 
   it('lists projects through the read-gated projects endpoint', async () => {
@@ -219,6 +221,233 @@ describe('CodeSite catch-all route', () => {
       body,
       expect.objectContaining({ userId: 'user-1' }),
     );
+  });
+
+  it('proxies quarantine manifest review through the read-gated CodeSite facade', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      quarantines: [{ quarantineId: 'qtn-1', status: 'reviewable' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const response = await GET(
+      new Request('http://app.test/api/workspace/acme/codesite/quarantines?transactionId=txn-1&status=reviewable'),
+      params(['quarantines']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      ok: true,
+      quarantines: [{ quarantineId: 'qtn-1', status: 'reviewable' }],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesitefs/quarantines/acme?userId=user-1&filesystemUserId=user-1&transactionId=txn-1&status=reviewable'),
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'x-user-id': 'user-1',
+          'x-runtime-fs-user-id': 'user-1',
+          'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+        }),
+      }),
+    );
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('proxies quarantine replay with selected paths and transaction metadata', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesitefs/quarantines/acme/qtn-1/replay'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-user-id': 'user-1',
+          'x-runtime-fs-user-id': 'user-1',
+          'x-codesite-mode': 'enforce',
+          'x-codesite-transaction-id': 'txn-1',
+          'x-codesite-lease-id': 'lease-1',
+        }),
+      }),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      paths: ['docs/review.md'],
+      userId: 'user-1',
+      filesystemUserId: 'user-1',
+      codesite: {
+        enforce: true,
+        mode: 'enforce',
+        workspaceSlug: 'acme',
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+      },
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('does not forward caller-injected quarantine changes to the collab manifest endpoint', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        paths: ['docs/review.md'],
+        changes: [{ path: 'secrets/override.txt', afterText: 'bad' }],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    const forwarded = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(forwarded).toMatchObject({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      paths: ['docs/review.md'],
+      userId: 'user-1',
+      filesystemUserId: 'user-1',
+    });
+    expect(forwarded).not.toHaveProperty('changes');
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('rejects quarantine proxy requests that impersonate a different runtime filesystem user', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+        filesystemUserId: 'user-2',
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(403);
+    expect(await json(response)).toEqual({
+      error: 'codesite_runtime_identity_mismatch',
+      detail: {
+        field: 'filesystemUserId',
+        actorUserId: 'user-1',
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('keeps quarantine apply write-gated because it can mutate the workspace', async () => {
+    canWriteScope.mockResolvedValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'apply']));
+
+    expect(response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(canWriteScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('rejects quarantine replay without explicit selected paths before proxying', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: [],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(400);
+    expect(await json(response)).toEqual({
+      error: 'missing_selected_paths',
+      detail: { quarantineId: 'qtn-1', action: 'replay' },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('uses forwarded host instead of a 0.0.0.0 bind origin for quarantine callbacks', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://0.0.0.0:3000/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        host: 'codesite-proof-app:3000',
+        'x-forwarded-proto': 'http',
+      },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      codesite: {
+        controlPlaneUrl: 'http://codesite-proof-app:3000/api/workspace/acme/codesite',
+      },
+    });
+    fetchSpy.mockRestore();
   });
 
   it('reads project success metrics through the read-gated metrics endpoint', async () => {

@@ -116,6 +116,7 @@ import {
   dryRunTransactionWrites,
   getAgentInbox,
   getAgentManifest,
+  getControlState,
   getEvents,
   getIncidentReplay,
   getLineProvenance,
@@ -569,7 +570,249 @@ describe('CodeSite control plane transaction validation', () => {
 
     expect(manifest.mcpTools).toEqual(CODESITE_MCP_TOOLS);
     expect(manifest.mcpTools).toContain('synthi_codesite_get_inbox');
+    expect(manifest.mcpTools).toContain('synthi_codesite_review_quarantine');
     expect(manifest.inboxRoot).toBe('projects/project-1/inbox/');
+    expect(manifest.quarantineRoot).toBe('projects/project-1/quarantines/');
+    expect(manifest.quarantineIndex).toBe('projects/project-1/quarantines/index.jsonl');
+  });
+
+  it('includes pending quarantine reviews in agent-readable control state', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Quarantine run',
+      request: 'Review quarantined write',
+      status: 'active',
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:03:00.000Z'),
+      zonePolicyJson: JSON.stringify({ zones: [], noFlyZones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      agentSessions: [{
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        agentProvider: 'codex',
+        agentRuntime: 'cli',
+        providerSessionRef: null,
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        permissionsJson: JSON.stringify([]),
+        redactionPolicyJson: JSON.stringify({}),
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        endedAt: null,
+      }],
+      executionPlans: [executionPlanFixture(['docs/**'])],
+      mutationLeases: [{
+        id: 'lease-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'], blockedPaths: [] }),
+        dojoProofRef: null,
+        dojoLicenseRef: null,
+        dojoEvidenceRefsJson: JSON.stringify([]),
+        dojoLedgerCheckpointHash: null,
+        dojoDecisionDigest: null,
+        implementationStatusJson: JSON.stringify({}),
+        issuedAt: new Date('2026-07-01T00:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      }],
+      mutationTxns: [{
+        ...transactionFixture(),
+        writeSetJson: JSON.stringify(['docs/review.md']),
+        observedWriteSetJson: JSON.stringify([]),
+      }],
+      assumptions: [],
+      policyDecisions: [],
+      events: [{
+        id: 'evt-q1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_quarantined',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'codesitefs',
+        actorId: 'qtn-1',
+        evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+        logicalTime: 9,
+        createdAt: new Date('2026-07-01T00:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          quarantineId: 'qtn-1',
+          path: 'docs/review.md',
+          quarantineEvidence: {
+            path: 'docs/review.md',
+            afterDigest: 'sha256:after-review',
+            evidenceRef: 'codesitefs:quarantine:sha256:review',
+          },
+        }),
+      }],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const state = await getControlState('acme', 'project-1');
+
+    expect(state.pendingQuarantines).toEqual([
+      expect.objectContaining({
+        quarantineId: 'qtn-1',
+        status: 'reviewable',
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+        changeCount: 1,
+      }),
+    ]);
+    expect(state.requiredActions).toContain('review_quarantine:qtn-1');
+    expect(state.towerState).toBe('holding');
+  });
+
+  it('keeps partially applied quarantines pending with remaining paths', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Partial quarantine run',
+      request: 'Apply one quarantined path',
+      status: 'active',
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:03:00.000Z'),
+      zonePolicyJson: JSON.stringify({ zones: [], noFlyZones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      agentSessions: [{
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        agentProvider: 'codex',
+        agentRuntime: 'cli',
+        providerSessionRef: null,
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        permissionsJson: JSON.stringify([]),
+        redactionPolicyJson: JSON.stringify({}),
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        endedAt: null,
+      }],
+      executionPlans: [executionPlanFixture(['docs/**'])],
+      mutationLeases: [{
+        id: 'lease-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'], blockedPaths: [] }),
+        dojoProofRef: null,
+        dojoLicenseRef: null,
+        dojoEvidenceRefsJson: JSON.stringify([]),
+        dojoLedgerCheckpointHash: null,
+        dojoDecisionDigest: null,
+        implementationStatusJson: JSON.stringify({}),
+        issuedAt: new Date('2026-07-01T00:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      }],
+      mutationTxns: [{
+        ...transactionFixture(),
+        writeSetJson: JSON.stringify(['docs/review.md']),
+        observedWriteSetJson: JSON.stringify(['docs/review.md']),
+      }],
+      assumptions: [],
+      policyDecisions: [],
+      events: [
+        {
+          id: 'evt-q1',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_quarantined',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+          logicalTime: 9,
+          createdAt: new Date('2026-07-01T00:02:00.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            path: 'docs/review.md',
+            quarantineEvidence: {
+              path: 'docs/review.md',
+              afterDigest: 'sha256:after-review',
+              evidenceRef: 'codesitefs:quarantine:sha256:review',
+            },
+          }),
+        },
+        {
+          id: 'evt-q2',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_quarantined',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:notes']),
+          logicalTime: 10,
+          createdAt: new Date('2026-07-01T00:02:15.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            path: 'docs/notes.md',
+            quarantineEvidence: {
+              path: 'docs/notes.md',
+              afterDigest: 'sha256:after-notes',
+              evidenceRef: 'codesitefs:quarantine:sha256:notes',
+            },
+          }),
+        },
+        {
+          id: 'evt-q3',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'quarantine_applied',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+          logicalTime: 11,
+          createdAt: new Date('2026-07-01T00:02:30.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            paths: ['docs/review.md'],
+            applied: [{ path: 'docs/review.md', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
+          }),
+        },
+      ],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const state = await getControlState('acme', 'project-1');
+
+    expect(state.pendingQuarantines).toEqual([
+      expect.objectContaining({
+        quarantineId: 'qtn-1',
+        status: 'partially_applied',
+        appliedPaths: ['docs/review.md'],
+        remainingPaths: ['docs/notes.md'],
+      }),
+    ]);
+    expect(state.requiredActions).toContain('review_quarantine:qtn-1');
+    expect(state.towerState).toBe('holding');
   });
 
   it('bootstraps automatic tower workflow with schema-first holding plans', async () => {

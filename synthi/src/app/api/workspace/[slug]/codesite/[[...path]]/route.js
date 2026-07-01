@@ -110,8 +110,10 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'artifacts' && route[3] === 'preview') {
       const search = new URL(request.url).searchParams;
+      const maxContentBytes = Number(search.get('maxContentBytes') || search.get('max_content_bytes') || NaN);
       return okJson(await previewArtifacts(slug, route[1], {
         includeContent: search.get('include') === 'content',
+        ...(Number.isFinite(maxContentBytes) ? { maxContentBytes } : {}),
       }));
     }
 
@@ -142,6 +144,10 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox') {
       return okJson({ inbox: await getAgentInbox(slug, route[1], access.actor) });
+    }
+
+    if (route[0] === 'quarantines' && route.length <= 2) {
+      return proxyCodeSiteQuarantine(request, slug, route, access.actor);
     }
 
     if (route[0] === 'provenance' && route[1] === 'line') {
@@ -226,6 +232,10 @@ export async function POST(request, { params }) {
 
     if (route[0] === 'transactions' && route[2] === 'quarantine-events') {
       return okJson({ event: await recordTransactionQuarantineEvent(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
+    if (route[0] === 'quarantines' && route[1] && ['replay', 'apply'].includes(route[2])) {
+      return proxyCodeSiteQuarantine(request, slug, route, access.actor, body);
     }
 
     if (route[0] === 'transactions' && route[2] === 'assumptions') {
@@ -335,6 +345,7 @@ function postAccessMode(route) {
     'abort',
     'source-state-since',
   ].includes(route[2])) return 'read';
+  if (route[0] === 'quarantines' && ['replay', 'apply'].includes(route[2])) return 'write';
   if (route[0] === 'projects' && [
     'codesitefs-events',
     'documents',
@@ -405,6 +416,160 @@ function eventStreamResponse({ signal, initialSince = null, load, eventName, idO
 
 const windowSetInterval = globalThis.setInterval.bind(globalThis);
 const windowClearInterval = globalThis.clearInterval.bind(globalThis);
+
+async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null) {
+  const collabBase = resolveServerCollabHttpUrl();
+  const sourceUrl = new URL(request.url);
+  const action = route[2] || null;
+  const quarantineId = route[1] || null;
+  const targetPath = quarantineId
+    ? `/codesitefs/quarantines/${encodeURIComponent(slug)}/${encodeURIComponent(quarantineId)}${action ? `/${action}` : ''}`
+    : `/codesitefs/quarantines/${encodeURIComponent(slug)}`;
+  const targetUrl = new URL(`${collabBase}${targetPath}`);
+  const identity = quarantineRuntimeIdentity(body, sourceUrl, actor);
+  if (identity.error) return identity.error;
+  const { actorUserId, filesystemUserId, runtimeScope } = identity;
+
+  if (!action) {
+    if (actorUserId) targetUrl.searchParams.set('userId', actorUserId);
+    if (filesystemUserId) targetUrl.searchParams.set('filesystemUserId', filesystemUserId);
+    if (runtimeScope) targetUrl.searchParams.set('runtimeScope', runtimeScope);
+    for (const key of ['transactionId', 'status']) {
+      const value = sourceUrl.searchParams.get(key);
+      if (value) targetUrl.searchParams.set(key, value);
+    }
+  }
+
+  const headers = {
+    accept: 'application/json',
+    'x-codesite-control-plane-url': codeSiteApiBaseUrl(request, sourceUrl, slug),
+  };
+  const authorization = request.headers.get('authorization');
+  const cookie = request.headers.get('cookie');
+  if (authorization) headers.authorization = authorization;
+  if (cookie) headers.cookie = cookie;
+  if (actorUserId) headers['x-user-id'] = actorUserId;
+  if (filesystemUserId) headers['x-runtime-fs-user-id'] = filesystemUserId;
+  if (runtimeScope) headers['x-runtime-scope'] = runtimeScope;
+
+  let nextBody = null;
+  if (action) {
+    const selectedPaths = Array.isArray(body?.paths)
+      ? body.paths
+      : Array.isArray(body?.selectedPaths)
+        ? body.selectedPaths
+        : Array.isArray(body?.selected_paths)
+          ? body.selected_paths
+          : [];
+    const normalizedSelectedPaths = selectedPaths
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+    if (normalizedSelectedPaths.length === 0) {
+      return errorJson(400, 'missing_selected_paths', { quarantineId, action });
+    }
+    headers['content-type'] = 'application/json';
+    const transactionId = body?.transactionId || body?.transaction_id;
+    const mutationLeaseId = body?.mutationLeaseId || body?.mutation_lease_id;
+    const displayCallsign = body?.displayCallsign || body?.callsign;
+    if (transactionId) {
+      headers['x-codesite-mode'] = 'enforce';
+      headers['x-codesite-transaction-id'] = transactionId;
+    }
+    if (mutationLeaseId) headers['x-codesite-lease-id'] = mutationLeaseId;
+    if (displayCallsign) headers['x-codesite-callsign'] = displayCallsign;
+    nextBody = JSON.stringify({
+      ...(transactionId ? { transactionId } : {}),
+      ...(mutationLeaseId ? { mutationLeaseId } : {}),
+      ...(displayCallsign ? { displayCallsign } : {}),
+      ...(body?.evidenceRefs ? { evidenceRefs: body.evidenceRefs } : {}),
+      ...(body?.evidence_refs ? { evidence_refs: body.evidence_refs } : {}),
+      ...(body?.processAncestry ? { processAncestry: body.processAncestry } : {}),
+      ...(body?.process_ancestry ? { process_ancestry: body.process_ancestry } : {}),
+      userId: actorUserId,
+      filesystemUserId,
+      runtimeScope,
+      paths: normalizedSelectedPaths,
+      codesite: {
+        ...(body?.codesite || body?.codeSite || {}),
+        enforce: true,
+        mode: 'enforce',
+        workspaceSlug: slug,
+        transactionId,
+        mutationLeaseId,
+        displayCallsign,
+        controlPlaneUrl: codeSiteApiBaseUrl(request, sourceUrl, slug),
+        cookie,
+      },
+    });
+  }
+
+  const response = await fetch(targetUrl, {
+    method: action ? 'POST' : 'GET',
+    headers,
+    body: nextBody,
+  });
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch (_) {
+    payload = { text };
+  }
+  return okJson(payload, { status: response.status });
+}
+
+function quarantineRuntimeIdentity(body, sourceUrl, actor) {
+  const actorIds = [actor?.userId, actor?.workspaceUserId].filter(Boolean).map(String);
+  const actorUserId = actorIds[0] || '';
+  const requestedUserId = body?.userId || body?.actorUserId || sourceUrl.searchParams.get('userId') || '';
+  const requestedFilesystemUserId = body?.filesystemUserId
+    || body?.filesystem_user_id
+    || sourceUrl.searchParams.get('filesystemUserId')
+    || sourceUrl.searchParams.get('filesystem_user_id')
+    || '';
+  for (const [field, value] of [
+    ['userId', requestedUserId],
+    ['filesystemUserId', requestedFilesystemUserId],
+  ]) {
+    if (value && !actorIds.includes(String(value))) {
+      return {
+        error: errorJson(403, 'codesite_runtime_identity_mismatch', {
+          field,
+          actorUserId,
+        }),
+      };
+    }
+  }
+  return {
+    actorUserId,
+    filesystemUserId: requestedFilesystemUserId || actorUserId,
+    runtimeScope: body?.runtimeScope || body?.runtime_scope || sourceUrl.searchParams.get('runtimeScope') || '',
+  };
+}
+
+function resolveServerCollabHttpUrl() {
+  return String(
+    process.env.COLLAB_SERVER_URL
+    || process.env.SYNTHI_COLLAB_SERVER_URL
+    || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
+    || process.env.COLLAB_URL
+    || 'http://localhost:1234'
+  ).replace(/\/+$/, '').replace(/^ws/i, 'http');
+}
+
+function codeSiteApiBaseUrl(request, url, slug) {
+  const explicit = process.env.SYNTHI_CODESITE_API_BASE_URL || process.env.CODESITE_API_BASE_URL;
+  if (explicit) {
+    return explicit.replace('{workspace_slug}', encodeURIComponent(slug)).replace(/\/+$/, '');
+  }
+  const configuredOrigin = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL || process.env.NEXTAUTH_URL;
+  const requestHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
+  const requestProto = request.headers.get('x-forwarded-proto') || url.protocol.replace(/:$/, '') || 'http';
+  const originFromHost = requestHost ? `${requestProto}://${requestHost}` : '';
+  const bindOnlyHost = ['0.0.0.0', '::', '[::]'].includes(url.hostname);
+  const origin = String(configuredOrigin || (bindOnlyHost ? originFromHost : url.origin) || url.origin).replace(/\/+$/, '');
+  return `${origin}/api/workspace/${encodeURIComponent(slug)}/codesite`;
+}
 
 export function PUT() {
   return methodNotAllowed('PUT');

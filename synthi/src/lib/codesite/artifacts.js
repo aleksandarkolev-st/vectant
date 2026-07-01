@@ -38,6 +38,9 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_generate_black_box',
   'synthi_codesite_get_line_provenance',
   'synthi_codesite_get_metrics',
+  'synthi_codesite_review_quarantine',
+  'synthi_codesite_replay_quarantine',
+  'synthi_codesite_apply_quarantine',
 ];
 
 export function codesiteSchemas() {
@@ -129,6 +132,28 @@ export function codesiteSchemas() {
       processAncestry: { type: 'array', items: { type: 'string' } },
       evidenceRefs: { type: 'array', items: { type: 'string' } },
     }, ['path', 'source', 'tool', 'disposition', 'reasonCodes', 'policyDecision']),
+    'codesitefs-quarantine.schema.json': schema('CodeSiteFSQuarantine', {
+      quarantineId: { type: 'string' },
+      workspaceSlug: { type: ['string', 'null'] },
+      projectId: { type: ['string', 'null'] },
+      transactionId: { type: ['string', 'null'] },
+      mutationLeaseId: { type: ['string', 'null'] },
+      displayCallsign: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      paths: { type: 'array', items: { type: 'string' } },
+      changes: { type: 'array' },
+      lifecycle: { type: 'object' },
+      rejected: { type: 'array' },
+      applied: { type: 'array' },
+      appliedPaths: { type: 'array', items: { type: 'string' } },
+      remainingPaths: { type: 'array', items: { type: 'string' } },
+      latestReplayAttempt: { type: ['object', 'null'] },
+      replayAttempts: { type: 'array' },
+      successfulReplay: { type: ['object', 'null'] },
+      evidenceRefs: { type: 'array', items: { type: 'string' } },
+      eventRefs: { type: 'array', items: { type: 'string' } },
+      symlinkSanitization: { type: ['object', 'null'] },
+    }, ['quarantineId', 'status', 'paths', 'changes', 'lifecycle', 'evidenceRefs']),
     'inspection-run.schema.json': schema('InspectionRun', {
       executionPlanId: { type: ['string', 'null'] },
       displayCallsign: { type: 'string' },
@@ -198,6 +223,7 @@ export function codesiteSchemas() {
       activeTransactions: { type: 'array' },
       allowedPaths: { type: 'array', items: { type: 'string' } },
       blockedPaths: { type: 'array', items: { type: 'string' } },
+      pendingQuarantines: { type: 'array' },
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
@@ -227,6 +253,7 @@ function schema(title, properties, required) {
 export function buildArtifactProjection(project, controlState = null) {
   const projectDir = `projects/${project.id}`;
   const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
+  const quarantines = quarantineReviewRecords(project);
   const files = [
     jsonFile('manifest.json', {
       version: CODESITE_ARTIFACT_VERSION,
@@ -238,6 +265,8 @@ export function buildArtifactProjection(project, controlState = null) {
       schemas: 'schemas/',
       compiler_output: 'airspace/compiler-output.json',
       inbox_root: `${projectDir}/inbox/`,
+      quarantine_root: `${projectDir}/quarantines/`,
+      quarantine_index: `${projectDir}/quarantines/index.jsonl`,
       proof_bundle_root: `${projectDir}/proof-bundles/`,
       mcp_tools: CODESITE_MCP_TOOLS,
     }),
@@ -253,6 +282,10 @@ export function buildArtifactProjection(project, controlState = null) {
     {
       relativePath: `${projectDir}/events.jsonl`,
       content: asArray(project.events).map((event) => stableJson(event)).join('\n') + (project.events?.length ? '\n' : ''),
+    },
+    {
+      relativePath: `${projectDir}/quarantines/index.jsonl`,
+      content: quarantines.map((record) => stableJson(record)).join('\n') + (quarantines.length ? '\n' : ''),
     },
     {
       relativePath: `${projectDir}/provenance/line-provenance.jsonl`,
@@ -282,6 +315,11 @@ export function buildArtifactProjection(project, controlState = null) {
     const events = eventsForSession(project.events, session, transactions, clearances);
     const landings = landingRunsForSession(project.inspectionRuns, session, flightPlans);
     const proofs = asArray(project.proofBundles).filter((proof) => transactions.some((txn) => txn.id === proof.transactionId));
+    const sessionQuarantines = quarantines.filter((record) => (
+      record.displayCallsign === session.displayCallsign
+      || transactions.some((txn) => txn.id === record.transactionId)
+      || clearances.some((lease) => lease.id === record.mutationLeaseId)
+    ));
 
     files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
     files.push({
@@ -317,6 +355,7 @@ export function buildArtifactProjection(project, controlState = null) {
       events,
       inspections: landings,
       proofBundles: proofs,
+      quarantines: sessionQuarantines,
     }));
     for (const item of inbox) {
       files.push(jsonFile(`${projectDir}/inbox/${callsign}/${item.eventId || item.id}.json`, item));
@@ -344,6 +383,10 @@ export function buildArtifactProjection(project, controlState = null) {
     files.push(jsonFile(`${projectDir}/policy-deltas/${delta.id}.json`, delta));
   }
 
+  for (const quarantine of quarantines) {
+    files.push(jsonFile(`${projectDir}/quarantines/${safeSegment(quarantine.quarantineId)}.json`, quarantine));
+  }
+
   for (const proof of asArray(project.proofBundles)) {
     const transaction = asArray(project.mutationTxns).find((item) => item.id === proof.transactionId);
     const mutationLease = transaction
@@ -362,6 +405,267 @@ export function buildArtifactProjection(project, controlState = null) {
   }
 
   return files;
+}
+
+export function quarantineReviewRecords(project = {}) {
+  const records = new Map();
+  const lifecycleTypes = new Set(['quarantine_reviewed', 'quarantine_replayed', 'quarantine_applied']);
+  const relevantEvents = asArray(project.events).filter((event) => (
+    event?.eventType === 'write_quarantined'
+    || lifecycleTypes.has(event?.eventType)
+  ));
+
+  for (const event of relevantEvents) {
+    const details = event.details || {};
+    const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
+    const fsDetails = codesiteFsEvent.details || {};
+    const evidence = details.quarantineEvidence
+      || details.quarantine_evidence
+      || fsDetails.quarantineEvidence
+      || fsDetails.quarantine_evidence
+      || {};
+    const quarantineId = quarantineEventId(event, details, fsDetails, evidence);
+    const record = records.get(quarantineId) || {
+      schemaVersion: 'synthi.codesite.codesitefs.quarantine.v1',
+      quarantineId,
+      workspaceSlug: project.workspaceSlug || null,
+      projectId: project.id || null,
+      transactionId: details.transactionId || details.transaction_id || codesiteFsEvent.transaction_id || null,
+      mutationLeaseId: event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null,
+      displayCallsign: event.displayCallsign || null,
+      status: 'reviewable',
+      paths: [],
+      changes: [],
+      lifecycle: {
+        capturedAt: null,
+        reviewedAt: null,
+        replayedAt: null,
+        appliedAt: null,
+      },
+      rejected: [],
+      applied: [],
+      appliedPaths: [],
+      remainingPaths: [],
+      latestReplayAttempt: null,
+      replayAttempts: [],
+      successfulReplay: null,
+      eventRefs: [],
+      evidenceRefs: [],
+      symlinkSanitization: null,
+      createdAt: event.createdAt || null,
+      updatedAt: event.createdAt || null,
+    };
+
+    record.eventRefs = appendUnique(record.eventRefs, event.id);
+    record.evidenceRefs = appendUnique(record.evidenceRefs, [
+      ...asArray(event.evidenceRefs),
+      ...asArray(details.evidenceRefs || details.evidence_refs),
+      ...asArray(codesiteFsEvent.evidence_refs || codesiteFsEvent.evidenceRefs),
+      evidence.evidenceRef,
+      ...(asArray(evidence.evidenceRefs || evidence.evidence_refs)),
+    ]);
+    const manifestPaths = asArray(details.manifestPaths || details.manifest_paths).filter(Boolean);
+    const manifestChanges = asArray(details.manifestChanges || details.manifest_changes)
+      .map(quarantineChangeFromManifest)
+      .filter((change) => change.path);
+    record.paths = appendUnique(record.paths, [
+      details.path,
+      codesiteFsEvent.path,
+      evidence.path,
+      ...asArray(details.paths || details.changedPaths || details.changed_paths),
+      ...manifestPaths,
+    ].filter(Boolean));
+    for (const change of manifestChanges) {
+      record.changes = upsertByKey(record.changes, change, (item) => item.evidenceRef || `${item.path}:${item.afterDigest || item.kind}`);
+    }
+    const manifestSymlinkSanitization = details.symlinkSanitization || details.symlink_sanitization;
+    if (manifestSymlinkSanitization) {
+      record.symlinkSanitization = record.symlinkSanitization || manifestSymlinkSanitization;
+    }
+    record.transactionId = record.transactionId || details.transactionId || details.transaction_id || null;
+    record.mutationLeaseId = record.mutationLeaseId || event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null;
+    record.displayCallsign = record.displayCallsign || event.displayCallsign || null;
+    record.updatedAt = laterIso(record.updatedAt, event.createdAt);
+
+    if (event.eventType === 'write_quarantined') {
+      record.lifecycle.capturedAt = record.lifecycle.capturedAt || event.createdAt || null;
+      record.status = record.status === 'applied' ? record.status : 'reviewable';
+      const change = quarantineChangeFromEvent(event, details, codesiteFsEvent, evidence);
+      if (change.path) {
+        record.changes = upsertByKey(record.changes, change, (item) => item.evidenceRef || `${item.path}:${item.afterDigest || item.kind}`);
+      }
+      if (fsDetails.symlinkSanitization || fsDetails.symlink_sanitization || details.symlinkSanitization || details.symlink_sanitization) {
+        record.symlinkSanitization = fsDetails.symlinkSanitization
+          || fsDetails.symlink_sanitization
+          || details.symlinkSanitization
+          || details.symlink_sanitization;
+      }
+    } else if (event.eventType === 'quarantine_reviewed') {
+      record.lifecycle.reviewedAt = record.lifecycle.reviewedAt || event.createdAt || null;
+      record.status = record.status === 'applied' ? record.status : 'reviewed';
+      record.review = {
+        selectedChangeCount: details.selectedChangeCount ?? null,
+        replayableChangeCount: details.replayableChangeCount ?? null,
+        rejectedChangeCount: details.rejectedChangeCount ?? null,
+      };
+    } else if (event.eventType === 'quarantine_replayed') {
+      const replayAttempt = quarantineReplayAttemptFromEvent(event, details);
+      record.latestReplayAttempt = replayAttempt;
+      record.replayAttempts = appendUniqueObjects(record.replayAttempts, [replayAttempt]);
+      record.rejected = appendUniqueObjects(record.rejected, asArray(details.rejected || event.rejected));
+      if (isSuccessfulQuarantineReplay(replayAttempt)) {
+        if (isReplayAttemptBeforeApply(replayAttempt, record.lifecycle)) {
+          record.lifecycle.replayedAt = replayAttempt.attemptedAt || record.lifecycle.replayedAt || null;
+          record.replay = replayAttempt;
+          record.successfulReplay = replayAttempt;
+        } else if (!record.successfulReplay) {
+          record.replay = replayAttempt;
+          record.successfulReplay = replayAttempt;
+        }
+        record.status = record.status === 'applied' ? record.status : 'replayed';
+      } else if (record.status !== 'applied' && record.status !== 'replayed') {
+        record.status = 'blocked';
+      }
+    } else if (event.eventType === 'quarantine_applied') {
+      record.lifecycle.appliedAt = event.createdAt || record.lifecycle.appliedAt;
+      record.applied = appendUniqueObjects(record.applied, asArray(details.applied));
+      record.boundaryPhase = details.boundaryPhase || null;
+    }
+
+    records.set(quarantineId, record);
+  }
+
+  return [...records.values()].map(finalizeQuarantineRecord).sort((left, right) => (
+    String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''))
+  ));
+}
+
+function finalizeQuarantineRecord(record) {
+  const paths = appendUnique(record.paths, asArray(record.changes).map((change) => change.path));
+  const applied = asArray(record.applied);
+  const appliedPaths = appendUnique([], applied.map((change) => change.path));
+  const remainingPaths = paths.filter((item) => !appliedPaths.includes(item));
+  let status = record.status;
+  if (appliedPaths.length > 0) {
+    status = remainingPaths.length > 0 ? 'partially_applied' : 'applied';
+  }
+  return {
+    ...record,
+    status,
+    paths,
+    applied,
+    appliedPaths,
+    remainingPaths,
+  };
+}
+
+function quarantineEventId(event, details = {}, fsDetails = {}, evidence = {}) {
+  return String(
+    details.quarantineId
+    || details.quarantine_id
+    || fsDetails.quarantineId
+    || fsDetails.quarantine_id
+    || evidence.quarantineId
+    || evidence.quarantine_id
+    || event.actorId
+    || evidence.evidenceRef
+    || event.id
+    || 'unknown-quarantine'
+  );
+}
+
+function quarantineChangeFromEvent(event, details = {}, codesiteFsEvent = {}, evidence = {}) {
+  return {
+    path: normalizeRecordPath(evidence.path || details.path || codesiteFsEvent.path),
+    kind: evidence.kind || details.changeKind || details.change_kind || codesiteFsEvent.kind || 'modified',
+    evidenceRef: evidence.evidenceRef || asArray(event.evidenceRefs)[0] || null,
+    beforeDigest: evidence.beforeDigest || evidence.before_digest || null,
+    afterDigest: evidence.afterDigest || evidence.after_digest || null,
+    currentDigest: evidence.currentDigest || evidence.current_digest || null,
+    expectedDigest: evidence.expectedDigest || evidence.expected_digest || null,
+    beforeSize: evidence.beforeSize ?? evidence.before_size ?? null,
+    afterSize: evidence.afterSize ?? evidence.after_size ?? null,
+    lineProvenanceCount: asArray(details.lineProvenance || details.line_provenance).length,
+  };
+}
+
+function quarantineChangeFromManifest(change = {}) {
+  const evidence = change.quarantineEvidence || change.quarantine_evidence || {};
+  return {
+    path: normalizeRecordPath(change.path || evidence.path),
+    kind: change.kind || evidence.kind || 'modified',
+    evidenceRef: change.evidenceRef || change.evidence_ref || evidence.evidenceRef || evidence.evidence_ref || null,
+    beforeDigest: change.beforeDigest || change.before_digest || evidence.beforeDigest || evidence.before_digest || null,
+    afterDigest: change.afterDigest || change.after_digest || evidence.afterDigest || evidence.after_digest || null,
+    currentDigest: change.currentDigest || change.current_digest || evidence.currentDigest || evidence.current_digest || null,
+    expectedDigest: change.expectedDigest || change.expected_digest || evidence.expectedDigest || evidence.expected_digest || null,
+    beforeSize: change.beforeSize ?? change.before_size ?? evidence.beforeSize ?? evidence.before_size ?? null,
+    afterSize: change.afterSize ?? change.after_size ?? evidence.afterSize ?? evidence.after_size ?? null,
+    lineProvenanceCount: asArray(change.lineProvenance || change.line_provenance).length,
+  };
+}
+
+function quarantineReplayAttemptFromEvent(event, details = {}) {
+  return {
+    attemptedAt: event.createdAt || null,
+    selectedChangeCount: details.selectedChangeCount ?? null,
+    replayableChangeCount: details.replayableChangeCount ?? null,
+    rejectedChangeCount: details.rejectedChangeCount ?? null,
+    paths: asArray(details.paths || details.selectedPaths || details.selected_paths),
+    replayablePaths: asArray(details.replay || details.replayable || details.prepared).map((item) => item.path).filter(Boolean),
+    rejectedPaths: asArray(details.rejected).map((item) => item.path).filter(Boolean),
+  };
+}
+
+function isSuccessfulQuarantineReplay(attempt = {}) {
+  return Number(attempt.replayableChangeCount || 0) > 0 && Number(attempt.rejectedChangeCount || 0) === 0;
+}
+
+function isReplayAttemptBeforeApply(attempt = {}, lifecycle = {}) {
+  if (!lifecycle.appliedAt) return true;
+  const attemptedAt = Date.parse(attempt.attemptedAt || '');
+  const appliedAt = Date.parse(lifecycle.appliedAt);
+  if (Number.isNaN(attemptedAt) || Number.isNaN(appliedAt)) return false;
+  return attemptedAt <= appliedAt;
+}
+
+function normalizeRecordPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function appendUnique(current, values) {
+  const next = [...asArray(current)];
+  for (const value of asArray(values)) {
+    if (value == null || value === '') continue;
+    const stringValue = String(value);
+    if (!next.includes(stringValue)) next.push(stringValue);
+  }
+  return next;
+}
+
+function appendUniqueObjects(current, values) {
+  const next = [...asArray(current)];
+  const seen = new Set(next.map((item) => stableJson(item)));
+  for (const value of asArray(values)) {
+    const key = stableJson(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(value);
+  }
+  return next;
+}
+
+function upsertByKey(items, item, keyOf) {
+  const key = keyOf(item);
+  const next = asArray(items).filter((existing) => keyOf(existing) !== key);
+  next.push(item);
+  return next;
+}
+
+function laterIso(left, right) {
+  if (!right) return left || null;
+  if (!left) return right;
+  return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
 function compilerOutput(zonePolicy = {}) {

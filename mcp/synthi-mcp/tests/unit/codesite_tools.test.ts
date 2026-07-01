@@ -279,6 +279,117 @@ describe("CodeSite MCP tool surface", () => {
     );
   });
 
+  it("reviews quarantine manifests through the CodeSite control-plane facade", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      quarantines: [{ quarantineId: "qtn-1", status: "reviewable" }],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_review_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      transaction_id: "txn-1",
+      status: "reviewable",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines?transactionId=txn-1&status=reviewable"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_review_quarantine",
+      response: expect.objectContaining({
+        quarantines: [expect.objectContaining({ quarantineId: "qtn-1" })],
+      }),
+    }));
+  });
+
+  it("replays and applies selected quarantine paths through the CodeSite API surface", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({
+        ok: true,
+        replay: [{ path: "docs/review.md" }],
+        rejected: [],
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        ok: true,
+        applied: [{ path: "docs/review.md" }],
+      }));
+
+    const replay = await dispatchCodeSiteTool("synthi_codesite_replay_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "agent-user",
+      filesystem_user_id: "runtime-user",
+      runtime_scope: "terminal",
+      selected_paths: ["docs/review.md"],
+    });
+    const apply = await dispatchCodeSiteTool("synthi_codesite_apply_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "agent-user",
+      filesystem_user_id: "runtime-user",
+      runtime_scope: "terminal",
+      selected_paths: ["docs/review.md"],
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(apply?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines/qtn-1/replay"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          transactionId: "txn-1",
+          paths: ["docs/review.md"],
+          mutationLeaseId: "lease-1",
+          userId: "agent-user",
+          filesystemUserId: "runtime-user",
+          runtimeScope: "terminal",
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines/qtn-1/apply"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          transactionId: "txn-1",
+          paths: ["docs/review.md"],
+          mutationLeaseId: "lease-1",
+          userId: "agent-user",
+          filesystemUserId: "runtime-user",
+          runtimeScope: "terminal",
+        }),
+      }),
+    );
+  });
+
+  it("fails quarantine replay before fetch when no selected paths are provided", async () => {
+    const replay = await dispatchCodeSiteTool("synthi_codesite_replay_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+    });
+
+    expect(replay?.isError).toBe(true);
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "missing_selected_paths",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("maps RFI and mayday tools to structured document and incident routes", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockJsonResponse({ document: { kind: "rfi" } }))

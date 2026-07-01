@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import prisma from '@/lib/prisma';
-import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from './artifacts';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
@@ -4425,6 +4425,23 @@ export async function getCodeSiteMetrics(workspaceSlug, projectId) {
 
 function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
+  const pendingQuarantines = quarantineReviewRecords(projection)
+    .filter((record) => record.status !== 'applied')
+    .map((record) => ({
+      quarantineId: record.quarantineId,
+      status: record.status,
+      transactionId: record.transactionId,
+      mutationLeaseId: record.mutationLeaseId,
+      displayCallsign: record.displayCallsign,
+      paths: record.paths,
+      changeCount: record.changes.length,
+      appliedPaths: record.appliedPaths,
+      remainingPaths: record.remainingPaths,
+      latestReplayAttempt: record.latestReplayAttempt,
+      successfulReplay: record.successfulReplay,
+      evidenceRefs: record.evidenceRefs,
+      lifecycle: record.lifecycle,
+    }));
   const requiredActions = [
     ...projection.assumptions
       .filter((assumption) => assumption.status === 'invalidated')
@@ -4432,6 +4449,7 @@ function buildControlState(workspaceSlug, projection) {
     ...projection.inboxItems
       .filter((item) => item.status === 'pending' && item.requiresResponse)
       .map((item) => `ack_event:${item.eventId || item.id}`),
+    ...pendingQuarantines.map((record) => `review_quarantine:${record.quarantineId}`),
   ];
   return {
     projectId: projection.id,
@@ -4443,6 +4461,7 @@ function buildControlState(workspaceSlug, projection) {
     activeTransactions: projection.mutationTxns.filter((txn) => ['open', 'validated', 'blocked'].includes(txn.status)),
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
+    pendingQuarantines,
     requiredActions,
     eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,
@@ -4508,6 +4527,8 @@ export async function getAgentManifest(workspaceSlug, projectId) {
     events: `projects/${projectId}/events.jsonl`,
     schemas: 'schemas/',
     inboxRoot: `projects/${projectId}/inbox/`,
+    quarantineRoot: `projects/${projectId}/quarantines/`,
+    quarantineIndex: `projects/${projectId}/quarantines/index.jsonl`,
     proofBundleRoot: `projects/${projectId}/proof-bundles/`,
     mcpTools: CODESITE_MCP_TOOLS,
   };

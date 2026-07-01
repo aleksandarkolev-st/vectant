@@ -581,18 +581,38 @@ function validateQuarantineReplayBase(change, currentContent, currentExists) {
 }
 
 function selectedQuarantineChanges(manifest, parsed = {}) {
-  if (Array.isArray(parsed.changes) || Array.isArray(parsed.quarantineChanges) || Array.isArray(parsed.quarantine_changes)) {
-    return parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes;
-  }
   const requestedPaths = new Set(arrayValue(parsed.paths || parsed.selectedPaths || parsed.selected_paths)
     .map((item) => {
       try { return normalizeRepoRelativePath(item); } catch (_) { return null; }
     })
     .filter(Boolean));
+  if (!requestedPaths.size) {
+    const error = new Error('missing_selected_paths');
+    error.code = 'MISSING_SELECTED_PATHS';
+    throw error;
+  }
   const changes = arrayValue(manifest?.changes);
-  return requestedPaths.size
-    ? changes.filter((change) => requestedPaths.has(change.path || change.quarantineEvidence?.path))
-    : changes;
+  return changes.filter((change) => requestedPaths.has(change.path || change.quarantineEvidence?.path));
+}
+
+function quarantineManifestEventDetails(manifest = {}) {
+  const changes = arrayValue(manifest.changes).map((change) => {
+    const evidence = change.quarantineEvidence || {};
+    return {
+      path: change.path || evidence.path || null,
+      kind: change.kind || evidence.kind || null,
+      beforeDigest: change.beforeDigest || evidence.beforeDigest || null,
+      afterDigest: change.afterDigest || evidence.afterDigest || null,
+      evidenceRef: evidence.evidenceRef || change.evidenceRef || null,
+      quarantineId: change.quarantineId || evidence.quarantineId || manifest.quarantineId || null,
+    };
+  }).filter((change) => change.path);
+  return {
+    manifestPaths: uniqueArray(changes.map((change) => change.path)),
+    manifestChanges: changes,
+    manifestChangeCount: changes.length,
+    symlinkSanitization: manifest.symlinkSanitization || null,
+  };
 }
 
 async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason) {
@@ -684,7 +704,11 @@ async function prepareCodeSiteQuarantineReplayPlan({
 
 function codeSiteControlPlaneBaseUrl(context = {}) {
   const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
-  if (explicit) return String(explicit).replace(/\/+$/, '');
+  if (explicit) {
+    return String(explicit)
+      .replace('{workspace_slug}', encodeURIComponent(context.workspaceSlug || ''))
+      .replace(/\/+$/, '');
+  }
   const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
   if (!appBase || !context.workspaceSlug) return null;
   return `${String(appBase).replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
@@ -2859,6 +2883,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const selected = selectedQuarantineChanges(quarantine, parsed);
+      const manifestEventDetails = quarantineManifestEventDetails(quarantine);
       const replay = await prepareCodeSiteQuarantineReplayPlan({
         slug,
         changes: selected,
@@ -2888,6 +2913,7 @@ const server = http.createServer(async (req, res) => {
             selectedChangeCount: selected.length,
             replayableChangeCount: replay.prepared.length,
             rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
           },
         });
         const replayedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_replayed', {
@@ -2900,6 +2926,7 @@ const server = http.createServer(async (req, res) => {
             selectedChangeCount: selected.length,
             replayableChangeCount: replay.prepared.length,
             rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
           },
         });
         res.writeHead(replay.rejected.length ? 409 : 200, { 'Content-Type': 'application/json' });
@@ -2990,6 +3017,7 @@ const server = http.createServer(async (req, res) => {
           quarantineId,
           applied,
           boundaryPhase: boundary.phase,
+          ...manifestEventDetails,
         },
       });
 
@@ -3017,6 +3045,16 @@ const server = http.createServer(async (req, res) => {
         writeCodeSiteDenied(res, err);
         return;
       }
+      if (err?.code === 'MISSING_SELECTED_PATHS') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'missing_selected_paths',
+          message: 'Replay/apply requires explicit selected quarantine paths.',
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
       const notFound = err?.code === 'ENOENT';
       console.error('[CodeSiteFS Quarantine] failed:', err?.message || err);
       res.writeHead(notFound ? 404 : 500, { 'Content-Type': 'application/json' });
@@ -3024,6 +3062,11 @@ const server = http.createServer(async (req, res) => {
         ok: false,
         error: notFound ? 'codesite_quarantine_not_found' : 'codesite_quarantine_failed',
         message: err?.message || 'CodeSite quarantine operation failed',
+        detail: {
+          action: action || 'get',
+          controlPlaneUrl: codeSiteControlPlaneBaseUrl(codeSiteContext),
+          hasControlPlaneCookie: Boolean(codeSiteContext.cookie),
+        },
         codesite: codeSiteMetadata,
       }));
     }

@@ -23,11 +23,13 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  applyCodeSiteQuarantine,
   createCodeSiteProject,
   createEmptyCodeSiteRadarState,
   exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
+  replayCodeSiteQuarantine,
   simulateCodeSiteShadowMerge,
 } from './codesiteClient';
 
@@ -147,6 +149,283 @@ function hasEntries(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
 }
 
+function quarantinePath(change = {}) {
+  return compact(change.path || change.quarantineEvidence?.path, '');
+}
+
+function quarantineDigest(change = {}, key) {
+  const evidence = change.quarantineEvidence || {};
+  return compact(change[key] || evidence[key] || evidence[key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`)], '');
+}
+
+function quarantineEvidenceRef(change = {}) {
+  const evidence = change.quarantineEvidence || {};
+  return compact(change.evidenceRef || evidence.evidenceRef || asArray(change.evidenceRefs || evidence.evidenceRefs)[0], '');
+}
+
+function selectedPathKey(paths) {
+  return asArray(paths).map(String).sort().join('\n');
+}
+
+function quarantineAppliedPaths(record = {}, reviewState = {}) {
+  return uniqueValues([
+    ...asArray(record.appliedPaths),
+    ...asArray(record.applied).map((item) => item.path),
+    ...asArray(reviewState.apply?.applied).map((item) => item.path),
+  ]);
+}
+
+function quarantineRemainingPaths(record = {}, reviewState = {}) {
+  const paths = uniqueValues([
+    ...asArray(record.paths),
+    ...asArray(record.changes).map(quarantinePath),
+  ]);
+  const applied = new Set(quarantineAppliedPaths(record, reviewState));
+  return paths.filter((item) => !applied.has(item));
+}
+
+function quarantineDisplayStatus(record = {}, reviewState = {}) {
+  const appliedPaths = quarantineAppliedPaths(record, reviewState);
+  if (appliedPaths.length > 0) {
+    return quarantineRemainingPaths(record, reviewState).length > 0 ? 'partially_applied' : 'applied';
+  }
+  if (reviewState.replay?.ok === true) return 'replayed';
+  return record.status || 'reviewable';
+}
+
+function quarantineEventId(event = {}) {
+  const details = event.details || {};
+  const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
+  const fsDetails = codesiteFsEvent.details || {};
+  const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
+  return String(
+    details.quarantineId
+    || details.quarantine_id
+    || fsDetails.quarantineId
+    || fsDetails.quarantine_id
+    || evidence.quarantineId
+    || evidence.quarantine_id
+    || event.actorId
+    || evidence.evidenceRef
+    || event.id
+    || 'unknown-quarantine'
+  );
+}
+
+function quarantineRecordsFromEvents(events) {
+  const records = new globalThis.Map();
+  for (const event of asArray(events)) {
+    if (!['write_quarantined', 'quarantine_reviewed', 'quarantine_replayed', 'quarantine_applied'].includes(event?.eventType)) continue;
+    const details = event.details || {};
+    const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
+    const fsDetails = codesiteFsEvent.details || {};
+    const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
+    const id = quarantineEventId(event);
+    const record = records.get(id) || {
+      quarantineId: id,
+      status: 'reviewable',
+      transactionId: details.transactionId || details.transaction_id || codesiteFsEvent.transaction_id || null,
+      mutationLeaseId: event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null,
+      displayCallsign: event.displayCallsign || null,
+      paths: [],
+      changes: [],
+      rejected: [],
+      latestReplayAttempt: null,
+      replayAttempts: [],
+      successfulReplay: null,
+      evidenceRefs: [],
+      eventRefs: [],
+      lifecycle: { capturedAt: null, reviewedAt: null, replayedAt: null, appliedAt: null },
+      symlinkSanitization: fsDetails.symlinkSanitization || fsDetails.symlink_sanitization || details.symlinkSanitization || details.symlink_sanitization || null,
+      updatedAt: event.createdAt || null,
+    };
+    record.eventRefs = uniqueValues([...record.eventRefs, event.id]);
+    record.evidenceRefs = uniqueValues([
+      ...record.evidenceRefs,
+      ...asArray(event.evidenceRefs),
+      ...asArray(details.evidenceRefs || details.evidence_refs),
+      evidence.evidenceRef,
+      ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+    ]);
+    record.paths = uniqueValues([
+      ...record.paths,
+      details.path,
+      codesiteFsEvent.path,
+      evidence.path,
+      ...asArray(details.paths || details.changedPaths || details.changed_paths),
+    ]);
+    if (event.eventType === 'write_quarantined') {
+      record.lifecycle.capturedAt = record.lifecycle.capturedAt || event.createdAt || null;
+      const change = {
+        path: evidence.path || details.path || codesiteFsEvent.path,
+        kind: evidence.kind || details.changeKind || details.change_kind || 'modified',
+        beforeDigest: evidence.beforeDigest || evidence.before_digest,
+        afterDigest: evidence.afterDigest || evidence.after_digest,
+        evidenceRef: evidence.evidenceRef,
+        quarantineEvidence: evidence,
+      };
+      if (change.path && !record.changes.some((item) => quarantinePath(item) === change.path && quarantineEvidenceRef(item) === quarantineEvidenceRef(change))) {
+        record.changes.push(change);
+      }
+    }
+    if (event.eventType === 'quarantine_reviewed') {
+      record.status = record.status === 'applied' ? record.status : 'reviewed';
+      record.lifecycle.reviewedAt = record.lifecycle.reviewedAt || event.createdAt || null;
+    }
+    if (event.eventType === 'quarantine_replayed') {
+      const attempt = quarantineReplayAttemptFromEvent(event, details);
+      record.latestReplayAttempt = attempt;
+      record.replayAttempts = appendUniqueObjects(record.replayAttempts, [attempt]);
+      record.rejected = [...record.rejected, ...asArray(details.rejected)];
+      if (isSuccessfulQuarantineReplay(attempt)) {
+        record.status = record.status === 'applied' ? record.status : 'replayed';
+        if (isReplayAttemptBeforeApply(attempt, record.lifecycle)) {
+          record.lifecycle.replayedAt = attempt.attemptedAt || record.lifecycle.replayedAt || null;
+          record.successfulReplay = attempt;
+        } else if (!record.successfulReplay) {
+          record.successfulReplay = attempt;
+        }
+      } else if (record.status !== 'applied' && record.status !== 'replayed') {
+        record.status = 'blocked';
+      }
+    }
+    if (event.eventType === 'quarantine_applied') {
+      record.status = 'applied';
+      record.lifecycle.appliedAt = event.createdAt || record.lifecycle.appliedAt;
+      record.applied = asArray(details.applied);
+    }
+    records.set(id, record);
+  }
+  return [...records.values()];
+}
+
+function normalizeQuarantineRecord(record = {}) {
+  const changes = asArray(record.changes);
+  const paths = uniqueValues([
+    ...asArray(record.paths),
+    ...changes.map(quarantinePath),
+  ]);
+  return {
+    ...record,
+    quarantineId: compact(record.quarantineId || record.id, 'unknown-quarantine'),
+    status: compact(record.status, changes.length ? 'reviewable' : 'pending'),
+    paths,
+    changes,
+    rejected: asArray(record.rejected),
+    applied: asArray(record.applied),
+    latestReplayAttempt: record.latestReplayAttempt || null,
+    replayAttempts: asArray(record.replayAttempts),
+    successfulReplay: record.successfulReplay || record.replay || null,
+    appliedPaths: uniqueValues([
+      ...asArray(record.appliedPaths),
+      ...asArray(record.applied).map((item) => item.path),
+    ]),
+    remainingPaths: asArray(record.remainingPaths),
+    evidenceRefs: uniqueValues(record.evidenceRefs),
+    eventRefs: uniqueValues(record.eventRefs),
+    lifecycle: record.lifecycle || {
+      capturedAt: record.createdAt || null,
+      reviewedAt: null,
+      replayedAt: null,
+      appliedAt: null,
+    },
+    symlinkSanitization: record.symlinkSanitization || record.symlink_sanitization || null,
+  };
+}
+
+function mergeQuarantineRecords(...groups) {
+  const merged = new globalThis.Map();
+  for (const raw of groups.flatMap((group) => asArray(group))) {
+    const record = normalizeQuarantineRecord(raw);
+    const previous = merged.get(record.quarantineId);
+    if (!previous) {
+      merged.set(record.quarantineId, record);
+      continue;
+    }
+    merged.set(record.quarantineId, {
+      ...previous,
+      ...record,
+      changes: [...previous.changes, ...record.changes].filter((change, index, allChanges) => {
+        const key = `${quarantinePath(change)}:${quarantineEvidenceRef(change)}`;
+        return index === allChanges.findIndex((candidate) => `${quarantinePath(candidate)}:${quarantineEvidenceRef(candidate)}` === key);
+      }),
+      paths: uniqueValues([...previous.paths, ...record.paths]),
+      rejected: [...asArray(previous.rejected), ...asArray(record.rejected)],
+      applied: [...asArray(previous.applied), ...asArray(record.applied)].filter((item, index, allItems) => {
+        const key = `${item?.path || ''}:${item?.evidenceRef || ''}`;
+        return index === allItems.findIndex((candidate) => `${candidate?.path || ''}:${candidate?.evidenceRef || ''}` === key);
+      }),
+      appliedPaths: uniqueValues([...asArray(previous.appliedPaths), ...asArray(record.appliedPaths)]),
+      remainingPaths: record.remainingPaths?.length ? record.remainingPaths : previous.remainingPaths,
+      latestReplayAttempt: record.latestReplayAttempt || previous.latestReplayAttempt || null,
+      replayAttempts: appendUniqueObjects(previous.replayAttempts, record.replayAttempts),
+      successfulReplay: previous.successfulReplay || record.successfulReplay || null,
+      evidenceRefs: uniqueValues([...previous.evidenceRefs, ...record.evidenceRefs]),
+      eventRefs: uniqueValues([...previous.eventRefs, ...record.eventRefs]),
+      lifecycle: mergeLifecycle(previous.lifecycle, record.lifecycle),
+      symlinkSanitization: record.symlinkSanitization || previous.symlinkSanitization,
+    });
+  }
+  return [...merged.values()].sort((left, right) => String(right.updatedAt || right.finalizedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.finalizedAt || left.createdAt || '')));
+}
+
+function quarantineReplayAttemptFromEvent(event, details = {}) {
+  return {
+    attemptedAt: event.createdAt || null,
+    selectedChangeCount: details.selectedChangeCount ?? null,
+    replayableChangeCount: details.replayableChangeCount ?? null,
+    rejectedChangeCount: details.rejectedChangeCount ?? null,
+    paths: asArray(details.paths || details.selectedPaths || details.selected_paths),
+    replayablePaths: asArray(details.replay || details.replayable || details.prepared).map((item) => item.path).filter(Boolean),
+    rejectedPaths: asArray(details.rejected).map((item) => item.path).filter(Boolean),
+  };
+}
+
+function isSuccessfulQuarantineReplay(attempt = {}) {
+  return Number(attempt.replayableChangeCount || 0) > 0 && Number(attempt.rejectedChangeCount || 0) === 0;
+}
+
+function isReplayAttemptBeforeApply(attempt = {}, lifecycle = {}) {
+  if (!lifecycle.appliedAt) return true;
+  const attemptedAt = Date.parse(attempt.attemptedAt || '');
+  const appliedAt = Date.parse(lifecycle.appliedAt);
+  if (Number.isNaN(attemptedAt) || Number.isNaN(appliedAt)) return false;
+  return attemptedAt <= appliedAt;
+}
+
+function appendUniqueObjects(current, values) {
+  const next = [...asArray(current)];
+  const seen = new Set(next.map((item) => JSON.stringify(item)));
+  for (const value of asArray(values)) {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(value);
+  }
+  return next;
+}
+
+function mergeLifecycle(previous = {}, next = {}) {
+  return {
+    capturedAt: previous.capturedAt || next.capturedAt || null,
+    reviewedAt: previous.reviewedAt || next.reviewedAt || null,
+    replayedAt: previous.replayedAt || next.replayedAt || null,
+    appliedAt: previous.appliedAt || next.appliedAt || null,
+  };
+}
+
+function quarantineReviewMessage(reviewState = {}) {
+  if (reviewState.status === 'replaying') return 'Replaying selected paths against the current workspace.';
+  if (reviewState.status === 'applying') return 'Applying replayed paths through the active transaction.';
+  const rejected = asArray(reviewState.replay?.rejected || reviewState.apply?.rejected);
+  if (rejected.length) {
+    const paths = uniqueValues(rejected.map((item) => item.path)).join(', ') || 'selected paths';
+    const reasons = uniqueValues(rejected.flatMap((item) => item.reasonCodes || item.reason_codes || item.error)).join(', ') || 'replay rejected';
+    return `Replay blocked for ${paths}: ${reasons}. Refresh the workspace, inspect the changed base, then replay again before applying.`;
+  }
+  return reviewState.error || '';
+}
+
 function formatTime(value) {
   const time = Date.parse(value || '');
   if (!Number.isFinite(time)) return '';
@@ -161,7 +440,7 @@ function statusTone(status) {
   if (['holding', 'blocked', 'denied', 'mayday', 'failed', 'critical'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #ff5757 18%, transparent)', color: 'var(--text-primary)' };
   }
-  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium'].includes(normalized)) {
+  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium', 'partially_applied'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #fbbf24 18%, transparent)', color: 'var(--text-primary)' };
   }
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
@@ -322,6 +601,233 @@ function RunwayOccupancyBoard({ runways }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function QuarantineReviewPanel({
+  records,
+  fetchError,
+  selectedId,
+  selectedPaths,
+  reviewState,
+  onSelect,
+  onTogglePath,
+  onReplay,
+  onApply,
+  disabled,
+}) {
+  const rows = asArray(records);
+  const selected = rows.find((record) => record.quarantineId === selectedId) || rows[0] || null;
+  const changes = asArray(selected?.changes);
+  const replayOk = reviewState.replay?.ok === true && reviewState.replayPathKey === selectedPathKey(selectedPaths);
+  const selectedSet = new Set(selectedPaths);
+  const reviewMessage = quarantineReviewMessage(reviewState);
+  const selectedStatus = selected ? quarantineDisplayStatus(selected, reviewState) : 'reviewable';
+  const selectedRemainingPaths = selected ? quarantineRemainingPaths(selected, reviewState) : [];
+  const selectedLifecycle = selected ? {
+    ...(selected.lifecycle || {}),
+    reviewedAt: reviewState.replay?.timelineEvents?.reviewed?.createdAt || selected.lifecycle?.reviewedAt,
+    replayedAt: reviewState.replay?.ok === true
+      ? reviewState.replay?.timelineEvents?.replayed?.createdAt || selected.lifecycle?.replayedAt
+      : selected.lifecycle?.replayedAt,
+    appliedAt: reviewState.apply?.timelineEvent?.createdAt || reviewState.apply?.timelineEvents?.applied?.createdAt || selected.lifecycle?.appliedAt,
+  } : {};
+
+  if (!rows.length) {
+    return fetchError ? (
+      <div data-testid="codesite-quarantine-fetch-error" className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+        Quarantine manifests unavailable: {compact(fetchError.message, 'fetch failed')}
+      </div>
+    ) : <EmptyLine>No CodeSiteFS quarantines waiting for review</EmptyLine>;
+  }
+
+  return (
+    <div data-testid="codesite-quarantine-review" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]">
+      <div className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+        {rows.map((record) => {
+          const active = selected?.quarantineId === record.quarantineId;
+          const displayStatus = active ? quarantineDisplayStatus(record, reviewState) : quarantineDisplayStatus(record);
+          return (
+            <button
+              key={record.quarantineId}
+              type="button"
+              data-testid="codesite-quarantine-row"
+              aria-pressed={active}
+              onClick={() => onSelect(record)}
+              className="block w-full border-t px-3 py-2 text-left text-xs first:border-t-0"
+              style={{
+                borderColor: 'var(--border-subtle)',
+                background: active ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))' : 'var(--bg-surface)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <code className="min-w-0 truncate text-[10px]" title={record.quarantineId}>{record.quarantineId}</code>
+                <Pill tone={displayStatus}>{displayStatus}</Pill>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill>{compact(record.displayCallsign, 'codesitefs')}</Pill>
+                <Pill>{asArray(record.changes).length || asArray(record.paths).length} paths</Pill>
+              </div>
+              <div className="mt-1"><PathList paths={record.paths} empty="no paths" maxVisible={2} /></div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        data-testid="codesite-quarantine-detail"
+        className="min-w-0 overflow-hidden rounded border p-3 text-xs"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+      >
+        {!selected ? (
+          <EmptyLine>Select a quarantine</EmptyLine>
+        ) : (
+          <div className="space-y-3">
+            <div data-testid="codesite-quarantine-summary" className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <code className="min-w-0 truncate text-[11px]" title={selected.quarantineId}>{selected.quarantineId}</code>
+                  <Pill tone={selectedStatus}>{selectedStatus}</Pill>
+                  <Pill>{selectedPaths.length} selected</Pill>
+                  {selectedRemainingPaths.length ? <Pill tone="holding">{selectedRemainingPaths.length} pending</Pill> : null}
+                </div>
+                <div className="mt-1 grid gap-1 text-[11px] sm:grid-cols-2">
+                  <div className="min-w-0">
+                    <span style={{ color: 'var(--text-muted)' }}>Transaction </span>
+                    <code className="truncate" title={selected.transactionId}>{compact(selected.transactionId, 'none')}</code>
+                  </div>
+                  <div className="min-w-0">
+                    <span style={{ color: 'var(--text-muted)' }}>Clearance </span>
+                    <code className="truncate" title={selected.mutationLeaseId}>{compact(selected.mutationLeaseId, 'none')}</code>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 sm:justify-end">
+                <IconButton
+                  title="Replay selected quarantine paths"
+                  onClick={() => onReplay(selected)}
+                  disabled={disabled || !selected.transactionId || selectedPaths.length === 0}
+                  testId="codesite-quarantine-replay-button"
+                >
+                  <FileSearch className="h-3.5 w-3.5" />
+                  Replay
+                </IconButton>
+                <IconButton
+                  title="Apply replayed quarantine paths"
+                  onClick={() => onApply(selected)}
+                  disabled={disabled || !replayOk || selectedPaths.length === 0}
+                  variant={replayOk ? 'primary' : 'neutral'}
+                  testId="codesite-quarantine-apply-button"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Apply
+                </IconButton>
+              </div>
+            </div>
+
+            {reviewMessage ? (
+              <div role="alert" aria-live="polite" className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))' }}>
+                {reviewMessage}
+              </div>
+            ) : null}
+
+            <div className="space-y-1">
+              {(changes.length ? changes : selected.paths.map((path) => ({ path }))).map((change) => {
+                const path = quarantinePath(change);
+                const checked = selectedSet.has(path);
+                return (
+                  <label
+                    key={`${selected.quarantineId}-${path}-${quarantineEvidenceRef(change)}`}
+                    data-testid="codesite-quarantine-change-row"
+                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded border px-2 py-1.5"
+                    style={{
+                      borderColor: checked ? 'color-mix(in srgb, var(--accent-primary) 44%, var(--border-subtle))' : 'var(--border-subtle)',
+                      background: checked ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-editor))' : 'var(--bg-editor)',
+                    }}
+                  >
+                    <input
+                      data-testid="codesite-quarantine-path-toggle"
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onTogglePath(path)}
+                      className="mt-1 h-4 w-4"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1">
+                        <code className="min-w-0 truncate text-[10px]" title={path}>{path}</code>
+                        <Pill>{compact(change.kind || change.change_kind, 'modified')}</Pill>
+                      </div>
+                      <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                        <PathList paths={[quarantineDigest(change, 'beforeDigest'), quarantineDigest(change, 'expectedDigest')].filter(Boolean)} empty="no base digest" maxVisible={2} />
+                        <PathList paths={[quarantineDigest(change, 'afterDigest'), quarantineEvidenceRef(change)].filter(Boolean)} empty="no after digest" maxVisible={2} />
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            {asArray(selected.symlinkSanitization?.sanitized).length ? (
+              <div data-testid="codesite-quarantine-symlink-guard" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #fbbf24 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 text-[11px] font-medium">Symlink Escape Guard</div>
+                {selected.symlinkSanitization.sanitized.map((item) => (
+                  <div key={`${item.path}-${item.resolvedTarget}`} className="grid gap-1 border-t py-1 first:border-t-0 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <code className="truncate text-[10px]" title={item.path}>{item.path}</code>
+                    <code className="truncate text-[10px]" title={item.resolvedTarget || item.target}>{item.resolvedTarget || item.target}</code>
+                    <Pill tone="holding">{compact(item.reason, 'replaced')}</Pill>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {reviewState.replay ? (
+              <div data-testid="codesite-quarantine-replay-result" className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-medium">Replay result</span>
+                  <Pill tone={reviewState.replay.ok ? 'active' : 'failed'}>{reviewState.replay.ok ? 'replayable' : 'blocked'}</Pill>
+                </div>
+                <PathList paths={asArray(reviewState.replay.replay).map((item) => item.path)} empty="no replayed paths" maxVisible={8} />
+                {asArray(reviewState.replay.rejected).length ? (
+                  <div className="mt-2 space-y-1">
+                    {reviewState.replay.rejected.map((item, index) => (
+                      <div key={`${item.path || 'reject'}-${index}`} data-testid="codesite-quarantine-rejected-row" className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' }}>
+                        <code className="truncate text-[10px]" title={item.path}>{compact(item.path, 'path')}</code>
+                        <PathList paths={item.reasonCodes || item.reason_codes || [item.error].filter(Boolean)} empty="rejected" maxVisible={4} />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {reviewState.apply ? (
+              <div data-testid="codesite-quarantine-apply-result" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #4ade80 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-medium">Apply result</span>
+                  <Pill tone={reviewState.apply.ok ? 'active' : 'failed'}>{reviewState.apply.ok ? 'applied' : 'blocked'}</Pill>
+                </div>
+                <PathList paths={asArray(reviewState.apply.applied).map((item) => item.path)} empty="no applied paths" maxVisible={8} />
+              </div>
+            ) : null}
+
+            <div data-testid="codesite-quarantine-timeline" className="grid gap-1 text-[11px] sm:grid-cols-4">
+              {[
+                ['Captured', selectedLifecycle.capturedAt],
+                ['Reviewed', selectedLifecycle.reviewedAt],
+                ['Replayed', selectedLifecycle.replayedAt],
+                ['Applied', selectedLifecycle.appliedAt],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                  <div style={{ color: 'var(--text-muted)' }}>{label}</div>
+                  <div className="truncate font-mono text-[10px]" title={value || ''}>{formatTime(value) || 'pending'}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -778,6 +1284,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [exportResult, setExportResult] = useState(null);
   const [lineInspector, setLineInspector] = useState({ status: 'idle', row: null, rows: [], error: null });
   const [simulationRun, setSimulationRun] = useState({ status: 'idle', result: null, error: null });
+  const [quarantineReview, setQuarantineReview] = useState({
+    selectedId: null,
+    selectedPaths: [],
+    status: 'idle',
+    replay: null,
+    replayPathKey: '',
+    apply: null,
+    error: null,
+  });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -897,6 +1412,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-12).reverse();
+  const allEvents = asArray(radarState.events);
+  const quarantineRecords = useMemo(() => mergeQuarantineRecords(
+    radarState.quarantines,
+    controlState?.pendingQuarantines,
+    quarantineRecordsFromEvents(allEvents),
+  ), [allEvents, controlState?.pendingQuarantines, radarState.quarantines]);
+  const selectedQuarantine = quarantineRecords.find((record) => record.quarantineId === quarantineReview.selectedId) || quarantineRecords[0] || null;
   const zones = asArray(currentProject?.zonePolicy?.zones);
   const noFlyZones = asArray(currentProject?.zonePolicy?.noFlyZones || currentProject?.zonePolicy?.noFly)
     .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
@@ -945,7 +1467,30 @@ export default function CodeSitePanel({ workspaceSlug }) {
   useEffect(() => {
     setLineInspector({ status: 'idle', row: null, rows: [], error: null });
     setSimulationRun({ status: 'idle', result: null, error: null });
+    setQuarantineReview({
+      selectedId: null,
+      selectedPaths: [],
+      status: 'idle',
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    });
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    if (!selectedQuarantine) return;
+    if (quarantineReview.selectedId === selectedQuarantine.quarantineId) return;
+    setQuarantineReview((current) => ({
+      ...current,
+      selectedId: selectedQuarantine.quarantineId,
+      selectedPaths: [],
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    }));
+  }, [quarantineReview.selectedId, selectedQuarantine]);
 
   const handleInspectLine = useCallback(async (row) => {
     if (!row?.filePath) return;
@@ -969,6 +1514,109 @@ export default function CodeSitePanel({ workspaceSlug }) {
       });
     }
   }, [currentProject?.id, workspaceSlug]);
+
+  const handleSelectQuarantine = useCallback((record) => {
+    setQuarantineReview({
+      selectedId: record?.quarantineId || null,
+      selectedPaths: [],
+      status: 'idle',
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    });
+  }, []);
+
+  const handleToggleQuarantinePath = useCallback((path) => {
+    if (!path) return;
+    setQuarantineReview((current) => {
+      const currentPaths = new Set(current.selectedPaths);
+      if (currentPaths.has(path)) currentPaths.delete(path);
+      else currentPaths.add(path);
+      return {
+        ...current,
+        selectedPaths: [...currentPaths],
+        replay: null,
+        replayPathKey: '',
+        apply: null,
+        error: null,
+      };
+    });
+  }, []);
+
+  const handleReplayQuarantine = useCallback(async (record) => {
+    if (!workspaceSlug || !record?.quarantineId || acting) return;
+    const paths = quarantineReview.selectedPaths;
+    if (!paths.length) {
+      setQuarantineReview((current) => ({ ...current, error: 'Select at least one quarantined path before replay.' }));
+      return;
+    }
+    setActing(true);
+    setQuarantineReview((current) => ({ ...current, status: 'replaying', error: null, replay: null, replayPathKey: selectedPathKey(paths), apply: null }));
+    try {
+      const result = await replayCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
+        transactionId: record.transactionId,
+        mutationLeaseId: record.mutationLeaseId,
+        paths,
+      });
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'replayed',
+        replay: result,
+        replayPathKey: selectedPathKey(paths),
+        error: null,
+      }));
+      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
+        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
+      });
+    } catch (nextError) {
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'error',
+        replay: nextError.body || null,
+        replayPathKey: selectedPathKey(paths),
+        error: nextError.message || 'codesite_quarantine_replay_failed',
+      }));
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
+
+  const handleApplyQuarantine = useCallback(async (record) => {
+    if (!workspaceSlug || !record?.quarantineId || acting) return;
+    const paths = quarantineReview.selectedPaths;
+    if (!paths.length || quarantineReview.replay?.ok !== true || quarantineReview.replayPathKey !== selectedPathKey(paths)) {
+      setQuarantineReview((current) => ({ ...current, error: 'Replay the selected quarantined paths before apply.' }));
+      return;
+    }
+    setActing(true);
+    setQuarantineReview((current) => ({ ...current, status: 'applying', error: null, apply: null }));
+    try {
+      const result = await applyCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
+        transactionId: record.transactionId,
+        mutationLeaseId: record.mutationLeaseId,
+        paths,
+      });
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'applied',
+        apply: result,
+        error: null,
+      }));
+      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
+        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
+      });
+    } catch (nextError) {
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'error',
+        apply: nextError.body || null,
+        error: nextError.message || 'codesite_quarantine_apply_failed',
+      }));
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, quarantineReview.replay, quarantineReview.replayPathKey, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
 
   const latestStatus = useMemo(() => {
     if (error?.status === 401) return 'auth';
@@ -1128,6 +1776,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section title="Runway Occupancy" icon={Route} right={<Pill tone={runwayOccupancy.length ? 'holding' : 'active'}>{runwayOccupancy.length}</Pill>}>
                 <RunwayOccupancyBoard runways={runwayOccupancy} />
+              </Section>
+
+              <Section title="Quarantine Review" icon={FileSearch} right={<Pill tone={quarantineRecords.length ? 'holding' : 'active'}>{quarantineRecords.length}</Pill>}>
+                <QuarantineReviewPanel
+                  records={quarantineRecords}
+                  fetchError={radarState.quarantineError}
+                  selectedId={selectedQuarantine?.quarantineId || quarantineReview.selectedId}
+                  selectedPaths={quarantineReview.selectedPaths}
+                  reviewState={quarantineReview}
+                  onSelect={handleSelectQuarantine}
+                  onTogglePath={handleToggleQuarantinePath}
+                  onReplay={handleReplayQuarantine}
+                  onApply={handleApplyQuarantine}
+                  disabled={acting}
+                />
               </Section>
 
               <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(collisionForecast.riskLevel)}>{compact(collisionForecast.riskLevel, 'unknown')}</Pill>}>
