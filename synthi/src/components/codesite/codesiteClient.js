@@ -154,6 +154,14 @@ export async function exportCodeSiteArtifacts(workspaceSlug, projectId) {
   });
 }
 
+export async function simulateCodeSiteShadowMerge(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/shadow-merge-simulate`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId = null) {
   if (!workspaceSlug) {
     return createEmptyCodeSiteRadarState(workspaceSlug);

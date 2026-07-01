@@ -27,6 +27,7 @@ import {
   exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
+  simulateCodeSiteShadowMerge,
 } from './codesiteClient';
 
 const POLL_MS = 5000;
@@ -42,6 +43,12 @@ function uniqueValues(values) {
 function compact(value, fallback = 'none') {
   if (value == null || value === '') return fallback;
   return String(value);
+}
+
+function formatPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '0%';
+  return `${Math.round(numeric * 100)}%`;
 }
 
 function parseLineRange(lineAnchor) {
@@ -86,6 +93,27 @@ function inspectionRunRefs(run) {
     ...asArray(run?.inspectionSignals).flatMap((signal) => asArray(signal?.evidenceRefs || signal?.evidence_refs)),
     run?.id ? `codesite:inspection:${run.id}` : null,
   ]);
+}
+
+function latestCounterfactualSimulation(runs) {
+  const latestRun = asArray(runs).slice().sort((left, right) => {
+    const leftTime = Date.parse(left?.createdAt || '') || 0;
+    const rightTime = Date.parse(right?.createdAt || '') || 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
+  }).slice(-1)[0] || null;
+  const verdict = latestRun?.arbiterVerdict || null;
+  if (!verdict) return { run: latestRun, result: null };
+  return {
+    run: latestRun,
+    result: {
+      ...verdict,
+      universes: asArray(verdict.universes).length ? verdict.universes : latestRun.universes,
+      evidenceRefs: asArray(verdict.evidenceRefs).length ? verdict.evidenceRefs : latestRun.evidenceRefs,
+      shadowJobRef: verdict.shadowJobRef || latestRun.shadowJobRef,
+      baseSnapshot: verdict.baseSnapshot || latestRun.baseSnapshot,
+    },
+  };
 }
 
 function hasEntries(value) {
@@ -185,7 +213,7 @@ function Metric({ label, value, tone = null, testId }) {
     >
       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className="mt-1 flex items-end justify-between gap-2">
-        <div className="font-mono text-xl leading-none tabular-nums" style={{ color: 'var(--text-primary)' }}>
+        <div className="min-w-0 truncate font-mono text-xl leading-none tabular-nums" title={String(value)} style={{ color: 'var(--text-primary)' }}>
           {value}
         </div>
         {tone ? <span className="h-2 w-2 rounded-full" style={riskTone(tone)} /> : null}
@@ -645,6 +673,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [exportResult, setExportResult] = useState(null);
   const [lineInspector, setLineInspector] = useState({ status: 'idle', row: null, rows: [], error: null });
+  const [simulationRun, setSimulationRun] = useState({ status: 'idle', result: null, error: null });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -725,6 +754,26 @@ export default function CodeSitePanel({ workspaceSlug }) {
     }
   }, [acting, loadRadar, radarState.selectedProjectId, workspaceSlug]);
 
+  const handleRunTowerSimulation = useCallback(async () => {
+    if (!workspaceSlug || !radarState.selectedProjectId || acting) return;
+
+    setActing(true);
+    setSimulationRun({ status: 'running', result: simulationRun.result, error: null });
+    try {
+      const result = await simulateCodeSiteShadowMerge(workspaceSlug, radarState.selectedProjectId);
+      setSimulationRun({ status: 'ready', result, error: null });
+      await loadRadar({ silent: true, projectId: radarState.selectedProjectId });
+    } catch (nextError) {
+      setSimulationRun({
+        status: 'error',
+        result: simulationRun.result,
+        error: nextError.message || 'codesite_tower_simulation_failed',
+      });
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, radarState.selectedProjectId, simulationRun.result, workspaceSlug]);
+
   const currentProject = radarState.project;
   const controlState = radarState.controlState;
   const hasProjects = radarState.projects.length > 0;
@@ -736,6 +785,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
   const inboxItems = asArray(currentProject?.inboxItems);
+  const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-12).reverse();
   const zones = asArray(currentProject?.zonePolicy?.zones);
@@ -778,9 +828,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
   ]) : [];
   const artifactContent = artifacts.find((file) => file.contentPreview)?.contentPreview;
   const artifactContentPath = artifacts.find((file) => file.contentPreview)?.path;
+  const latestSimulation = latestCounterfactualSimulation(counterfactualRuns);
+  const towerSimulation = simulationRun.result || latestSimulation.result;
+  const towerUniverses = asArray(towerSimulation?.universes);
+  const selectedUniverse = towerUniverses.find((universe) => universe.strategy === towerSimulation?.selected) || towerUniverses[0] || null;
 
   useEffect(() => {
     setLineInspector({ status: 'idle', row: null, rows: [], error: null });
+    setSimulationRun({ status: 'idle', result: null, error: null });
   }, [currentProject?.id]);
 
   const handleInspectLine = useCallback(async (row) => {
@@ -959,6 +1014,117 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     ))}
                   </div>
                 )}
+              </Section>
+
+              <Section
+                title="Tower Simulator"
+                icon={Activity}
+                right={<Pill tone={selectedUniverse?.result || simulationRun.status}>{compact(towerSimulation?.selected, simulationRun.status === 'running' ? 'running' : 'not run')}</Pill>}
+              >
+                <div data-testid="codesite-tower-simulator" className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Compare route strategies against repo policy, tests, incidents, and active clearances.
+                    </div>
+                    <IconButton
+                      title="Run Tower simulation"
+                      onClick={handleRunTowerSimulation}
+                      disabled={!radarState.selectedProjectId || loading || acting}
+                      testId="codesite-run-tower-simulator"
+                    >
+                      <Radar className="h-3.5 w-3.5" />
+                      Simulate
+                    </IconButton>
+                  </div>
+                  {simulationRun.error ? (
+                    <div className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', color: 'var(--text-primary)' }}>
+                      {simulationRun.error}
+                    </div>
+                  ) : null}
+                  {towerUniverses.length === 0 ? (
+                    <EmptyLine>No simulator run recorded</EmptyLine>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
+                        <Metric label="Selected" value={compact(towerSimulation?.selected, 'none')} tone={selectedUniverse?.result || 'idle'} testId="codesite-tower-selected" />
+                        <Metric label="Collision" value={formatPercent(selectedUniverse?.predictedCollisionRisk)} tone={selectedUniverse?.result || 'idle'} />
+                        <Metric label="Inspect" value={selectedUniverse?.inspectionCost ?? 0} />
+                        <Metric label="Confidence" value={formatPercent(selectedUniverse?.confidence)} />
+                      </div>
+                      <div className="space-y-1">
+                        {towerUniverses.map((universe) => {
+                          const selected = universe.strategy === towerSimulation?.selected;
+                          return (
+                            <div
+                              key={universe.strategy}
+                              data-testid="codesite-tower-universe"
+                              className="rounded border px-3 py-2 text-xs"
+                              style={{
+                                borderColor: selected ? 'color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))' : 'var(--border-subtle)',
+                                background: selected ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))' : 'var(--bg-surface)',
+                              }}
+                            >
+                              <div className="grid gap-2 sm:grid-cols-[minmax(128px,1fr)_minmax(0,2fr)_auto] sm:items-center">
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium">{compact(universe.strategy, 'strategy')}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    <Pill tone={universe.result}>{compact(universe.result, 'review')}</Pill>
+                                    {selected ? <Pill tone="active">selected</Pill> : null}
+                                  </div>
+                                </div>
+                                <div className="grid min-w-0 gap-1 text-[11px] sm:grid-cols-3">
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Risk </span>
+                                    <span className="font-mono tabular-nums">{formatPercent(universe.predictedCollisionRisk)}</span>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Stale </span>
+                                    <span className="font-mono tabular-nums">{universe.staleAssumptions ?? 0}</span>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Cost </span>
+                                    <span className="font-mono tabular-nums">{universe.inspectionCost ?? 0}</span>
+                                  </div>
+                                </div>
+                                <div className="justify-self-start sm:justify-self-end">
+                                  <Pill tone={universe.unresolvedRisks?.length ? 'holding' : 'active'}>
+                                    {asArray(universe.unresolvedRisks).length} unresolved
+                                  </Pill>
+                                </div>
+                              </div>
+                              <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                <div>
+                                  <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Tower actions</div>
+                                  <PathList paths={universe.requiredTowerActions || []} empty="none" maxVisible={6} />
+                                </div>
+                                <div>
+                                  <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Reason codes</div>
+                                  <PathList paths={universe.reasonCodes || []} empty="none" maxVisible={6} />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                          <div className="mb-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Signals used</div>
+                          <PathList
+                            paths={Object.entries(selectedUniverse?.sourceSignals || {})
+                              .map(([key, value]) => `${key}:${value}`)
+                              .filter((item) => !item.endsWith(':0'))}
+                            empty="no source signals"
+                            maxVisible={10}
+                          />
+                        </div>
+                        <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                          <div className="mb-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence</div>
+                          <PathList paths={towerSimulation?.evidenceRefs || latestSimulation.run?.evidenceRefs || []} empty="none" maxVisible={10} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </Section>
 
               <Section title="Flights" icon={Route} right={<Pill>{activeFlights.length}</Pill>}>

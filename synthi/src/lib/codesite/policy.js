@@ -672,8 +672,8 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   }
 
   for (const lease of activeLeases) {
-    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : lease.leaseJson;
-    const route = pathsForRoute(leaseJson?.allowedPaths || []);
+    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
+    const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
     const restrictedPaths = route.filter((path) => {
       const zone = classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy);
       return ['A', 'B'].includes(String(zone?.class || '').toUpperCase());

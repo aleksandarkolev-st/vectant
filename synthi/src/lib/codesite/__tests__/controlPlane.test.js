@@ -119,6 +119,7 @@ import {
   preflightCodeSiteFsWrite,
   recordTransactionWrite,
   requestMutationLease,
+  shadowMergeSimulate,
   validateTransaction,
 } from '../controlPlane.js';
 import { CODESITE_MCP_TOOLS } from '../artifacts.js';
@@ -2573,6 +2574,255 @@ describe('CodeSite control plane transaction validation', () => {
       agentSession: { id: 'agent-1', ownerUserId: 'user-1' },
       proofBundles: [expect.objectContaining({ id: 'proof-1', bundleDigest: 'sha256:bundle' })],
     });
+  });
+
+  it('scores shadow merge strategies from semantic repo signals and persists a rich counterfactual scene', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'api', label: 'Auth API', class: 'B', paths: ['api/auth/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: [
+          'packages/schemas/auth.ts',
+          'api/auth/signup.ts',
+          'app/signup/page.tsx',
+          'tests/auth/signup.test.ts',
+        ],
+        importEdges: [
+          { from: 'api/auth/signup.ts', imports: ['packages/schemas/auth.ts'] },
+          { from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] },
+        ],
+        testOwnership: [
+          { testPath: 'tests/auth/signup.test.ts', covers: ['packages/schemas/auth.ts', 'api/auth/signup.ts'] },
+        ],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: ['app/generated/auth-client.ts'],
+      },
+    };
+    prisma.codeSiteProject.findFirst
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup coordination',
+        request: 'Coordinate signup schema and UI',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-schema',
+            projectId: 'project-1',
+            agentSessionId: 'agent-schema',
+            displayCallsign: 'SCHEMA-01',
+            mission: 'Change signup contract',
+            domain: 'schema',
+            status: 'preflight',
+            routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-ui',
+            projectId: 'project-1',
+            agentSessionId: 'agent-ui',
+            displayCallsign: 'UI-02',
+            mission: 'Build signup UI',
+            domain: 'frontend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['app/signup/page.tsx']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [{
+          id: 'incident-auth-1',
+          severity: 'medium',
+          category: 'near_miss',
+          participantsJson: JSON.stringify(['UI-02']),
+          affectedZonesJson: JSON.stringify(['packages/schemas/**']),
+          evidenceRefsJson: JSON.stringify(['incident:auth-schema']),
+        }],
+        inspectionRuns: [{
+          id: 'inspection-auth-1',
+          status: 'passed',
+          changedPathsJson: JSON.stringify(['packages/schemas/auth.ts']),
+          inspectionSignalsJson: JSON.stringify([{ key: 'auth.signup.test', status: 'passed' }]),
+          evidenceRefsJson: JSON.stringify(['test:auth-signup']),
+        }],
+      })
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup coordination',
+        request: 'Coordinate signup schema and UI',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+      });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-1',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema-first', 'frontend/backend parallel', 'single fullstack agent', 'test-first'],
+    });
+
+    expect(result.selected).toBe('schema-first');
+    expect(result.universes.map((universe) => universe.strategy)).toContain('frontend-backend-parallel');
+    expect(result.universes.map((universe) => universe.strategy)).toContain('single-fullstack-agent');
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    const parallelUniverse = result.universes.find((universe) => universe.strategy === 'frontend-backend-parallel');
+    expect(schemaUniverse.avoidedRisks).toContain('semantic_collision');
+    expect(schemaUniverse.requiredTowerActions).toContain('refresh_downstream_assumptions');
+    expect(schemaUniverse.sourceSignals).toMatchObject({
+      importGraphEdges: 2,
+      testOwners: 1,
+      priorIncidents: 1,
+      inspectionRuns: 1,
+      contractRiskCount: 1,
+    });
+    expect(parallelUniverse.unresolvedRisks).toContain('semantic_collision');
+    expect(result.evidenceRefs).toContain('codesite:incident:incident-auth-1');
+    expect(result.evidenceRefs).toContain('codesite:inspection:inspection-auth-1');
+    expect(result.evidenceRefs.some((ref) => ref.startsWith('codesite:repo-policy:'))).toBe(true);
+    expect(prisma.codeSiteCounterfactualRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        shadowJobRef: expect.stringMatching(/^codesite-shadow:/),
+        baseSnapshot: expect.stringMatching(/^repo@/),
+        validityStrength: 'strong',
+        evidenceRefsJson: expect.stringContaining('codesite:repo-policy:'),
+        universesJson: expect.stringContaining('frontend-backend-parallel'),
+        arbiterVerdictJson: expect.stringContaining('policyDeltaCandidates'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'shadow_run',
+        actorType: 'counterfactual',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'arbiter_verdict',
+        detailsJson: expect.stringContaining('schema-first'),
+      }),
+    }));
+  });
+
+  it('treats migration-only simulator pressure as a single runway problem', async () => {
+    const zonePolicy = {
+      zones: [
+        {
+          zoneKey: 'migrations',
+          label: 'Migration runway',
+          class: 'A',
+          paths: ['prisma/migrations/**'],
+          rules: ['single_migration_runway_lock', 'migration_radar_required'],
+        },
+      ],
+      semanticGraph: {
+        files: [
+          'prisma/migrations/202607010001_init/migration.sql',
+          'prisma/migrations/202607010002_accounts/migration.sql',
+        ],
+        importEdges: [],
+        testOwnership: [],
+        migrationLocks: ['prisma/migrations/**'],
+        packageExports: [],
+        generatedClients: [],
+      },
+    };
+    prisma.codeSiteProject.findFirst
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Migration coordination',
+        request: 'Coordinate two migrations',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-migration-a',
+            projectId: 'project-1',
+            displayCallsign: 'DB-01',
+            mission: 'Add auth table',
+            domain: 'backend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['prisma/migrations/202607010001_init/migration.sql']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-migration-b',
+            projectId: 'project-1',
+            displayCallsign: 'DB-02',
+            mission: 'Add accounts table',
+            domain: 'backend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['prisma/migrations/202607010002_accounts/migration.sql']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      })
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Migration coordination',
+        request: 'Coordinate two migrations',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+      });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-migration',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', { strategies: [] });
+
+    expect(result.selected).toBe('single-fullstack-agent');
+    const selected = result.universes.find((universe) => universe.strategy === result.selected);
+    const schema = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(selected.requiredTowerActions).toContain('single_migration_runway_lock');
+    expect(selected.avoidedRisks).toContain('migration_collision');
+    expect(selected.sourceSignals).toMatchObject({
+      migrationRiskCount: 1,
+      migrationLocks: 1,
+      contractRiskCount: 0,
+    });
+    expect(schema.unresolvedRisks).toContain('migration_collision');
   });
 
   it('records arbiter verdict events for counterfactual runs', async () => {

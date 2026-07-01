@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   exportCodeSiteArtifacts: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
+  simulateCodeSiteShadowMerge: vi.fn(),
 }));
 
 function emptyState(workspaceSlug = 'acme') {
@@ -41,6 +42,7 @@ vi.mock('../codesiteClient', () => ({
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
+  simulateCodeSiteShadowMerge: h.simulateCodeSiteShadowMerge,
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
@@ -164,6 +166,102 @@ function radarState() {
         processAncestry: ['mcp:synthi_codesite_apply_patch'],
         promptSummary: 'Add checkout route',
       }],
+      counterfactualRuns: [{
+        id: 'cfr-1',
+        shadowJobRef: 'codesite-shadow:checkout',
+        baseSnapshot: 'repo@sha256:base',
+        validityStrength: 'strong',
+        evidenceRefs: ['codesite:shadow_merge_simulator', 'codesite:repo-policy:checkout'],
+        universes: [
+          {
+            strategy: 'schema-first',
+            result: 'passed',
+            predictedCollisionRisk: 0.18,
+            staleAssumptions: 0,
+            inspectionCost: 7,
+            confidence: 0.88,
+            avoidedRisks: ['semantic_collision'],
+            unresolvedRisks: [],
+            requiredTowerActions: ['schema_first', 'refresh_downstream_assumptions'],
+            reasonCodes: ['schema_airspace_first', 'semantic_collision_mitigated'],
+            sourceSignals: {
+              importGraphEdges: 2,
+              testOwners: 1,
+              contractRiskCount: 1,
+              priorIncidents: 1,
+              inspectionRuns: 1,
+              signalStrength: 'strong',
+            },
+          },
+          {
+            strategy: 'frontend-backend-parallel',
+            result: 'risk',
+            predictedCollisionRisk: 0.72,
+            staleAssumptions: 2,
+            inspectionCost: 12,
+            confidence: 0.88,
+            avoidedRisks: [],
+            unresolvedRisks: ['semantic_collision'],
+            requiredTowerActions: ['schema_first', 'refresh_downstream_assumptions'],
+            reasonCodes: ['parallelism_crosses_contract_airspace'],
+            sourceSignals: {
+              importGraphEdges: 2,
+              testOwners: 1,
+              contractRiskCount: 1,
+              priorIncidents: 1,
+              inspectionRuns: 1,
+              signalStrength: 'strong',
+            },
+          },
+        ],
+        arbiterVerdict: {
+          selected: 'schema-first',
+          universes: [
+            {
+              strategy: 'schema-first',
+              result: 'passed',
+              predictedCollisionRisk: 0.18,
+              staleAssumptions: 0,
+              inspectionCost: 7,
+              confidence: 0.88,
+              avoidedRisks: ['semantic_collision'],
+              unresolvedRisks: [],
+              requiredTowerActions: ['schema_first', 'refresh_downstream_assumptions'],
+              reasonCodes: ['schema_airspace_first', 'semantic_collision_mitigated'],
+              sourceSignals: {
+                importGraphEdges: 2,
+                testOwners: 1,
+                contractRiskCount: 1,
+                priorIncidents: 1,
+                inspectionRuns: 1,
+                signalStrength: 'strong',
+              },
+            },
+            {
+              strategy: 'frontend-backend-parallel',
+              result: 'risk',
+              predictedCollisionRisk: 0.72,
+              staleAssumptions: 2,
+              inspectionCost: 12,
+              confidence: 0.88,
+              avoidedRisks: [],
+              unresolvedRisks: ['semantic_collision'],
+              requiredTowerActions: ['schema_first', 'refresh_downstream_assumptions'],
+              reasonCodes: ['parallelism_crosses_contract_airspace'],
+              sourceSignals: {
+                importGraphEdges: 2,
+                testOwners: 1,
+                contractRiskCount: 1,
+                priorIncidents: 1,
+                inspectionRuns: 1,
+                signalStrength: 'strong',
+              },
+            },
+          ],
+          evidenceRefs: ['codesite:shadow_merge_simulator', 'codesite:repo-policy:checkout'],
+        },
+        createdAt: '2026-06-29T23:40:00.000Z',
+      }],
       inboxItems: [{
         id: 'inbox-1',
         agentSessionId: 'agent-1',
@@ -259,6 +357,27 @@ describe('CodeSitePanel', () => {
     vi.clearAllMocks();
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.simulateCodeSiteShadowMerge.mockResolvedValue({
+      selected: 'test-first',
+      universes: [{
+        strategy: 'test-first',
+        result: 'passed',
+        predictedCollisionRisk: 0.16,
+        staleAssumptions: 0,
+        inspectionCost: 8,
+        confidence: 0.9,
+        avoidedRisks: ['test_collision'],
+        unresolvedRisks: [],
+        requiredTowerActions: ['run_owned_tests_before_landing'],
+        reasonCodes: ['test_ownership_before_landing'],
+        sourceSignals: {
+          testOwners: 2,
+          importGraphEdges: 1,
+          signalStrength: 'strong',
+        },
+      }],
+      evidenceRefs: ['codesite:shadow_merge_simulator', 'codesite:repo-policy:rerun'],
+    });
   });
 
   afterEach(() => {
@@ -286,6 +405,12 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('API airspace');
     expect(container.textContent).toContain('write_overlap');
+    expect(container.textContent).toContain('Tower Simulator');
+    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('schema-first');
+    expect(container.textContent).toContain('frontend-backend-parallel');
+    expect(container.textContent).toContain('refresh_downstream_assumptions');
+    expect(container.textContent).toContain('importGraphEdges:2');
+    expect(container.textContent).toContain('codesite:repo-policy:checkout');
     const riskCones = container.querySelectorAll('[data-testid="codesite-risk-cone"]');
     const replayTrace = container.querySelector('[data-testid="codesite-replay-trace"]');
     const flightBlips = container.querySelectorAll('[data-testid="codesite-flight-blip"]');
@@ -342,6 +467,15 @@ describe('CodeSitePanel', () => {
     expect(inspector.textContent).toContain('dojo:source:checkout-contract');
     expect(inspector.textContent).toContain('mcp:synthi_codesite_apply_patch');
     expect(inspector.textContent).toContain('Add checkout route');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-run-tower-simulator"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(h.simulateCodeSiteShadowMerge).toHaveBeenCalledWith('acme', 'proj-1');
+    expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('test-first');
+    expect(container.textContent).toContain('run_owned_tests_before_landing');
 
     await act(async () => {
       container.querySelector('[data-testid="codesite-export"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));

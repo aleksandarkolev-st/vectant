@@ -37,6 +37,13 @@ import {
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
 const SUPPORTED_TRANSACTION_ISOLATION = 'serializable';
+const DEFAULT_TOWER_SIMULATION_STRATEGIES = [
+  'schema-first',
+  'backend-first',
+  'frontend-backend-parallel',
+  'single-fullstack-agent',
+  'test-first',
+];
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -3973,45 +3980,560 @@ export async function collisionPredict(workspaceSlug, projectId) {
 }
 
 export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
-  const forecast = await collisionPredict(workspaceSlug, projectId);
-  const strategies = asArray(body.strategies || [
-    'schema-first',
-    'frontend-backend-parallel',
-    'single-fullstack-agent',
-    'test-first',
-  ]);
-  const universes = strategies.map((strategy) => {
-    const schemaFirst = strategy === 'schema-first';
-    const riskPenalty = forecast.risks.length * (schemaFirst ? 1 : 3);
-    const staleAssumptions = schemaFirst ? 0 : forecast.risks.filter((risk) => risk.risk === 'contract_collision').length;
-    return {
-      strategy,
-      result: riskPenalty <= 2 ? 'passed' : 'risk',
-      predictedCollisionRisk: Math.min(1, riskPenalty / 10),
-      staleAssumptions,
-      inspectionCost: 2 + riskPenalty,
-    };
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: {
+      executionPlans: true,
+      mutationLeases: true,
+      incidents: true,
+      inspectionRuns: true,
+    },
   });
+  if (!project) throw notFound('project_not_found');
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const executionPlans = project.executionPlans.map(executionPlanProjection);
+  const mutationLeases = project.mutationLeases.map(mutationLeaseProjection);
+  const forecast = predictCollisions({
+    executionPlans,
+    leases: mutationLeases,
+    zonePolicy,
+  });
+  const requestedStrategies = asArray(
+    body.strategies
+    ?? body.strategy
+    ?? body.coordinationStrategies
+    ?? body.coordination_strategies
+    ?? DEFAULT_TOWER_SIMULATION_STRATEGIES,
+  );
+  const strategies = unique(requestedStrategies
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  const strategySet = strategies.length ? strategies : DEFAULT_TOWER_SIMULATION_STRATEGIES;
+  const towerSignals = buildTowerSimulationSignals({
+    project,
+    executionPlans,
+    mutationLeases,
+    forecast,
+    zonePolicy,
+  });
+  const universes = strategySet.map((strategy) => scoreTowerStrategy(strategy, towerSignals));
   const selected = universes.slice().sort((a, b) => {
-    if (a.staleAssumptions !== b.staleAssumptions) return a.staleAssumptions - b.staleAssumptions;
-    return a.inspectionCost - b.inspectionCost;
+    if (a.predictedCollisionRisk !== b.predictedCollisionRisk) return a.predictedCollisionRisk - b.predictedCollisionRisk;
+    if (asArray(a.unresolvedRisks).length !== asArray(b.unresolvedRisks).length) {
+      return asArray(a.unresolvedRisks).length - asArray(b.unresolvedRisks).length;
+    }
+    if (a.inspectionCost !== b.inspectionCost) return a.inspectionCost - b.inspectionCost;
+    return a.staleAssumptions - b.staleAssumptions;
   })[0];
+  const shadowJobRef = body.shadowJobRef || body.shadow_job_ref || `codesite-shadow:${digest({
+    projectId,
+    strategies: strategySet,
+    forecast,
+    sourceDigest: towerSignals.sourceDigest,
+  })}`;
+  const baseSnapshot = body.baseSnapshot || body.base_snapshot || `repo@${digest({
+    projectId,
+    policyDigest: towerSignals.policyDigest,
+    routes: towerSignals.routeDigest,
+  })}`;
+  const evidenceRefs = unique([
+    'codesite:shadow_merge_simulator',
+    `codesite:repo-policy:${towerSignals.policyDigest}`,
+    `codesite:collision-forecast:${digest(forecast)}`,
+    ...towerSignals.priorIncidents.map((incident) => `codesite:incident:${incident.id}`).filter(Boolean),
+    ...towerSignals.inspectionRuns.map((run) => `codesite:inspection:${run.id}`).filter(Boolean),
+  ]);
+  const policyDeltaCandidates = buildTowerPolicyDeltaCandidates(towerSignals, selected);
   const result = {
     selected: selected.strategy,
     reason: {
+      reasonCodes: selected.reasonCodes,
       staleAssumptions: selected.staleAssumptions,
       inspectionCost: selected.inspectionCost,
+      predictedCollisionRisk: selected.predictedCollisionRisk,
       riskLevel: forecast.riskLevel,
+      sourceSignals: selected.sourceSignals,
     },
     universes,
+    shadowJobRef,
+    baseSnapshot,
+    evidenceRefs,
+    policyDeltaCandidates,
+    repoSignals: towerSignals.summary,
   };
   await createCounterfactualRun(workspaceSlug, projectId, {
+    shadowJobRef,
+    baseSnapshot,
     universes,
     arbiterVerdict: result,
-    validityStrength: 'simulated',
-    evidenceRefs: ['codesite:shadow_merge_simulator'],
+    validityStrength: towerSignals.summary.signalStrength,
+    evidenceRefs,
   });
   return result;
+}
+
+function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, forecast, zonePolicy }) {
+  const semanticGraph = zonePolicy?.semanticGraph || {};
+  const priorIncidents = asArray(project.incidents).map(towerIncidentSignal);
+  const inspectionRuns = asArray(project.inspectionRuns).map(towerInspectionSignal);
+  const activeLeases = mutationLeases.filter((lease) => lease.status === 'active');
+  const footprints = executionPlans.map((plan) => towerRouteFootprint({
+    plan,
+    zonePolicy,
+    semanticGraph,
+    priorIncidents,
+    inspectionRuns,
+  }));
+  const contractRisks = asArray(forecast.risks).filter((risk) =>
+    ['contract_collision', 'semantic_collision'].includes(risk.risk)
+    || (risk.risk === 'wake_turbulence' && risk.wake?.kind !== 'migration'));
+  const migrationRisks = asArray(forecast.risks).filter((risk) =>
+    risk.risk === 'migration_collision'
+    || (risk.risk === 'wake_turbulence' && risk.wake?.kind === 'migration'));
+  const severityPoints = asArray(forecast.risks).reduce((sum, risk) => {
+    const severity = String(risk.severity || '').toLowerCase();
+    return sum + ({ critical: 8, high: 5, medium: 3, low: 1 }[severity] || 2);
+  }, 0);
+  const zones = unique(footprints.flatMap((footprint) => footprint.zones.map((zone) => zone.zoneKey || zone.label || zone.class).filter(Boolean)));
+  const schemaOwners = unique(footprints.flatMap((footprint) => footprint.schemaOwners));
+  const testOwners = unique(footprints.flatMap((footprint) => footprint.tests));
+  const missingTestRoutes = footprints
+    .filter((footprint) => footprint.route.length > 0 && footprint.tests.length === 0)
+    .flatMap((footprint) => footprint.route);
+  const migrationLocks = unique(footprints.flatMap((footprint) => footprint.migrationLocks));
+  const packageExports = unique(footprints.flatMap((footprint) => footprint.packageExports));
+  const importEdges = unique(footprints.flatMap((footprint) => footprint.importEdges));
+  const downstreamDependents = unique(footprints.flatMap((footprint) => footprint.importedBy));
+  const restrictedClasses = unique(footprints.flatMap((footprint) => footprint.zoneClasses.filter((klass) => ['A', 'B'].includes(klass))));
+  const activeLeaseLocks = activeLeases.flatMap((lease) => pathsForRoute(lease.lease?.allowedPaths || lease.lease?.route || []));
+  const routeDigest = digest(footprints.map((footprint) => ({ planId: footprint.planId, route: footprint.route })));
+  const policyDigest = digest(zonePolicy);
+  const sourceDigest = digest({
+    semanticGraphDigest: semanticGraph.sourceDigest || digest(semanticGraph),
+    policyDigest,
+    routeDigest,
+    incidents: priorIncidents.map((incident) => incident.id),
+    inspections: inspectionRuns.map((run) => run.id),
+  });
+  const summary = {
+    signalStrength: sourceSignalStrength({ semanticGraph, priorIncidents, inspectionRuns }),
+    planCount: executionPlans.length,
+    activeLeaseCount: activeLeases.length,
+    forecastRiskCount: asArray(forecast.risks).length,
+    highRiskCount: asArray(forecast.risks).filter((risk) => ['critical', 'high'].includes(String(risk.severity || '').toLowerCase())).length,
+    contractRiskCount: contractRisks.length,
+    migrationRiskCount: migrationRisks.length,
+    classAOrBZones: restrictedClasses.length,
+    importGraphEdges: importEdges.length,
+    downstreamDependents: downstreamDependents.length,
+    testOwners: testOwners.length,
+    missingTestRoutes: unique(missingTestRoutes).length,
+    schemaOwners: schemaOwners.length,
+    migrationLocks: migrationLocks.length,
+    packageExports: packageExports.length,
+    priorIncidents: priorIncidents.length,
+    activeLeaseLocks: unique(activeLeaseLocks).length,
+    inspectionRuns: inspectionRuns.length,
+  };
+  const rawStaleAssumptionPressure = contractRisks.length
+    + Math.ceil(downstreamDependents.length / 2)
+    + migrationLocks.length
+    + packageExports.length
+    + priorIncidents.filter((incident) => ['critical', 'high', 'medium'].includes(String(incident.severity).toLowerCase())).length;
+  const baseInspectionCost = 2
+    + executionPlans.length
+    + restrictedClasses.length
+    + Math.ceil(testOwners.length / 2)
+    + migrationLocks.length
+    + Math.ceil(priorIncidents.length / 2)
+    + unique(missingTestRoutes).length;
+  return {
+    project,
+    forecast,
+    footprints,
+    priorIncidents,
+    inspectionRuns,
+    activeLeases,
+    semanticGraph,
+    severityPoints,
+    contractRisks,
+    migrationRisks,
+    schemaOwners,
+    testOwners,
+    missingTestRoutes: unique(missingTestRoutes),
+    migrationLocks,
+    packageExports,
+    importEdges,
+    downstreamDependents,
+    restrictedClasses,
+    activeLeaseLocks: unique(activeLeaseLocks),
+    rawStaleAssumptionPressure,
+    baseInspectionCost,
+    policyDigest,
+    routeDigest,
+    sourceDigest,
+    summary,
+  };
+}
+
+function towerRouteFootprint({ plan, zonePolicy, semanticGraph, priorIncidents, inspectionRuns }) {
+  const route = pathsForRoute(plan.route);
+  const files = normalizePathList(asArray(semanticGraph.files));
+  const routeFiles = files.filter((file) => route.some((pattern) => towerPathsOverlap(file, pattern)));
+  const routeSurface = unique([...route, ...routeFiles]);
+  const zones = route.map((pattern) => classifyPath(pattern.replace(/\*\*?$/, 'index.ts'), zonePolicy)).filter(Boolean);
+  const imports = [];
+  const importedBy = [];
+  const importEdges = [];
+  for (const edge of asArray(semanticGraph.importEdges)) {
+    const from = normalizePath(edge.from);
+    const imported = normalizePathList(edge.imports);
+    if (!from) continue;
+    if (routeSurface.some((pattern) => towerPathsOverlap(from, pattern))) {
+      imports.push(...imported);
+      importEdges.push(`${from}->${imported.join(',')}`);
+    }
+    if (imported.some((target) => routeSurface.some((pattern) => towerPathsOverlap(target, pattern)))) {
+      importedBy.push(from);
+      importEdges.push(`${from}->${imported.join(',')}`);
+    }
+  }
+  const tests = asArray(semanticGraph.testOwnership)
+    .filter((owner) => asArray(owner.covers).some((covered) =>
+      [...routeSurface, ...imports, ...importedBy].some((pattern) => towerPathsOverlap(covered, pattern))))
+    .map((owner) => owner.testPath)
+    .filter(Boolean);
+  const migrationLocks = asArray(semanticGraph.migrationLocks)
+    .filter((lock) => route.some((pattern) => towerPathsOverlap(lock, pattern)));
+  const packageExports = asArray(semanticGraph.packageExports)
+    .filter((entry) => {
+      const candidates = unique([
+        entry.root && `${String(entry.root).replace(/\/+$/, '')}/**`,
+        ...asArray(entry.exports),
+      ].filter(Boolean));
+      return candidates.some((candidate) => routeSurface.some((pattern) => towerPathsOverlap(candidate, pattern)));
+    })
+    .map((entry) => entry.packageName || entry.root)
+    .filter(Boolean);
+  const generatedClients = asArray(semanticGraph.generatedClients)
+    .filter((client) => routeSurface.some((pattern) => towerPathsOverlap(client, pattern)) || routeSurface.some(isSchemaSurface));
+  const incidents = priorIncidents.filter((incident) =>
+    incident.affectedZones.some((zone) => routeSurface.some((pattern) => towerPathsOverlap(zone, pattern))));
+  const inspections = inspectionRuns.filter((run) =>
+    run.changedPaths.some((changedPath) => routeSurface.some((pattern) => towerPathsOverlap(changedPath, pattern))));
+  const schemaOwners = routeSurface.filter(isSchemaSurface);
+  return {
+    planId: plan.id,
+    displayCallsign: plan.displayCallsign,
+    domain: plan.domain,
+    route,
+    routeFiles,
+    zones,
+    zoneClasses: unique(zones.map((zone) => String(zone.class || 'C').toUpperCase())),
+    zoneRules: unique(zones.flatMap((zone) => asArray(zone.rules))),
+    imports: unique(imports),
+    importedBy: unique(importedBy),
+    importEdges: unique(importEdges),
+    tests: unique(tests),
+    migrationLocks: unique(migrationLocks),
+    packageExports: unique(packageExports),
+    generatedClients: unique(generatedClients),
+    schemaOwners: unique(schemaOwners),
+    incidents,
+    inspections,
+  };
+}
+
+function normalizeTowerStrategyName(strategy) {
+  const normalized = String(strategy || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\/\s*/g, '-')
+    .replace(/[_\s]+/g, '-');
+  const aliases = {
+    'frontend-backend-parallel': 'frontend-backend-parallel',
+    'frontend-backend': 'frontend-backend-parallel',
+    parallel: 'frontend-backend-parallel',
+    'schema-first': 'schema-first',
+    'backend-first': 'backend-first',
+    'single-fullstack-agent': 'single-fullstack-agent',
+    'single-fullstack': 'single-fullstack-agent',
+    fullstack: 'single-fullstack-agent',
+    'test-first': 'test-first',
+  };
+  return aliases[normalized] || normalized;
+}
+
+function scoreTowerStrategy(strategy, signals) {
+  const normalized = normalizeTowerStrategyName(strategy);
+  const sourceSignals = strategySourceSignals(signals);
+  const baseRisk = signals.severityPoints
+    + (signals.summary.contractRiskCount * 3)
+    + (signals.summary.classAOrBZones * 2)
+    + signals.summary.migrationLocks
+    + Math.ceil(signals.summary.downstreamDependents / 2)
+    + signals.summary.activeLeaseLocks;
+  const staleBase = signals.rawStaleAssumptionPressure;
+  const costBase = signals.baseInspectionCost;
+  const hasSchemaContractPressure = signals.summary.contractRiskCount > 0
+    || signals.summary.schemaOwners > 0
+    || signals.summary.packageExports > 0;
+  const hasMigrationPressure = signals.summary.migrationLocks > 0
+    || signals.summary.migrationRiskCount > 0;
+  const hasSchemaPressure = hasSchemaContractPressure || hasMigrationPressure;
+  const hasTestPressure = signals.summary.testOwners > 0 || signals.summary.missingTestRoutes > 0;
+  const profiles = {
+    'schema-first': {
+      riskMultiplier: hasSchemaContractPressure ? 0.34 : (hasMigrationPressure ? 0.72 : 0.72),
+      staleMultiplier: hasSchemaContractPressure ? 0.12 : (hasMigrationPressure ? 0.5 : 0.45),
+      costDelta: hasSchemaContractPressure ? 1 : 2,
+      reasonCodes: hasSchemaContractPressure
+        ? ['schema_airspace_first', 'downstream_assumptions_refresh_after_contract']
+        : ['schema_first_has_limited_effect_without_contract_pressure'],
+    },
+    'backend-first': {
+      riskMultiplier: hasSchemaPressure ? 0.78 : 0.7,
+      staleMultiplier: hasSchemaPressure ? 0.72 : 0.45,
+      costDelta: 2 + Math.ceil(signals.summary.downstreamDependents / 3),
+      reasonCodes: ['backend_route_before_ui', 'api_surface_stabilized_before_frontend'],
+    },
+    'frontend-backend-parallel': {
+      riskMultiplier: hasSchemaPressure ? 1.25 : 0.58,
+      staleMultiplier: hasSchemaPressure ? 1.2 : 0.4,
+      costDelta: hasSchemaPressure ? 3 : -1,
+      reasonCodes: hasSchemaPressure
+        ? ['parallelism_crosses_contract_airspace', 'requires_extra_assumption_refresh']
+        : ['parallel_routes_have_low_semantic_overlap'],
+    },
+    'single-fullstack-agent': {
+      riskMultiplier: hasMigrationPressure && !hasSchemaContractPressure ? 0.3 : 0.44,
+      staleMultiplier: 0.3,
+      costDelta: Math.max(2, signals.summary.planCount * 2),
+      reasonCodes: hasMigrationPressure
+        ? ['single_writer_reduces_merge_collision', 'single_migration_runway_lock']
+        : ['single_writer_reduces_merge_collision', 'higher_serial_inspection_cost'],
+    },
+    'test-first': {
+      riskMultiplier: hasTestPressure ? 0.62 : 0.8,
+      staleMultiplier: hasSchemaPressure ? 0.45 : 0.28,
+      costDelta: 2 + Math.ceil(signals.summary.testOwners / 2),
+      reasonCodes: ['test_ownership_before_landing', 'inspection_radar_runs_before_mutation'],
+    },
+  };
+  const profile = profiles[normalized] || {
+    riskMultiplier: 0.9,
+    staleMultiplier: 0.7,
+    costDelta: 2,
+    reasonCodes: ['custom_strategy_scored_from_repo_signals'],
+  };
+  const riskResolution = resolveTowerStrategyRisks(normalized, signals, {
+    hasSchemaContractPressure,
+    hasMigrationPressure,
+    hasTestPressure,
+  });
+  const adjustedRisk = Math.max(0, baseRisk * profile.riskMultiplier);
+  const unresolvedRiskPenalty = riskResolution.unresolvedRisks.length * 0.18;
+  const predictedCollisionRisk = clamp(roundTo((adjustedRisk / 28) + unresolvedRiskPenalty, 3), 0, 1);
+  const staleAssumptions = Math.max(0, Math.round(staleBase * profile.staleMultiplier));
+  const inspectionCost = Math.max(1, Math.round(costBase + profile.costDelta + (predictedCollisionRisk * 4)));
+  const reworkRiskReduction = roundTo(Math.max(0, 1 - (adjustedRisk / Math.max(1, baseRisk || adjustedRisk || 1))), 3);
+  const result = riskResolution.unresolvedRisks.length > 0
+    ? (predictedCollisionRisk <= 0.55 ? 'review' : 'risk')
+    : (predictedCollisionRisk <= 0.28 && staleAssumptions <= 1 ? 'passed' : (predictedCollisionRisk <= 0.55 ? 'review' : 'risk'));
+  return {
+    strategy: normalized,
+    result,
+    predictedCollisionRisk,
+    staleAssumptions,
+    inspectionCost,
+    reworkRiskReduction,
+    confidence: confidenceForSignalStrength(signals.summary.signalStrength, sourceSignals),
+    avoidedRisks: riskResolution.avoidedRisks,
+    unresolvedRisks: riskResolution.unresolvedRisks,
+    requiredTowerActions: riskResolution.requiredTowerActions,
+    reasonCodes: unique([
+      ...profile.reasonCodes,
+      ...riskResolution.reasonCodes,
+      ...(signals.summary.priorIncidents ? ['prior_incidents_weighted'] : []),
+      ...(signals.summary.migrationLocks ? ['migration_lock_weighted'] : []),
+      ...(signals.summary.importGraphEdges ? ['import_graph_weighted'] : []),
+      ...(signals.summary.testOwners ? ['test_ownership_weighted'] : []),
+    ]),
+    sourceSignals,
+  };
+}
+
+function resolveTowerStrategyRisks(strategy, signals, pressure = {}) {
+  const avoidedRisks = [];
+  const unresolvedRisks = [];
+  const requiredTowerActions = [];
+  const reasonCodes = [];
+  for (const risk of asArray(signals.forecast.risks)) {
+    const riskName = risk.risk || risk.type || 'collision';
+    const recommendedAction = risk.recommendedResolution?.action || risk.wake?.requiredWaits?.[0] || null;
+    const towerAction = recommendedAction || actionForRiskName(riskName);
+    if (towerAction) requiredTowerActions.push(towerAction);
+    const resolved = strategyResolvesRisk(strategy, riskName, recommendedAction, pressure);
+    if (resolved) {
+      avoidedRisks.push(riskName);
+      reasonCodes.push(`${riskName}_mitigated`);
+    } else {
+      unresolvedRisks.push(riskName);
+    }
+  }
+  if (pressure.hasMigrationPressure) requiredTowerActions.push('single_migration_runway_lock');
+  if (pressure.hasSchemaContractPressure) requiredTowerActions.push('refresh_downstream_assumptions');
+  if (pressure.hasTestPressure) requiredTowerActions.push('run_owned_tests_before_landing');
+  return {
+    avoidedRisks: unique(avoidedRisks),
+    unresolvedRisks: unique(unresolvedRisks),
+    requiredTowerActions: unique(requiredTowerActions),
+    reasonCodes: unique(reasonCodes),
+  };
+}
+
+function strategyResolvesRisk(strategy, riskName, recommendedAction, pressure = {}) {
+  if (riskName === 'migration_collision' || recommendedAction === 'single_migration_runway_lock') {
+    return strategy === 'single-fullstack-agent' || strategy === 'test-first';
+  }
+  if (['contract_collision', 'semantic_collision', 'wake_turbulence'].includes(riskName) || recommendedAction === 'schema_first') {
+    return strategy === 'schema-first' || strategy === 'single-fullstack-agent' || strategy === 'test-first';
+  }
+  if (riskName === 'test_collision' || recommendedAction === 'sequence_test_radar') {
+    return strategy === 'test-first' || strategy === 'single-fullstack-agent';
+  }
+  if (riskName === 'file_collision') {
+    return strategy === 'single-fullstack-agent' || (!pressure.hasSchemaContractPressure && strategy !== 'frontend-backend-parallel');
+  }
+  return strategy === 'single-fullstack-agent';
+}
+
+function actionForRiskName(riskName) {
+  if (riskName === 'migration_collision') return 'single_migration_runway_lock';
+  if (['contract_collision', 'semantic_collision'].includes(riskName)) return 'schema_first';
+  if (riskName === 'test_collision') return 'sequence_test_radar';
+  if (riskName === 'wake_turbulence') return 'hold_for_wake_turbulence';
+  if (riskName === 'file_collision') return 'sequence_flights';
+  return null;
+}
+
+function confidenceForSignalStrength(signalStrength, sourceSignals) {
+  const base = { strong: 0.86, moderate: 0.7, simulated: 0.52 }[signalStrength] || 0.5;
+  const bonus = Math.min(0.1, (
+    sourceSignals.importGraphEdges
+    + sourceSignals.testOwners
+    + sourceSignals.priorIncidents
+    + sourceSignals.inspectionRuns
+  ) / 200);
+  return roundTo(Math.min(0.95, base + bonus), 2);
+}
+
+function strategySourceSignals(signals) {
+  return {
+    forecastRiskCount: signals.summary.forecastRiskCount,
+    highRiskCount: signals.summary.highRiskCount,
+    contractRiskCount: signals.summary.contractRiskCount,
+    migrationRiskCount: signals.summary.migrationRiskCount,
+    importGraphEdges: signals.summary.importGraphEdges,
+    downstreamDependents: signals.summary.downstreamDependents,
+    testOwners: signals.summary.testOwners,
+    missingTestRoutes: signals.summary.missingTestRoutes,
+    schemaOwners: signals.summary.schemaOwners,
+    migrationLocks: signals.summary.migrationLocks,
+    packageExports: signals.summary.packageExports,
+    priorIncidents: signals.summary.priorIncidents,
+    activeLeaseLocks: signals.summary.activeLeaseLocks,
+    inspectionRuns: signals.summary.inspectionRuns,
+    signalStrength: signals.summary.signalStrength,
+  };
+}
+
+function buildTowerPolicyDeltaCandidates(signals, selected) {
+  const candidates = [];
+  if (signals.summary.missingTestRoutes > 0) {
+    candidates.push({
+      rule: 'require_test_owner_for_mutation_route',
+      affectedRoutes: signals.missingTestRoutes.slice(0, 8),
+      expectedRiskReduction: 0.18,
+      confidence: 0.72,
+    });
+  }
+  if (signals.summary.migrationLocks > 0) {
+    candidates.push({
+      rule: 'single_migration_runway_lock',
+      affectedRoutes: signals.migrationLocks.slice(0, 8),
+      expectedRiskReduction: 0.24,
+      confidence: 0.82,
+    });
+  }
+  if (signals.summary.priorIncidents > 0 && selected?.predictedCollisionRisk > 0.28) {
+    candidates.push({
+      rule: 'incident_weighted_preflight_hold',
+      affectedIncidents: signals.priorIncidents.map((incident) => incident.id).filter(Boolean).slice(0, 8),
+      expectedRiskReduction: 0.16,
+      confidence: 0.68,
+    });
+  }
+  return candidates;
+}
+
+function towerIncidentSignal(incident = {}) {
+  return {
+    id: incident.id,
+    severity: incident.severity || 'medium',
+    category: incident.category || 'near_miss',
+    participants: parseJson(incident.participantsJson, incident.participants || []),
+    affectedZones: normalizePathList(parseJson(incident.affectedZonesJson, incident.affectedZones || [])),
+    evidenceRefs: parseJson(incident.evidenceRefsJson, incident.evidenceRefs || []),
+  };
+}
+
+function towerInspectionSignal(run = {}) {
+  return {
+    id: run.id,
+    status: run.status || 'pending',
+    changedPaths: normalizePathList(parseJson(run.changedPathsJson, run.changedPaths || [])),
+    inspectionSignals: parseJson(run.inspectionSignalsJson, run.inspectionSignals || []),
+    evidenceRefs: parseJson(run.evidenceRefsJson, run.evidenceRefs || []),
+  };
+}
+
+function sourceSignalStrength({ semanticGraph, priorIncidents, inspectionRuns }) {
+  const signalCount = [
+    asArray(semanticGraph.importEdges).length,
+    asArray(semanticGraph.testOwnership).length,
+    asArray(semanticGraph.migrationLocks).length,
+    asArray(semanticGraph.packageExports).length,
+    asArray(priorIncidents).length,
+    asArray(inspectionRuns).length,
+  ].filter(Boolean).length;
+  if (signalCount >= 4) return 'strong';
+  if (signalCount >= 2) return 'moderate';
+  return 'simulated';
+}
+
+function isSchemaSurface(pathValue) {
+  return /(schema|prisma|openapi|packages\/schemas|package\.json|exports?)/i.test(String(pathValue || ''));
+}
+
+function towerPathsOverlap(left, right) {
+  const leftPath = normalizePath(left);
+  const rightPath = normalizePath(right);
+  if (!leftPath || !rightPath) return false;
+  if (leftPath === rightPath) return true;
+  if (matchPathPattern(leftPath, rightPath) || matchPathPattern(rightPath, leftPath)) return true;
+  const leftRoot = leftPath.split('*')[0].replace(/\/+$/, '');
+  const rightRoot = rightPath.split('*')[0].replace(/\/+$/, '');
+  return Boolean(leftRoot && rightRoot && (leftRoot.startsWith(rightRoot) || rightRoot.startsWith(leftRoot)));
+}
+
+function roundTo(value, places = 2) {
+  const factor = 10 ** places;
+  return Math.round(Number(value || 0) * factor) / factor;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 export async function getLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
