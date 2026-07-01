@@ -15941,7 +15941,108 @@ function preflightRuntimeOnlyOpenGaps(backend) {
   return ['runtime_preflight_output_oracle_not_proven'];
 }
 
-function oidnOutputOracleEvidenceFacet(input = {}) {
+async function oidnMatrixFileEvidence(role, input = {}, context = {}) {
+  const file = compactObject(input);
+  const failedGates = [];
+  const repoRoot = path.resolve(context.repoRoot ?? process.cwd());
+  const baseDir = path.resolve(context.baseDir ?? repoRoot);
+  const declaredPath = firstText(
+    file.resolvedPath,
+    file.resolved_path,
+    file.path,
+    file.localPath,
+    file.local_path,
+  );
+  const declaredHash = normalizeSha256(firstText(
+    file.sha256,
+    file.contentHash,
+    file.content_hash,
+    file.hash,
+  ));
+  const declaredByteLength = finiteNumber(file.byteLength ?? file.byte_length);
+  if (!declaredPath) {
+    return {
+      role,
+      accepted: false,
+      path: null,
+      resolvedPath: null,
+      resolved_path: null,
+      byteLength: null,
+      byte_length: null,
+      sha256: null,
+      declaredSha256: declaredHash,
+      declared_sha256: declaredHash,
+      failedGates: [`${role}:oidn_output_oracle_file_path_missing`],
+      failed_gates: [`${role}:oidn_output_oracle_file_path_missing`],
+    };
+  }
+  const resolvedPath = resolveEvidencePath(declaredPath, repoRoot, baseDir);
+  if (!resolvedPath) {
+    return {
+      role,
+      accepted: false,
+      path: declaredPath,
+      resolvedPath: null,
+      resolved_path: null,
+      byteLength: null,
+      byte_length: null,
+      sha256: null,
+      declaredSha256: declaredHash,
+      declared_sha256: declaredHash,
+      failedGates: [`${role}:oidn_output_oracle_path_outside_allowed_roots`],
+      failed_gates: [`${role}:oidn_output_oracle_path_outside_allowed_roots`],
+    };
+  }
+  let bytes;
+  try {
+    bytes = await fs.readFile(resolvedPath);
+  } catch {
+    return {
+      role,
+      accepted: false,
+      path: declaredPath,
+      resolvedPath,
+      resolved_path: resolvedPath,
+      byteLength: null,
+      byte_length: null,
+      sha256: null,
+      declaredSha256: declaredHash,
+      declared_sha256: declaredHash,
+      failedGates: [`${role}:oidn_output_oracle_file_unreadable`],
+      failed_gates: [`${role}:oidn_output_oracle_file_unreadable`],
+    };
+  }
+  const sha256 = sha256BufferHash(bytes);
+  if (!declaredHash || !/^sha256:[0-9a-f]{64}$/i.test(declaredHash)) {
+    failedGates.push(`${role}:oidn_output_oracle_hash_missing`);
+  } else if (declaredHash !== sha256) {
+    failedGates.push(`${role}:oidn_output_oracle_recomputed_hash_mismatch`);
+  }
+  if (!Number.isFinite(declaredByteLength) || declaredByteLength <= 0) {
+    failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+  } else if (declaredByteLength !== bytes.length) {
+    failedGates.push(`${role}:oidn_output_oracle_recomputed_byte_length_mismatch`);
+  }
+  if (bytes.length <= 0) failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+  if (file.accepted !== true) failedGates.push(`${role}:oidn_output_oracle_file_not_accepted`);
+  const uniqueFailedGates = compactStringList(failedGates);
+  return {
+    role,
+    accepted: uniqueFailedGates.length === 0,
+    path: declaredPath,
+    resolvedPath,
+    resolved_path: resolvedPath,
+    byteLength: bytes.length,
+    byte_length: bytes.length,
+    sha256,
+    declaredSha256: declaredHash,
+    declared_sha256: declaredHash,
+    failedGates: uniqueFailedGates,
+    failed_gates: uniqueFailedGates,
+  };
+}
+
+async function oidnOutputOracleEvidenceFacet(input = {}, context = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
   const failedGates = [];
@@ -15975,31 +16076,74 @@ function oidnOutputOracleEvidenceFacet(input = {}) {
   const nestedFailed = compactStringList((facet.failedGates ?? facet.failed_gates ?? [])
     .map((gate) => firstText(gate?.code, gate)));
   failedGates.push(...nestedFailed);
-  if (firstBool(facet.outputDistinctFromInput, facet.output_distinct_from_input) !== true) {
-    failedGates.push('oidn_output_oracle_output_equals_input');
-  }
-  if (firstBool(facet.expectedOutputMatched, facet.expected_output_matched) !== true) {
-    failedGates.push('oidn_output_oracle_expected_output_not_matched');
-  }
-  if (!/^sha256:[0-9a-f]{64}$/i.test(firstText(facet.manifestSha256, facet.manifest_sha256))) {
+  const manifestSha256 = normalizeSha256(firstText(facet.manifestSha256, facet.manifest_sha256));
+  const manifestPath = firstText(facet.manifestPath, facet.manifest_path);
+  if (!/^sha256:[0-9a-f]{64}$/i.test(manifestSha256)) {
     failedGates.push('oidn_output_oracle_manifest_hash_missing');
+  }
+  if (!manifestPath) {
+    failedGates.push('oidn_output_oracle_manifest_path_missing');
+  } else {
+    const manifestResolvedPath = resolveEvidencePath(
+      manifestPath,
+      path.resolve(context.repoRoot ?? process.cwd()),
+      path.resolve(context.baseDir ?? context.repoRoot ?? process.cwd()),
+    );
+    if (!manifestResolvedPath) {
+      failedGates.push('oidn_output_oracle_manifest_path_outside_allowed_roots');
+    } else {
+      try {
+        const manifestBytes = await fs.readFile(manifestResolvedPath);
+        const recomputedManifestSha256 = sha256BufferHash(manifestBytes);
+        if (manifestSha256 && manifestSha256 !== recomputedManifestSha256) {
+          failedGates.push('oidn_output_oracle_manifest_hash_mismatch');
+        }
+      } catch {
+        failedGates.push('oidn_output_oracle_manifest_unreadable');
+      }
+    }
   }
   const files = Array.isArray(facet.files) ? facet.files : [];
   const roles = new Map(files.map((file) => [firstText(file?.role), file]));
+  const recomputedFiles = [];
   for (const role of ['noisy_input', 'denoised_output']) {
     const file = compactObject(roles.get(role));
     if (Object.keys(file).length === 0) {
       failedGates.push(`${role}:oidn_output_oracle_file_missing`);
       continue;
     }
-    if (file.accepted !== true) failedGates.push(`${role}:oidn_output_oracle_file_not_accepted`);
-    if (!/^sha256:[0-9a-f]{64}$/i.test(firstText(file.sha256))) {
-      failedGates.push(`${role}:oidn_output_oracle_hash_missing`);
-    }
-    const byteLength = finiteNumber(file.byteLength ?? file.byte_length);
-    if (!Number.isFinite(byteLength) || byteLength <= 0) {
-      failedGates.push(`${role}:oidn_output_oracle_file_empty`);
-    }
+    const fileEvidence = await oidnMatrixFileEvidence(role, file, context);
+    recomputedFiles.push(fileEvidence);
+    failedGates.push(...fileEvidence.failedGates);
+  }
+  const expectedFile = compactObject(roles.get('expected_output'));
+  if (Object.keys(expectedFile).length > 0) {
+    const fileEvidence = await oidnMatrixFileEvidence('expected_output', expectedFile, context);
+    recomputedFiles.push(fileEvidence);
+    failedGates.push(...fileEvidence.failedGates);
+  }
+  const noisyHash = recomputedFiles.find((file) => file.role === 'noisy_input')?.sha256;
+  const denoisedHash = recomputedFiles.find((file) => file.role === 'denoised_output')?.sha256;
+  if (firstBool(facet.outputDistinctFromInput, facet.output_distinct_from_input) !== true) {
+    failedGates.push('oidn_output_oracle_output_equals_input');
+  }
+  if (noisyHash && denoisedHash && noisyHash === denoisedHash) {
+    failedGates.push('oidn_output_oracle_output_equals_input');
+  }
+  if (firstBool(facet.expectedOutputMatched, facet.expected_output_matched) !== true) {
+    failedGates.push('oidn_output_oracle_expected_output_not_matched');
+  }
+  const expectedHash = normalizeSha256(firstText(
+    recomputedFiles.find((file) => file.role === 'expected_output')?.sha256,
+    facet.expectedOutputSha256,
+    facet.expected_output_sha256,
+    facet.expectedOutputHash,
+    facet.expected_output_hash,
+  ));
+  if (!expectedHash || !/^sha256:[0-9a-f]{64}$/i.test(expectedHash)) {
+    failedGates.push('oidn_expected_output_hash_missing');
+  } else if (denoisedHash && denoisedHash !== expectedHash) {
+    failedGates.push('oidn_expected_output_hash_mismatch');
   }
   const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
   if (evidenceRefs.length === 0) failedGates.push('oidn_output_oracle_evidence_refs_missing');
@@ -16010,8 +16154,12 @@ function oidnOutputOracleEvidenceFacet(input = {}) {
     accepted: uniqueFailedGates.length === 0,
     proofAuthority: authority || null,
     proof_authority: authority || null,
-    manifestSha256: firstText(facet.manifestSha256, facet.manifest_sha256) || null,
-    manifest_sha256: firstText(facet.manifestSha256, facet.manifest_sha256) || null,
+    manifestSha256: manifestSha256 || null,
+    manifest_sha256: manifestSha256 || null,
+    expectedOutputSha256: expectedHash || null,
+    expected_output_sha256: expectedHash || null,
+    recomputedFiles,
+    recomputed_files: recomputedFiles,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     failedGates: uniqueFailedGates.map((code) => ({ code })),
@@ -16029,7 +16177,10 @@ async function preflightRow(json, filePath, context) {
     ? preflightAcceptedField(backend, acceptance)
     : false;
   const oidnOutputOracleFacet = backend === 'oidn_hip'
-    ? oidnOutputOracleEvidenceFacet(json.outputOracle ?? json.output_oracle)
+    ? await oidnOutputOracleEvidenceFacet(json.outputOracle ?? json.output_oracle, {
+      repoRoot: context.repoRoot,
+      baseDir: path.dirname(filePath),
+    })
     : null;
   const proofAccepted = backend === 'oidn_hip'
     ? serializedProofAccepted && oidnOutputOracleFacet?.accepted === true

@@ -338,6 +338,8 @@ async function buildOidnOutputOracleEvidence(manifestPath) {
     files: [noisy, denoised, ...(expected ? [expected] : [])],
     outputDistinctFromInput,
     output_distinct_from_input: outputDistinctFromInput,
+    expectedOutputSha256: expectedHash,
+    expected_output_sha256: expectedHash,
     expectedOutputMatched: accepted,
     expected_output_matched: accepted,
     evidenceRefs,
