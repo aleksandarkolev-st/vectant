@@ -40,11 +40,28 @@ describe('CodeSite repo policy compiler', () => {
     write(root, 'packages/contracts/package.json', JSON.stringify({
       name: '@acme/contracts',
       exports: {
-        '.': './src/index.ts',
+        '.': {
+          types: './src/index.d.ts',
+          import: './src/index.ts',
+          require: './dist/index.cjs',
+        },
+        './server': {
+          import: './src/server.ts',
+          default: './src/server.ts',
+        },
+        './features/*': './src/features/*.ts',
       },
     }, null, 2));
     write(root, 'packages/contracts/src/index.ts', 'export type Signup = { email: string };\n');
-    write(root, 'apps/web/signup/SignupForm.tsx', 'import type { Signup } from "@acme/contracts";\nexport const form = {} as Signup;\n');
+    write(root, 'packages/contracts/src/server.ts', 'export const server = { runtime: "node" };\n');
+    write(root, 'packages/contracts/src/features/audit.ts', 'export const audit = { enabled: true };\n');
+    write(root, 'apps/web/signup/SignupForm.tsx', [
+      'import React from "react";',
+      'import type { Signup } from "@acme/contracts";',
+      'import { server } from "@acme/contracts/server";',
+      'import { audit } from "@acme/contracts/features/audit";',
+      'export const form = { server, audit, React } as unknown as Signup;',
+    ].join('\n'));
     write(root, 'apps/web/signup/SignupForm.test.tsx', 'import { form } from "./SignupForm";\n');
     write(root, 'infra/prod/kustomization.yaml', 'resources: []\n');
     write(root, '.env.example', 'TOKEN=redacted\n');
@@ -73,7 +90,22 @@ describe('CodeSite repo policy compiler', () => {
       expect.objectContaining({
         packageName: '@acme/contracts',
         root: 'packages/contracts',
-        exports: ['packages/contracts/src/index.ts'],
+        exports: expect.arrayContaining([
+          'packages/contracts/src/index.ts',
+          'packages/contracts/src/server.ts',
+          'packages/contracts/src/features/*.ts',
+        ]),
+        exportMap: {
+          '.': [
+            'packages/contracts/src/index.d.ts',
+            'packages/contracts/src/index.ts',
+            'packages/contracts/dist/index.cjs',
+          ],
+          './features/*': ['packages/contracts/src/features/*.ts'],
+          './server': [
+            'packages/contracts/src/server.ts',
+          ],
+        },
       }),
     ]));
     expect(signals.deployment).toEqual([{ path: 'infra/prod/kustomization.yaml' }]);
@@ -81,9 +113,15 @@ describe('CodeSite repo policy compiler', () => {
     expect(signals.importEdges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         from: 'apps/web/signup/SignupForm.tsx',
-        imports: expect.arrayContaining(['packages/contracts/src/index.ts']),
+        imports: expect.arrayContaining([
+          'packages/contracts/src/index.ts',
+          'packages/contracts/src/server.ts',
+          'packages/contracts/src/features/audit.ts',
+        ]),
       }),
     ]));
+    expect(signals.importEdges.find((edge) => edge.from === 'apps/web/signup/SignupForm.tsx')?.imports)
+      .not.toContain('react');
     expect(signals.testOwnership).toEqual(expect.arrayContaining([
       expect.objectContaining({
         testPath: 'apps/web/signup/SignupForm.test.tsx',

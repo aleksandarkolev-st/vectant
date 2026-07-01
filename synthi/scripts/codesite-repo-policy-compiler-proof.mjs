@@ -68,10 +68,29 @@ function prepareFixtureRepo(dir, slug) {
   write(root, 'synthi/prisma/migrations/202607010001_auth/migration.sql', 'CREATE TABLE "User" (id text primary key, email text unique);\n');
   write(root, 'packages/contracts/package.json', JSON.stringify({
     name: '@acme/contracts',
-    exports: { '.': './src/index.ts' },
+    exports: {
+      '.': {
+        types: './src/index.d.ts',
+        import: './src/index.ts',
+        require: './dist/index.cjs',
+      },
+      './server': {
+        import: './src/server.ts',
+        default: './src/server.ts',
+      },
+      './features/*': './src/features/*.ts',
+    },
   }, null, 2));
   write(root, 'packages/contracts/src/index.ts', 'export type Signup = { email: string; displayName?: string };\n');
-  write(root, 'apps/web/signup/SignupForm.tsx', 'import type { Signup } from "@acme/contracts";\nexport const form = {} as Signup;\n');
+  write(root, 'packages/contracts/src/server.ts', 'export const server = { runtime: "node" };\n');
+  write(root, 'packages/contracts/src/features/audit.ts', 'export const audit = { enabled: true };\n');
+  write(root, 'apps/web/signup/SignupForm.tsx', [
+    'import React from "react";',
+    'import type { Signup } from "@acme/contracts";',
+    'import { server } from "@acme/contracts/server";',
+    'import { audit } from "@acme/contracts/features/audit";',
+    'export const form = { server, audit, React } as unknown as Signup;',
+  ].join('\n'));
   write(root, 'apps/web/signup/SignupForm.test.tsx', 'import { form } from "./SignupForm";\nvoid form;\n');
   write(root, 'app/api/auth/signup/route.ts', 'import type { Signup } from "@acme/contracts";\nexport async function POST(_: Request) { return Response.json({ ok: true } as Signup); }\n');
   write(root, 'infra/prod/kustomization.yaml', 'resources: []\n');
@@ -104,6 +123,10 @@ function sourceTable(policy) {
 
 function edgeTable(edges) {
   return edges.map((edge) => `<tr><td>${escapeHtml(edge.from)}</td><td>${escapeHtml(edge.imports.join(', '))}</td></tr>`).join('\n');
+}
+
+function packageExportTable(entries) {
+  return entries.map((entry) => `<tr><td>${escapeHtml(entry.packageName)}</td><td>${escapeHtml(entry.root)}</td><td>${escapeHtml(JSON.stringify(entry.exportMap || {}, null, 2))}</td></tr>`).join('\n');
 }
 
 function zoneTable(zones) {
@@ -140,7 +163,7 @@ pre{white-space:pre-wrap;border:1px solid #252d3f;border-radius:8px;background:#
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Repo Policy Compiler Proof</h1>
-<p>Live Docker workflow using a real fixture repository, package-name imports, OpenAPI paths, CODEOWNERS, Prisma migrations, test ownership, deployment config, secret patterns, past incidents, and the CodeSite project API.</p>
+<p>Live Docker workflow using a real fixture repository, package-name imports, conditional and wildcard package export maps, OpenAPI paths, CODEOWNERS, Prisma migrations, test ownership, deployment config, secret patterns, past incidents, and the CodeSite project API.</p>
 </section>
 <section class="grid">
 <div class="card"><div class="label">Workspace</div><div class="value">${escapeHtml(proof.slug)}</div></div>
@@ -149,6 +172,7 @@ pre{white-space:pre-wrap;border:1px solid #252d3f;border-radius:8px;background:#
 <div class="card"><div class="label">Repo root</div><div class="value">${escapeHtml(proof.fixtureRepo)}</div></div>
 </section>
 <section class="card"><h2>Policy Sources</h2><table><tbody>${sourceTable(proof.policy)}</tbody></table></section>
+<section class="card"><h2>Package Export Maps</h2><table><thead><tr><th>Package</th><th>Root</th><th>Export map</th></tr></thead><tbody>${packageExportTable(proof.signals.packageExports)}</tbody></table></section>
 <section class="card"><h2>Import Graph</h2><table><thead><tr><th>From</th><th>Resolved imports</th></tr></thead><tbody>${edgeTable(proof.signals.importEdges)}</tbody></table></section>
 <section class="card"><h2>Contract Zones</h2><table><thead><tr><th>Source</th><th>Label</th><th>Class</th><th>Paths</th></tr></thead><tbody>${zoneTable(proof.contractZones)}</tbody></table></section>
 <section><pre>${escapeHtml(JSON.stringify(proof.assertions, null, 2))}</pre></section>
@@ -198,6 +222,7 @@ async function main() {
   const openapiZone = apiPolicy.zones.find((zone) => zone.source === 'repo_openapi');
   const packageImportEdge = apiPolicy.semanticGraph.importEdges.find((edge) => edge.from === 'apps/web/signup/SignupForm.tsx');
   const apiImportEdge = apiPolicy.semanticGraph.importEdges.find((edge) => edge.from === 'app/api/auth/signup/route.ts');
+  const packageExport = apiPolicy.semanticGraph.packageExports.find((entry) => entry.packageName === '@acme/contracts');
   const testOwner = apiPolicy.semanticGraph.testOwnership.find((owner) => owner.testPath === 'apps/web/signup/SignupForm.test.tsx');
   const contractZones = apiPolicy.zones.filter((zone) => ['repo_openapi', 'repo_package_exports', 'repo_prisma_migration', 'repo_past_incident'].includes(zone.source));
   const compilerArtifact = (artifactPreview.files || []).find((file) => file.path === 'airspace/compiler-output.json');
@@ -207,7 +232,13 @@ async function main() {
 
   const assertions = {
     packageNameImportResolved: packageImportEdge?.imports?.includes('packages/contracts/src/index.ts') === true
-      && apiImportEdge?.imports?.includes('packages/contracts/src/index.ts') === true,
+      && apiImportEdge?.imports?.includes('packages/contracts/src/index.ts') === true
+      && packageImportEdge?.imports?.includes('packages/contracts/src/server.ts') === true
+      && packageImportEdge?.imports?.includes('packages/contracts/src/features/audit.ts') === true
+      && packageImportEdge?.imports?.includes('react') !== true,
+    packageExportMapPreserved: packageExport?.exportMap?.['.']?.includes('packages/contracts/src/index.ts') === true
+      && packageExport?.exportMap?.['./server']?.includes('packages/contracts/src/server.ts') === true
+      && packageExport?.exportMap?.['./features/*']?.includes('packages/contracts/src/features/*.ts') === true,
     openApiContractParsed: openapiZone?.contractPaths?.includes('/auth/signup') === true
       && openapiZone?.operations?.some((operation) => operation.method === 'POST' && operation.path === '/auth/signup') === true,
     openApiRoutesClassified: openapiZone?.paths?.includes('api/auth/signup/**') === true

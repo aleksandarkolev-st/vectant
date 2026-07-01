@@ -277,6 +277,7 @@ function buildSemanticGraph(repoSignals) {
     packageName: entry.packageName,
     root: entry.root,
     exports: uniqueStrings(entry.exports),
+    exportMap: normalizePackageExportMap(entry.exportMap),
   }));
   return {
     files,
@@ -435,9 +436,22 @@ function normalizePackageExports(value) {
       const root = normalizePath(entry?.root || entry?.packageRoot || entry?.dir || '') || '';
       const packageName = String(entry?.packageName || entry?.name || root || 'package');
       const exports = normalizePathList(entry?.exports || entry?.exportedFiles || entry?.files || []);
-      return root || exports.length ? { packageName, root, exports } : null;
+      const exportMap = normalizePackageExportMap(entry?.exportMap || entry?.exportsMap || entry?.packageExportMap);
+      return root || exports.length ? { packageName, root, exports, exportMap } : null;
     })
     .filter(Boolean);
+}
+
+function normalizePackageExportMap(value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, paths]) => {
+      const exportKey = String(key || '.').trim() || '.';
+      const exports = normalizePathList(paths);
+      return exports.length ? [exportKey, exports] : null;
+    })
+    .filter(Boolean)
+    .sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function normalizeImportEdges(value) {
