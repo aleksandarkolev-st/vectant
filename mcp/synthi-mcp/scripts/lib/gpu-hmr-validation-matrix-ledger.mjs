@@ -21394,6 +21394,8 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
     const userOwnedSourceFirst =
       SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority);
     return firstBool(sourceFirst.accepted) === true
+      && firstText(sourceFirst.schemaVersion, sourceFirst.schema_version)
+        === AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
       && userOwnedSourceFirst

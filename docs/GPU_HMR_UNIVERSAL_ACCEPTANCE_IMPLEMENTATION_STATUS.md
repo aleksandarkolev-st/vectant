@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Schema Boundary
+
+The source-first visual broad-readiness selector now requires the `synthi.gpu.hmr.agent_split_source_first_ingestion.v1` schema directly before a row can satisfy the aggregate visual lane. The broad proof already recorded that required schema; the selector now enforces it instead of relying only on `accepted=true`, proof authority, and source authority.
+
+The smoke matrix now spoofs an otherwise accepted source-first visual row with a forged source-first ingestion schema. The matrix query remains valid as an audit artifact, but broad readiness closes with `sourceFirstVisualRowCount=0` and `broad_acceptance_requires_source_first_visual_full_runtime_row`. This prevents a serialized source-first object with success-shaped booleans from satisfying broad readiness outside the typed source-first contract.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including forged source-first schema refusal, proof gpu-validation-matrix-ledger:sha256:3e32c47b1f25057ad10055b975cfdb51393cb120d55ad6db1eab9f057a927d06, rows=66
+```
+
 ## 2026-07-01 Source-First Visual Output-Oracle Boundary
 
 The source-first visual broad-readiness selector now requires an accepted `outputOracleFacet` with `kind=visual_oracle`. It no longer counts a row that has accepted visual pixels, async visual/CAS support, and strict runtime visual authority when the output-oracle facet is absent or not explicitly visual. This aligns the implementation with the retained predicate signal `visual_output_oracle_accepted`.

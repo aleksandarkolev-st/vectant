@@ -7675,6 +7675,18 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withSourceFirstSchemaVersion(row, schemaVersion) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+    schemaVersion,
+    schema_version: schemaVersion,
+  };
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withAsyncVisualSupportAuthorityClaim(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   const asyncVisual = {
@@ -8747,6 +8759,34 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithForgedSourceFirstSchemaQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) =>
+      withSourceFirstSchemaVersion(row, 'synthi.gpu.hmr.agent_split_source_first_ingestion.forged')
+    ),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithForgedSourceFirstSchemaQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedSourceFirstSchemaQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedSourceFirstSchemaQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithForgedSourceFirstSchemaQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithForgedSourceFirstSchemaQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const broadReadinessWithForgedAsyncVisualAuthorityQuery = queryGpuHmrValidationMatrixLedger({
