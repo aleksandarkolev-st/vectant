@@ -976,6 +976,26 @@ The durable control-plane store must implement:
 - `GET <store-url>/<record_id>` or the configured read URL template, returning
   the same runtime state plus a matching `state_sha256`.
 
+The bundled `synthi-mcp-http` server can host those production endpoints when
+deployed with an external HTTPS ingress and a production Postgres control-plane
+database:
+
+```powershell
+$env:SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED = "1"
+$env:SYNTHI_THERAPEUTIC_PROD_POSTGRES_URL = "<production postgres connection string>"
+$env:SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN = "<store bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN = "<probe bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_URL = "https://<real-observability-or-probe-provider>/..."
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_AUTH_TOKEN = "<upstream bearer token>"
+```
+
+`SYNTHI_THERAPEUTIC_PROD_STORE_PATH` defaults to
+`/therapeutic/runtime-state`, and `SYNTHI_THERAPEUTIC_PROD_PROBE_PATH` defaults
+to `/therapeutic/incident-response`. The server refuses to enable the
+production endpoints without Postgres, store/probe tokens, and a non-loopback
+HTTPS probe upstream. The state endpoint stores exact JSON text for release
+hash reconstruction and JSONB for database inspection.
+
 The release artifact must prove:
 
 - real deployed hosted runtime URL and session authorization

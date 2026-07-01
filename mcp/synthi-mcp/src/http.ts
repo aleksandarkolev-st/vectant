@@ -3,6 +3,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { Pool } from "pg";
 import { loadEnvFile } from "./util/env.js";
 
 const __envLoad = loadEnvFile();
@@ -30,6 +31,9 @@ import {
   FileSnapshotPersistor,
   snapshotStore,
 } from "./snapshot/index.js";
+import { applyDojoPostgresMigrations } from "./dojo/store/postgres_proof_store.js";
+import { PostgresTherapeuticProductionRuntimeStateStore } from "./dojo/tomography/production_runtime_state_store.js";
+import type { TherapeuticDurableRuntimeState, TherapeuticTenantScope } from "./dojo/tomography/index.js";
 
 type HttpMcpConfig = {
   host: string;
@@ -41,6 +45,18 @@ type HttpMcpConfig = {
   bearerHeader: string;
   defaultSessionId?: string;
   defaultSignalingUrl: string;
+  therapeuticProduction: TherapeuticProductionHttpConfig;
+};
+
+type TherapeuticProductionHttpConfig = {
+  enabled: boolean;
+  storePath: string;
+  probePath: string;
+  storeBearerToken: string;
+  probeBearerToken: string;
+  postgresUrl: string;
+  probeUpstreamUrl: string;
+  probeUpstreamBearerToken: string;
 };
 
 type HttpMcpSession = {
@@ -114,6 +130,10 @@ function isLoopbackHost(host: string): boolean {
     || normalized === "[::1]";
 }
 
+function boolFromEnv(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
 function resolveConfig(args: Record<string, string | boolean>, env = process.env): HttpMcpConfig {
   const defaultSessionId = stringArg(args, "session")
     ?? stringArg(args, "session-id")
@@ -121,6 +141,22 @@ function resolveConfig(args: Record<string, string | boolean>, env = process.env
   const defaultSignalingUrl = stringArg(args, "signaling-url")
     ?? env["SYNTHI_SIGNALING_URL"]
     ?? "ws://localhost:9000";
+  const therapeuticProductionEnabled = boolFromEnv(env["SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED"]);
+  const therapeuticProduction: TherapeuticProductionHttpConfig = {
+    enabled: therapeuticProductionEnabled,
+    storePath: normalizePath(env["SYNTHI_THERAPEUTIC_PROD_STORE_PATH"], "/therapeutic/runtime-state"),
+    probePath: normalizePath(env["SYNTHI_THERAPEUTIC_PROD_PROBE_PATH"], "/therapeutic/incident-response"),
+    storeBearerToken: env["SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN"]?.trim() ?? "",
+    probeBearerToken: env["SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN"]?.trim() ?? "",
+    postgresUrl: (
+      env["SYNTHI_THERAPEUTIC_PROD_POSTGRES_URL"]
+      ?? env["SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL"]
+      ?? env["DATABASE_URL"]
+      ?? ""
+    ).trim(),
+    probeUpstreamUrl: env["SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_URL"]?.trim() ?? "",
+    probeUpstreamBearerToken: env["SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_AUTH_TOKEN"]?.trim() ?? "",
+  };
   const config = {
     host: stringArg(args, "host") ?? env["SYNTHI_MCP_HTTP_HOST"] ?? "127.0.0.1",
     port: parsePositiveInt(
@@ -145,9 +181,22 @@ function resolveConfig(args: Record<string, string | boolean>, env = process.env
     ),
     ...(defaultSessionId !== undefined ? { defaultSessionId } : {}),
     defaultSignalingUrl,
+    therapeuticProduction,
   };
   if (!config.bearerToken && !isLoopbackHost(config.host)) {
     throw new Error("synthi_mcp_http_bearer_token_required_for_non_loopback_host");
+  }
+  if (config.therapeuticProduction.enabled) {
+    if (!config.therapeuticProduction.postgresUrl) {
+      throw new Error("therapeutic_production_http_postgres_url_required");
+    }
+    if (!config.therapeuticProduction.storeBearerToken) {
+      throw new Error("therapeutic_production_http_store_bearer_token_required");
+    }
+    if (!config.therapeuticProduction.probeBearerToken) {
+      throw new Error("therapeutic_production_http_probe_bearer_token_required");
+    }
+    validateExternalHttpsUrl(config.therapeuticProduction.probeUpstreamUrl, "therapeutic_production_probe_upstream_url");
   }
   return config;
 }
@@ -197,6 +246,136 @@ async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise
   }
 }
 
+function headerValue(req: IncomingMessage, name: string): string {
+  const raw = req.headers[name.toLowerCase()];
+  return Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
+}
+
+function requireBearerAuth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  bearerToken: string,
+  message: string,
+): boolean {
+  if (isAuthorized(req, bearerToken, "authorization")) return true;
+  res.setHeader("www-authenticate", "Bearer");
+  sendJson(res, 401, {
+    jsonrpc: "2.0",
+    error: { code: -32001, message },
+    id: null,
+  });
+  return false;
+}
+
+function requireTenantScopeHeaders(req: IncomingMessage): TherapeuticTenantScope {
+  const tenantId = headerValue(req, "x-synthi-tenant-id").trim();
+  const workspaceId = headerValue(req, "x-synthi-workspace-id").trim();
+  const actorId = headerValue(req, "x-synthi-actor-id").trim();
+  if (!tenantId || !workspaceId) {
+    throw new HttpError(400, "therapeutic_production_tenant_scope_headers_required");
+  }
+  return {
+    tenant_id: tenantId,
+    workspace_id: workspaceId,
+    ...(actorId ? { actor_id: actorId } : {}),
+  };
+}
+
+function validateExternalHttpsUrl(value: string, label: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label}_invalid`);
+  }
+  if (parsed.protocol !== "https:") throw new Error(`${label}_must_be_https`);
+  const host = parsed.hostname.toLowerCase();
+  if (
+    isLoopbackHost(host)
+    || host.endsWith(".test")
+    || host.endsWith(".example")
+    || host.includes("localhost")
+  ) {
+    throw new Error(`${label}_must_be_external`);
+  }
+}
+
+function storeRecordIdFromPath(pathname: string, storePath: string): string | null {
+  const prefix = `${storePath.replace(/\/$/, "")}/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const suffix = pathname.slice(prefix.length);
+  if (!suffix || suffix.includes("/")) return null;
+  return decodeURIComponent(suffix);
+}
+
+function parseTherapeuticStateAppend(
+  body: unknown,
+  headerTenantScope: TherapeuticTenantScope,
+): {
+  tenant_scope: TherapeuticTenantScope;
+  task_id: string;
+  state: TherapeuticDurableRuntimeState;
+  state_sha256?: string;
+  created_at?: string;
+  created_by?: string;
+  record_id?: string;
+} {
+  if (!isRecord(body)) throw new HttpError(400, "therapeutic_production_state_append_body_required");
+  if (body["schema_version"] !== "synthi.dojo.therapeuticProductionStateAppend.v1") {
+    throw new HttpError(400, "therapeutic_production_state_append_schema_invalid");
+  }
+  const tenantScope = body["tenant_scope"];
+  const state = body["state"];
+  const taskId = stringField(body, "task_id", true);
+  if (!isRecord(tenantScope) || !isRecord(state)) {
+    throw new HttpError(400, "therapeutic_production_state_append_payload_invalid");
+  }
+  const bodyTenantScope: TherapeuticTenantScope = {
+    tenant_id: stringField(tenantScope, "tenant_id", true),
+    workspace_id: stringField(tenantScope, "workspace_id", true),
+    ...(stringField(tenantScope, "actor_id", false) ? { actor_id: stringField(tenantScope, "actor_id", false) } : {}),
+    ...(stringField(tenantScope, "data_region", false) ? { data_region: stringField(tenantScope, "data_region", false) } : {}),
+  };
+  if (
+    bodyTenantScope.tenant_id !== headerTenantScope.tenant_id
+    || bodyTenantScope.workspace_id !== headerTenantScope.workspace_id
+    || (
+      headerTenantScope.actor_id
+      && bodyTenantScope.actor_id
+      && bodyTenantScope.actor_id !== headerTenantScope.actor_id
+    )
+  ) {
+    throw new HttpError(403, "therapeutic_production_tenant_scope_mismatch");
+  }
+  return {
+    tenant_scope: {
+      ...bodyTenantScope,
+      ...(headerTenantScope.actor_id ? { actor_id: headerTenantScope.actor_id } : {}),
+    },
+    task_id: taskId,
+    state: state as unknown as TherapeuticDurableRuntimeState,
+    ...(stringField(body, "state_sha256", false) ? { state_sha256: stringField(body, "state_sha256", false) } : {}),
+    ...(stringField(body, "created_at", false) ? { created_at: stringField(body, "created_at", false) } : {}),
+    ...(stringField(body, "created_by", false) ? { created_by: stringField(body, "created_by", false) } : {}),
+    ...(stringField(body, "record_id", false) ? { record_id: stringField(body, "record_id", false) } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, key: string, required: true): string;
+function stringField(record: Record<string, unknown>, key: string, required: false): string | undefined;
+function stringField(record: Record<string, unknown>, key: string, required: boolean): string | undefined {
+  const value = record[key];
+  if (typeof value !== "string" || !value.trim()) {
+    if (required) throw new HttpError(400, `therapeutic_production_${key}_required`);
+    return undefined;
+  }
+  return value.trim();
+}
+
 async function main(): Promise<void> {
   if (__envLoad.path) {
     process.stderr.write(
@@ -206,6 +385,16 @@ async function main(): Promise<void> {
 
   const args = parseArgs(process.argv.slice(2));
   const config = resolveConfig(args);
+  const therapeuticPostgresPool = config.therapeuticProduction.enabled
+    ? new Pool({ connectionString: config.therapeuticProduction.postgresUrl })
+    : null;
+  const therapeuticRuntimeStateStore = therapeuticPostgresPool
+    ? new PostgresTherapeuticProductionRuntimeStateStore(therapeuticPostgresPool)
+    : null;
+  if (therapeuticPostgresPool) {
+    await applyDojoPostgresMigrations(therapeuticPostgresPool);
+    process.stderr.write("synthi-mcp therapeutic production: postgres-backed endpoints enabled\n");
+  }
 
   const snapshotDir = process.env["SYNTHI_SNAPSHOT_DIR"];
   if (snapshotDir) {
@@ -269,7 +458,90 @@ async function main(): Promise<void> {
           path: config.path,
           auth_required: Boolean(config.bearerToken),
           auth_header: config.bearerToken ? config.bearerHeader : null,
+          therapeutic_production_endpoints_enabled: config.therapeuticProduction.enabled,
         });
+        return;
+      }
+
+      if (
+        config.therapeuticProduction.enabled
+        && url.pathname === config.therapeuticProduction.storePath
+        && req.method === "POST"
+      ) {
+        if (!requireBearerAuth(
+          req,
+          res,
+          config.therapeuticProduction.storeBearerToken,
+          "therapeutic_production_store_unauthorized",
+        )) return;
+        if (!therapeuticRuntimeStateStore) throw new HttpError(503, "therapeutic_production_store_unavailable");
+        const body = await readJsonBody(req, config.maxBodyBytes);
+        const tenantScope = requireTenantScopeHeaders(req);
+        const record = await therapeuticRuntimeStateStore.appendState(parseTherapeuticStateAppend(body, tenantScope));
+        sendJson(res, 201, {
+          record_id: record.record_id,
+          state_sha256: record.state_sha256,
+          created_at: record.created_at,
+        });
+        return;
+      }
+
+      const therapeuticRuntimeRecordId = config.therapeuticProduction.enabled
+        ? storeRecordIdFromPath(url.pathname, config.therapeuticProduction.storePath)
+        : null;
+      if (therapeuticRuntimeRecordId && req.method === "GET") {
+        if (!requireBearerAuth(
+          req,
+          res,
+          config.therapeuticProduction.storeBearerToken,
+          "therapeutic_production_store_unauthorized",
+        )) return;
+        if (!therapeuticRuntimeStateStore) throw new HttpError(503, "therapeutic_production_store_unavailable");
+        const tenantScope = requireTenantScopeHeaders(req);
+        const record = await therapeuticRuntimeStateStore.getState({
+          tenant_id: tenantScope.tenant_id,
+          workspace_id: tenantScope.workspace_id,
+          record_id: therapeuticRuntimeRecordId,
+        });
+        if (!record) throw new HttpError(404, "therapeutic_production_state_not_found");
+        sendJson(res, 200, record);
+        return;
+      }
+
+      if (
+        config.therapeuticProduction.enabled
+        && url.pathname === config.therapeuticProduction.probePath
+        && req.method === "POST"
+      ) {
+        if (!requireBearerAuth(
+          req,
+          res,
+          config.therapeuticProduction.probeBearerToken,
+          "therapeutic_production_probe_unauthorized",
+        )) return;
+        const body = await readJsonBody(req, config.maxBodyBytes);
+        const upstreamResponse = await fetch(config.therapeuticProduction.probeUpstreamUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(config.therapeuticProduction.probeUpstreamBearerToken
+              ? { authorization: `Bearer ${config.therapeuticProduction.probeUpstreamBearerToken}` }
+              : {}),
+            "x-synthi-tenant-id": headerValue(req, "x-synthi-tenant-id"),
+            "x-synthi-workspace-id": headerValue(req, "x-synthi-workspace-id"),
+            "x-synthi-actor-id": headerValue(req, "x-synthi-actor-id"),
+            "x-synthi-runtime-session-id": headerValue(req, "x-synthi-runtime-session-id"),
+          },
+          body: JSON.stringify(body ?? {}),
+        });
+        const text = await upstreamResponse.text();
+        let parsed: unknown = text;
+        try {
+          parsed = text ? JSON.parse(text) : {};
+        } catch {
+          parsed = { upstream_non_json_response: true };
+        }
+        sendJson(res, upstreamResponse.status, parsed);
         return;
       }
 
@@ -339,6 +611,7 @@ async function main(): Promise<void> {
         );
       },
     });
+    await therapeuticPostgresPool?.end();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
