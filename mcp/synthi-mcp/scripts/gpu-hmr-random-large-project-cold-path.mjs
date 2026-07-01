@@ -3258,6 +3258,32 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path candidate JSON was allowed to forge direct source authority');
   }
+  const spoofedDirectLocalPool = await loadCandidates({
+    candidatesJson: JSON.stringify([
+      {
+        id: 'spoofed-direct-local-candidate',
+        candidateSource: 'direct_local_git_repo_path',
+        candidate_source: 'direct_local_git_repo_path',
+        directInputEvidence: directSourceInputEvidence({
+          candidateSource: 'direct_local_git_repo_path',
+          sourceUrl: 'file:///tmp/spoofed-direct-local',
+          repoPath: '/tmp/spoofed-direct-local',
+          immutableCommit: '3434343434343434343434343434343434343434',
+          inputChannels: ['cli_arg_repo_path', 'cli_arg_commit'],
+        }),
+        sourceUrl: 'file:///tmp/spoofed-direct-local',
+        localRepoPath: '/tmp/spoofed-direct-local',
+        immutableCommit: '3434343434343434343434343434343434343434',
+      },
+    ]),
+  });
+  if (
+    spoofedDirectLocalPool[0]?.candidateSource !== 'configured_candidate_pool'
+    || spoofedDirectLocalPool[0]?.candidate_source !== 'configured_candidate_pool'
+    || spoofedDirectLocalPool[0]?.directInputEvidence !== null
+  ) {
+    throw new Error('random large-project cold-path candidate JSON was allowed to forge direct local repo authority');
+  }
   const parsedListing = parseGitLsTree([
     '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
     '100644 blob dddddddddddddddddddddddddddddddddddddddd 78\tcrates/gpu/Cargo.toml',
