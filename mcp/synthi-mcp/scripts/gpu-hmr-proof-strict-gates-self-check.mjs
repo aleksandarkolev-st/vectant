@@ -957,6 +957,62 @@ assert.match(
   })).detail,
   /visual_oracle_before_image_dimensions_mismatch/,
 );
+const duplicateBeforeAfterLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      after_image: VISUAL_BEFORE.path,
+      afterImage: VISUAL_BEFORE.path,
+      after_image_hash: VISUAL_BEFORE.hash,
+      afterImageHash: VISUAL_BEFORE.hash,
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_BEFORE.hash,
+        after_image_hash: VISUAL_BEFORE.hash,
+        diff_image_hash: VISUAL_DIFF.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:duplicate-before-after-refused',
+    proofLedger: duplicateBeforeAfterLedger,
+    proofLedgerQuery: duplicateBeforeAfterLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_before_after_image_hashes_not_distinct/,
+);
+const duplicateDiffLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      diff_image: VISUAL_AFTER.path,
+      diffImage: VISUAL_AFTER.path,
+      diff_image_hash: VISUAL_AFTER.hash,
+      diffImageHash: VISUAL_AFTER.hash,
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_BEFORE.hash,
+        after_image_hash: VISUAL_AFTER.hash,
+        diff_image_hash: VISUAL_AFTER.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:duplicate-diff-refused',
+    proofLedger: duplicateDiffLedger,
+    proofLedgerQuery: duplicateDiffLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_diff_image_hash_not_distinct/,
+);
 const successClaimCasLedger = buildGpuHmrProofLedger(visualLedgerRecord({
   oracle_artifacts: {
     visual_oracle_artifacts: casOnlyVisualOracleArtifacts({

@@ -951,6 +951,13 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
     .map((entry) => entry.hash)
     .filter((hash) => hash !== undefined && hash !== null && String(hash).trim() !== '');
   const allDeclaredHashesContentAddressed = declaredHashes.every(contentAddressedSha256);
+  const matchedHashesByRole = new Map();
+  const addMatchedRoleHash = (role, hash) => {
+    if (!normalizeSha256(hash)) return;
+    const existing = matchedHashesByRole.get(role) ?? new Set();
+    existing.add(normalizeSha256(hash));
+    matchedHashesByRole.set(role, existing);
+  };
   const byteBackedRoleFailures = ['before', 'after', 'diff'].flatMap((role) => {
     const roleEntries = entries.filter((entry) => entry.role === role);
     const hashedEntries = roleEntries.filter((entry) => normalizeSha256(entry.hash));
@@ -981,6 +988,11 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
       validation.actual?.casValidation
       && validation.actual.casValidation.accepted !== true
     );
+    for (const validation of readable) {
+      if (validation.expectedHash === validation.actual.hash) {
+        addMatchedRoleHash(role, validation.actual.hash);
+      }
+    }
     return compactStrings([
       readable.length > 0 ? null : `visual_oracle_${role}_image_bytes_unreadable`,
       invalidCasLocator ? `visual_oracle_${role}_image_cas_locator_invalid` : null,
@@ -989,6 +1001,11 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
       matchedPng && !dimensionsMatched ? `visual_oracle_${role}_image_dimensions_mismatch` : null,
     ]);
   });
+  const rolesShareMatchedHash = (left, right) => {
+    const leftHashes = matchedHashesByRole.get(left) ?? new Set();
+    const rightHashes = matchedHashesByRole.get(right) ?? new Set();
+    return [...leftHashes].some((hash) => rightHashes.has(hash));
+  };
   return compactStrings([
     entries.length > 0 ? null : 'visual_oracle_artifacts_missing',
     hasRole('before') ? null : 'visual_oracle_before_image_missing',
@@ -998,6 +1015,15 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
     hasContentAddressedHash('after') ? null : 'visual_oracle_after_image_hash_missing',
     hasContentAddressedHash('diff') ? null : 'visual_oracle_diff_image_hash_missing',
     allDeclaredHashesContentAddressed ? null : 'visual_oracle_image_hash_not_content_addressed',
+    rolesShareMatchedHash('before', 'after')
+      ? 'visual_oracle_before_after_image_hashes_not_distinct'
+      : null,
+    (
+      rolesShareMatchedHash('before', 'diff')
+      || rolesShareMatchedHash('after', 'diff')
+    )
+      ? 'visual_oracle_diff_image_hash_not_distinct'
+      : null,
     ...byteBackedRoleFailures,
     ...casLocatorAuditFailures,
   ]);
