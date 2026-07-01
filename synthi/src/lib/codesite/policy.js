@@ -289,14 +289,26 @@ function compileRepoSignalZones(repoSignals) {
   }
 
   for (const [index, entry] of repoSignals.openapi.entries()) {
+    const paths = uniqueStrings([
+      entry.path,
+      ...normalizePatternList(entry.routePatterns || entry.route_patterns || entry.contractRoutePatterns || []),
+    ]);
     zones.push({
       zoneKey: `openapi_contract_${zoneKeySegment(entry.path, index)}`,
       label: `API contract: ${entry.path}`,
       class: 'B',
-      paths: [entry.path],
+      paths,
       rules: uniqueStrings([...AIRSPACE_CLASSES.B.rules, 'api_contract_radar_required']),
       risk: 'high',
       source: 'repo_openapi',
+      contractPaths: asArray(entry.contractPaths || entry.contract_paths || [])
+        .map((contractPath) => String(contractPath || '').trim())
+        .filter(Boolean),
+      operations: asArray(entry.operations).map((operation) => ({
+        path: operation.path,
+        method: operation.method,
+        operationId: operation.operationId || null,
+      })),
     });
   }
 

@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { discoverRepoPolicySignals } from '../repoPolicyCompiler.js';
+import { compileZonePolicy } from '../policy.js';
 
 const roots = [];
 
@@ -27,7 +28,13 @@ describe('CodeSite repo policy compiler', () => {
       'api/auth/** @security',
       'packages/contracts/** @platform',
     ].join('\n'));
-    write(root, 'openapi/auth.yaml', 'openapi: 3.1.0\npaths: {}\n');
+    write(root, 'openapi/auth.yaml', [
+      'openapi: 3.1.0',
+      'paths:',
+      '  /auth/signup:',
+      '    post:',
+      '      operationId: signup',
+    ].join('\n'));
     write(root, 'synthi/prisma/schema.prisma', 'model User { id String @id }\n');
     write(root, 'synthi/prisma/migrations/20260630000000_add_user/migration.sql', 'CREATE TABLE "User" (id text primary key);\n');
     write(root, 'packages/contracts/package.json', JSON.stringify({
@@ -37,7 +44,7 @@ describe('CodeSite repo policy compiler', () => {
       },
     }, null, 2));
     write(root, 'packages/contracts/src/index.ts', 'export type Signup = { email: string };\n');
-    write(root, 'apps/web/signup/SignupForm.tsx', 'import type { Signup } from "../../../packages/contracts/src/index";\nexport const form = {} as Signup;\n');
+    write(root, 'apps/web/signup/SignupForm.tsx', 'import type { Signup } from "@acme/contracts";\nexport const form = {} as Signup;\n');
     write(root, 'apps/web/signup/SignupForm.test.tsx', 'import { form } from "./SignupForm";\n');
     write(root, 'infra/prod/kustomization.yaml', 'resources: []\n');
     write(root, '.env.example', 'TOKEN=redacted\n');
@@ -48,7 +55,14 @@ describe('CodeSite repo policy compiler', () => {
     expect(signals.codeowners).toEqual(expect.arrayContaining([
       expect.objectContaining({ pattern: 'api/auth/**', owners: ['@security'] }),
     ]));
-    expect(signals.openapi).toEqual([{ path: 'openapi/auth.yaml' }]);
+    expect(signals.openapi).toEqual([expect.objectContaining({
+      path: 'openapi/auth.yaml',
+      contractPaths: ['/auth/signup'],
+      routePatterns: expect.arrayContaining(['api/auth/signup/**', 'app/api/auth/signup/**']),
+      operations: expect.arrayContaining([
+        expect.objectContaining({ path: '/auth/signup', method: 'POST' }),
+      ]),
+    })]);
     expect(signals.prisma.schemas).toEqual([{ path: 'synthi/prisma/schema.prisma' }]);
     expect(signals.prisma.migrations).toEqual([{ path: 'synthi/prisma/migrations' }]);
     expect(signals.packageExports).toEqual(expect.arrayContaining([
@@ -73,5 +87,23 @@ describe('CodeSite repo policy compiler', () => {
       }),
     ]));
     expect(signals.digest).toMatch(/^sha256:/);
+
+    const policy = compileZonePolicy({ repoSignals: signals });
+    expect(policy.policySources).toMatchObject({
+      openapi: 1,
+      packageExports: 1,
+      importEdges: 2,
+      testOwnership: 1,
+    });
+    expect(policy.zones).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'repo_openapi',
+        paths: expect.arrayContaining(['openapi/auth.yaml', 'api/auth/signup/**']),
+        contractPaths: ['/auth/signup'],
+        operations: expect.arrayContaining([
+          expect.objectContaining({ path: '/auth/signup', method: 'POST' }),
+        ]),
+      }),
+    ]));
   });
 });
