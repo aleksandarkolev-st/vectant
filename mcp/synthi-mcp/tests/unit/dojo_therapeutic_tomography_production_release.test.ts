@@ -1,4 +1,9 @@
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 
 const releaseModulePromise = import("../../scripts/dojo-therapeutic-tomography-release-evidence.mjs");
 
@@ -317,4 +322,160 @@ describe("therapeutic tomography production release evidence gate", () => {
       "proof_signature_algorithm_not_ed25519",
     ]));
   });
+
+  it("fails a production run before writing evidence when hosted runtime omits authorization context", async () => {
+    const { runTherapeuticTomographyProductionReleaseEvidence } = await releaseModulePromise;
+    const { env, restore } = externalSignerEnv();
+    const outputPath = join(await mkdtemp(join(tmpdir(), "therapeutic-prod-runtime-context-")), "evidence.json");
+    try {
+      await expect(runTherapeuticTomographyProductionReleaseEvidence({
+        env,
+        outputPath,
+        now: "2026-07-01T00:00:00.000Z",
+        fetchImpl: productionFetch({ runtimeBody: { ok: true }, omitRuntimeHeaders: true }),
+      })).rejects.toThrow("therapeutic_production_runtime_authorization_context_mismatch");
+      expect(existsSync(outputPath)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("fails a production run before writing evidence when durable store readback is not reconstructable", async () => {
+    const { runTherapeuticTomographyProductionReleaseEvidence } = await releaseModulePromise;
+    const { env, restore } = externalSignerEnv();
+    const outputPath = join(await mkdtemp(join(tmpdir(), "therapeutic-prod-store-readback-")), "evidence.json");
+    try {
+      await expect(runTherapeuticTomographyProductionReleaseEvidence({
+        env,
+        outputPath,
+        now: "2026-07-01T00:00:00.000Z",
+        fetchImpl: productionFetch({ tamperStoreReadback: true }),
+      })).rejects.toThrow("therapeutic_production_store_reconstruction_unverified");
+      expect(existsSync(outputPath)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
 });
+
+function externalSignerEnv() {
+  const keyPair = generateEd25519DojoProofKeyPair("therapeutic-prod-key");
+  const previous = process.env.DOJO_TEST_PRIVATE_KEY_PEM;
+  process.env.DOJO_TEST_PRIVATE_KEY_PEM = keyPair.private_key_pem;
+  return {
+    env: productionEnv({
+      SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "external-command",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: keyPair.key_id,
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND: process.execPath,
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS: JSON.stringify(["-e", externalSignerCommandSource()]),
+      SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: keyPair.public_key_pem,
+    }),
+    restore: () => {
+      if (previous === undefined) delete process.env.DOJO_TEST_PRIVATE_KEY_PEM;
+      else process.env.DOJO_TEST_PRIVATE_KEY_PEM = previous;
+    },
+  };
+}
+
+function productionFetch({
+  runtimeBody,
+  omitRuntimeHeaders = false,
+  tamperStoreReadback = false,
+}: {
+  runtimeBody?: Record<string, unknown>;
+  omitRuntimeHeaders?: boolean;
+  tamperStoreReadback?: boolean;
+} = {}) {
+  let persistedState: any = null;
+  let persistedStateSha256 = "";
+  return async (url: string, init?: RequestInit) => {
+    const parsedBody = init?.body ? JSON.parse(String(init.body)) : {};
+    if (url === "https://runtime.prod.synthi.ai/session/session-prod-001") {
+      const headers = omitRuntimeHeaders ? {} : {
+        "x-synthi-runtime-session-id": "session-prod-001",
+        "x-synthi-tenant-id": "tenant-prod-001",
+        "x-synthi-organization-id": "org-prod-001",
+        "x-synthi-workspace-id": "workspace-prod-001",
+        "x-synthi-actor-id": "agent-prod-001",
+        "x-synthi-roles": "incident_commander,therapeutic_proof_broker",
+      };
+      return jsonResponse(runtimeBody ?? {
+        authorization_context: {
+          session_id: "session-prod-001",
+          tenant_id: "tenant-prod-001",
+          organization_id: "org-prod-001",
+          workspace_id: "workspace-prod-001",
+          actor_id: "agent-prod-001",
+          roles: ["incident_commander", "therapeutic_proof_broker"],
+        },
+      }, headers);
+    }
+    if (url === "https://probe.prod.synthi.ai/therapeutic/incident-response") {
+      if (parsedBody.probe_name === "service_health_rollup") {
+        return jsonResponse({
+          service_name: "checkout-api",
+          health_delta: -0.42,
+          primary_symptom: "elevated_5xx",
+          confidence: 0.91,
+          time_window: "last_30m",
+        });
+      }
+      if (parsedBody.probe_name === "blast_radius_summary") {
+        return jsonResponse({
+          affected_slice: "checkout-api:eu-west",
+          estimated_impact_pct: 14.5,
+          severity: "high",
+          confidence: 0.88,
+          time_window: "last_30m",
+        });
+      }
+      return jsonResponse({ error: "unknown_probe" }, {}, 404);
+    }
+    if (url === "https://control.prod.synthi.ai/therapeutic/runtime-state" && init?.method === "POST") {
+      persistedState = parsedBody.state;
+      persistedStateSha256 = parsedBody.state_sha256;
+      return jsonResponse({ record_id: "record-prod-001", state_sha256: persistedStateSha256 }, {}, 201);
+    }
+    if (url === "https://control.prod.synthi.ai/therapeutic/runtime-state/record-prod-001" && init?.method === "GET") {
+      return jsonResponse({
+        record_id: "record-prod-001",
+        state_sha256: persistedStateSha256,
+        state: tamperStoreReadback
+          ? { ...persistedState, trace: { ...persistedState.trace, task_id: "tampered-task" } }
+          : persistedState,
+      });
+    }
+    return jsonResponse({ error: `unexpected_url:${url}` }, {}, 500);
+  };
+}
+
+function jsonResponse(body: unknown, headers: Record<string, string> = {}, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      ...headers,
+    },
+  });
+}
+
+function externalSignerCommandSource() {
+  return `
+const { createPrivateKey, sign } = require("node:crypto");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => input += chunk);
+process.stdin.on("end", () => {
+  const request = JSON.parse(input);
+  const privateKey = createPrivateKey(process.env.DOJO_TEST_PRIVATE_KEY_PEM);
+  const signature = sign(null, Buffer.from(request.payload, "utf8"), privateKey).toString("base64url");
+  process.stdout.write(JSON.stringify({
+    schema_version: "synthi.dojo.externalSignerResponse.v1",
+    algorithm: "ed25519",
+    key_id: request.key_id,
+    signature: "ed25519:" + signature
+  }));
+});
+`;
+}
