@@ -8479,6 +8479,50 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withSourceFirstWorkspaceSourceProvenance(row, sourceAuthority, sourceRoot) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = sourceFirstIngestionEvidenceFor({
+    targetId: cloned.targetId,
+    sourceAuthority,
+  });
+  const provenance = {
+    schemaVersion: 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    proofAuthority: 'workspace_source_tree_provenance_only_not_gpu_hmr_success',
+    proof_authority: 'workspace_source_tree_provenance_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsSourceProvenance: true,
+    accepted_as_source_provenance: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    sourceRoot,
+    source_root: sourceRoot,
+    sourceTreeSnapshotHash: sourceFirst.initialManifestHash,
+    source_tree_snapshot_hash: sourceFirst.initialManifestHash,
+    sourceContentHash: sourceFirst.sourceContentHash,
+    source_content_hash: sourceFirst.sourceContentHash,
+    initialManifestHash: sourceFirst.initialManifestHash,
+    initial_manifest_hash: sourceFirst.initialManifestHash,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  sourceFirst.workspaceSourceProvenance = provenance;
+  sourceFirst.workspace_source_provenance = provenance;
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withSharedSourceFirstDirectIdentity(row, sourceUrl, immutableCommit) {
   const cloned = JSON.parse(JSON.stringify(row));
   cloned.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
@@ -10161,6 +10205,62 @@ const implicitCliSourceFirstCoverage = new Map(
 assert.equal(
   implicitCliSourceFirstCoverage.get('source_first_uncompiled_project_validation')?.status,
   'missing',
+);
+const broadReadinessWithWorkspaceSourceMissingProvenanceQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows.map((row) => withSourceFirstSourceAuthority(row, 'user_source_files')),
+      ...broadReadinessRandomColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithWorkspaceSourceMissingProvenanceQuery.accepted, true);
+assert.equal(
+  broadReadinessWithWorkspaceSourceMissingProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithWorkspaceSourceMissingProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithWorkspaceSourceMissingProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const workspaceSourceMissingProvenanceCoverage = new Map(
+  broadReadinessWithWorkspaceSourceMissingProvenanceQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  workspaceSourceMissingProvenanceCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
+const broadReadinessWithWorkspaceSourceProvenanceQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row, index) =>
+      withSourceFirstWorkspaceSourceProvenance(
+        row,
+        index % 2 === 0 ? 'user_source_files' : 'workspace_source_files',
+        `C:/external-user-workspaces/source-first-${index + 1}`,
+      )
+    ),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithWorkspaceSourceProvenanceQuery.accepted, true);
+assert.equal(
+  broadReadinessWithWorkspaceSourceProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualRows,
+  2,
+);
+assert.equal(
+  broadReadinessWithWorkspaceSourceProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount,
+  2,
 );
 const broadReadinessWithDirectSourceFirstMissingIdentityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

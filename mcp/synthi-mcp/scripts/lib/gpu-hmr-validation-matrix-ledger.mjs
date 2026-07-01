@@ -76,6 +76,10 @@ const SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES = new Set([
   'direct_source_url_commit',
   'direct_local_git_repo_path',
 ]);
+const SOURCE_FIRST_VISUAL_WORKSPACE_SOURCE_AUTHORITIES = new Set([
+  'user_source_files',
+  'workspace_source_files',
+]);
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -5330,6 +5334,18 @@ function sourceFirstIngestionFacet(row = {}) {
     repo_path: repoPath,
     immutableCommit,
     immutable_commit: immutableCommit,
+    workspaceSourceProvenance: compactObject(
+      supplied.workspaceSourceProvenance
+      ?? supplied.workspace_source_provenance
+      ?? supplied.sourceWorkspaceProvenance
+      ?? supplied.source_workspace_provenance,
+    ),
+    workspace_source_provenance: compactObject(
+      supplied.workspaceSourceProvenance
+      ?? supplied.workspace_source_provenance
+      ?? supplied.sourceWorkspaceProvenance
+      ?? supplied.source_workspace_provenance,
+    ),
     directSourceInputEvidence,
     direct_source_input_evidence: directSourceInputEvidence,
     directSourceIdentityRequired,
@@ -23315,6 +23331,139 @@ function sourceFirstVisualSourceIdentityHashList(rows = []) {
   )))];
 }
 
+function sourceFirstWorkspaceSourceProvenanceFacet(sourceFirst = {}, context = {}) {
+  const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
+  if (!SOURCE_FIRST_VISUAL_WORKSPACE_SOURCE_AUTHORITIES.has(sourceAuthority)) {
+    return {
+      accepted: true,
+      applies: false,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const facet = compactObject(
+    sourceFirst.workspaceSourceProvenance
+    ?? sourceFirst.workspace_source_provenance
+    ?? sourceFirst.sourceWorkspaceProvenance
+    ?? sourceFirst.source_workspace_provenance,
+  );
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority, facet.authority);
+  const accepted = firstBool(facet.accepted, facet.acceptedAsSourceProvenance, facet.accepted_as_source_provenance);
+  const targetNameIndependent = firstBool(
+    facet.targetNameIndependent,
+    facet.target_name_independent,
+  ) === true;
+  const projectNameWhitelist = Array.isArray(facet.projectNameWhitelist)
+    ? facet.projectNameWhitelist
+    : Array.isArray(facet.project_name_whitelist)
+      ? facet.project_name_whitelist
+      : [];
+  const specificTargetIdsAllowed = Array.isArray(facet.specificTargetIdsAllowed)
+    ? facet.specificTargetIdsAllowed
+    : Array.isArray(facet.specific_target_ids_allowed)
+      ? facet.specific_target_ids_allowed
+      : [];
+  const sourceRoot = firstText(
+    facet.sourceRoot,
+    facet.source_root,
+    facet.workspaceRoot,
+    facet.workspace_root,
+    facet.repoPath,
+    facet.repo_path,
+  );
+  const rootOrigin = randomColdPathDirectLocalRepoPathOrigin({
+    candidateSource: 'direct_local_git_repo_path',
+    repoPath: sourceRoot,
+  }, context);
+  const sourceTreeSnapshotHash = firstText(
+    facet.sourceTreeSnapshotHash,
+    facet.source_tree_snapshot_hash,
+    facet.sourceTreeManifestHash,
+    facet.source_tree_manifest_hash,
+  );
+  const sourceContentHash = firstText(
+    facet.sourceContentHash,
+    facet.source_content_hash,
+    sourceFirst.sourceContentHash,
+    sourceFirst.source_content_hash,
+  );
+  const initialManifestHash = firstText(
+    sourceFirst.initialManifestHash,
+    sourceFirst.initial_manifest_hash,
+  );
+  const boundInitialManifestHash = firstText(
+    facet.initialManifestHash,
+    facet.initial_manifest_hash,
+  );
+  const openGaps = compactStringList([
+    Object.keys(facet).length > 0 ? null : 'source_first_workspace_source_provenance_missing',
+    schemaVersion === 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1'
+      ? null
+      : 'source_first_workspace_source_provenance_schema_invalid',
+    proofAuthority === 'workspace_source_tree_provenance_only_not_gpu_hmr_success'
+      ? null
+      : 'source_first_workspace_source_provenance_authority_invalid',
+    accepted === true ? null : 'source_first_workspace_source_provenance_not_accepted',
+    targetNameIndependent ? null : 'source_first_workspace_source_provenance_target_name_dependent',
+    projectNameWhitelist.length === 0
+      ? null
+      : 'source_first_workspace_source_provenance_project_whitelist_present',
+    specificTargetIdsAllowed.length === 0
+      ? null
+      : 'source_first_workspace_source_provenance_target_whitelist_present',
+    rootOrigin.accepted === true ? null : 'source_first_workspace_source_path_internal_or_missing',
+    contentAddressedSha256(sourceTreeSnapshotHash)
+      ? null
+      : 'source_first_workspace_source_tree_snapshot_hash_missing',
+    contentAddressedSha256(sourceContentHash)
+      ? null
+      : 'source_first_workspace_source_content_hash_missing',
+    boundInitialManifestHash && initialManifestHash && boundInitialManifestHash !== initialManifestHash
+      ? 'source_first_workspace_initial_manifest_hash_mismatch'
+      : null,
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'source_first_workspace_source_provenance_claims_gpu_hmr_acceptance'
+      : null,
+    firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'source_first_workspace_source_provenance_claims_gpu_hmr_success'
+      : null,
+    firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'source_first_workspace_source_provenance_claims_runtime_authority'
+      : null,
+    firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'source_first_workspace_source_provenance_claims_dispatch_authority'
+      : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.source_first_workspace_source_provenance_check.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_workspace_source_provenance_check.v1',
+    authority: 'matrix_recomputed_workspace_source_provenance_not_gpu_hmr_success',
+    proofAuthority: 'matrix_recomputed_workspace_source_provenance_not_gpu_hmr_success',
+    proof_authority: 'matrix_recomputed_workspace_source_provenance_not_gpu_hmr_success',
+    applies: true,
+    accepted: openGaps.length === 0,
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    sourceRoot: sourceRoot ?? null,
+    source_root: sourceRoot ?? null,
+    sourceTreeSnapshotHash: sourceTreeSnapshotHash ?? null,
+    source_tree_snapshot_hash: sourceTreeSnapshotHash ?? null,
+    sourceContentHash: sourceContentHash ?? null,
+    source_content_hash: sourceContentHash ?? null,
+    rootOrigin,
+    root_origin: rootOrigin,
+    openGaps,
+    open_gaps: openGaps,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
 function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
   const {
     requireOutputOracleFacet = true,
@@ -23338,6 +23487,8 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       candidateSource: sourceAuthority,
       repoPath: firstText(sourceFirst.repoPath, sourceFirst.repo_path),
     }, context);
+    const workspaceSourceProvenance =
+      sourceFirstWorkspaceSourceProvenanceFacet(sourceFirst, context);
     const directSourceIdentityAccepted =
       firstBool(
         sourceFirst.directSourceIdentityAccepted,
@@ -23350,6 +23501,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
       && (requireUserOwnedSource ? userOwnedSourceFirst : true)
       && directLocalPathOrigin.accepted === true
+      && workspaceSourceProvenance.accepted === true
       && directSourceIdentityAccepted
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
@@ -23412,10 +23564,22 @@ function sourceFirstVisualBroadReadinessPredicate() {
       [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
     direct_source_authorities_requiring_identity_evidence:
       [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
+    workspaceSourceAuthoritiesRequiringProvenance:
+      [...SOURCE_FIRST_VISUAL_WORKSPACE_SOURCE_AUTHORITIES],
+    workspace_source_authorities_requiring_provenance:
+      [...SOURCE_FIRST_VISUAL_WORKSPACE_SOURCE_AUTHORITIES],
     requiredDirectInputEvidenceAuthority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
     required_direct_input_evidence_authority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
     requiredDirectSourceIdentityRole: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     required_direct_source_identity_role: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    requiredWorkspaceSourceProvenanceSchema:
+      'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    required_workspace_source_provenance_schema:
+      'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    requiredWorkspaceSourceProvenanceAuthority:
+      'workspace_source_tree_provenance_only_not_gpu_hmr_success',
+    required_workspace_source_provenance_authority:
+      'workspace_source_tree_provenance_only_not_gpu_hmr_success',
     rejectedSourceAuthoritiesForBroadReadiness: [
       'profile_source_files',
       'builtin_fixture_source',
@@ -23446,6 +23610,9 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
       'direct_local_source_path_outside_matrix_fixture_roots',
+      'workspace_source_tree_provenance_accepted_when_workspace_authority',
+      'workspace_source_tree_snapshot_hash_observed',
+      'workspace_source_path_outside_matrix_fixture_roots',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
@@ -23464,6 +23631,9 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
       'direct_local_source_path_outside_matrix_fixture_roots',
+      'workspace_source_tree_provenance_accepted_when_workspace_authority',
+      'workspace_source_tree_snapshot_hash_observed',
+      'workspace_source_path_outside_matrix_fixture_roots',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
