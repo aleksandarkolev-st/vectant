@@ -22120,6 +22120,7 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
     const buildMetadataAccepted = buildMetadataDiscoveryAccepted
       && buildMetadataContentAccepted
       && Boolean(buildMetadataContentHash);
+    const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
     const templateAccepted = firstBool(
       row.runtimeBoundaryEventManifestTemplateAccepted,
       row.runtime_boundary_event_manifest_template_accepted,
@@ -22182,6 +22183,7 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
       && buildMetadataAccepted
+      && Boolean(sourceContentIdentityHash)
       && templateAccepted
       && (!requireLargeSourceTree || largeSourceTree)
       && !forbiddenAuthority;
@@ -22189,10 +22191,15 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
 }
 
 function randomColdPathSourceIdentityHash(row) {
+  return randomColdPathSourceContentIdentityHash(row);
+}
+
+function randomColdPathSourceContentIdentityHash(row) {
   const facet = compactObject(
     row.randomLargeProjectColdPath
     ?? row.random_large_project_cold_path,
   );
+  const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
   const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
   const repoPath = firstText(
     facet.repoPath,
@@ -22210,6 +22217,39 @@ function randomColdPathSourceIdentityHash(row) {
     row.immutableCommit,
     row.immutable_commit,
   );
+  const sourceListingHash = normalizeSha256(firstText(
+    intake.sourceListingHash,
+    intake.source_listing_hash,
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+    row.sourceListingHash,
+    row.source_listing_hash,
+  ));
+  const sourceIntakeFacetHash = normalizeSha256(firstText(
+    intake.facetHash,
+    intake.facet_hash,
+    facet.sourceIntakeFacetHash,
+    facet.source_intake_facet_hash,
+    row.sourceIntakeFacetHash,
+    row.source_intake_facet_hash,
+  ));
+  const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
+    intake.buildMetadataContentEvidence,
+    intake.build_metadata_content_evidence,
+    row.buildMetadataContentEvidence,
+    row.build_metadata_content_evidence,
+    facet.buildMetadataContentEvidence,
+    facet.build_metadata_content_evidence,
+  ));
+  const buildMetadataContentHash = buildContentEvidence.contentEvidenceHash
+    ?? normalizeSha256(firstText(
+      intake.buildMetadataContentHash,
+      intake.build_metadata_content_hash,
+      row.buildMetadataContentHash,
+      row.build_metadata_content_hash,
+      facet.buildMetadataContentHash,
+      facet.build_metadata_content_hash,
+    ));
   const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
     facet.directInputEvidence,
     facet.direct_input_evidence,
@@ -22221,9 +22261,31 @@ function randomColdPathSourceIdentityHash(row) {
     repoPath,
     immutableCommit,
   });
-  return directInputEvidence.acceptedAsDirectInputEvidence === true
-    ? directInputEvidence.sourceIdentityHash
-    : null;
+  if (
+    directInputEvidence.acceptedAsDirectInputEvidence !== true
+    || !sourceListingHash
+    || !sourceIntakeFacetHash
+    || !buildMetadataContentHash
+    || !String(immutableCommit ?? '').trim()
+    || !String(sourceUrl ?? repoPath ?? '').trim()
+  ) {
+    return null;
+  }
+  const normalizedSourceUrl = String(sourceUrl ?? '').trim();
+  const normalizedRepoPath = String(repoPath ?? '').trim();
+  return `sha256:${sha256Hex(stableJson({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_content_identity.v1',
+    candidateSource: String(directInputEvidence.candidateSource ?? '').trim(),
+    sourceKind: String(directInputEvidence.sourceKind ?? '').trim(),
+    hasSourceUrl: Boolean(normalizedSourceUrl),
+    hasRepoPath: Boolean(normalizedRepoPath),
+    sourceUrlHash: normalizedSourceUrl ? `sha256:${sha256Hex(normalizedSourceUrl)}` : null,
+    repoPathHash: normalizedRepoPath ? `sha256:${sha256Hex(normalizedRepoPath)}` : null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
+    sourceListingHash,
+    sourceIntakeFacetHash,
+    buildMetadataContentHash,
+  }))}`;
 }
 
 function randomColdPathDistinctSourceIdentityHashList(rows) {
@@ -22243,6 +22305,10 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     specific_target_ids_allowed: [],
     sourceIdentityRole: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     source_identity_role: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    sourceContentIdentityRole:
+      'source_content_identity_hash_bound_to_listing_intake_and_build_metadata_not_input_channel',
+    source_content_identity_role:
+      'source_content_identity_hash_bound_to_listing_intake_and_build_metadata_not_input_channel',
     acceptedCandidateSources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     accepted_candidate_sources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     requiredProfileMode: 'unprofiled_arbitrary_project_cold_intake',
@@ -22269,8 +22335,11 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
       'distinct_direct_source_identities_observed',
+      'distinct_source_content_identities_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
+      'source_listing_hash_observed',
+      'source_intake_facet_hash_observed',
       'source_derived_backend_candidates_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
@@ -22286,8 +22355,11 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
       'distinct_direct_source_identities_observed',
+      'distinct_source_content_identities_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
+      'source_listing_hash_observed',
+      'source_intake_facet_hash_observed',
       'source_derived_backend_candidates_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
@@ -22449,7 +22521,14 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathTargets,
     randomColdPathRowIds,
     randomColdPathDistinctSourceIdentityHashes,
+    randomColdPathDistinctSourceContentIdentityHashes: randomColdPathDistinctSourceIdentityHashes,
+    random_cold_path_distinct_source_content_identity_hashes:
+      randomColdPathDistinctSourceIdentityHashes,
     randomColdPathCandidateDistinctSourceIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentIdentityHashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_identity_hashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
     randomColdPathCandidateTargets,
     randomColdPathCandidateRowIds,
     randomColdPathSelectionPredicateHash: randomColdPathSelectionPredicate.predicateHash,
@@ -22503,6 +22582,14 @@ function computeBroadLibraryAgnosticProof(rows) {
     random_cold_path_distinct_source_identity_count: randomColdPathDistinctSourceIdentityHashes.length,
     randomColdPathDistinctSourceIdentityHashes,
     random_cold_path_distinct_source_identity_hashes: randomColdPathDistinctSourceIdentityHashes,
+    randomColdPathDistinctSourceContentIdentityCount:
+      randomColdPathDistinctSourceIdentityHashes.length,
+    random_cold_path_distinct_source_content_identity_count:
+      randomColdPathDistinctSourceIdentityHashes.length,
+    randomColdPathDistinctSourceContentIdentityHashes:
+      randomColdPathDistinctSourceIdentityHashes,
+    random_cold_path_distinct_source_content_identity_hashes:
+      randomColdPathDistinctSourceIdentityHashes,
     randomColdPathCandidateRows: randomColdPathCandidateRows.length,
     random_cold_path_candidate_rows: randomColdPathCandidateRows.length,
     randomColdPathCandidateDistinctSourceIdentityCount:
@@ -22512,6 +22599,14 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathCandidateDistinctSourceIdentityHashes:
       randomColdPathCandidateDistinctSourceIdentityHashes,
     random_cold_path_candidate_distinct_source_identity_hashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentIdentityCount:
+      randomColdPathCandidateDistinctSourceIdentityHashes.length,
+    random_cold_path_candidate_distinct_source_content_identity_count:
+      randomColdPathCandidateDistinctSourceIdentityHashes.length,
+    randomColdPathCandidateDistinctSourceContentIdentityHashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_identity_hashes:
       randomColdPathCandidateDistinctSourceIdentityHashes,
     randomColdPathCandidateRowIds,
     random_cold_path_candidate_row_ids: randomColdPathCandidateRowIds,
@@ -22645,6 +22740,14 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     random_cold_path_distinct_source_identity_count: randomColdPathDistinctSourceIdentityHashes.length,
     randomColdPathDistinctSourceIdentityHashes,
     random_cold_path_distinct_source_identity_hashes: randomColdPathDistinctSourceIdentityHashes,
+    randomColdPathDistinctSourceContentIdentityCount:
+      randomColdPathDistinctSourceIdentityHashes.length,
+    random_cold_path_distinct_source_content_identity_count:
+      randomColdPathDistinctSourceIdentityHashes.length,
+    randomColdPathDistinctSourceContentIdentityHashes:
+      randomColdPathDistinctSourceIdentityHashes,
+    random_cold_path_distinct_source_content_identity_hashes:
+      randomColdPathDistinctSourceIdentityHashes,
     randomColdPathCandidateRowCount: randomColdPathCandidateRows.length,
     random_cold_path_candidate_row_count: randomColdPathCandidateRows.length,
     randomColdPathCandidateDistinctSourceIdentityCount:
@@ -22654,6 +22757,14 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     randomColdPathCandidateDistinctSourceIdentityHashes:
       randomColdPathCandidateDistinctSourceIdentityHashes,
     random_cold_path_candidate_distinct_source_identity_hashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentIdentityCount:
+      randomColdPathCandidateDistinctSourceIdentityHashes.length,
+    random_cold_path_candidate_distinct_source_content_identity_count:
+      randomColdPathCandidateDistinctSourceIdentityHashes.length,
+    randomColdPathCandidateDistinctSourceContentIdentityHashes:
+      randomColdPathCandidateDistinctSourceIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_identity_hashes:
       randomColdPathCandidateDistinctSourceIdentityHashes,
     sourceFirstVisualRowCount: sourceFirstVisualRows.length,
     source_first_visual_row_count: sourceFirstVisualRows.length,

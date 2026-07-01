@@ -1475,13 +1475,16 @@ function randomColdDirectInputEvidenceFixture({
   sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
   repoPath = null,
   immutableCommit = '1111111111111111111111111111111111111111',
+  inputChannels: inputChannelsOverride = null,
 } = {}) {
   const sourceKind = candidateSource === 'direct_local_git_repo_path'
     ? 'local_repo_path_commit'
     : 'source_url_commit';
-  const inputChannels = candidateSource === 'direct_local_git_repo_path'
-    ? ['cli_arg_repo_path', 'cli_arg_commit']
-    : ['cli_arg_source_url', 'cli_arg_commit'];
+  const inputChannels = Array.isArray(inputChannelsOverride)
+    ? [...inputChannelsOverride].sort()
+    : candidateSource === 'direct_local_git_repo_path'
+      ? ['cli_arg_repo_path', 'cli_arg_commit']
+      : ['cli_arg_source_url', 'cli_arg_commit'];
   const sourceIdentityHash = contentHashFor({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
     candidateSource,
@@ -7953,13 +7956,40 @@ function randomColdReadinessMatrixRow({
   totalKnownBytes = 15 * 1024 * 1024,
   inputMode = 'cli_or_env_direct_source',
   directInputEvidence = true,
+  directInputEvidenceInputChannels = null,
   buildMetadataDiscoveryAccepted = true,
   buildMetadataContentAccepted = true,
-  buildMetadataContentEvidence = buildMetadataContentAccepted
-    ? randomColdBuildMetadataContentEvidenceFixture({ targetId, accepted: true })
-    : null,
-  buildMetadataContentHash = buildMetadataContentEvidence?.contentEvidenceHash ?? null,
+  buildMetadataContentEvidence = undefined,
+  buildMetadataContentHash = null,
+  sourceListingHash = null,
+  sourceIntakeFacetHash = null,
 } = {}) {
+  const sourceContentSeed = {
+    sourceUrl: sourceUrl ?? null,
+    localRepoPath: localRepoPath ?? null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
+  };
+  sourceListingHash ??= contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_listing_identity.v1',
+    ...sourceContentSeed,
+  });
+  sourceIntakeFacetHash ??= contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_intake_identity.v1',
+    ...sourceContentSeed,
+  });
+  const sourceContentEvidenceId = contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_build_metadata_content_identity.v1',
+    ...sourceContentSeed,
+  });
+  if (buildMetadataContentEvidence === undefined) {
+    buildMetadataContentEvidence = buildMetadataContentAccepted
+      ? randomColdBuildMetadataContentEvidenceFixture({
+        targetId: sourceContentEvidenceId,
+        accepted: true,
+      })
+      : null;
+  }
+  buildMetadataContentHash ??= buildMetadataContentEvidence?.contentEvidenceHash ?? null;
   const sizeSignals = inputMode
     ? {
       inputMode,
@@ -7982,6 +8012,7 @@ function randomColdReadinessMatrixRow({
         sourceUrl,
         repoPath: localRepoPath,
         immutableCommit,
+        inputChannels: directInputEvidenceInputChannels,
       })
       : directInputEvidence
     : null;
@@ -8110,6 +8141,10 @@ function randomColdReadinessMatrixRow({
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
       detected_build_systems: ['cargo', 'npm_or_node'],
+      sourceListingHash,
+      source_listing_hash: sourceListingHash,
+      facetHash: sourceIntakeFacetHash,
+      facet_hash: sourceIntakeFacetHash,
       fileCount,
       file_count: fileCount,
       totalKnownBytes,
@@ -8132,6 +8167,10 @@ function randomColdReadinessMatrixRow({
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       detectedBuildSystems: ['cargo', 'npm_or_node'],
       detected_build_systems: ['cargo', 'npm_or_node'],
+      sourceListingHash,
+      source_listing_hash: sourceListingHash,
+      facetHash: sourceIntakeFacetHash,
+      facet_hash: sourceIntakeFacetHash,
       fileCount,
       file_count: fileCount,
       totalKnownBytes,
@@ -9346,6 +9385,52 @@ assert.equal(
   repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
     ?.qualifyingDistinctSourceIdentityCount,
   1,
+);
+const variedInputChannelSets = [
+  ['cli_arg_source_url', 'cli_arg_commit'],
+  ['env_source_url', 'env_commit'],
+  ['cli_arg_source_url', 'env_commit'],
+  ['env_source_url', 'cli_arg_commit'],
+  ['cli_arg_source_url', 'cli_arg_commit', 'env_source_id'],
+];
+const variedChannelSameSourceRandomColdRows = variedInputChannelSets.map((inputChannels, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `varied-channel-source-random-cold-readiness-${index + 1}`,
+    sourceUrl: 'https://example.invalid/replayed/channel-variant-large-project.git',
+    immutableCommit: '5555555555555555555555555555555555555555',
+    directInputEvidenceInputChannels: inputChannels,
+  })
+);
+const broadReadinessWithVariedChannelSameSourceColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...variedChannelSameSourceRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithVariedChannelSameSourceColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceContentIdentityCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
 );
 const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({
   targetId: 'stale-unsafe-accepted-source-first-visual',
