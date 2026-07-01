@@ -1787,6 +1787,8 @@ function randomColdPathManifest({
   const gpuSourceFileCount = 31;
   const directInputEvidence = randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit });
   const sourceIntakeEvidence = {
+    schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
+    schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
     proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
     proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
     acceptedForGpuHmr: false,
@@ -1795,6 +1797,8 @@ function randomColdPathManifest({
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
     acceptedAsIntakeEvidence: true,
     accepted_as_intake_evidence: true,
     transport: 'github_git_tree_api_recursive',
@@ -8790,9 +8794,21 @@ function randomColdReadinessMatrixRow({
     },
     coldSourceTreeIntake: {
       present: true,
+      schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
+      schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
+      proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
+      proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
       accepted: true,
       acceptedAsIntakeEvidence: true,
       accepted_as_intake_evidence: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
       buildMetadataDiscoveryAccepted,
       build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
       buildMetadataContentAccepted,
@@ -8815,12 +8831,26 @@ function randomColdReadinessMatrixRow({
       total_known_bytes: totalKnownBytes,
       sourceRelevantFileCount,
       source_relevant_file_count: sourceRelevantFileCount,
+      failedGates: [],
+      failed_gates: [],
     },
     cold_source_tree_intake: {
       present: true,
+      schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
+      schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
+      proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
+      proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
       accepted: true,
       acceptedAsIntakeEvidence: true,
       accepted_as_intake_evidence: true,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
       buildMetadataDiscoveryAccepted,
       build_metadata_discovery_accepted: buildMetadataDiscoveryAccepted,
       buildMetadataContentAccepted,
@@ -8843,6 +8873,8 @@ function randomColdReadinessMatrixRow({
       total_known_bytes: totalKnownBytes,
       sourceRelevantFileCount,
       source_relevant_file_count: sourceRelevantFileCount,
+      failedGates: [],
+      failed_gates: [],
     },
     coldRuntimeBoundaryEventManifestTemplate: {
       present: true,
@@ -10474,6 +10506,53 @@ assert.ok(
   broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
 );
+const sharedContentSourceListingHash = hashValue('shared-random-cold-content-only:listing');
+const sharedContentBuildEvidence = randomColdBuildMetadataContentEvidenceFixture({
+  targetId: 'shared-random-cold-content-only',
+});
+const differentSourceLabelsSameContentColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `different-label-same-content-random-cold-${index + 1}`,
+    sourceUrl: `https://example.invalid/relabelled/content-clone-${index + 1}.git`,
+    immutableCommit: sha256Hex(`different-label-same-content-random-cold-${index + 1}`)
+      .slice(0, 40),
+    sourceListingHash: sharedContentSourceListingHash,
+    buildMetadataContentEvidence: sharedContentBuildEvidence,
+  })
+);
+const broadReadinessWithDifferentLabelsSameContentColdQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows,
+      ...differentSourceLabelsSameContentColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithDifferentLabelsSameContentColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceContentOnlyIdentityCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_content'),
+);
 const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `forged-content-identity-source-random-cold-readiness-${index + 1}`,
@@ -10518,6 +10597,40 @@ assert.equal(
 assert.ok(
   broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
+);
+const forgedSourceIntakeAuthorityColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'forged-source-intake-authority-random-cold',
+    sourceUrl: 'https://example.invalid/forged/source-intake-authority.git',
+    immutableCommit: '2323232323232323232323232323232323232323',
+  });
+  row.coldSourceTreeIntake.proofAuthority = 'forged_source_intake_runtime_authority';
+  row.coldSourceTreeIntake.proof_authority = 'forged_source_intake_runtime_authority';
+  row.cold_source_tree_intake.proofAuthority = 'forged_source_intake_runtime_authority';
+  row.cold_source_tree_intake.proof_authority = 'forged_source_intake_runtime_authority';
+  return row;
+})());
+const forgedSourceIntakeAuthorityColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    forgedSourceIntakeAuthorityColdRow,
+  ],
+});
+assert.equal(forgedSourceIntakeAuthorityColdQuery.accepted, false);
+assert.ok(forgedSourceIntakeAuthorityColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(forgedSourceIntakeAuthorityColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_authority_invalid'
+));
+assert.equal(
+  forgedSourceIntakeAuthorityColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  forgedSourceIntakeAuthorityColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({
   targetId: 'stale-unsafe-accepted-source-first-visual',

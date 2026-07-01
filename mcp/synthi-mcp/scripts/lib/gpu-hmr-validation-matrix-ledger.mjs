@@ -214,6 +214,10 @@ const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
   'source_identity_hash_bound_to_direct_input_not_whitelist';
+const RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
+const RANDOM_COLD_SOURCE_INTAKE_AUTHORITY =
+  'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
@@ -1413,6 +1417,8 @@ function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sour
 
 function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const facet = compactObject(sourceIntake);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const buildDiscovery = compactObject(
     facet.buildMetadataDiscovery
     ?? facet.build_metadata_discovery
@@ -1433,12 +1439,19 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ?? result.runtime_boundary_expectation,
   );
   const present = Object.keys(facet).length > 0;
-  const accepted = firstBool(
+  const acceptedFlag = firstBool(
     facet.acceptedAsIntakeEvidence,
     facet.accepted_as_intake_evidence,
     result.sourceTreeIntakeAccepted,
     result.source_tree_intake_accepted,
-  ) === true;
+  );
+  const sourceListingHash = normalizeSha256(firstText(
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+    facet.listingHash,
+    facet.listing_hash,
+  ));
+  const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
   const backendCandidates = compactStringList([
     ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
     ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
@@ -1457,19 +1470,55 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ...(Array.isArray(buildDiscovery.detectedBuildSystems) ? buildDiscovery.detectedBuildSystems : []),
     ...(Array.isArray(buildDiscovery.detected_build_systems) ? buildDiscovery.detected_build_systems : []),
   ]);
-  const failedGates = compactStringList([
+  const suppliedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
     ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
     ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
     ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
   ]);
+  const failedGates = compactStringList([
+    present ? null : 'random_cold_source_intake_evidence_missing',
+    present && schemaVersion !== RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION
+      ? 'random_cold_source_intake_schema_invalid'
+      : null,
+    present && proofAuthority !== RANDOM_COLD_SOURCE_INTAKE_AUTHORITY
+      ? 'random_cold_source_intake_authority_invalid'
+      : null,
+    present && acceptedFlag !== true
+      ? 'random_cold_source_intake_not_accepted'
+      : null,
+    present && !sourceListingHash
+      ? 'random_cold_source_intake_listing_hash_missing'
+      : null,
+    present && !facetHash
+      ? 'random_cold_source_intake_facet_hash_missing'
+      : null,
+    present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'random_cold_source_intake_claimed_gpu_hmr_acceptance'
+      : null,
+    present && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'random_cold_source_intake_claimed_gpu_hmr_success'
+      : null,
+    present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'random_cold_source_intake_claimed_runtime_authority'
+      : null,
+    present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_source_intake_claimed_dispatch_authority'
+      : null,
+    ...suppliedFailedGates,
+  ]);
+  const accepted = present && failedGates.length === 0;
   return {
     present,
     accepted,
     acceptedAsIntakeEvidence: accepted,
     accepted_as_intake_evidence: accepted,
-    proofAuthority: firstText(facet.proofAuthority, facet.proof_authority) ?? null,
-    proof_authority: firstText(facet.proofAuthority, facet.proof_authority) ?? null,
+    sourceIntakeAcceptedFlag: acceptedFlag === true,
+    source_intake_accepted_flag: acceptedFlag === true,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -1478,20 +1527,10 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     can_satisfy_runtime_proof: false,
     status: firstText(facet.status, result.status) ?? null,
     transport: firstText(facet.transport) ?? null,
-    sourceListingHash: normalizeSha256(firstText(
-      facet.sourceListingHash,
-      facet.source_listing_hash,
-      facet.listingHash,
-      facet.listing_hash,
-    )),
-    source_listing_hash: normalizeSha256(firstText(
-      facet.sourceListingHash,
-      facet.source_listing_hash,
-      facet.listingHash,
-      facet.listing_hash,
-    )),
-    facetHash: normalizeSha256(firstText(facet.facetHash, facet.facet_hash)),
-    facet_hash: normalizeSha256(firstText(facet.facetHash, facet.facet_hash)),
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    facetHash,
+    facet_hash: facetHash,
     fileCount: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
     file_count: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
     totalKnownBytes: finiteNumber(facet.totalKnownBytes ?? facet.total_known_bytes) ?? 0,
@@ -12928,6 +12967,26 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_template_claimed_runtime_authority' });
     }
+    const coldSourceIntakeRaw = compactObject(
+      row.coldSourceTreeIntake
+      ?? row.cold_source_tree_intake
+      ?? row.sourceIntakeEvidence
+      ?? row.source_intake_evidence,
+    );
+    const coldSourceIntakeDeclaredAccepted = firstBool(
+      row.sourceTreeIntakeAccepted,
+      row.source_tree_intake_accepted,
+      coldSourceIntakeRaw.accepted,
+      coldSourceIntakeRaw.acceptedAsIntakeEvidence,
+      coldSourceIntakeRaw.accepted_as_intake_evidence,
+    ) === true;
+    if (Object.keys(coldSourceIntakeRaw).length > 0 || coldSourceIntakeDeclaredAccepted) {
+      const coldSourceIntake = randomColdSourceIntakeSummary(coldSourceIntakeRaw, row);
+      if (coldSourceIntake.accepted !== true) {
+        failures.push({ code: 'random_large_project_cold_source_intake_invalid' });
+        failures.push(...coldSourceIntake.failedGates.map((code) => ({ code })));
+      }
+    }
     if (row.acceptedForGpuHmr === true || row.gpuHmrSuccess === true) {
       failures.push({ code: 'random_large_project_cold_path_row_cannot_claim_gpu_hmr_success' });
     }
@@ -23003,6 +23062,7 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       ?? row.random_large_project_cold_path,
     );
     const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+    const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
     const template = compactObject(
       row.coldRuntimeBoundaryEventManifestTemplate
       ?? row.cold_runtime_boundary_event_manifest_template,
@@ -23102,21 +23162,19 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       ...(Array.isArray(backendEvidence.source_derived_backend_candidates)
         ? backendEvidence.source_derived_backend_candidates
         : []),
-      ...(Array.isArray(intake.backendCandidates) ? intake.backendCandidates : []),
-      ...(Array.isArray(intake.backend_candidates) ? intake.backend_candidates : []),
+      ...(Array.isArray(sourceIntakeEvidence.backendCandidates)
+        ? sourceIntakeEvidence.backendCandidates
+        : []),
+      ...(Array.isArray(sourceIntakeEvidence.backend_candidates)
+        ? sourceIntakeEvidence.backend_candidates
+        : []),
     ]);
     const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
     const candidateBackendUsedForAcceptance = firstBool(
       backendEvidence.candidateBackendUsedForAcceptance,
       backendEvidence.candidate_backend_used_for_acceptance,
     ) === true;
-    const sourceAccepted = firstBool(
-      row.sourceTreeIntakeAccepted,
-      row.source_tree_intake_accepted,
-      intake.accepted,
-      intake.acceptedAsIntakeEvidence,
-      intake.accepted_as_intake_evidence,
-    ) === true;
+    const sourceAccepted = sourceIntakeEvidence.accepted === true;
     const buildMetadataDiscoveryAccepted = firstBool(
       row.buildMetadataDiscoveryAccepted,
       row.build_metadata_discovery_accepted,
@@ -23376,6 +23434,68 @@ function randomColdPathSourceContentIdentityHash(row) {
   }))}`;
 }
 
+function randomColdPathSourceContentOnlyIdentityHash(row) {
+  const facet = compactObject(
+    row.randomLargeProjectColdPath
+    ?? row.random_large_project_cold_path,
+  );
+  const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+  const sourceIntake = randomColdSourceIntakeSummary(intake, row);
+  const sourceListingHash = normalizeSha256(firstText(
+    sourceIntake.sourceListingHash,
+    sourceIntake.source_listing_hash,
+    intake.sourceListingHash,
+    intake.source_listing_hash,
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+    row.sourceListingHash,
+    row.source_listing_hash,
+  ));
+  const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
+    sourceIntake.buildMetadataContentEvidence,
+    sourceIntake.build_metadata_content_evidence,
+    intake.buildMetadataContentEvidence,
+    intake.build_metadata_content_evidence,
+    row.buildMetadataContentEvidence,
+    row.build_metadata_content_evidence,
+    facet.buildMetadataContentEvidence,
+    facet.build_metadata_content_evidence,
+  ));
+  const buildFileContentRefs = compactObjectList(
+    buildContentEvidence.buildFiles
+    ?? buildContentEvidence.build_files,
+  )
+    .map((file) => ({
+      path: firstText(file.path, file.relativePath, file.relative_path) ?? null,
+      contentHash: normalizeSha256(firstText(file.contentHash, file.content_hash)),
+      byteLength: finiteNumber(file.byteLength ?? file.byte_length),
+    }))
+    .filter((file) =>
+      typeof file.path === 'string'
+      && file.path.length > 0
+      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+      && Number.isFinite(file.byteLength)
+      && file.byteLength > 0
+    )
+    .sort((a, b) =>
+      `${a.path}\0${a.contentHash}\0${a.byteLength}`
+        .localeCompare(`${b.path}\0${b.contentHash}\0${b.byteLength}`)
+    );
+  if (
+    sourceIntake.accepted !== true
+    || buildContentEvidence.acceptedAsBuildMetadataContent !== true
+    || !sourceListingHash
+    || buildFileContentRefs.length === 0
+  ) {
+    return null;
+  }
+  return `sha256:${sha256Hex(stableJson({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_content_only_identity.v1',
+    sourceListingHash,
+    buildFileContentRefs,
+  }))}`;
+}
+
 function randomColdPathDistinctSourceIdentityHashList(rows) {
   return [...new Set(compactStringList(rows.map((row) => randomColdPathSourceIdentityHash(row))))].sort();
 }
@@ -23383,6 +23503,12 @@ function randomColdPathDistinctSourceIdentityHashList(rows) {
 function randomColdPathDistinctSourceContentIdentityHashList(rows) {
   return [...new Set(compactStringList(rows.map((row) =>
     randomColdPathSourceContentIdentityHash(row)
+  )))].sort();
+}
+
+function randomColdPathDistinctSourceContentOnlyIdentityHashList(rows) {
+  return [...new Set(compactStringList(rows.map((row) =>
+    randomColdPathSourceContentOnlyIdentityHash(row)
   )))].sort();
 }
 
@@ -23407,6 +23533,10 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'source_content_identity_hash_bound_to_listing_intake_and_build_metadata_not_input_channel',
     source_content_identity_role:
       'source_content_identity_hash_bound_to_listing_intake_and_build_metadata_not_input_channel',
+    sourceContentOnlyIdentityRole:
+      'source_content_only_identity_hash_bound_to_listing_and_build_file_bytes_not_repo_or_commit',
+    source_content_only_identity_role:
+      'source_content_only_identity_hash_bound_to_listing_and_build_file_bytes_not_repo_or_commit',
     acceptedCandidateSources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     accepted_candidate_sources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     requiredProfileMode: 'unprofiled_arbitrary_project_cold_intake',
@@ -23434,6 +23564,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_cli_or_env_input_mode_observed',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
+      'distinct_source_content_only_identities_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
       'source_listing_hash_observed',
@@ -23457,6 +23588,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'direct_cli_or_env_input_mode_observed',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
+      'distinct_source_content_only_identities_observed',
       'immutable_commit_present',
       'source_url_or_repo_path_present',
       'source_listing_hash_observed',
@@ -23479,8 +23611,13 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     large_source_tree_required: requireLargeSourceTree === true,
     distinctSourceIdentitiesRequired: true,
     distinct_source_identities_required: true,
+    distinctSourceContentOnlyIdentitiesRequired: true,
+    distinct_source_content_only_identities_required: true,
     minimumDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_distinct_source_identity_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumDistinctSourceContentOnlyIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_distinct_source_content_only_identity_count:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimumFileCountWhenLargeRequired: requireLargeSourceTree === true
       ? BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
       : 0,
@@ -23559,10 +23696,14 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathDistinctSourceIdentityHashList(randomColdPathRows);
   const randomColdPathDistinctSourceContentIdentityHashes =
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathRows);
+  const randomColdPathDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathRows);
   const randomColdPathCandidateDistinctSourceIdentityHashes =
     randomColdPathDistinctSourceIdentityHashList(randomColdPathCandidateRows);
   const randomColdPathCandidateDistinctSourceContentIdentityHashes =
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathCandidateRows);
+  const randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathCandidateRows);
   const randomColdPathCandidateTargets = compactStringList(
     randomColdPathCandidateRows.map((row) => row.targetId),
   );
@@ -23587,11 +23728,15 @@ function computeBroadLibraryAgnosticProof(rows) {
       ? null
       : 'broad_acceptance_requires_adversarial_refusals',
     randomColdPathDistinctSourceIdentityHashes.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
+      && randomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
       ? null
       : randomColdPathCandidateRows.length === 0
         ? 'broad_acceptance_requires_random_large_project_cold_path'
         : randomColdPathRows.length === 0
           ? 'broad_acceptance_requires_large_random_project_cold_paths'
+          : randomColdPathDistinctSourceIdentityHashes.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
+            ? 'broad_acceptance_requires_distinct_random_large_project_cold_content'
           : randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
             ? 'broad_acceptance_requires_distinct_random_large_project_cold_sources'
             : 'broad_acceptance_requires_more_random_large_project_cold_paths',
@@ -23641,11 +23786,17 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathDistinctSourceContentIdentityHashes,
     random_cold_path_distinct_source_content_identity_hashes:
       randomColdPathDistinctSourceContentIdentityHashes,
+    randomColdPathDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_distinct_source_content_only_identity_hashes:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateDistinctSourceIdentityHashes,
     randomColdPathCandidateDistinctSourceContentIdentityHashes:
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
     random_cold_path_candidate_distinct_source_content_identity_hashes:
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_only_identity_hashes:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateTargets,
     randomColdPathCandidateRowIds,
     randomColdPathSelectionPredicateHash: randomColdPathSelectionPredicate.predicateHash,
@@ -23711,6 +23862,14 @@ function computeBroadLibraryAgnosticProof(rows) {
       randomColdPathDistinctSourceContentIdentityHashes,
     random_cold_path_distinct_source_content_identity_hashes:
       randomColdPathDistinctSourceContentIdentityHashes,
+    randomColdPathDistinctSourceContentOnlyIdentityCount:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_path_distinct_source_content_only_identity_count:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdPathDistinctSourceContentOnlyIdentityHashes:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_distinct_source_content_only_identity_hashes:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateRows: randomColdPathCandidateRows.length,
     random_cold_path_candidate_rows: randomColdPathCandidateRows.length,
     randomColdPathCandidateDistinctSourceIdentityCount:
@@ -23729,6 +23888,14 @@ function computeBroadLibraryAgnosticProof(rows) {
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
     random_cold_path_candidate_distinct_source_content_identity_hashes:
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentOnlyIdentityCount:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_path_candidate_distinct_source_content_only_identity_count:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_only_identity_hashes:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateRowIds,
     random_cold_path_candidate_row_ids: randomColdPathCandidateRowIds,
     randomColdPathCandidateTargets,
@@ -23859,10 +24026,14 @@ function broadLibraryAgnosticReadiness(
     randomColdPathDistinctSourceIdentityHashList(randomColdPathRows);
   const randomColdPathDistinctSourceContentIdentityHashes =
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathRows);
+  const randomColdPathDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathRows);
   const randomColdPathCandidateDistinctSourceIdentityHashes =
     randomColdPathDistinctSourceIdentityHashList(randomColdPathCandidateRows);
   const randomColdPathCandidateDistinctSourceContentIdentityHashes =
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathCandidateRows);
+  const randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathCandidateRows);
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualSourceIdentityHashes =
     sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
@@ -23942,6 +24113,14 @@ function broadLibraryAgnosticReadiness(
       randomColdPathDistinctSourceContentIdentityHashes,
     random_cold_path_distinct_source_content_identity_hashes:
       randomColdPathDistinctSourceContentIdentityHashes,
+    randomColdPathDistinctSourceContentOnlyIdentityCount:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_path_distinct_source_content_only_identity_count:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdPathDistinctSourceContentOnlyIdentityHashes:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_distinct_source_content_only_identity_hashes:
+      randomColdPathDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateRowCount: randomColdPathCandidateRows.length,
     random_cold_path_candidate_row_count: randomColdPathCandidateRows.length,
     randomColdPathCandidateDistinctSourceIdentityCount:
@@ -23960,6 +24139,14 @@ function broadLibraryAgnosticReadiness(
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
     random_cold_path_candidate_distinct_source_content_identity_hashes:
       randomColdPathCandidateDistinctSourceContentIdentityHashes,
+    randomColdPathCandidateDistinctSourceContentOnlyIdentityCount:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes.length,
+    random_cold_path_candidate_distinct_source_content_only_identity_count:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes.length,
+    randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
+    random_cold_path_candidate_distinct_source_content_only_identity_hashes:
+      randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     sourceFirstVisualRowCount: sourceFirstVisualRows.length,
     source_first_visual_row_count: sourceFirstVisualRows.length,
     sourceFirstVisualSourceIdentityCount: sourceFirstVisualSourceIdentityHashes.length,
@@ -23984,6 +24171,10 @@ function broadLibraryAgnosticReadiness(
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     minimumRandomColdPathDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimum_random_cold_path_distinct_source_content_only_identity_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
