@@ -1,0 +1,155 @@
+{
+  "generatedAt": "2026-07-01T05:47:35.305Z",
+  "context": {
+    "active": true,
+    "workspaceSlug": "codesitefs-runtime-boundary",
+    "transactionId": "txn-1782884854528",
+    "mutationLeaseId": "lease-runtime-boundary",
+    "displayCallsign": "RUNTIME-RAW-01",
+    "actorUserId": "agent-user",
+    "effectiveUserId": "workspace-user",
+    "allowedPaths": [
+      "src/**"
+    ],
+    "blockedPaths": [
+      "api/auth/**"
+    ],
+    "processAncestry": [
+      "docker-container",
+      "sh",
+      "raw-write"
+    ],
+    "evidenceRefs": [
+      "proof:codesitefs-runtime-boundary"
+    ],
+    "controlPlaneUrl": "http://app.test/api/workspace/codesitefs-runtime-boundary/codesite"
+  },
+  "docker": {
+    "image": "node:22-bookworm",
+    "containerName": "codesitefs-boundary-1782884854557",
+    "command": [
+      "docker",
+      "run",
+      "--rm",
+      "--name",
+      "codesitefs-boundary-1782884854557",
+      "-v",
+      "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e:/workspace",
+      "-w",
+      "/workspace",
+      "node:22-bookworm",
+      "sh",
+      "-lc",
+      "set -eu\nmkdir -p src api/auth\nprintf 'overlay app from raw docker\\n' > src/app.js\nprintf 'raw auth bypass attempt\\n' > api/auth/signup.ts\nprintf 'runtime wrote only to quarantine\\n' > runtime.out"
+    ]
+  },
+  "quarantine": {
+    "root": "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e",
+    "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/repo",
+    "digest": "sha256:40f67229e3e06d37e11a1103fd66a9db78c545c4db343a64768323ab46d3b20c"
+  },
+  "changes": [
+    {
+      "path": "api/auth/signup.ts",
+      "kind": "modified",
+      "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+      "afterDigest": "sha256:ba37c87b90de5bffe1c0b44053e62e2db9dd90e39e96566bed2b1156d196e171",
+      "beforeSize": 22,
+      "afterSize": 24,
+      "evidenceDigest": "sha256:7e1e0c1a3dd75b14d49277e6c1ad4e55075e2109f7bf08928c518f65a854664d"
+    },
+    {
+      "path": "runtime.out",
+      "kind": "created",
+      "beforeDigest": null,
+      "afterDigest": "sha256:6402800ad8e4fdcec294525b547c845ee1b87c5b035054451fa3df71df49a3c7",
+      "beforeSize": null,
+      "afterSize": 33,
+      "evidenceDigest": "sha256:4ff47d6d38d994e3a2b4de389bfca613e972c03b974221626050536693dece25"
+    },
+    {
+      "path": "src/app.js",
+      "kind": "modified",
+      "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+      "afterDigest": "sha256:0a086f616f1505014793ebc97b527484ce60fdfc21b94a6f450840d855049f23",
+      "beforeSize": 21,
+      "afterSize": 28,
+      "evidenceDigest": "sha256:6e2efbd52676d792129cdbe1f07018c88e99cdbd66177ccc66c40abe2b19b689"
+    }
+  ],
+  "recordedEvents": [
+    {
+      "path": "api/auth/signup.ts",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:0f152e74939dedc447f505f2c2dbebe066fedfa2da4be2adad186f04d7129deb",
+      "processAncestry": [
+        "docker-container",
+        "sh",
+        "raw-write"
+      ]
+    },
+    {
+      "path": "runtime.out",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:bb825ec19f1394ce0c0f1e22aefcd7edf9982a93d32c9e7f5a88c7b0497df1bb",
+      "processAncestry": [
+        "docker-container",
+        "sh",
+        "raw-write"
+      ]
+    },
+    {
+      "path": "src/app.js",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:09389546c1f6a472d5ace04bff9b4af78ff5c0cd7f75b714c4bed01e70476515",
+      "processAncestry": [
+        "docker-container",
+        "sh",
+        "raw-write"
+      ]
+    }
+  ],
+  "productPath": {
+    "containerLaunchMode": "quarantine-runtime",
+    "sysboxLaunchMode": "block-runtime",
+    "overlayAContainer": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-64cde05e87",
+    "overlayBContainer": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-ed9c873e6d"
+  },
+  "repoChecks": [
+    {
+      "path": "src/app.js",
+      "realRepoAfter": "real repo app before",
+      "quarantineKind": "modified"
+    },
+    {
+      "path": "api/auth/signup.ts",
+      "realRepoAfter": "real repo auth before",
+      "quarantineKind": "modified"
+    },
+    {
+      "path": "runtime.out",
+      "realRepoAfter": "missing from real repo",
+      "quarantineKind": "created"
+    }
+  ],
+  "assertions": {
+    "containerTerminalRoutesToQuarantineRuntime": true,
+    "sysboxTerminalStillBlocksWithoutMountStrategy": true,
+    "sameTransactionOverlaysUseDistinctRuntimeContainers": true,
+    "realRepoAllowedFileUnchanged": true,
+    "realRepoBlockedFileUnchanged": true,
+    "runtimeContainerChangedOnlyQuarantine": true,
+    "blockedPathRecordedAsQuarantined": true,
+    "processTreeProvenanceRecorded": true,
+    "durableEvidenceRefsCreated": true
+  }
+}

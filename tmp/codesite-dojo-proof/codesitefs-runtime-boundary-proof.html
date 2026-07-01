@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSiteFS Runtime Boundary Proof</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0e;color:#f5f7fb}
+body{margin:0;padding:28px;background:#080a0e}
+main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
+.hero,.card{border:1px solid #293246;border-radius:8px;background:#10151f;padding:18px}
+.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
+h1{font-size:25px;margin:8px 0 6px;letter-spacing:0}
+h2{font-size:16px;margin:0 0 10px;letter-spacing:0}
+p{margin:0;color:#afbad0;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.label{font-size:12px;color:#98a2b8}
+.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-top:1px solid #293246;padding:8px;text-align:left;vertical-align:top}
+th{color:#afbad0;font-weight:600}
+pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#05060a;padding:14px;color:#cbd3e7;font-size:12px;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<span class="pass">PASS</span>
+<h1>CodeSiteFS Runtime Boundary Proof</h1>
+<p>Real Docker container attempted raw workspace writes. CodeSiteFS mounted a writable quarantine overlay, preserved the real repo, and recorded write_quarantined evidence for every changed path.</p>
+</section>
+<section class="grid">
+<div class="card"><div class="label">Docker image</div><div class="value">node:22-bookworm</div></div>
+<div class="card"><div class="label">Container</div><div class="value">codesitefs-boundary-1782884854557</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">txn-1782884854528</div></div>
+<div class="card"><div class="label">Quarantine root</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e</div></div>
+</section>
+<section class="card">
+<h2>Repo Preservation</h2>
+<table><thead><tr><th>Path</th><th>Real repo after raw Docker write</th><th>Quarantine change</th></tr></thead><tbody>
+<tr><td>src/app.js</td><td>real repo app before</td><td>modified</td></tr><tr><td>api/auth/signup.ts</td><td>real repo auth before</td><td>modified</td></tr><tr><td>runtime.out</td><td>missing from real repo</td><td>created</td></tr>
+</tbody></table>
+</section>
+<section class="card">
+<h2>Recorded Boundary Events</h2>
+<table><thead><tr><th>Path</th><th>Event</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
+<tr><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:0f152e74939dedc447f505f2c2dbebe066fedfa2da4be2adad186f04d7129deb</td></tr><tr><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:bb825ec19f1394ce0c0f1e22aefcd7edf9982a93d32c9e7f5a88c7b0497df1bb</td></tr><tr><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:09389546c1f6a472d5ace04bff9b4af78ff5c0cd7f75b714c4bed01e70476515</td></tr>
+</tbody></table>
+</section>
+<section class="card">
+<h2>Product Runtime Contract</h2>
+<table><thead><tr><th>Check</th><th>Value</th></tr></thead><tbody>
+<tr><td>Container terminal launch mode</td><td>quarantine-runtime</td></tr>
+<tr><td>Sysbox terminal launch mode</td><td>block-runtime</td></tr>
+<tr><td>Overlay A runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-64cde05e87</td></tr>
+<tr><td>Overlay B runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-ed9c873e6d</td></tr>
+</tbody></table>
+</section>
+<section class="card"><h2>Assertions</h2><pre>{
+  &quot;containerTerminalRoutesToQuarantineRuntime&quot;: true,
+  &quot;sysboxTerminalStillBlocksWithoutMountStrategy&quot;: true,
+  &quot;sameTransactionOverlaysUseDistinctRuntimeContainers&quot;: true,
+  &quot;realRepoAllowedFileUnchanged&quot;: true,
+  &quot;realRepoBlockedFileUnchanged&quot;: true,
+  &quot;runtimeContainerChangedOnlyQuarantine&quot;: true,
+  &quot;blockedPathRecordedAsQuarantined&quot;: true,
+  &quot;processTreeProvenanceRecorded&quot;: true,
+  &quot;durableEvidenceRefsCreated&quot;: true
+}</pre></section>
+<section class="card"><h2>Docker Command</h2><pre>docker run --rm --name codesitefs-boundary-1782884854557 -v /tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e:/workspace -w /workspace node:22-bookworm sh -lc set -eu
+mkdir -p src api/auth
+printf 'overlay app from raw docker\n' &gt; src/app.js
+printf 'raw auth bypass attempt\n' &gt; api/auth/signup.ts
+printf 'runtime wrote only to quarantine\n' &gt; runtime.out</pre></section>
+</main>
+</body>
+</html>

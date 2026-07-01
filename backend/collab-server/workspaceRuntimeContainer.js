@@ -122,6 +122,13 @@ function createRuntimeManager({
     const { mode, quarantineId } = runtimeIdentityOptions(options);
     return `${slug} ${userId} ${mode}${quarantineId ? `:${quarantineId}` : ''}`;
   };
+  const sessionEntry = (containerId, slug, userId, options, now) => ({
+    containerId,
+    slug,
+    userId,
+    runtimeIdentity: runtimeIdentityOptions(options),
+    lastActive: now,
+  });
 
   async function ensureRuntimeContainer(slug, userId, options = {}) {
     const quarantineRoot = codeSiteQuarantineRoot(options);
@@ -171,7 +178,7 @@ function createRuntimeManager({
             throw error;
           }
         }
-        sessions.set(key, { containerId: info.Id, lastActive: now });
+        sessions.set(key, sessionEntry(info.Id, slug, userId, options, now));
         return { name, host: name, containerId: info.Id, created: false };
       }
       try { await existing.remove({ force: true }); } catch (_) {}
@@ -254,7 +261,7 @@ function createRuntimeManager({
 
     const container = await docker.createContainer(createOpts);
     await container.start();
-    sessions.set(key, { containerId: container.id, lastActive: now });
+    sessions.set(key, sessionEntry(container.id, slug, userId, options, now));
     // Use the structured-logger convention (event, data). console (the test
     // default) also accepts this. NB: collab-server's logger has no `.log`.
     logger.info('runtime_container_started', { name, slug, userId, mode });
@@ -297,16 +304,20 @@ function createRuntimeManager({
     return false;
   }
 
-  function touch(slug, userId) {
-    const s = sessions.get(keyOf(slug, userId));
+  function touch(slug, userId, options = {}) {
+    const s = sessions.get(keyOf(slug, userId, options));
     if (s) s.lastActive = Date.now();
   }
 
-  async function teardown(slug, userId) {
-    const key = keyOf(slug, userId);
+  async function teardown(slug, userId, options = {}) {
+    const key = keyOf(slug, userId, options);
     const s = sessions.get(key);
     sessions.delete(key);
-    const id = s?.containerId || runtimeContainerName(slug, userId);
+    const id = s?.containerId || runtimeContainerName(slug, userId, options);
+    await removeRuntimeContainer(id);
+  }
+
+  async function removeRuntimeContainer(id) {
     try {
       const c = docker.getContainer(id);
       try { await c.stop({ t: 5 }); } catch (_) {}
@@ -319,8 +330,8 @@ function createRuntimeManager({
   async function cullIdle(now = Date.now()) {
     for (const [key, entry] of [...sessions.entries()]) {
       if (shouldCull(entry, now)) {
-        const [slug, userId] = key.split(' ');
-        await teardown(slug, userId);
+        sessions.delete(key);
+        await removeRuntimeContainer(entry.containerId);
       }
     }
   }

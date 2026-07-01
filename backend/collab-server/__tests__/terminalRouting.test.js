@@ -21,7 +21,7 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
 });
 
-test('CodeSite terminal launch mode quarantines local shells and blocks runtime-backed shells', () => {
+test('CodeSite terminal launch mode quarantines local shells and runtime containers while blocking unenforced runtime pods', () => {
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: null,
     workspaceSlug: 'repo',
@@ -43,7 +43,7 @@ test('CodeSite terminal launch mode quarantines local shells and blocks runtime-
     enableContainerRuntime: true,
     workspaceRuntime: {},
     workspaceSlug: 'repo',
-  }), 'block-runtime');
+  }), 'quarantine-runtime');
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec

@@ -18,7 +18,7 @@ function codeSiteTerminalLaunchMode({
 } = {}) {
   if (!codeSiteContext?.active) return 'normal';
   if (usesRuntimePodTerminal) return 'block-runtime';
-  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'block-runtime';
+  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'quarantine-runtime';
   return 'quarantine';
 }
 
