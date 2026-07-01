@@ -23082,19 +23082,28 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0);
   const broadRuntimeRowsMissing = matrixGeneralizationRuntimeRows === 0;
   const rowLocalBroadRuntimeRowsMissing = broadRuntimeRows.length === 0;
-  const openGaps = broadProof.accepted === true
-    ? []
-    : compactStringList([
-      'matrix_level_broad_generalization_proof_not_present',
-      broadRuntimeRowsMissing ? 'broad_runtime_rows_missing' : null,
-      ...(Array.isArray(broadProof.openGaps) ? broadProof.openGaps : []),
-    ]);
+  const matrixGeneralizationAccepted = broadProof.accepted === true;
+  const openGaps = compactStringList([
+    matrixGeneralizationAccepted
+      ? null
+      : 'matrix_level_broad_generalization_proof_not_present',
+    broadRuntimeRowsMissing ? 'broad_runtime_rows_missing' : null,
+    rowLocalBroadRuntimeRowsMissing ? 'row_local_broad_runtime_rows_missing' : null,
+    ...(matrixGeneralizationAccepted
+      ? []
+      : (Array.isArray(broadProof.openGaps) ? broadProof.openGaps : [])),
+  ]);
+  const accepted = matrixGeneralizationAccepted && !rowLocalBroadRuntimeRowsMissing;
   return {
     schemaVersion: 'synthi.gpu_hmr.broad_library_agnostic_readiness.v1',
     authority: 'matrix_computed_not_row_declared',
-    accepted: broadProof.accepted === true,
+    accepted,
     broadLibraryAgnosticProof: broadProof,
     broad_library_agnostic_proof: broadProof,
+    matrixGeneralizationAccepted,
+    matrix_generalization_accepted: matrixGeneralizationAccepted,
+    rowLocalBroadRuntimeProofRequired: true,
+    row_local_broad_runtime_proof_required: true,
     broadRuntimeRows: broadRuntimeRows.length,
     broad_runtime_rows: broadRuntimeRows.length,
     broadRuntimeRowsComputed,

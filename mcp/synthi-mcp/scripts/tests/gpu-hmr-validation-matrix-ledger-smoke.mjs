@@ -9882,11 +9882,24 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('row_local_broad_runtime_rows_missing'),
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationAccepted,
   true,
 );
-assert.deepEqual(
-  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
-  [],
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeProofRequired,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .accepted,
+  true,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof.authority,
@@ -10214,11 +10227,16 @@ const opaqueSourceFirstBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
 assert.equal(opaqueSourceFirstBroadReadinessQuery.accepted, true);
 assert.equal(
   opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
-assert.deepEqual(
-  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
-  [],
+assert.ok(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('row_local_broad_runtime_rows_missing'),
+);
+assert.equal(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .matrixGeneralizationAccepted,
+  true,
 );
 assert.equal(
   opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
@@ -10240,7 +10258,7 @@ const nonWhitelistedBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
 assert.equal(nonWhitelistedBroadReadinessQuery.accepted, true);
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
@@ -10261,9 +10279,14 @@ assert.deepEqual(
     .broadLibraryAgnosticProof.randomColdPathSelectionPredicate.projectNameWhitelist,
   [],
 );
-assert.deepEqual(
-  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
-  [],
+assert.ok(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('row_local_broad_runtime_rows_missing'),
+);
+assert.equal(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .matrixGeneralizationAccepted,
+  true,
 );
 assert.ok(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets
