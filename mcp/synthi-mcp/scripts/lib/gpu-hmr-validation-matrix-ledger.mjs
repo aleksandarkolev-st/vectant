@@ -59,6 +59,8 @@ const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT = 25;
+const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS = 15 * 60 * 1000;
 const BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT = 2;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
@@ -22575,8 +22577,118 @@ function rowRuntimeBoundarySupportScore(row) {
 }
 
 function rowUpdatedAtMs(row) {
-  const parsed = Date.parse(String(row.updatedAt ?? ''));
+  const parsed = Date.parse(String(row.updatedAt ?? row.updated_at ?? ''));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function randomColdPathFreshnessPolicy(options = {}) {
+  const enforced =
+    firstBool(
+      options.enforceRandomColdPathFreshness,
+      options.enforce_random_cold_path_freshness,
+      options.enforced,
+    ) === true;
+  const generatedAt = firstText(options.generatedAt, options.generated_at);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_broad_readiness_freshness_policy.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_path_broad_readiness_freshness_policy.v1',
+    authority: 'collector_mtime_freshness_policy_not_gpu_hmr_success',
+    proofAuthority: 'collector_mtime_freshness_policy_not_gpu_hmr_success',
+    proof_authority: 'collector_mtime_freshness_policy_not_gpu_hmr_success',
+    enforced,
+    maxCollectionAgeMs: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS,
+    max_collection_age_ms: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS,
+    maxFutureSkewMs: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS,
+    max_future_skew_ms: BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS,
+    generatedAt: generatedAt ?? null,
+    generated_at: generatedAt ?? null,
+    requiredFor: 'random_large_project_cold_path_broad_readiness',
+    required_for: 'random_large_project_cold_path_broad_readiness',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
+function randomColdPathBroadReadinessFreshness(row, context = {}) {
+  const suppliedPolicy = compactObject(
+    context.randomColdPathFreshnessPolicy
+    ?? context.random_cold_path_freshness_policy,
+  );
+  const policy = randomColdPathFreshnessPolicy({
+    ...suppliedPolicy,
+    generatedAt: firstText(
+      context.generatedAt,
+      context.generated_at,
+      suppliedPolicy.generatedAt,
+      suppliedPolicy.generated_at,
+    ),
+    enforceRandomColdPathFreshness: firstBool(
+      context.enforceRandomColdPathFreshness,
+      context.enforce_random_cold_path_freshness,
+      suppliedPolicy.enforced,
+    ) === true,
+  });
+  const rowUpdatedAt = firstText(row.updatedAt, row.updated_at);
+  if (policy.enforced !== true) {
+    return {
+      ...policy,
+      accepted: true,
+      rowUpdatedAt: rowUpdatedAt ?? null,
+      row_updated_at: rowUpdatedAt ?? null,
+      ageMs: null,
+      age_ms: null,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const generatedAtMs = Date.parse(String(policy.generatedAt ?? ''));
+  const rowUpdatedAtMsValue = Date.parse(String(rowUpdatedAt ?? ''));
+  const maxCollectionAgeMs =
+    finiteNumber(policy.maxCollectionAgeMs ?? policy.max_collection_age_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS;
+  const maxFutureSkewMs =
+    finiteNumber(policy.maxFutureSkewMs ?? policy.max_future_skew_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS;
+  const ageMs = Number.isFinite(generatedAtMs) && Number.isFinite(rowUpdatedAtMsValue)
+    ? generatedAtMs - rowUpdatedAtMsValue
+    : null;
+  const openGaps = compactStringList([
+    Number.isFinite(generatedAtMs)
+      ? null
+      : 'random_cold_path_freshness_generated_at_missing_or_invalid',
+    rowUpdatedAt
+      ? null
+      : 'random_cold_path_freshness_row_updated_at_missing',
+    rowUpdatedAt && Number.isFinite(rowUpdatedAtMsValue)
+      ? null
+      : 'random_cold_path_freshness_row_updated_at_invalid',
+    ageMs !== null && ageMs < -maxFutureSkewMs
+      ? 'random_cold_path_freshness_row_updated_at_after_matrix_generated_at'
+      : null,
+    ageMs !== null && ageMs > maxCollectionAgeMs
+      ? 'random_cold_path_freshness_row_too_old_for_current_matrix'
+      : null,
+  ]);
+  return {
+    ...policy,
+    accepted: openGaps.length === 0,
+    rowUpdatedAt: rowUpdatedAt ?? null,
+    row_updated_at: rowUpdatedAt ?? null,
+    ageMs,
+    age_ms: ageMs,
+    openGaps,
+    open_gaps: openGaps,
+  };
+}
+
+function randomColdPathBroadReadinessFreshnessGaps(rows, context = {}) {
+  return compactStringList(rows
+    .filter((row) => row.proofMode === 'random_large_project_cold_path')
+    .flatMap((row) => randomColdPathBroadReadinessFreshness(row, context).openGaps ?? []));
 }
 
 function selectBestRows(rows) {
@@ -23053,7 +23165,8 @@ function sourceFirstVisualBroadReadinessPredicate() {
   };
 }
 
-function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = true } = {}) {
+function randomColdPathRowsForBroadReadiness(rows, options = {}) {
+  const { requireLargeSourceTree = true, ...context } = options;
   return rows.filter((row) => {
     if (row.proofMode !== 'random_large_project_cold_path') return false;
     if (row.matrixOutcome !== 'refusal_proven') return false;
@@ -23268,6 +23381,7 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
         buildContentEvidence.canSatisfyDispatchProof,
         buildContentEvidence.can_satisfy_dispatch_proof,
       ) === true;
+    const freshness = randomColdPathBroadReadinessFreshness(row, context);
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
       && finalizedActualAttempt
       && arbitraryColdIntake
@@ -23278,7 +23392,8 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       && Boolean(sourceContentIdentityHash)
       && templateAccepted
       && (!requireLargeSourceTree || largeSourceTree)
-      && !forbiddenAuthority;
+      && !forbiddenAuthority
+      && freshness.accepted === true;
   });
 }
 
@@ -23512,7 +23627,9 @@ function randomColdPathDistinctSourceContentOnlyIdentityHashList(rows) {
   )))].sort();
 }
 
-function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true } = {}) {
+function randomColdPathBroadReadinessPredicate(options = {}) {
+  const { requireLargeSourceTree = true, ...context } = options;
+  const freshnessPolicy = randomColdPathFreshnessPolicy(context);
   const predicate = {
     schemaVersion: RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
     schema_version: RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION,
@@ -23579,6 +23696,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
       'cold_path_complete_actual_attempt',
+      'collector_mtime_current_for_matrix_when_freshness_policy_enforced',
       'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
@@ -23603,10 +23721,15 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
       'cold_path_complete_actual_attempt',
+      'collector_mtime_current_for_matrix_when_freshness_policy_enforced',
       'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
     ],
+    freshnessPolicy,
+    freshness_policy: freshnessPolicy,
+    freshnessRequiredWhenPolicyEnforced: true,
+    freshness_required_when_policy_enforced: true,
     largeSourceTreeRequired: requireLargeSourceTree === true,
     large_source_tree_required: requireLargeSourceTree === true,
     distinctSourceIdentitiesRequired: true,
@@ -23665,19 +23788,22 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
   };
 }
 
-function computeBroadLibraryAgnosticProof(rows) {
+function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
   const refusalRowsForReadiness = rows.filter((row) =>
     row.matrixOutcome === 'refusal_proven'
       && row.proofMode !== 'random_large_project_cold_path'
   );
-  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
+  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows, context);
   const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
     requireLargeSourceTree: false,
+    ...context,
   });
-  const randomColdPathSelectionPredicate = randomColdPathBroadReadinessPredicate();
+  const randomColdPathSelectionPredicate = randomColdPathBroadReadinessPredicate(context);
   const randomColdPathCandidateSelectionPredicate =
-    randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false });
+    randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false, ...context });
+  const randomColdPathFreshnessGaps =
+    randomColdPathBroadReadinessFreshnessGaps(rows, context);
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
   const sourceFirstVisualSelectionPredicate = sourceFirstVisualBroadReadinessPredicate();
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
@@ -23732,7 +23858,9 @@ function computeBroadLibraryAgnosticProof(rows) {
         >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
       ? null
       : randomColdPathCandidateRows.length === 0
-        ? 'broad_acceptance_requires_random_large_project_cold_path'
+        ? randomColdPathFreshnessGaps.length > 0
+          ? 'broad_acceptance_requires_fresh_random_large_project_cold_path'
+          : 'broad_acceptance_requires_random_large_project_cold_path'
         : randomColdPathRows.length === 0
           ? 'broad_acceptance_requires_large_random_project_cold_paths'
           : randomColdPathDistinctSourceIdentityHashes.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
@@ -23802,6 +23930,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathSelectionPredicateHash: randomColdPathSelectionPredicate.predicateHash,
     randomColdPathCandidateSelectionPredicateHash:
       randomColdPathCandidateSelectionPredicate.predicateHash,
+    randomColdPathFreshnessPolicy: randomColdPathSelectionPredicate.freshnessPolicy,
+    random_cold_path_freshness_policy: randomColdPathSelectionPredicate.freshnessPolicy,
+    randomColdPathFreshnessGaps,
+    random_cold_path_freshness_gaps: randomColdPathFreshnessGaps,
     randomColdPathFileCountThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT,
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     randomColdPathSourceRelevantFileCountThreshold:
@@ -23908,6 +24040,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     random_cold_path_selection_predicate: randomColdPathSelectionPredicate,
     randomColdPathCandidateSelectionPredicate,
     random_cold_path_candidate_selection_predicate: randomColdPathCandidateSelectionPredicate,
+    randomColdPathFreshnessPolicy: randomColdPathSelectionPredicate.freshnessPolicy,
+    random_cold_path_freshness_policy: randomColdPathSelectionPredicate.freshnessPolicy,
+    randomColdPathFreshnessGaps,
+    random_cold_path_freshness_gaps: randomColdPathFreshnessGaps,
     randomColdPathSelectionTargetNameIndependent:
       randomColdPathSelectionPredicate.targetNameIndependent === true,
     random_cold_path_selection_target_name_independent:
@@ -24006,9 +24142,10 @@ function broadLibraryAgnosticReadiness(
     row.matrixOutcome === 'refusal_proven'
       && row.proofMode !== 'random_large_project_cold_path'
   );
-  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows);
+  const randomColdPathRows = randomColdPathRowsForBroadReadiness(rows, context);
   const randomColdPathCandidateRows = randomColdPathRowsForBroadReadiness(rows, {
     requireLargeSourceTree: false,
+    ...context,
   });
   const sourceFirstVisualRows = sourceFirstVisualRowsForBroadReadiness(rows);
   const backends = compactStringList(fullRuntimeRows.map((row) => row.backend));
@@ -24047,6 +24184,12 @@ function broadLibraryAgnosticReadiness(
   const attemptFreshness = broadReadinessAttemptFreshness(
     context.attemptHistory ?? context.attempt_history,
   );
+  const randomColdPathFreshnessGaps =
+    compactStringList(
+      broadProof.randomColdPathFreshnessGaps
+      ?? broadProof.random_cold_path_freshness_gaps
+      ?? randomColdPathBroadReadinessFreshnessGaps(rows, context),
+    );
   const openGaps = compactStringList([
     matrixGeneralizationAccepted
       ? null
@@ -24087,6 +24230,10 @@ function broadLibraryAgnosticReadiness(
       attemptFreshness.latestAttemptUnselectedBlocksReadiness,
     latest_attempt_unselected_blocks_readiness:
       attemptFreshness.latestAttemptUnselectedBlocksReadiness,
+    randomColdPathFreshnessPolicy: randomColdPathFreshnessPolicy(context),
+    random_cold_path_freshness_policy: randomColdPathFreshnessPolicy(context),
+    randomColdPathFreshnessGaps,
+    random_cold_path_freshness_gaps: randomColdPathFreshnessGaps,
     matrixGeneralizationRuntimeRows,
     matrix_generalization_runtime_rows: matrixGeneralizationRuntimeRows,
     scopedRuntimeRows: scopedRuntimeRows.length,
@@ -24194,7 +24341,7 @@ function coverageSummary(rows, context = {}) {
     byBackend[row.backend] = (byBackend[row.backend] ?? 0) + 1;
   }
   const fullRuntimeRows = rows.filter(acceptedFullRuntimeRow);
-  const broadProof = computeBroadLibraryAgnosticProof(rows);
+  const broadProof = computeBroadLibraryAgnosticProof(rows, context);
   const broadRuntimeRows = fullRuntimeRows.filter((row) => rowIsBroadFullRuntime(row, broadProof));
   const scopedRuntimeRows = scopedFullRuntimePartitionRows(fullRuntimeRows, broadProof);
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
@@ -24230,7 +24377,7 @@ function coverageSummary(rows, context = {}) {
     unprovenRows: unprovenRows.length,
     unprovenTargets: compactStringList(unprovenRows.map((row) => row.targetId)),
     broadLibraryAgnosticReadiness: broadLibraryAgnosticReadiness(rows, broadProof, context),
-    planCoverage: planCoverage(rows),
+    planCoverage: planCoverage(rows, context),
   };
 }
 
@@ -25217,7 +25364,7 @@ function realRocmRepositoryTargetCoverage(rows) {
     });
 }
 
-function planCoverage(rows) {
+function planCoverage(rows, context = {}) {
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
     && row.proofMode !== 'hip_module_runtime_readback'
@@ -25274,10 +25421,13 @@ function planCoverage(rows) {
     row.proofMode === 'random_large_project_cold_path'
   );
   const randomColdRows = [...randomColdRefusalRows, ...randomColdPreflightRows];
-  const qualifyingRandomColdRows = randomColdPathRowsForBroadReadiness(rows);
+  const qualifyingRandomColdRows = randomColdPathRowsForBroadReadiness(rows, context);
   const candidateRandomColdRows = randomColdPathRowsForBroadReadiness(rows, {
     requireLargeSourceTree: false,
+    ...context,
   });
+  const randomColdFreshnessGaps =
+    randomColdPathBroadReadinessFreshnessGaps(randomColdRows, context);
   const qualifyingRandomColdDistinctSourceIdentities =
     randomColdPathDistinctSourceIdentityHashList(qualifyingRandomColdRows);
   const candidateRandomColdDistinctSourceIdentities =
@@ -25344,7 +25494,10 @@ function planCoverage(rows) {
           ]
           : randomColdRows.length > 0
             ? [
-              'qualifying_direct_random_large_project_cold_path_required',
+              ...(randomColdFreshnessGaps.length > 0
+                ? ['fresh_random_large_project_cold_path_required']
+                : ['qualifying_direct_random_large_project_cold_path_required']),
+              ...randomColdFreshnessGaps,
               ...compactStringList(randomColdRows.flatMap((row) => row.openGaps)),
             ]
             : ['random_large_project_cold_path_required'],
@@ -25360,6 +25513,8 @@ function planCoverage(rows) {
       candidate_distinct_source_identity_count: candidateRandomColdDistinctSourceIdentities.length,
       candidateDistinctSourceIdentityHashes: candidateRandomColdDistinctSourceIdentities,
       candidate_distinct_source_identity_hashes: candidateRandomColdDistinctSourceIdentities,
+      freshnessGaps: randomColdFreshnessGaps,
+      freshness_gaps: randomColdFreshnessGaps,
       refusalRowCount: randomColdRefusalRows.length,
       refusal_row_count: randomColdRefusalRows.length,
       preflightRowCount: randomColdPreflightRows.length,
@@ -25486,8 +25641,16 @@ function planCoverage(rows) {
 
 export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const generatedAt = firstText(ledger.generatedAt, ledger.generated_at);
+  const randomColdPathFreshnessContext = {
+    generatedAt,
+    generated_at: generatedAt,
+    enforceRandomColdPathFreshness: Boolean(generatedAt),
+    enforce_random_cold_path_freshness: Boolean(generatedAt),
+  };
   const preliminaryRows = rows.map((row) => rowWithEvaluatedSafety(row));
-  const preliminaryBroadProof = computeBroadLibraryAgnosticProof(preliminaryRows);
+  const preliminaryBroadProof =
+    computeBroadLibraryAgnosticProof(preliminaryRows, randomColdPathFreshnessContext);
   const evaluatedRows = rows.map((row) =>
     rowWithEvaluatedSafety(row, { broadProof: preliminaryBroadProof })
   );
@@ -25547,6 +25710,7 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   const suppliedAttemptHistory = compactObject(ledger.attemptHistory ?? ledger.attempt_history);
   const recomputedSummary = coverageSummary(summaryRows, {
     attemptHistory: suppliedAttemptHistory,
+    ...randomColdPathFreshnessContext,
   });
   if (Object.keys(suppliedSummary).length > 0) {
     const suppliedRowDerivedSummary = rowDerivedSummaryFields(suppliedSummary);
@@ -25586,6 +25750,18 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
 }
 
 export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
+  const enforceRandomColdPathFreshness =
+    firstBool(
+      options.enforceRandomColdPathFreshness,
+      options.enforce_random_cold_path_freshness,
+    ) !== false;
+  const randomColdPathFreshnessContext = {
+    generatedAt,
+    generated_at: generatedAt,
+    enforceRandomColdPathFreshness,
+    enforce_random_cold_path_freshness: enforceRandomColdPathFreshness,
+  };
   const includeSafetyInvalidatedRows =
     options.includeInvalidated === true || options.includeUnproven === true;
   const preliminaryRows = rows.map((row) => rowWithEvaluatedSafety(row));
@@ -25598,7 +25774,8 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
   const preliminaryIncludedRows = options.includeUnproven === true
     ? preliminarySafetyAcceptedRows
     : preliminarySafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
-  const preliminaryBroadProof = computeBroadLibraryAgnosticProof(preliminaryIncludedRows);
+  const preliminaryBroadProof =
+    computeBroadLibraryAgnosticProof(preliminaryIncludedRows, randomColdPathFreshnessContext);
   const safetyEvaluatedRows = rows.map((row) =>
     rowWithEvaluatedSafety(row, { broadProof: preliminaryBroadProof })
   );
@@ -25616,7 +25793,7 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
   });
   includedRows.sort((a, b) => rowKey(a).localeCompare(rowKey(b)));
   const summary = {
-    ...coverageSummary(includedRows, { attemptHistory }),
+    ...coverageSummary(includedRows, { attemptHistory, ...randomColdPathFreshnessContext }),
     includeInvalidated: options.includeInvalidated === true,
     omittedInvalidatedRows,
     omitted_invalidated_rows: omittedInvalidatedRows,
@@ -25626,7 +25803,7 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
   };
   const seed = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
-    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    generatedAt,
     latestPerTarget: options.latestPerTarget !== false,
     includeInvalidated: options.includeInvalidated === true,
     includeUnproven: options.includeUnproven === true,

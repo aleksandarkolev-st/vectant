@@ -2043,7 +2043,6 @@ const randomColdLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [randomColdPathDir],
-  generatedAt: '2026-06-30T21:00:00.000Z',
   includeUnproven: true,
 });
 const randomColdRow = randomColdLedger.rows.find(
@@ -2142,7 +2141,6 @@ const multiRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [multiRandomColdPathDir],
-  generatedAt: '2026-06-30T21:01:00.000Z',
 });
 const multiRandomColdRows = multiRandomColdLedger.rows.filter(
   (row) => row.proofMode === 'random_large_project_cold_path',
@@ -2170,7 +2168,6 @@ const multiRandomColdAuditLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [multiRandomColdPathDir],
-  generatedAt: '2026-06-30T21:01:00.000Z',
   includeInvalidated: true,
 });
 const multiRandomColdAuditRows = multiRandomColdAuditLedger.rows.filter(
@@ -2233,7 +2230,6 @@ const forgedBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [forgedCandidateBackendDir],
-  generatedAt: '2026-06-30T21:00:00.500Z',
   includeUnproven: true,
 });
 const forgedBackendColdRow = forgedBackendColdLedger.rows.find(
@@ -2273,7 +2269,6 @@ const forgedRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [forgedRandomColdPathDir],
-  generatedAt: '2026-06-30T21:00:01.000Z',
   includeUnproven: true,
 });
 const forgedRandomColdRow = forgedRandomColdLedger.rows.find(
@@ -8609,6 +8604,8 @@ function randomColdReadinessMatrixRow({
   eventType = 'cold_path_complete',
   dryRun = false,
   actualAttempt = eventType === 'cold_path_complete' && dryRun !== true,
+  updatedAt = '2026-06-30T21:00:00.000Z',
+  artifactPath = `random-cold-readiness/${targetId}.json`,
 } = {}) {
   const sourceContentSeed = {
     sourceUrl: sourceUrl ?? null,
@@ -8674,6 +8671,10 @@ function randomColdReadinessMatrixRow({
     backend: 'webgpu',
     targetId,
     target_id: targetId,
+    artifactPath,
+    artifact_path: artifactPath,
+    updatedAt,
+    updated_at: updatedAt,
     profileId: profileMode,
     profile_id: profileMode,
     profileMode,
@@ -10681,11 +10682,103 @@ const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   ...broadReadinessRandomColdRows,
 ];
+const broadReadinessFreshRandomColdLedger = buildGpuHmrValidationMatrixLedger(
+  broadReadinessRowsWithRandomCold,
+  { generatedAt: '2026-06-30T21:05:00.000Z' },
+);
+assert.equal(broadReadinessFreshRandomColdLedger.query.accepted, true);
+assert.equal(
+  broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.accepted,
+  true,
+);
+assert.equal(
+  broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathFreshnessPolicy.enforced,
+  true,
+);
+assert.equal(
+  broadReadinessFreshRandomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  5,
+);
+const staleRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `stale-random-cold-current-run-${index + 1}`,
+    sourceUrl: `https://example.invalid/stale-current-run/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`stale-random-cold-current-run-${index + 1}`).slice(0, 40),
+    updatedAt: '2026-06-01T00:00:00.000Z',
+    artifactPath: `historical-default-root/random-cold-${index + 1}.json`,
+  })
+);
+const broadReadinessWithStaleRandomColdLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRows,
+  ...staleRandomColdRows,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithStaleRandomColdLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithStaleRandomColdLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithStaleRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithStaleRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithStaleRandomColdLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_fresh_random_large_project_cold_path'),
+);
+assert.ok(
+  broadReadinessWithStaleRandomColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathFreshnessGaps
+    .includes('random_cold_path_freshness_row_too_old_for_current_matrix'),
+);
+const staleRandomColdCoverage = new Map(
+  broadReadinessWithStaleRandomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  staleRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.ok(
+  staleRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.freshnessGaps
+    .includes('random_cold_path_freshness_row_too_old_for_current_matrix'),
+);
+const broadReadinessWithMixedFreshStaleColdLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRows,
+  ...broadReadinessRandomColdRows.slice(0, 2),
+  ...staleRandomColdRows.slice(0, 3),
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithMixedFreshStaleColdLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithMixedFreshStaleColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  2,
+);
+assert.equal(
+  broadReadinessWithMixedFreshStaleColdLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.ok(
+  broadReadinessWithMixedFreshStaleColdLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_more_random_large_project_cold_paths'),
+);
 const broadReadinessWithStaleUnsafeRowsLedger = buildGpuHmrValidationMatrixLedger([
   ...broadReadinessRowsWithRandomCold,
   staleUnsafeAcceptedRow,
   staleUnsafeRandomColdRow,
-]);
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
 assert.equal(broadReadinessWithStaleUnsafeRowsLedger.query.accepted, true);
 assert.equal(broadReadinessWithStaleUnsafeRowsLedger.summary.omittedInvalidatedRows, 2);
 assert.equal(broadReadinessWithStaleUnsafeRowsLedger.summary.omitted_invalidated_rows, 2);
@@ -10727,7 +10820,9 @@ const newerWeakBroadReadinessAttempt = {
 const broadReadinessWithNewerWeakAttemptLedger = buildGpuHmrValidationMatrixLedger([
   ...broadReadinessRowsWithNewerWeakAttempt,
   newerWeakBroadReadinessAttempt,
-]);
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
 assert.equal(broadReadinessWithNewerWeakAttemptLedger.query.accepted, true);
 assert.equal(
   broadReadinessWithNewerWeakAttemptLedger.attemptHistory.latestUnselectedAttemptWarning,
