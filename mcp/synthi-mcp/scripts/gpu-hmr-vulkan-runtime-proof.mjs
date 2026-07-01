@@ -1569,6 +1569,7 @@ function buildLedgerRecord({
   const afterOutput = traceValidation?.events?.afterOutput;
   const retirementEvent = traceValidation?.events?.retirementEvent;
   const dispatchId = firstText(afterDispatch?.id, 'vulkan-dispatch-epoch-2');
+  const outputTargetId = 'vulkan-frame-readback';
   const deterministicMode = deterministicVisualMode({ beforeHash: frames.beforeHash, afterHash: frames.afterHash });
   return {
     project_id: CFG.targetId,
@@ -1610,12 +1611,16 @@ function buildLedgerRecord({
       command_buffer: 'VkCommandBuffer:epoch-2',
       pipeline: 'VkPipeline:epoch-2',
       command: 'vkCmdDispatch',
+      output_target_id: outputTargetId,
+      outputTargetId,
     },
     output_event: {
       id: firstText(afterOutput?.id, 'vulkan-frame-output-epoch-2'),
       kind: 'visual_frame_readback',
       passed: true,
       after_dispatch_id: firstText(afterOutput?.after_dispatch_id, afterOutput?.afterDispatchId, dispatchId),
+      output_target_id: outputTargetId,
+      outputTargetId,
       artifact_hash: afterHash,
       epoch: '2',
       timestamp_monotonic_ns: timestampNs(afterOutput) ?? timings.outputTimestampNs,

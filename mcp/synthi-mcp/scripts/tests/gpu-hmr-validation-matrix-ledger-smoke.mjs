@@ -742,15 +742,22 @@ function deterministicMode(scope) {
 }
 
 function visualOracleArtifacts(scope, visualRoot = visualDir) {
+  const beforePath = path.join(visualRoot, 'before-hmr-first.png');
+  const afterPath = path.join(visualRoot, 'after-hmr-first.png');
+  const diffPath = path.join(visualRoot, 'before-after-diff.png');
+  const existingMaterializedPngHashOrFallback = (filePath, fallbackSeed) =>
+    fsSync.existsSync(filePath) && fsSync.statSync(filePath).size > PNG_HEADER.length
+      ? fileHashForPath(filePath)
+      : hashValue(fallbackSeed);
   return {
-    before_image: path.join(visualRoot, 'before-hmr-first.png'),
-    before_image_hash: hashValue(`before-image:${scope}`),
+    before_image: beforePath,
+    before_image_hash: existingMaterializedPngHashOrFallback(beforePath, `before-image:${scope}`),
     before_image_hash_verified: true,
-    after_image: path.join(visualRoot, 'after-hmr-first.png'),
-    after_image_hash: hashValue(`after-image:${scope}`),
+    after_image: afterPath,
+    after_image_hash: existingMaterializedPngHashOrFallback(afterPath, `after-image:${scope}`),
     after_image_hash_verified: true,
-    diff_image: path.join(visualRoot, 'before-after-diff.png'),
-    diff_image_hash: hashValue(`diff-image:${scope}`),
+    diff_image: diffPath,
+    diff_image_hash: existingMaterializedPngHashOrFallback(diffPath, `diff-image:${scope}`),
     diff_image_hash_verified: true,
     blank_frame_rejection: true,
     same_frame_rejection: true,
@@ -1994,7 +2001,7 @@ assert.ok(forgedRandomColdLedger.query.failedGates.some(
 ));
 
 const visualDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow');
-await writeRgbaPng(path.join(visualDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(visualDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(visualDir, 'after-hmr-first.png'), 8, 8, (x, y) => [16 + x, 24 + y, 48, 255]);
 await writeRgbaPng(path.join(visualDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(visualDir, 'agent-split-results.json'), [
@@ -3219,7 +3226,7 @@ const visualDimensionMismatchDir = path.join(
 const visualDimensionMismatchBefore = path.join(visualDimensionMismatchDir, 'before-hmr-first.png');
 const visualDimensionMismatchAfter = path.join(visualDimensionMismatchDir, 'after-hmr-first.png');
 const visualDimensionMismatchDiff = path.join(visualDimensionMismatchDir, 'before-after-diff.png');
-await writeRgbaPng(visualDimensionMismatchBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(visualDimensionMismatchBefore, 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(visualDimensionMismatchAfter, 16, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
 await writeRgbaPng(visualDimensionMismatchDiff, 16, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(visualDimensionMismatchDir, 'run-mode-visual-dimension-mismatch.json'), {
@@ -6821,7 +6828,7 @@ await writeJson(path.join(artifactsRoot, 'webgpu-runtime-visual-proof', 'forged-
 });
 
 const forgedWebGpuVisualDir = path.join(artifactsRoot, 'webgpu-runtime-visual-proof');
-await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-after.png'), 8, 8, (x, y) => [32 + x, 48 + y, 64, 255]);
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeRgbaPng(path.join(forgedWebGpuVisualDir, 'forged-single-screenshot.png'), 8, 8, (x, y) => [
@@ -6931,7 +6938,7 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-hash-mismatch-pr
 });
 
 const outsideVisualDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpu-hmr-outside-visual-'));
-await writeRgbaPng(path.join(outsideVisualDir, 'outside-before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(outsideVisualDir, 'outside-before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(outsideVisualDir, 'outside-after.png'), 8, 8, (x, y) => [40 + x, 56 + y, 72, 255]);
 await writeRgbaPng(path.join(outsideVisualDir, 'outside-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-path-escape-proof.json'), {
@@ -7071,7 +7078,7 @@ const hiprtDir = path.join(artifactsRoot, 'hiprt-light-math-warm-proof');
 const hiprtAcceptedBefore = path.join(hiprtDir, 'accepted-before.png');
 const hiprtAcceptedAfter = path.join(hiprtDir, 'accepted-after.png');
 const hiprtAcceptedDiff = path.join(hiprtDir, 'accepted-diff.png');
-await writeRgbaPng(hiprtAcceptedBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(hiprtAcceptedBefore, 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(hiprtAcceptedAfter, 8, 8, (x, y) => [24 + x, 32 + y, 48 + x + y, 255]);
 await writeRgbaPng(hiprtAcceptedDiff, 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProofArtifact({
@@ -7244,6 +7251,37 @@ await writeJson(path.join(truncatedVisualDir, 'hot1.json'), {
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:truncated-visual-hot1',
     editHash: hashValue('truncated-visual-hot1'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+
+const blankBeforeVisualDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-blank-before-visual');
+await writeRgbaPng(path.join(blankBeforeVisualDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(blankBeforeVisualDir, 'after-hmr-first.png'), 8, 8, (x, y) => [32 + x, 48 + y, 96, 255]);
+await writeRgbaPng(path.join(blankBeforeVisualDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(blankBeforeVisualDir, 'hot1.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:blank-before-visual-hot1', 'gpu-runtime-proof:sha256:blank-before-visual-hot1'),
+  ...runtimeProofMaterials('hot_delta_1', {
+    projectId: 'blank-before-visual',
+    visualRoot: blankBeforeVisualDir,
+  }),
+  targetId: 'blank-before-visual',
+  profileId: 'blank-before-visual',
+  proofId: 'agent-split-run-mode-proof:sha256:blank-before-visual-hot1',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: visualArtifactSet({
+    before: path.join(blankBeforeVisualDir, 'before-hmr-first.png'),
+    after: path.join(blankBeforeVisualDir, 'after-hmr-first.png'),
+    diff: path.join(blankBeforeVisualDir, 'before-after-diff.png'),
+  }),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:blank-before-visual-hot1',
+    editHash: hashValue('blank-before-visual-hot1'),
     editKind: 'gpu_artifact_edit',
   },
 });
@@ -11495,6 +11533,16 @@ assert.equal(truncatedVisual.visual.decodedImageCount, 0);
 assert.ok(truncatedVisual.visual.images.every((image) => image.decodeError?.startsWith('png_decode_failed')));
 assert.ok(truncatedVisual.reasons.includes('visual_artifacts_not_readable'));
 
+const blankBeforeVisual = ledger.rows.find((row) => row.targetId === 'blank-before-visual');
+assert.equal(blankBeforeVisual?.matrixOutcome, 'unproven');
+assert.equal(blankBeforeVisual.acceptedForGpuHmr, false);
+assert.equal(blankBeforeVisual.visual.recomputedVisualPair.accepted, false);
+assert.ok(blankBeforeVisual.visual.recomputedVisualPair.failedGates.some((gate) =>
+  gate.code === 'visual_pair_blank_before_frame'
+));
+assert.ok(blankBeforeVisual.visual.failedGates.includes('visual_pair_pixel_recompute_not_accepted'));
+assert.ok(blankBeforeVisual.reasons.includes('visual_artifacts_not_readable'));
+
 const noVisualOptOut = ledger.rows.find((row) => row.targetId === 'no-visual-optout');
 assert.equal(noVisualOptOut?.matrixOutcome, 'unproven');
 assert.equal(noVisualOptOut.acceptedForGpuHmr, false);
@@ -12577,7 +12625,7 @@ const reverseArtifactNamespaceDir = path.join(
   'agent-split-artifacts',
   'synthetic-artifact-namespace-reverse',
 );
-await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'after-hmr-first.png'), 8, 8, (x, y) => [92 + x, 104 + y, 132, 255]);
 await writeRgbaPng(path.join(reverseArtifactNamespaceDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const reverseArtifactNamespaceMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -12667,7 +12715,7 @@ const mismatchedArtifactNamespaceDir = path.join(
   'agent-split-artifacts',
   'synthetic-artifact-namespace-mismatch',
 );
-await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'after-hmr-first.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
 await writeRgbaPng(path.join(mismatchedArtifactNamespaceDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const mismatchedArtifactNamespaceMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -12755,7 +12803,7 @@ assert.ok(mismatchedArtifactNamespaceTarget?.openGaps.includes(
 ));
 
 const spoofNamedFlowDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-name-only-profile');
-await writeRgbaPng(path.join(spoofNamedFlowDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(spoofNamedFlowDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(spoofNamedFlowDir, 'after.png'), 8, 8, (x, y) => [80 + x, 92 + y, 120, 255]);
 await writeRgbaPng(path.join(spoofNamedFlowDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(spoofNamedFlowDir, 'hot1-name-only.json'), {
@@ -12796,7 +12844,7 @@ assert.equal(spoofNamedFlowRuntime.validationProfileEvidence.accepted, false);
 assert.equal(spoofNamedFlowCoverage.get('flow_visual_gpu_path'), undefined);
 
 const forgedAcceptedProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-non-flow-forged-profile');
-await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'after.png'), 8, 8, (x, y) => [88 + x, 96 + y, 132, 255]);
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const forgedAcceptedProfileMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -12863,7 +12911,7 @@ assert.ok(forgedAcceptedProfileRuntime.validationProfileEvidence.failedGates.inc
 assert.equal(forgedAcceptedProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
 const substringOnlyProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-substring-only-profile');
-await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'after.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const substringOnlyProfileMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -12929,7 +12977,7 @@ const explicitContractSourceProfileDir = path.join(
   'agent-split-artifacts',
   'synthetic-flow-explicit-contract-source-profile',
 );
-await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'after.png'), 8, 8, (x, y) => [104 + x, 124 + y, 148, 255]);
 await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const explicitContractSourceProfileMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -12995,7 +13043,7 @@ assert.ok(explicitContractSourceProfileRuntime.validationProfileEvidence.failedG
 assert.equal(explicitContractSourceProfileCoverage.get('flow_visual_gpu_path'), undefined);
 
 const hashBoundProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-hash-bound-profile');
-await writeRgbaPng(path.join(hashBoundProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(hashBoundProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'after.png'), 8, 8, (x, y) => [112 + x, 132 + y, 156, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const boundProfileHash = hashValue('flow-profile-hash-bound');
@@ -13074,7 +13122,7 @@ const unboundSceneManifestProfileDir = path.join(
   'agent-split-artifacts',
   'synthetic-flow-unbound-scene-manifest-profile',
 );
-await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'after.png'), 8, 8, (x, y) => [118 + x, 130 + y, 172, 255]);
 await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const unboundSceneManifestMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -13138,7 +13186,7 @@ const mismatchedSourceHashProfileDir = path.join(
   'agent-split-artifacts',
   'synthetic-flow-source-hash-mismatch-profile',
 );
-await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'after.png'), 8, 8, (x, y) => [120 + x, 140 + y, 164, 255]);
 await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const mismatchedSourceHashMaterials = runtimeProofMaterials('hot_delta_1', {
@@ -13203,7 +13251,7 @@ assert.ok(mismatchedSourceHashRuntime.validationProfileEvidence.failedGates.incl
 ));
 
 const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic-flow-duplicate-hot2');
-await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(duplicateHot2Dir, 'after.png'), 8, 8, (x, y) => [64 + x, 72 + y, 96, 255]);
 await writeRgbaPng(path.join(duplicateHot2Dir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
@@ -13277,7 +13325,7 @@ assert.equal(fissionRow.proofChainAccepted, true);
 assert.equal(fissionRow.acceptanceClass, 'smallest_safe_per_kernel_fission');
 
 const acceptedRealRocmDir = path.join(logsRoot, 'real-rocm-accepted-lib');
-await writeRgbaPng(path.join(acceptedRealRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(acceptedRealRocmDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(acceptedRealRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [80 + x, 96 + y, 128, 255]);
 await writeRgbaPng(path.join(acceptedRealRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(acceptedRealRocmDir, 'real-rocm-accepted.json'), {
@@ -13540,7 +13588,7 @@ async function writeForgedRealRocmAcceptanceGateCase({
   expectedOpenGaps = [],
 }) {
   const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);
-  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
   await writeRgbaPng(path.join(dir, 'after-hmr-first.png'), 8, 8, (x, y) => [84 + x, 100 + y, 132, 255]);
   await writeRgbaPng(path.join(dir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
   const materials = realRocmRuntimeProofMaterials('hot_delta_1', {
@@ -13715,7 +13763,7 @@ assert.equal(forgedMissingSidecarRocm.realRocmSidecarRuntimeConsistencyGate.acce
 
 async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) {
   const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);
-  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
   await writeRgbaPng(path.join(dir, 'after-hmr-first.png'), 8, 8, (x, y) => [90 + x, 104 + y, 140, 255]);
   await writeRgbaPng(path.join(dir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
   const materials = realRocmRuntimeProofMaterials('hot_delta_1', {
@@ -13834,7 +13882,7 @@ const forgedRestartFirewall = await writeForgedRealRocmFirewallCase({
 assert.equal(forgedRestartFirewall.processRestarted, true);
 
 const forgedOldArtifactRocmDir = path.join(logsRoot, 'real-rocm-forged-old-artifact-dispatch');
-await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [94 + x, 106 + y, 144, 255]);
 await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 const forgedOldArtifactMaterials = realRocmRuntimeProofMaterials('hot_delta_1', {
@@ -13923,7 +13971,7 @@ assert.ok(forgedOldArtifact.reasons.includes('dispatch_artifact_hash_mismatch'))
 assert.ok(forgedOldArtifact.openGaps.includes('proof_ledger_success_required'));
 
 const forgedSidecarMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-sidecar-mismatch');
-await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [88 + x, 100 + y, 136, 255]);
 await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(forgedSidecarMismatchRocmDir, 'real-rocm-forged-sidecar-mismatch.json'), {
@@ -14066,7 +14114,7 @@ assert.ok(forgedSidecarMismatch.openGaps.includes(
 ));
 
 const forgedRequiredHookRocmDir = path.join(logsRoot, 'real-rocm-forged-required-hook');
-await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [90 + x, 112 + y, 140, 255]);
 await writeRgbaPng(path.join(forgedRequiredHookRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-hook.json'), {
@@ -14226,7 +14274,7 @@ assert.ok(forgedRequiredHookRocm.openGaps.includes(
 ));
 
 const forgedMissingHookFacetRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-hook-facet');
-await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [32 + x, 96 + y, 180, 255]);
 await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
 await writeJson(path.join(forgedMissingHookFacetRocmDir, 'real-rocm-forged-missing-hook-facet.json'), {
@@ -16849,7 +16897,13 @@ assert.ok(forgedRuntimeChainMismatchRocm.reasons.includes(
 ));
 assert.ok(forgedRuntimeChainMismatchRocm.openGaps.includes('real_rocm_runtime_chain_required'));
 
-async function writeForgedRuntimeChainCase({ slug, mutateRecord, expectedReason }) {
+async function writeForgedRuntimeChainCase({
+  slug,
+  mutateRecord,
+  expectedReason,
+  expectedOutputOracleAccepted = true,
+  expectedOutputOracleFailedGates = [],
+}) {
   const dir = path.join(logsRoot, `real-rocm-forged-runtime-chain-${slug}`);
   const scope = `forged-runtime-chain-${slug}`;
   const materials = realRocmComputeProofLedgerMaterials(scope, {
@@ -16932,7 +16986,12 @@ async function writeForgedRuntimeChainCase({ slug, mutateRecord, expectedReason 
   assert.equal(row.acceptedForGpuHmr, false);
   assert.equal(row.runtimeProofArtifact.accepted, true);
   assert.equal(row.ledger.gpuHmrSuccess, true);
-  assert.equal(row.outputOracleFacet.accepted, true);
+  assert.equal(row.outputOracleFacet.accepted, expectedOutputOracleAccepted);
+  const outputOracleFailedGateCodes = (row.outputOracleFacet.failedGates ?? [])
+    .map((gate) => gate?.code ?? gate);
+  for (const expectedGate of expectedOutputOracleFailedGates) {
+    assert.ok(outputOracleFailedGateCodes.includes(expectedGate));
+  }
   assert.equal(row.outputOracleResolutionGate.accepted, true);
   assert.equal(row.realRocmRuntimeChain.accepted, false);
   assert.ok(row.reasons.includes(expectedReason));
@@ -16965,6 +17024,11 @@ await writeForgedRuntimeChainCase({
 await writeForgedRuntimeChainCase({
   slug: 'missing-output-target',
   expectedReason: 'real_rocm_runtime_chain_output_target_missing',
+  expectedOutputOracleAccepted: false,
+  expectedOutputOracleFailedGates: [
+    'output_oracle_binding_oracle_target_missing',
+    'output_oracle_binding_target_mismatch',
+  ],
   mutateRecord(record) {
     if (record.outputEvent) delete record.outputEvent.output_target_id;
     if (record.output_event) delete record.output_event.output_target_id;
@@ -20197,7 +20261,7 @@ const forgedVisualPriorAfter = path.join(forgedVisualPriorRocmDir, 'prior-after.
 const forgedVisualPriorDiff = path.join(forgedVisualPriorRocmDir, 'prior-diff.png');
 const forgedVisualPriorReadback = path.join(forgedVisualPriorRocmDir, 'readback.bin');
 const forgedVisualPriorBytes = Buffer.from([7, 14, 21, 28, 35, 42, 49, 56]);
-await writeRgbaPng(forgedVisualPriorBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(forgedVisualPriorBefore, 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(forgedVisualPriorAfter, 8, 8, (x, y) => [72 + x, 88 + y, 120, 255]);
 await writeRgbaPng(forgedVisualPriorDiff, 8, 8, () => [255, 255, 255, 255]);
 await fs.writeFile(forgedVisualPriorReadback, forgedVisualPriorBytes);

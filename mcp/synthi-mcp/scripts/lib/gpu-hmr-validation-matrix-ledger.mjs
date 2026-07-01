@@ -3175,6 +3175,10 @@ async function recomputeVisualPairEvidence(images) {
       metrics.meanAbsDelta8bit ?? metrics.mean_abs_delta_8bit ?? metrics.meanAbs ?? metrics.mean_abs,
     );
     const visiblePixelCount = finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count);
+    const beforeFrame = await recomputeSingleVisualFrameEvidence([before]);
+    const beforeVisiblePixelCount = finiteNumber(
+      beforeFrame.visiblePixelCount ?? beforeFrame.visible_pixel_count,
+    );
     let diffVisiblePixelCount = null;
     if (diff?.decoded) {
       const diffFrame = await recomputeSingleVisualFrameEvidence([diff]);
@@ -3183,6 +3187,7 @@ async function recomputeVisualPairEvidence(images) {
     const accepted =
       Number(changedPixelRatio) > 0
       && Number(meanAbsDelta8bit) > 0
+      && Number(beforeVisiblePixelCount) > 0
       && Number(visiblePixelCount) > 0
       && (diff ? Number(diffVisiblePixelCount) > 0 : true);
     return {
@@ -3200,6 +3205,8 @@ async function recomputeVisualPairEvidence(images) {
       changed_pixel_ratio: changedPixelRatio,
       meanAbsDelta8bit,
       mean_abs_delta_8bit: meanAbsDelta8bit,
+      beforeVisiblePixelCount,
+      before_visible_pixel_count: beforeVisiblePixelCount,
       visiblePixelCount,
       visible_pixel_count: visiblePixelCount,
       diffVisiblePixelCount,
@@ -3207,6 +3214,7 @@ async function recomputeVisualPairEvidence(images) {
       failedGates: compactStringList([
         Number(changedPixelRatio) > 0 ? null : 'visual_pair_zero_pixel_delta',
         Number(meanAbsDelta8bit) > 0 ? null : 'visual_pair_zero_mean_delta',
+        Number(beforeVisiblePixelCount) > 0 ? null : 'visual_pair_blank_before_frame',
         Number(visiblePixelCount) > 0 ? null : 'visual_pair_blank_after_frame',
         diff && !(Number(diffVisiblePixelCount) > 0) ? 'visual_diff_frame_blank' : null,
       ]).map((code) => ({ code })),
@@ -14594,6 +14602,13 @@ async function vulkanRuntimeRow(json, filePath, context) {
     },
     runtimeVisualOracleEvidenceRequirements(),
   );
+  const outputOracleFacet = await ledgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
   const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
     json.deterministicVisualMode
     ?? json.deterministic_visual_mode
@@ -14689,6 +14704,7 @@ async function vulkanRuntimeRow(json, filePath, context) {
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0
     && visual.accepted === true
+    && outputOracleFacet.accepted === true
     && nativeVulkanApiAccepted
     && declaredScopeEvidence.accepted === true
     && negativeLayoutRefusalAccepted
@@ -14720,6 +14736,8 @@ async function vulkanRuntimeRow(json, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     sourceAdaptation,
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
@@ -14776,6 +14794,10 @@ async function vulkanRuntimeRow(json, filePath, context) {
       ledger.present === true ? null : 'proof_ledger_record_missing',
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
+      outputOracleFacet.kind === 'visual_oracle' && outputOracleFacet.accepted !== true
+        ? 'visual_oracle_artifacts_not_accepted'
+        : null,
       nativeVulkanApiAccepted ? null : 'native_vulkan_api_not_accepted',
       declaredScopeEvidence.accepted === true
         ? null
@@ -14787,12 +14809,18 @@ async function vulkanRuntimeRow(json, filePath, context) {
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       sourceAdaptation.sourceAdaptedProfile ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
+      ...outputOracleFacet.failedGates.map((failure) => failure.code),
       ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
       ...declaredScopeEvidence.failedGates,
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'vulkan_runtime_pipeline_visual_proof_not_accepted',
+      outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
+      outputOracleFacet.kind === 'visual_oracle' && outputOracleFacet.accepted !== true
+        ? 'visual_oracle_artifacts_not_accepted'
+        : null,
+      ...outputOracleFacet.failedGates.map((failure) => failure.code),
       ...declaredScopeEvidence.failedGates,
       ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
@@ -17594,6 +17622,76 @@ function ledgerRecordVisualOracleArtifacts(record) {
   );
 }
 
+function failedGateObjects(codes) {
+  return compactStringList(codes).map((code) => ({ code }));
+}
+
+function ledgerVisualOracleArtifactBindingEvidence(proofLedger, visual = {}) {
+  const visualRecords = ledgerRecordsFromValue(proofLedger).filter(ledgerRecordHasVisualOutput);
+  const actualHashesByRole = visualImageHashesByRole(visual);
+  const requiredRoles = ['before', 'after', 'diff'];
+  const records = visualRecords.map((record, index) => {
+    const artifacts = ledgerRecordVisualOracleArtifacts(record);
+    const expectedHashesByRole = declaredVisualArtifactHashesByRole(artifacts);
+    const missingDeclaredRoles = requiredRoles.filter((role) => !expectedHashesByRole.get(role));
+    const missingActualRoles = requiredRoles.filter((role) =>
+      expectedHashesByRole.get(role) && !actualHashesByRole.get(role)
+    );
+    const mismatchedRoles = requiredRoles.filter((role) => {
+      const expected = expectedHashesByRole.get(role);
+      const actual = actualHashesByRole.get(role);
+      return Boolean(expected) && Boolean(actual) && expected !== actual;
+    });
+    const accepted =
+      missingDeclaredRoles.length === 0
+      && missingActualRoles.length === 0
+      && mismatchedRoles.length === 0;
+    return {
+      index,
+      accepted,
+      expectedHashesByRole: Object.fromEntries(expectedHashesByRole),
+      expected_hashes_by_role: Object.fromEntries(expectedHashesByRole),
+      actualHashesByRole: Object.fromEntries(actualHashesByRole),
+      actual_hashes_by_role: Object.fromEntries(actualHashesByRole),
+      missingDeclaredRoles,
+      missing_declared_roles: missingDeclaredRoles,
+      missingActualRoles,
+      missing_actual_roles: missingActualRoles,
+      mismatchedRoles,
+      mismatched_roles: mismatchedRoles,
+    };
+  });
+  const failedGates = compactStringList([
+    visualRecords.length > 0 ? null : 'ledger_visual_oracle_record_missing',
+    records.length === visualRecords.length && records.length > 0
+      ? null
+      : 'ledger_visual_oracle_artifacts_missing',
+    records.every((record) => record.missingDeclaredRoles.length === 0)
+      ? null
+      : 'ledger_visual_oracle_artifact_hash_missing',
+    records.every((record) => record.missingActualRoles.length === 0)
+      ? null
+      : 'accepted_visual_artifact_hash_missing',
+    records.every((record) => record.mismatchedRoles.length === 0)
+      ? null
+      : 'ledger_visual_oracle_artifact_hash_mismatch',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.ledger_visual_oracle_artifact_binding.v1',
+    schema_version: 'synthi.gpu_hmr.ledger_visual_oracle_artifact_binding.v1',
+    accepted: failedGates.length === 0,
+    recordCount: visualRecords.length,
+    record_count: visualRecords.length,
+    requiredRoles,
+    required_roles: requiredRoles,
+    actualHashesByRole: Object.fromEntries(actualHashesByRole),
+    actual_hashes_by_role: Object.fromEntries(actualHashesByRole),
+    records,
+    failedGates: failedGateObjects(failedGates),
+    failed_gates: failedGateObjects(failedGates),
+  };
+}
+
 async function resolveComputeOracleArtifactPaths(artifacts, repoRoot, baseDir) {
   const out = { ...artifacts };
   const locators = computeArtifactCasLocators(artifacts);
@@ -17859,8 +17957,36 @@ async function realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, ba
   };
 }
 
-function ledgerOutputOracleBindingEvidence(proofLedger) {
+function runtimeChainOutputOracleBindingOverlay(runtimeChain) {
+  const chain = compactObject(runtimeChain);
+  if (chain.accepted !== true) return null;
+  const outputTargetId = firstText(chain.outputTargetId, chain.output_target_id);
+  if (!outputTargetId) return null;
+  const dispatchId = firstText(chain.dispatchId, chain.dispatch_id);
+  const afterDispatchId = firstText(
+    chain.afterDispatchId,
+    chain.after_dispatch_id,
+    chain.outputAfterDispatchId,
+    chain.output_after_dispatch_id,
+  );
+  return {
+    source: 'accepted_runtime_chain_overlay',
+    outputTargetId,
+    dispatchTargetId: outputTargetId,
+    oracleTargetId: outputTargetId,
+    dispatchId,
+    afterDispatchId,
+    evidenceRef: firstText(chain.proofId, chain.proof_id, chain.runtimeChainId, chain.runtime_chain_id),
+  };
+}
+
+function ledgerOutputOracleBindingEvidence(proofLedger, options = {}) {
   const records = ledgerRecordsFromValue(proofLedger);
+  const supplementalBindings = compactObjectList([
+    runtimeChainOutputOracleBindingOverlay(options.runtimeChain ?? options.runtime_chain),
+    ...(Array.isArray(options.supplementalBindings) ? options.supplementalBindings : []),
+    ...(Array.isArray(options.supplemental_bindings) ? options.supplemental_bindings : []),
+  ]);
   const dispatchTargetEvidence = [];
   const oracleTargetEvidence = [];
   const dispatchIdEvidence = [];
@@ -17883,6 +18009,37 @@ function ledgerOutputOracleBindingEvidence(proofLedger) {
     dispatchTargetEvidence.push(dispatchTarget);
     oracleTargetEvidence.push(oracleTarget);
     evidenceRefs.push(dispatchId, afterDispatchId, dispatchTarget, oracleTarget);
+  }
+  for (const binding of supplementalBindings) {
+    const dispatchTarget = firstText(
+      binding.dispatchTargetId,
+      binding.dispatch_target_id,
+      binding.outputTargetId,
+      binding.output_target_id,
+    );
+    const oracleTarget = firstText(
+      binding.oracleTargetId,
+      binding.oracle_target_id,
+      binding.outputTargetId,
+      binding.output_target_id,
+    );
+    const dispatchId = firstText(binding.dispatchId, binding.dispatch_id);
+    const afterDispatchId = firstText(binding.afterDispatchId, binding.after_dispatch_id);
+    dispatchTargetEvidence.push(dispatchTarget);
+    oracleTargetEvidence.push(oracleTarget);
+    if (dispatchId && afterDispatchId) {
+      dispatchIdEvidence.push(dispatchId);
+      afterDispatchEvidence.push(afterDispatchId);
+    }
+    evidenceRefs.push(
+      binding.source,
+      binding.evidenceRef,
+      binding.evidence_ref,
+      dispatchTarget,
+      oracleTarget,
+      dispatchId,
+      afterDispatchId,
+    );
   }
   const dispatchIds = compactStringList(dispatchIdEvidence);
   const afterDispatchIds = compactStringList(afterDispatchEvidence);
@@ -17938,6 +18095,8 @@ function ledgerOutputOracleBindingEvidence(proofLedger) {
     dispatch_ids: dispatchIds,
     afterDispatchIds,
     after_dispatch_ids: afterDispatchIds,
+    supplementalBindingSources: compactStringList(supplementalBindings.map((binding) => binding.source)),
+    supplemental_binding_sources: compactStringList(supplementalBindings.map((binding) => binding.source)),
     evidenceRefs: compactStringList(evidenceRefs),
     evidence_refs: compactStringList(evidenceRefs),
     failedGates,
@@ -17945,12 +18104,12 @@ function ledgerOutputOracleBindingEvidence(proofLedger) {
   };
 }
 
-async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, baseDir) {
+async function ledgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, baseDir, options = {}) {
   const ledgerAccepted = ledger.present === true
     && ledger.source === 'recomputed_ledger'
     && ledger.gpuHmrSuccess === true
     && ledger.failedInvariants.length === 0;
-  const outputBinding = ledgerOutputOracleBindingEvidence(proofLedger);
+  const outputBinding = ledgerOutputOracleBindingEvidence(proofLedger, options);
   if (!ledgerAccepted) {
     return {
       accepted: false,
@@ -17963,30 +18122,57 @@ async function realRocmLedgerOutputOracleFacet(ledger, proofLedger, visual, repo
   }
   const visualLedgerOutput = ledgerRecordsFromValue(proofLedger).some(ledgerRecordHasVisualOutput);
   if (visualLedgerOutput) {
+    const visualArtifactBinding = ledgerVisualOracleArtifactBindingEvidence(proofLedger, visual);
+    const failedGates = failedGateObjects([
+      outputBinding.accepted === true ? null : 'output_oracle_binding_not_accepted',
+      visual.present === true && visual.accepted === true ? null : 'visual_oracle_artifacts_not_accepted',
+      visualArtifactBinding.accepted === true ? null : 'visual_oracle_artifacts_not_ledger_bound',
+      ...compactStringList(outputBinding.failedGates),
+      ...compactStringList((visualArtifactBinding.failedGates ?? []).map((failure) => failure.code)),
+    ]);
     return {
-      accepted: visual.present === true && visual.accepted === true,
+      accepted: failedGates.length === 0,
       kind: 'visual_oracle',
       compute: null,
       outputBinding,
       output_binding: outputBinding,
+      visualArtifactBinding,
+      visual_artifact_binding: visualArtifactBinding,
       evidenceRefs: outputBinding.evidenceRefs,
       evidence_refs: outputBinding.evidence_refs,
-      failedGates: visual.present === true && visual.accepted === true
-        ? []
-        : [{ code: 'visual_oracle_artifacts_not_accepted' }],
+      failedGates,
+      failed_gates: failedGates,
     };
   }
   const compute = await realRocmComputeOracleFileIntegrityFacet(proofLedger, repoRoot, baseDir);
+  const failedGates = failedGateObjects([
+    outputBinding.accepted === true ? null : 'output_oracle_binding_not_accepted',
+    compute.accepted === true ? null : 'compute_oracle_artifacts_not_accepted',
+    ...compactStringList(outputBinding.failedGates),
+    ...compactStringList((compute.failedGates ?? []).map((failure) => failure.code ?? failure)),
+  ]);
   return {
-    accepted: compute.accepted === true,
+    accepted: failedGates.length === 0,
     kind: 'compute_oracle',
     compute,
     outputBinding,
     output_binding: outputBinding,
     evidenceRefs: outputBinding.evidenceRefs,
     evidence_refs: outputBinding.evidence_refs,
-    failedGates: compute.failedGates,
+    failedGates,
+    failed_gates: failedGates,
   };
+}
+
+async function realRocmLedgerOutputOracleFacet(
+  ledger,
+  proofLedger,
+  visual,
+  repoRoot,
+  baseDir,
+  options = {},
+) {
+  return ledgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, baseDir, options);
 }
 
 function normalizeTargetProgressionPhase(raw) {
@@ -19631,6 +19817,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    { runtimeChain: realRocmRuntimeChain },
   );
   const outputOrVisualOracleAccepted = outputOracleFacet.accepted === true;
   const nativeBoundaryRequiresAppHook = nativeBoundaryRequiresRealRocmAppHook({
