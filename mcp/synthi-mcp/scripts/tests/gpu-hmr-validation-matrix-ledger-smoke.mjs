@@ -8462,6 +8462,13 @@ function withUpdatedAt(row, updatedAt) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withArtifactPath(row, artifactPath) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.artifactPath = artifactPath;
+  cloned.artifact_path = artifactPath;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withSourceFirstSourceAuthority(row, sourceAuthority) {
   const cloned = JSON.parse(JSON.stringify(row));
   cloned.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
@@ -10942,6 +10949,72 @@ assert.ok(
   staleRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.freshnessGaps
     .includes('random_cold_path_freshness_row_too_old_for_current_matrix'),
 );
+const replayedHistoricalRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `fresh-mtime-replayed-historical-random-cold-${index + 1}`,
+    sourceUrl: `https://example.invalid/fresh-mtime-replay/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`fresh-mtime-replayed-historical-random-cold-${index + 1}`).slice(0, 40),
+    updatedAt: '2026-06-30T21:03:00.000Z',
+    artifactPath: `historical-default-root/random-cold-${index + 1}.json`,
+  })
+);
+const broadReadinessWithFreshMtimeHistoricalColdLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRows,
+  ...replayedHistoricalRandomColdRows,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithFreshMtimeHistoricalColdLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithFreshMtimeHistoricalColdLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithFreshMtimeHistoricalColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithFreshMtimeHistoricalColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithFreshMtimeHistoricalColdLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_fresh_random_large_project_cold_path'),
+);
+assert.ok(
+  broadReadinessWithFreshMtimeHistoricalColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathFreshnessGaps
+    .includes('random_cold_path_artifact_path_replay_or_audit_root'),
+);
+const replayedOldDatedRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `fresh-mtime-old-dated-random-cold-${index + 1}`,
+    sourceUrl: `https://example.invalid/fresh-mtime-old-dated/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`fresh-mtime-old-dated-random-cold-${index + 1}`).slice(0, 40),
+    updatedAt: '2026-06-30T21:03:00.000Z',
+    artifactPath:
+      `mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/project-20260609/replay-${index + 1}.json`,
+  })
+);
+const broadReadinessWithFreshMtimeOldDatedColdLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRows,
+  ...replayedOldDatedRandomColdRows,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithFreshMtimeOldDatedColdLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithFreshMtimeOldDatedColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithFreshMtimeOldDatedColdLedger.summary.broadLibraryAgnosticReadiness
+    .randomColdPathFreshnessGaps
+    .includes('random_cold_path_artifact_path_timestamp_too_old_for_current_matrix'),
+);
 const staleBroadReadinessContributorRows = broadReadinessRows.map((row) =>
   withUpdatedAt(row, '2026-06-01T00:00:00.000Z')
 );
@@ -10997,6 +11070,56 @@ assert.ok(
   broadReadinessWithStaleContributorLedger.summary.broadLibraryAgnosticReadiness
     .sourceFirstVisualFreshnessGaps
     .includes('source_first_visual:broad_readiness_freshness_row_too_old_for_current_matrix'),
+);
+const freshMtimeReplayedContributorRows = broadReadinessRows.map((row, index) =>
+  withArtifactPath(
+    row,
+    index % 2 === 0
+      ? `mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/replayed-${index + 1}.json`
+      : `mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-proof-artifacts/replayed-20260609-${index + 1}.json`,
+  )
+);
+const broadReadinessWithFreshMtimeReplayedContributorsLedger =
+  buildGpuHmrValidationMatrixLedger([
+    ...freshMtimeReplayedContributorRows,
+    ...broadReadinessRandomColdRows,
+  ], {
+    generatedAt: '2026-06-30T21:05:00.000Z',
+  });
+assert.equal(broadReadinessWithFreshMtimeReplayedContributorsLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithFreshMtimeReplayedContributorsLedger.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithFreshMtimeReplayedContributorsLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.acceptedFullRuntimeRows,
+  0,
+);
+assert.ok(
+  broadReadinessWithFreshMtimeReplayedContributorsLedger.summary.broadLibraryAgnosticReadiness
+    .fullRuntimeFreshnessGaps
+    .some((gap) =>
+      gap === 'full_runtime:broad_readiness_artifact_path_replay_or_audit_root'
+      || gap === 'full_runtime:broad_readiness_artifact_path_timestamp_too_old_for_current_matrix'
+    ),
+);
+assert.ok(
+  broadReadinessWithFreshMtimeReplayedContributorsLedger.summary.broadLibraryAgnosticReadiness
+    .refusalFreshnessGaps
+    .some((gap) =>
+      gap === 'adversarial_refusal:broad_readiness_artifact_path_replay_or_audit_root'
+      || gap === 'adversarial_refusal:broad_readiness_artifact_path_timestamp_too_old_for_current_matrix'
+    ),
+);
+assert.ok(
+  broadReadinessWithFreshMtimeReplayedContributorsLedger.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualFreshnessGaps
+    .some((gap) =>
+      gap === 'source_first_visual:broad_readiness_artifact_path_replay_or_audit_root'
+      || gap === 'source_first_visual:broad_readiness_artifact_path_timestamp_too_old_for_current_matrix'
+    ),
 );
 const broadReadinessWithMixedFreshStaleColdLedger = buildGpuHmrValidationMatrixLedger([
   ...broadReadinessRows,

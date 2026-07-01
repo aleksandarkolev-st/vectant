@@ -22651,6 +22651,148 @@ function broadReadinessFreshnessPolicy(options = {}) {
   };
 }
 
+function artifactPathDateCandidates(value) {
+  const artifactPath = firstText(value);
+  if (!artifactPath) return [];
+  const normalized = artifactPath.replace(/\\/g, '/');
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = (raw, precision) => {
+    if (!raw || seen.has(`${precision}:${raw}`)) return;
+    seen.add(`${precision}:${raw}`);
+    candidates.push({ raw, precision });
+  };
+  for (const match of normalized.matchAll(/(?<![A-Za-z0-9])(20\d{6})T?(\d{6})Z?(?![A-Za-z0-9])/gi)) {
+    pushCandidate(`${match[1]}${match[2]}`, 'second');
+  }
+  for (const match of normalized.matchAll(/(?<![A-Za-z0-9])(20\d{6})(?![A-Za-z0-9])/g)) {
+    pushCandidate(match[1], 'day');
+  }
+  return candidates;
+}
+
+function parseArtifactPathDateCandidate(candidate = {}) {
+  const raw = firstText(candidate.raw);
+  if (!raw) return null;
+  const year = Number(raw.slice(0, 4));
+  const month = Number(raw.slice(4, 6));
+  const day = Number(raw.slice(6, 8));
+  const hour = raw.length >= 14 ? Number(raw.slice(8, 10)) : 0;
+  const minute = raw.length >= 14 ? Number(raw.slice(10, 12)) : 0;
+  const second = raw.length >= 14 ? Number(raw.slice(12, 14)) : 0;
+  const timestamp = Date.UTC(year, month - 1, day, hour, minute, second);
+  const date = new Date(timestamp);
+  if (
+    !Number.isFinite(timestamp)
+    || date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour
+    || date.getUTCMinutes() !== minute
+    || date.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  return {
+    raw,
+    precision: candidate.precision ?? (raw.length >= 14 ? 'second' : 'day'),
+    timestamp,
+    iso: date.toISOString(),
+  };
+}
+
+function broadReadinessArtifactPathProvenance(row = {}, context = {}, role = 'contributor') {
+  const artifactPath = firstText(row.artifactPath, row.artifact_path);
+  const suppliedPolicy = compactObject(
+    context.broadReadinessFreshnessPolicy
+    ?? context.broad_readiness_freshness_policy,
+  );
+  const policy = broadReadinessFreshnessPolicy({
+    ...suppliedPolicy,
+    generatedAt: firstText(
+      context.generatedAt,
+      context.generated_at,
+      suppliedPolicy.generatedAt,
+      suppliedPolicy.generated_at,
+    ),
+    enforceBroadReadinessFreshness: firstBool(
+      context.enforceBroadReadinessFreshness,
+      context.enforce_broad_readiness_freshness,
+      context.enforceRandomColdPathFreshness,
+      context.enforce_random_cold_path_freshness,
+      suppliedPolicy.enforced,
+    ) === true,
+  });
+  const normalizedPath = artifactPath ? artifactPath.replace(/\\/g, '/') : null;
+  const lowerPath = normalizedPath ? normalizedPath.toLowerCase() : '';
+  const segments = lowerPath.split('/').filter(Boolean);
+  const replayRoot = segments.find((segment) =>
+    segment === 'validation-matrix-unproven-audit'
+    || segment === 'historical-default-root'
+    || segment.startsWith('historical-')
+  ) ?? null;
+  const parsedDates = artifactPathDateCandidates(artifactPath)
+    .map(parseArtifactPathDateCandidate)
+    .filter(Boolean);
+  const newestPathDate = parsedDates.length > 0
+    ? parsedDates.reduce((latest, current) =>
+      current.timestamp > latest.timestamp ? current : latest
+    )
+    : null;
+  const generatedAtMs = Date.parse(String(policy.generatedAt ?? ''));
+  const maxCollectionAgeMs =
+    finiteNumber(policy.maxCollectionAgeMs ?? policy.max_collection_age_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS;
+  const maxFutureSkewMs =
+    finiteNumber(policy.maxFutureSkewMs ?? policy.max_future_skew_ms)
+    ?? BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS;
+  const artifactPathAgeMs =
+    Number.isFinite(generatedAtMs) && newestPathDate
+      ? generatedAtMs - newestPathDate.timestamp
+      : null;
+  const enforced = policy.enforced === true;
+  const openGaps = enforced
+    ? compactStringList([
+      replayRoot ? 'broad_readiness_artifact_path_replay_or_audit_root' : null,
+      artifactPathAgeMs !== null && artifactPathAgeMs < -maxFutureSkewMs
+        ? 'broad_readiness_artifact_path_timestamp_after_matrix_generated_at'
+        : null,
+      artifactPathAgeMs !== null && artifactPathAgeMs > maxCollectionAgeMs
+        ? 'broad_readiness_artifact_path_timestamp_too_old_for_current_matrix'
+        : null,
+    ])
+    : [];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.broad_readiness_artifact_path_provenance.v1',
+    schema_version: 'synthi.gpu_hmr.broad_readiness_artifact_path_provenance.v1',
+    authority: 'artifact_path_replay_audit_not_gpu_hmr_success',
+    proofAuthority: 'artifact_path_replay_audit_not_gpu_hmr_success',
+    proof_authority: 'artifact_path_replay_audit_not_gpu_hmr_success',
+    accepted: openGaps.length === 0,
+    role,
+    artifactPath: artifactPath ?? null,
+    artifact_path: artifactPath ?? null,
+    replayRoot,
+    replay_root: replayRoot,
+    pathTimestamp: newestPathDate?.iso ?? null,
+    path_timestamp: newestPathDate?.iso ?? null,
+    pathTimestampRaw: newestPathDate?.raw ?? null,
+    path_timestamp_raw: newestPathDate?.raw ?? null,
+    pathTimestampPrecision: newestPathDate?.precision ?? null,
+    path_timestamp_precision: newestPathDate?.precision ?? null,
+    pathTimestampAgeMs: artifactPathAgeMs,
+    path_timestamp_age_ms: artifactPathAgeMs,
+    openGaps,
+    open_gaps: openGaps,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+}
+
 function broadReadinessContributorFreshness(row, context = {}, role = 'contributor') {
   const suppliedPolicy = compactObject(
     context.broadReadinessFreshnessPolicy
@@ -22697,6 +22839,7 @@ function broadReadinessContributorFreshness(row, context = {}, role = 'contribut
   const ageMs = Number.isFinite(generatedAtMs) && Number.isFinite(rowUpdatedAtMsValue)
     ? generatedAtMs - rowUpdatedAtMsValue
     : null;
+  const artifactPathProvenance = broadReadinessArtifactPathProvenance(row, context, role);
   const openGaps = compactStringList([
     Number.isFinite(generatedAtMs)
       ? null
@@ -22713,6 +22856,7 @@ function broadReadinessContributorFreshness(row, context = {}, role = 'contribut
     ageMs !== null && ageMs > maxCollectionAgeMs
       ? 'broad_readiness_freshness_row_too_old_for_current_matrix'
       : null,
+    ...artifactPathProvenance.openGaps,
   ]);
   return {
     ...policy,
@@ -22722,6 +22866,8 @@ function broadReadinessContributorFreshness(row, context = {}, role = 'contribut
     row_updated_at: rowUpdatedAt ?? null,
     ageMs,
     age_ms: ageMs,
+    artifactPathProvenance,
+    artifact_path_provenance: artifactPathProvenance,
     openGaps,
     open_gaps: openGaps,
   };
@@ -22815,6 +22961,20 @@ function randomColdPathBroadReadinessFreshness(row, context = {}) {
   const ageMs = Number.isFinite(generatedAtMs) && Number.isFinite(rowUpdatedAtMsValue)
     ? generatedAtMs - rowUpdatedAtMsValue
     : null;
+  const artifactPathProvenance = broadReadinessArtifactPathProvenance(
+    row,
+    {
+      ...context,
+      broadReadinessFreshnessPolicy: {
+        ...policy,
+        enforced: policy.enforced,
+      },
+    },
+    'random_cold_path',
+  );
+  const randomColdArtifactPathGaps = artifactPathProvenance.openGaps.map((gap) =>
+    gap.replace(/^broad_readiness_/, 'random_cold_path_')
+  );
   const openGaps = compactStringList([
     Number.isFinite(generatedAtMs)
       ? null
@@ -22831,6 +22991,7 @@ function randomColdPathBroadReadinessFreshness(row, context = {}) {
     ageMs !== null && ageMs > maxCollectionAgeMs
       ? 'random_cold_path_freshness_row_too_old_for_current_matrix'
       : null,
+    ...randomColdArtifactPathGaps,
   ]);
   return {
     ...policy,
@@ -22839,6 +23000,18 @@ function randomColdPathBroadReadinessFreshness(row, context = {}) {
     row_updated_at: rowUpdatedAt ?? null,
     ageMs,
     age_ms: ageMs,
+    artifactPathProvenance: {
+      ...artifactPathProvenance,
+      accepted: randomColdArtifactPathGaps.length === 0,
+      openGaps: randomColdArtifactPathGaps,
+      open_gaps: randomColdArtifactPathGaps,
+    },
+    artifact_path_provenance: {
+      ...artifactPathProvenance,
+      accepted: randomColdArtifactPathGaps.length === 0,
+      openGaps: randomColdArtifactPathGaps,
+      open_gaps: randomColdArtifactPathGaps,
+    },
     openGaps,
     open_gaps: openGaps,
   };
