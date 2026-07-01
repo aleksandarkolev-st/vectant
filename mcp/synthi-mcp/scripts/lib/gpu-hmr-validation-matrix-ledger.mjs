@@ -11773,8 +11773,17 @@ function fullRuntimeLedgerAuthorityFailures(row) {
 }
 
 function nativeRuntimeTraceEvidenceFacet(row = {}) {
-  const runtimeTrace = compactObject(row.runtimeTrace ?? row.runtime_trace);
-  const runtimeResourceTrace = compactObject(row.runtimeResourceTrace ?? row.runtime_resource_trace);
+  const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
+  const runtimeTrace = compactObject({
+    ...compactObject(runtimeProofArtifact.runtimeTrace ?? runtimeProofArtifact.runtime_trace),
+    ...compactObject(row.runtimeTrace ?? row.runtime_trace),
+  });
+  const runtimeResourceTrace = compactObject({
+    ...compactObject(
+      runtimeProofArtifact.runtimeResourceTrace ?? runtimeProofArtifact.runtime_resource_trace,
+    ),
+    ...compactObject(row.runtimeResourceTrace ?? row.runtime_resource_trace),
+  });
   const nativeHipApiEvidence = compactObject(row.nativeHipApiEvidence ?? row.native_hip_api_evidence);
   const ledgerRecord = ledgerRecordForRow(row);
   const traceDispatchEvent = compactObject(
@@ -11858,10 +11867,16 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
     && row.ledger?.gpuHmrSuccess === true
     && Array.isArray(row.ledger?.failedInvariants)
     && row.ledger.failedInvariants.length === 0;
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const outputOracleKind = firstText(
+    outputOracle.kind,
+    outputOracle.oracleKind,
+    outputOracle.oracle_kind,
+  );
   const computeOracleAccepted =
-    row.outputOracleFacet?.kind === 'compute_oracle'
-    && row.outputOracleFacet?.accepted === true;
-  const visualOracleAccepted = row.visual?.required === true && row.visual?.accepted === true;
+    outputOracleKind === 'compute_oracle' && rowHasAcceptedComputeEvidence(row);
+  const visualOracleAccepted =
+    outputOracleKind === 'visual_oracle' && rowHasAcceptedVisualOutputOracle(row);
   const outputOracleAccepted = computeOracleAccepted || visualOracleAccepted;
   const nativeRuntimeTrace = nativeRuntimeTraceEvidenceFacet(row);
   const nativeRuntimeAuthorityAccepted =
@@ -11869,7 +11884,7 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
     && row.proofChainAccepted === true
     && outputOracleAccepted
     && nativeRuntimeTrace.accepted === true;
-  const accepted = strictRuntimeArtifactAccepted;
+  const accepted = strictRuntimeArtifactAccepted && nativeRuntimeAuthorityAccepted;
   const failedGates = accepted
     ? []
     : compactStringList([
@@ -11880,7 +11895,7 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
         ? null
         : 'full_runtime_authority_native_runtime_trace_missing',
       strictRuntimeArtifactAccepted ? null : 'full_runtime_authority_strict_runtime_proof_artifact_missing',
-      'full_runtime_authority_requires_strict_runtime_proof_artifact',
+      strictRuntimeArtifactAccepted ? null : 'full_runtime_authority_requires_strict_runtime_proof_artifact',
     ]);
   return {
     schemaVersion: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
@@ -12690,12 +12705,28 @@ function runtimeProofArtifactFacet(runtimeProofArtifact, options = {}) {
       ...options,
     },
   );
+  const runtimeTrace = compactObject(runtimeProofArtifact.runtimeTrace ?? runtimeProofArtifact.runtime_trace);
+  const runtimeResourceTrace = compactObject(
+    runtimeProofArtifact.runtimeResourceTrace ?? runtimeProofArtifact.runtime_resource_trace,
+  );
   return {
     present,
     proofId: firstText(runtimeProofArtifact.proofId, runtimeProofArtifact.proof_id),
     accepted: gate.accepted === true,
     source: present ? 'embedded_runtime_proof_artifact' : 'missing',
     failedGates: compactStringList(gate.failures).map((code) => ({ code })),
+    ...(Object.keys(runtimeTrace).length > 0
+      ? {
+          runtimeTrace,
+          runtime_trace: runtimeTrace,
+        }
+      : {}),
+    ...(Object.keys(runtimeResourceTrace).length > 0
+      ? {
+          runtimeResourceTrace,
+          runtime_resource_trace: runtimeResourceTrace,
+        }
+      : {}),
   };
 }
 

@@ -1135,6 +1135,50 @@ function runtimeProofMaterials(scope, options = {}) {
   const deterministicVisualModeEvaluation =
     evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode);
   assert.equal(deterministicVisualModeEvaluation.accepted, true);
+  const runtimeTrace = {
+    loaderEvents: [{
+      source: 'hipModuleLoadData',
+      artifactHash: afterHash,
+      artifact_hash: afterHash,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+    loader_events: [{
+      source: 'hipModuleLoadData',
+      artifactHash: afterHash,
+      artifact_hash: afterHash,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+    dispatchEvents: [{
+      command: 'hipModuleLaunchKernel',
+      dispatchId: `dispatch:${scope}`,
+      dispatch_id: `dispatch:${scope}`,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+    dispatch_events: [{
+      command: 'hipModuleLaunchKernel',
+      dispatchId: `dispatch:${scope}`,
+      dispatch_id: `dispatch:${scope}`,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+    outputEvents: [{
+      kind: 'visual_frame',
+      afterDispatchId: `dispatch:${scope}`,
+      after_dispatch_id: `dispatch:${scope}`,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+    output_events: [{
+      kind: 'visual_frame',
+      afterDispatchId: `dispatch:${scope}`,
+      after_dispatch_id: `dispatch:${scope}`,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+    }],
+  };
   const runtimeProofArtifact = {
     proofId: `runtime-proof-artifact:sha256:${sha256Hex(scope)}`,
     fullRuntimeProven: sourceAdaptedVisualProfile ? false : true,
@@ -1167,6 +1211,8 @@ function runtimeProofMaterials(scope, options = {}) {
     },
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
   };
   return {
     proofLedger,
@@ -1175,6 +1221,8 @@ function runtimeProofMaterials(scope, options = {}) {
     proof_ledger_query: proofLedgerQuery,
     runtimeProofArtifact,
     runtime_proof_artifact: runtimeProofArtifact,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
   };
 }
 
@@ -1324,6 +1372,61 @@ function computeProofLedgerMaterials(scope, {
     derivedContract: contract,
   });
   assert.equal(acceptanceContractConsistency.accepted, true);
+  const computeEvidenceRefs = [`evidence:synthetic-compute:${scope}`];
+  const dispatchCommand = backend === 'opencl'
+    ? 'clEnqueueNDRangeKernel'
+    : backend === 'vulkan'
+      ? 'vkQueueSubmit'
+      : 'hipModuleLaunchKernel';
+  const loaderSource = backend === 'opencl'
+    ? 'clBuildProgram'
+    : backend === 'vulkan'
+      ? 'vkCreatePipeline'
+      : 'hipModuleLoadData';
+  const runtimeTrace = {
+    loaderEvents: [{
+      source: loaderSource,
+      artifactHash: afterHash,
+      artifact_hash: afterHash,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+    loader_events: [{
+      source: loaderSource,
+      artifactHash: afterHash,
+      artifact_hash: afterHash,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+    dispatchEvents: [{
+      command: dispatchCommand,
+      dispatchId: `dispatch:${scope}`,
+      dispatch_id: `dispatch:${scope}`,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+    dispatch_events: [{
+      command: dispatchCommand,
+      dispatchId: `dispatch:${scope}`,
+      dispatch_id: `dispatch:${scope}`,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+    outputEvents: [{
+      kind: 'compute_oracle',
+      afterDispatchId: `dispatch:${scope}`,
+      after_dispatch_id: `dispatch:${scope}`,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+    output_events: [{
+      kind: 'compute_oracle',
+      afterDispatchId: `dispatch:${scope}`,
+      after_dispatch_id: `dispatch:${scope}`,
+      evidenceRefs: computeEvidenceRefs,
+      evidence_refs: computeEvidenceRefs,
+    }],
+  };
   const runtimeProofArtifact = {
     proofId: `runtime-proof-artifact:sha256:${sha256Hex(`compute:${scope}`)}`,
     fullRuntimeProven: true,
@@ -1346,6 +1449,8 @@ function computeProofLedgerMaterials(scope, {
       accepted: true,
       mode: 'derived_only',
     },
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
   };
   return {
     proofLedger,
@@ -1355,6 +1460,8 @@ function computeProofLedgerMaterials(scope, {
     runtimeProofArtifact,
     runtime_proof_artifact: runtimeProofArtifact,
     computeOracleArtifacts,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
   };
 }
 
@@ -7776,6 +7883,61 @@ assert.ok(nativeAuthorityMissingLoaderQuery.failedGates.some((gate) =>
 assert.ok(nativeAuthorityMissingLoaderQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_strict_runtime_proof_artifact'
 ));
+
+const strictArtifactMissingNativeAuthorityRow = withQueryRecomputedRowId((() => {
+  const missingLoaderTrace = {
+    dispatchEvents: nativeAuthorityTrace.dispatchEvents,
+    outputEvents: nativeAuthorityTrace.outputEvents,
+  };
+  const row = acceptedAuthoritativeMatrixRow(
+    'strict-artifact-missing-native-authority',
+    {
+      proofMode: 'strict_runtime_ledger',
+      proofChain: 'embedded_runtime_proof_artifact_recomputed_ledger',
+      proofChainAccepted: true,
+      runtimeTrace: missingLoaderTrace,
+      runtime_trace: missingLoaderTrace,
+      fullRuntimeEvidenceAuthority: null,
+      full_runtime_evidence_authority: null,
+    },
+  );
+  const artifact = {
+    ...(row.runtimeProofArtifact ?? row.runtime_proof_artifact ?? {}),
+    runtimeTrace: missingLoaderTrace,
+    runtime_trace: missingLoaderTrace,
+    runtimeResourceTrace: {},
+    runtime_resource_trace: {},
+  };
+  row.runtimeProofArtifact = artifact;
+  row.runtime_proof_artifact = artifact;
+  const record = row.ledger?.record ?? {};
+  const originalLoader = record.loaderEvent ?? record.loader_event ?? {};
+  const scrubbedLoader = {
+    artifactHash: originalLoader.artifactHash ?? originalLoader.artifact_hash,
+    artifact_hash: originalLoader.artifact_hash ?? originalLoader.artifactHash,
+    evidenceRefs: ['evidence:strict-artifact-missing-native-authority:loader-without-boundary'],
+    evidence_refs: ['evidence:strict-artifact-missing-native-authority:loader-without-boundary'],
+  };
+  record.loaderEvent = scrubbedLoader;
+  record.loader_event = scrubbedLoader;
+  row.ledger.record = record;
+  return row;
+})());
+const strictArtifactMissingNativeAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [strictArtifactMissingNativeAuthorityRow],
+});
+assert.equal(strictArtifactMissingNativeAuthorityQuery.accepted, false);
+assert.equal(strictArtifactMissingNativeAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(strictArtifactMissingNativeAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'full_runtime_authority_native_runtime_trace_missing'
+));
+assert.equal(
+  strictArtifactMissingNativeAuthorityQuery.failedGates.some((gate) =>
+    gate.code === 'full_runtime_authority_strict_runtime_proof_artifact_missing'
+  ),
+  false,
+);
 
 const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');
 assert.equal(strictMissingArtifact?.proofMode, 'strict_runtime_ledger');
