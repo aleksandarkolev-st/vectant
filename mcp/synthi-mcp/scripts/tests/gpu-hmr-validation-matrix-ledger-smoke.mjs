@@ -776,6 +776,36 @@ function visualOracleArtifacts(scope, visualRoot = visualDir) {
   };
 }
 
+function completeVisualOracleArtifacts(scope, visualRoot, artifacts = {}) {
+  return {
+    ...visualOracleArtifacts(scope, visualRoot),
+    ...artifacts,
+    ...(artifacts.beforeImage ? {
+      before_image: artifacts.beforeImage,
+      before_image_hash: artifacts.beforeImageHash,
+      before_image_hash_verified: true,
+    } : {}),
+    ...(artifacts.afterImage ? {
+      after_image: artifacts.afterImage,
+      after_image_hash: artifacts.afterImageHash,
+      after_image_hash_verified: true,
+    } : {}),
+    ...(artifacts.diffImage ? {
+      diff_image: artifacts.diffImage,
+      diff_image_hash: artifacts.diffImageHash,
+      diff_image_hash_verified: true,
+    } : {}),
+    pixel_metrics_verified: true,
+  };
+}
+
+function runtimeProofMaterialsWithVisualArtifacts(scope, options, artifacts) {
+  return withVisualOracleArtifacts(
+    runtimeProofMaterials(scope, options),
+    completeVisualOracleArtifacts(scope, options?.visualRoot ?? visualDir, artifacts),
+  );
+}
+
 function acceptanceContract(scope, options = {}) {
   const projectId = options.projectId ?? 'flow';
   const evidenceRef = `evidence:synthetic-runtime:${scope}`;
@@ -7185,6 +7215,24 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-path-escape-proo
   },
 });
 
+const forgedWebGpuVisualArtifacts = visualArtifactSet({
+  before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+  after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+  diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+});
+Object.assign(forgedWebGpuVisualArtifacts, {
+  ...visualOracleArtifacts('hot_delta_1', forgedWebGpuVisualDir),
+  before_image: forgedWebGpuVisualArtifacts.beforeImage,
+  before_image_hash: forgedWebGpuVisualArtifacts.beforeImageHash,
+  before_image_hash_verified: true,
+  after_image: forgedWebGpuVisualArtifacts.afterImage,
+  after_image_hash: forgedWebGpuVisualArtifacts.afterImageHash,
+  after_image_hash_verified: true,
+  diff_image: forgedWebGpuVisualArtifacts.diffImage,
+  diff_image_hash: forgedWebGpuVisualArtifacts.diffImageHash,
+  diff_image_hash_verified: true,
+  pixel_metrics_verified: true,
+});
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-visual-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:source-adapted-forged',
@@ -7198,15 +7246,11 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
       supported_pipeline_scope: 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list',
     },
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...withVisualOracleArtifacts(runtimeProofMaterials('hot_delta_1', {
     projectId: 'forged-webgpu-source-adapted-visual',
     visualRoot: forgedWebGpuVisualDir,
-  }),
-  visualOracleArtifacts: visualArtifactSet({
-    before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
-    after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
-    diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
-  }),
+  }), forgedWebGpuVisualArtifacts),
+  visualOracleArtifacts: forgedWebGpuVisualArtifacts,
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -7294,6 +7338,24 @@ const hiprtAcceptedDiff = path.join(hiprtDir, 'accepted-diff.png');
 await writeRgbaPng(hiprtAcceptedBefore, 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(hiprtAcceptedAfter, 8, 8, (x, y) => [24 + x, 32 + y, 48 + x + y, 255]);
 await writeRgbaPng(hiprtAcceptedDiff, 8, 8, () => [255, 255, 255, 255]);
+const hiprtAcceptedVisualArtifactsHot1 = visualArtifactSet({
+  before: hiprtAcceptedBefore,
+  after: hiprtAcceptedAfter,
+  diff: hiprtAcceptedDiff,
+});
+Object.assign(hiprtAcceptedVisualArtifactsHot1, {
+  ...visualOracleArtifacts('hot_delta_1', hiprtDir),
+  before_image: hiprtAcceptedVisualArtifactsHot1.beforeImage,
+  before_image_hash: hiprtAcceptedVisualArtifactsHot1.beforeImageHash,
+  before_image_hash_verified: true,
+  after_image: hiprtAcceptedVisualArtifactsHot1.afterImage,
+  after_image_hash: hiprtAcceptedVisualArtifactsHot1.afterImageHash,
+  after_image_hash_verified: true,
+  diff_image: hiprtAcceptedVisualArtifactsHot1.diffImage,
+  diff_image_hash: hiprtAcceptedVisualArtifactsHot1.diffImageHash,
+  diff_image_hash_verified: true,
+  pixel_metrics_verified: true,
+});
 await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProofArtifact({
   slug: 'accepted-hiprt-recomputed-oracle',
   profileId: 'accepted-hiprt-recomputed-oracle',
@@ -7396,10 +7458,10 @@ await writeJson(path.join(hiprtDir, 'forged-hiprt-missing-instrumentation-hot.js
     'gpu-ledger-proof:sha256:forged-hiprt-missing-instrumentation',
     'gpu-runtime-proof:sha256:forged-hiprt-missing-instrumentation',
   ),
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...withVisualOracleArtifacts(runtimeProofMaterials('hot_delta_1', {
     projectId: 'forged-hiprt-missing-instrumentation',
     visualRoot: hiprtDir,
-  }),
+  }), hiprtAcceptedVisualArtifactsHot1),
   backend: 'hiprt',
   targetId: 'forged-hiprt-missing-instrumentation',
   profileId: 'forged-hiprt-missing-instrumentation',
@@ -7407,11 +7469,7 @@ await writeJson(path.join(hiprtDir, 'forged-hiprt-missing-instrumentation-hot.js
   proofId: 'agent-split-run-mode-proof:sha256:forged-hiprt-missing-instrumentation',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: hiprtAcceptedBefore,
-    after: hiprtAcceptedAfter,
-    diff: hiprtAcceptedDiff,
-  }),
+  visualArtifacts: hiprtAcceptedVisualArtifactsHot1,
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13303,21 +13361,22 @@ const spoofNamedFlowDir = path.join(logsRoot, 'agent-split-artifacts', 'syntheti
 await writeRgbaPng(path.join(spoofNamedFlowDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(spoofNamedFlowDir, 'after.png'), 8, 8, (x, y) => [80 + x, 92 + y, 120, 255]);
 await writeRgbaPng(path.join(spoofNamedFlowDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const spoofNamedFlowVisualArtifacts = visualArtifactSet({
+  before: path.join(spoofNamedFlowDir, 'before.png'),
+  after: path.join(spoofNamedFlowDir, 'after.png'),
+  diff: path.join(spoofNamedFlowDir, 'diff.png'),
+});
 await writeJson(path.join(spoofNamedFlowDir, 'hot1-name-only.json'), {
   ...runModeProofBase,
   ...waitProofValidation('gpu-ledger-proof:sha256:flow-name-only-hot1', 'gpu-runtime-proof:sha256:flow-name-only-hot1'),
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
     projectId: 'flow',
     visualRoot: spoofNamedFlowDir,
-  }),
+  }, spoofNamedFlowVisualArtifacts),
   proofId: 'agent-split-run-mode-proof:sha256:flow-name-only-hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(spoofNamedFlowDir, 'before.png'),
-    after: path.join(spoofNamedFlowDir, 'after.png'),
-    diff: path.join(spoofNamedFlowDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_1', spoofNamedFlowDir, spoofNamedFlowVisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13344,10 +13403,15 @@ const forgedAcceptedProfileDir = path.join(logsRoot, 'agent-split-artifacts', 's
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'after.png'), 8, 8, (x, y) => [88 + x, 96 + y, 132, 255]);
 await writeRgbaPng(path.join(forgedAcceptedProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const forgedAcceptedProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+const forgedAcceptedProfileVisualArtifacts = visualArtifactSet({
+  before: path.join(forgedAcceptedProfileDir, 'before.png'),
+  after: path.join(forgedAcceptedProfileDir, 'after.png'),
+  diff: path.join(forgedAcceptedProfileDir, 'diff.png'),
+});
+const forgedAcceptedProfileMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'not-flow-runtime-target',
   visualRoot: forgedAcceptedProfileDir,
-});
+}, forgedAcceptedProfileVisualArtifacts);
 await writeJson(path.join(forgedAcceptedProfileDir, 'hot1-forged-flow-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -13373,11 +13437,7 @@ await writeJson(path.join(forgedAcceptedProfileDir, 'hot1-forged-flow-profile.js
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(forgedAcceptedProfileDir, 'before.png'),
-    after: path.join(forgedAcceptedProfileDir, 'after.png'),
-    diff: path.join(forgedAcceptedProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_1', forgedAcceptedProfileDir, forgedAcceptedProfileVisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13411,10 +13471,15 @@ const substringOnlyProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'sy
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'after.png'), 8, 8, (x, y) => [96 + x, 112 + y, 144, 255]);
 await writeRgbaPng(path.join(substringOnlyProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const substringOnlyProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+const substringOnlyProfileVisualArtifacts = visualArtifactSet({
+  before: path.join(substringOnlyProfileDir, 'before.png'),
+  after: path.join(substringOnlyProfileDir, 'after.png'),
+  diff: path.join(substringOnlyProfileDir, 'diff.png'),
+});
+const substringOnlyProfileMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'flow',
   visualRoot: substringOnlyProfileDir,
-});
+}, substringOnlyProfileVisualArtifacts);
 await writeJson(path.join(substringOnlyProfileDir, 'hot1-substring-only-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -13437,11 +13502,7 @@ await writeJson(path.join(substringOnlyProfileDir, 'hot1-substring-only-profile.
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(substringOnlyProfileDir, 'before.png'),
-    after: path.join(substringOnlyProfileDir, 'after.png'),
-    diff: path.join(substringOnlyProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_1', substringOnlyProfileDir, substringOnlyProfileVisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13477,10 +13538,15 @@ const explicitContractSourceProfileDir = path.join(
 await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'after.png'), 8, 8, (x, y) => [104 + x, 124 + y, 148, 255]);
 await writeRgbaPng(path.join(explicitContractSourceProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const explicitContractSourceProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+const explicitContractSourceProfileVisualArtifacts = visualArtifactSet({
+  before: path.join(explicitContractSourceProfileDir, 'before.png'),
+  after: path.join(explicitContractSourceProfileDir, 'after.png'),
+  diff: path.join(explicitContractSourceProfileDir, 'diff.png'),
+});
+const explicitContractSourceProfileMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'flow',
   visualRoot: explicitContractSourceProfileDir,
-});
+}, explicitContractSourceProfileVisualArtifacts);
 await writeJson(path.join(explicitContractSourceProfileDir, 'hot1-explicit-contract-source-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -13504,11 +13570,11 @@ await writeJson(path.join(explicitContractSourceProfileDir, 'hot1-explicit-contr
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(explicitContractSourceProfileDir, 'before.png'),
-    after: path.join(explicitContractSourceProfileDir, 'after.png'),
-    diff: path.join(explicitContractSourceProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    explicitContractSourceProfileDir,
+    explicitContractSourceProfileVisualArtifacts,
+  ),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13543,16 +13609,21 @@ const hashBoundProfileDir = path.join(logsRoot, 'agent-split-artifacts', 'synthe
 await writeRgbaPng(path.join(hashBoundProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'after.png'), 8, 8, (x, y) => [112 + x, 132 + y, 156, 255]);
 await writeRgbaPng(path.join(hashBoundProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const hashBoundProfileVisualArtifacts = visualArtifactSet({
+  before: path.join(hashBoundProfileDir, 'before.png'),
+  after: path.join(hashBoundProfileDir, 'after.png'),
+  diff: path.join(hashBoundProfileDir, 'diff.png'),
+});
 const boundProfileHash = hashValue('flow-profile-hash-bound');
 const boundSourceHash = hashValue('flow-source-hash-bound');
 const boundDeterministicModeHash = hashValue('flow-deterministic-mode-hash-bound');
 const boundVisualProofHash = hashValue('flow-visual-proof-hash-bound');
 const boundVisualSceneManifestHash = hashValue('flow-visual-scene-manifest-hash-bound');
-const hashBoundProfileMaterials = runtimeProofMaterials('hot_delta_1', {
+const hashBoundProfileMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'flow',
   visualRoot: hashBoundProfileDir,
   extraEvidenceRefs: [boundVisualSceneManifestHash],
-});
+}, hashBoundProfileVisualArtifacts);
 await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -13587,11 +13658,7 @@ await writeJson(path.join(hashBoundProfileDir, 'hot1-hash-bound-profile.json'), 
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(hashBoundProfileDir, 'before.png'),
-    after: path.join(hashBoundProfileDir, 'after.png'),
-    diff: path.join(hashBoundProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_1', hashBoundProfileDir, hashBoundProfileVisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13622,10 +13689,15 @@ const unboundSceneManifestProfileDir = path.join(
 await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'after.png'), 8, 8, (x, y) => [118 + x, 130 + y, 172, 255]);
 await writeRgbaPng(path.join(unboundSceneManifestProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const unboundSceneManifestMaterials = runtimeProofMaterials('hot_delta_1', {
+const unboundSceneManifestVisualArtifacts = visualArtifactSet({
+  before: path.join(unboundSceneManifestProfileDir, 'before.png'),
+  after: path.join(unboundSceneManifestProfileDir, 'after.png'),
+  diff: path.join(unboundSceneManifestProfileDir, 'diff.png'),
+});
+const unboundSceneManifestMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'flow',
   visualRoot: unboundSceneManifestProfileDir,
-});
+}, unboundSceneManifestVisualArtifacts);
 await writeJson(path.join(unboundSceneManifestProfileDir, 'hot1-unbound-scene-manifest-profile.json'), {
   ...runModeProofBase,
   ...waitProofValidation(
@@ -13650,11 +13722,11 @@ await writeJson(path.join(unboundSceneManifestProfileDir, 'hot1-unbound-scene-ma
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(unboundSceneManifestProfileDir, 'before.png'),
-    after: path.join(unboundSceneManifestProfileDir, 'after.png'),
-    diff: path.join(unboundSceneManifestProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    unboundSceneManifestProfileDir,
+    unboundSceneManifestVisualArtifacts,
+  ),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13686,10 +13758,15 @@ const mismatchedSourceHashProfileDir = path.join(
 await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'after.png'), 8, 8, (x, y) => [120 + x, 140 + y, 164, 255]);
 await writeRgbaPng(path.join(mismatchedSourceHashProfileDir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
-const mismatchedSourceHashMaterials = runtimeProofMaterials('hot_delta_1', {
+const mismatchedSourceHashVisualArtifacts = visualArtifactSet({
+  before: path.join(mismatchedSourceHashProfileDir, 'before.png'),
+  after: path.join(mismatchedSourceHashProfileDir, 'after.png'),
+  diff: path.join(mismatchedSourceHashProfileDir, 'diff.png'),
+});
+const mismatchedSourceHashMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
   projectId: 'flow',
   visualRoot: mismatchedSourceHashProfileDir,
-});
+}, mismatchedSourceHashVisualArtifacts);
 const mismatchedActualSourceHash = hashValue('flow-source-actual');
 const mismatchedDeclaredSourceHash = hashValue('flow-source-declared');
 await writeJson(path.join(mismatchedSourceHashProfileDir, 'hot1-source-hash-mismatch-profile.json'), {
@@ -13719,11 +13796,11 @@ await writeJson(path.join(mismatchedSourceHashProfileDir, 'hot1-source-hash-mism
   }),
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(mismatchedSourceHashProfileDir, 'before.png'),
-    after: path.join(mismatchedSourceHashProfileDir, 'after.png'),
-    diff: path.join(mismatchedSourceHashProfileDir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    mismatchedSourceHashProfileDir,
+    mismatchedSourceHashVisualArtifacts,
+  ),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13751,23 +13828,24 @@ const duplicateHot2Dir = path.join(logsRoot, 'agent-split-artifacts', 'synthetic
 await writeRgbaPng(path.join(duplicateHot2Dir, 'before.png'), 8, 8, () => [8, 8, 8, 255]);
 await writeRgbaPng(path.join(duplicateHot2Dir, 'after.png'), 8, 8, (x, y) => [64 + x, 72 + y, 96, 255]);
 await writeRgbaPng(path.join(duplicateHot2Dir, 'diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const duplicateHot2VisualArtifacts = visualArtifactSet({
+  before: path.join(duplicateHot2Dir, 'before.png'),
+  after: path.join(duplicateHot2Dir, 'after.png'),
+  diff: path.join(duplicateHot2Dir, 'diff.png'),
+});
 await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
   ...runModeProofBase,
   ...waitProofValidation('gpu-ledger-proof:sha256:duplicate-hot1', 'gpu-runtime-proof:sha256:duplicate-hot1'),
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
     projectId: 'duplicate-hot2',
     visualRoot: duplicateHot2Dir,
-  }),
+  }, duplicateHot2VisualArtifacts),
   targetId: 'duplicate-hot2',
   profileId: 'duplicate-hot2',
   proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot1',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(duplicateHot2Dir, 'before.png'),
-    after: path.join(duplicateHot2Dir, 'after.png'),
-    diff: path.join(duplicateHot2Dir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_1', duplicateHot2Dir, duplicateHot2VisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -13779,20 +13857,16 @@ await writeJson(path.join(duplicateHot2Dir, 'hot1.json'), {
 await writeJson(path.join(duplicateHot2Dir, 'hot2.json'), {
   ...runModeProofBase,
   ...waitProofValidation('gpu-ledger-proof:sha256:duplicate-hot2', 'gpu-runtime-proof:sha256:duplicate-hot2'),
-  ...runtimeProofMaterials('hot_delta_2', {
+  ...runtimeProofMaterialsWithVisualArtifacts('hot_delta_2', {
     projectId: 'duplicate-hot2',
     visualRoot: duplicateHot2Dir,
-  }),
+  }, duplicateHot2VisualArtifacts),
   targetId: 'duplicate-hot2',
   profileId: 'duplicate-hot2',
   proofId: 'agent-split-run-mode-proof:sha256:duplicate-hot2',
   acceptedForGpuHmr: true,
   gpuHmrSuccess: true,
-  visualArtifacts: visualArtifactSet({
-    before: path.join(duplicateHot2Dir, 'before.png'),
-    after: path.join(duplicateHot2Dir, 'after.png'),
-    diff: path.join(duplicateHot2Dir, 'diff.png'),
-  }),
+  visualArtifacts: completeVisualOracleArtifacts('hot_delta_2', duplicateHot2Dir, duplicateHot2VisualArtifacts),
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_2',
@@ -21026,7 +21100,10 @@ const forgedRealRocmLedger = await collectGpuHmrValidationMatrixLedger({
 const forgedRealRocm = forgedRealRocmLedger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
 assert.equal(forgedRealRocm?.matrixOutcome, 'unproven');
 assert.equal(forgedRealRocm.acceptedForGpuHmr, false);
-assert.equal(forgedRealRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedRealRocm.runtimeProofArtifact.accepted, false);
+assert.ok(forgedRealRocm.runtimeProofArtifact.failedGates.some(
+  (gate) => gate.code === 'visual_oracle_before_image_bytes_unreadable',
+));
 assert.equal(forgedRealRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedRealRocm.visual.present, false);
 assert.ok(forgedRealRocm.reasons.includes('output_or_visual_oracle_proof_missing'));

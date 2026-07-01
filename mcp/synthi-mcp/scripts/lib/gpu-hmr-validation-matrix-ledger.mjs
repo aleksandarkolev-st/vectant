@@ -12610,11 +12610,23 @@ async function runModeLedgerFacetWithComputeArtifactOverlay(json, runtimeProofAr
   }, repoRoot, baseDir);
 }
 
-function runtimeProofArtifactFacet(runtimeProofArtifact) {
+function runtimeProofArtifactGateOptions(filePath, context = {}) {
+  const roots = compactStringList([
+    context.repoRoot,
+    context.mcpRoot,
+    filePath ? path.dirname(filePath) : null,
+  ]);
+  return roots.length > 0 ? { visualArtifactRoots: roots } : {};
+}
+
+function runtimeProofArtifactFacet(runtimeProofArtifact, options = {}) {
   const present = Object.keys(runtimeProofArtifact).length > 0;
   const gate = runtimeProofArtifactStrictGate(
     present ? runtimeProofArtifact : null,
-    { name: 'run_mode_runtime_proof_artifact' },
+    {
+      name: 'run_mode_runtime_proof_artifact',
+      ...options,
+    },
   );
   return {
     present,
@@ -12683,7 +12695,10 @@ async function runtimeProofRow(json, filePath, context) {
   const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
   const ledger = await ledgerFacetWithComputeArtifactOverlay(json, context.repoRoot, path.dirname(filePath));
   const runtimeProofArtifactRaw = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifactRaw);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifactRaw,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const proofLedger = compactObject(
     json.proofLedger
     ?? json.proof_ledger
@@ -13172,7 +13187,10 @@ async function agentSplitRow(records, filePath, context) {
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(waitDetail ?? {});
   const recomputedLedger = runModeLedgerFacet(waitDetail ?? {}, runtimeProofArtifact);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const sourceAdaptation = sourceAdaptationProofFacet(
     waitDetail,
     runtimeProofArtifact,
@@ -13483,7 +13501,10 @@ async function hiprtWarmRow(json, filePath, context) {
   const strict = compactObject(json.strictHmrProvenance ?? json.strict_hmr_provenance);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
-  const runtimeProofArtifactProof = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactProof = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const runtimeProbeInstrumentation = runtimeProbeInstrumentationDisclosureFacet(
     json.runtimeProbeInstrumentation,
     json.runtime_probe_instrumentation,
@@ -13728,7 +13749,10 @@ async function hiprtWarmRow(json, filePath, context) {
 
 async function webGpuRuntimeVisualRow(json, filePath, context) {
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const visualArtifacts = compactObject(
     json.visualOracleArtifacts
     ?? json.visual_oracle_artifacts
@@ -13901,7 +13925,10 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
 async function webGpuRuntimeComputeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
@@ -14086,7 +14113,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
 async function hipModuleRuntimeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
@@ -14358,7 +14388,10 @@ async function hipModuleRuntimeRow(json, filePath, context) {
 async function openClRuntimeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
@@ -14613,7 +14646,10 @@ async function openClRuntimeRow(json, filePath, context) {
 async function vulkanRuntimeRow(json, filePath, context) {
   const ledger = ledgerFacet(json);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
@@ -19008,7 +19044,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const evidence = compactObject(json.evidence);
   const checks = Array.isArray(json.checks) ? json.checks : [];
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const ledger = await runModeLedgerFacetWithComputeArtifactOverlay(
     json,
     runtimeProofArtifact,
@@ -20947,7 +20986,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
   const runtimeProofArtifact = runtimeProofArtifactFromValue(json);
   const ledger = runModeLedgerFacet(json, runtimeProofArtifact);
-  const runtimeProofArtifactGate = runtimeProofArtifactFacet(runtimeProofArtifact);
+  const runtimeProofArtifactGate = runtimeProofArtifactFacet(
+    runtimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
   const runtimeProbeInstrumentation = runtimeProbeInstrumentationDisclosureFacet(
     json.runtimeProbeInstrumentation,
     json.runtime_probe_instrumentation,

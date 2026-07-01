@@ -1,3 +1,13 @@
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { evaluateGpuHmrAcceptanceContract } from './gpu-hmr-acceptance-contract.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 
@@ -27,6 +37,14 @@ const ACCEPTED_PROOF_LEDGER_SOURCE_CONSISTENCY_MODES = new Set([
   'derived_only',
   'explicit_vs_derived',
 ]);
+const MODULE_FILE_PATH = fileURLToPath(import.meta.url);
+const MODULE_DIR = path.dirname(MODULE_FILE_PATH);
+const DEFAULT_VISUAL_ARTIFACT_ROOTS = [
+  process.cwd(),
+  path.resolve(MODULE_DIR, '../..'),
+  path.resolve(MODULE_DIR, '../../..'),
+  path.resolve(MODULE_DIR, '../../../..'),
+];
 
 function sortedCodes(values) {
   return compactStrings((Array.isArray(values) ? values : [])
@@ -187,6 +205,91 @@ function contentAddressedSha256(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? '').trim());
 }
 
+function normalizeSha256(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return contentAddressedSha256(text) ? text : null;
+}
+
+function sha256Bytes(buffer) {
+  return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function fileUrlToPathMaybe(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/^file:\/\//iu.test(text)) {
+    try {
+      return fileURLToPath(text);
+    } catch {
+      return null;
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(text)) return null;
+  return text;
+}
+
+function uniqueRealRoots(values) {
+  const roots = [];
+  const seen = new Set();
+  for (const raw of compactStrings(values)) {
+    try {
+      const resolved = realpathSync(path.resolve(raw));
+      const key = resolved.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        roots.push(resolved);
+      }
+    } catch {
+      // Non-existent artifact roots cannot safely authorize file evidence.
+    }
+  }
+  return roots;
+}
+
+function pathInsideRoot(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function visualArtifactRoots(options = {}) {
+  return uniqueRealRoots([
+    ...DEFAULT_VISUAL_ARTIFACT_ROOTS,
+    ...compactStrings(options.visualArtifactRoots ?? options.visual_artifact_roots),
+  ]);
+}
+
+function resolveReadableVisualArtifactPath(rawPath, roots) {
+  const pathText = fileUrlToPathMaybe(rawPath);
+  if (!pathText || roots.length === 0) return null;
+  const candidates = path.isAbsolute(pathText)
+    ? [path.resolve(pathText)]
+    : roots.map((root) => path.resolve(root, pathText));
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
+      const realPath = realpathSync(candidate);
+      if (!roots.some((root) => pathInsideRoot(realPath, root))) continue;
+      return realPath;
+    } catch {
+      // Keep trying the next candidate.
+    }
+  }
+  return null;
+}
+
+function visualArtifactByteHash(entry, roots) {
+  const resolvedPath = resolveReadableVisualArtifactPath(entry?.path, roots);
+  if (!resolvedPath) return null;
+  try {
+    return {
+      resolvedPath,
+      hash: sha256Bytes(readFileSync(resolvedPath)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function visualArtifactObjects(record) {
   const oracleArtifacts = firstObject(record.oracle_artifacts, record.oracleArtifacts);
   const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
@@ -289,9 +392,10 @@ function recordClaimsVisualOutput(record) {
     || visualArtifactsPresent(record);
 }
 
-function visualOracleDeclarationFailures(proofLedger) {
+function visualOracleDeclarationFailures(proofLedger, options = {}) {
   const records = ledgerRecords(proofLedger).filter(recordClaimsVisualOutput);
   if (records.length === 0) return [];
+  const roots = visualArtifactRoots(options);
   const entries = records.flatMap((record) =>
     visualArtifactObjects(record).flatMap((object) => visualArtifactEntriesFromValue(object))
   );
@@ -303,6 +407,23 @@ function visualOracleDeclarationFailures(proofLedger) {
     .map((entry) => entry.hash)
     .filter((hash) => hash !== undefined && hash !== null && String(hash).trim() !== '');
   const allDeclaredHashesContentAddressed = declaredHashes.every(contentAddressedSha256);
+  const byteBackedRoleFailures = ['before', 'after', 'diff'].flatMap((role) => {
+    const roleEntries = entries.filter((entry) => entry.role === role);
+    const hashedEntries = roleEntries.filter((entry) => normalizeSha256(entry.hash));
+    if (hashedEntries.length === 0) return [];
+    const validations = hashedEntries.map((entry) => ({
+      expectedHash: normalizeSha256(entry.hash),
+      actual: visualArtifactByteHash(entry, roots),
+    }));
+    const readable = validations.filter((validation) => validation.actual);
+    const matched = readable.some((validation) =>
+      validation.expectedHash === validation.actual.hash
+    );
+    return compactStrings([
+      readable.length > 0 ? null : `visual_oracle_${role}_image_bytes_unreadable`,
+      matched ? null : `visual_oracle_${role}_image_hash_mismatch`,
+    ]);
+  });
   return compactStrings([
     entries.length > 0 ? null : 'visual_oracle_artifacts_missing',
     hasRole('before') ? null : 'visual_oracle_before_image_missing',
@@ -312,6 +433,7 @@ function visualOracleDeclarationFailures(proofLedger) {
     hasContentAddressedHash('after') ? null : 'visual_oracle_after_image_hash_missing',
     hasContentAddressedHash('diff') ? null : 'visual_oracle_diff_image_hash_missing',
     allDeclaredHashesContentAddressed ? null : 'visual_oracle_image_hash_not_content_addressed',
+    ...byteBackedRoleFailures,
   ]);
 }
 
@@ -466,7 +588,7 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
       ) {
         failures.push('proof_ledger_query_mismatch');
       }
-      failures.push(...visualOracleDeclarationFailures(proofLedger));
+      failures.push(...visualOracleDeclarationFailures(proofLedger, options));
     }
     if (!proofLedgerQuery) {
       failures.push('proof_ledger_query_missing');

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   adversarialPreflightStrictGate,
   runtimeProofArtifactStrictGate,
@@ -16,6 +19,30 @@ const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
+const SELF_CHECK_ARTIFACT_DIR = path.join(
+  process.cwd(),
+  '.gpu-hmr-test-logs',
+  'strict-gates-self-check',
+);
+mkdirSync(SELF_CHECK_ARTIFACT_DIR, { recursive: true });
+
+function sha256Bytes(buffer) {
+  return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function writeVisualArtifact(name, bytes) {
+  const filePath = path.join(SELF_CHECK_ARTIFACT_DIR, name);
+  const buffer = Buffer.from(bytes);
+  writeFileSync(filePath, buffer);
+  return {
+    path: filePath,
+    hash: sha256Bytes(buffer),
+  };
+}
+
+const VISUAL_BEFORE = writeVisualArtifact('before-frame.bin', [0x89, 0x50, 0x4e, 0x47, 1]);
+const VISUAL_AFTER = writeVisualArtifact('after-frame.bin', [0x89, 0x50, 0x4e, 0x47, 2]);
+const VISUAL_DIFF = writeVisualArtifact('diff-frame.bin', [0x89, 0x50, 0x4e, 0x47, 3]);
 
 function modelAvailabilityFields() {
   return {
@@ -117,7 +144,7 @@ function deterministicVisualMode() {
   };
 }
 
-function visualOracleArtifacts() {
+function visualOracleArtifacts(overrides = {}) {
   return {
     before_image: 'memory://visual-before.png',
     after_image: 'memory://visual-after.png',
@@ -149,7 +176,35 @@ function visualOracleArtifacts() {
       diff_image_hash_verified: true,
       metrics_verified: true,
     },
+    ...overrides,
   };
+}
+
+function byteBackedVisualOracleArtifacts(overrides = {}) {
+  return visualOracleArtifacts({
+    before_image: VISUAL_BEFORE.path,
+    beforeImage: VISUAL_BEFORE.path,
+    before_image_hash: VISUAL_BEFORE.hash,
+    beforeImageHash: VISUAL_BEFORE.hash,
+    after_image: VISUAL_AFTER.path,
+    afterImage: VISUAL_AFTER.path,
+    after_image_hash: VISUAL_AFTER.hash,
+    afterImageHash: VISUAL_AFTER.hash,
+    diff_image: VISUAL_DIFF.path,
+    diffImage: VISUAL_DIFF.path,
+    diff_image_hash: VISUAL_DIFF.hash,
+    diffImageHash: VISUAL_DIFF.hash,
+    visual_pixel_verification: {
+      before_image_hash: VISUAL_BEFORE.hash,
+      after_image_hash: VISUAL_AFTER.hash,
+      diff_image_hash: VISUAL_DIFF.hash,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      metrics_verified: true,
+    },
+    ...overrides,
+  });
 }
 
 function timingMetrics(overrides = {}) {
@@ -477,6 +532,17 @@ const webgpuComputeOnlyLedger = buildGpuHmrProofLedger(ledgerRecord({
     evidence_refs: ['runtime:webgpu-compute-readback'],
   },
 }));
+const byteBackedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts(),
+  },
+}));
+const byteBackedVisualArtifact = runtimeArtifact({
+  proofId: 'strict-visual-runtime-proof-artifact:byte-backed-pass',
+  proofLedger: byteBackedVisualLedger,
+  proofLedgerQuery: byteBackedVisualLedger.query,
+  deterministicVisualModeEvaluation: { accepted: true },
+});
 
 assert.equal(adversarialPreflightStrictGate(passingPreflight).status, 'pass');
 assert.equal(runtimeProofArtifactStrictGate(passingArtifact).status, 'pass');
@@ -484,6 +550,7 @@ assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
   proofLedger: webgpuComputeOnlyLedger,
   proofLedgerQuery: webgpuComputeOnlyLedger.query,
 })).status, 'pass');
+assert.equal(runtimeProofArtifactStrictGate(byteBackedVisualArtifact).status, 'pass');
 assert.equal(strictProofGateFailures([
   adversarialPreflightStrictGate(passingPreflight),
   runtimeProofArtifactStrictGate(passingArtifact),
@@ -655,6 +722,41 @@ assert.match(
     proofLedgerQuery: buildGpuHmrProofLedger(visualLedgerRecord()).query,
   }).detail,
   /deterministic_visual_mode_missing/,
+);
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:descriptor-only-refused',
+    proofLedger: buildGpuHmrProofLedger(visualLedgerRecord()),
+    proofLedgerQuery: buildGpuHmrProofLedger(visualLedgerRecord()).query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_before_image_bytes_unreadable/,
+);
+const forgedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      after_image_hash: VISUAL_BEFORE.hash,
+      afterImageHash: VISUAL_BEFORE.hash,
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_BEFORE.hash,
+        after_image_hash: VISUAL_BEFORE.hash,
+        diff_image_hash: VISUAL_DIFF.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:hash-mismatch-refused',
+    proofLedger: forgedVisualLedger,
+    proofLedgerQuery: forgedVisualLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_after_image_hash_mismatch/,
 );
 assert.match(
   runtimeProofArtifactStrictGates([], { requireAtLeastOne: true })[0].detail,
