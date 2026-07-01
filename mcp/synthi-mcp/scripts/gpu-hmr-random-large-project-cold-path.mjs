@@ -14,6 +14,8 @@ const AUTHORITY = 'random_large_project_cold_path_selection_only_not_gpu_hmr_suc
 const DIRECT_SOURCE_INPUT_SCHEMA = 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
+  'source_identity_hash_bound_to_direct_input_not_whitelist';
 const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
 const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_discovery.v1';
@@ -332,7 +334,13 @@ function directSourceInputEvidence({
     sourceKind,
     hasSourceUrl: Boolean(String(sourceUrl ?? '').trim()),
     hasRepoPath: Boolean(String(repoPath ?? '').trim()),
-    immutableCommit: String(immutableCommit ?? '').trim(),
+    sourceUrlHash: String(sourceUrl ?? '').trim()
+      ? contentHash(String(sourceUrl ?? '').trim())
+      : null,
+    repoPathHash: String(repoPath ?? '').trim()
+      ? contentHash(String(repoPath ?? '').trim())
+      : null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
     inputChannels: channels,
   };
   const sourceIdentityHash = contentHash(stableJson(seed));
@@ -370,8 +378,8 @@ function directSourceInputEvidence({
     candidate_source: candidateSource,
     sourceKind,
     source_kind: sourceKind,
-    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
-    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    sourceIdentityRole: DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    source_identity_role: DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     targetNameIndependent: true,
     target_name_independent: true,
     projectNameWhitelist: [],

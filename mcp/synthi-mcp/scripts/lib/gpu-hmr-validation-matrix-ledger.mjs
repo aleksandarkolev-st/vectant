@@ -207,6 +207,8 @@ const RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
+const RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
+  'source_identity_hash_bound_to_direct_input_not_whitelist';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
@@ -1684,7 +1686,31 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
   };
 }
 
-function randomColdDirectSourceInputEvidenceFacet(input = {}) {
+function randomColdDirectSourceIdentityHash({
+  candidateSource,
+  sourceKind,
+  sourceUrl,
+  repoPath,
+  immutableCommit,
+  inputChannels,
+} = {}) {
+  const normalizedSourceUrl = String(sourceUrl ?? '').trim();
+  const normalizedRepoPath = String(repoPath ?? '').trim();
+  const seed = {
+    schemaVersion: RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    candidateSource: String(candidateSource ?? '').trim(),
+    sourceKind: String(sourceKind ?? '').trim(),
+    hasSourceUrl: Boolean(normalizedSourceUrl),
+    hasRepoPath: Boolean(normalizedRepoPath),
+    sourceUrlHash: normalizedSourceUrl ? `sha256:${sha256Hex(normalizedSourceUrl)}` : null,
+    repoPathHash: normalizedRepoPath ? `sha256:${sha256Hex(normalizedRepoPath)}` : null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
+    inputChannels: compactStringList(inputChannels),
+  };
+  return `sha256:${sha256Hex(stableJson(seed))}`;
+}
+
+function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
@@ -1732,6 +1758,23 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}) {
     : candidateSource === 'direct_source_url_commit'
       ? 'source_url_commit'
       : null;
+  const requireSourceIdentityHash = firstBool(
+    context.requireSourceIdentityHash,
+    context.require_source_identity_hash,
+  ) === true;
+  const expectedSourceIdentityHash = requireSourceIdentityHash
+    ? randomColdDirectSourceIdentityHash({
+      candidateSource,
+      sourceKind,
+      sourceUrl: firstText(context.sourceUrl, context.source_url),
+      repoPath: firstText(context.repoPath, context.repo_path),
+      immutableCommit: firstText(context.immutableCommit, context.immutable_commit),
+      inputChannels,
+    })
+    : null;
+  const sourceIdentityHashMatchesContext = expectedSourceIdentityHash
+    ? sourceIdentityHash === expectedSourceIdentityHash
+    : null;
   const failedGates = compactStringList([
     present ? null : 'random_cold_direct_input_evidence_missing',
     present && schemaVersion !== RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION
@@ -1757,7 +1800,7 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}) {
     present && cliOrEnvChannelObserved !== true
       ? 'random_cold_direct_input_cli_or_env_channel_missing'
       : null,
-    present && sourceIdentityRole !== 'identity_presence_and_immutable_commit_only_not_whitelist'
+    present && sourceIdentityRole !== RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE
       ? 'random_cold_direct_input_source_identity_role_invalid'
       : null,
     present && firstBool(facet.targetNameIndependent, facet.target_name_independent) !== true
@@ -1777,6 +1820,9 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}) {
       : null,
     present && !/^sha256:[a-f0-9]{64}$/i.test(sourceIdentityHash ?? '')
       ? 'random_cold_direct_input_hash_missing'
+      : null,
+    present && requireSourceIdentityHash && sourceIdentityHashMatchesContext !== true
+      ? 'random_cold_direct_input_source_identity_hash_mismatch'
       : null,
     present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       ? 'random_cold_direct_input_claimed_gpu_hmr_acceptance'
@@ -1823,6 +1869,10 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}) {
     specific_target_ids_allowed: specificTargetIdsAllowed,
     sourceIdentityHash,
     source_identity_hash: sourceIdentityHash,
+    expectedSourceIdentityHash,
+    expected_source_identity_hash: expectedSourceIdentityHash,
+    sourceIdentityHashMatchesContext,
+    source_identity_hash_matches_context: sourceIdentityHashMatchesContext,
     failedGates,
     failed_gates: failedGates,
   };
@@ -1855,6 +1905,15 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     result.canSatisfyRuntimeProof,
     result.can_satisfy_runtime_proof,
   );
+  const candidateSource = firstText(candidate.candidateSource, candidate.candidate_source);
+  const sourceUrl = firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url);
+  const repoPath = firstText(result.repoPath, result.repo_path, candidate.repoPath, candidate.repo_path);
+  const immutableCommit = firstText(
+    result.immutableCommit,
+    result.immutable_commit,
+    candidate.immutableCommit,
+    candidate.immutable_commit,
+  );
   const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
     candidate.directInputEvidence,
     candidate.direct_input_evidence,
@@ -1862,7 +1921,12 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     result.direct_input_evidence,
     json.directInputEvidence,
     json.direct_input_evidence,
-  ));
+  ), {
+    requireSourceIdentityHash: true,
+    sourceUrl,
+    repoPath,
+    immutableCommit,
+  });
   const failedGates = compactStringList([
     schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION
       ? null
@@ -1924,8 +1988,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     selected_candidate_count: selectedIds.length,
     candidateId: firstText(result.candidateId, result.candidate_id, candidate.id),
     candidate_id: firstText(result.candidateId, result.candidate_id, candidate.id),
-    candidateSource: firstText(candidate.candidateSource, candidate.candidate_source),
-    candidate_source: firstText(candidate.candidateSource, candidate.candidate_source),
+    candidateSource,
+    candidate_source: candidateSource,
     directInputEvidence,
     direct_input_evidence: directInputEvidence,
     sizeSignals: firstCompactObject(
@@ -1942,20 +2006,12 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     ),
     profileMode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
     profile_mode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
-    sourceUrl: firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url),
-    source_url: firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url),
-    immutableCommit: firstText(
-      result.immutableCommit,
-      result.immutable_commit,
-      candidate.immutableCommit,
-      candidate.immutable_commit,
-    ),
-    immutable_commit: firstText(
-      result.immutableCommit,
-      result.immutable_commit,
-      candidate.immutableCommit,
-      candidate.immutable_commit,
-    ),
+    sourceUrl,
+    source_url: sourceUrl,
+    repoPath,
+    repo_path: repoPath,
+    immutableCommit,
+    immutable_commit: immutableCommit,
     selectionHash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
     selection_hash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
     pendingManifestHash: normalizeSha256(firstText(
@@ -20776,6 +20832,14 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     candidate.sourceUrl,
     candidate.source_url,
   );
+  const repoPath = firstText(
+    randomLargeProjectColdPath.repoPath,
+    randomLargeProjectColdPath.repo_path,
+    result.repoPath,
+    result.repo_path,
+    candidate.repoPath,
+    candidate.repo_path,
+  );
   const immutableCommit = firstText(
     randomLargeProjectColdPath.immutableCommit,
     result.immutableCommit,
@@ -20865,6 +20929,8 @@ function randomLargeProjectColdPathRow(json, filePath, context) {
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
     sourceUrl,
     source_url: sourceUrl,
+    repoPath,
+    repo_path: repoPath,
     immutableCommit,
     immutable_commit: immutableCommit,
     sourceTreeIntakeAccepted: coldSourceTreeIntake.accepted === true,
@@ -21571,12 +21637,6 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
     );
-    const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
-      facet.directInputEvidence,
-      facet.direct_input_evidence,
-      row.randomColdPathDirectInputEvidence,
-      row.random_cold_path_direct_input_evidence,
-    ));
     const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
       intake.buildMetadataContentEvidence,
       intake.build_metadata_content_evidence,
@@ -21596,12 +21656,29 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
     );
     const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
     const repoPath = firstText(facet.repoPath, facet.repo_path, row.repoPath, row.repo_path);
+    const immutableCommit = firstText(
+      facet.immutableCommit,
+      facet.immutable_commit,
+      row.immutableCommit,
+      row.immutable_commit,
+    );
     const candidateSource = firstText(
       facet.candidateSource,
       facet.candidate_source,
       row.candidateSource,
       row.candidate_source,
     );
+    const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
+      facet.directInputEvidence,
+      facet.direct_input_evidence,
+      row.randomColdPathDirectInputEvidence,
+      row.random_cold_path_direct_input_evidence,
+    ), {
+      requireSourceIdentityHash: true,
+      sourceUrl,
+      repoPath,
+      immutableCommit,
+    });
     const sizeSignals = firstCompactObject(
       facet.sizeSignals,
       facet.size_signals,
@@ -21609,12 +21686,6 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       row.size_signals,
     );
     const inputMode = firstText(sizeSignals.inputMode, sizeSignals.input_mode);
-    const immutableCommit = firstText(
-      facet.immutableCommit,
-      facet.immutable_commit,
-      row.immutableCommit,
-      row.immutable_commit,
-    );
     const directUserColdInput = candidateSource === 'direct_source_url_commit'
       || candidateSource === 'direct_local_git_repo_path';
     const directInputModeProven = inputMode === 'cli_or_env_direct_source';
@@ -21624,7 +21695,8 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       && directInputEvidence.candidateSource === candidateSource
       && directInputEvidence.targetNameIndependent === true
       && directInputEvidence.projectNameWhitelist.length === 0
-      && directInputEvidence.specificTargetIdsAllowed.length === 0;
+      && directInputEvidence.specificTargetIdsAllowed.length === 0
+      && directInputEvidence.sourceIdentityHashMatchesContext === true;
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
       && directInputModeProven
@@ -21744,8 +21816,8 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
     project_name_whitelist: [],
     specificTargetIdsAllowed: [],
     specific_target_ids_allowed: [],
-    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
-    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    sourceIdentityRole: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    source_identity_role: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     acceptedCandidateSources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     accepted_candidate_sources: ['direct_source_url_commit', 'direct_local_git_repo_path'],
     requiredProfileMode: 'unprofiled_arbitrary_project_cold_intake',

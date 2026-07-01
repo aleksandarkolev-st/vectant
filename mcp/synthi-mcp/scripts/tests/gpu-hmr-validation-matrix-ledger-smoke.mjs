@@ -1473,14 +1473,17 @@ function randomColdDirectInputEvidenceFixture({
   const inputChannels = candidateSource === 'direct_local_git_repo_path'
     ? ['cli_arg_repo_path', 'cli_arg_commit']
     : ['cli_arg_source_url', 'cli_arg_commit'];
-  const sourceIdentityHash = hashValue(JSON.stringify({
+  const sourceIdentityHash = contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
     candidateSource,
     sourceKind,
-    sourceUrlPresent: Boolean(sourceUrl),
-    repoPathPresent: Boolean(repoPath),
-    immutableCommit,
+    hasSourceUrl: Boolean(sourceUrl),
+    hasRepoPath: Boolean(repoPath),
+    sourceUrlHash: sourceUrl ? hashValue(sourceUrl) : null,
+    repoPathHash: repoPath ? hashValue(repoPath) : null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
     inputChannels,
-  }));
+  });
   return {
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
     schema_version: 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1',
@@ -1503,8 +1506,8 @@ function randomColdDirectInputEvidenceFixture({
     candidate_source: candidateSource,
     sourceKind,
     source_kind: sourceKind,
-    sourceIdentityRole: 'identity_presence_and_immutable_commit_only_not_whitelist',
-    source_identity_role: 'identity_presence_and_immutable_commit_only_not_whitelist',
+    sourceIdentityRole: 'source_identity_hash_bound_to_direct_input_not_whitelist',
+    source_identity_role: 'source_identity_hash_bound_to_direct_input_not_whitelist',
     targetNameIndependent: true,
     target_name_independent: true,
     projectNameWhitelist: [],
@@ -7822,11 +7825,13 @@ function randomColdReadinessMatrixRow({
     && inputMode
     && (candidateSource === 'direct_source_url_commit'
       || candidateSource === 'direct_local_git_repo_path')
-    ? randomColdDirectInputEvidenceFixture({
-      candidateSource,
-      sourceUrl,
-      immutableCommit,
-    })
+    ? directInputEvidence === true
+      ? randomColdDirectInputEvidenceFixture({
+        candidateSource,
+        sourceUrl,
+        immutableCommit,
+      })
+      : directInputEvidence
     : null;
   const directInputEvidenceFields = directInputEvidenceFacet
     ? {
@@ -8687,6 +8692,45 @@ assert.ok(
   broadReadinessWithMissingDirectInputEvidenceQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessMismatchedDirectInputRows = Array.from({ length: 5 }, (_, index) => {
+  const immutableCommit = sha256Hex(`mismatched-direct-input-evidence-commit-${index + 1}`)
+    .slice(0, 40);
+  return randomColdReadinessMatrixRow({
+    targetId: `mismatched-direct-input-evidence-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/direct-input-row/project-${index + 1}.git`,
+    immutableCommit,
+    directInputEvidence: randomColdDirectInputEvidenceFixture({
+      sourceUrl: `https://example.invalid/replayed-direct-input/project-${index + 1}.git`,
+      immutableCommit,
+    }),
+  });
+});
+const broadReadinessWithMismatchedDirectInputQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessMismatchedDirectInputRows,
+  ],
+});
+assert.equal(broadReadinessWithMismatchedDirectInputQuery.accepted, true);
+assert.equal(
+  broadReadinessWithMismatchedDirectInputQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithMismatchedDirectInputQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithMismatchedDirectInputQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithMismatchedDirectInputQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessDiscoveryOnlyBuildRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `discovery-only-build-metadata-cold-readiness-${index + 1}`,
@@ -9208,7 +9252,7 @@ assert.equal(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.sourceIdentityRole,
-  'identity_presence_and_immutable_commit_only_not_whitelist',
+  'source_identity_hash_bound_to_direct_input_not_whitelist',
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
