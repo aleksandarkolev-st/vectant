@@ -1545,6 +1545,8 @@ function randomColdBuildMetadataContentEvidenceFixture({
   canSatisfyRuntimeProof = false,
   canSatisfyDispatchProof = false,
   contentEvidenceHashOverride = null,
+  includeByteLength = true,
+  includeTransport = true,
 } = {}) {
   const buildFiles = accepted
     ? [
@@ -1552,9 +1554,17 @@ function randomColdBuildMetadataContentEvidenceFixture({
         path: 'CMakeLists.txt',
         contentHash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
         content_hash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
-        byteLength: 4096,
-        byte_length: 4096,
-        transport: 'git_show_immutable_commit',
+        ...(includeByteLength
+          ? {
+            byteLength: 4096,
+            byte_length: 4096,
+          }
+          : {}),
+        ...(includeTransport
+          ? {
+            transport: 'git_show_immutable_commit',
+          }
+          : {}),
       },
     ]
     : [];
@@ -9109,6 +9119,59 @@ assert.equal(
 assert.ok(
   broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const broadReadinessHashOnlyBuildContentRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `hash-only-build-content-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/hash-only-build-content/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`hash-only-build-content-commit-${index + 1}`).slice(0, 40),
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
+      targetId: `hash-only-build-content-${index + 1}`,
+      includeByteLength: false,
+      includeTransport: false,
+    }),
+  })
+);
+const broadReadinessWithHashOnlyBuildContentQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessHashOnlyBuildContentRows,
+  ],
+});
+assert.equal(broadReadinessWithHashOnlyBuildContentQuery.accepted, true);
+assert.equal(
+  broadReadinessWithHashOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithHashOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithHashOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithHashOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const hashOnlyBuildContentCoverage = new Map(
+  broadReadinessWithHashOnlyBuildContentQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  hashOnlyBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'diagnostic_only',
+);
+assert.equal(
+  hashOnlyBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
+);
+assert.ok(
+  hashOnlyBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({

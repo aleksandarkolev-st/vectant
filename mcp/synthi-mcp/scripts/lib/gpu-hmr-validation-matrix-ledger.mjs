@@ -1567,12 +1567,18 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
   const buildFiles = compactObjectList(facet.buildFiles ?? facet.build_files);
   const normalizedBuildFiles = buildFiles.map((file) => {
     const contentHash = normalizeSha256(firstText(file.contentHash, file.content_hash));
+    const byteLength = finiteNumber(
+      file.byteLength
+      ?? file.byte_length
+      ?? file.observedByteLength
+      ?? file.observed_byte_length,
+    );
     return {
       path: firstText(file.path, file.relativePath, file.relative_path) ?? null,
       contentHash,
       content_hash: contentHash,
-      byteLength: finiteNumber(file.byteLength ?? file.byte_length),
-      byte_length: finiteNumber(file.byteLength ?? file.byte_length),
+      byteLength,
+      byte_length: byteLength,
       transport: firstText(file.transport) ?? null,
     };
   });
@@ -1580,6 +1586,19 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     typeof file.path === 'string'
       && file.path.length > 0
       && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+  ).length;
+  const buildFileByteLengthCount = normalizedBuildFiles.filter((file) =>
+    typeof file.path === 'string'
+      && file.path.length > 0
+      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+      && Number.isFinite(file.byteLength)
+      && file.byteLength > 0
+  ).length;
+  const buildFileTransportCount = normalizedBuildFiles.filter((file) =>
+    typeof file.path === 'string'
+      && file.path.length > 0
+      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+      && Boolean(file.transport)
   ).length;
   const suppliedContentEvidenceHash = normalizeSha256(firstText(
     facet.contentEvidenceHash,
@@ -1629,6 +1648,12 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     present && buildFileHashCount < 1
       ? 'random_cold_build_metadata_content_file_hash_missing'
       : null,
+    present && buildFileHashCount > 0 && buildFileByteLengthCount < buildFileHashCount
+      ? 'random_cold_build_metadata_content_file_byte_length_missing'
+      : null,
+    present && buildFileHashCount > 0 && buildFileTransportCount < buildFileHashCount
+      ? 'random_cold_build_metadata_content_file_transport_missing'
+      : null,
     present && !/^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
       ? 'random_cold_build_metadata_content_hash_missing'
       : null,
@@ -1673,6 +1698,10 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     accepted_build_file_count: acceptedBuildFileCount,
     buildFileHashCount,
     build_file_hash_count: buildFileHashCount,
+    buildFileByteLengthCount,
+    build_file_byte_length_count: buildFileByteLengthCount,
+    buildFileTransportCount,
+    build_file_transport_count: buildFileTransportCount,
     buildFiles: normalizedBuildFiles,
     build_files: normalizedBuildFiles,
     contentEvidenceHash: accepted ? suppliedContentEvidenceHash : null,
