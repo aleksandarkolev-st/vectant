@@ -11768,6 +11768,9 @@ function rowSafetyFailures(row, context = {}) {
     if (row.runtimeProofArtifact?.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
     }
+    if (!rowHasAcceptedOutputOracleClosure(row)) {
+      failures.push({ code: 'gpu_hmr_success_requires_accepted_output_oracle_facet' });
+    }
     const missingDependencyProbe = compactObject(
       row.realRocmMissingDependencyProbe
       ?? row.real_rocm_missing_dependency_probe
@@ -20439,6 +20442,32 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   );
   const asyncVisualProofJob = rawAsyncVisualProofJob(json);
   const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
+  const declaredOutputOracleFacet = compactObject(
+    json.outputOracleFacet
+    ?? json.output_oracle_facet
+    ?? json.outputOracle
+    ?? json.output_oracle,
+  );
+  const outputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
+    ? declaredOutputOracleFacet
+    : {
+      kind: 'visual_oracle',
+      oracleKind: 'visual_oracle',
+      oracle_kind: 'visual_oracle',
+      accepted: visual.accepted === true && visual.present === true,
+      proofAuthority: 'matrix_recomputed_visual_oracle_artifacts_not_gpu_hmr_success',
+      proof_authority: 'matrix_recomputed_visual_oracle_artifacts_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      visualAccepted: visual.accepted === true,
+      visual_accepted: visual.accepted === true,
+      failedGates: visual.accepted === true ? [] : ['visual_artifacts_not_accepted'],
+      failed_gates: visual.accepted === true ? [] : ['visual_artifacts_not_accepted'],
+    };
   const asyncVisualProofJobBindingAccepted =
     asyncVisualCasBundle.asyncVisualProofJobPresent !== true
     || asyncVisualCasBundle.asyncVisualProofJobBinding?.accepted === true;
@@ -20618,6 +20647,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     async_visual_proof_job: asyncVisualProofJob,
     asyncVisualCasBundle,
     async_visual_cas_bundle: asyncVisualCasBundle,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     visual,
     runMode,
     cpuHmrUsed,
@@ -21469,6 +21500,21 @@ function rowHasAcceptedComputeEvidence(row) {
       === 'compute_oracle'
   )
     || computeCardOnlyProofAccepted;
+}
+
+function rowHasAcceptedVisualOutputOracle(row) {
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  return firstBool(outputOracle.accepted) === true
+    && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind) === 'visual_oracle'
+    && rowHasAcceptedVisualEvidence(row);
+}
+
+function rowHasAcceptedOutputOracleClosure(row) {
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const kind = firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind);
+  if (kind === 'visual_oracle') return rowHasAcceptedVisualOutputOracle(row);
+  if (kind === 'compute_oracle') return rowHasAcceptedComputeEvidence(row);
+  return rowHasAcceptedComputeEvidence(row);
 }
 
 function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {

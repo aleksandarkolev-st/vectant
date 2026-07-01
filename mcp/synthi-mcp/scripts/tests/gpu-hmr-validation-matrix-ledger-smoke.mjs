@@ -9037,7 +9037,10 @@ const broadReadinessWithoutVisualOutputOracleFacetQuery = queryGpuHmrValidationM
     ...broadReadinessRandomColdRows,
   ],
 });
-assert.equal(broadReadinessWithoutVisualOutputOracleFacetQuery.accepted, true);
+assert.equal(broadReadinessWithoutVisualOutputOracleFacetQuery.accepted, false);
+assert.ok(broadReadinessWithoutVisualOutputOracleFacetQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_accepted_output_oracle_facet'
+));
 assert.equal(
   broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness.accepted,
   false,
