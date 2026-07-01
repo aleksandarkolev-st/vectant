@@ -56,6 +56,8 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
     collisionForecast: {
       riskLevel: 'unknown',
       risks: [],
+      runwayOccupancy: [],
+      wakeTurbulence: [],
     },
   };
 }
@@ -99,6 +101,8 @@ export function normalizeCodeSiteRadarState({
     collisionForecast: {
       ...forecast,
       risks: Array.isArray(forecast?.risks) ? forecast.risks : [],
+      runwayOccupancy: Array.isArray(forecast?.runwayOccupancy) ? forecast.runwayOccupancy : [],
+      wakeTurbulence: Array.isArray(forecast?.wakeTurbulence) ? forecast.wakeTurbulence : [],
     },
   };
 }

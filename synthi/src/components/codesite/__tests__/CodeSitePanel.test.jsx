@@ -311,6 +311,16 @@ function radarState() {
       collisionForecast: {
         riskLevel: 'medium',
         risks: [{ risk: 'write_overlap', severity: 'medium', conflictZone: 'api/checkout/**' }],
+        runwayOccupancy: [{
+          runway: 'api/checkout/**',
+          route: ['api/checkout/**'],
+          occupiedBy: 'ATLAS-1',
+          mutationLeaseId: 'lease-1',
+          runwayClass: 'B',
+          diffPaths: ['api/checkout/route.js'],
+          pendingInspections: ['api_contract_radar', 'landing_inspection', 'inspection:QA-1'],
+          eligibleFlights: ['QA-1', 'DOCS-2'],
+        }],
       },
     },
     metrics: {
@@ -432,6 +442,14 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Airspace Map');
+    expect(container.textContent).toContain('Runway Occupancy');
+    const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
+    expect(runwayRow.textContent).toContain('api/checkout/**');
+    expect(runwayRow.textContent).toContain('ATLAS-1');
+    expect(runwayRow.textContent).toContain('api/checkout/route.js');
+    expect(runwayRow.textContent).toContain('api_contract_radar');
+    expect(runwayRow.textContent).toContain('inspection:QA-1');
+    expect(runwayRow.textContent).toContain('QA-1');
     expect(container.textContent).toContain('Success Metrics');
     expect(container.textContent).toContain('Collisions avoided');
     expect(container.textContent).toContain('CodeSiteFS blocked writes');

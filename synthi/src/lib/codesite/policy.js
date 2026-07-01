@@ -675,14 +675,16 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   return { ok: true, reasonCodes: ['inside_clearance_route'], zone, path: rel };
 }
 
-export function predictCollisions({ executionPlans, leases, zonePolicy }) {
+export function predictCollisions({ executionPlans, leases, transactions = [], inspectionRuns = [], zonePolicy }) {
   const plans = asArray(executionPlans);
   const activeLeases = asArray(leases).filter((lease) => lease.status === 'active');
+  const activeTransactions = asArray(transactions).filter((txn) => ['open', 'validated', 'blocked'].includes(String(txn.status || '').toLowerCase()));
+  const inspections = asArray(inspectionRuns);
   const risks = [];
   const riskKeys = new Set();
   const semanticGraph = zonePolicy?.semanticGraph || {};
   const footprints = new Map(plans.map((plan) => [plan, semanticFootprint(plan, semanticGraph)]));
-  const runwayOccupancy = buildRunwayOccupancy(activeLeases, plans, zonePolicy);
+  const runwayOccupancy = buildRunwayOccupancy(activeLeases, plans, zonePolicy, activeTransactions, inspections);
 
   for (let i = 0; i < plans.length; i += 1) {
     for (let j = i + 1; j < plans.length; j += 1) {
@@ -756,15 +758,20 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   };
 }
 
-function buildRunwayOccupancy(activeLeases, plans, zonePolicy) {
+function buildRunwayOccupancy(activeLeases, plans, zonePolicy, activeTransactions = [], inspectionRuns = []) {
   return activeLeases.map((lease) => {
     const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
     const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
+    const transactionDiffPaths = asArray(activeTransactions)
+      .filter((txn) => txn.mutationLeaseId === lease.id)
+      .flatMap(transactionWritePaths);
     const runway = route[0] || null;
     const classes = uniqueStrings(route.map((path) =>
       classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy)?.class || 'C'));
-    const pendingInspections = uniqueStrings(route.flatMap((path) =>
-      defaultRadarForWakePath(path, zonePolicy)));
+    const pendingInspections = uniqueStrings([
+      ...route.flatMap((path) => defaultRadarForWakePath(path, zonePolicy)),
+      ...pendingInspectionLabelsForRoute(route, inspectionRuns),
+    ]);
     const eligibleFlights = plans
       .filter((plan) => {
         const planRoutes = pathsForRoute(plan.route);
@@ -779,11 +786,43 @@ function buildRunwayOccupancy(activeLeases, plans, zonePolicy) {
       occupiedBy: lease.displayCallsign || lease.agentSessionId || lease.id || null,
       mutationLeaseId: lease.id || null,
       runwayClass: classes.includes('A') ? 'A' : (classes.includes('B') ? 'B' : classes[0] || 'C'),
-      diffPaths: uniqueStrings(pathsForRoute(leaseJson?.writeSet || leaseJson?.observedWriteSet || leaseJson?.allowedPaths || [])),
+      diffPaths: uniqueStrings([
+        ...transactionDiffPaths,
+        ...pathsForRoute(leaseJson?.writeSet || leaseJson?.observedWriteSet || []),
+        ...(transactionDiffPaths.length || leaseJson?.writeSet || leaseJson?.observedWriteSet ? [] : pathsForRoute(leaseJson?.allowedPaths || [])),
+      ]),
       pendingInspections,
       eligibleFlights,
     };
   });
+}
+
+function pendingInspectionLabelsForRoute(route, inspectionRuns = []) {
+  return asArray(inspectionRuns)
+    .filter((run) => ['requested', 'running', 'pending'].includes(String(run?.status || '').toLowerCase()))
+    .filter((run) => {
+      const changedPaths = pathsForRoute(run?.changedPaths || run?.changed_paths || parseJsonArray(run?.changedPathsJson));
+      return changedPaths.some((changedPath) =>
+        route.some((routePath) => patternsOverlap(changedPath, routePath) || patternsOverlap(routePath, changedPath)));
+    })
+    .map((run) => `inspection:${run.displayCallsign || run.id}`)
+    .filter(Boolean);
+}
+
+function transactionWritePaths(transaction) {
+  const writeSet = transaction?.writeSet || transaction?.write_set || parseJsonArray(transaction?.writeSetJson);
+  const observedWriteSet = transaction?.observedWriteSet || transaction?.observed_write_set || parseJsonArray(transaction?.observedWriteSetJson);
+  return pathsForRoute([...asArray(writeSet), ...asArray(observedWriteSet)]);
+}
+
+function parseJsonArray(value) {
+  if (!value || typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function wakeTurbulenceRisks({ activeLeases, plans, zonePolicy, semanticGraph }) {

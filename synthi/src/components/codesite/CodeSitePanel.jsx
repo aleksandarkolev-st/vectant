@@ -281,6 +281,51 @@ function MetricsGroup({ title, rows }) {
   );
 }
 
+function RunwayOccupancyBoard({ runways }) {
+  const rows = asArray(runways);
+  if (!rows.length) return <EmptyLine>No occupied runways</EmptyLine>;
+  return (
+    <div data-testid="codesite-runway-occupancy" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+      {rows.map((runway, index) => {
+        const diffPaths = asArray(runway.diffPaths?.length ? runway.diffPaths : runway.route);
+        const pendingInspections = asArray(runway.pendingInspections);
+        const eligibleFlights = asArray(runway.eligibleFlights);
+        return (
+          <div
+            key={`${runway.mutationLeaseId || runway.runway || 'runway'}-${index}`}
+            data-testid="codesite-runway-row"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(136px,0.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)]"
+            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
+          >
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium" title={runway.runway || 'unassigned runway'}>{compact(runway.runway, 'unassigned runway')}</span>
+                <Pill tone={runway.runwayClass === 'A' ? 'holding' : 'active'}>Class {compact(runway.runwayClass, 'C')}</Pill>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill tone="active">{compact(runway.occupiedBy, 'occupied')}</Pill>
+                {runway.mutationLeaseId ? <Pill>{compact(runway.mutationLeaseId, 'lease')}</Pill> : null}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Diff on runway</div>
+              <PathList paths={diffPaths} empty="no diff yet" maxVisible={3} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Pending inspections</div>
+              <PathList paths={pendingInspections} empty="none pending" maxVisible={3} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Can land</div>
+              <PathList paths={eligibleFlights} empty="runway locked" maxVisible={3} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   const list = asArray(paths);
   const visible = list.slice(0, maxVisible);
@@ -839,7 +884,9 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const metricSections = metrics?.sections || {};
   const metricSummary = metrics?.summary || {};
   const hasProjects = radarState.projects.length > 0;
-  const risks = radarState.collisionForecast.risks;
+  const collisionForecast = radarState.collisionForecast || controlState?.collisionForecast || {};
+  const risks = asArray(collisionForecast.risks);
+  const runwayOccupancy = asArray(collisionForecast.runwayOccupancy || controlState?.collisionForecast?.runwayOccupancy);
   const activeFlights = asArray(controlState?.activeFlights);
   const activeLeases = asArray(controlState?.activeMutationLeases);
   const activeTransactions = asArray(controlState?.activeTransactions);
@@ -1039,7 +1086,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
                   <Metric label="Transactions" value={radarState.counts.activeTransactions} />
                   <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
-                  <Metric label="Risk" value={compact(radarState.collisionForecast.riskLevel, 'unknown')} tone={radarState.collisionForecast.riskLevel} />
+                  <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
                 </div>
               </div>
 
@@ -1079,7 +1126,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 />
               </Section>
 
-              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(radarState.collisionForecast.riskLevel)}>{compact(radarState.collisionForecast.riskLevel, 'unknown')}</Pill>}>
+              <Section title="Runway Occupancy" icon={Route} right={<Pill tone={runwayOccupancy.length ? 'holding' : 'active'}>{runwayOccupancy.length}</Pill>}>
+                <RunwayOccupancyBoard runways={runwayOccupancy} />
+              </Section>
+
+              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(collisionForecast.riskLevel)}>{compact(collisionForecast.riskLevel, 'unknown')}</Pill>}>
                 {risks.length === 0 ? (
                   <EmptyLine>No forecasted collisions</EmptyLine>
                 ) : (

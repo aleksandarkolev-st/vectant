@@ -252,7 +252,20 @@ describe('CodeSite airspace policy', () => {
           allowedPaths: ['synthi/prisma/migrations/20260630_add_user/**'],
         }),
       }],
+      transactions: [{
+        id: 'txn-db-1',
+        mutationLeaseId: 'lease-db-1',
+        status: 'open',
+        writeSet: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+      }],
+      inspectionRuns: [{
+        id: 'inspection-db-1',
+        displayCallsign: 'QA-DB-01',
+        status: 'requested',
+        changedPaths: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+      }],
       executionPlans: [
+        { displayCallsign: 'DB-OVERLAP-99', route: ['synthi/prisma/migrations/20260630_add_user/steps.sql'] },
         { displayCallsign: 'TEST-02', route: ['tests/db/**'] },
         { displayCallsign: 'CLIENT-03', route: ['synthi/src/generated/prisma/**'] },
       ],
@@ -263,9 +276,12 @@ describe('CodeSite airspace policy', () => {
         runway: 'synthi/prisma/migrations/20260630_add_user/**',
         occupiedBy: 'DB-01',
         runwayClass: 'A',
-        pendingInspections: expect.arrayContaining(['migration_runway_lock', 'landing_inspection']),
+        diffPaths: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+        pendingInspections: expect.arrayContaining(['migration_runway_lock', 'landing_inspection', 'inspection:QA-DB-01']),
+        eligibleFlights: expect.arrayContaining(['TEST-02', 'CLIENT-03']),
       }),
     ]);
+    expect(forecast.runwayOccupancy[0].eligibleFlights).not.toContain('DB-OVERLAP-99');
     expect(forecast.wakeTurbulence).toEqual(expect.arrayContaining([
       expect.objectContaining({
         risk: 'wake_turbulence',

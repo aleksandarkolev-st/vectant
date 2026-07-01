@@ -4412,6 +4412,8 @@ function buildControlState(workspaceSlug, projection) {
     collisionForecast: predictCollisions({
       executionPlans: projection.executionPlans,
       leases: projection.mutationLeases,
+      transactions: projection.mutationTxns,
+      inspectionRuns: projection.inspectionRuns,
       zonePolicy: projection.zonePolicy,
     }),
     updatedAt: new Date().toISOString(),
