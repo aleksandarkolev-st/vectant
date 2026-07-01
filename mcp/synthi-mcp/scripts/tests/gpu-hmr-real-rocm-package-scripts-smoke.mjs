@@ -9,6 +9,7 @@ const packageRoot = path.resolve(__dirname, '..', '..');
 const packageJsonPath = path.resolve(packageRoot, 'package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
+const packageFiles = new Set(packageJson.files ?? []);
 const largeRocmScripts = [
   'proof:real-rocm:large-ml-miopen',
   'proof:real-rocm:large-ml-composable-kernel',
@@ -55,7 +56,52 @@ function hasUnsafeRelativePath(value) {
   );
 }
 
+function normalizePackagePath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function proofRunnerPathsFromCommand(command) {
+  const normalized = normalizePackagePath(command);
+  const paths = new Set();
+  for (const match of normalized.matchAll(/\bnode\s+(scripts\/[^\s"'`]+\.mjs)\b/g)) {
+    paths.add(match[1]);
+  }
+  for (const match of normalized.matchAll(/import\(['"]\.\/(scripts\/[^'"]+\.mjs)['"]\)/g)) {
+    paths.add(match[1]);
+  }
+  return [...paths].filter((scriptPath) => !scriptPath.startsWith('scripts/tests/')).sort();
+}
+
+function packageFilesContains(filePath) {
+  const normalized = normalizePackagePath(filePath);
+  if (packageFiles.has(normalized)) return true;
+  for (const entry of packageFiles) {
+    const normalizedEntry = normalizePackagePath(entry);
+    if (normalizedEntry.endsWith('/**') && normalized.startsWith(normalizedEntry.slice(0, -3))) {
+      return true;
+    }
+    if (!normalizedEntry.includes('*') && normalized.startsWith(`${normalizedEntry.replace(/\/+$/, '')}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const failures = [];
+const packageProofRunnerFiles = new Map();
+for (const [scriptName, command] of Object.entries(packageJson.scripts ?? {})) {
+  if (!scriptName.startsWith('proof:') || scriptName.endsWith(':self-check')) continue;
+  for (const runnerPath of proofRunnerPathsFromCommand(command)) {
+    const previous = packageProofRunnerFiles.get(runnerPath) ?? [];
+    packageProofRunnerFiles.set(runnerPath, [...previous, scriptName]);
+  }
+}
+for (const [runnerPath, scriptNames] of [...packageProofRunnerFiles.entries()].sort()) {
+  if (!packageFilesContains(runnerPath)) {
+    failures.push(`${runnerPath}:proof_runner_not_packaged:${scriptNames.join(',')}`);
+  }
+}
+
 for (const scriptName of largeRocmScripts) {
   const command = packageJson.scripts?.[scriptName];
   if (typeof command !== 'string') {
@@ -161,6 +207,7 @@ console.log(JSON.stringify({
   schemaVersion: 'synthi.gpu_hmr.real_rocm_package_scripts_smoke.v1',
   largeRocmScripts,
   largeRocmProfiles: largeRocmProfiles.map((profile) => profile.id),
+  packagedProofRunnerFiles: [...packageProofRunnerFiles.keys()].sort(),
   runtimeAdapterTemplate: 'runtime_boundary_log_harvest_v1',
   upstreamTimeoutDefault: '7200000',
   upstreamTimeoutSourceRecorded: true,

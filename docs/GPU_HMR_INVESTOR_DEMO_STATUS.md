@@ -76,6 +76,14 @@ Source-first/no-precompiled proof now requires exact seed-manifest purity eviden
 Real ROCm diagnostic screenshots are now explicitly separated from runtime visual proof. A readable/nonblank screenshot may still be retained as diagnostic evidence, but if it is not frame-gated after an epoch dispatch it is marked supplemental and excluded from runtime visual-proof counts, proof summaries, target-progression accepted visual counts, and matrix small-oracle visual fallback.
 ```
 
+Packaged proof-runner note:
+
+```text
+The npm package proof-runner allowlist now has a generic coverage gate: non-test `proof:*` commands are scanned for `scripts/*.mjs` runners, and `proof:real-rocm:package-scripts:self-check` fails if an exposed proof runner is not included in package `files`. The dry-run package now includes the OIDN/HIP preflight runner plus OpenCL/Vulkan preflight, source-first visual, runtime-profile, external-profile, timing, HIPRT warm, and runtime proof runners.
+
+This only makes proof tooling reproducible from the package. It does not turn OIDN preflight, package presence, script existence, or a dry-run tarball into GPU HMR acceptance. OIDN output still needs its own same-process loader, epoch, dispatch, host identity, output oracle, firewall, and strict ledger proof before it can be accepted.
+```
+
 Best demo surfaces:
 
 1. ROCm/HIP realistic raytrace preview: deterministic generated visual workload with a faceted diamond scene, smaller stones, wall/awning geometry, glossy car geometry, slab lighting, hot delta 1, hot delta 2 with a different edit, negative edit refusal, image-tool-inspected before/after/diff PNGs, and strict runtime-ledger artifacts.

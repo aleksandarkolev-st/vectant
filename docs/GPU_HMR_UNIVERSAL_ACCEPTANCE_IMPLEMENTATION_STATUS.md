@@ -4,6 +4,22 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Packaged Proof Runner Coverage
+
+The MCP package proof-runner allowlist is now derived and tested generically instead of relying on remembered individual script entries. `proof:real-rocm:package-scripts:self-check` scans non-test `proof:*` npm commands, extracts direct `node scripts/*.mjs` runners and `node -e import('./scripts/*.mjs')` runners, and fails if any exposed proof runner is missing from the package `files` list.
+
+This closed a packaged-proof gap for the OIDN/HIP preflight lane and other proof entry points. The packaged runner set now includes `gpu-hmr-oidn-preflight.mjs`, `gpu-hmr-opencl-preflight.mjs`, `gpu-hmr-vulkan-preflight.mjs`, `gpu-hmr-runtime-profile-proof.mjs`, `gpu-hmr-agent-split-workspace-test.mjs`, `gpu-hmr-external-project-profile.mjs`, `gpu-hmr-timing-metrics-summary.mjs`, and `hiprt-light-math-warm-proof.mjs`, alongside the existing real-ROCm, random cold-path, WebGPU, HIP module, OpenCL runtime, Vulkan runtime, and HIPRT target-progression runners. `npm pack --dry-run --json` confirmed those runner files are present in the generated tarball.
+
+This is packaging and reproducibility hardening only. A packaged OIDN/HIP preflight runner still reports runtime capability or precise refusal; it cannot satisfy output proof or GPU HMR acceptance without a same-process loader, epoch publication, dispatch trace, host identity, visual or compute output oracle, firewall evidence, and strict proof-ledger closure.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-real-rocm-package-scripts-smoke.mjs -> passed
+npm --prefix mcp/synthi-mcp run proof:real-rocm:package-scripts:self-check -> passed; packagedProofRunnerFiles includes OIDN/OpenCL/Vulkan preflight, source-first, runtime-profile, external-profile, timing, HIPRT warm, and runtime proof runners
+npm pack --dry-run --json in mcp/synthi-mcp -> passed; tarball file list includes scripts/gpu-hmr-oidn-preflight.mjs and the other exposed proof runners
+```
+
 ## 2026-07-01 Direct User-Owned Source-First Visual Proof
 
 The source-first visual path now accepts direct user-owned source input instead of relying only on packaged profile source files. `proof:agent-split:source-first` can read `SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH` / `SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH`, optionally bind paths under `SYNTHI_GPU_AGENT_SOURCE_ROOT`, and require a direct source authority from `SYNTHI_GPU_AGENT_SOURCE_AUTHORITY` or the manifest. Accepted authorities are `direct_source_url_commit`, `direct_local_git_repo_path`, `user_source_files`, `workspace_source_files`, and `cli_or_env_direct_source`; `profile_source_files` is deliberately rejected for this direct-source lane.
