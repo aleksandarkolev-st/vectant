@@ -26023,14 +26023,18 @@ function realRocmRepositoryTargetCoverage(rows) {
     && (acceptedFullRuntimeRow(row) || row.matrixOutcome === 'refusal_proven')
   );
   const byTarget = new Map();
+  const missingIdentityRows = [];
   for (const row of candidates) {
-    const targetId = firstText(row.targetId, row.profileId, row.artifactPath);
-    if (!targetId) continue;
+    const targetId = firstText(row.targetId, row.profileId);
+    if (!targetId || targetId === 'unknown') {
+      missingIdentityRows.push(row);
+      continue;
+    }
     const targetRows = byTarget.get(targetId) ?? [];
     targetRows.push(row);
     byTarget.set(targetId, targetRows);
   }
-  return [...byTarget.entries()]
+  const coverage = [...byTarget.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([targetId, targetRows]) => {
       const accepted = targetRows.filter((row) => acceptedFullRuntimeRow(row));
@@ -26093,6 +26097,20 @@ function realRocmRepositoryTargetCoverage(rows) {
         target_id: targetId,
       });
     });
+  if (missingIdentityRows.length > 0) {
+    coverage.push(coverageEntry({
+      id: 'large_real_rocm_repo:unknown_target_identity',
+      requirement: 'Large real ROCm repository rows require explicit target/profile identity; artifact paths are diagnostic only',
+      status: 'missing',
+      rows: missingIdentityRows,
+      openGaps: ['large_real_rocm_repo_target_identity_missing'],
+      targetIdentityRequired: true,
+      target_identity_required: true,
+      artifactPathDiagnosticOnly: true,
+      artifact_path_diagnostic_only: true,
+    }));
+  }
+  return coverage;
 }
 
 function planCoverage(rows, context = {}) {

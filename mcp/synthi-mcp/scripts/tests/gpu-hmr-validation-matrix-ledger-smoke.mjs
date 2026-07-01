@@ -13626,6 +13626,43 @@ const retainedSecondRocm = retainedRealRocmRows.find((row) => row.targetId === '
 assert.equal(retainedSecondRocm?.matrixOutcome, 'refusal_proven');
 assert.equal(retainedSecondRocm.backend, 'hip');
 assert.equal(retainedSecondRocm.proofChain, 'real_rocm_strict_runtime_refusal');
+const artifactPathIdentityOnlyRealRocm = withQueryRecomputedRowId((() => {
+  const row = JSON.parse(JSON.stringify(retainedSecondRocm));
+  delete row.targetId;
+  delete row.target_id;
+  delete row.profileId;
+  delete row.profile_id;
+  row.artifactPath = 'synthetic/path-derived-real-rocm-identity.json';
+  row.artifact_path = 'synthetic/path-derived-real-rocm-identity.json';
+  return row;
+})());
+const artifactPathIdentityOnlyCoverageLedger = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [artifactPathIdentityOnlyRealRocm],
+});
+assert.equal(artifactPathIdentityOnlyCoverageLedger.accepted, true);
+const artifactPathIdentityOnlyCoverage = new Map(
+  artifactPathIdentityOnlyCoverageLedger.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  artifactPathIdentityOnlyCoverage.get(
+    'large_real_rocm_repo:synthetic/path-derived-real-rocm-identity.json',
+  ),
+  undefined,
+);
+assert.equal(
+  artifactPathIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')?.status,
+  'missing',
+);
+assert.equal(
+  artifactPathIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')
+    ?.artifactPathDiagnosticOnly,
+  true,
+);
+assert.ok(
+  artifactPathIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')
+    ?.openGaps.includes('large_real_rocm_repo_target_identity_missing'),
+);
 
 const originalHostPreflightRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
