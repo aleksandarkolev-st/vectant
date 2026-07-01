@@ -1515,6 +1515,110 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('classifies landing inspection commands through first-class radar adapters', async () => {
+    const adapters = [
+      ['clearance', /^clearance:run:sha256:/],
+      ['type', /^typecheck:run:sha256:/],
+      ['tests', /^test:run:sha256:/],
+      ['api_contract', /^api-contract:run:sha256:/],
+      ['security', /^security:scan:sha256:/],
+      ['migration', /^migration:plan:sha256:/],
+      ['ui', /^ui:screenshot:sha256:/],
+      ['accessibility', /^accessibility:audit:sha256:/],
+      ['runtime', /^runtime:event:sha256:/],
+      ['performance', /^performance:budget:sha256:/],
+      ['handover', /^handover:packet:sha256:/],
+    ];
+
+    const run = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-STACK-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      execute: true,
+      commands: adapters.map(([adapter]) => ({
+        adapter,
+        command: process.execPath,
+        args: ['-e', `console.log("${adapter} radar ok")`],
+        timeoutMs: 5000,
+      })),
+    });
+
+    expect(run.status).toBe('completed');
+    for (const [adapter, prefix] of adapters) {
+      const signal = run.inspectionSignals.find((item) => item.key === adapter);
+      expect(signal).toMatchObject({
+        key: adapter,
+        status: 'passed',
+        adapter: expect.objectContaining({ key: adapter }),
+      });
+      expect(signal.reasonCodes).toEqual(expect.arrayContaining([
+        `${adapter}_radar_passed`,
+        `${adapter}_adapter_executed`,
+      ]));
+      expect(signal.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(prefix)]));
+      expect(run.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(prefix)]));
+    }
+  });
+
+  it('canonicalizes manual adapter signals and required-radar aliases', async () => {
+    const manualRun = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-MANUAL-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      inspectionSignals: [{
+        adapter: 'visual',
+        status: 'passed',
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }],
+      evidenceRefs: ['ui:screenshot:sha256:manual'],
+    });
+    expect(manualRun.inspectionSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'ui',
+        status: 'passed',
+        adapter: expect.objectContaining({ key: 'ui' }),
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }),
+    ]));
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      writeSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedWriteSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['components/auth/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['visual'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-visual',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-MANUAL-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['components/auth/**']),
+      inspectionSignalsJson: JSON.stringify([{
+        adapter: 'visual',
+        status: 'passed',
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }]),
+      evidenceRefsJson: JSON.stringify(['ui:screenshot:sha256:manual']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(true);
+    expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
+  });
+
   it('returns source-state since a transaction without mutating validation state', async () => {
     prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
       ...transactionFixture(),

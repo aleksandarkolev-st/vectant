@@ -44,6 +44,19 @@ const DEFAULT_TOWER_SIMULATION_STRATEGIES = [
   'single-fullstack-agent',
   'test-first',
 ];
+const RADAR_INSPECTION_ADAPTERS = [
+  { key: 'clearance', label: 'Clearance radar', evidencePrefix: 'clearance:run', aliases: ['clearance', 'diff', 'scope'] },
+  { key: 'type', label: 'Type radar', evidencePrefix: 'typecheck:run', aliases: ['type', 'typecheck', 'tsc', 'schema_compatibility'] },
+  { key: 'tests', label: 'Test radar', evidencePrefix: 'test:run', aliases: ['test', 'tests', 'unit_tests', 'integration_tests', 'e2e', 'vitest', 'jest', 'playwright'] },
+  { key: 'api_contract', label: 'API contract radar', evidencePrefix: 'api-contract:run', aliases: ['api', 'api_contract', 'contract', 'openapi', 'schema_contract'] },
+  { key: 'security', label: 'Security radar', evidencePrefix: 'security:scan', aliases: ['security', 'secret', 'secrets', 'auth', 'injection', 'rate_limit'] },
+  { key: 'migration', label: 'Migration radar', evidencePrefix: 'migration:plan', aliases: ['migration', 'migrations', 'rollback', 'database'] },
+  { key: 'ui', label: 'UI radar', evidencePrefix: 'ui:screenshot', aliases: ['ui', 'visual', 'screenshot', 'responsive', 'visual_drift'] },
+  { key: 'accessibility', label: 'Accessibility radar', evidencePrefix: 'accessibility:audit', aliases: ['accessibility', 'a11y', 'labels', 'keyboard', 'contrast'] },
+  { key: 'runtime', label: 'Runtime radar', evidencePrefix: 'runtime:event', aliases: ['runtime', 'health', 'ports', 'logs', 'start'] },
+  { key: 'performance', label: 'Performance radar', evidencePrefix: 'performance:budget', aliases: ['performance', 'perf', 'latency', 'bundle', 'query_budget'] },
+  { key: 'handover', label: 'Handover radar', evidencePrefix: 'handover:packet', aliases: ['handover', 'handoff', 'packet', 'review_packet'] },
+];
 const PROMOTED_POLICY_DELTA_STATES = new Set(['accepted', 'active', 'promoted', 'validated']);
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
@@ -2363,11 +2376,11 @@ function inspectionEvidenceRefs(run) {
 function requiredInspectionSignals(transaction) {
   const lease = parseJson(transaction.mutationLease.leaseJson, {});
   const requiredRadar = asArray(lease.requiredRadar || lease.required_radar)
-    .map(normalizeInspectionSignal)
+    .map(canonicalInspectionSignal)
     .filter(Boolean);
   const invariantSignals = asArray(parseJson(transaction.invariantsJson, []))
     .filter((invariant) => /[:_.-]pass$/i.test(String(invariant || '')))
-    .map(normalizeInspectionSignal)
+    .map(canonicalInspectionSignal)
     .filter(Boolean);
   const required = unique([...requiredRadar, ...invariantSignals]);
   return required.length ? required : ['landing'];
@@ -2377,14 +2390,18 @@ function inspectionSatisfiesSignal(run, requiredSignal) {
   const signals = asArray(parseJson(run.inspectionSignalsJson, []));
   return signals.some((signal) => {
     if (inspectionSignalFailed(signal)) return false;
-    return normalizeInspectionSignal(signalKey(signal)) === requiredSignal
+    return canonicalInspectionSignal(signalKey(signal)) === canonicalInspectionSignal(requiredSignal)
       && inspectionSignalHasDurableEvidence(run, signal);
   });
 }
 
 function signalKey(signal) {
   if (typeof signal === 'string') return signal;
-  return signal?.key || signal?.signal || signal?.type || signal?.name || signal?.inspector || '';
+  const adapter = signal?.adapter;
+  const adapterKey = typeof adapter === 'string'
+    ? adapter
+    : adapter?.key || adapter?.signal || adapter?.type || adapter?.name || '';
+  return signal?.key || signal?.signal || signal?.type || signal?.name || signal?.radar || adapterKey || signal?.inspector || '';
 }
 
 function normalizeInspectionSignal(value) {
@@ -2395,6 +2412,57 @@ function normalizeInspectionSignal(value) {
     .replace(/[^a-z0-9_]+/g, '_')
     .replace(/_pass(ed)?$/, '')
     .replace(/^_+|_+$/g, '');
+}
+
+function radarInspectionAdapterFor(value) {
+  const normalized = normalizeInspectionSignal(value);
+  if (!normalized) return null;
+  return RADAR_INSPECTION_ADAPTERS.find((adapter) =>
+    adapter.key === normalized || adapter.aliases.some((alias) => normalizeInspectionSignal(alias) === normalized)) || null;
+}
+
+function canonicalInspectionSignal(value) {
+  const normalized = normalizeInspectionSignal(value);
+  const adapter = radarInspectionAdapterFor(normalized);
+  return adapter?.key || normalized;
+}
+
+function inspectionSignalAdapterValue(signal) {
+  if (!signal || typeof signal !== 'object') return null;
+  const adapter = signal.adapter;
+  if (typeof adapter === 'string') return adapter;
+  if (adapter && typeof adapter === 'object') {
+    return adapter.key || adapter.signal || adapter.type || adapter.name || null;
+  }
+  return signal.radar || signal.radarKey || signal.radar_key || null;
+}
+
+function radarInspectionAdapterProjection(adapter) {
+  if (!adapter) return null;
+  return {
+    key: adapter.key,
+    label: adapter.label,
+    evidencePrefix: adapter.evidencePrefix,
+  };
+}
+
+function normalizeInspectionSignalPayload(signal) {
+  const key = normalizeInspectionSignal(signalKey(signal));
+  const adapter = radarInspectionAdapterFor(inspectionSignalAdapterValue(signal) || key);
+  if (typeof signal === 'string') {
+    return {
+      key: adapter?.key || key,
+      status: 'requested',
+      evidenceRefs: [],
+      ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
+    };
+  }
+  if (!signal || typeof signal !== 'object') return null;
+  return {
+    ...signal,
+    key: adapter?.key || key,
+    ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
+  };
 }
 
 function inspectionSignalHasDurableEvidence(run, signal) {
@@ -2409,7 +2477,7 @@ function signalEvidenceRefs(signal) {
 }
 
 function isDurableInspectionEvidenceRef(ref) {
-  return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
+  return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|api-contract:run|security:scan|migration:plan|ui:screenshot|accessibility:audit|performance:budget|handover:packet|clearance:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
 }
 
 async function seedLineProvenance(transaction, bundle) {
@@ -3639,7 +3707,9 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
       displayCallsign: body.displayCallsign || body.callsign || 'INSPECT-01',
       status: shouldExecute ? 'running' : body.status || 'requested',
       changedPathsJson: stringifyJson(normalizePathList(body.changedPaths || body.changed_paths || [])),
-      inspectionSignalsJson: stringifyJson(body.inspectionSignals || body.inspection_signals || []),
+      inspectionSignalsJson: stringifyJson(asArray(body.inspectionSignals || body.inspection_signals || [])
+        .map(normalizeInspectionSignalPayload)
+        .filter(Boolean)),
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
     },
   });
@@ -3678,7 +3748,9 @@ export async function completeInspectionRun(workspaceSlug, inspectionRunId, body
     where: { id: run.id },
     data: {
       status: body.status || 'completed',
-      inspectionSignalsJson: stringifyJson(body.inspectionSignals || body.inspection_signals || parseJson(run.inspectionSignalsJson, [])),
+      inspectionSignalsJson: stringifyJson(asArray(body.inspectionSignals || body.inspection_signals || parseJson(run.inspectionSignalsJson, []))
+        .map(normalizeInspectionSignalPayload)
+        .filter(Boolean)),
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || parseJson(run.evidenceRefsJson, [])),
       completedAt: new Date(),
     },
@@ -3771,8 +3843,10 @@ function normalizeInspectionCommand(command, index) {
   if (Array.isArray(command)) {
     const [executable, ...args] = command.map((part) => String(part));
     if (!executable) return null;
+    const adapter = radarInspectionAdapterFor(executable);
     return {
-      key: normalizeInspectionSignal(executable) || `command_${index + 1}`,
+      key: adapter?.key || normalizeInspectionSignal(executable) || `command_${index + 1}`,
+      adapterKey: adapter?.key || null,
       executable,
       args,
       cwd: null,
@@ -3782,8 +3856,10 @@ function normalizeInspectionCommand(command, index) {
   if (!command || typeof command !== 'object') return null;
   const executable = String(command.command || command.executable || command.bin || '').trim();
   if (!executable) return null;
+  const adapter = radarInspectionAdapterFor(command.adapter || command.radar || command.key || command.signal || command.name || executable);
   return {
-    key: normalizeInspectionSignal(command.key || command.signal || command.name || executable) || `command_${index + 1}`,
+    key: adapter?.key || normalizeInspectionSignal(command.key || command.signal || command.name || executable) || `command_${index + 1}`,
+    adapterKey: adapter?.key || null,
     executable,
     args: asArray(command.args || command.argv).map((arg) => String(arg)),
     cwd: normalizePath(command.cwd || command.workingDirectory || command.working_directory) || null,
@@ -3795,6 +3871,7 @@ async function runInspectionCommand(spec, repoRoot) {
   const startedAt = new Date();
   const cwd = resolveInspectionCwd(repoRoot, spec.cwd);
   const timeoutMs = normalizeInspectionTimeout(spec.timeoutMs);
+  const adapter = radarInspectionAdapterFor(spec.adapterKey || spec.key);
   const result = await runCommand(spec.executable, spec.args, { cwd, timeoutMs });
   const completedAt = new Date();
   const status = result.exitCode === 0 && !result.timedOut ? 'passed' : 'failed';
@@ -3812,11 +3889,12 @@ async function runInspectionCommand(spec, repoRoot) {
     completedAt: completedAt.toISOString(),
   });
   const evidenceRefs = unique([
-    durableInspectionCommandRef(spec.key, evidenceDigest),
+    durableInspectionCommandRef(spec.key, evidenceDigest, adapter),
     `artifact:${evidenceDigest}`,
   ]);
   return {
     key: spec.key,
+    ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
     status,
     command: {
       executable: spec.executable,
@@ -3832,6 +3910,10 @@ async function runInspectionCommand(spec, repoRoot) {
     stderrTail: result.stderrTail,
     evidenceDigest,
     evidenceRefs,
+    reasonCodes: [
+      `${adapter?.key || spec.key}_radar_${status}`,
+      ...(adapter ? [`${adapter.key}_adapter_executed`] : []),
+    ],
     source: 'codesite_inspection_executor',
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
@@ -3913,7 +3995,8 @@ function tail(value, limit = 8000) {
   return text.length > limit ? text.slice(-limit) : text;
 }
 
-function durableInspectionCommandRef(key, evidenceDigest) {
+function durableInspectionCommandRef(key, evidenceDigest, adapter = null) {
+  if (adapter?.evidencePrefix) return `${adapter.evidencePrefix}:${evidenceDigest}`;
   const normalized = normalizeInspectionSignal(key);
   if (/typecheck|tsc/.test(normalized)) return `typecheck:run:${evidenceDigest}`;
   if (/test|vitest|jest|playwright|spec/.test(normalized)) return `test:run:${evidenceDigest}`;

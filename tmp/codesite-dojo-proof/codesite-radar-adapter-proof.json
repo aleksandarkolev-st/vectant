@@ -1,0 +1,551 @@
+{
+  "generatedAt": "2026-07-01T06:26:31.831Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-radar-adapter-proof-1782887114713",
+  "project": {
+    "id": "cmr1ozuak0000ob5b2zda03xd",
+    "title": "Radar adapter proof"
+  },
+  "inspectionRun": {
+    "id": "cmr1ozwn8001sob5bcjtvz2p9",
+    "projectId": "cmr1ozuak0000ob5b2zda03xd",
+    "executionPlanId": null,
+    "displayCallsign": "RADAR-STACK-01",
+    "status": "completed",
+    "changedPaths": [
+      "components/auth/SignupForm.tsx",
+      "api/auth/signup.ts"
+    ],
+    "inspectionSignals": [
+      {
+        "key": "clearance",
+        "adapter": {
+          "key": "clearance",
+          "label": "Clearance radar",
+          "evidencePrefix": "clearance:run"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"clearance radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 80,
+        "stdoutTail": "clearance radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+        "evidenceRefs": [
+          "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+          "artifact:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7"
+        ],
+        "reasonCodes": [
+          "clearance_radar_passed",
+          "clearance_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.597Z",
+        "completedAt": "2026-07-01T06:26:27.677Z"
+      },
+      {
+        "key": "type",
+        "adapter": {
+          "key": "type",
+          "label": "Type radar",
+          "evidencePrefix": "typecheck:run"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"type radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 67,
+        "stdoutTail": "type radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+        "evidenceRefs": [
+          "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+          "artifact:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222"
+        ],
+        "reasonCodes": [
+          "type_radar_passed",
+          "type_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.677Z",
+        "completedAt": "2026-07-01T06:26:27.744Z"
+      },
+      {
+        "key": "tests",
+        "adapter": {
+          "key": "tests",
+          "label": "Test radar",
+          "evidencePrefix": "test:run"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"tests radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 70,
+        "stdoutTail": "tests radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+        "evidenceRefs": [
+          "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+          "artifact:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2"
+        ],
+        "reasonCodes": [
+          "tests_radar_passed",
+          "tests_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.744Z",
+        "completedAt": "2026-07-01T06:26:27.814Z"
+      },
+      {
+        "key": "api_contract",
+        "adapter": {
+          "key": "api_contract",
+          "label": "API contract radar",
+          "evidencePrefix": "api-contract:run"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"api_contract radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 65,
+        "stdoutTail": "api_contract radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+        "evidenceRefs": [
+          "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+          "artifact:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4"
+        ],
+        "reasonCodes": [
+          "api_contract_radar_passed",
+          "api_contract_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.814Z",
+        "completedAt": "2026-07-01T06:26:27.879Z"
+      },
+      {
+        "key": "security",
+        "adapter": {
+          "key": "security",
+          "label": "Security radar",
+          "evidencePrefix": "security:scan"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"security radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 82,
+        "stdoutTail": "security radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+        "evidenceRefs": [
+          "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+          "artifact:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a"
+        ],
+        "reasonCodes": [
+          "security_radar_passed",
+          "security_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.879Z",
+        "completedAt": "2026-07-01T06:26:27.961Z"
+      },
+      {
+        "key": "migration",
+        "adapter": {
+          "key": "migration",
+          "label": "Migration radar",
+          "evidencePrefix": "migration:plan"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"migration radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 73,
+        "stdoutTail": "migration radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+        "evidenceRefs": [
+          "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+          "artifact:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2"
+        ],
+        "reasonCodes": [
+          "migration_radar_passed",
+          "migration_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:27.961Z",
+        "completedAt": "2026-07-01T06:26:28.034Z"
+      },
+      {
+        "key": "ui",
+        "adapter": {
+          "key": "ui",
+          "label": "UI radar",
+          "evidencePrefix": "ui:screenshot"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"ui radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 80,
+        "stdoutTail": "ui radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+        "evidenceRefs": [
+          "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+          "artifact:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84"
+        ],
+        "reasonCodes": [
+          "ui_radar_passed",
+          "ui_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:28.038Z",
+        "completedAt": "2026-07-01T06:26:28.118Z"
+      },
+      {
+        "key": "accessibility",
+        "adapter": {
+          "key": "accessibility",
+          "label": "Accessibility radar",
+          "evidencePrefix": "accessibility:audit"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"accessibility radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 69,
+        "stdoutTail": "accessibility radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+        "evidenceRefs": [
+          "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+          "artifact:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62"
+        ],
+        "reasonCodes": [
+          "accessibility_radar_passed",
+          "accessibility_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:28.118Z",
+        "completedAt": "2026-07-01T06:26:28.187Z"
+      },
+      {
+        "key": "runtime",
+        "adapter": {
+          "key": "runtime",
+          "label": "Runtime radar",
+          "evidencePrefix": "runtime:event"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"runtime radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 72,
+        "stdoutTail": "runtime radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+        "evidenceRefs": [
+          "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+          "artifact:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5"
+        ],
+        "reasonCodes": [
+          "runtime_radar_passed",
+          "runtime_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:28.187Z",
+        "completedAt": "2026-07-01T06:26:28.259Z"
+      },
+      {
+        "key": "performance",
+        "adapter": {
+          "key": "performance",
+          "label": "Performance radar",
+          "evidencePrefix": "performance:budget"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"performance radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 110,
+        "stdoutTail": "performance radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+        "evidenceRefs": [
+          "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+          "artifact:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8"
+        ],
+        "reasonCodes": [
+          "performance_radar_passed",
+          "performance_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:28.260Z",
+        "completedAt": "2026-07-01T06:26:28.370Z"
+      },
+      {
+        "key": "handover",
+        "adapter": {
+          "key": "handover",
+          "label": "Handover radar",
+          "evidencePrefix": "handover:packet"
+        },
+        "status": "passed",
+        "command": {
+          "executable": "/usr/local/bin/node",
+          "args": [
+            "-e",
+            "console.log(\"handover radar adapter proof\")"
+          ],
+          "cwd": ".",
+          "timeoutMs": 5000
+        },
+        "exitCode": 0,
+        "signal": null,
+        "timedOut": false,
+        "durationMs": 69,
+        "stdoutTail": "handover radar adapter proof\n",
+        "stderrTail": "",
+        "evidenceDigest": "sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+        "evidenceRefs": [
+          "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+          "artifact:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5"
+        ],
+        "reasonCodes": [
+          "handover_radar_passed",
+          "handover_adapter_executed"
+        ],
+        "source": "codesite_inspection_executor",
+        "startedAt": "2026-07-01T06:26:28.370Z",
+        "completedAt": "2026-07-01T06:26:28.439Z"
+      }
+    ],
+    "evidenceRefs": [
+      "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+      "artifact:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+      "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+      "artifact:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+      "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+      "artifact:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+      "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+      "artifact:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+      "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+      "artifact:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+      "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+      "artifact:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+      "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+      "artifact:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+      "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+      "artifact:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+      "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+      "artifact:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+      "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+      "artifact:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+      "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+      "artifact:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5"
+    ],
+    "requestedAt": "2026-07-01T06:26:25.412Z",
+    "completedAt": "2026-07-01T06:26:28.440Z"
+  },
+  "adapterRows": [
+    {
+      "adapter": "clearance",
+      "status": "passed",
+      "evidenceRef": "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+      "reasonCodes": [
+        "clearance_radar_passed",
+        "clearance_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "type",
+      "status": "passed",
+      "evidenceRef": "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+      "reasonCodes": [
+        "type_radar_passed",
+        "type_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "tests",
+      "status": "passed",
+      "evidenceRef": "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+      "reasonCodes": [
+        "tests_radar_passed",
+        "tests_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "api_contract",
+      "status": "passed",
+      "evidenceRef": "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+      "reasonCodes": [
+        "api_contract_radar_passed",
+        "api_contract_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "security",
+      "status": "passed",
+      "evidenceRef": "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+      "reasonCodes": [
+        "security_radar_passed",
+        "security_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "migration",
+      "status": "passed",
+      "evidenceRef": "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+      "reasonCodes": [
+        "migration_radar_passed",
+        "migration_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "ui",
+      "status": "passed",
+      "evidenceRef": "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+      "reasonCodes": [
+        "ui_radar_passed",
+        "ui_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "accessibility",
+      "status": "passed",
+      "evidenceRef": "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+      "reasonCodes": [
+        "accessibility_radar_passed",
+        "accessibility_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "runtime",
+      "status": "passed",
+      "evidenceRef": "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+      "reasonCodes": [
+        "runtime_radar_passed",
+        "runtime_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "performance",
+      "status": "passed",
+      "evidenceRef": "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+      "reasonCodes": [
+        "performance_radar_passed",
+        "performance_adapter_executed"
+      ]
+    },
+    {
+      "adapter": "handover",
+      "status": "passed",
+      "evidenceRef": "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+      "reasonCodes": [
+        "handover_radar_passed",
+        "handover_adapter_executed"
+      ]
+    }
+  ],
+  "assertions": {
+    "inspectionCompleted": true,
+    "everyAdapterProducedSignal": true,
+    "everyAdapterProducedDurableEvidence": true,
+    "everyAdapterRecordedReasonCodes": true
+  }
+}
