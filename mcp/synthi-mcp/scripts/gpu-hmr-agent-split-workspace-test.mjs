@@ -5555,39 +5555,53 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       },
     },
   };
-  const proof = withRunModeVisualLedgerProof({
-    proof: {
-      proofLedger: ledger,
-      proof_ledger: ledger,
-      runtimeProofArtifact: {
-        proofId: 'gpu-runtime-proof:sha256:self-check-clock-domain',
+  const originalProfile = ACTIVE_AGENT_PROFILE;
+  let proof;
+  try {
+    ACTIVE_AGENT_PROFILE = {
+      deterministicVisualMode: {
+        frame_capture_after_epoch_dispatch: false,
+        presentation_fence_or_frame_boundary: false,
+        profile_only_marker: 'self-check-profile-default-preserved',
+      },
+    };
+    proof = withRunModeVisualLedgerProof({
+      proof: {
         proofLedger: ledger,
         proof_ledger: ledger,
-      },
-      gpuProofValidation: {
-        satisfied: true,
-        proofLedgerValidation: {
-          gpuHmrSuccess: true,
-          failedInvariants: [],
+        runtimeProofArtifact: {
+          proofId: 'gpu-runtime-proof:sha256:self-check-clock-domain',
+          proofLedger: ledger,
+          proof_ledger: ledger,
+        },
+        gpuProofValidation: {
+          satisfied: true,
+          proofLedgerValidation: {
+            gpuHmrSuccess: true,
+            failedInvariants: [],
+          },
         },
       },
-    },
-    visualDelta,
-    beforeShot,
-    afterShot,
-    wait: {
-      frame_gate: {
-        status: 'satisfied',
-        ts_ms: selectedFrameTimestampMs - 3_926,
+      visualDelta,
+      beforeShot,
+      afterShot,
+      wait: {
+        frame_gate: {
+          status: 'satisfied',
+          ts_ms: selectedFrameTimestampMs - 3_926,
+        },
       },
-    },
-  });
+    });
+  } finally {
+    ACTIVE_AGENT_PROFILE = originalProfile;
+  }
   const recomputed = queryGpuHmrLedgerInvariants(embeddedLedgerFromProof(proof));
   const record = firstLedgerRecord(embeddedLedgerFromProof(proof));
   const artifacts =
     record?.outputEvent?.visualOracleArtifacts
     ?? record?.output_event?.visual_oracle_artifacts
     ?? null;
+  const deterministicMode = record?.deterministicVisualMode ?? record?.deterministic_visual_mode ?? null;
   if (
     recomputed.gpuHmrSuccess !== true
     || !Array.isArray(recomputed.failedInvariants)
@@ -5595,6 +5609,9 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     || artifacts?.timestamp_after_dispatch !== outputTimestampNs
     || artifacts?.timestamp_after_dispatch_clock !== 'ledger_output_event_monotonic_ns'
     || artifacts?.selected_frame_timestamp_ms !== selectedFrameTimestampMs
+    || deterministicMode?.frame_capture_after_epoch_dispatch !== true
+    || deterministicMode?.presentation_fence_or_frame_boundary !== true
+    || deterministicMode?.profile_only_marker !== 'self-check-profile-default-preserved'
   ) {
     throw new Error(`run-mode visual ledger clock-domain self-check failed: ${JSON.stringify({
       gpuHmrSuccess: recomputed.gpuHmrSuccess,
@@ -5602,6 +5619,7 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       timestampAfterDispatch: artifacts?.timestamp_after_dispatch,
       timestampAfterDispatchClock: artifacts?.timestamp_after_dispatch_clock,
       selectedFrameTimestampMs: artifacts?.selected_frame_timestamp_ms,
+      deterministicMode,
     })}`);
   }
   ledgerFirewallFieldsFromProof(proof);
@@ -6567,8 +6585,8 @@ function withRunModeVisualLedgerProof({
       ?? ACTIVE_AGENT_PROFILE?.deterministic_visual_mode
       ?? {};
     const mergedDeterministicVisualMode = {
-      ...deterministicVisualMode,
       ...(isRecord(profileDeterministicVisualMode) ? profileDeterministicVisualMode : {}),
+      ...deterministicVisualMode,
       source: ACTIVE_AGENT_PROFILE
         ? 'agent_visual_profile_plus_mcp_frame_evidence'
         : 'mcp_frame_evidence',
