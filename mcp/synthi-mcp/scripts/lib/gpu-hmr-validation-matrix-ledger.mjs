@@ -22895,6 +22895,15 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       facet.build_metadata_content_evidence,
     ));
     const authority = firstText(facet.proofAuthority, facet.proof_authority);
+    const eventType = firstText(facet.eventType, facet.event_type, row.eventType, row.event_type);
+    const dryRun = firstBool(facet.dryRun, facet.dry_run, row.dryRun, row.dry_run) === true;
+    const actualAttempt =
+      firstBool(facet.actualAttempt, facet.actual_attempt, row.actualAttempt, row.actual_attempt) === true
+      || (eventType === 'cold_path_complete' && dryRun !== true);
+    const finalizedActualAttempt =
+      eventType === 'cold_path_complete'
+      && dryRun !== true
+      && actualAttempt === true;
     const profileMode = firstText(
       facet.profileMode,
       facet.profile_mode,
@@ -23077,6 +23086,7 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
         buildContentEvidence.can_satisfy_dispatch_proof,
       ) === true;
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
+      && finalizedActualAttempt
       && arbitraryColdIntake
       && sourceDerivedBackendObserved
       && !candidateBackendUsedForAcceptance
@@ -23312,6 +23322,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
+      'cold_path_complete_actual_attempt',
       'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
@@ -23334,6 +23345,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_byte_hashes_observed',
       'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
+      'cold_path_complete_actual_attempt',
       'source_relevant_file_count_required_for_large_source',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',

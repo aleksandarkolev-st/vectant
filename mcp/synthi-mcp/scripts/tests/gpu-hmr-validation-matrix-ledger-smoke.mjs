@@ -8525,6 +8525,9 @@ function randomColdReadinessMatrixRow({
   buildMetadataContentHash = null,
   sourceListingHash = null,
   sourceIntakeFacetHash = null,
+  eventType = 'cold_path_complete',
+  dryRun = false,
+  actualAttempt = eventType === 'cold_path_complete' && dryRun !== true,
 } = {}) {
   const sourceContentSeed = {
     sourceUrl: sourceUrl ?? null,
@@ -8596,6 +8599,12 @@ function randomColdReadinessMatrixRow({
     profile_mode: profileMode,
     proofMode: 'random_large_project_cold_path',
     proof_mode: 'random_large_project_cold_path',
+    eventType,
+    event_type: eventType,
+    dryRun,
+    dry_run: dryRun,
+    actualAttempt,
+    actual_attempt: actualAttempt,
     matrixOutcome: 'refusal_proven',
     matrix_outcome: 'refusal_proven',
     acceptanceClass: 'runtime_proof_rejected',
@@ -8624,6 +8633,12 @@ function randomColdReadinessMatrixRow({
       profile_mode: profileMode,
       candidateSource,
       candidate_source: candidateSource,
+      eventType,
+      event_type: eventType,
+      dryRun,
+      dry_run: dryRun,
+      actualAttempt,
+      actual_attempt: actualAttempt,
       ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
@@ -8664,6 +8679,12 @@ function randomColdReadinessMatrixRow({
       profile_mode: profileMode,
       candidateSource,
       candidate_source: candidateSource,
+      eventType,
+      event_type: eventType,
+      dryRun,
+      dry_run: dryRun,
+      actualAttempt,
+      actual_attempt: actualAttempt,
       ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
@@ -10202,6 +10223,54 @@ assert.ok(
   broadReadinessWithOneRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
     'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
+);
+const pendingOrDryRunRandomColdRows = [
+  ...Array.from({ length: 3 }, (_, index) =>
+    randomColdReadinessMatrixRow({
+      targetId: `pending-random-cold-readiness-${index + 1}`,
+      sourceUrl: `https://example.invalid/pending/random-cold-${index + 1}.git`,
+      immutableCommit: `777777777777777777777777777777777777777${index + 1}`,
+      eventType: 'cold_path_pending',
+      dryRun: false,
+      actualAttempt: false,
+    })
+  ),
+  ...Array.from({ length: 2 }, (_, index) =>
+    randomColdReadinessMatrixRow({
+      targetId: `dry-run-random-cold-readiness-${index + 1}`,
+      sourceUrl: `https://example.invalid/dry-run/random-cold-${index + 1}.git`,
+      immutableCommit: `888888888888888888888888888888888888888${index + 1}`,
+      eventType: 'cold_path_complete',
+      dryRun: true,
+      actualAttempt: false,
+    })
+  ),
+];
+const broadReadinessWithPendingOrDryRunColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...pendingOrDryRunRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithPendingOrDryRunColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithPendingOrDryRunColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithPendingOrDryRunColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithPendingOrDryRunColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithPendingOrDryRunColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const directLocalRandomColdRow = randomColdReadinessMatrixRow({
   targetId: 'direct-local-random-cold-readiness-user-project',
