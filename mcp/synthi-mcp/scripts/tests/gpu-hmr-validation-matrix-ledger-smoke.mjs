@@ -8344,6 +8344,10 @@ assert.equal(
 assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.accepted, false);
 assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsComputed, true);
 assert.equal(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsMissing, true);
+assert.equal(
+  forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeRowsMissing,
+  true,
+);
 assert.ok(forgedBroadScopeQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
   'broad_runtime_rows_missing',
 ));
@@ -8791,6 +8795,14 @@ assert.equal(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRows,
   0,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsMissing,
+  false,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeRowsMissing,
+  true,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationRuntimeRows,

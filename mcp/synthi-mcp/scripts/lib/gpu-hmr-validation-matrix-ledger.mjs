@@ -21919,7 +21919,11 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const broadRuntimeRowsComputed = true;
-  const broadRuntimeRowsMissing = broadRuntimeRows.length === 0;
+  const matrixGeneralizationRuntimeRows =
+    finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
+    ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0);
+  const broadRuntimeRowsMissing = matrixGeneralizationRuntimeRows === 0;
+  const rowLocalBroadRuntimeRowsMissing = broadRuntimeRows.length === 0;
   const openGaps = broadProof.accepted === true
     ? []
     : compactStringList([
@@ -21939,12 +21943,10 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     broad_runtime_rows_computed: broadRuntimeRowsComputed,
     broadRuntimeRowsMissing,
     broad_runtime_rows_missing: broadRuntimeRowsMissing,
-    matrixGeneralizationRuntimeRows:
-      finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
-      ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0),
-    matrix_generalization_runtime_rows:
-      finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
-      ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0),
+    rowLocalBroadRuntimeRowsMissing,
+    row_local_broad_runtime_rows_missing: rowLocalBroadRuntimeRowsMissing,
+    matrixGeneralizationRuntimeRows,
+    matrix_generalization_runtime_rows: matrixGeneralizationRuntimeRows,
     scopedRuntimeRows: scopedRuntimeRows.length,
     scoped_runtime_rows: scopedRuntimeRows.length,
     acceptedFullRuntimeRows: fullRuntimeRows.length,
