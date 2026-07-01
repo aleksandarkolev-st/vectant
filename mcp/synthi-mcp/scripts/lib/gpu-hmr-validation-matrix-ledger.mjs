@@ -23146,6 +23146,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
   const {
     requireOutputOracleFacet = true,
     requireUserOwnedSource = true,
+    ...context
   } = options;
   return rows.filter((row) => {
     if (!acceptedFullRuntimeRow(row)) return false;
@@ -23160,6 +23161,10 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
     const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
     const userOwnedSourceFirst =
       SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority);
+    const directLocalPathOrigin = randomColdPathDirectLocalRepoPathOrigin({
+      candidateSource: sourceAuthority,
+      repoPath: firstText(sourceFirst.repoPath, sourceFirst.repo_path),
+    }, context);
     const directSourceIdentityAccepted =
       firstBool(
         sourceFirst.directSourceIdentityAccepted,
@@ -23171,6 +23176,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
       && (requireUserOwnedSource ? userOwnedSourceFirst : true)
+      && directLocalPathOrigin.accepted === true
       && directSourceIdentityAccepted
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
@@ -23266,6 +23272,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
+      'direct_local_source_path_outside_matrix_fixture_roots',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
@@ -23283,6 +23290,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
+      'direct_local_source_path_outside_matrix_fixture_roots',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
@@ -23315,6 +23323,28 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'strict_runtime_visual_oracle_and_async_cas_support_only_not_target_name',
     visual_authority_role:
       'strict_runtime_visual_oracle_and_async_cas_support_only_not_target_name',
+    rejectedDirectLocalSourceRootsForBroadReadiness: [
+      '.gpu-hmr-test-logs',
+      '.gpu-hmr-test-artifacts',
+      'tmp/validation-runs',
+      'tmp/real-rocm',
+      'test/fixtures',
+      'tests/fixtures',
+      'mcp test harness roots',
+      '.synthi/generated',
+      'node_modules',
+    ],
+    rejected_direct_local_source_roots_for_broad_readiness: [
+      '.gpu-hmr-test-logs',
+      '.gpu-hmr-test-artifacts',
+      'tmp/validation-runs',
+      'tmp/real-rocm',
+      'test/fixtures',
+      'tests/fixtures',
+      'mcp test harness roots',
+      '.synthi/generated',
+      'node_modules',
+    ],
   };
   const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
   return {
@@ -24066,7 +24096,7 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false, ...context });
   const randomColdPathFreshnessGaps =
     randomColdPathBroadReadinessFreshnessGaps(rows, context);
-  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows, context);
   const sourceFirstVisualRows = broadReadinessFreshRows(
     sourceFirstVisualCandidateRows,
     context,
@@ -24469,7 +24499,7 @@ function broadLibraryAgnosticReadiness(
     requireLargeSourceTree: false,
     ...context,
   });
-  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows);
+  const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows, context);
   const sourceFirstVisualRows = broadReadinessFreshRows(
     sourceFirstVisualCandidateRows,
     context,
@@ -25767,6 +25797,7 @@ function planCoverage(rows, context = {}) {
   const sourceFirstFullRuntimeRows =
     sourceFirstVisualRowsForBroadReadiness(rows, {
       requireOutputOracleFacet: true,
+      ...context,
     });
   const sourceFirstFullRuntimeSourceIdentities =
     sourceFirstVisualSourceIdentityHashList(sourceFirstFullRuntimeRows);

@@ -8484,6 +8484,18 @@ function withSharedSourceFirstDirectIdentity(row, sourceUrl, immutableCommit) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withSourceFirstDirectLocalIdentity(row, repoPath, immutableCommit) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+    targetId: cloned.targetId,
+    sourceAuthority: 'direct_local_git_repo_path',
+    repoPath,
+    immutableCommit,
+  });
+  cloned.source_first_ingestion = cloned.sourceFirstIngestion;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutSourceFirstDirectSourceIdentity(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   const sourceFirst = {
@@ -10182,6 +10194,66 @@ const missingDirectSourceIdentityCoverage = new Map(
 );
 assert.equal(
   missingDirectSourceIdentityCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
+const fixtureLocalSourceFirstVisualRows = broadReadinessRows.map((row) => {
+  const oracleKind = row.outputOracleFacet?.kind ?? row.output_oracle_facet?.kind;
+  return oracleKind === 'visual_oracle'
+    ? withSourceFirstDirectLocalIdentity(
+      row,
+      path.join(
+        'mcp',
+        'synthi-mcp',
+        '.gpu-hmr-test-logs',
+        'source-first',
+        'visual-fixture',
+        row.targetId,
+      ),
+      sha256Hex(`fixture-local-source-first:${row.targetId}`).slice(0, 40),
+    )
+    : row;
+});
+const broadReadinessWithFixtureLocalSourceFirstVisualQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...fixtureLocalSourceFirstVisualRows,
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithFixtureLocalSourceFirstVisualQuery.accepted, true);
+assert.equal(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+assert.ok(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSelectionPredicate.requiredSignals
+    .includes('direct_local_source_path_outside_matrix_fixture_roots'),
+);
+assert.ok(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSelectionPredicate
+    .rejectedDirectLocalSourceRootsForBroadReadiness
+    .includes('.gpu-hmr-test-logs'),
+);
+const fixtureLocalSourceFirstCoverage = new Map(
+  broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.planCoverage.map((entry) => [
+    entry.id,
+    entry,
+  ])
+);
+assert.equal(
+  fixtureLocalSourceFirstCoverage.get('source_first_uncompiled_project_validation')?.status,
   'missing',
 );
 const repeatedSourceFirstVisualIdentityRows = broadReadinessRows.map((row) => {
