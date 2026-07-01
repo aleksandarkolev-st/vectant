@@ -637,6 +637,7 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
     fixed_seed: boolOrNull(mode.fixed_seed ?? mode.fixedSeed),
     seed_policy_fixed: boolOrNull(mode.seed_policy_fixed ?? mode.seedPolicyFixed),
     seed_policy_hash: textOrNull(mode.seed_policy_hash ?? mode.seedPolicyHash),
+    camera_state_hash: textOrNull(mode.camera_state_hash ?? mode.cameraStateHash),
     frozen_camera: boolOrNull(mode.frozen_camera ?? mode.frozenCamera),
     temporal_accumulation_disabled:
       boolOrNull(mode.temporal_accumulation_disabled ?? mode.temporalAccumulationDisabled),

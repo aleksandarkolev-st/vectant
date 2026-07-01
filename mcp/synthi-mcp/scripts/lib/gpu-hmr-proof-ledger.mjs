@@ -679,6 +679,28 @@ function computeSha256Digest(value) {
   return String(value ?? '').match(/^sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 }
 
+function canonicalSha256(value) {
+  const digest = computeSha256Digest(value);
+  return digest ? `sha256:${digest}` : null;
+}
+
+function expectedVisualCameraStateHashes(record) {
+  const contract = asObject(record.acceptanceContract ?? record.acceptance_contract);
+  const state = asObject(contract.state_preservation_checks ?? contract.statePreservationChecks);
+  const hiprtContract = asObject(contract.hiprt_contract ?? contract.hiprtContract);
+  const deterministicVisualMode = asObject(
+    record.deterministic_visual_mode ?? record.deterministicVisualMode,
+  );
+  return [
+    deterministicVisualMode.camera_state_hash,
+    deterministicVisualMode.cameraStateHash,
+    state.camera_state_hash,
+    state.cameraStateHash,
+    hiprtContract.camera_state_hash,
+    hiprtContract.cameraStateHash,
+  ].map(canonicalSha256).filter(Boolean);
+}
+
 function visualOracleArtifacts(recordOracleArtifacts, outputEvent) {
   const {
     ledgerArtifacts,
@@ -1450,6 +1472,19 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
       );
       if (visiblePixelCount !== null && visiblePixelCount <= 0) {
         addFailure(failures, 'visual_visible_pixel_count_zero');
+      }
+      const cameraStateHash = artifactFieldText(artifacts, 'camera_state_hash', 'cameraStateHash');
+      const canonicalCameraStateHash = canonicalSha256(cameraStateHash);
+      if (!canonicalCameraStateHash) {
+        addFailure(failures, 'visual_camera_state_hash_invalid');
+      } else {
+        const expectedCameraStateHashes = expectedVisualCameraStateHashes(record);
+        if (
+          expectedCameraStateHashes.length > 0
+          && !expectedCameraStateHashes.includes(canonicalCameraStateHash)
+        ) {
+          addFailure(failures, 'visual_camera_state_hash_mismatch');
+        }
       }
       const swapchainSize = artifactFieldArray(artifacts, 'swapchain_size', 'swapchainSize');
       if (

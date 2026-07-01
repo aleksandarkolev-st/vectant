@@ -22,6 +22,7 @@ import {
 import {
   buildGpuHmrProofLedger,
   buildGpuHmrRunModeCoverageSupport,
+  evaluateGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from '../lib/gpu-hmr-proof-ledger.mjs';
 import {
@@ -729,6 +730,7 @@ function deterministicMode(scope) {
     fixed_seed: true,
     seed_policy_fixed: true,
     seed_policy_hash: hashValue(`seed:${scope}`),
+    camera_state_hash: hashValue(`camera:${scope}`),
     frozen_camera: true,
     temporal_accumulation_not_applicable: true,
     taa_not_applicable: true,
@@ -2053,6 +2055,26 @@ await writeJson(path.join(visualDir, 'agent-split-results.json'), [
   },
   { name: 'runner stayed alive after GPU HMR', status: 'pass', detail: 'no runner crash marker' },
 ]);
+
+const visualCameraMismatchMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'visual-camera-mismatch-ledger',
+});
+const visualCameraMismatchRecord = cloneJson(visualCameraMismatchMaterials.proofLedger.records[0]);
+delete visualCameraMismatchRecord.proofId;
+const forgedCameraHash = hashValue('visual-camera-mismatch-forged-camera');
+if (visualCameraMismatchRecord.oracleArtifacts?.visual_oracle_artifacts) {
+  visualCameraMismatchRecord.oracleArtifacts.visual_oracle_artifacts.camera_state_hash = forgedCameraHash;
+  visualCameraMismatchRecord.oracleArtifacts.visual_oracle_artifacts.cameraStateHash = forgedCameraHash;
+}
+if (visualCameraMismatchRecord.outputEvent?.visual_oracle_artifacts) {
+  visualCameraMismatchRecord.outputEvent.visual_oracle_artifacts.camera_state_hash = forgedCameraHash;
+  visualCameraMismatchRecord.outputEvent.visual_oracle_artifacts.cameraStateHash = forgedCameraHash;
+}
+const visualCameraMismatchEvaluation = evaluateGpuHmrProofLedger(visualCameraMismatchRecord);
+assert.equal(visualCameraMismatchEvaluation.gpuHmrSuccess, false);
+assert.ok(visualCameraMismatchEvaluation.failedInvariants.some((failure) =>
+  failure.code === 'visual_camera_state_hash_mismatch'
+));
 
 const forgedLegacyDir = path.join(logsRoot, 'agent-split-artifacts', 'forged-legacy-preview');
 await writeRgbaPng(path.join(forgedLegacyDir, 'before-hmr-first.png'), 8, 8, () => [8, 8, 8, 255]);
@@ -14722,13 +14744,23 @@ assert.equal(acceptedComputeCasOnlyRocm.outputOracleFacet.compute.computeArtifac
 
 const acceptedVisualCasRocmDir = path.join(logsRoot, 'real-rocm-accepted-visual-cas-lib');
 await fs.mkdir(acceptedVisualCasRocmDir, { recursive: true });
+const acceptedVisualCasBaseMaterials = realRocmRuntimeProofMaterials(
+  'hot_delta_1',
+  { projectId: 'real-rocm-accepted-visual-cas-lib' },
+);
+const acceptedVisualCasBaseRecord = acceptedVisualCasBaseMaterials.proofLedger.records[0];
+const acceptedVisualCasCameraStateHash =
+  acceptedVisualCasBaseRecord.deterministic_visual_mode?.camera_state_hash
+  ?? acceptedVisualCasBaseRecord.deterministic_visual_mode?.cameraStateHash
+  ?? acceptedVisualCasBaseRecord.deterministicVisualMode?.camera_state_hash
+  ?? acceptedVisualCasBaseRecord.deterministicVisualMode?.cameraStateHash;
 const acceptedVisualCasArtifacts = await visualArtifactSetWithCas({
   before: path.join(visualDir, 'before-hmr-first.png'),
   after: path.join(visualDir, 'after-hmr-first.png'),
   diff: path.join(visualDir, 'before-after-diff.png'),
 }, {
-  cameraStateHash: hashValue('real-rocm-accepted-visual-cas-camera'),
-  camera_state_hash: hashValue('real-rocm-accepted-visual-cas-camera'),
+  cameraStateHash: acceptedVisualCasCameraStateHash,
+  camera_state_hash: acceptedVisualCasCameraStateHash,
   captureBackend: 'runtime_adapter_visual_oracle',
   capture_backend: 'runtime_adapter_visual_oracle',
   swapchainSize: [8, 8],
@@ -14736,10 +14768,6 @@ const acceptedVisualCasArtifacts = await visualArtifactSetWithCas({
   frameNumber: 11,
   frame_number: 11,
 });
-const acceptedVisualCasBaseMaterials = realRocmRuntimeProofMaterials(
-  'hot_delta_1',
-  { projectId: 'real-rocm-accepted-visual-cas-lib' },
-);
 const acceptedVisualCasTrace =
   acceptedVisualCasBaseMaterials.proofLedger.records[0].artifact_after_hash
   ?? acceptedVisualCasBaseMaterials.proofLedger.records[0].artifactAfterHash;
