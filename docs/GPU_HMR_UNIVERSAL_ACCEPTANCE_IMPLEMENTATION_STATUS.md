@@ -6,16 +6,16 @@ This document records the current implementation status against `GPU_HMR_UNIVERS
 
 ## 2026-07-01 Broad Proof Oracle-Kind Boundary
 
-Broad-readiness compute coverage now requires an accepted `outputOracleFacet` with `kind=compute_oracle` or an explicit compute-card proof flag. An accepted visual output-oracle facet no longer counts as compute evidence. This closes a type-confusion path where visual-only full-runtime rows could satisfy both visual and compute oracle coverage in the aggregate broad proof.
+Broad-readiness compute coverage now requires an accepted `outputOracleFacet` with `kind=compute_oracle` or an explicit compute-card proof flag backed by accepted compute-card evidence and `visual.evidenceKind=compute_card_not_runtime_visual_oracle`. An accepted visual output-oracle facet no longer counts as compute evidence, and a standalone serialized `computeCardOnlyProofAccepted=true` flag is not enough. This closes a type-confusion path where visual-only full-runtime rows could satisfy both visual and compute oracle coverage in the aggregate broad proof.
 
-Smoke coverage now builds a visual-only broad-readiness matrix with HIP, WebGPU, OpenCL, and Vulkan full-runtime rows, adversarial refusals, direct large random cold paths, and source-first visual evidence. The matrix query remains internally valid, but broad readiness stays closed with `computeOracleTargetCount=0` and `broad_acceptance_requires_compute_oracle_rows`.
+Smoke coverage now builds a visual-only broad-readiness matrix with HIP, WebGPU, OpenCL, and Vulkan full-runtime rows, adversarial refusals, direct large random cold paths, and source-first visual evidence. The matrix query remains internally valid, but broad readiness stays closed with `computeOracleTargetCount=0` and `broad_acceptance_requires_compute_oracle_rows`. A paired smoke query forges `computeCardOnlyProofAccepted=true` on those visual-only rows without accepted compute-card evidence; it is refused the same way.
 
 Verification for this patch:
 
 ```text
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including visual-only broad-readiness compute-oracle refusal, latest observed proof gpu-validation-matrix-ledger:sha256:82a3dfd67b74cae350f280fe49d85d6e645ebc3c822471cd823b2a236fbff071, rows=66
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including visual-only broad-readiness compute-oracle refusal and forged compute-card-only flag refusal, latest observed proof gpu-validation-matrix-ledger:sha256:fa36006432a4e4b829f97f4c0705fd62a8f877877fbbd80336d8e8843102eecf, rows=66
 ```
 
 ## 2026-07-01 Random Cold-Path Coverage Boundary

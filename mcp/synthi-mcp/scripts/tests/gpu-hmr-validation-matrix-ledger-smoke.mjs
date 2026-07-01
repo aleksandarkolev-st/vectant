@@ -7716,6 +7716,15 @@ function withAsyncVisualSupportAuthorityClaim(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withForgedComputeCardOnlyFlag(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.computeCardOnlyProofAccepted = true;
+  cloned.compute_card_only_proof_accepted = true;
+  delete cloned.computeCardEvidence;
+  delete cloned.compute_card_evidence;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutOutputOracleFacet(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   delete cloned.outputOracleFacet;
@@ -8998,6 +9007,27 @@ assert.equal(
 );
 assert.ok(
   broadReadinessVisualOnlyWithRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_compute_oracle_rows'),
+);
+const broadReadinessForgedComputeCardOnlyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessVisualOnlyRows.map((row) => withForgedComputeCardOnlyFlag(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessForgedComputeCardOnlyQuery.accepted, true);
+assert.equal(
+  broadReadinessForgedComputeCardOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessForgedComputeCardOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .computeOracleTargetCount,
+  0,
+);
+assert.ok(
+  broadReadinessForgedComputeCardOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_compute_oracle_rows'),
 );
 const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
