@@ -4,6 +4,7 @@ import { asArray, stableJson } from './json';
 import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
+import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pilotLicense';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
@@ -89,7 +90,33 @@ export function codesiteSchemas() {
       dojoLedgerCheckpointHash: { type: ['string', 'null'] },
       dojoDecisionDigest: { type: ['string', 'null'] },
       implementationStatus: { type: 'object' },
+      pilotLicenseHealth: { type: ['object', 'null'] },
+      pilotLicenseRequirement: { type: ['object', 'null'] },
     }, ['executionPlanId', 'agentSessionId', 'displayCallsign', 'status', 'lease']),
+    'pilot-license-health.schema.json': schema('PilotLicenseHealth', {
+      schemaVersion: { type: 'string' },
+      key: { type: 'string' },
+      agentSessionId: { type: ['string', 'null'] },
+      displayCallsign: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      level: { type: 'string' },
+      levelRank: { type: 'number' },
+      dojoPilotLicenseRef: { type: ['string', 'null'] },
+      dojoLicenseRef: { type: ['string', 'null'] },
+      dojoProofRef: { type: ['string', 'null'] },
+      repoScope: { type: ['string', 'null'] },
+      authorizedAirspace: { type: 'array', items: { type: 'string' } },
+      restrictedAirspace: { type: 'array', items: { type: 'string' } },
+      requiredRadar: { type: 'array', items: { type: 'string' } },
+      earnedBy: { type: 'array' },
+      sourceDrift: { type: 'object' },
+      landingStats: { type: 'object' },
+      violationStats: { type: 'object' },
+      reasonCodes: { type: 'array', items: { type: 'string' } },
+      requiredAction: { type: ['string', 'null'] },
+      evidenceRefs: { type: 'array', items: { type: 'string' } },
+      lifecycle: { type: 'object' },
+    }, ['schemaVersion', 'key', 'status', 'level']),
     'mutation-transaction.schema.json': schema('MutationTransaction', {
       mutationLeaseId: { type: 'string' },
       baseSnapshot: { type: 'string' },
@@ -224,6 +251,8 @@ export function codesiteSchemas() {
       allowedPaths: { type: 'array', items: { type: 'string' } },
       blockedPaths: { type: 'array', items: { type: 'string' } },
       pendingQuarantines: { type: 'array' },
+      pilotLicenseHealth: { type: 'array' },
+      pilotLicenseSummary: { type: 'object' },
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
@@ -252,6 +281,9 @@ function schema(title, properties, required) {
 
 export function buildArtifactProjection(project, controlState = null) {
   const projectDir = `projects/${project.id}`;
+  const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth).length
+    ? asArray(controlState.pilotLicenseHealth)
+    : buildPilotLicenseHealthRecords(project);
   const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
   const quarantines = quarantineReviewRecords(project);
   const files = [
@@ -264,6 +296,7 @@ export function buildArtifactProjection(project, controlState = null) {
       events: `${projectDir}/events.jsonl`,
       schemas: 'schemas/',
       compiler_output: 'airspace/compiler-output.json',
+      pilot_license_health: `${projectDir}/pilot-license-health.json`,
       inbox_root: `${projectDir}/inbox/`,
       quarantine_root: `${projectDir}/quarantines/`,
       quarantine_index: `${projectDir}/quarantines/index.jsonl`,
@@ -278,6 +311,11 @@ export function buildArtifactProjection(project, controlState = null) {
     jsonFile(`${projectDir}/control-state.json`, controlState || minimalControlState(project)),
     jsonFile(`${projectDir}/radar-snapshot.json`, controlState || minimalControlState(project)),
     jsonFile(`${projectDir}/collision-forecast.json`, controlState?.collisionForecast || {}),
+    jsonFile(`${projectDir}/pilot-license-health.json`, {
+      schemaVersion: 'synthi.codesite.pilotLicenseHealth.index.v1',
+      summary: pilotLicenseHealthSummary(pilotLicenseHealth),
+      records: pilotLicenseHealth,
+    }),
     jsonFile(`${projectDir}/metrics.json`, metrics),
     {
       relativePath: `${projectDir}/events.jsonl`,
@@ -315,6 +353,10 @@ export function buildArtifactProjection(project, controlState = null) {
     const events = eventsForSession(project.events, session, transactions, clearances);
     const landings = landingRunsForSession(project.inspectionRuns, session, flightPlans);
     const proofs = asArray(project.proofBundles).filter((proof) => transactions.some((txn) => txn.id === proof.transactionId));
+    const pilotHealth = pilotLicenseHealth.find((record) => (
+      record.agentSessionId === session.id
+      || record.displayCallsign === session.displayCallsign
+    )) || null;
     const sessionQuarantines = quarantines.filter((record) => (
       record.displayCallsign === session.displayCallsign
       || transactions.some((txn) => txn.id === record.transactionId)
@@ -322,6 +364,7 @@ export function buildArtifactProjection(project, controlState = null) {
     ));
 
     files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
+    files.push(jsonFile(`${projectDir}/flights/${callsign}/pilot-license-health.json`, pilotHealth));
     files.push({
       relativePath: `${projectDir}/flights/${callsign}/transponder.jsonl`,
       content: events.map((event) => stableJson(event)).join('\n') + (events.length ? '\n' : ''),
@@ -354,6 +397,7 @@ export function buildArtifactProjection(project, controlState = null) {
       inbox,
       events,
       inspections: landings,
+      pilotLicenseHealth: pilotHealth,
       proofBundles: proofs,
       quarantines: sessionQuarantines,
     }));
@@ -679,12 +723,15 @@ function compilerOutput(zonePolicy = {}) {
 }
 
 function minimalControlState(project) {
+  const pilotLicenseHealth = buildPilotLicenseHealthRecords(project);
   return {
     projectId: project.id,
     workspaceSlug: project.workspaceSlug,
     towerState: project.status,
     activeFlights: asArray(project.executionPlans).filter((plan) => plan.status !== 'closed'),
     activeMutationLeases: asArray(project.mutationLeases).filter((lease) => lease.status === 'active'),
+    pilotLicenseHealth,
+    pilotLicenseSummary: pilotLicenseHealthSummary(pilotLicenseHealth),
     requiredActions: [],
   };
 }

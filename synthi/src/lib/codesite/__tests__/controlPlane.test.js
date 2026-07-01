@@ -231,6 +231,12 @@ function executionPlanFixture(route = ['synthi/prisma/**']) {
       projectId: 'project-1',
       ownerUserId: 'user-1',
       displayCallsign: 'ATLAS-1',
+      pilotLicenseSnapshotJson: JSON.stringify({
+        level: 2,
+        repoScope: 'acme',
+        authorizedAirspace: ['synthi/prisma/**'],
+        requiredRadar: ['api_contract', 'security'],
+      }),
     },
   };
 }
@@ -1051,7 +1057,67 @@ describe('CodeSite control plane transaction validation', () => {
     expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
       'dojo_clearance_proof_verified',
       'dojo_public_proof_signature_verified',
+      'pilot_license_health_active',
+      'pilot_license_level_authorized',
     ]));
+    expect(lease.pilotLicenseHealth).toMatchObject({
+      status: 'active',
+      level: 'IFR',
+      dojoLicenseRef: 'schema.level_2@2026-06-25',
+    });
+    const storedLease = JSON.parse(prisma.codeSiteMutationLease.create.mock.calls.at(-1)[0].data.leaseJson);
+    expect(storedLease.pilotLicenseHealth).toMatchObject({
+      status: 'active',
+      level: 'IFR',
+      dojoProofRef: 'pcap-auth-schema',
+    });
+  });
+
+  it('blocks restricted clearances when the pilot license expired from source drift', async () => {
+    const plan = executionPlanFixture(['synthi/prisma/**']);
+    plan.project.zonePolicyJson = JSON.stringify({
+      zones: [
+        { zoneKey: 'schema', class: 'B', label: 'Schema', paths: ['synthi/prisma/**'], rules: [], risk: 'high' },
+      ],
+      compiler: {
+        sourceDigest: 'sha256:source-v2',
+        policyDigest: 'sha256:policy-v2',
+      },
+    });
+    plan.agentSession = {
+      ...plan.agentSession,
+      dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
+      dojoProofRef: 'pcap-auth-schema',
+      dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:checkride-1']),
+      pilotLicenseSnapshotJson: JSON.stringify({
+        level: 2,
+        repoScope: 'acme',
+        authorizedAirspace: ['synthi/prisma/**'],
+        requiredRadar: ['api_contract', 'security'],
+        expiresOn: ['source_drift'],
+        sourceDigest: 'sha256:source-v1',
+      }),
+    };
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(plan);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('blocked');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'pilot_license_source_drift_expired',
+      'pilot_license_expired',
+    ]));
+    expect(lease.pilotLicenseHealth).toMatchObject({
+      status: 'expired',
+      sourceDrift: {
+        expired: true,
+        sourceDigest: 'sha256:source-v1',
+        currentSourceDigest: 'sha256:source-v2',
+      },
+    });
   });
 
   it('allows the verified schema-first leader through restricted collision airspace', async () => {

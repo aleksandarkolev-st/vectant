@@ -11,6 +11,12 @@ import {
   verifyCodeSiteDojoProof,
 } from './dojoProof';
 import {
+  applyPilotLicenseHealthGate,
+  buildPilotLicenseHealthForClearance,
+  buildPilotLicenseHealthRecords,
+  pilotLicenseHealthSummary,
+} from './pilotLicense';
+import {
   classifyPath,
   compileZonePolicy,
   digest,
@@ -719,8 +725,19 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     zonePolicy,
     collisionAvoidance,
   });
+  const pilotLicenseHealth = await pilotLicenseHealthForLeaseRequest({
+    workspaceSlug,
+    plan,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+    dojoProof,
+  });
   const clearancePolicy = applyCounterfactualPolicyGate(
-    applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
+    applyPilotLicenseHealthGate(
+      applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
+      pilotLicenseHealth,
+    ),
     counterfactualPolicy,
   );
   const finalRequestedLease = {
@@ -743,6 +760,8 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
         towerInstruction: clearancePolicy.towerInstruction,
         inspectedZones: clearancePolicy.inspectedZones,
         dojoProofVerification: dojoProofSummary.verification,
+        pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+        pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
         counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
       }),
@@ -760,12 +779,19 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     displayCallsign: lease.displayCallsign,
     decision: clearancePolicy.decision,
     reasonCodes: clearancePolicy.reasonCodes,
-    input: { executionPlan, requestedLease: finalRequestedLease, dojoProof: dojoProofSummary },
+    input: {
+      executionPlan,
+      requestedLease: finalRequestedLease,
+      dojoProof: dojoProofSummary,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+    },
     decisionJson: {
       status: clearancePolicy.status,
       towerInstruction: clearancePolicy.towerInstruction,
       inspectedZones: clearancePolicy.inspectedZones,
       dojoProof: dojoProofSummary,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
@@ -782,6 +808,8 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       status: clearancePolicy.status,
       reasonCodes: clearancePolicy.reasonCodes,
       towerInstruction: clearancePolicy.towerInstruction,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
@@ -803,6 +831,44 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     });
   }
   return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
+}
+
+async function pilotLicenseHealthForLeaseRequest({
+  workspaceSlug,
+  plan,
+  executionPlan,
+  requestedLease,
+  zonePolicy,
+  dojoProof,
+}) {
+  const project = await prisma.codeSiteProject.findUnique({
+    where: { id: plan.projectId },
+    include: PROJECT_INCLUDE,
+  });
+  const healthProject = project || {
+    ...plan.project,
+    id: plan.projectId,
+    workspaceSlug,
+    zonePolicyJson: plan.project?.zonePolicyJson || stringifyJson(zonePolicy),
+    agentSessions: [plan.agentSession].filter(Boolean),
+    executionPlans: [plan].filter(Boolean),
+    mutationLeases: [],
+    policyDecisions: [],
+    events: [],
+    inspectionRuns: [],
+    incidents: [],
+  };
+  return buildPilotLicenseHealthForClearance({
+    ...healthProject,
+    workspaceSlug: healthProject.workspaceSlug || workspaceSlug,
+    zonePolicy,
+    zonePolicyJson: healthProject.zonePolicyJson || stringifyJson(zonePolicy),
+  }, {
+    agentSession: plan.agentSession,
+    executionPlan,
+    requestedLease,
+    dojoProof,
+  });
 }
 
 async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, requestedLease, zonePolicy }) {
@@ -4425,6 +4491,8 @@ export async function getCodeSiteMetrics(workspaceSlug, projectId) {
 
 function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
+  const pilotLicenseHealth = buildPilotLicenseHealthRecords(projection);
+  const pilotLicenseSummary = pilotLicenseHealthSummary(pilotLicenseHealth);
   const pendingQuarantines = quarantineReviewRecords(projection)
     .filter((record) => record.status !== 'applied')
     .map((record) => ({
@@ -4450,6 +4518,7 @@ function buildControlState(workspaceSlug, projection) {
       .filter((item) => item.status === 'pending' && item.requiresResponse)
       .map((item) => `ack_event:${item.eventId || item.id}`),
     ...pendingQuarantines.map((record) => `review_quarantine:${record.quarantineId}`),
+    ...pilotLicenseHealth.map((record) => record.requiredAction).filter(Boolean),
   ];
   return {
     projectId: projection.id,
@@ -4462,6 +4531,8 @@ function buildControlState(workspaceSlug, projection) {
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
     pendingQuarantines,
+    pilotLicenseHealth,
+    pilotLicenseSummary,
     requiredActions,
     eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,
@@ -5829,6 +5900,7 @@ function executionPlanProjection(plan) {
 }
 
 function mutationLeaseProjection(lease, extra = {}) {
+  const leaseBody = parseJson(lease.leaseJson, {});
   return {
     id: lease.id,
     projectId: lease.projectId,
@@ -5836,7 +5908,9 @@ function mutationLeaseProjection(lease, extra = {}) {
     agentSessionId: lease.agentSessionId,
     displayCallsign: lease.displayCallsign,
     status: lease.status,
-    lease: parseJson(lease.leaseJson, {}),
+    lease: leaseBody,
+    pilotLicenseHealth: leaseBody.pilotLicenseHealth || null,
+    pilotLicenseRequirement: leaseBody.pilotLicenseRequirement || null,
     dojoProofRef: lease.dojoProofRef,
     dojoLicenseRef: lease.dojoLicenseRef,
     dojoEvidenceRefs: parseJson(lease.dojoEvidenceRefsJson, []),

@@ -230,4 +230,191 @@ describe('CodeSite success metrics', () => {
     });
     expect(proofMetric.detail).toContain('no external verifier');
   });
+
+  it('scores pilot-license health records as trust evidence', () => {
+    const metrics = buildCodeSiteMetrics({
+      workspaceSlug: 'acme',
+      controlState: {
+        pilotLicenseHealth: [{
+          key: 'agent-1',
+          displayCallsign: 'ATLAS-1',
+          status: 'active',
+          reasonCodes: ['pilot_license_health_active'],
+          evidenceRefs: ['dojo:evidence:active'],
+        }, {
+          key: 'agent-2',
+          displayCallsign: 'BETA-2',
+          status: 'expired',
+          reasonCodes: ['pilot_license_source_drift_expired'],
+          evidenceRefs: ['dojo:evidence:expired'],
+        }],
+      },
+      project: {
+        id: 'project-license',
+        workspaceSlug: 'acme',
+        mutationLeases: [{
+          id: 'lease-1',
+          displayCallsign: 'ATLAS-1',
+          status: 'active',
+        }, {
+          id: 'lease-2',
+          displayCallsign: 'BETA-2',
+          status: 'blocked',
+        }],
+      },
+    });
+
+    const row = metrics.sections.trust.find((item) => item.key === 'pilotLicenseViolationRate');
+    expect(row).toMatchObject({
+      status: 'measured',
+      value: 0.5,
+      sampleSize: 1,
+    });
+    expect(row.evidenceRefs).toEqual(expect.arrayContaining(['dojo:evidence:expired']));
+    expect(metrics.evidence.pilotLicenseStatusCounts).toMatchObject({ active: 1, expired: 1 });
+    expect(metrics.evidence.reasonCodeCounts).toMatchObject({
+      pilot_license_source_drift_expired: 1,
+    });
+  });
+
+  it('deduplicates pilot-license violations without counting healthy license decisions', () => {
+    const metrics = buildCodeSiteMetrics({
+      workspaceSlug: 'acme',
+      controlState: {
+        pilotLicenseHealth: [{
+          key: 'agent-active',
+          displayCallsign: 'ACTIVE-IFR',
+          status: 'active',
+          requiredAirspaceClass: 'B',
+          reasonCodes: ['pilot_license_health_active', 'pilot_license_source_current'],
+          evidenceRefs: ['pilot-health:active'],
+        }, {
+          key: 'agent-stale',
+          displayCallsign: 'STALE-IFR',
+          status: 'expired',
+          requiredAirspaceClass: 'B',
+          reasonCodes: ['pilot_license_source_drift_expired'],
+          evidenceRefs: ['pilot-health:stale'],
+        }],
+      },
+      project: {
+        id: 'project-duplicate-license-evidence',
+        workspaceSlug: 'acme',
+        mutationLeases: [{
+          id: 'lease-active',
+          displayCallsign: 'ACTIVE-IFR',
+          status: 'active',
+        }, {
+          id: 'lease-stale',
+          displayCallsign: 'STALE-IFR',
+          status: 'blocked',
+        }],
+        policyDecisions: [{
+          id: 'decision-active',
+          decision: 'inspect',
+          reasonCodes: ['pilot_license_health_active', 'pilot_license_source_current'],
+          decisionBody: {
+            displayCallsign: 'ACTIVE-IFR',
+            requiredAirspaceClass: 'B',
+            status: 'active',
+          },
+          evidenceRefs: ['policy:active'],
+        }, {
+          id: 'decision-stale',
+          decision: 'block',
+          reasonCodes: ['pilot_license_source_drift_expired'],
+          decisionBody: {
+            displayCallsign: 'STALE-IFR',
+            requiredAirspaceClass: 'B',
+          },
+          evidenceRefs: ['policy:stale'],
+        }],
+      },
+    });
+
+    const row = metrics.sections.trust.find((item) => item.key === 'pilotLicenseViolationRate');
+    expect(row).toMatchObject({
+      status: 'measured',
+      value: 0.5,
+      sampleSize: 3,
+    });
+    expect(row.detail).toMatchObject({ numerator: 1, denominator: 2 });
+    expect(row.evidenceRefs).toEqual(expect.arrayContaining(['pilot-health:stale', 'policy:stale']));
+    expect(row.evidenceRefs).not.toEqual(expect.arrayContaining(['pilot-health:active', 'policy:active']));
+  });
+
+  it('counts pilot-attributed denied writes as separate trust attempts', () => {
+    const metrics = buildCodeSiteMetrics({
+      workspaceSlug: 'acme',
+      controlState: {
+        pilotLicenseHealth: [{
+          key: 'agent-active',
+          displayCallsign: 'ACTIVE-IFR',
+          status: 'active',
+          evidenceRefs: ['pilot-health:active'],
+        }, {
+          key: 'agent-stale',
+          displayCallsign: 'STALE-IFR',
+          status: 'expired',
+          reasonCodes: ['pilot_license_source_drift_expired'],
+          evidenceRefs: ['pilot-health:stale'],
+        }],
+      },
+      project: {
+        id: 'project-write-license-evidence',
+        workspaceSlug: 'acme',
+        mutationLeases: [{
+          id: 'lease-active',
+          displayCallsign: 'ACTIVE-IFR',
+          status: 'active',
+        }, {
+          id: 'lease-stale',
+          displayCallsign: 'STALE-IFR',
+          status: 'blocked',
+        }],
+        policyDecisions: [{
+          id: 'decision-stale',
+          decision: 'block',
+          reasonCodes: ['pilot_license_source_drift_expired'],
+          decisionBody: {
+            displayCallsign: 'STALE-IFR',
+            pilotLicenseHealth: {
+              key: 'agent-stale',
+              displayCallsign: 'STALE-IFR',
+              status: 'expired',
+            },
+          },
+          evidenceRefs: ['policy:stale'],
+        }, {
+          id: 'decision-write-denied',
+          decision: 'block',
+          reasonCodes: ['entered_no_fly_zone'],
+          decisionBody: {
+            path: 'secrets/prod.env',
+            source: 'codesitefs',
+          },
+          displayCallsign: 'STALE-IFR',
+          evidenceRefs: ['policy:write-denied'],
+        }],
+        events: [{
+          id: 'event-write-denied',
+          eventType: 'write_denied',
+          displayCallsign: 'STALE-IFR',
+          details: {
+            path: 'secrets/prod.env',
+            reasonCodes: ['entered_no_fly_zone'],
+          },
+          evidenceRefs: ['codesitefs:denied'],
+        }],
+      },
+    });
+
+    const row = metrics.sections.trust.find((item) => item.key === 'pilotLicenseViolationRate');
+    expect(row).toMatchObject({
+      status: 'measured',
+      value: 0.6667,
+    });
+    expect(row.detail).toMatchObject({ numerator: 2, denominator: 3 });
+    expect(row.evidenceRefs).toEqual(expect.arrayContaining(['policy:stale', 'codesitefs:denied']));
+  });
 });

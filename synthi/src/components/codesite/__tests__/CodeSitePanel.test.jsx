@@ -300,6 +300,12 @@ function radarState() {
         dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
         dojoLedgerCheckpointHash: 'sha256:ledger',
         dojoDecisionDigest: 'sha256:dojo-decision',
+        pilotLicenseHealth: {
+          status: 'active',
+          level: 'IFR',
+          dojoLicenseRef: 'schema.level_2@2026-06-25',
+        },
+        pilotLicenseRequirement: { minimumLevel: 'IFR' },
         expiresAt: '2026-06-29T23:59:00.000Z',
       }],
       activeTransactions: [{
@@ -310,6 +316,30 @@ function radarState() {
         openedAt: '2026-06-29T23:30:00.000Z',
       }],
       requiredActions: ['ack_event:event-1'],
+      pilotLicenseHealth: [{
+        key: 'agent-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        level: 'IFR',
+        dojoLicenseRef: 'schema.level_2@2026-06-25',
+        dojoProofRef: 'pcap-checkout-schema',
+        dojoDecisionDigest: 'sha256:dojo-decision',
+        authorizedAirspace: ['api/checkout/**'],
+        requiredRadar: ['api_contract', 'security'],
+        earnedBy: ['dojo:evidence:checkride-1'],
+        sourceDrift: {
+          monitored: true,
+          sourceDigest: 'sha256:source-v1',
+          currentSourceDigest: 'sha256:source-v1',
+          expired: false,
+        },
+        landingStats: { total: 3, passed: 3, failed: 0 },
+        violationStats: { total: 0, critical: 0 },
+        reasonCodes: ['pilot_license_health_active', 'pilot_license_source_current'],
+        requiredAction: null,
+        evidenceRefs: ['dojo:evidence:checkride-1'],
+      }],
       allowedPaths: ['api/checkout/**'],
       blockedPaths: ['secrets/**'],
       collisionForecast: {
@@ -540,6 +570,11 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Airspace Map');
     expect(container.textContent).toContain('Runway Occupancy');
+    expect(container.textContent).toContain('Pilot License Health');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
+    expect(container.textContent).toContain('pilot:active');
+    expect(container.textContent).toContain('min:IFR');
     const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
     expect(runwayRow.textContent).toContain('api/checkout/**');
     expect(runwayRow.textContent).toContain('ATLAS-1');

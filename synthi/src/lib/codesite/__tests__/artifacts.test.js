@@ -36,9 +36,35 @@ function projectFixture() {
       },
     },
     controlPlan: { selectedStrategy: 'schema-first' },
-    agentSessions: [{ id: 'ags-1', displayCallsign: 'CODEX-04', ownerUserId: 'user-1' }],
+    agentSessions: [{
+      id: 'ags-1',
+      displayCallsign: 'CODEX-04',
+      ownerUserId: 'user-1',
+      dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
+      dojoProofRef: 'pcap-schema',
+      dojoEvidenceRefs: ['dojo:evidence:checkride'],
+      dojoDecisionDigest: 'sha256:dojo-decision',
+      pilotLicenseSnapshot: {
+        level: 2,
+        repoScope: 'acme',
+        authorizedAirspace: ['packages/schemas/**'],
+        requiredRadar: ['api_contract', 'security'],
+        expiresOn: ['source_drift'],
+        sourceDigest: 'sha256:compiler-source',
+      },
+    }],
     executionPlans: [{ id: 'plan-1', agentSessionId: 'ags-1', displayCallsign: 'CODEX-04', route: ['packages/schemas/auth/**'], status: 'filed' }],
-    mutationLeases: [{ id: 'lease-1', executionPlanId: 'plan-1', agentSessionId: 'ags-1', displayCallsign: 'CODEX-04', status: 'active', lease: { allowedPaths: ['packages/schemas/auth/**'] } }],
+    mutationLeases: [{
+      id: 'lease-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'ags-1',
+      displayCallsign: 'CODEX-04',
+      status: 'active',
+      lease: { allowedPaths: ['packages/schemas/auth/**'], requiredRadar: ['api_contract'] },
+      dojoLicenseRef: 'schema.level_2@2026-06-25',
+      dojoProofRef: 'pcap-schema',
+      dojoEvidenceRefs: ['dojo:evidence:lease'],
+    }],
     mutationTxns: [{ id: 'txn-1', agentSessionId: 'ags-1', mutationLeaseId: 'lease-1', readSet: ['packages/schemas/auth/signup.ts'], writeSet: ['packages/schemas/auth/signup.ts'], invariants: ['api-contract:pass'] }],
     assumptions: [{ id: 'asm-1', ownerSessionId: 'ags-1', status: 'active', assumptionKey: 'auth.signup.v2' }],
     events: [
@@ -131,6 +157,7 @@ describe('CodeSite artifact projection', () => {
     expect(manifest.metrics).toBe('projects/site_signup_email_verification/metrics.json');
     expect(manifest.quarantine_index).toBe('projects/site_signup_email_verification/quarantines/index.jsonl');
     expect(manifest.quarantine_root).toBe('projects/site_signup_email_verification/quarantines/');
+    expect(manifest.pilot_license_health).toBe('projects/site_signup_email_verification/pilot-license-health.json');
     expect(paths).toContain('airspace/compiler-output.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'airspace/compiler-output.json').content)).toMatchObject({
       schemaVersion: 'synthi.codesite.repoPolicyCompilerOutput.v1',
@@ -150,8 +177,19 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('schemas/incident.schema.json');
     expect(paths).toContain('schemas/incident-replay.schema.json');
     expect(paths).toContain('schemas/metrics.schema.json');
+    expect(paths).toContain('schemas/pilot-license-health.schema.json');
     expect(paths).toContain('schemas/codesitefs-quarantine.schema.json');
     expect(paths).toContain('projects/site_signup_email_verification/metrics.json');
+    expect(paths).toContain('projects/site_signup_email_verification/pilot-license-health.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/pilot-license-health.json').content)).toMatchObject({
+      schemaVersion: 'synthi.codesite.pilotLicenseHealth.index.v1',
+      summary: expect.objectContaining({ active: 1 }),
+      records: [expect.objectContaining({
+        displayCallsign: 'CODEX-04',
+        status: 'active',
+        level: 'IFR',
+      })],
+    });
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/metrics.json').content)).toMatchObject({
       schemaVersion: 'synthi.codesite.metrics.v1',
       summary: expect.objectContaining({
@@ -181,6 +219,7 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transaction.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transponder.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/landing.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/pilot-license-health.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).quarantines).toEqual([
       expect.objectContaining({ quarantineId: 'qtn-signup-1' }),
@@ -212,11 +251,13 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
-	    expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
+    expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
+	    expect(codesiteSchemas()).toHaveProperty('pilot-license-health.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('codesitefs-quarantine.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
     expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pendingQuarantines');
+    expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pilotLicenseHealth');
     expect(codesiteSchemas()['line-provenance.schema.json'].properties).toMatchObject({
       startLine: { type: ['number', 'null'] },
       endLine: { type: ['number', 'null'] },

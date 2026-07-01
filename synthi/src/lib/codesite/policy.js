@@ -617,8 +617,9 @@ export function evaluateLeaseRequest({ executionPlan, zonePolicy, requestedLease
   const noFlyZones = pathsForRoute(zonePolicy?.noFlyZones || []);
   const inspected = route.map((path) => classifyPath(path, zonePolicy)).filter(Boolean);
   const criticalZones = inspected.filter((zone) => ['A', 'B'].includes(String(zone.class || '').toUpperCase()));
+  const noFlyPatterns = [...blockedPaths, ...noFlyZones];
   const enteredNoFly = route.filter((path) =>
-    [...blockedPaths, ...noFlyZones].some((pattern) => matchPathPattern(path, pattern)));
+    noFlyPatterns.some((pattern) => routeMayEnterPattern(path, pattern)));
 
   if (enteredNoFly.length > 0) {
     return {
@@ -653,7 +654,10 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   const rel = normalizePath(path);
   const leaseJson = typeof lease?.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease?.leaseJson || {});
   const allowedPaths = pathsForRoute(leaseJson.allowedPaths || leaseJson.route || []);
-  const blockedPaths = pathsForRoute(leaseJson.blockedPaths || leaseJson.noFlyZones || []);
+  const blockedPaths = pathsForRoute([
+    ...asArray(leaseJson.blockedPaths || leaseJson.noFlyZones || []),
+    ...asArray(zonePolicy?.noFlyZones || []),
+  ]);
   const allowedTools = asArray(leaseJson.allowedTools || leaseJson.tools || []);
   const zone = classifyPath(rel, zonePolicy);
 
@@ -666,6 +670,16 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   if (lease?.expiresAt && new Date(lease.expiresAt).getTime() < Date.now()) {
     return { ok: false, reasonCodes: ['clearance_expired'], zone, path: rel };
   }
+  const pilotLicenseHealth = leaseJson.pilotLicenseHealth || null;
+  const pilotStatus = String(pilotLicenseHealth?.status || '').toLowerCase();
+  if (pilotLicenseHealth && pilotStatus && pilotStatus !== 'active') {
+    return { ok: false, reasonCodes: [`pilot_license_${pilotStatus}`, 'pilot_license_health_not_active'], zone, path: rel };
+  }
+  const sourceDrift = pilotLicenseHealth?.sourceDrift || {};
+  const currentSourceDigest = firstPolicySourceDigest(zonePolicy);
+  if (sourceDrift.monitored && sourceDrift.sourceDigest && currentSourceDigest && sourceDrift.sourceDigest !== currentSourceDigest) {
+    return { ok: false, reasonCodes: ['pilot_license_source_drift_expired'], zone, path: rel };
+  }
   if (blockedPaths.some((pattern) => matchPathPattern(rel, pattern))) {
     return { ok: false, reasonCodes: ['entered_no_fly_zone'], zone, path: rel };
   }
@@ -676,6 +690,16 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
     return { ok: false, reasonCodes: ['tool_not_in_clearance'], zone, path: rel };
   }
   return { ok: true, reasonCodes: ['inside_clearance_route'], zone, path: rel };
+}
+
+function firstPolicySourceDigest(zonePolicy = {}) {
+  return zonePolicy.compiler?.sourceDigest
+    || zonePolicy.compiler?.source_digest
+    || zonePolicy.semanticGraph?.sourceDigest
+    || zonePolicy.semanticGraph?.source_digest
+    || zonePolicy.sourceDigest
+    || zonePolicy.source_digest
+    || null;
 }
 
 export function predictCollisions({ executionPlans, leases, transactions = [], inspectionRuns = [], zonePolicy }) {
@@ -1121,6 +1145,19 @@ function patternsOverlap(left, right) {
   const rightRoot = right.split('*')[0].replace(/\/+$/, '');
   if (!leftRoot || !rightRoot) return true;
   return leftRoot.startsWith(rightRoot) || rightRoot.startsWith(leftRoot);
+}
+
+function routeMayEnterPattern(routePath, pattern) {
+  const route = normalizePath(routePath);
+  const blocked = normalizePath(pattern);
+  if (!route || !blocked) return false;
+  if (matchPathPattern(route, blocked) || matchPathPattern(blocked, route)) return true;
+  if (route === '**' || route === '*' || blocked === '**' || blocked === '*') return true;
+  const routeRoot = route.split('*')[0].replace(/\/+$/, '');
+  const blockedRoot = blocked.split('*')[0].replace(/\/+$/, '');
+  if (!routeRoot) return true;
+  if (!blockedRoot) return false;
+  return routeRoot.startsWith(blockedRoot) || blockedRoot.startsWith(routeRoot);
 }
 
 function schemaFirstResolution(left, right) {
