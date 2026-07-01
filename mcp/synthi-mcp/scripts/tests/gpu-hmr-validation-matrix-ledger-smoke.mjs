@@ -5362,6 +5362,18 @@ function runtimeAdapterBoundaryBridgeFixture(scope, materials, overrides = {}) {
     can_satisfy_dispatch_proof: false,
     strictRuntimeProofAccepted: true,
     strict_runtime_proof_accepted: true,
+    strictRuntimeProofGateAccepted: true,
+    strict_runtime_proof_gate_accepted: true,
+    strictRuntimeProofGate: {
+      status: 'pass',
+      accepted: true,
+      failures: [],
+    },
+    strict_runtime_proof_gate: {
+      status: 'pass',
+      accepted: true,
+      failures: [],
+    },
     strictRuntimeProofArtifactPresent: true,
     strict_runtime_proof_artifact_present: true,
     proofLedgerPresent: true,
@@ -12510,6 +12522,18 @@ const importedRuntimeProfileAdapterResult = {
   can_satisfy_dispatch_proof: false,
   strictRuntimeProofAccepted: true,
   strict_runtime_proof_accepted: true,
+  strictRuntimeProofGateAccepted: true,
+  strict_runtime_proof_gate_accepted: true,
+  strictRuntimeProofGate: {
+    status: 'pass',
+    accepted: true,
+    failures: [],
+  },
+  strict_runtime_proof_gate: {
+    status: 'pass',
+    accepted: true,
+    failures: [],
+  },
   strictRuntimeProofArtifactPresent: true,
   strict_runtime_proof_artifact_present: true,
   strictRuntimeProofId: `gpu-runtime-proof:sha256:${'a'.repeat(64)}`,
@@ -12575,6 +12599,70 @@ assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult
 assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.canSatisfyRuntimeProof, false);
 assert.ok(runtimeProfileAdapterResultRocm.reasons.includes(
   'real_rocm_runtime_profile_adapter_result:runtime_profile_adapter_result_imported',
+));
+
+const {
+  strictRuntimeProofGateAccepted: _runtimeProfileAdapterResultGateAccepted,
+  strict_runtime_proof_gate_accepted: _runtimeProfileAdapterResultGateAcceptedSnake,
+  strictRuntimeProofGate: _runtimeProfileAdapterResultGate,
+  strict_runtime_proof_gate: _runtimeProfileAdapterResultGateSnake,
+  ...nakedStrictRuntimeProfileAdapterResult
+} = importedRuntimeProfileAdapterResult;
+const nakedStrictRuntimeProfileAdapterResultDir = path.join(
+  logsRoot,
+  'real-rocm-naked-strict-runtime-profile-adapter-result',
+);
+await writeJson(
+  path.join(
+    nakedStrictRuntimeProfileAdapterResultDir,
+    'real-rocm-naked-strict-runtime-profile-adapter-result.json',
+  ),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-naked-strict-runtime-profile-adapter-result-20260630',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-naked-strict-runtime-profile-adapter-result',
+      source: 'scripts/profiles/real-rocm-naked-strict-runtime-profile-adapter-result.json',
+    },
+    source_url: 'https://example.invalid/rocm/naked-strict-runtime-profile-adapter-result.git',
+    target_name: 'NakedStrictRuntimeProfileAdapterResultDriver',
+    real_rocm_runtime_profile_adapter_result: nakedStrictRuntimeProfileAdapterResult,
+    realRocmRuntimeProfileAdapterResult: nakedStrictRuntimeProfileAdapterResult,
+    runtime_profile_adapter_result: nakedStrictRuntimeProfileAdapterResult,
+    runtimeProfileAdapterResult: nakedStrictRuntimeProfileAdapterResult,
+  },
+);
+const nakedStrictRuntimeProfileAdapterResultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [nakedStrictRuntimeProfileAdapterResultDir],
+  generatedAt: '2026-06-30T00:00:03.150Z',
+});
+const nakedStrictRuntimeProfileAdapterResultRocm =
+  nakedStrictRuntimeProfileAdapterResultLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(nakedStrictRuntimeProfileAdapterResultRocm?.acceptedForGpuHmr, false);
+assert.equal(nakedStrictRuntimeProfileAdapterResultRocm.gpuHmrSuccess, false);
+assert.equal(
+  nakedStrictRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.accepted,
+  false,
+);
+assert.ok(
+  nakedStrictRuntimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .failedGates
+    .includes('real_rocm_runtime_profile_adapter_result_strict_gate_not_accepted'),
+);
+assert.ok(
+  nakedStrictRuntimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .failedGates
+    .includes('real_rocm_runtime_profile_adapter_result_imported_without_strict_proof'),
+);
+assert.ok(nakedStrictRuntimeProfileAdapterResultRocm.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result_not_accepted',
 ));
 
 const forgedRuntimeProfileAdapterResult = {

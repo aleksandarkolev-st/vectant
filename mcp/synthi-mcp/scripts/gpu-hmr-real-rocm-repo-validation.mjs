@@ -3650,13 +3650,42 @@ function runtimeProfileAdapterStrictSummary(result = {}) {
     'ledgerId',
     'ledger_id',
   ]);
+  const declaredStrictRuntimeProofAccepted =
+    result.strictRuntimeProofAccepted === true
+    || result.strict_runtime_proof_accepted === true;
+  const strictRuntimeProofGate =
+    result.strictRuntimeProofGate
+    ?? result.strict_runtime_proof_gate
+    ?? null;
+  const strictRuntimeProofGateAccepted =
+    result.strictRuntimeProofGateAccepted === true
+    || result.strict_runtime_proof_gate_accepted === true
+    || strictRuntimeProofGate?.accepted === true
+    || strictRuntimeProofGate?.status === 'pass';
+  const strictRuntimeProofGateFailures = compactStringList([
+    ...(Array.isArray(result.strictRuntimeProofGateFailures)
+      ? result.strictRuntimeProofGateFailures
+      : []),
+    ...(Array.isArray(result.strict_runtime_proof_gate_failures)
+      ? result.strict_runtime_proof_gate_failures
+      : []),
+    ...(Array.isArray(strictRuntimeProofGate?.failures)
+      ? strictRuntimeProofGate.failures
+      : []),
+  ]);
   return {
+    declaredStrictRuntimeProofAccepted,
+    declared_strict_runtime_proof_accepted: declaredStrictRuntimeProofAccepted,
     strictRuntimeProofAccepted:
-      result.strictRuntimeProofAccepted === true
-      || result.strict_runtime_proof_accepted === true,
+      declaredStrictRuntimeProofAccepted && strictRuntimeProofGateAccepted,
     strict_runtime_proof_accepted:
-      result.strictRuntimeProofAccepted === true
-      || result.strict_runtime_proof_accepted === true,
+      declaredStrictRuntimeProofAccepted && strictRuntimeProofGateAccepted,
+    strictRuntimeProofGateAccepted,
+    strict_runtime_proof_gate_accepted: strictRuntimeProofGateAccepted,
+    strictRuntimeProofGateStatus: strictRuntimeProofGate?.status ?? null,
+    strict_runtime_proof_gate_status: strictRuntimeProofGate?.status ?? null,
+    strictRuntimeProofGateFailures,
+    strict_runtime_proof_gate_failures: strictRuntimeProofGateFailures,
     strictRuntimeProofArtifactPresent:
       result.strictRuntimeProofArtifactPresent === true
       || result.strict_runtime_proof_artifact_present === true,
@@ -5008,6 +5037,13 @@ async function collectRuntimeProfileAdapterResultBridge(runtimeProfile = null) {
   const boundaryImportBlockingGaps = [];
   if (parsed && strictSummary.strictRuntimeProofAccepted !== true) {
     blockingGaps.push('runtime_profile_adapter_strict_runtime_proof_not_accepted');
+  }
+  if (
+    parsed
+    && strictSummary.declaredStrictRuntimeProofAccepted === true
+    && strictSummary.strictRuntimeProofGateAccepted !== true
+  ) {
+    blockingGaps.push('runtime_profile_adapter_strict_gate_not_accepted');
   }
   if (parsed && adapterBoundaryCoverage.missingEventKinds.length > 0) {
     boundaryImportBlockingGaps.push('runtime_profile_adapter_boundary_coverage_incomplete');
@@ -19472,6 +19508,18 @@ async function selfCheckRuntimeDispatchEvidence() {
     profile_id: 'self-check-runtime-profile',
     strictRuntimeProofAccepted: true,
     strict_runtime_proof_accepted: true,
+    strictRuntimeProofGateAccepted: true,
+    strict_runtime_proof_gate_accepted: true,
+    strictRuntimeProofGate: {
+      status: 'pass',
+      accepted: true,
+      failures: [],
+    },
+    strict_runtime_proof_gate: {
+      status: 'pass',
+      accepted: true,
+      failures: [],
+    },
     strictRuntimeProofArtifactPresent: true,
     strict_runtime_proof_artifact_present: true,
     strictRuntimeProofId: `gpu-runtime-proof:sha256:${'c'.repeat(64)}`,

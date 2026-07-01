@@ -10,6 +10,7 @@ import {
   normalizeRuntimeProofProfile,
   runtimeProfileToHiprtWarmEnv,
 } from './lib/gpu-hmr-runtime-profile.mjs';
+import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -304,6 +305,14 @@ function summarizeProofArtifact(proof) {
     ...(Array.isArray(runtimeProofArtifact?.limitations) ? runtimeProofArtifact.limitations : []),
     ...(Array.isArray(proof?.limitations) ? proof.limitations : []),
   ];
+  const strictRuntimeProofGate = runtimeProofArtifact
+    ? runtimeProofArtifactStrictGate(runtimeProofArtifact, {
+      name: 'runtime profile adapter declared proof strict gate',
+    })
+    : null;
+  const strictRuntimeProofGateFailures = Array.isArray(strictRuntimeProofGate?.failures)
+    ? strictRuntimeProofGate.failures
+    : [];
   return {
     strictRuntimeProofArtifactPresent: Boolean(runtimeProofArtifact),
     strict_runtime_proof_artifact_present: Boolean(runtimeProofArtifact),
@@ -321,6 +330,14 @@ function summarizeProofArtifact(proof) {
     limitations_present: limitations.length > 0,
     limitationCount: limitations.length,
     limitation_count: limitations.length,
+    strictRuntimeProofGate,
+    strict_runtime_proof_gate: strictRuntimeProofGate,
+    strictRuntimeProofGateAccepted: strictRuntimeProofGate?.accepted === true,
+    strict_runtime_proof_gate_accepted: strictRuntimeProofGate?.accepted === true,
+    strictRuntimeProofGateStatus: strictRuntimeProofGate?.status ?? null,
+    strict_runtime_proof_gate_status: strictRuntimeProofGate?.status ?? null,
+    strictRuntimeProofGateFailures,
+    strict_runtime_proof_gate_failures: strictRuntimeProofGateFailures,
   };
 }
 
@@ -342,6 +359,7 @@ async function writeRuntimeProfileAdapterResult({
     proofSummary.strictRuntimeProofArtifactPresent === true
     && proofSummary.gpuHmrSuccess === true
     && proofSummary.fullRuntimeProven === true
+    && proofSummary.strictRuntimeProofGateAccepted === true
     && proofSummary.limitationsPresent !== true;
   const blockingGaps = [
     runnerSucceeded ? null : 'runtime_profile_adapter_runner_failed',
@@ -356,6 +374,9 @@ async function writeRuntimeProfileAdapterResult({
       : null,
     proofSummary.strictRuntimeProofArtifactPresent && proofSummary.fullRuntimeProven !== true
       ? 'runtime_profile_adapter_full_runtime_not_proven'
+      : null,
+    proofSummary.strictRuntimeProofArtifactPresent && proofSummary.strictRuntimeProofGateAccepted !== true
+      ? 'runtime_profile_adapter_strict_gate_rejected'
       : null,
     proofSummary.limitationsPresent ? 'runtime_profile_adapter_limitations_present' : null,
   ].filter(Boolean);
@@ -576,10 +597,12 @@ async function selfCheck() {
       resultSmokeSpawn.exitCode === 0
       && resultSmokeArtifact.schemaVersion === 'synthi.gpu_hmr.runtime_profile_adapter_result.v1'
       && resultSmokeArtifact.proofJsonPresent === true
-      && resultSmokeArtifact.strictRuntimeProofAccepted === true
+      && resultSmokeArtifact.strictRuntimeProofAccepted === false
+      && resultSmokeArtifact.strictRuntimeProofGateAccepted === false
+      && resultSmokeArtifact.blockingGaps.includes('runtime_profile_adapter_strict_gate_rejected')
       && resultSmokeArtifact.acceptedForGpuHmr === false
       && resultSmokeArtifact.canSatisfyRuntimeProof === false
-      && resultSmokeArtifact.blockingGaps.length === 0,
+      && resultSmokeArtifact.gpuHmrSuccess === false,
     adapter: resultSmoke.adapter.family,
     resultPath: path.relative(REPO_ROOT, resultSmokePath).replace(/\\/g, '/'),
   });

@@ -9033,10 +9033,37 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     facet.canSatisfyDispatchProof,
     facet.can_satisfy_dispatch_proof,
   );
-  const strictRuntimeProofAccepted = firstBool(
+  const declaredStrictRuntimeProofAccepted = firstBool(
     facet.strictRuntimeProofAccepted,
     facet.strict_runtime_proof_accepted,
   );
+  const strictRuntimeProofGate = compactObject(
+    facet.strictRuntimeProofGate ?? facet.strict_runtime_proof_gate,
+  );
+  const strictRuntimeProofGateAccepted = firstBool(
+    facet.strictRuntimeProofGateAccepted,
+    facet.strict_runtime_proof_gate_accepted,
+    strictRuntimeProofGate.accepted,
+    strictRuntimeProofGate.status === 'pass'
+      ? true
+      : strictRuntimeProofGate.status === 'fail'
+        ? false
+        : undefined,
+  );
+  const strictRuntimeProofAccepted =
+    declaredStrictRuntimeProofAccepted === true
+    && strictRuntimeProofGateAccepted === true;
+  const strictRuntimeProofGateFailures = compactStringList([
+    ...(Array.isArray(facet.strictRuntimeProofGateFailures)
+      ? facet.strictRuntimeProofGateFailures
+      : []),
+    ...(Array.isArray(facet.strict_runtime_proof_gate_failures)
+      ? facet.strict_runtime_proof_gate_failures
+      : []),
+    ...(Array.isArray(strictRuntimeProofGate.failures)
+      ? strictRuntimeProofGate.failures
+      : []),
+  ]);
   const strictRuntimeProofArtifactPresent = firstBool(
     facet.strictRuntimeProofArtifactPresent,
     facet.strict_runtime_proof_artifact_present,
@@ -9185,6 +9212,11 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     imported && strictRuntimeProofAccepted !== true
       ? 'real_rocm_runtime_profile_adapter_result_imported_without_strict_proof'
       : null,
+    imported
+      && declaredStrictRuntimeProofAccepted === true
+      && strictRuntimeProofGateAccepted !== true
+      ? 'real_rocm_runtime_profile_adapter_result_strict_gate_not_accepted'
+      : null,
     imported && strictRuntimeProofArtifactPresent !== true
       ? 'real_rocm_runtime_profile_adapter_result_imported_without_runtime_artifact'
       : null,
@@ -9253,6 +9285,14 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     can_satisfy_dispatch_proof: canSatisfyDispatchProof === true,
     strictRuntimeProofAccepted: strictRuntimeProofAccepted === true,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted === true,
+    declaredStrictRuntimeProofAccepted: declaredStrictRuntimeProofAccepted === true,
+    declared_strict_runtime_proof_accepted: declaredStrictRuntimeProofAccepted === true,
+    strictRuntimeProofGateAccepted: strictRuntimeProofGateAccepted === true,
+    strict_runtime_proof_gate_accepted: strictRuntimeProofGateAccepted === true,
+    strictRuntimeProofGateStatus: strictRuntimeProofGate.status ?? null,
+    strict_runtime_proof_gate_status: strictRuntimeProofGate.status ?? null,
+    strictRuntimeProofGateFailures,
+    strict_runtime_proof_gate_failures: strictRuntimeProofGateFailures,
     strictRuntimeProofArtifactPresent: strictRuntimeProofArtifactPresent === true,
     strict_runtime_proof_artifact_present: strictRuntimeProofArtifactPresent === true,
     proofLedgerPresent: proofLedgerPresent === true,
