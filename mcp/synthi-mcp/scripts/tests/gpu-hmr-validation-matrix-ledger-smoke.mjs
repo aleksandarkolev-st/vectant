@@ -14313,6 +14313,32 @@ const forgedUnsupportedOutputResolutionRocm = await writeForgedRealRocmAcceptanc
 });
 assert.equal(forgedUnsupportedOutputResolutionRocm.outputOracleResolutionGate.accepted, false);
 
+const forgedSourceDerivedOutputResolutionRocm = await writeForgedRealRocmAcceptanceGateCase({
+  slug: 'source-derived-output-resolution-source',
+  outputOracleResolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'hip.matrix-multiplication.readback-c.v1',
+    mode: 'hip.matrix-multiplication.readback-c.v1',
+    sourceDerivedCandidateCount: 1,
+    selectedSource: 'source_derived_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  expectedReasons: ['real_rocm_output_oracle_resolution_not_accepted'],
+  expectedOpenGaps: [
+    'real_rocm_output_oracle_resolution_required',
+    'real_rocm_output_oracle_source_derived_profile_not_runtime_authority',
+  ],
+});
+assert.equal(forgedSourceDerivedOutputResolutionRocm.outputOracleResolutionGate.accepted, false);
+assert.equal(
+  forgedSourceDerivedOutputResolutionRocm.outputOracleResolutionGate.sourceDerivedProfileSelected,
+  true,
+);
+
 const forgedMissingSidecarRocm = await writeForgedRealRocmAcceptanceGateCase({
   slug: 'missing-sidecar-consistency',
   mutateMaterials(materials) {

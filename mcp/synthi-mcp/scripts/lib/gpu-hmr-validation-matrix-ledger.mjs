@@ -241,7 +241,6 @@ const VALIDATION_BLOCKER_SCHEMA_VERSION =
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
   'profile_runtime_profile',
   'runtime_output_oracle_evidence',
-  'source_derived_profile',
 ]);
 const TARGET_PROGRESSION_PHASES = new Set([
   'small-oracle',
@@ -16939,9 +16938,11 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
   const runtimeProfileMissing = runtimeProfilePresent === false;
   const runtimeProfileUnsynced = runtimeProfileSynced === false;
   const noSelectedSource = selectedSource === 'none' || selectedSource === null;
+  const sourceDerivedProfileSelected = selectedSource === 'source_derived_profile';
   const selectedSourceUnsupported =
     selectedSource !== null
     && selectedSource !== 'none'
+    && !sourceDerivedProfileSelected
     && !REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES.has(selectedSource);
   const failedGates = compactStringList([
     schemaVersion ? null : 'real_rocm_output_oracle_resolution_schema_missing',
@@ -16956,6 +16957,7 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
     runtimeProfileSynced === true ? null : 'real_rocm_output_oracle_runtime_profile_sync_not_explicitly_proven',
     runtimeProfileUnsynced ? 'real_rocm_output_oracle_runtime_profile_not_synced' : null,
     noSelectedSource ? 'real_rocm_output_oracle_source_missing' : null,
+    sourceDerivedProfileSelected ? 'real_rocm_output_oracle_source_derived_profile_not_runtime_authority' : null,
     selectedSourceUnsupported ? 'real_rocm_output_oracle_source_unsupported' : null,
     failedReason ? `real_rocm_output_oracle_resolution_failed:${failedReason}` : null,
   ]);
@@ -16971,6 +16973,8 @@ function realRocmOutputOracleResolutionGate(outputOracleResolution = {}, { requi
     mode,
     selectedSource,
     selected_source: selectedSource,
+    sourceDerivedProfileSelected,
+    source_derived_profile_selected: sourceDerivedProfileSelected,
     disabledReason,
     disabled_reason: disabledReason,
     failedReason,
