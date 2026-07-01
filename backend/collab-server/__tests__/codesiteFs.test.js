@@ -41,8 +41,10 @@ test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, 'src', 'app.js'), 'inside\n');
     await fs.writeFile(path.join(outside, 'secret.txt'), 'outside\n');
+    await fs.mkdir(path.join(repo, 'canonical'), { recursive: true });
     await fs.symlink(path.join(outside, 'secret.txt'), path.join(repo, 'src', 'secret-link.txt'));
     await fs.symlink(outside, path.join(repo, 'outside-dir'));
+    await fs.symlink(path.join(repo, 'canonical'), path.join(repo, 'alias-dir'));
 
     const existing = await resolveCodeSiteRepoPath(repo, 'src/app.js');
     assert.strictEqual(existing.path, 'src/app.js');
@@ -61,6 +63,10 @@ test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary
     await assert.rejects(
       () => resolveCodeSiteRepoPath(repo, 'outside-dir/new-file.js'),
       (error) => error.code === 'repo_parent_symlink_escape',
+    );
+    await assert.rejects(
+      () => resolveCodeSiteRepoPath(repo, 'alias-dir/new-file.js'),
+      (error) => error.code === 'repo_path_symlink_alias',
     );
   } finally {
     await fs.rm(repo, { recursive: true, force: true });

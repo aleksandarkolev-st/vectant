@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const repoCache = require('./repoCache');
-const { normalizeRepoRelativePath } = require('./codesiteFs');
+const { createCodeSiteFS, normalizeRepoRelativePath } = require('./codesiteFs');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -136,6 +136,58 @@ async function hashFile(absPath) {
     } finally {
         try { stream.destroy(); } catch (_) {}
     }
+}
+
+function arrayValue(value) {
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function uniqueArray(values) {
+    return [...new Set(arrayValue(values))];
+}
+
+function codeSiteContextFromOptions(options = {}) {
+    return options.codesiteContext || options.codeSiteContext || null;
+}
+
+function codeSiteEvidenceArrays(input = {}) {
+    return {
+        evidenceRefs: arrayValue(input.evidenceRefs ?? input.evidence_refs),
+        processAncestry: arrayValue(input.processAncestry ?? input.process_ancestry),
+        lineProvenance: arrayValue(
+            input.lineProvenance
+            ?? input.line_provenance
+            ?? input.hunks
+            ?? input.lineAnchors
+            ?? input.line_anchors
+        ),
+    };
+}
+
+function mergeCodeSiteEvidence(...inputs) {
+    const evidenceRefs = [];
+    const processAncestry = [];
+    const lineProvenance = [];
+    for (const input of inputs) {
+        const evidence = codeSiteEvidenceArrays(input || {});
+        evidenceRefs.push(...evidence.evidenceRefs);
+        processAncestry.push(...evidence.processAncestry);
+        lineProvenance.push(...evidence.lineProvenance);
+    }
+    return {
+        evidenceRefs: uniqueArray(evidenceRefs),
+        processAncestry: uniqueArray(processAncestry),
+        lineProvenance,
+    };
+}
+
+function codeSiteAttempt(pathValue, kind, tool, ...evidenceInputs) {
+    const evidence = mergeCodeSiteEvidence(...evidenceInputs);
+    const attempt = { path: pathValue, kind, tool };
+    if (evidence.evidenceRefs.length) attempt.evidenceRefs = evidence.evidenceRefs;
+    if (evidence.processAncestry.length) attempt.processAncestry = evidence.processAncestry;
+    if (evidence.lineProvenance.length) attempt.lineProvenance = evidence.lineProvenance;
+    return attempt;
 }
 
 function languageForPath(p) {
@@ -1157,6 +1209,42 @@ class GitService {
         
         // Return original error with structured format
         return new GitError(e.message || 'Unknown git error', 'GIT_ERROR');
+    }
+
+    _codeSiteBoundaryOptions(context, options = {}, repoPath) {
+        if (!context?.active && !options.requireCodeSiteBoundary) return null;
+        const nestedOptions = options.codesiteOptions || options.codeSiteOptions || {};
+        const requireAuthoritativeContext = options.requireAuthoritativeContext
+            ?? nestedOptions.requireAuthoritativeContext
+            ?? (context?.active ? context.mode !== 'monitor' : true);
+        const boundaryOptions = {
+            ...nestedOptions,
+            repoRoot: repoPath,
+            requireAuthoritativeContext,
+        };
+        const fetchImpl = options.fetch || options.codesiteFetch || options.codeSiteFetch;
+        if (fetchImpl) boundaryOptions.fetch = fetchImpl;
+        return boundaryOptions;
+    }
+
+    async _runCodeSiteMutationBoundary(slug, userId, options = {}, operation = {}, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        const context = codeSiteContextFromOptions(options);
+        const boundaryOptions = this._codeSiteBoundaryOptions(context, options, effectiveRepoPath);
+        if (!boundaryOptions) {
+            return applyFn({ repoPath: effectiveRepoPath });
+        }
+
+        const codesiteFs = createCodeSiteFS(context, boundaryOptions);
+        const boundary = await codesiteFs.run({
+            ...operation,
+            operation: options.operation || operation.operation || operation.kind,
+            tool: options.tool || operation.tool,
+            evidenceRefs: operation.evidenceRefs || options.evidenceRefs || options.evidence_refs,
+            processAncestry: operation.processAncestry || options.processAncestry || options.process_ancestry,
+            lineProvenance: operation.lineProvenance || options.lineProvenance || options.line_provenance,
+        }, async () => applyFn({ repoPath: effectiveRepoPath }), boundaryOptions);
+        return boundary.applyResult;
     }
 
     /**
@@ -3531,11 +3619,17 @@ class GitService {
         }
     }
 
-    async syncFile(slug, filePath, content, userId) {
+    async syncFile(slug, filePath, content, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(filePath);
-        const fullPath = path.join(repoPath, safeRel);
-        await safeWriteFile(fullPath, content);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'sync-file',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(filePath, 'sync-file', 'file_write', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(filePath);
+            const fullPath = path.join(repoPath, safeRel);
+            await safeWriteFile(fullPath, content);
+        }, repoPath);
     }
 
     /**
@@ -3545,27 +3639,42 @@ class GitService {
      * @param {string} newPath - Desired relative path
      * @returns {Promise<{success: boolean}>}
      */
-    async renameItem(slug, oldPath, newPath, userId) {
+    async renameItem(slug, oldPath, newPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeOld = normalizeRepoRelativePath(oldPath);
-        const safeNew = normalizeRepoRelativePath(newPath);
-        const absOld = path.join(repoPath, safeOld);
-        const absNew = path.join(repoPath, safeNew);
-        // Ensure the target directory exists
-        await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
-        await fs.promises.rename(absOld, absNew);
-        return { success: true };
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'rename-item',
+            tool: 'file_rename',
+            attempts: [
+                codeSiteAttempt(oldPath, 'rename-item:old', 'file_rename', options),
+                codeSiteAttempt(newPath, 'rename-item:new', 'file_rename', options),
+            ],
+        }, async () => {
+            const safeOld = normalizeRepoRelativePath(oldPath);
+            const safeNew = normalizeRepoRelativePath(newPath);
+            const absOld = path.join(repoPath, safeOld);
+            const absNew = path.join(repoPath, safeNew);
+            // Ensure the target directory exists
+            await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
+            await fs.promises.rename(absOld, absNew);
+            return { success: true };
+        }, repoPath);
     }
 
-    async deleteFile(slug, filePath, userId) {
+    async deleteFile(slug, filePath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(filePath);
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await fs.promises.unlink(fullPath);
-        } catch (_) {
-            // ignore
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'delete-file',
+            tool: 'file_delete',
+            attempts: [codeSiteAttempt(filePath, 'delete-file', 'file_delete', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(filePath);
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await fs.promises.unlink(fullPath);
+            } catch (_) {
+                // ignore
+            }
+        }, repoPath);
     }
     
     /**
@@ -3574,36 +3683,42 @@ class GitService {
      * @param {string} itemPath - Path to file or directory
      * @returns {Promise<{deleted: number}>} Number of items deleted
      */
-    async deleteItem(slug, itemPath, userId) {
+    async deleteItem(slug, itemPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         // Remove trailing slash for path operations
         const cleanPath = String(itemPath || '').endsWith('/') ? String(itemPath).slice(0, -1) : itemPath;
-        const safeRel = normalizeRepoRelativePath(cleanPath);
-        const fullPath = path.join(repoPath, safeRel);
-        
-        let deleted = 0;
-        
-        try {
-            const stat = await fs.promises.stat(fullPath);
-            
-            if (stat.isDirectory()) {
-                // Recursively delete directory
-                await fs.promises.rm(fullPath, { recursive: true, force: true });
-                // Count approximate items (we'll say 1 for the dir itself)
-                deleted = 1;
-            } else {
-                await fs.promises.unlink(fullPath);
-                deleted = 1;
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'delete-item',
+            tool: 'file_delete',
+            attempts: [codeSiteAttempt(cleanPath, 'delete-item', 'file_delete', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(cleanPath);
+            const fullPath = path.join(repoPath, safeRel);
+
+            let deleted = 0;
+
+            try {
+                const stat = await fs.promises.stat(fullPath);
+
+                if (stat.isDirectory()) {
+                    // Recursively delete directory
+                    await fs.promises.rm(fullPath, { recursive: true, force: true });
+                    // Count approximate items (we'll say 1 for the dir itself)
+                    deleted = 1;
+                } else {
+                    await fs.promises.unlink(fullPath);
+                    deleted = 1;
+                }
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    // File/folder doesn't exist - not an error
+                    return { deleted: 0, error: 'not_found' };
+                }
+                throw e;
             }
-        } catch (e) {
-            if (e.code === 'ENOENT') {
-                // File/folder doesn't exist - not an error
-                return { deleted: 0, error: 'not_found' };
-            }
-            throw e;
-        }
-        
-        return { deleted };
+
+            return { deleted };
+        }, repoPath);
     }
 
     async listFiles(slug, userId) {
@@ -3724,31 +3839,43 @@ class GitService {
         return parts.join('/');
     }
 
-    async writeFile(slug, filePath, content, userId) {
+    async writeFile(slug, filePath, content, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        let safeRel;
-        try {
-            safeRel = normalizeRepoRelativePath(filePath);
-        } catch (_) {
-            throw new Error('Invalid file path');
-        }
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await safeWriteFile(fullPath, content);
-        } catch (e) {
-            throw new Error(`Failed to write file: ${e.message}`);
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'write-file',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(filePath, 'write-file', 'file_write', options)],
+        }, async () => {
+            let safeRel;
+            try {
+                safeRel = normalizeRepoRelativePath(filePath);
+            } catch (_) {
+                throw new Error('Invalid file path');
+            }
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await safeWriteFile(fullPath, content);
+            } catch (e) {
+                throw new Error(`Failed to write file: ${e.message}`);
+            }
+        }, repoPath);
     }
 
-    async createDirectory(slug, dirPath, userId) {
+    async createDirectory(slug, dirPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(dirPath);
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await fs.promises.mkdir(fullPath, { recursive: true });
-        } catch (e) {
-            throw new Error(`Failed to create directory: ${e.message}`);
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'create-directory',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(dirPath, 'create-directory', 'file_write', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(dirPath);
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await fs.promises.mkdir(fullPath, { recursive: true });
+            } catch (e) {
+                throw new Error(`Failed to create directory: ${e.message}`);
+            }
+        }, repoPath);
     }
 
     async writeFilesBatch(slug, files, options = {}) {
@@ -3761,63 +3888,69 @@ class GitService {
                 throw new Error('files must be an array');
             }
 
-            const written = [];
-            const skipped = [];
-            const errors = [];
+            return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                operation: 'write-files-batch',
+                tool: 'file_write',
+                attempts: files.map((file) => codeSiteAttempt(file?.path, 'write-files-batch', 'file_write', options, file)),
+            }, async () => {
+                const written = [];
+                const skipped = [];
+                const errors = [];
 
-            for (const f of files) {
-                try {
-                    let rel;
+                for (const f of files) {
                     try {
-                        rel = normalizeRepoRelativePath(f?.path);
-                    } catch (_) {
-                        skipped.push({ path: f?.path, reason: 'invalid_path' });
-                        continue;
-                    }
-
-                    // NOTE: we intentionally do NOT allow folder markers here.
-                    if (rel.endsWith('/')) {
-                        skipped.push({ path: rel, reason: 'folders_not_supported' });
-                        continue;
-                    }
-
-                    const encoding = (f?.encoding || 'utf8').toLowerCase();
-                    const content = (typeof f?.content === 'string') ? f.content : (typeof f?.contentBase64 === 'string' ? f.contentBase64 : null);
-                    if (typeof content !== 'string') {
-                        skipped.push({ path: rel, reason: 'missing_content' });
-                        continue;
-                    }
-
-                    const fullPath = path.join(repoPath, rel);
-
-                    if (encoding === 'base64') {
-                        const buf = Buffer.from(content, 'base64');
-                        await safeWriteFile(fullPath, buf);
-                    } else {
-                        await safeWriteFile(fullPath, content);
-                    }
-
-                    written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
-
-                    if (syncToGcs && gcsSync.isGcsConfigured()) {
+                        let rel;
                         try {
-                            await gcsSync.syncFileToGcs(slug, rel, content, userId);
-                        } catch (e) {
-                            // Non-fatal: file is still written to repo, but storage may lag.
-                            errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });
+                            rel = normalizeRepoRelativePath(f?.path);
+                        } catch (_) {
+                            skipped.push({ path: f?.path, reason: 'invalid_path' });
+                            continue;
                         }
-                    }
-                } catch (e) {
-                    errors.push({ path: f?.path, stage: 'write', error: e?.message || String(e) });
-                }
-            }
 
-            return {
-                success: errors.length === 0,
-                written,
-                skipped,
-                errors,
-            };
+                        // NOTE: we intentionally do NOT allow folder markers here.
+                        if (rel.endsWith('/')) {
+                            skipped.push({ path: rel, reason: 'folders_not_supported' });
+                            continue;
+                        }
+
+                        const encoding = (f?.encoding || 'utf8').toLowerCase();
+                        const content = (typeof f?.content === 'string') ? f.content : (typeof f?.contentBase64 === 'string' ? f.contentBase64 : null);
+                        if (typeof content !== 'string') {
+                            skipped.push({ path: rel, reason: 'missing_content' });
+                            continue;
+                        }
+
+                        const fullPath = path.join(repoPath, rel);
+
+                        if (encoding === 'base64') {
+                            const buf = Buffer.from(content, 'base64');
+                            await safeWriteFile(fullPath, buf);
+                        } else {
+                            await safeWriteFile(fullPath, content);
+                        }
+
+                        written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
+
+                        if (syncToGcs && gcsSync.isGcsConfigured()) {
+                            try {
+                                await gcsSync.syncFileToGcs(slug, rel, content, userId);
+                            } catch (e) {
+                                // Non-fatal: file is still written to repo, but storage may lag.
+                                errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });
+                            }
+                        }
+                    } catch (e) {
+                        errors.push({ path: f?.path, stage: 'write', error: e?.message || String(e) });
+                    }
+                }
+
+                return {
+                    success: errors.length === 0,
+                    written,
+                    skipped,
+                    errors,
+                };
+            }, repoPath);
         }, userId);
     }
 
@@ -4756,9 +4889,6 @@ gitService.MergeConflictError = MergeConflictError;
 gitService.AuthenticationError = AuthenticationError;
 gitService.RemoteNotConfiguredError = RemoteNotConfiguredError;
 
-// Expose the atomic-write helper for modules that write outside the class
-// (e.g. server.js flushDocToDisk).
-gitService.safeWriteFile = safeWriteFile;
 gitService.isBinaryExtension = isBinaryExtension;
 
 module.exports = gitService;

@@ -68,6 +68,7 @@ async function resolveCodeSiteRepoPath(repoRoot, input) {
       throw codeSitePathError('repo_path_symlink_unresolved', error?.message || 'CodeSiteFS path symlink could not be resolved');
     });
     assertPathInsideRepo(repoRealPath, realPath, 'repo_path_symlink_escape');
+    assertCanonicalRepoPath(repoRealPath, normalized, realPath);
     const targetStat = stat.isSymbolicLink()
       ? await fsp.stat(realPath)
       : stat;
@@ -80,13 +81,16 @@ async function resolveCodeSiteRepoPath(repoRoot, input) {
       kind: fileKind(targetStat),
       isSymlink: stat.isSymbolicLink(),
       parentRealPath: path.dirname(realPath),
+      canonicalPath: normalized,
     };
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
 
-  const parentRealPath = await nearestExistingParentRealPath(repoRealPath, absolutePath);
+  const { parentRealPath, canonicalAbsolutePath } = await nearestExistingParentRealPath(repoRealPath, absolutePath);
   assertPathInsideRepo(repoRealPath, parentRealPath, 'repo_parent_symlink_escape');
+  assertPathInsideRepo(repoRealPath, canonicalAbsolutePath, 'repo_parent_symlink_escape');
+  assertCanonicalRepoPath(repoRealPath, normalized, canonicalAbsolutePath);
   return {
     path: normalized,
     repoRealPath,
@@ -96,6 +100,7 @@ async function resolveCodeSiteRepoPath(repoRoot, input) {
     kind: 'missing',
     isSymlink: false,
     parentRealPath,
+    canonicalPath: normalized,
   };
 }
 
@@ -104,7 +109,12 @@ async function nearestExistingParentRealPath(repoRealPath, absolutePath) {
   while (true) {
     assertPathInsideRepo(repoRealPath, current, 'repo_path_escape');
     try {
-      return await fsp.realpath(current);
+      const parentRealPath = await fsp.realpath(current);
+      const missingRel = path.relative(current, absolutePath);
+      return {
+        parentRealPath,
+        canonicalAbsolutePath: path.resolve(parentRealPath, missingRel),
+      };
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         throw codeSitePathError('repo_parent_unavailable', error?.message || 'CodeSiteFS parent path is unavailable');
@@ -116,6 +126,21 @@ async function nearestExistingParentRealPath(repoRealPath, absolutePath) {
     }
     current = next;
   }
+}
+
+function assertCanonicalRepoPath(repoRealPath, normalizedPath, canonicalAbsolutePath) {
+  const canonicalPath = repoRelativePath(repoRealPath, canonicalAbsolutePath);
+  if (canonicalPath !== normalizedPath) {
+    throw codeSitePathError(
+      'repo_path_symlink_alias',
+      `CodeSiteFS path resolves through a symlink alias: ${normalizedPath} -> ${canonicalPath}`,
+    );
+  }
+}
+
+function repoRelativePath(repoRealPath, candidatePath) {
+  const rel = path.relative(repoRealPath, candidatePath);
+  return rel.replace(/\\/g, '/');
 }
 
 function assertPathInsideRepo(repoRealPath, candidatePath, code) {

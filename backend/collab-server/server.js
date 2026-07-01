@@ -1051,7 +1051,7 @@ async function flushDocToDisk(docName, options = {}) {
   // the user's edited content, and there's nothing to revert to.
   //
   // ORDER MATTERS: we MUST read the prior disk content BEFORE calling
-  // safeWriteFile, otherwise the read sees the freshly-written new content
+  // gitService.writeFile, otherwise the read sees the freshly-written new content
   // and `prior === content` short-circuits the baseline seed.  An earlier
   // version relied on gitService.syncFile() happening in the caller, which
   // broke this ordering and meant the very first saved version was always
@@ -1096,7 +1096,7 @@ async function flushDocToDisk(docName, options = {}) {
       tool: 'file_write',
       ...codeSiteWriteEvidence(options, derivedLineProvenance),
     }],
-  }, async () => gitService.safeWriteFile(fullPath, content), { repoRoot: repoPath });
+  }, async () => gitService.writeFile(slug, filePath, content, effectiveUserId), { repoRoot: repoPath });
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -4123,7 +4123,7 @@ const server = http.createServer(async (req, res) => {
             kind: 'file-version-restore',
             tool: 'file_write',
           }],
-        }, async () => gitService.safeWriteFile(fullPath, content), { repoRoot: repoPath });
+        }, async () => gitService.writeFile(slug, normalizedPath, content, targetUserId), { repoRoot: repoPath });
 
         // 2) Pull the CRDT doc onto the restored content so live editors
         // converge without data loss, then ALWAYS hard-invalidate the doc.
