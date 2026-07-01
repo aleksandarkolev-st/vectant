@@ -190,6 +190,43 @@ function codeSiteAttempt(pathValue, kind, tool, ...evidenceInputs) {
     return attempt;
 }
 
+function normalizePatchHeaderPath(rawPath) {
+    let patchPath = String(rawPath || '').trim();
+    if (!patchPath || patchPath === '/dev/null') return null;
+    const tabIndex = patchPath.indexOf('\t');
+    if (tabIndex >= 0) patchPath = patchPath.slice(0, tabIndex);
+    if (patchPath.startsWith('"')) {
+        try {
+            patchPath = JSON.parse(patchPath);
+        } catch (_) {
+            // Fall back to the raw path; normalizeRepoRelativePath will reject unsafe input.
+        }
+    }
+    if (patchPath.startsWith('a/') || patchPath.startsWith('b/')) {
+        patchPath = patchPath.slice(2);
+    }
+    return normalizeRepoRelativePath(patchPath);
+}
+
+function extractUnifiedPatchPaths(patch) {
+    const paths = new Set();
+    for (const line of String(patch || '').split(/\r?\n/)) {
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+            const patchPath = normalizePatchHeaderPath(line.slice(4));
+            if (patchPath) paths.add(patchPath);
+        }
+    }
+    return [...paths];
+}
+
+function assertSingleFilePatchTarget(patchPaths, expectedPath) {
+    if (patchPaths.length === 1 && patchPaths[0] === expectedPath) return;
+    const error = new Error('Discard patch target does not match requested file path.');
+    error.code = 'PATCH_PATH_MISMATCH';
+    error.details = { expectedPath, patchPaths };
+    throw error;
+}
+
 function languageForPath(p) {
     const ext = (path.extname(p || '').replace('.', '') || '').toLowerCase();
     const map = {
@@ -1178,6 +1215,10 @@ class GitService {
 
     // Centralized error mapper for git errors
     mapGitError(e, slug) {
+        if (e?.code === 'CODESITE_WRITE_DENIED' || e?.code === 'PATCH_PATH_MISMATCH') {
+            return e;
+        }
+
         const msg = (e.message || '').toLowerCase();
         
         if (msg.includes('repository not found') || msg.includes('remote: repository not found')) {
@@ -1245,6 +1286,15 @@ class GitService {
             lineProvenance: operation.lineProvenance || options.lineProvenance || options.line_provenance,
         }, async () => applyFn({ repoPath: effectiveRepoPath }), boundaryOptions);
         return boundary.applyResult;
+    }
+
+    async _runCodeSiteGitWorktreeBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_worktree',
+            attempts: [codeSiteAttempt('**', kind, 'git_worktree', options)],
+        }, applyFn, effectiveRepoPath);
     }
 
     /**
@@ -2004,10 +2054,12 @@ class GitService {
         }, userId);
     }
 
-    async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = []) {
+    async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'checkout', async () => {
+                    const git = await this.getGit(slug, userId);
                 // ── Ensure we have the latest remote refs ──
                 // If the branch doesn't exist locally (e.g. a PR head branch
                 // like "MAZNA"), we need to fetch first so git knows about
@@ -2095,6 +2147,7 @@ class GitService {
                 }
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
                 if (msg.includes('would be overwritten') || msg.includes('your local changes')) {
@@ -2237,11 +2290,12 @@ class GitService {
      *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
      * @param {string} userId
      */
-    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null) {
+    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'interactive-rebase', async () => {
+                const git = await this.getGit(slug, userId);
 
                 // Build the rebase-todo script
                 const todoLines = operations.map(op => {
@@ -2308,36 +2362,45 @@ class GitService {
 
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 // If rebase fails, try to abort so we don't leave repo in bad state
-                try {
-                    const git2 = await this.getGit(slug, userId);
-                    await git2.rebase(['--abort']);
-                } catch (_) { /* already clean */ }
+                if (e?.code !== 'CODESITE_WRITE_DENIED') {
+                    try {
+                        const git2 = await this.getGit(slug, userId);
+                        await git2.rebase(['--abort']);
+                    } catch (_) { /* already clean */ }
+                }
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async rebaseAbort(slug, userId) {
+    async rebaseAbort(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.rebase(['--abort']);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'rebase-abort', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.rebase(['--abort']);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async rebaseContinue(slug, userId, commitIdentity = null) {
+    async rebaseContinue(slug, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
-                this._archiveGitAsync(slug, userId);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'rebase-continue', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
+                    this._archiveGitAsync(slug, userId);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2384,22 +2447,32 @@ class GitService {
     }
 
     // Discard (revert) selected lines from the working tree by reverse-applying a patch
-    async discardLines(slug, filePath, patch, userId) {
+    async discardLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard-lines',
+                    tool: 'git_worktree',
+                    attempts: attemptPaths.map((patchPath) => codeSiteAttempt(patchPath, 'discard-lines', 'git_worktree', options)),
+                }, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2483,23 +2556,30 @@ class GitService {
     }
 
     // Discard all unstaged changes
-    async discardAll(slug, userId) {
+    async discardAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                const status = await git.status();
-                
-                // Checkout all modified/deleted tracked files
-                if (status.modified.length > 0 || status.deleted.length > 0) {
-                    await git.checkout(['--', '.']);
-                }
-                
-                // Clean untracked files
-                if (status.not_added.length > 0) {
-                    await git.clean('f', ['-d']);
-                }
-                
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard-all',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt('**', 'discard-all', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const status = await git.status();
+
+                    // Checkout all modified/deleted tracked files
+                    if (status.modified.length > 0 || status.deleted.length > 0) {
+                        await git.checkout(['--', '.']);
+                    }
+
+                    // Clean untracked files
+                    if (status.not_added.length > 0) {
+                        await git.clean('f', ['-d']);
+                    }
+
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2765,10 +2845,13 @@ class GitService {
         }
     }
 
-    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
+    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
+            let git;
             try {
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'pull', async () => {
+                git = await this.getGit(slug, userId);
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
 
                 // Pull may produce a merge commit when the local branch has
@@ -2820,9 +2903,12 @@ class GitService {
                         deletions: pullResult.summary?.deletions || 0,
                     }
                 };
+                }, repoPath);
             } catch (e) {
                 // Archive .git even on conflict so the state is persisted
-                this._archiveGitAsync(slug, userId);
+                if (e?.code !== 'CODESITE_WRITE_DENIED') {
+                    this._archiveGitAsync(slug, userId);
+                }
                 if (e instanceof MergeConflictError) throw e;
                 
                 const msg = (e.message || '').toLowerCase();
@@ -2867,25 +2953,32 @@ class GitService {
         }, userId);
     }
 
-    async discardChange(slug, filePath, userId) {
+    async discardChange(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                // Check if file is untracked
-                const status = await git.status();
-                const fileStatus = status.files.find(f => f.path === filePath);
-                
-                if (fileStatus && fileStatus.index === '?') {
-                    // Untracked file, delete it
-                    const repoPath = this.getEffectiveRepoPath(slug, userId);
-                    const fullPath = path.join(repoPath, filePath);
-                    if (fs.existsSync(fullPath)) {
-                        await fs.promises.unlink(fullPath);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'discard', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    // Check if file is untracked
+                    const status = await git.status();
+                    const fileStatus = status.files.find(f => f.path === safeRel);
+
+                    if (fileStatus && fileStatus.index === '?') {
+                        // Untracked file, delete it
+                        const fullPath = path.join(repoPath, safeRel);
+                        if (fs.existsSync(fullPath)) {
+                            await fs.promises.unlink(fullPath);
+                        }
+                    } else {
+                        await git.checkout(['--', safeRel]);
                     }
-                } else {
-                    await git.checkout(filePath);
-                }
-                return this.getStatus(slug, userId);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2895,13 +2988,21 @@ class GitService {
     // ===== Merge Conflict Resolution =====
     
     // Resolve conflict by accepting "ours" (current branch) version
-    async resolveConflictOurs(slug, filePath, userId) {
+    async resolveConflictOurs(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.checkout(['--ours', filePath]);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'resolve-ours',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'resolve-ours', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.checkout(['--ours', safeRel]);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2909,13 +3010,21 @@ class GitService {
     }
 
     // Resolve conflict by accepting "theirs" (incoming) version
-    async resolveConflictTheirs(slug, filePath, userId) {
+    async resolveConflictTheirs(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.checkout(['--theirs', filePath]);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'resolve-theirs',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'resolve-theirs', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.checkout(['--theirs', safeRel]);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2923,12 +3032,20 @@ class GitService {
     }
 
     // Mark a conflicted file as resolved (after manual edit)
-    async markResolved(slug, filePath, userId) {
+    async markResolved(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'mark-resolved',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'mark-resolved', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2936,15 +3053,18 @@ class GitService {
     }
 
     // Cherry-pick a commit onto the current branch
-    async cherryPick(slug, hash, userId, commitIdentity = null) {
+    async cherryPick(slug, hash, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                // Cherry-pick replays the original author but sets the
-                // committer to the running user — pin both via env so
-                // attribution stays with the requester.
-                await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'cherry-pick', async () => {
+                    const git = await this.getGit(slug, userId);
+                    // Cherry-pick replays the original author but sets the
+                    // committer to the running user — pin both via env so
+                    // attribution stays with the requester.
+                    await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2952,12 +3072,15 @@ class GitService {
     }
 
     // Revert a commit (create an inverse commit)
-    async revertCommit(slug, hash, userId, commitIdentity = null) {
+    async revertCommit(slug, hash, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'revert', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -3020,12 +3143,15 @@ class GitService {
     }
 
     // Abort current merge (discard all merge changes)
-    async abortMerge(slug, userId) {
+    async abortMerge(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.merge(['--abort']);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'abort-merge', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.merge(['--abort']);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -3043,8 +3169,10 @@ class GitService {
      * @param {string} [token]  Optional auth token for the fetch step
      * @returns {{ status, hasConflicts, conflictedFiles }}
      */
-    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
+    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
+            const repoPath = this.getEffectiveRepoPath(slug, userId);
+            return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'merge-branch', async () => {
             const git = await this.getGit(slug, userId);
 
             // Normalise: strip leading "origin/" so we always work with the
@@ -3107,6 +3235,7 @@ class GitService {
                 hasConflicts: hasConflicts || (status?.hasConflicts ?? false) || conflictedFiles.length > 0,
                 conflictedFiles,
             };
+            }, repoPath);
         }, userId);
     }
 
@@ -3399,27 +3528,33 @@ class GitService {
         }
     }
 
-    async stashPush(slug, message = '', userId, commitIdentity = null) {
+    async stashPush(slug, message = '', userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                const options = message ? ['-m', message] : [];
-                // `git stash push` builds synthetic stash + index commits;
-                // attribute them to the requester for clean ref-log history.
-                await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...options]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-push', async () => {
+                    const git = await this.getGit(slug, userId);
+                    const stashOptions = message ? ['-m', message] : [];
+                    // `git stash push` builds synthetic stash + index commits;
+                    // attribute them to the requester for clean ref-log history.
+                    await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...stashOptions]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async stashPop(slug, index = 0, userId, commitIdentity = null) {
+    async stashPop(slug, index = 0, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-pop', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -3438,12 +3573,15 @@ class GitService {
         }, userId);
     }
 
-    async stashApply(slug, index = 0, userId) {
+    async stashApply(slug, index = 0, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.stash(['apply', `stash@{${index}}`]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-apply', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.stash(['apply', `stash@{${index}}`]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
