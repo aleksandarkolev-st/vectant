@@ -1560,6 +1560,58 @@ function randomColdBuildMetadataContentEvidenceHashSeed(facet) {
   return seed;
 }
 
+function randomColdBuildMetadataPathRecognized(pathValue) {
+  const normalizedPath = firstText(pathValue)?.replace(/\\/g, '/').toLowerCase();
+  if (!normalizedPath) return false;
+  const basename = normalizedPath.split('/').filter(Boolean).pop() ?? normalizedPath;
+  if (
+    [
+      'cmakelists.txt',
+      'cmakepresets.json',
+      'cmakeuserpresets.json',
+      'compile_commands.json',
+      'cargo.toml',
+      'go.mod',
+      'go.work',
+      'package.json',
+      'makefile',
+      'gnumakefile',
+      'build.ninja',
+      'meson.build',
+      'build',
+      'build.bazel',
+      'workspace',
+      'workspace.bazel',
+      'module.bazel',
+      '.bazelrc',
+      'build.gradle',
+      'build.gradle.kts',
+      'settings.gradle',
+      'settings.gradle.kts',
+      'pom.xml',
+      'maven.config',
+      'configure',
+      'configure.ac',
+      'configure.in',
+      'setup.py',
+      'setup.cfg',
+      'pyproject.toml',
+      'sconstruct',
+      'sconscript',
+      'xmake.lua',
+      'premake5.lua',
+      'conanfile.txt',
+      'conanfile.py',
+      'vcpkg.json',
+      'build.rs',
+    ].includes(basename)
+  ) {
+    return true;
+  }
+  return /\.(sln|vcxproj|vcproj|xcodeproj\/project\.pbxproj|csproj|fsproj|vbproj)$/i
+    .test(normalizedPath);
+}
+
 function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -1609,6 +1661,12 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
       && file.path.length > 0
       && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
       && Boolean(file.transport)
+  ).length;
+  const recognizedBuildMetadataPathCount = normalizedBuildFiles.filter((file) =>
+    typeof file.path === 'string'
+      && file.path.length > 0
+      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
+      && randomColdBuildMetadataPathRecognized(file.path)
   ).length;
   const suppliedContentEvidenceHash = normalizeSha256(firstText(
     facet.contentEvidenceHash,
@@ -1664,6 +1722,9 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     present && buildFileHashCount > 0 && buildFileTransportCount < buildFileHashCount
       ? 'random_cold_build_metadata_content_file_transport_missing'
       : null,
+    present && buildFileHashCount > 0 && recognizedBuildMetadataPathCount < 1
+      ? 'random_cold_build_metadata_content_build_file_path_unrecognized'
+      : null,
     present && !/^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
       ? 'random_cold_build_metadata_content_hash_missing'
       : null,
@@ -1712,6 +1773,8 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     build_file_byte_length_count: buildFileByteLengthCount,
     buildFileTransportCount,
     build_file_transport_count: buildFileTransportCount,
+    recognizedBuildMetadataPathCount,
+    recognized_build_metadata_path_count: recognizedBuildMetadataPathCount,
     buildFiles: normalizedBuildFiles,
     build_files: normalizedBuildFiles,
     contentEvidenceHash: accepted ? suppliedContentEvidenceHash : null,
@@ -22767,6 +22830,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_evidence_accepted',
       'build_metadata_content_schema_authority_accepted',
       'build_metadata_content_byte_hashes_observed',
+      'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',
@@ -22787,6 +22851,7 @@ function randomColdPathBroadReadinessPredicate({ requireLargeSourceTree = true }
       'build_metadata_content_evidence_accepted',
       'build_metadata_content_schema_authority_accepted',
       'build_metadata_content_byte_hashes_observed',
+      'build_metadata_content_build_file_path_recognized',
       'build_metadata_content_hash_observed',
       'runtime_boundary_event_manifest_template_validated',
       'no_gpu_hmr_runtime_or_dispatch_authority_claims',

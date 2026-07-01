@@ -1594,13 +1594,14 @@ function randomColdBuildMetadataContentEvidenceFixture({
   contentEvidenceHashOverride = null,
   includeByteLength = true,
   includeTransport = true,
+  buildFilePath = 'CMakeLists.txt',
 } = {}) {
   const buildFiles = accepted
     ? [
       {
-        path: 'CMakeLists.txt',
-        contentHash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
-        content_hash: hashValue(`random-cold-build-file:${targetId}:CMakeLists.txt`),
+        path: buildFilePath,
+        contentHash: hashValue(`random-cold-build-file:${targetId}:${buildFilePath}`),
+        content_hash: hashValue(`random-cold-build-file:${targetId}:${buildFilePath}`),
         ...(includeByteLength
           ? {
             byteLength: 4096,
@@ -9309,6 +9310,62 @@ assert.ok(
   hashOnlyBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
+const broadReadinessUnrecognizedBuildContentRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `unrecognized-build-content-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/unrecognized-build-content/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`unrecognized-build-content-commit-${index + 1}`).slice(0, 40),
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
+      targetId: `unrecognized-build-content-${index + 1}`,
+      buildFilePath: 'README.md',
+    }),
+  })
+);
+const broadReadinessWithUnrecognizedBuildContentQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessUnrecognizedBuildContentRows,
+  ],
+});
+assert.equal(broadReadinessWithUnrecognizedBuildContentQuery.accepted, true);
+assert.equal(
+  broadReadinessWithUnrecognizedBuildContentQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithUnrecognizedBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithUnrecognizedBuildContentQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithUnrecognizedBuildContentQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const unrecognizedBuildContentCoverage = new Map(
+  broadReadinessWithUnrecognizedBuildContentQuery.summary.planCoverage.map((entry) => [
+    entry.id,
+    entry,
+  ])
+);
+assert.equal(
+  unrecognizedBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.status,
+  'diagnostic_only',
+);
+assert.equal(
+  unrecognizedBuildContentCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingRowCount,
+  0,
+);
+assert.ok(
+  unrecognizedBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `small-random-cold-readiness-user-project-${index + 1}`,
@@ -10304,6 +10361,12 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredSignals.includes(
       'build_metadata_content_byte_hashes_observed',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'build_metadata_content_build_file_path_recognized',
     ),
 );
 assert.ok(
