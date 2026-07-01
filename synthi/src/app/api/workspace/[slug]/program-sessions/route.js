@@ -104,6 +104,7 @@ export async function POST(req, { params }) {
       title: body.title || null,
       timeout: body.timeout,
       env: body.env && typeof body.env === 'object' ? body.env : {},
+      codeSiteContext,
     });
     const nextState = runtime.runtimeSession?.state || 'running';
     const updated = await updateProgramSession(session.id, { state: nextState });

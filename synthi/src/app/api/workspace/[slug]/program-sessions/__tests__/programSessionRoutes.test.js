@@ -144,7 +144,7 @@ describe('POST /api/workspace/[slug]/program-sessions', () => {
     );
 
     expect(res.status).toBe(201);
-    expect(h.launchRuntime).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-1', command: 'npm run dev' }));
+    expect(h.launchRuntime).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-1', command: 'npm run dev', codeSiteContext }));
     expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'launch_requested',
       codeSiteContext,

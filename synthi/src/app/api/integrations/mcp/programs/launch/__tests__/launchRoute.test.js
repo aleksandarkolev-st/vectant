@@ -54,7 +54,7 @@ describe('POST /api/integrations/mcp/programs/launch', () => {
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-9', state: 'running', activePorts: [5900], webPort: 5900 });
     expect(h.launchInstalled).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-9', userId: 'u1' }),
+      expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-9', userId: 'u1', codeSiteContext }),
     );
     expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'launch_requested',

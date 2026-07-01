@@ -282,7 +282,7 @@ describe('POST /programs/[installId]/launch', () => {
     const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', { codeSiteContext }, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
 
     expect(res.status).toBe(200);
-    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps1', userId: 'gh1' }));
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps1', userId: 'gh1', codeSiteContext }));
     expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'launch_requested',
       codeSiteContext,
@@ -378,7 +378,7 @@ describe('GET /programs/detect (Slice 1)', () => {
     const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', { codeSiteContext }, 'POST'), ctx({ slug: 'team' }));
 
     expect(res.status).toBe(200);
-    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-d', userId: 'gh1' }));
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-d', userId: 'gh1', codeSiteContext }));
     expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'launch_requested',
       codeSiteContext,

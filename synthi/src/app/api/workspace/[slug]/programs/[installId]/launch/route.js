@@ -65,6 +65,7 @@ export async function POST(req, { params }) {
       config,
       userId: actor.workspaceUserId,
       title: config.displayName || null,
+      codeSiteContext,
     });
     const nextState = snapshot?.state || 'running';
     const updated = await updateProgramSession(session.id, { state: nextState });

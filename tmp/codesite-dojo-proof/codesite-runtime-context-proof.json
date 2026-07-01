@@ -1,0 +1,56 @@
+{
+  "generatedAt": "2026-07-01T00:11:11.619Z",
+  "title": "CodeSite Runtime Context Passthrough Proof",
+  "summary": "Docker-backed route and client tests prove CodeSite context is forwarded from MCP/browser routes into collab-server runtime calls.",
+  "totals": {
+    "testSuites": 23,
+    "tests": 66,
+    "passedTests": 66,
+    "failedTests": 0
+  },
+  "surfaces": [
+    "execInWorkspaceRuntime -> /program-runtime/:slug/exec",
+    "launchInstalledProgram -> /program-runtime/:slug/launch-program",
+    "launchProgramRuntime -> /exec-terminal/:slug",
+    "MCP runtime-exec route",
+    "MCP programs launch route",
+    "Workspace programs launch and detect routes",
+    "Workspace program-sessions command route"
+  ],
+  "assertions": {
+    "dockerVitestPassed": true,
+    "runtimeClientCovered": true,
+    "mcpRuntimeExecCovered": true,
+    "mcpProgramLaunchCovered": true,
+    "workspaceProgramLaunchCovered": true,
+    "workspaceProgramSessionCovered": true,
+    "noFailedTests": true
+  },
+  "suites": [
+    {
+      "name": "/workspace/synthi/src/lib/programs/__tests__/runtimeClient.test.js",
+      "status": "passed",
+      "assertionResults": 9
+    },
+    {
+      "name": "/workspace/synthi/src/app/api/integrations/mcp/runtime-exec/__tests__/runtimeExecRoute.test.js",
+      "status": "passed",
+      "assertionResults": 8
+    },
+    {
+      "name": "/workspace/synthi/src/app/api/workspace/[slug]/programs/__tests__/programRoutes.test.js",
+      "status": "passed",
+      "assertionResults": 29
+    },
+    {
+      "name": "/workspace/synthi/src/app/api/workspace/[slug]/program-sessions/__tests__/programSessionRoutes.test.js",
+      "status": "passed",
+      "assertionResults": 12
+    },
+    {
+      "name": "/workspace/synthi/src/app/api/integrations/mcp/programs/launch/__tests__/launchRoute.test.js",
+      "status": "passed",
+      "assertionResults": 8
+    }
+  ]
+}

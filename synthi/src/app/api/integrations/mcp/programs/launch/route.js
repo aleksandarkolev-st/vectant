@@ -103,6 +103,7 @@ export async function POST(req) {
       config,
       userId: actor.userId,
       title: config.displayName || null,
+      codeSiteContext,
     });
     const nextState = snapshot?.state || 'running';
     const updated = await updateProgramSession(session.id, { state: nextState });
