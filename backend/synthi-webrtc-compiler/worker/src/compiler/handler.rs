@@ -7879,6 +7879,108 @@ fn include_bridge_kernel_source_paths(
     (targets.into_iter().collect(), omitted.into_iter().collect())
 }
 
+fn device_mapping_symbol_matches(mapping_symbol: &str, requested_symbol: &str) -> bool {
+    let mapping = mapping_symbol.trim();
+    let requested = requested_symbol.trim();
+    if mapping.is_empty() || requested.is_empty() {
+        return false;
+    }
+    if mapping == requested {
+        return true;
+    }
+    if mapping.rsplit("::").next() == Some(requested)
+        || requested.rsplit("::").next() == Some(mapping)
+    {
+        return true;
+    }
+    exported_symbol_source_identity_candidates(mapping)
+        .into_iter()
+        .any(|candidate| {
+            candidate == requested
+                || candidate.rsplit("::").next() == Some(requested)
+                || requested.rsplit("::").next() == Some(candidate.as_str())
+        })
+}
+
+fn include_bridge_maps_kernel_symbol(
+    sidecar: &serde_json::Value,
+    source_path: &str,
+    symbol: &str,
+    generated_path: Option<&str>,
+) -> bool {
+    let source =
+        normalized_request_filename(source_path).unwrap_or_else(|| source_path.replace('\\', "/"));
+    let expected_generated = generated_path.map(|path| {
+        normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"))
+    });
+    let symbol = symbol.trim();
+    if symbol.is_empty() {
+        return false;
+    }
+
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
+                continue;
+            }
+            let include_bridge_mapping = item
+                .get("generatedMappingMode")
+                .and_then(serde_json::Value::as_str)
+                == Some("source_include_bridge")
+                || item
+                    .get("mappingConfidence")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("generated_include_bridge_same_source");
+            if !include_bridge_mapping {
+                continue;
+            }
+            let Some(mapping_symbol) = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+            else {
+                continue;
+            };
+            if !device_mapping_symbol_matches(mapping_symbol, symbol) {
+                continue;
+            }
+            let Some(mapping_source) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if mapping_source != source {
+                continue;
+            }
+            if let Some(expected_generated) = expected_generated.as_deref() {
+                let Some(mapping_generated) = item
+                    .get("generatedPath")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(normalized_request_filename)
+                else {
+                    continue;
+                };
+                if mapping_generated != expected_generated {
+                    continue;
+                }
+            }
+            if !device_symbol_identity_key(item).has_evidence() {
+                continue;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 fn device_partial_artifact_specs(
     sidecar: &serde_json::Value,
     generated_path: &str,
@@ -8521,6 +8623,23 @@ fn try_warm_rebuild_header_plan(
     } else {
         None
     };
+    let body_only_include_bridge_mapped = body_only_kernel
+        .as_deref()
+        .map(|symbol| {
+            include_bridge_maps_kernel_symbol(
+                sidecar_meta,
+                user_path,
+                symbol,
+                generated_device_path,
+            )
+        })
+        .unwrap_or(false);
+    if source_included_by_generated_role
+        && body_only_kernel.is_some()
+        && !body_only_include_bridge_mapped
+    {
+        preflight_reasons.push("source_include_bridge_symbol_mapping_missing".to_string());
+    }
 
     let candidate_plan = warm_rebuild_reload_plan(
         "warm_rebuild",
@@ -8553,10 +8672,11 @@ fn try_warm_rebuild_header_plan(
         .collect();
     let (template_symbols, template_source_paths) =
         template_rebuild_impacts(&normalized_candidate, user_path);
-    let template_source_projection_available = source_included_by_generated_role
-        || (!template_symbols.is_empty() && !template_source_paths.is_empty());
+    let template_source_projection_available =
+        !template_symbols.is_empty() && !template_source_paths.is_empty();
     let deterministic_body_rebuild = preflight_reasons.is_empty()
         && body_only_kernel.is_some()
+        && body_only_include_bridge_mapped
         && non_template_warm_reasons.is_empty();
     let mut reason_codes = if deterministic_body_rebuild {
         vec![
@@ -8633,7 +8753,14 @@ fn try_warm_rebuild_header_plan(
             .into_iter()
             .chain(template_symbols)
             .collect(),
-        affected_source_paths: template_source_paths,
+        affected_source_paths: if deterministic_body_rebuild {
+            vec![
+                normalized_request_filename(user_path)
+                    .unwrap_or_else(|| user_path.replace('\\', "/")),
+            ]
+        } else {
+            template_source_paths
+        },
     })
 }
 
@@ -16262,7 +16389,10 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
                         "generatedRole": "device",
                         "generatedPath": ".synthi/generated/gpu/device.hip",
                         "mappingConfidence": "generated_include_bridge_same_source",
-                        "generatedMappingMode": "source_include_bridge"
+                        "generatedMappingMode": "source_include_bridge",
+                        "qualifiedSourceName": "CameraRays",
+                        "signatureHash": "sha256:camera-rays-signature",
+                        "sourceSpanHash": "sha256:camera-rays-source-span"
                     }
                 ],
                 "deviceIncludeGraph": {
@@ -18225,6 +18355,108 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             .iter()
             .any(|code| code == "template_evidence_not_required"));
         assert_eq!(decision.affected_symbols, vec!["CameraRays".to_string()]);
+        assert_eq!(
+            decision.affected_source_paths,
+            vec!["src/Device/kernels/CameraRays.h".to_string()]
+        );
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_generated_include_without_symbol_mapping() {
+        let mut sidecar = generated_include_bridge_sidecar();
+        sidecar["deviceMappingReport"]["deviceMappings"] = serde_json::json!([]);
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1Device~1kernels~1CameraRays.h")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("random_number += 1", "random_number += 3");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/Device/kernels/CameraRays.h",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(!decision.accepted);
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "source_include_bridge_symbol_mapping_missing"));
+        assert_eq!(
+            decision
+                .reload_plan
+                .get("plan")
+                .and_then(serde_json::Value::as_str),
+            Some("unsupported")
+        );
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_generated_include_with_wrong_symbol_mapping() {
+        let mut sidecar = generated_include_bridge_sidecar();
+        sidecar["deviceMappingReport"]["deviceMappings"][0]["symbol"] =
+            serde_json::Value::String("OtherKernel".to_string());
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1Device~1kernels~1CameraRays.h")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("random_number += 1", "random_number += 3");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/Device/kernels/CameraRays.h",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(!decision.accepted);
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "source_include_bridge_symbol_mapping_missing"));
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_generated_include_mapping_without_identity_evidence() {
+        let mut sidecar = generated_include_bridge_sidecar();
+        if let Some(mapping) = sidecar["deviceMappingReport"]["deviceMappings"][0].as_object_mut() {
+            mapping.remove("qualifiedSourceName");
+            mapping.remove("signatureHash");
+            mapping.remove("sourceSpanHash");
+        }
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1Device~1kernels~1CameraRays.h")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("random_number += 1", "random_number += 3");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/Device/kernels/CameraRays.h",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(!decision.accepted);
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "source_include_bridge_symbol_mapping_missing"));
+    }
+
+    #[test]
+    fn include_bridge_symbol_matching_accepts_qualified_and_mangled_identity() {
+        assert!(device_mapping_symbol_matches("gpu::CameraRays", "CameraRays"));
+        assert!(device_mapping_symbol_matches("CameraRays", "gpu::CameraRays"));
+        assert!(device_mapping_symbol_matches("_ZN3gpu10CameraRaysEv", "CameraRays"));
+        assert!(!device_mapping_symbol_matches("OtherKernel", "CameraRays"));
     }
 
     #[test]
