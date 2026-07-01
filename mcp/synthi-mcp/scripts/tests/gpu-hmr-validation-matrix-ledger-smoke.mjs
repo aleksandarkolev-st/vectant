@@ -1404,13 +1404,13 @@ const artifactsRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts');
 const casRoot = path.join(mcpRoot, '.gpu-hmr-test-artifacts-cas');
 
 function randomColdPathManifest({
-  candidateId = 'direct-random-wgpu-cold',
+  candidateId = 'direct-random-arbitrary-cold',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
-  const sourceUrl = 'https://example.invalid/arbitrary/wgpu.git';
-  const immutableCommit = '22c6cb18d4b73254b0d62511e6a9d68e06dea70f';
+  const sourceUrl = 'https://example.invalid/arbitrary/user-project.git';
+  const immutableCommit = '1111111111111111111111111111111111111111';
   const sourceIntakeEvidence = {
     proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
     proof_authority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
@@ -1675,7 +1675,7 @@ const forgedRandomColdPathDir = path.join(tmpRoot, 'random-large-project-cold-pa
 await writeJson(
   path.join(forgedRandomColdPathDir, 'random-cold-forged-template.json'),
   randomColdPathManifest({
-    candidateId: 'direct-random-wgpu-forged-template',
+    candidateId: 'direct-random-arbitrary-forged-template',
     template: rehashColdRuntimeBoundaryTemplateFacet(forgedRuntimeEventsTemplateSeed),
   }),
 );
@@ -8222,6 +8222,42 @@ assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualTargets,
   ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
+);
+const nonWhitelistedRandomColdRows = Array.from({ length: 5 }, (_, index) => {
+  const suffix = sha256Hex(`opaque-arbitrary-cold-${index + 1}`).slice(0, 12);
+  return randomColdReadinessMatrixRow({
+    targetId: `opaque-user-gpu-project-${suffix}`,
+    sourceUrl: `https://example.invalid/customer/private-gpu-project-${suffix}.git`,
+    immutableCommit: sha256Hex(`opaque-arbitrary-cold-commit-${index + 1}`).slice(0, 40),
+  });
+});
+const nonWhitelistedBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...nonWhitelistedRandomColdRows,
+  ],
+});
+assert.equal(nonWhitelistedBroadReadinessQuery.accepted, true);
+assert.equal(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  true,
+);
+assert.equal(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  5,
+);
+assert.deepEqual(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps,
+  [],
+);
+assert.ok(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets
+    .every((target) => target.startsWith('opaque-user-gpu-project-')),
+);
+assert.ok(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets
+    .every((target) => !/(wgpu|bevy|godot|llama|miopen|hipblaslt|composable)/i.test(target)),
 );
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
