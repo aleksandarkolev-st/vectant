@@ -1205,6 +1205,7 @@ function buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }
     selection_decision_hash: sha256Text(stableJson(decision)),
     output_oracle_contract: {
       kind: 'compute_readback',
+      target_id: profile.buffers.readback.name,
       readback_buffer: profile.buffers.readback.name,
       raw_readback_hash: oracleArtifacts.raw_readback_hash,
       expected_output_hash: oracleArtifacts.expected_output_hash,
@@ -1392,6 +1393,7 @@ function buildProofLedgerRecord({
   const beforeEpoch = '1';
   const dispatchId = runtimeTrace.dispatchEvents?.[1]?.id ?? 'hip-module-dispatch-epoch-2';
   const processId = runtimeTrace.processId;
+  const outputTargetId = profile.buffers.readback.name;
   const outputEvent = {
     id: `hip-module-output-${afterEpoch}`,
     kind: 'compute_readback',
@@ -1399,6 +1401,8 @@ function buildProofLedgerRecord({
     after_dispatch_id: dispatchId,
     artifact_hash: compiled.afterHsacoHash,
     epoch: afterEpoch,
+    output_target_id: outputTargetId,
+    outputTargetId,
     timestamp_monotonic_ns: timings.outputTimestampNs,
     process_id: processId,
     output_oracle: {
@@ -1455,6 +1459,8 @@ function buildProofLedgerRecord({
       shared_mem_bytes: profile.launch.sharedMemBytes,
       stream: profile.launch.stream,
       kernel_params: profile.abi.params,
+      output_target_id: outputTargetId,
+      outputTargetId,
       command: 'hipModuleLaunchKernel',
     },
     output_event: outputEvent,
@@ -1489,7 +1495,7 @@ function buildProofLedgerRecord({
     },
     output_oracle_target: {
       kind: 'compute',
-      target_id: profile.buffers.readback.name,
+      target_id: outputTargetId,
       compute_only_target_verified: true,
       evidence_refs: [oracleArtifacts.raw_readback_hash, oracleArtifacts.rendered_card_png],
     },
@@ -1887,6 +1893,7 @@ function buildSyntheticRuntimeProofFixture(profile) {
   };
   const dispatchBefore = 'hip-module-self-check-dispatch-1';
   const dispatchAfter = 'hip-module-self-check-dispatch-2';
+  const outputTargetId = profile.buffers.readback.name;
   const runtimeTrace = {
     processId: 'hip-module-self-check-process',
     sameProcess: true,
@@ -1912,12 +1919,12 @@ function buildSyntheticRuntimeProofFixture(profile) {
       { epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 140 },
     ],
     dispatchEvents: [
-      { id: dispatchBefore, launch_api: 'hipModuleLaunchKernel', epoch: '1', artifact_hash: compiled.beforeHsacoHash, timestamp_monotonic_ns: 50 },
-      { id: dispatchAfter, launch_api: 'hipModuleLaunchKernel', epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 150 },
+      { id: dispatchBefore, launch_api: 'hipModuleLaunchKernel', epoch: '1', artifact_hash: compiled.beforeHsacoHash, timestamp_monotonic_ns: 50, output_target_id: outputTargetId, outputTargetId },
+      { id: dispatchAfter, launch_api: 'hipModuleLaunchKernel', epoch: '2', artifact_hash: compiled.afterHsacoHash, timestamp_monotonic_ns: 150, output_target_id: outputTargetId, outputTargetId },
     ],
     outputEvents: [
-      { id: 'hip-module-self-check-output-1', passed: true, values: profile.outputOracle.expectedBeforeValues, after_dispatch_id: dispatchBefore, epoch: '1', timestamp_monotonic_ns: 60 },
-      { id: 'hip-module-self-check-output-2', passed: true, values: profile.outputOracle.expectedAfterValues, after_dispatch_id: dispatchAfter, epoch: '2', timestamp_monotonic_ns: 160 },
+      { id: 'hip-module-self-check-output-1', passed: true, values: profile.outputOracle.expectedBeforeValues, after_dispatch_id: dispatchBefore, epoch: '1', timestamp_monotonic_ns: 60, output_target_id: outputTargetId, outputTargetId },
+      { id: 'hip-module-self-check-output-2', passed: true, values: profile.outputOracle.expectedAfterValues, after_dispatch_id: dispatchAfter, epoch: '2', timestamp_monotonic_ns: 160, output_target_id: outputTargetId, outputTargetId },
     ],
     retirementEvent: {
       id: 'hip-module-self-check-retire-1',
@@ -2126,6 +2133,19 @@ async function selfCheck() {
       && syntheticProof.runtimeProofArtifact.strictGate?.status === 'pass'
       && syntheticProof.runtimeProofArtifact.proofLedgerSourceConsistency?.mode === 'derived_only',
     detail: syntheticProof.runtimeProofArtifact.strictGate,
+  });
+  checks.push({
+    name: 'runtime-proof-output-target-bound',
+    ok: (() => {
+      const record = syntheticProof.proofLedger.records?.[0] ?? {};
+      const outputTargetId = profile.buffers.readback.name;
+      const dispatchEvent = record.dispatch_event ?? record.dispatchEvent ?? {};
+      const outputEvent = record.output_event ?? record.outputEvent ?? {};
+      const outputOracleTarget = record.output_oracle_target ?? record.outputOracleTarget ?? {};
+      return (dispatchEvent.output_target_id ?? dispatchEvent.outputTargetId) === outputTargetId
+        && (outputEvent.output_target_id ?? outputEvent.outputTargetId) === outputTargetId
+        && (outputOracleTarget.target_id ?? outputOracleTarget.targetId) === outputTargetId;
+    })(),
   });
   checks.push({
     name: 'runtime-proof-artifact-rejects-forged-cpu-fallback',

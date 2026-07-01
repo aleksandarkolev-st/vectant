@@ -563,12 +563,14 @@ void write_runtime_json(
       << dim_json(plan.grid_dim) << ",\"block_dim\":" << dim_json(plan.block_dim)
       << ",\"shared_mem_bytes\":" << plan.shared_mem_bytes << ",\"stream\":\"hipStreamCreate\",\"gpu_ms\":"
       << before.gpu_ms << ",\"timestamp_monotonic_ns\":" << before.dispatch_start_ns
+      << ",\"output_target_id\":" << json_string(plan.readback_buffer)
       << ",\"passed\":" << (before.passed ? "true" : "false") << "},\n";
   out << "    {\"id\":" << json_string(after.dispatch_id) << ",\"epoch\":2,\"artifact_hash\":"
       << json_string(after.artifact_hash) << ",\"launch_api\":\"hipModuleLaunchKernel\",\"grid_dim\":"
       << dim_json(plan.grid_dim) << ",\"block_dim\":" << dim_json(plan.block_dim)
       << ",\"shared_mem_bytes\":" << plan.shared_mem_bytes << ",\"stream\":\"hipStreamCreate\",\"gpu_ms\":"
       << after.gpu_ms << ",\"timestamp_monotonic_ns\":" << after.dispatch_start_ns
+      << ",\"output_target_id\":" << json_string(plan.readback_buffer)
       << ",\"passed\":" << (after.passed ? "true" : "false") << "}\n";
   out << "  ],\n";
   out << "  \"outputEvents\":[\n";
@@ -576,11 +578,13 @@ void write_runtime_json(
       << ",\"epoch\":1,\"artifact_hash\":" << json_string(before.artifact_hash)
       << ",\"passed\":" << (before.passed ? "true" : "false")
       << ",\"timestamp_monotonic_ns\":" << before.output_readback_ns
+      << ",\"output_target_id\":" << json_string(plan.readback_buffer)
       << ",\"values\":" << number_array_json(before.values) << "},\n";
   out << "    {\"id\":\"hip-module-output-2\",\"after_dispatch_id\":" << json_string(after.dispatch_id)
       << ",\"epoch\":2,\"artifact_hash\":" << json_string(after.artifact_hash)
       << ",\"passed\":" << (after.passed ? "true" : "false")
       << ",\"timestamp_monotonic_ns\":" << after.output_readback_ns
+      << ",\"output_target_id\":" << json_string(plan.readback_buffer)
       << ",\"values\":" << number_array_json(after.values) << "}\n";
   out << "  ],\n";
   out << "  \"retirementEvent\":{\"id\":\"hip-module-retire-1\",\"retired_epoch\":1,\"status\":\"stream_event_proven\",\"api\":\"hipEventRecord+hipStreamSynchronize+hipModuleUnload\",\"timestamp_monotonic_ns\":" << monotonic_ns() << "},\n";
