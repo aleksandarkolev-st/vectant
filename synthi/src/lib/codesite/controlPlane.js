@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import prisma from '@/lib/prisma';
 import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
+import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
@@ -4493,6 +4494,7 @@ function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
   const pilotLicenseHealth = buildPilotLicenseHealthRecords(projection);
   const pilotLicenseSummary = pilotLicenseHealthSummary(pilotLicenseHealth);
+  const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(projection);
   const pendingQuarantines = quarantineReviewRecords(projection)
     .filter((record) => record.status !== 'applied')
     .map((record) => ({
@@ -4518,6 +4520,9 @@ function buildControlState(workspaceSlug, projection) {
       .filter((item) => item.status === 'pending' && item.requiresResponse)
       .map((item) => `ack_event:${item.eventId || item.id}`),
     ...pendingQuarantines.map((record) => `review_quarantine:${record.quarantineId}`),
+    ...filesystemBoundaryProofs
+      .filter((record) => !record.proofComplete)
+      .map((record) => `complete_filesystem_boundary_proof:${record.proofId}`),
     ...pilotLicenseHealth.map((record) => record.requiredAction).filter(Boolean),
   ];
   return {
@@ -4533,6 +4538,7 @@ function buildControlState(workspaceSlug, projection) {
     pendingQuarantines,
     pilotLicenseHealth,
     pilotLicenseSummary,
+    filesystemBoundaryProofs,
     requiredActions,
     eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,

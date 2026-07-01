@@ -340,6 +340,54 @@ function radarState() {
         requiredAction: null,
         evidenceRefs: ['dojo:evidence:checkride-1'],
       }],
+      filesystemBoundaryProofs: [
+        {
+          proofId: 'fs-boundary-event-denied',
+          eventId: 'event-denied',
+          eventType: 'write_denied',
+          disposition: 'write_denied',
+          prevented: true,
+          quarantined: false,
+          path: 'secrets/prod.env',
+          transactionId: 'txn-1',
+          mutationLeaseId: null,
+          requestedMutationLeaseId: null,
+          inspectedLeases: [{ mutationLeaseId: 'lease-1', displayCallsign: 'ATLAS-1', ok: false, reasonCodes: ['entered_no_fly_zone'] }],
+          displayCallsign: 'ATLAS-1',
+          leaseState: 'inspected_clearance_rejected',
+          reasonCodes: ['entered_no_fly_zone'],
+          reason: 'Write denied before repo mutation.',
+          boundary: { source: 'runtime_pod_terminal', tool: 'terminal_exec', operation: 'write' },
+          process: { ancestry: ['python', 'bash', 'codex-cli'], display: 'python <- bash <- codex-cli' },
+          evidence: { refs: ['event:event-denied', 'runtime:event:denied-write'], lineProvenanceCount: 0 },
+          evidenceRefs: ['event:event-denied', 'runtime:event:denied-write'],
+          proofComplete: true,
+          missingProofFields: [],
+          createdAt: '2026-06-29T23:33:00.000Z',
+        },
+        {
+          proofId: 'fs-boundary-event-incomplete',
+          eventId: 'event-incomplete',
+          eventType: 'write_denied',
+          disposition: 'write_denied',
+          prevented: true,
+          quarantined: false,
+          path: 'api/checkout/route.js',
+          transactionId: null,
+          mutationLeaseId: null,
+          displayCallsign: null,
+          leaseState: 'no_active_clearance',
+          reasonCodes: [],
+          reason: '',
+          boundary: { source: 'codesitefs', tool: 'file_write', operation: 'write' },
+          process: { ancestry: [], display: null },
+          evidence: { refs: ['event:event-incomplete'], lineProvenanceCount: 0 },
+          evidenceRefs: ['event:event-incomplete'],
+          proofComplete: false,
+          missingProofFields: ['reason', 'process'],
+          createdAt: '2026-06-29T23:34:00.000Z',
+        },
+      ],
       allowedPaths: ['api/checkout/**'],
       blockedPaths: ['secrets/**'],
       collisionForecast: {
@@ -575,6 +623,17 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
     expect(container.textContent).toContain('pilot:active');
     expect(container.textContent).toContain('min:IFR');
+    expect(container.textContent).toContain('Filesystem Boundary Proofs');
+    const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
+    expect(boundaryProof).toBeTruthy();
+    expect(boundaryProof.textContent).toContain('secrets/prod.env');
+    expect(boundaryProof.textContent).toContain('lease-1');
+    expect(boundaryProof.textContent).toContain('inspected_clearance_rejected');
+    expect(boundaryProof.textContent).toContain('entered_no_fly_zone');
+    expect(boundaryProof.textContent).toContain('python <- bash <- codex-cli');
+    expect(boundaryProof.textContent).toContain('runtime:event:denied-write');
+    expect(boundaryProof.textContent).toContain('incomplete');
+    expect(boundaryProof.textContent).toContain('missing process');
     const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
     expect(runwayRow.textContent).toContain('api/checkout/**');
     expect(runwayRow.textContent).toContain('ATLAS-1');

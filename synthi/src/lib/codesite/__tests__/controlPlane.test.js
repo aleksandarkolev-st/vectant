@@ -677,7 +677,20 @@ describe('CodeSite control plane transaction validation', () => {
         changeCount: 1,
       }),
     ]);
+    expect(state.filesystemBoundaryProofs).toEqual([
+      expect.objectContaining({
+        eventId: 'evt-q1',
+        disposition: 'write_quarantined',
+        path: 'docs/review.md',
+        mutationLeaseId: 'lease-1',
+        leaseState: 'matched_clearance',
+        proofComplete: false,
+        missingProofFields: expect.arrayContaining(['reason', 'process']),
+        evidenceRefs: expect.arrayContaining(['event:evt-q1', 'codesitefs:quarantine:sha256:review']),
+      }),
+    ]);
     expect(state.requiredActions).toContain('review_quarantine:qtn-1');
+    expect(state.requiredActions).toContain('complete_filesystem_boundary_proof:fs-boundary-evt-q1');
     expect(state.towerState).toBe('holding');
   });
 

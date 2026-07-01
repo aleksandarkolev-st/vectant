@@ -5,6 +5,7 @@ import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
 import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pilotLicense';
+import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
@@ -159,6 +160,37 @@ export function codesiteSchemas() {
       processAncestry: { type: 'array', items: { type: 'string' } },
       evidenceRefs: { type: 'array', items: { type: 'string' } },
     }, ['path', 'source', 'tool', 'disposition', 'reasonCodes', 'policyDecision']),
+    'filesystem-boundary-proof.schema.json': schema('FilesystemBoundaryProof', {
+      schemaVersion: { type: 'string' },
+      proofId: { type: 'string' },
+      projectId: { type: ['string', 'null'] },
+      workspaceSlug: { type: ['string', 'null'] },
+      eventId: { type: ['string', 'null'] },
+      policyDecisionId: { type: ['string', 'null'] },
+      eventType: { type: 'string' },
+      disposition: { type: 'string', enum: ['write_denied', 'write_quarantined'] },
+      prevented: { type: 'boolean' },
+      quarantined: { type: 'boolean' },
+      path: { type: 'string' },
+      transactionId: { type: ['string', 'null'] },
+      mutationLeaseId: { type: ['string', 'null'] },
+      requestedMutationLeaseId: { type: ['string', 'null'] },
+      inspectedLeases: { type: 'array' },
+      displayCallsign: { type: ['string', 'null'] },
+      leaseState: { type: 'string' },
+      lease: { type: ['object', 'null'] },
+      reasonCodes: { type: 'array', items: { type: 'string' } },
+      reason: { type: 'string' },
+      zone: { type: ['object', 'null'] },
+      boundary: { type: 'object' },
+      process: { type: 'object' },
+      evidence: { type: 'object' },
+      evidenceRefs: { type: 'array', items: { type: 'string' } },
+      quarantine: { type: ['object', 'null'] },
+      proofComplete: { type: 'boolean' },
+      missingProofFields: { type: 'array', items: { type: 'string' } },
+      createdAt: { type: ['string', 'null'] },
+    }, ['schemaVersion', 'proofId', 'eventType', 'disposition', 'path', 'leaseState', 'reasonCodes', 'evidenceRefs', 'proofComplete']),
     'codesitefs-quarantine.schema.json': schema('CodeSiteFSQuarantine', {
       quarantineId: { type: 'string' },
       workspaceSlug: { type: ['string', 'null'] },
@@ -253,6 +285,7 @@ export function codesiteSchemas() {
       pendingQuarantines: { type: 'array' },
       pilotLicenseHealth: { type: 'array' },
       pilotLicenseSummary: { type: 'object' },
+      filesystemBoundaryProofs: { type: 'array' },
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
@@ -286,6 +319,7 @@ export function buildArtifactProjection(project, controlState = null) {
     : buildPilotLicenseHealthRecords(project);
   const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
   const quarantines = quarantineReviewRecords(project);
+  const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(project);
   const files = [
     jsonFile('manifest.json', {
       version: CODESITE_ARTIFACT_VERSION,
@@ -300,6 +334,8 @@ export function buildArtifactProjection(project, controlState = null) {
       inbox_root: `${projectDir}/inbox/`,
       quarantine_root: `${projectDir}/quarantines/`,
       quarantine_index: `${projectDir}/quarantines/index.jsonl`,
+      filesystem_boundary_proof: `${projectDir}/filesystem-boundary-proof.json`,
+      filesystem_boundary_proof_index: `${projectDir}/filesystem-boundary-proofs/index.jsonl`,
       proof_bundle_root: `${projectDir}/proof-bundles/`,
       mcp_tools: CODESITE_MCP_TOOLS,
     }),
@@ -324,6 +360,21 @@ export function buildArtifactProjection(project, controlState = null) {
     {
       relativePath: `${projectDir}/quarantines/index.jsonl`,
       content: quarantines.map((record) => stableJson(record)).join('\n') + (quarantines.length ? '\n' : ''),
+    },
+    jsonFile(`${projectDir}/filesystem-boundary-proof.json`, {
+      schemaVersion: 'synthi.codesite.filesystemBoundaryProof.index.v1',
+      summary: {
+        total: filesystemBoundaryProofs.length,
+        denied: filesystemBoundaryProofs.filter((record) => record.disposition === 'write_denied').length,
+        quarantined: filesystemBoundaryProofs.filter((record) => record.disposition === 'write_quarantined').length,
+        complete: filesystemBoundaryProofs.filter((record) => record.proofComplete).length,
+        incomplete: filesystemBoundaryProofs.filter((record) => !record.proofComplete).length,
+      },
+      records: filesystemBoundaryProofs,
+    }),
+    {
+      relativePath: `${projectDir}/filesystem-boundary-proofs/index.jsonl`,
+      content: filesystemBoundaryProofs.map((record) => stableJson(record)).join('\n') + (filesystemBoundaryProofs.length ? '\n' : ''),
     },
     {
       relativePath: `${projectDir}/provenance/line-provenance.jsonl`,
@@ -361,6 +412,15 @@ export function buildArtifactProjection(project, controlState = null) {
       record.displayCallsign === session.displayCallsign
       || transactions.some((txn) => txn.id === record.transactionId)
       || clearances.some((lease) => lease.id === record.mutationLeaseId)
+    ));
+    const sessionFilesystemBoundaryProofs = filesystemBoundaryProofs.filter((record) => (
+      record.displayCallsign === session.displayCallsign
+      || transactions.some((txn) => txn.id === record.transactionId)
+      || clearances.some((lease) => (
+        lease.id === record.mutationLeaseId
+        || lease.id === record.requestedMutationLeaseId
+        || asArray(record.inspectedLeases).some((inspected) => inspected.mutationLeaseId === lease.id)
+      ))
     ));
 
     files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
@@ -400,6 +460,7 @@ export function buildArtifactProjection(project, controlState = null) {
       pilotLicenseHealth: pilotHealth,
       proofBundles: proofs,
       quarantines: sessionQuarantines,
+      filesystemBoundaryProofs: sessionFilesystemBoundaryProofs,
     }));
     for (const item of inbox) {
       files.push(jsonFile(`${projectDir}/inbox/${callsign}/${item.eventId || item.id}.json`, item));
@@ -429,6 +490,10 @@ export function buildArtifactProjection(project, controlState = null) {
 
   for (const quarantine of quarantines) {
     files.push(jsonFile(`${projectDir}/quarantines/${safeSegment(quarantine.quarantineId)}.json`, quarantine));
+  }
+
+  for (const proof of filesystemBoundaryProofs) {
+    files.push(jsonFile(`${projectDir}/filesystem-boundary-proofs/${safeSegment(proof.proofId)}.json`, proof));
   }
 
   for (const proof of asArray(project.proofBundles)) {
@@ -724,6 +789,7 @@ function compilerOutput(zonePolicy = {}) {
 
 function minimalControlState(project) {
   const pilotLicenseHealth = buildPilotLicenseHealthRecords(project);
+  const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(project);
   return {
     projectId: project.id,
     workspaceSlug: project.workspaceSlug,
@@ -732,6 +798,7 @@ function minimalControlState(project) {
     activeMutationLeases: asArray(project.mutationLeases).filter((lease) => lease.status === 'active'),
     pilotLicenseHealth,
     pilotLicenseSummary: pilotLicenseHealthSummary(pilotLicenseHealth),
+    filesystemBoundaryProofs,
     requiredActions: [],
   };
 }

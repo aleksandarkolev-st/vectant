@@ -70,10 +70,38 @@ function projectFixture() {
     events: [
       { id: 'evt-1', eventType: 'clearance_issued', details: { mutationLeaseId: 'lease-1' } },
       {
+        id: 'evt-denied-1',
+        eventType: 'write_denied',
+        displayCallsign: null,
+        actorType: 'codesitefs',
+        actorId: 'decision-deny-1',
+        evidenceRefs: ['runtime:event:denied-write-1'],
+        details: {
+          path: 'infra/prod.env',
+          source: 'runtime_pod_terminal',
+          tool: 'terminal_exec',
+          disposition: 'write_denied',
+          reasonCodes: ['entered_no_fly_zone'],
+          policyDecisionId: 'decision-deny-1',
+          codesiteFsEvent: {
+            type: null,
+            source: 'runtime_pod_terminal',
+            operation: 'write',
+            path: 'infra/prod.env',
+            details: {
+              process_ancestry: ['python', 'bash', 'codex-cli'],
+              reason_codes: ['entered_no_fly_zone'],
+            },
+          },
+        },
+        createdAt: '2026-07-01T00:00:30.000Z',
+      },
+      {
         id: 'evt-q1',
         eventType: 'write_quarantined',
         displayCallsign: 'CODEX-04',
         mutationLeaseId: 'lease-1',
+        actorType: 'codesitefs',
         evidenceRefs: ['codesitefs:quarantine:sha256:review'],
         details: {
           transactionId: 'txn-1',
@@ -109,7 +137,16 @@ function projectFixture() {
     incidents: [{ id: 'inc-1', category: 'near_miss', severity: 'medium', replayDigest: 'sha256:replay', incidentReplay: { events: ['evt-1'] } }],
 	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' }],
     lineProvenance: [{ filePath: 'packages/schemas/auth/signup.ts', lineAnchor: 'L1', displayCallsign: 'CODEX-04', proofBundleId: 'proof-1' }],
-    policyDecisions: [],
+    policyDecisions: [{
+      id: 'decision-deny-1',
+      mutationLeaseId: null,
+      displayCallsign: null,
+      decision: 'block',
+      reasonCodes: ['entered_no_fly_zone'],
+      decisionBody: {
+        towerInstruction: 'Write preflight blocked for infra/prod.env. Request clearance.',
+      },
+    }],
     inspectionRuns: [{
       id: 'inspect-1',
       executionPlanId: 'plan-1',
@@ -157,6 +194,8 @@ describe('CodeSite artifact projection', () => {
     expect(manifest.metrics).toBe('projects/site_signup_email_verification/metrics.json');
     expect(manifest.quarantine_index).toBe('projects/site_signup_email_verification/quarantines/index.jsonl');
     expect(manifest.quarantine_root).toBe('projects/site_signup_email_verification/quarantines/');
+    expect(manifest.filesystem_boundary_proof).toBe('projects/site_signup_email_verification/filesystem-boundary-proof.json');
+    expect(manifest.filesystem_boundary_proof_index).toBe('projects/site_signup_email_verification/filesystem-boundary-proofs/index.jsonl');
     expect(manifest.pilot_license_health).toBe('projects/site_signup_email_verification/pilot-license-health.json');
     expect(paths).toContain('airspace/compiler-output.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'airspace/compiler-output.json').content)).toMatchObject({
@@ -207,6 +246,21 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('projects/site_signup_email_verification/quarantines/index.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/quarantines/qtn-signup-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/quarantines/index.jsonl').content).toContain('qtn-signup-1');
+    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proof.json');
+    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proofs/index.jsonl');
+    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proofs/fs-boundary-evt-denied-1.json');
+    const boundaryProofIndex = JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/filesystem-boundary-proof.json').content);
+    expect(boundaryProofIndex.summary).toMatchObject({ total: 2, denied: 1, quarantined: 1, complete: 1, incomplete: 1 });
+    expect(boundaryProofIndex.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventId: 'evt-denied-1',
+        path: 'infra/prod.env',
+        leaseState: 'no_active_clearance',
+        process: expect.objectContaining({ display: 'python <- bash <- codex-cli' }),
+        evidenceRefs: expect.arrayContaining(['event:evt-denied-1', 'runtime:event:denied-write-1']),
+        proofComplete: true,
+      }),
+    ]));
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/quarantines/qtn-signup-1.json').content)).toMatchObject({
       quarantineId: 'qtn-signup-1',
       status: 'replayed',
@@ -224,6 +278,9 @@ describe('CodeSite artifact projection', () => {
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).quarantines).toEqual([
       expect.objectContaining({ quarantineId: 'qtn-signup-1' }),
     ]);
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).filesystemBoundaryProofs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventId: 'evt-q1', path: 'docs/review.md' }),
+    ]));
     expect(paths).toContain('projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json').content).redactedPayload.body.apiToken).toBe('[redacted]');
     expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
@@ -250,6 +307,13 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
+    expect(codesiteSchemas()).toHaveProperty('filesystem-boundary-proof.schema.json');
+    expect(codesiteSchemas()['filesystem-boundary-proof.schema.json'].properties).toMatchObject({
+      requestedMutationLeaseId: { type: ['string', 'null'] },
+      inspectedLeases: { type: 'array' },
+      proofComplete: { type: 'boolean' },
+      missingProofFields: { type: 'array', items: { type: 'string' } },
+    });
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
     expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('pilot-license-health.schema.json');
@@ -258,6 +322,7 @@ describe('CodeSite artifact projection', () => {
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
     expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pendingQuarantines');
     expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pilotLicenseHealth');
+    expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('filesystemBoundaryProofs');
     expect(codesiteSchemas()['line-provenance.schema.json'].properties).toMatchObject({
       startLine: { type: ['number', 'null'] },
       endLine: { type: ['number', 'null'] },
