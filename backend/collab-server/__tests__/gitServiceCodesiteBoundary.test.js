@@ -36,6 +36,13 @@ function codeSiteWorktreeContext(slug, overrides = {}) {
   });
 }
 
+function codeSiteIndexContext(slug, overrides = {}) {
+  return codeSiteContext(slug, {
+    allowedTools: ['git_index'],
+    ...overrides,
+  });
+}
+
 function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) {
   const calls = [];
   const fetch = async (url, options = {}) => {
@@ -132,6 +139,377 @@ test('direct gitService.discardChange records git_worktree before reverting a tr
     assert.strictEqual(recordBodies[0].path, 'src/app.js');
     assert.strictEqual(recordBodies[0].tool, 'git_worktree');
     assert.strictEqual(recordBodies[0].codesiteFsEvent.type, 'write_allowed');
+  });
+});
+
+test('direct gitService.stageFile records git_index before staging a path', async (t) => {
+  const slug = uniqueSlug('codesite-stage-file');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await gitService.stageFile(slug, 'src/app.js', userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch,
+      evidenceRefs: ['direct:stage-file'],
+    });
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), 'src/app.js');
+    assert.deepStrictEqual(recordBodies.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['src/app.js', 'git_index', 'write_allowed', 'stage'],
+    ]);
+  });
+});
+
+test('direct gitService.stageFile blocks unauthorized index writes before staging', async (t) => {
+  const slug = uniqueSlug('codesite-stage-file-denied');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'api/auth/signup.ts': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'after\n');
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.stageFile(slug, 'api/auth/signup.ts', userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === 'api/auth/signup.ts'
+        && error.event.details.operation === 'stage'
+        && error.event.details.reason_codes.includes('outside_clearance_route'),
+    );
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), '');
+    assert.strictEqual(await fs.readFile(path.join(repoPath, 'api/auth/signup.ts'), 'utf8'), 'after\n');
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool, body.codesiteFsEvent.type]), [
+      ['api/auth/signup.ts', 'git_index', 'write_denied'],
+    ]);
+  });
+});
+
+test('direct gitService.stageLines records git_index before staging approved hunks', async (t) => {
+  const slug = uniqueSlug('codesite-stage-lines');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'one\ntwo\nthree\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'one\nTWO\nthree\n');
+    const { stdout: patch } = await git(repoPath, ['diff', '--unified=0', '--', 'src/app.js']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await gitService.stageLines(slug, 'src/app.js', patch, userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch,
+      evidenceRefs: ['direct:stage-lines'],
+    });
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    const { stdout: worktreeNames } = await git(repoPath, ['diff', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), 'src/app.js');
+    assert.strictEqual(worktreeNames.trim(), '');
+    assert.deepStrictEqual(recordBodies.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['src/app.js', 'git_index', 'write_allowed', 'stage-lines'],
+    ]);
+  });
+});
+
+test('direct gitService.stageLines gates the actual patch target before staging hunks', async (t) => {
+  const slug = uniqueSlug('codesite-stage-lines-forged');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, {
+      'src/app.js': 'src before\n',
+      'api/auth/signup.ts': 'api before\n',
+    });
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'api after\n');
+    const { stdout: patch } = await git(repoPath, ['diff', '--unified=0', '--', 'api/auth/signup.ts']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.stageLines(slug, 'src/app.js', patch, userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === 'api/auth/signup.ts'
+        && error.event.details.operation === 'stage-lines'
+        && error.event.details.reason_codes.includes('outside_clearance_route'),
+    );
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), '');
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool, body.codesiteFsEvent.type]), [
+      ['api/auth/signup.ts', 'git_index', 'write_denied'],
+    ]);
+  });
+});
+
+test('direct gitService.stageLines rejects mismatched patch targets even inside the write set', async (t) => {
+  const slug = uniqueSlug('codesite-stage-lines-mismatch');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, {
+      'src/app.js': 'app before\n',
+      'src/other.js': 'other before\n',
+    });
+    await fs.writeFile(path.join(repoPath, 'src/other.js'), 'other after\n');
+    const { stdout: patch } = await git(repoPath, ['diff', '--unified=0', '--', 'src/other.js']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.stageLines(slug, 'src/app.js', patch, userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'PATCH_PATH_MISMATCH'
+        && error.details.expectedPath === 'src/app.js'
+        && error.details.patchPaths.includes('src/other.js'),
+    );
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), '');
+    assert.deepStrictEqual(recordBodies.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['src/other.js', 'git_index', 'write_allowed', 'stage-lines'],
+    ]);
+  });
+});
+
+test('direct gitService.unstageFile records git_index and disambiguates same-name branches', async (t) => {
+  const slug = uniqueSlug('codesite-unstage-file');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'main\n' });
+    await git(repoPath, ['checkout', '-b', 'src/app.js']);
+    await git(repoPath, ['checkout', 'main']);
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await gitService.unstageFile(slug, 'src/app.js', userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch,
+    });
+
+    const { stdout: currentBranch } = await git(repoPath, ['branch', '--show-current']);
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(currentBranch.trim(), 'main');
+    assert.strictEqual(cachedNames.trim(), '');
+    assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'after\n');
+    assert.strictEqual(recordBodies[0].codesiteFsEvent.details.operation, 'unstage');
+  });
+});
+
+test('direct gitService.unstageFile blocks unauthorized paths before mutating the index', async (t) => {
+  const slug = uniqueSlug('codesite-unstage-file-denied');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'api/auth/signup.ts': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'after\n');
+    await git(repoPath, ['add', '--', 'api/auth/signup.ts']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.unstageFile(slug, 'api/auth/signup.ts', userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === 'api/auth/signup.ts'
+        && error.event.details.operation === 'unstage'
+        && error.event.details.reason_codes.includes('outside_clearance_route'),
+    );
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), 'api/auth/signup.ts');
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool, body.codesiteFsEvent.type]), [
+      ['api/auth/signup.ts', 'git_index', 'write_denied'],
+    ]);
+  });
+});
+
+test('direct gitService.unstageLines gates patch targets and unstages only after CodeSiteFS allows', async (t) => {
+  const slug = uniqueSlug('codesite-unstage-lines');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'one\ntwo\nthree\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'one\nTWO\nthree\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    const { stdout: patch } = await git(repoPath, ['diff', '--cached', '--unified=0', '--', 'src/app.js']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await gitService.unstageLines(slug, 'src/app.js', patch, userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch,
+      evidenceRefs: ['direct:unstage-lines'],
+    });
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    const { stdout: worktreeNames } = await git(repoPath, ['diff', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), '');
+    assert.strictEqual(worktreeNames.trim(), 'src/app.js');
+    assert.deepStrictEqual(recordBodies.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['src/app.js', 'git_index', 'write_allowed', 'unstage-lines'],
+    ]);
+  });
+});
+
+test('direct gitService.unstageLines denies forged patch targets before mutating the index', async (t) => {
+  const slug = uniqueSlug('codesite-unstage-lines-forged');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, {
+      'src/app.js': 'src before\n',
+      'api/auth/signup.ts': 'api before\n',
+    });
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'api after\n');
+    await git(repoPath, ['add', '--', 'api/auth/signup.ts']);
+    const { stdout: patch } = await git(repoPath, ['diff', '--cached', '--unified=0', '--', 'api/auth/signup.ts']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.unstageLines(slug, 'src/app.js', patch, userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === 'api/auth/signup.ts'
+        && error.event.details.operation === 'unstage-lines'
+        && error.event.details.reason_codes.includes('outside_clearance_route'),
+    );
+
+    const { stdout: cachedNames } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedNames.trim(), 'api/auth/signup.ts');
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool, body.codesiteFsEvent.type]), [
+      ['api/auth/signup.ts', 'git_index', 'write_denied'],
+    ]);
+  });
+});
+
+test('direct gitService.stageAll requires broad index clearance before staging everything', async (t) => {
+  const slug = uniqueSlug('codesite-stage-all');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, {
+      'src/app.js': 'before\n',
+      'api/auth/signup.ts': 'before\n',
+    });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'after\n');
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.stageAll(slug, userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === '**'
+        && error.event.details.operation === 'stage-all',
+    );
+
+    const { stdout: cachedAfterDeny } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.strictEqual(cachedAfterDeny.trim(), '');
+
+    const allowAllRecords = [];
+    const { fetch: allowAllFetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies: allowAllRecords });
+    await gitService.stageAll(slug, userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch: allowAllFetch,
+    });
+
+    const { stdout: cachedAfterAllow } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.deepStrictEqual(cachedAfterAllow.trim().split('\n').sort(), ['api/auth/signup.ts', 'src/app.js']);
+    assert.deepStrictEqual(allowAllRecords.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['**', 'git_index', 'write_allowed', 'stage-all'],
+    ]);
+  });
+});
+
+test('direct gitService.unstageAll requires broad index clearance before unstaging everything', async (t) => {
+  const slug = uniqueSlug('codesite-unstage-all');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, {
+      'src/app.js': 'before\n',
+      'api/auth/signup.ts': 'before\n',
+    });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    await fs.writeFile(path.join(repoPath, 'api/auth/signup.ts'), 'after\n');
+    await git(repoPath, ['add', '--', 'src/app.js', 'api/auth/signup.ts']);
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.unstageAll(slug, userId, {
+        codesiteContext: codeSiteIndexContext(slug),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.path === '**'
+        && error.event.details.operation === 'unstage-all',
+    );
+
+    const { stdout: cachedAfterDeny } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    assert.deepStrictEqual(cachedAfterDeny.trim().split('\n').sort(), ['api/auth/signup.ts', 'src/app.js']);
+
+    const allowAllRecords = [];
+    const { fetch: allowAllFetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies: allowAllRecords });
+    await gitService.unstageAll(slug, userId, {
+      codesiteContext: codeSiteIndexContext(slug),
+      fetch: allowAllFetch,
+    });
+
+    const { stdout: cachedAfterAllow } = await git(repoPath, ['diff', '--cached', '--name-only']);
+    const { stdout: worktreeAfterAllow } = await git(repoPath, ['diff', '--name-only']);
+    assert.strictEqual(cachedAfterAllow.trim(), '');
+    assert.deepStrictEqual(worktreeAfterAllow.trim().split('\n').sort(), ['api/auth/signup.ts', 'src/app.js']);
+    assert.deepStrictEqual(allowAllRecords.map((body) => [
+      body.path,
+      body.tool,
+      body.codesiteFsEvent.type,
+      body.codesiteFsEvent.details.operation,
+    ]), [
+      ['**', 'git_index', 'write_allowed', 'unstage-all'],
+    ]);
   });
 });
 

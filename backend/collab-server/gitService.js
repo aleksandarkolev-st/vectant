@@ -221,7 +221,7 @@ function extractUnifiedPatchPaths(patch) {
 
 function assertSingleFilePatchTarget(patchPaths, expectedPath) {
     if (patchPaths.length === 1 && patchPaths[0] === expectedPath) return;
-    const error = new Error('Discard patch target does not match requested file path.');
+    const error = new Error('Patch target does not match requested file path.');
     error.code = 'PATCH_PATH_MISMATCH';
     error.details = { expectedPath, patchPaths };
     throw error;
@@ -1294,6 +1294,16 @@ class GitService {
             operation: kind,
             tool: 'git_worktree',
             attempts: [codeSiteAttempt('**', kind, 'git_worktree', options)],
+        }, applyFn, effectiveRepoPath);
+    }
+
+    async _runCodeSiteGitIndexBoundary(slug, userId, options = {}, kind, paths = '**', applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        const attemptPaths = Array.isArray(paths) ? paths : [paths];
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_index',
+            attempts: attemptPaths.map((attemptPath) => codeSiteAttempt(attemptPath || '**', kind, 'git_index', options)),
         }, applyFn, effectiveRepoPath);
     }
 
@@ -2407,12 +2417,16 @@ class GitService {
         }, userId);
     }
 
-    async stageFile(slug, filePath, userId) {
+    async stageFile(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage', safeRel, async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.raw(['add', '--', safeRel]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2420,26 +2434,32 @@ class GitService {
     }
 
     // Stage specific lines/hunks using patch mode
-    async stageLines(slug, filePath, patch, userId) {
+    async stageLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage-lines', attemptPaths, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                // Write the patch to a temp file — simple-git's raw() passes
-                // all args as CLI arguments and does NOT support stdin piping,
-                // so we can't pass the patch content inline.
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    // Write the patch to a temp file — simple-git's raw() passes
+                    // all args as CLI arguments and does NOT support stdin piping,
+                    // so we can't pass the patch content inline.
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    // Always clean up the temp patch file
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        // Always clean up the temp patch file
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2482,52 +2502,69 @@ class GitService {
     // Unstage specific lines/hunks from the index by reverse-applying a patch
     // with --cached (index only, no working tree changes).
     // This is the inverse of stageLines — toggling a hunk back to unstaged.
-    async unstageLines(slug, filePath, patch, userId) {
+    async unstageLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage-lines', attemptPaths, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async unstageFile(slug, filePath, userId) {
+    async unstageFile(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
-                await git.reset(['HEAD', filePath]);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage', safeRel, async () => {
+                    const git = await this.getGit(slug, userId);
+                    try {
+                        await git.reset(['HEAD', '--', safeRel]);
+                    } catch (e) {
+                        // Fallback for initial commit or if HEAD is invalid
+                        try {
+                            await git.rm(['--cached', '--', safeRel]);
+                        } catch (e2) {
+                            throw this.mapGitError(e, slug);
+                        }
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
-                // Fallback for initial commit or if HEAD is invalid
-                try {
-                    await git.rm(['--cached', filePath]);
-                } catch (e2) {
-                    throw this.mapGitError(e, slug);
-                }
+                throw this.mapGitError(e, slug);
             }
-            return this.getStatus(slug, userId);
         }, userId);
     }
 
     // Stage all changes
-    async stageAll(slug, userId) {
+    async stageAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add('-A');
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage-all', '**', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.add('-A');
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2535,23 +2572,30 @@ class GitService {
     }
 
     // Unstage all staged changes
-    async unstageAll(slug, userId) {
+    async unstageAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
-                await git.reset(['HEAD']);
-            } catch (e) {
-                // Fallback for initial commit - reset --mixed with rm --cached for each file
-                try {
-                    const status = await git.status();
-                    for (const file of status.staged) {
-                        await git.rm(['--cached', file]);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage-all', '**', async () => {
+                    const git = await this.getGit(slug, userId);
+                    try {
+                        await git.reset(['HEAD']);
+                    } catch (e) {
+                        // Fallback for initial commit - reset --mixed with rm --cached for each file
+                        try {
+                            const status = await git.status();
+                            for (const file of status.staged) {
+                                await git.rm(['--cached', '--', file]);
+                            }
+                        } catch (e2) {
+                            throw this.mapGitError(e, slug);
+                        }
                     }
-                } catch (e2) {
-                    throw this.mapGitError(e, slug);
-                }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
             }
-            return this.getStatus(slug, userId);
         }, userId);
     }
 
