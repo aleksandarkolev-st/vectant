@@ -133,8 +133,8 @@ function transactionFixture() {
     baseSnapshotEvidenceJson: null,
     isolation: 'serializable',
     status: 'open',
-    readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
-    observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+    readSetJson: JSON.stringify([]),
+    observedReadSetJson: JSON.stringify([]),
     writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
     observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
     semanticDependencyRefsJson: JSON.stringify([]),
@@ -1021,7 +1021,7 @@ describe('CodeSite control plane transaction validation', () => {
     expect(incident.timelineEventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
   });
 
-	  it('does not mark a transaction stale because of its own write event', async () => {
+  it('does not mark a transaction stale because of its own write event', async () => {
     prisma.codeSiteEvent.findMany.mockResolvedValue([
       {
         id: 'event-own-write',
@@ -1054,6 +1054,55 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'validated' }),
     }));
+  });
+
+  it('blocks serializable validation when repo read snapshot evidence is skipped', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      baseSnapshotEvidenceJson: null,
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_required_for_serializable',
+      'repo_snapshot_read_set_coverage_required',
+    ]));
+    expect(result.decision.repoSnapshot.missingReadSet).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('blocks serializable validation when snapshot evidence misses observed or semantic reads', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-coverage-'));
+    await fs.mkdir(path.join(root, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], { repoRoot: root });
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma', 'openapi/auth.yaml']),
+      semanticDependencyRefsJson: JSON.stringify([{ path: 'packages/schemas/**' }]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
+    expect(result.decision.repoSnapshot.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
+    expect(result.decision.repoSnapshot.missingReadSet).toEqual([
+      'openapi/auth.yaml',
+      'packages/schemas/**',
+    ]);
   });
 
   it('detects stale reads through route overlap and semantic dependency refs', async () => {
@@ -1353,6 +1402,11 @@ describe('CodeSite control plane transaction validation', () => {
   });
 
   it('returns source-state since a transaction without mutating validation state', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+    });
     prisma.codeSiteEvent.findMany.mockResolvedValue([
       {
         id: 'event-other-write',

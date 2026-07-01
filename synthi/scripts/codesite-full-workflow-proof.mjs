@@ -290,12 +290,65 @@ async function runVerifier({ proofBundle, exportPaths }) {
   return result;
 }
 
+async function proveSerializableSnapshotGate({ api, lease, readPath, changedPath, baseSnapshotEvidence }) {
+  const skippedTransaction = await api(`/mutation-leases/${encodeURIComponent(lease.id)}/transactions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      readSet: [readPath],
+      writeSet: [changedPath],
+      skipRepoSnapshot: true,
+      invariants: ['clearance.diff.inside_route'],
+    }),
+  });
+  const skippedValidation = await api(`/transactions/${encodeURIComponent(skippedTransaction.transaction.id)}/validate`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+  const undercoveredTransaction = await api(`/mutation-leases/${encodeURIComponent(lease.id)}/transactions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      baseSnapshot: baseSnapshotEvidence.snapshotDigest,
+      baseSnapshotEvidence,
+      readSet: [readPath],
+      writeSet: [changedPath],
+      invariants: ['clearance.diff.inside_route'],
+    }),
+  });
+  await api(`/transactions/${encodeURIComponent(undercoveredTransaction.transaction.id)}/record-read`, {
+    method: 'POST',
+    body: JSON.stringify({ path: changedPath }),
+  });
+  const undercoveredValidation = await api(`/transactions/${encodeURIComponent(undercoveredTransaction.transaction.id)}/validate`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+  return {
+    skipped: {
+      transactionId: skippedTransaction.transaction.id,
+      ok: skippedValidation.decision.ok,
+      reasonCodes: skippedValidation.decision.reasonCodes || [],
+      requiredReadSet: skippedValidation.decision.repoSnapshot?.requiredReadSet || [],
+      missingReadSet: skippedValidation.decision.repoSnapshot?.missingReadSet || [],
+    },
+    undercovered: {
+      transactionId: undercoveredTransaction.transaction.id,
+      ok: undercoveredValidation.decision.ok,
+      reasonCodes: undercoveredValidation.decision.reasonCodes || [],
+      snapshotReadSet: undercoveredValidation.decision.repoSnapshot?.snapshotReadSet || [],
+      missingReadSet: undercoveredValidation.decision.repoSnapshot?.missingReadSet || [],
+    },
+  };
+}
+
 function proofHtml(proof) {
   const summary = [
     ['Workspace', proof.slug],
     ['Project', proof.project.title],
     ['Schema clearance', `${proof.clearance.callsign} ${proof.clearance.status}`],
     ['Transaction', `${proof.transaction.id} ${proof.transaction.status}`],
+    ['Serializable gate', `skip=${proof.serializableSnapshotGate.skipped.ok ? 'allowed' : 'blocked'}, coverage=${proof.serializableSnapshotGate.undercovered.ok ? 'allowed' : 'blocked'}`],
     ['Proof bundle', `${proof.proofBundle.id} ${proof.proofBundle.bundleDigest}`],
     ['CodeSiteFS', `${proof.codesiteFs.denied.disposition}, ${proof.codesiteFs.quarantined.disposition}`],
     ['Line provenance', proof.lineProvenance.map((row) => `${row.filePath} ${row.lineAnchor}`).join(', ')],
@@ -327,13 +380,15 @@ pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Full Workflow Proof</h1>
-<p>Live Docker workflow: schema-first clearance, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
+<p>Live Docker workflow: schema-first clearance, serializable read-snapshot gates, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
 </section>
 <section class="grid">
 ${summary.map(([label, value]) => `<div class="card"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`).join('\n')}
 </section>
 <h2>Assertions</h2>
 <pre>${escapeHtml(JSON.stringify(proof.assertions, null, 2))}</pre>
+<h2>Serializable Snapshot Gate</h2>
+<pre>${escapeHtml(JSON.stringify(proof.serializableSnapshotGate, null, 2))}</pre>
 <h2>Commit Trailers</h2>
 <pre>${escapeHtml(Object.entries(proof.proofBundle.trailers || {}).map(([key, value]) => `${key}: ${value}`).join('\n'))}</pre>
 </main>
@@ -427,6 +482,13 @@ async function main() {
     }),
   });
   const lease = leaseResponse.mutationLease;
+  const serializableSnapshotGate = await proveSerializableSnapshotGate({
+    api,
+    lease,
+    readPath,
+    changedPath,
+    baseSnapshotEvidence,
+  });
 
   const transactionResponse = await api(`/mutation-leases/${encodeURIComponent(lease.id)}/transactions`, {
     method: 'POST',
@@ -580,6 +642,7 @@ async function main() {
       dojoProofRef: lease.dojoProofRef,
       dojoDecisionDigest: lease.dojoDecisionDigest,
     },
+    serializableSnapshotGate,
     codesiteFs: {
       denied: {
         ok: false,
@@ -645,6 +708,11 @@ async function main() {
       proofBundleCreated: Boolean(proofBundle?.id && proofBundle?.bundleDigest),
       commitTrailersPresent: Boolean(proofBundle?.trailers?.['CodeSite-Transaction'] && proofBundle?.trailers?.['CodeSite-Clearance']),
       repoSnapshotRecorded: baseSnapshotEvidence.status === 'recorded' && commitResponse.transaction.commitDecision?.repoSnapshot?.reasonCodes?.includes('repo_snapshot_stable'),
+      serializableSnapshotGateBlocked: serializableSnapshotGate.skipped.ok === false
+        && serializableSnapshotGate.skipped.reasonCodes.includes('repo_snapshot_required_for_serializable')
+        && serializableSnapshotGate.undercovered.ok === false
+        && serializableSnapshotGate.undercovered.reasonCodes.includes('repo_snapshot_read_set_coverage_required')
+        && serializableSnapshotGate.undercovered.missingReadSet.includes(changedPath),
       repoStateCollectedFromRealRepo: repoState.source === 'collab-server' && repoState.writeFileDigests?.some((file) => file.path === changedPath && file.exists && /^sha256:/.test(file.digest || '')),
       inspectionCommandsExecuted: inspectionResponse.inspectionRun.status === 'completed'
         && inspectionResponse.inspectionRun.inspectionSignals.some((signal) => signal.key === 'typecheck' && signal.source === 'codesite_inspection_executor')

@@ -25,14 +25,15 @@ pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Full Workflow Proof</h1>
-<p>Live Docker workflow: schema-first clearance, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
+<p>Live Docker workflow: schema-first clearance, serializable read-snapshot gates, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
 </section>
 <section class="grid">
-<div class="card"><div class="label">Workspace</div><div class="value">codesite-full-workflow-proof-1782863201162</div></div>
+<div class="card"><div class="label">Workspace</div><div class="value">codesite-full-workflow-proof-1782864052294</div></div>
 <div class="card"><div class="label">Project</div><div class="value">Full workflow proof</div></div>
 <div class="card"><div class="label">Schema clearance</div><div class="value">SCHEMA-01 active</div></div>
-<div class="card"><div class="label">Transaction</div><div class="value">cmr1aqy6c002hob4t4i4lc6p5 committed</div></div>
-<div class="card"><div class="label">Proof bundle</div><div class="value">cmr1arx8t003bob4tn8gkrceg sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">cmr1ba3v1002vob4th49nzcq0 committed</div></div>
+<div class="card"><div class="label">Serializable gate</div><div class="value">skip=blocked, coverage=blocked</div></div>
+<div class="card"><div class="label">Proof bundle</div><div class="value">cmr1bb5py003pob4t21nitqew sha256:fb710d9b9332f5f530ea01bc956b50e867a85a48decd598d985f62768bb93b7e</div></div>
 <div class="card"><div class="label">CodeSiteFS</div><div class="value">write_denied, write_quarantined</div></div>
 <div class="card"><div class="label">Line provenance</div><div class="value">synthi/prisma/schema.prisma synthi/prisma/schema.prisma#L10-L15</div></div>
 </section>
@@ -47,6 +48,7 @@ pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#
   &quot;proofBundleCreated&quot;: true,
   &quot;commitTrailersPresent&quot;: true,
   &quot;repoSnapshotRecorded&quot;: true,
+  &quot;serializableSnapshotGateBlocked&quot;: true,
   &quot;repoStateCollectedFromRealRepo&quot;: true,
   &quot;inspectionCommandsExecuted&quot;: true,
   &quot;lineProvenanceSeeded&quot;: true,
@@ -54,17 +56,49 @@ pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#
   &quot;exportedProofVerifies&quot;: true,
   &quot;browserUiCaptured&quot;: true
 }</pre>
+<h2>Serializable Snapshot Gate</h2>
+<pre>{
+  &quot;skipped&quot;: {
+    &quot;transactionId&quot;: &quot;cmr1b9nfi002hob4t9xp1pgyx&quot;,
+    &quot;ok&quot;: false,
+    &quot;reasonCodes&quot;: [
+      &quot;repo_snapshot_not_recorded&quot;,
+      &quot;repo_snapshot_required_for_serializable&quot;,
+      &quot;repo_snapshot_read_set_coverage_required&quot;
+    ],
+    &quot;requiredReadSet&quot;: [
+      &quot;synthi/prisma/schema-contract-read.txt&quot;
+    ],
+    &quot;missingReadSet&quot;: [
+      &quot;synthi/prisma/schema-contract-read.txt&quot;
+    ]
+  },
+  &quot;undercovered&quot;: {
+    &quot;transactionId&quot;: &quot;cmr1b9xba002nob4twezs5k6i&quot;,
+    &quot;ok&quot;: false,
+    &quot;reasonCodes&quot;: [
+      &quot;repo_snapshot_stable&quot;,
+      &quot;repo_snapshot_read_set_coverage_required&quot;
+    ],
+    &quot;snapshotReadSet&quot;: [
+      &quot;synthi/prisma/schema-contract-read.txt&quot;
+    ],
+    &quot;missingReadSet&quot;: [
+      &quot;synthi/prisma/schema.prisma&quot;
+    ]
+  }
+}</pre>
 <h2>Commit Trailers</h2>
-<pre>CodeSite-Project: cmr1aqkri0000ob4tk6g7lxo1
+<pre>CodeSite-Project: cmr1b94r80000ob4tvocxqx7r
 CodeSite-Flight: SCHEMA-01
-CodeSite-Clearance: cmr1aqusi0029ob4t8ecj7dxl
+CodeSite-Clearance: cmr1b9h870029ob4t633ktzjo
 CodeSite-Landing: completed
-CodeSite-Transaction: cmr1aqy6c002hob4t4i4lc6p5
-CodeSite-Lease: cmr1aqusi0029ob4t8ecj7dxl
+CodeSite-Transaction: cmr1ba3v1002vob4th49nzcq0
+CodeSite-Lease: cmr1b9h870029ob4t633ktzjo
 CodeSite-Read-Set: sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a
 CodeSite-Write-Set: sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973
 CodeSite-Invariants: clearance.diff.inside_route
-CodeSite-Black-Box: sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc</pre>
+CodeSite-Black-Box: sha256:fb710d9b9332f5f530ea01bc956b50e867a85a48decd598d985f62768bb93b7e</pre>
 </main>
 </body>
 </html>

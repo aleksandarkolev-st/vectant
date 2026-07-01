@@ -1589,7 +1589,9 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
   const readSet = parseJson(transaction.readSetJson, []);
+  const observedReadSet = parseJson(transaction.observedReadSetJson, []);
   const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
+  const snapshotReadSet = serializableSnapshotReadSet(transaction, readSet, observedReadSet, semanticDependencyRefs);
   const lease = transaction.mutationLease;
   const blockedWrites = [...new Set([...writeSet, ...observedWriteSet])]
     .map((path) => ({ path, evaluation: evaluatePathMutation({ lease, path, zonePolicy }) }))
@@ -1601,7 +1603,7 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
     },
   });
   const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]));
-  const repoSnapshot = await validateTransactionSnapshot(transaction);
+  const repoSnapshot = await validateTransactionSnapshot(transaction, snapshotReadSet);
   const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0 && repoSnapshot.ok;
   const decision = {
     ok,
@@ -1645,6 +1647,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId, actor = 
   const observedReadSet = parseJson(transaction.observedReadSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
   const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
+  const snapshotReadSet = serializableSnapshotReadSet(transaction, readSet, observedReadSet, semanticDependencyRefs);
   const events = await sourceStateEventsSince(transaction);
   const externalEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
@@ -1664,7 +1667,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId, actor = 
       writeSet,
       observedWriteSet,
       semanticDependencyRefs,
-      repoSnapshot: await validateTransactionSnapshot(transaction),
+      repoSnapshot: await validateTransactionSnapshot(transaction, snapshotReadSet),
       changedPaths,
       staleReads: staleReadEventsFrom(transaction, unique([...readSet, ...semanticDependencyRefs]), events),
     },
@@ -1700,9 +1703,53 @@ async function buildTransactionSnapshotEvidence(readSet, body = {}) {
   });
 }
 
-async function validateTransactionSnapshot(transaction) {
+async function validateTransactionSnapshot(transaction, requiredReadSet = null) {
   const evidence = parseJson(transaction.baseSnapshotEvidenceJson, null);
-  return validateReadSnapshotEvidence(evidence);
+  const validation = await validateReadSnapshotEvidence(evidence);
+  return enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet);
+}
+
+function serializableSnapshotReadSet(transaction, readSet = [], observedReadSet = [], semanticDependencyRefs = []) {
+  if (!usesSerializableIsolation(transaction)) return [];
+  return unique([
+    ...normalizePathList(readSet),
+    ...normalizePathList(observedReadSet),
+    ...normalizePathList(semanticDependencyRefs),
+  ]);
+}
+
+function usesSerializableIsolation(transaction) {
+  return String(transaction?.isolation || 'serializable').toLowerCase() === 'serializable';
+}
+
+function enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet = []) {
+  const required = normalizePathList(requiredReadSet);
+  if (!usesSerializableIsolation(transaction) || required.length === 0) return validation;
+
+  const expected = normalizeReadSnapshotEvidence(parseJson(transaction.baseSnapshotEvidenceJson, null));
+  const snapshotReadSet = normalizePathList(expected?.readSet || []);
+  const missingReadSet = required.filter((readPath) => (
+    !snapshotReadSet.some((snapshotPath) => snapshotCoversReadPath(snapshotPath, readPath))
+  ));
+  const requiresSnapshot = !expected || expected.status === 'empty' || validation.reasonCodes.includes('repo_snapshot_not_recorded');
+  if (!requiresSnapshot && missingReadSet.length === 0) return validation;
+
+  return {
+    ...validation,
+    ok: false,
+    reasonCodes: unique([
+      ...validation.reasonCodes,
+      ...(requiresSnapshot ? ['repo_snapshot_required_for_serializable'] : []),
+      ...(missingReadSet.length ? ['repo_snapshot_read_set_coverage_required'] : []),
+    ]),
+    requiredReadSet: required,
+    snapshotReadSet,
+    missingReadSet,
+  };
+}
+
+function snapshotCoversReadPath(snapshotPath, readPath) {
+  return snapshotPath === readPath || matchPathPattern(readPath, snapshotPath);
 }
 
 function staleReadEventsFrom(transaction, readSet, events = []) {

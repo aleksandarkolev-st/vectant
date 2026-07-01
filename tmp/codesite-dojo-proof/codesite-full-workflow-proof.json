@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-06-30T23:48:52.330Z",
+  "generatedAt": "2026-07-01T00:03:58.318Z",
   "baseUrl": "http://127.0.0.1:3107",
-  "slug": "codesite-full-workflow-proof-1782863201162",
+  "slug": "codesite-full-workflow-proof-1782864052294",
   "project": {
-    "id": "cmr1aqkri0000ob4tk6g7lxo1",
+    "id": "cmr1b94r80000ob4tvocxqx7r",
     "title": "Full workflow proof",
-    "route": "/workspace/codesite-full-workflow-proof-1782863201162/codesite"
+    "route": "/workspace/codesite-full-workflow-proof-1782864052294/codesite"
   },
   "clearance": {
-    "id": "cmr1aqusi0029ob4t8ecj7dxl",
+    "id": "cmr1b9h870029ob4t633ktzjo",
     "callsign": "SCHEMA-01",
     "status": "active",
     "reasonCodes": [
@@ -20,6 +20,37 @@
     "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
     "dojoProofRef": "pcap-full-workflow-schema",
     "dojoDecisionDigest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2"
+  },
+  "serializableSnapshotGate": {
+    "skipped": {
+      "transactionId": "cmr1b9nfi002hob4t9xp1pgyx",
+      "ok": false,
+      "reasonCodes": [
+        "repo_snapshot_not_recorded",
+        "repo_snapshot_required_for_serializable",
+        "repo_snapshot_read_set_coverage_required"
+      ],
+      "requiredReadSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "missingReadSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ]
+    },
+    "undercovered": {
+      "transactionId": "cmr1b9xba002nob4twezs5k6i",
+      "ok": false,
+      "reasonCodes": [
+        "repo_snapshot_stable",
+        "repo_snapshot_read_set_coverage_required"
+      ],
+      "snapshotReadSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "missingReadSet": [
+        "synthi/prisma/schema.prisma"
+      ]
+    }
   },
   "codesiteFs": {
     "denied": {
@@ -63,17 +94,17 @@
     }
   },
   "transaction": {
-    "id": "cmr1aqy6c002hob4t4i4lc6p5",
+    "id": "cmr1ba3v1002vob4th49nzcq0",
     "status": "committed",
     "writeSet": [
       "synthi/prisma/schema.prisma"
     ],
-    "proofBundleDigest": "sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc"
+    "proofBundleDigest": "sha256:fb710d9b9332f5f530ea01bc956b50e867a85a48decd598d985f62768bb93b7e"
   },
   "inspection": {
-    "id": "cmr1armc50031ob4tq0lk742w",
-    "projectId": "cmr1aqkri0000ob4tk6g7lxo1",
-    "executionPlanId": "cmr1aqmd8001nob4ts55ygl9a",
+    "id": "cmr1bapnh003fob4tn51u206k",
+    "projectId": "cmr1b94r80000ob4tvocxqx7r",
+    "executionPlanId": "cmr1b96i5001nob4t05zdh6o1",
     "displayCallsign": "SCHEMA-01",
     "status": "completed",
     "changedPaths": [
@@ -95,17 +126,17 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 109,
+        "durationMs": 244,
         "stdoutTail": "",
         "stderrTail": "",
-        "evidenceDigest": "sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
+        "evidenceDigest": "sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
         "evidenceRefs": [
-          "typecheck:run:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
-          "artifact:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102"
+          "typecheck:run:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
+          "artifact:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-06-30T23:48:07.314Z",
-        "completedAt": "2026-06-30T23:48:07.423Z"
+        "startedAt": "2026-07-01T00:02:58.747Z",
+        "completedAt": "2026-07-01T00:02:58.991Z"
       },
       {
         "key": "tests",
@@ -122,35 +153,35 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 131,
+        "durationMs": 176,
         "stdoutTail": "",
         "stderrTail": "",
-        "evidenceDigest": "sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a",
+        "evidenceDigest": "sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7",
         "evidenceRefs": [
-          "test:run:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a",
-          "artifact:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a"
+          "test:run:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7",
+          "artifact:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-06-30T23:48:07.423Z",
-        "completedAt": "2026-06-30T23:48:07.554Z"
+        "startedAt": "2026-07-01T00:02:58.992Z",
+        "completedAt": "2026-07-01T00:02:59.168Z"
       }
     ],
     "evidenceRefs": [
       "runtime:event:inspection-full-workflow",
-      "typecheck:run:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
-      "artifact:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
-      "test:run:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a",
-      "artifact:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a"
+      "typecheck:run:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
+      "artifact:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
+      "test:run:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7",
+      "artifact:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7"
     ],
-    "requestedAt": "2026-06-30T23:48:04.181Z",
-    "completedAt": "2026-06-30T23:48:07.555Z"
+    "requestedAt": "2026-07-01T00:02:54.941Z",
+    "completedAt": "2026-07-01T00:02:59.169Z"
   },
   "repoState": {
     "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
-    "workspaceSlug": "codesite-full-workflow-proof-1782863201162",
-    "transactionId": "cmr1aqy6c002hob4t4i4lc6p5",
+    "workspaceSlug": "codesite-full-workflow-proof-1782864052294",
+    "transactionId": "cmr1ba3v1002vob4th49nzcq0",
     "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
-    "gitHead": "94ca16694180ef4b18651df7fc5fe7b82c90bdff",
+    "gitHead": "f6b1d6ea6cc5d316fdc45d90f157326a259fb795",
     "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "worktreeDiffDigest": "sha256:eb8e1d67f151ef3637b462f2b8f8f808b71fb845cc474e2a1e8b84cf68bc92da",
     "writeFileDigests": [
@@ -161,14 +192,14 @@
         "exists": true
       }
     ],
-    "generatedAt": "2026-06-30T23:48:03.533Z",
+    "generatedAt": "2026-07-01T00:02:54.035Z",
     "source": "collab-server",
-    "evidenceDigest": "sha256:35ab530ca7b448818acc504196057259df346ba98a960945d85837e02f4d82a4"
+    "evidenceDigest": "sha256:3c96753bc709dab32ebc19ce5c22433270d7b8b943dbd3272a4fa7e5c8567641"
   },
   "proofBundle": {
-    "id": "cmr1arx8t003bob4tn8gkrceg",
-    "projectId": "cmr1aqkri0000ob4tk6g7lxo1",
-    "transactionId": "cmr1aqy6c002hob4t4i4lc6p5",
+    "id": "cmr1bb5py003pob4t21nitqew",
+    "projectId": "cmr1b94r80000ob4tvocxqx7r",
+    "transactionId": "cmr1ba3v1002vob4th49nzcq0",
     "commitSha": null,
     "readSetDigest": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
     "writeSetDigest": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
@@ -178,22 +209,22 @@
     "evidenceRefs": [
       "mcp:audit:commit-full-workflow",
       "runtime:event:inspection-full-workflow",
-      "typecheck:run:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
-      "artifact:sha256:a772c33c0ec2ab48994fe556821c9dc3ceea5927ff8081a22d7fb0fec7417102",
-      "test:run:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a",
-      "artifact:sha256:5fcf2d6fddd6a0a541e70c2a8c736c84be63e90e391d30fbb4396ebe3821df2a",
-      "codesite:inspection:cmr1armc50031ob4tq0lk742w",
-      "codesite:repo-state:sha256:35ab530ca7b448818acc504196057259df346ba98a960945d85837e02f4d82a4",
-      "codesite:transaction:cmr1aqy6c002hob4t4i4lc6p5",
-      "codesite:lease:cmr1aqusi0029ob4t8ecj7dxl"
+      "typecheck:run:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
+      "artifact:sha256:7fa1c9095a69d7a49b55458c3391ea382c4acf0aa2f250087e2d8bf6c5c616fb",
+      "test:run:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7",
+      "artifact:sha256:ce3ca0ac025a1c959ad7bbaa86b6f0c06ddc4c8393089d0b5c6f7f4275db5ec7",
+      "codesite:inspection:cmr1bapnh003fob4tn51u206k",
+      "codesite:repo-state:sha256:3c96753bc709dab32ebc19ce5c22433270d7b8b943dbd3272a4fa7e5c8567641",
+      "codesite:transaction:cmr1ba3v1002vob4th49nzcq0",
+      "codesite:lease:cmr1b9h870029ob4t633ktzjo"
     ],
     "dojoEvidenceRefs": [],
     "repoState": {
       "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
-      "workspaceSlug": "codesite-full-workflow-proof-1782863201162",
-      "transactionId": "cmr1aqy6c002hob4t4i4lc6p5",
+      "workspaceSlug": "codesite-full-workflow-proof-1782864052294",
+      "transactionId": "cmr1ba3v1002vob4th49nzcq0",
       "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
-      "gitHead": "94ca16694180ef4b18651df7fc5fe7b82c90bdff",
+      "gitHead": "f6b1d6ea6cc5d316fdc45d90f157326a259fb795",
       "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktreeDiffDigest": "sha256:eb8e1d67f151ef3637b462f2b8f8f808b71fb845cc474e2a1e8b84cf68bc92da",
       "writeFileDigests": [
@@ -204,66 +235,66 @@
           "exists": true
         }
       ],
-      "generatedAt": "2026-06-30T23:48:03.533Z",
+      "generatedAt": "2026-07-01T00:02:54.035Z",
       "source": "collab-server",
-      "evidenceDigest": "sha256:35ab530ca7b448818acc504196057259df346ba98a960945d85837e02f4d82a4"
+      "evidenceDigest": "sha256:3c96753bc709dab32ebc19ce5c22433270d7b8b943dbd3272a4fa7e5c8567641"
     },
     "incidentReplayDigest": null,
-    "bundleDigest": "sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc",
-    "createdAt": "2026-06-30T23:48:18.318Z",
+    "bundleDigest": "sha256:fb710d9b9332f5f530ea01bc956b50e867a85a48decd598d985f62768bb93b7e",
+    "createdAt": "2026-07-01T00:03:15.767Z",
     "trailers": {
-      "CodeSite-Project": "cmr1aqkri0000ob4tk6g7lxo1",
+      "CodeSite-Project": "cmr1b94r80000ob4tvocxqx7r",
       "CodeSite-Flight": "SCHEMA-01",
-      "CodeSite-Clearance": "cmr1aqusi0029ob4t8ecj7dxl",
+      "CodeSite-Clearance": "cmr1b9h870029ob4t633ktzjo",
       "CodeSite-Landing": "completed",
-      "CodeSite-Transaction": "cmr1aqy6c002hob4t4i4lc6p5",
-      "CodeSite-Lease": "cmr1aqusi0029ob4t8ecj7dxl",
+      "CodeSite-Transaction": "cmr1ba3v1002vob4th49nzcq0",
+      "CodeSite-Lease": "cmr1b9h870029ob4t633ktzjo",
       "CodeSite-Read-Set": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
       "CodeSite-Write-Set": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
       "CodeSite-Invariants": "clearance.diff.inside_route",
-      "CodeSite-Black-Box": "sha256:b3f2771ca11984b1d8d358c15c13f79770838bec17b1bf112182ca0dcd7f73dc"
+      "CodeSite-Black-Box": "sha256:fb710d9b9332f5f530ea01bc956b50e867a85a48decd598d985f62768bb93b7e"
     }
   },
   "lineProvenance": [
     {
-      "id": "cmr1arx9f003dob4tli6sychx",
-      "projectId": "cmr1aqkri0000ob4tk6g7lxo1",
-      "transactionId": "cmr1aqy6c002hob4t4i4lc6p5",
+      "id": "cmr1bb5qz003rob4tu4pogvhc",
+      "projectId": "cmr1b94r80000ob4tvocxqx7r",
+      "transactionId": "cmr1ba3v1002vob4th49nzcq0",
       "filePath": "synthi/prisma/schema.prisma",
       "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
       "displayCallsign": "SCHEMA-01",
       "reasonRef": "full-workflow-schema-change",
       "evidenceRefs": [
-        "proof:cmr1arx8t003bob4tn8gkrceg",
-        "transaction:cmr1aqy6c002hob4t4i4lc6p5",
-        "event:cmr1arhwn002zob4t0vfz0881",
+        "proof:cmr1bb5py003pob4t21nitqew",
+        "transaction:cmr1ba3v1002vob4th49nzcq0",
+        "event:cmr1bamp5003dob4tqr0rvpc5",
         "mcp:audit:write-full-workflow",
         "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4"
       ],
       "dojoSourceRefs": [],
-      "proofBundleId": "cmr1arx8t003bob4tn8gkrceg",
+      "proofBundleId": "cmr1bb5py003pob4t21nitqew",
       "processAncestry": [
         "mcp:synthi_codesite_apply_patch",
         "codex:tmp-proof-session"
       ],
       "promptSummary": "Land schema-first full workflow proof",
-      "createdAt": "2026-06-30T23:48:18.339Z"
+      "createdAt": "2026-07-01T00:03:15.804Z"
     }
   ],
   "exported": {
-    "fileCount": 52,
+    "fileCount": 54,
     "paths": [
       "manifest.json",
       "airspace/zones.json",
       "airspace/no-fly-zones.json",
       "airspace/class-rules.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/tower-plan.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/control-state.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/radar-snapshot.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/collision-forecast.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/events.jsonl",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/provenance/line-provenance.jsonl",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/handover.md",
+      "projects/cmr1b94r80000ob4tvocxqx7r/tower-plan.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/control-state.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/radar-snapshot.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/collision-forecast.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/events.jsonl",
+      "projects/cmr1b94r80000ob4tvocxqx7r/provenance/line-provenance.jsonl",
+      "projects/cmr1b94r80000ob4tvocxqx7r/handover.md",
       "schemas/agent-session.schema.json",
       "schemas/execution-plan.schema.json",
       "schemas/mutation-lease.schema.json",
@@ -279,37 +310,39 @@
       "schemas/proof-bundle.schema.json",
       "schemas/line-provenance.schema.json",
       "schemas/control-state.schema.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/policy-decisions/cmr1aqust002bob4tozzghrt5.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/policy-decisions/cmr1ar4tu002nob4tma7woiro.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/policy-decisions/cmr1ar9ui002tob4tfipi7i10.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/agent-session.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/transponder.jsonl",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/landing.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/flight-plan.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/clearance.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/transaction-cmr1aqy6c002hob4t4i4lc6p5.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/transaction.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/assumptions.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/SCHEMA-01/black-box.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/agent-session.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/transponder.jsonl",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/landing.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/flight-plan.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/assumptions.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/API-02/black-box.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/agent-session.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/transponder.jsonl",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/landing.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/flight-plan.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/assumptions.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/flights/TEST-03/black-box.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/proof-bundles/cmr1arx8t003bob4tn8gkrceg.proof.json",
-      "projects/cmr1aqkri0000ob4tk6g7lxo1/proof-bundles/cmr1arx8t003bob4tn8gkrceg.trailers.txt"
+      "projects/cmr1b94r80000ob4tvocxqx7r/policy-decisions/cmr1b9h8i002bob4tl8ix95ir.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/policy-decisions/cmr1ba8ex0031ob4tsuqqu918.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/policy-decisions/cmr1bah2z0037ob4tx7m81lse.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/agent-session.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/transponder.jsonl",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/landing.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/flight-plan.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/clearance.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/transaction-cmr1b9nfi002hob4t9xp1pgyx.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/transaction-cmr1b9xba002nob4twezs5k6i.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/transaction-cmr1ba3v1002vob4th49nzcq0.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/transaction.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/assumptions.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/SCHEMA-01/black-box.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/agent-session.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/transponder.jsonl",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/landing.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/flight-plan.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/assumptions.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/API-02/black-box.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/agent-session.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/transponder.jsonl",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/landing.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/flight-plan.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/assumptions.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/flights/TEST-03/black-box.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/proof-bundles/cmr1bb5py003pob4t21nitqew.proof.json",
+      "projects/cmr1b94r80000ob4tvocxqx7r/proof-bundles/cmr1bb5py003pob4t21nitqew.trailers.txt"
     ],
     "verifier": {
       "ok": true,
-      "bundlePath": ".synthi/codesite/projects/cmr1aqkri0000ob4tk6g7lxo1/proof-bundles/cmr1arx8t003bob4tn8gkrceg.proof.json",
-      "trailersPath": ".synthi/codesite/projects/cmr1aqkri0000ob4tk6g7lxo1/proof-bundles/cmr1arx8t003bob4tn8gkrceg.trailers.txt",
+      "bundlePath": ".synthi/codesite/projects/cmr1b94r80000ob4tvocxqx7r/proof-bundles/cmr1bb5py003pob4t21nitqew.proof.json",
+      "trailersPath": ".synthi/codesite/projects/cmr1b94r80000ob4tvocxqx7r/proof-bundles/cmr1bb5py003pob4t21nitqew.trailers.txt",
       "checks": [],
       "errors": []
     }
@@ -352,6 +385,11 @@
     "clearance_issued",
     "near_miss",
     "transaction_opened",
+    "transaction_validated",
+    "transaction_opened",
+    "transponder_update",
+    "transaction_validated",
+    "transaction_opened",
     "write_attempted",
     "write_denied",
     "write_attempted",
@@ -380,6 +418,7 @@
     "proofBundleCreated": true,
     "commitTrailersPresent": true,
     "repoSnapshotRecorded": true,
+    "serializableSnapshotGateBlocked": true,
     "repoStateCollectedFromRealRepo": true,
     "inspectionCommandsExecuted": true,
     "lineProvenanceSeeded": true,
