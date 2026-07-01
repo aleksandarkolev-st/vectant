@@ -4,6 +4,21 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Full-Runtime Authority Boundary
+
+The recomputed `fullRuntimeEvidenceAuthority` facet now carries the explicit schema `synthi.gpu_hmr.full_runtime_evidence_authority.v1` and proof authority `matrix_recomputed_full_runtime_evidence_authority_not_row_declared`. Source-first visual broad-readiness selection and source-first coverage require that schema, proof authority, and `authority=strict_runtime_proof_artifact` before a visual row can count toward aggregate broad readiness.
+
+This closes a boolean-only shortcut: accepted visual pixels, accepted async visual/CAS support, and `fullRuntimeEvidenceAuthority.accepted=true` are not enough unless the full-runtime authority facet is matrix-recomputed and schema-bound. The retained source-first visual predicate now records `requiredFullRuntimeEvidenceAuthoritySchema`, `requiredFullRuntimeEvidenceAuthority`, `requiredFullRuntimeAuthoritySource`, and the required signal `full_runtime_evidence_authority_schema_accepted`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including schema-bound full-runtime authority assertions in the source-first visual broad predicate and source-first coverage rows, proof gpu-validation-matrix-ledger:sha256:ad34ad8676ad3831e197aa1264ac8d9d36299bdabc7d5036c5450ecf0fda695a, rows=66
+post-patch source-first visual predicate hash for new recomputes -> sha256:ef2698dcccb9fd4d1a52dd7a15bb22672dc238e6140e276a6f2da5d6cee8467a
+```
+
 ## 2026-07-01 Source-First Visual Schema Boundary
 
 The source-first visual broad-readiness selector now requires the `synthi.gpu.hmr.agent_split_source_first_ingestion.v1` schema directly before a row can satisfy the aggregate visual lane. The broad proof already recorded that required schema; the selector now enforces it instead of relying only on `accepted=true`, proof authority, and source authority.

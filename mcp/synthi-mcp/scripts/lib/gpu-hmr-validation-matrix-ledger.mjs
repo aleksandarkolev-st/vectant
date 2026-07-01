@@ -92,6 +92,10 @@ const AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY =
   'source_first_ingestion_provenance_only_not_runtime_proof';
 const ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY =
   'async_visual_metrics_and_transport_only';
+const FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.full_runtime_evidence_authority.v1';
+const FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY =
+  'matrix_recomputed_full_runtime_evidence_authority_not_row_declared';
 const REQUIRED_FULL_RUNTIME_LEDGER_RECORD_FIELDS = [
   ['schemaVersion', 'schema_version'],
   ['proofId', 'proof_id'],
@@ -11630,6 +11634,12 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
       'full_runtime_authority_requires_strict_runtime_proof_artifact',
     ]);
   return {
+    schemaVersion: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+    schema_version: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+    proofAuthority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+    proof_authority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+    evidenceAuthority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+    evidence_authority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
     accepted,
     authority: strictRuntimeArtifactAccepted
       ? 'strict_runtime_proof_artifact'
@@ -21417,6 +21427,15 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
       && firstBool(asyncVisual.workerCasInputAccepted, asyncVisual.worker_cas_input_accepted) === true
       && firstBool(asyncVisual.nativeImageDependencyBound, asyncVisual.native_image_dependency_bound) === true
       && rowHasAcceptedVisualEvidence(row)
+      && firstText(runtimeAuthority.schemaVersion, runtimeAuthority.schema_version)
+        === FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION
+      && firstText(
+        runtimeAuthority.proofAuthority,
+        runtimeAuthority.proof_authority,
+        runtimeAuthority.evidenceAuthority,
+        runtimeAuthority.evidence_authority,
+      ) === FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY
+      && firstText(runtimeAuthority.authority) === 'strict_runtime_proof_artifact'
       && firstBool(runtimeAuthority.accepted) === true
       && firstBool(runtimeAuthority.visualOracleAccepted, runtimeAuthority.visual_oracle_accepted) === true
       && firstBool(outputOracle.accepted) === true
@@ -21454,6 +21473,12 @@ function sourceFirstVisualBroadReadinessPredicate() {
     required_source_first_evidence_authority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
     requiredAsyncVisualSupportAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
     required_async_visual_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+    requiredFullRuntimeEvidenceAuthoritySchema: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+    required_full_runtime_evidence_authority_schema: FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION,
+    requiredFullRuntimeEvidenceAuthority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+    required_full_runtime_evidence_authority: FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY,
+    requiredFullRuntimeAuthoritySource: 'strict_runtime_proof_artifact',
+    required_full_runtime_authority_source: 'strict_runtime_proof_artifact',
     requiredSignals: [
       'strict_full_runtime_row_accepted',
       'source_first_ingestion_accepted',
@@ -21464,6 +21489,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'async_visual_worker_cas_input_accepted',
       'native_image_dependency_bound',
       'visual_artifacts_accepted',
+      'full_runtime_evidence_authority_schema_accepted',
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
       'no_gpu_hmr_success_claims_from_support_facets',
@@ -21478,6 +21504,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'async_visual_worker_cas_input_accepted',
       'native_image_dependency_bound',
       'visual_artifacts_accepted',
+      'full_runtime_evidence_authority_schema_accepted',
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
       'no_gpu_hmr_success_claims_from_support_facets',
@@ -23098,6 +23125,10 @@ function planCoverage(rows) {
     && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
     && row.asyncVisualCasBundle?.gpuHmrSuccess === false
     && row.asyncVisualCasBundle?.proofAuthority === ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY
+    && row.fullRuntimeEvidenceAuthority?.schemaVersion === FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION
+    && row.fullRuntimeEvidenceAuthority?.proofAuthority
+      === FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY
+    && row.fullRuntimeEvidenceAuthority?.authority === 'strict_runtime_proof_artifact'
     && row.fullRuntimeEvidenceAuthority?.accepted === true
     && (
       row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true

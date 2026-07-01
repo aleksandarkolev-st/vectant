@@ -8977,8 +8977,29 @@ assert.deepEqual(
 assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'full_runtime_evidence_authority_schema_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
       'strict_runtime_visual_authority_accepted',
     ),
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredFullRuntimeEvidenceAuthoritySchema,
+  'synthi.gpu_hmr.full_runtime_evidence_authority.v1',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredFullRuntimeEvidenceAuthority,
+  'matrix_recomputed_full_runtime_evidence_authority_not_row_declared',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredFullRuntimeAuthoritySource,
+  'strict_runtime_proof_artifact',
 );
 assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -11317,6 +11338,11 @@ assert.ok(sourceFirstCoverage.rows.every((row) =>
   && row.asyncVisualCasBundle?.casHashesMatchDeclaredVisualHashes === true
   && row.asyncVisualCasBundle?.casHashesMatchMatrixVisualHashes === true
   && row.asyncVisualCasBundle?.tileEvidenceAccepted === true
+  && row.fullRuntimeEvidenceAuthority?.schemaVersion
+    === 'synthi.gpu_hmr.full_runtime_evidence_authority.v1'
+  && row.fullRuntimeEvidenceAuthority?.proofAuthority
+    === 'matrix_recomputed_full_runtime_evidence_authority_not_row_declared'
+  && row.fullRuntimeEvidenceAuthority?.authority === 'strict_runtime_proof_artifact'
   && row.fullRuntimeEvidenceAuthority?.accepted === true
   && (
     row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
