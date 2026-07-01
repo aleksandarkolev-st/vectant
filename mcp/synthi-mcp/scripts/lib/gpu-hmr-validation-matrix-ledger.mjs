@@ -521,10 +521,6 @@ function eventTimestampNs(event) {
   );
 }
 
-function isSelfCheckId(value) {
-  return /\bself[-_ ]?check\b/i.test(String(value ?? ''));
-}
-
 function objectCandidates(...values) {
   const out = [];
   const visit = (value) => {
@@ -16425,7 +16421,6 @@ async function readExternalRejectionProof(proofPath, repoRoot, baseDir, expected
 
 async function externalProjectRejectionRow(json, filePath, context) {
   const profileId = firstText(json.profileId, json.profile_id, path.basename(filePath).replace(/-\d+-rejection-proof\.json$/, ''));
-  if (isSelfCheckId(profileId) || isSelfCheckId(filePath)) return null;
   const externalProjectContract = externalProjectContractEvidence(json);
   const backend = externalProjectContract.backend;
   const rejection = compactObject(json.rejection);

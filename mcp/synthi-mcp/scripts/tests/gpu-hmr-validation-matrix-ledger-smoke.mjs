@@ -4600,6 +4600,37 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-sha
   proofId: 'external-rejection-proof:sha256:synthetic-bevy',
 });
 
+await writeJson(path.join(logsRoot, 'external-projects', 'explicit-self-check-named-project-rejection-proof.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+  profileId: 'explicit-self-check-named-project',
+  proofMode: 'mcp_preview',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'arbitrary_external_project',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  externalProjectContract: externalProjectContractForTest({
+    profileId: 'explicit-self-check-named-project',
+    backend: 'webgl',
+    backendFamily: 'webgl',
+    libraryFamily: 'arbitrary_external_project',
+    runtimeEnvironment: 'browser_dev_server',
+    profileClass: 'external_engine_visual_profile',
+    manifestHash: hashValue('explicit-self-check-named-project-manifest'),
+    runtimeEvidenceRefs: ['external-rejection-proof:sha256:synthetic-self-check-named-project'],
+  }),
+  status: 'fail',
+  rejection: {
+    accepted: false,
+    reasons: [
+      'external_profile_failed',
+      'visual_frame_missing',
+      'visual_oracle_not_accepted',
+    ],
+  },
+  proofId: 'external-rejection-proof:sha256:synthetic-self-check-named-project',
+});
+
 const externalVisualDir = path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual');
 await writeRgbaPng(path.join(externalVisualDir, 'before.png'), 320, 240, (x, y) => [
   (x * 3 + y) % 256,
@@ -11992,6 +12023,20 @@ assert.equal(bevyNameOnly.externalProjectContract.accepted, false);
 assert.ok(bevyNameOnly.openGaps.includes('external_backend_metadata_missing'));
 assert.ok(bevyNameOnly.openGaps.includes('external_profile_class_missing'));
 
+const selfCheckNamedExternalRejection = ledger.rows.find(
+  (row) => row.targetId === 'explicit-self-check-named-project',
+);
+assert.equal(selfCheckNamedExternalRejection?.matrixOutcome, 'refusal_proven');
+assert.equal(selfCheckNamedExternalRejection.backend, 'webgl');
+assert.equal(selfCheckNamedExternalRejection.acceptedForGpuHmr, false);
+assert.equal(selfCheckNamedExternalRejection.gpuHmrSuccess, false);
+assert.equal(selfCheckNamedExternalRejection.refusalProven, true);
+assert.equal(selfCheckNamedExternalRejection.proofChainAccepted, true);
+assert.equal(selfCheckNamedExternalRejection.externalProjectContract.accepted, true);
+assert.ok(selfCheckNamedExternalRejection.reasons.includes('external_profile_failed'));
+assert.ok(selfCheckNamedExternalRejection.reasons.includes('visual_frame_missing'));
+assert.ok(selfCheckNamedExternalRejection.reasons.includes('visual_oracle_not_accepted'));
+
 const externalVisual = ledger.rows.find((row) => row.targetId === 'explicit-external-engine-visual');
 assert.equal(externalVisual?.matrixOutcome, 'visual_profile_accepted');
 assert.equal(externalVisual.backend, 'webgl');
@@ -13633,7 +13678,7 @@ assert.equal(
 const retainedRealRocmRefusalCount = retainedRealRocmRows
   .filter((row) => row.matrixOutcome === 'refusal_proven').length;
 assert.equal(retainedRealRocmRefusalCount, 2);
-assert.equal(ledger.summary.refusalProvenRows, 4 + retainedRealRocmRefusalCount);
+assert.equal(ledger.summary.refusalProvenRows, 5 + retainedRealRocmRefusalCount);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
