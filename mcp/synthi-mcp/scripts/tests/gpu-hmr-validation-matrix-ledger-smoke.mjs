@@ -10479,6 +10479,56 @@ assert.deepEqual(
   broadReadinessWithDirectLocalColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets,
   ['direct-local-random-cold-readiness-user-project'],
 );
+const fixtureLocalRandomColdRow = randomColdReadinessMatrixRow({
+  targetId: 'fixture-local-random-cold-readiness-user-project',
+  candidateSource: 'direct_local_git_repo_path',
+  sourceUrl: 'file:///tmp/synthi-self-check-local-user-project',
+  localRepoPath: path.join(
+    'mcp',
+    'synthi-mcp',
+    '.gpu-hmr-test-logs',
+    'random-large-project-cold-path',
+    'self-check',
+    'local-user-project',
+  ),
+  immutableCommit: '1313131313131313131313131313131313131313',
+});
+const broadReadinessWithFixtureLocalColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    fixtureLocalRandomColdRow,
+  ],
+});
+assert.equal(broadReadinessWithFixtureLocalColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+assert.ok(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathSelectionPredicate.requiredSignals
+    .includes('direct_local_git_repo_path_outside_matrix_fixture_roots'),
+);
+assert.ok(
+  broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathSelectionPredicate
+    .rejectedDirectLocalRepoPathRootsForBroadReadiness
+    .includes('.gpu-hmr-test-logs'),
+);
 const repeatedSourceRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `replayed-source-random-cold-readiness-${index + 1}`,

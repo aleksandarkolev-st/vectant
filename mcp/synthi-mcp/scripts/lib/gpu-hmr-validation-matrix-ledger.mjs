@@ -23380,17 +23380,21 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       row.localRepoPath,
       row.local_repo_path,
     );
-    const immutableCommit = firstText(
-      facet.immutableCommit,
-      facet.immutable_commit,
-      row.immutableCommit,
-      row.immutable_commit,
-    );
     const candidateSource = firstText(
       facet.candidateSource,
       facet.candidate_source,
       row.candidateSource,
       row.candidate_source,
+    );
+    const localRepoPathOrigin = randomColdPathDirectLocalRepoPathOrigin(
+      { candidateSource, repoPath },
+      context,
+    );
+    const immutableCommit = firstText(
+      facet.immutableCommit,
+      facet.immutable_commit,
+      row.immutableCommit,
+      row.immutable_commit,
     );
     const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
       facet.directInputEvidence,
@@ -23423,6 +23427,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && directInputEvidence.sourceIdentityHashMatchesContext === true;
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
+      && localRepoPathOrigin.accepted === true
       && directInputModeProven
       && directInputEvidenceAccepted
       && Boolean(immutableCommit)
@@ -23554,6 +23559,70 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && !forbiddenAuthority
       && freshness.accepted === true;
   });
+}
+
+function randomColdPathDirectLocalRepoPathOrigin({ candidateSource, repoPath } = {}, context = {}) {
+  if (candidateSource !== 'direct_local_git_repo_path') {
+    return {
+      accepted: true,
+      applies: false,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const normalized = normalizeMaybeWindowsPath(repoPath);
+  const normalizedForSegments = String(normalized ?? '').replace(/\\/g, '/').toLowerCase();
+  const segments = normalizedForSegments.split('/').filter(Boolean);
+  const segmentSet = new Set(segments);
+  const containsPair = (left, right) =>
+    segments.some((segment, index) => segment === left && segments[index + 1] === right);
+  const repoRoot = firstText(context.repoRoot, context.repo_root);
+  const mcpRoot = firstText(context.mcpRoot, context.mcp_root);
+  const internalRoots = compactStringList([
+    mcpRoot ? path.join(mcpRoot, '.gpu-hmr-test-logs') : null,
+    mcpRoot ? path.join(mcpRoot, '.gpu-hmr-test-artifacts') : null,
+    mcpRoot ? path.join(mcpRoot, 'scripts', 'tests') : null,
+    mcpRoot ? path.join(mcpRoot, 'tests') : null,
+    repoRoot ? path.join(repoRoot, '.gpu-hmr-test-logs') : null,
+    repoRoot ? path.join(repoRoot, '.gpu-hmr-test-artifacts') : null,
+    repoRoot ? path.join(repoRoot, 'tmp', 'validation-runs') : null,
+    repoRoot ? path.join(repoRoot, 'tmp', 'real-rocm') : null,
+    repoRoot ? path.join(repoRoot, 'test', 'fixtures') : null,
+    repoRoot ? path.join(repoRoot, 'tests', 'fixtures') : null,
+  ]);
+  const insideContextRoot =
+    normalized && internalRoots.some((root) => pathInside(normalized, root));
+  const internalSegmentReason = compactStringList([
+    segmentSet.has('.gpu-hmr-test-logs') ? 'gpu_hmr_test_logs_root' : null,
+    segmentSet.has('.gpu-hmr-test-artifacts') ? 'gpu_hmr_test_artifacts_root' : null,
+    segmentSet.has('validation-runs') ? 'validation_runs_root' : null,
+    segmentSet.has('real-rocm') ? 'real_rocm_retained_root' : null,
+    segmentSet.has('node_modules') ? 'dependency_cache_root' : null,
+    containsPair('.synthi', 'generated') ? 'synthi_generated_namespace' : null,
+    containsPair('test', 'fixtures') || containsPair('tests', 'fixtures')
+      ? 'test_fixture_root'
+      : null,
+    containsPair('scripts', 'tests') ? 'script_test_root' : null,
+    insideContextRoot ? 'context_internal_collection_root' : null,
+  ])[0] ?? null;
+  const openGaps = compactStringList([
+    normalized ? null : 'random_cold_direct_local_repo_path_missing',
+    internalSegmentReason
+      ? `random_cold_direct_local_repo_path_internal_${internalSegmentReason}`
+      : null,
+  ]);
+  return {
+    accepted: openGaps.length === 0,
+    applies: true,
+    repoPath: repoPath ?? null,
+    repo_path: repoPath ?? null,
+    normalizedRepoPath: normalized ?? null,
+    normalized_repo_path: normalized ?? null,
+    rejectedInternalPathKind: internalSegmentReason,
+    rejected_internal_path_kind: internalSegmentReason,
+    openGaps,
+    open_gaps: openGaps,
+  };
 }
 
 function randomColdPathSourceIdentityHash(row) {
@@ -23838,6 +23907,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
     requiredSignals: [
       'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
+      'direct_local_git_repo_path_outside_matrix_fixture_roots',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
       'distinct_source_content_only_identities_observed',
@@ -23863,6 +23933,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
     required_signals: [
       'direct_source_input_evidence_accepted',
       'direct_cli_or_env_input_mode_observed',
+      'direct_local_git_repo_path_outside_matrix_fixture_roots',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
       'distinct_source_content_only_identities_observed',
@@ -23938,6 +24009,28 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
     backend_identity_role: 'source_tree_intake_backend_candidates_only_not_candidate_declaration',
     candidateBackendDeclarationsDiagnosticOnly: true,
     candidate_backend_declarations_diagnostic_only: true,
+    rejectedDirectLocalRepoPathRootsForBroadReadiness: [
+      '.gpu-hmr-test-logs',
+      '.gpu-hmr-test-artifacts',
+      'tmp/validation-runs',
+      'tmp/real-rocm',
+      'test/fixtures',
+      'tests/fixtures',
+      'mcp test harness roots',
+      '.synthi/generated',
+      'node_modules',
+    ],
+    rejected_direct_local_repo_path_roots_for_broad_readiness: [
+      '.gpu-hmr-test-logs',
+      '.gpu-hmr-test-artifacts',
+      'tmp/validation-runs',
+      'tmp/real-rocm',
+      'test/fixtures',
+      'tests/fixtures',
+      'mcp test harness roots',
+      '.synthi/generated',
+      'node_modules',
+    ],
   };
   const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
   return {
@@ -26028,6 +26121,10 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     generated_at: generatedAt,
     enforceRandomColdPathFreshness,
     enforce_random_cold_path_freshness: enforceRandomColdPathFreshness,
+    repoRoot: options.repoRoot,
+    repo_root: options.repoRoot,
+    mcpRoot: options.mcpRoot,
+    mcp_root: options.mcpRoot,
   };
   const includeSafetyInvalidatedRows =
     options.includeInvalidated === true || options.includeUnproven === true;
@@ -26125,5 +26222,7 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
     includeUnproven: options.includeUnproven === true,
     sourceRoots: roots.map((root) => relPath(root, repoRoot)),
     generatedAt: options.generatedAt,
+    repoRoot,
+    mcpRoot,
   });
 }
