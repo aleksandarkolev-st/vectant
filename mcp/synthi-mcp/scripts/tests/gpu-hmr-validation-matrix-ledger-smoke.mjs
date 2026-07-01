@@ -9081,6 +9081,57 @@ assert.ok(
     'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
 );
+const repeatedSourceRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `replayed-source-random-cold-readiness-${index + 1}`,
+    sourceUrl: 'https://example.invalid/replayed/random-large-project.git',
+    immutableCommit: '3333333333333333333333333333333333333333',
+  })
+);
+const broadReadinessWithRepeatedSourceColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...repeatedSourceRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithRepeatedSourceColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithRepeatedSourceColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceColdQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithRepeatedSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
+);
+const repeatedSourceColdCoverage = new Map(
+  broadReadinessWithRepeatedSourceColdQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingRowCount,
+  5,
+);
+assert.equal(
+  repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingDistinctSourceIdentityCount,
+  1,
+);
 const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   ...broadReadinessRandomColdRows,
@@ -9221,6 +9272,11 @@ assert.equal(
   5,
 );
 assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
+  5,
+);
+assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualRowCount,
   2,
 );
@@ -9231,6 +9287,11 @@ assert.deepEqual(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathRows,
+  5,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathDistinctSourceIdentityCount,
   5,
 );
 assert.equal(
@@ -9329,6 +9390,16 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.distinctSourceIdentitiesRequired,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.minimumDistinctSourceIdentityCount,
+  5,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredDirectInputEvidenceAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
@@ -9346,6 +9417,12 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathSelectionPredicate.requiredSignals.includes(
       'direct_source_input_evidence_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathSelectionPredicate.requiredSignals.includes(
+      'distinct_direct_source_identities_observed',
     ),
 );
 assert.ok(
@@ -9484,6 +9561,11 @@ assert.equal(
 );
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceIdentityCount,
   5,
 );
 assert.equal(
