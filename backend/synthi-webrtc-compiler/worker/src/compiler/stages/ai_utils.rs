@@ -489,20 +489,6 @@ fn manifest_module_file(manifest: &serde_json::Value, role: &str) -> Option<Stri
         .map(|s| s.trim_start_matches("./").replace('\\', "/"))
 }
 
-fn default_device_filename(manifest: &serde_json::Value) -> &'static str {
-    match manifest
-        .get("gpu")
-        .and_then(|gpu| gpu.get("vendor"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "rocm" | "hip" => "device.hip",
-        _ => "device.cu",
-    }
-}
-
 fn insert_split_role(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     role: &str,
@@ -573,13 +559,10 @@ fn normalize_split_response(
         return split;
     };
 
-    for (role, fallback) in [
-        ("shared", "shared.h"),
-        ("core", "core.cpp"),
-        ("gui", "gui.cpp"),
-        ("host_runner", "host_runner.cpp"),
-    ] {
-        let filename = manifest_module_file(manifest, role).unwrap_or_else(|| fallback.to_string());
+    for role in ["shared", "core", "gui", "host_runner"] {
+        let Some(filename) = manifest_module_file(manifest, role) else {
+            continue;
+        };
         let already_role_keyed = obj
             .get(role)
             .and_then(|v| v.get("content"))
@@ -596,8 +579,9 @@ fn normalize_split_response(
         }
     }
 
-    let device_filename = manifest_module_file(manifest, "device")
-        .unwrap_or_else(|| default_device_filename(manifest).to_string());
+    let Some(device_filename) = manifest_module_file(manifest, "device") else {
+        return split;
+    };
     let device_role_keyed = obj
         .get("device")
         .and_then(|v| v.get("content"))
@@ -2308,6 +2292,32 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("particle_flow"));
+    }
+
+    #[test]
+    fn split_normalization_does_not_infer_default_role_filenames() {
+        let split = json!({
+            "shared.h": "#pragma once\n",
+            "core.cpp": "extern \"C\" void core_on_update(void*, double) {}",
+            "gui.cpp": "extern \"C\" void gui_on_render(void*) {}",
+            "host_runner.cpp": "int main() { return 0; }",
+            "device.hip": "extern \"C\" __global__ void inferred_device(float* x) {}",
+            "device.cu": "extern \"C\" __global__ void inferred_cuda(float* x) {}"
+        });
+        let manifest = json!({
+            "gpu": { "vendor": "rocm" }
+        });
+
+        let normalized = normalize_split_response(split, Some(&manifest));
+
+        for role in ["shared", "core", "gui", "host_runner", "device"] {
+            assert!(
+                normalized.get(role).is_none(),
+                "role {role} should require an explicit manifest module file or role object"
+            );
+        }
+        assert!(normalized.get("device.hip").is_some());
+        assert!(normalized.get("device.cu").is_some());
     }
 
     fn gpu_compile_request_for_source(source: &str) -> CompileRequest {

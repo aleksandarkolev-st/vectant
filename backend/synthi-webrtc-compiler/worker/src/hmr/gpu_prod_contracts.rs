@@ -455,8 +455,7 @@ fn generated_roles_from_manifest(manifest: &Value) -> Value {
         let path = module_files
             .and_then(|m| m.get(role))
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| legacy_role_path(role));
+            .map(str::to_string);
         if let Some(path) = path {
             roles.insert(
                 role.to_string(),
@@ -526,8 +525,7 @@ fn device_roles_from_manifest(
     let device_path = module_files
         .and_then(|m| m.get("device"))
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| legacy_role_path("device"));
+        .map(str::to_string);
     let Some(path) = device_path else {
         return Value::Array(Vec::new());
     };
@@ -2929,17 +2927,6 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn legacy_role_path(role: &str) -> Option<String> {
-    match role {
-        "shared" => Some("shared.h".to_string()),
-        "core" => Some("core.cpp".to_string()),
-        "gui" => Some("gui.cpp".to_string()),
-        "host_runner" => Some("host_runner.cpp".to_string()),
-        "device" => None,
-        _ => None,
-    }
-}
-
 fn stable_hash(value: &Value) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     let mut hasher = Sha256::new();
@@ -3314,6 +3301,42 @@ mod tests {
                 .pointer("/generatedRoles/deviceRoles/0/sourceFiles/0")
                 .and_then(Value::as_str),
             Some("src/gpu/device.hip")
+        );
+    }
+
+    #[test]
+    fn generated_roles_do_not_infer_default_module_filenames() {
+        let sidecar = json!({
+            "compile_manifest": {
+                "compiler": "clang++",
+                "std": "c++20",
+                "common_flags": ["-shared", "-fPIC"],
+                "gpu": {
+                    "vendor": "rocm",
+                    "device_compiler": "hipcc",
+                    "arch": ["gfx1201"]
+                }
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let generated_roles = migrated
+            .get("generatedRoles")
+            .and_then(Value::as_object)
+            .expect("generatedRoles object");
+
+        for role in ["shared", "core", "gui", "host_runner", "device"] {
+            assert!(
+                !generated_roles.contains_key(role),
+                "role {role} must come from explicit module_files, not default filenames"
+            );
+        }
+        assert_eq!(
+            migrated
+                .pointer("/generatedRoles/deviceRoles")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
         );
     }
 
