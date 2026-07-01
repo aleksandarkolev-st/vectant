@@ -8242,6 +8242,18 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withSharedSourceFirstDirectIdentity(row, sourceUrl, immutableCommit) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+    targetId: cloned.targetId,
+    sourceAuthority: 'direct_source_url_commit',
+    sourceUrl,
+    immutableCommit,
+  });
+  cloned.source_first_ingestion = cloned.sourceFirstIngestion;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutSourceFirstDirectSourceIdentity(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   const sourceFirst = {
@@ -9885,6 +9897,63 @@ assert.equal(
   missingDirectSourceIdentityCoverage.get('source_first_uncompiled_project_validation')?.status,
   'missing',
 );
+const repeatedSourceFirstVisualIdentityRows = broadReadinessRows.map((row) => {
+  const oracleKind = row.outputOracleFacet?.kind ?? row.output_oracle_facet?.kind;
+  return oracleKind === 'visual_oracle'
+    ? withSharedSourceFirstDirectIdentity(
+      row,
+      'https://example.invalid/replayed/source-first-visual.git',
+      '9999999999999999999999999999999999999999',
+    )
+    : row;
+});
+const broadReadinessWithRepeatedSourceFirstVisualIdentityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...repeatedSourceFirstVisualIdentityRows,
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.accepted, true);
+assert.equal(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  2,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualSourceIdentityCount,
+  1,
+);
+assert.equal(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .minimumSourceFirstVisualDistinctSourceIdentityCount,
+  2,
+);
+assert.ok(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_distinct_source_first_visual_full_runtime_sources'),
+);
+const repeatedSourceFirstVisualIdentityCoverage = new Map(
+  broadReadinessWithRepeatedSourceFirstVisualIdentityQuery.summary.planCoverage.map((entry) => [
+    entry.id,
+    entry,
+  ])
+);
+assert.equal(
+  repeatedSourceFirstVisualIdentityCoverage.get('source_first_uncompiled_project_validation')
+    ?.status,
+  'candidate_only',
+);
+assert.ok(
+  repeatedSourceFirstVisualIdentityCoverage.get('source_first_uncompiled_project_validation')
+    ?.openGaps.includes('distinct_source_first_visual_full_runtime_sources_required'),
+);
 const broadReadinessWithForgedSourceFirstSchemaQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -10563,7 +10632,17 @@ assert.equal(
   2,
 );
 assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .minimumSourceFirstVisualDistinctSourceIdentityCount,
+  2,
+);
+assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualSourceIdentityCount,
+  2,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .minimumSourceFirstVisualDistinctSourceIdentityCount,
   2,
 );
 assert.ok(
@@ -10599,6 +10678,16 @@ assert.deepEqual(
     'user_source_files',
     'workspace_source_files',
   ],
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.distinctSourceIdentitiesRequired,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.minimumDistinctSourceIdentityCount,
+  2,
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -10655,6 +10744,12 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
       'direct_source_identity_evidence_accepted_when_direct_authority',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'distinct_source_first_visual_source_identities_observed',
     ),
 );
 assert.ok(

@@ -59,6 +59,7 @@ const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT = 25;
+const BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT = 2;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
@@ -22436,6 +22437,12 @@ function sourceFirstVisualBroadReadinessPredicate() {
     specific_target_ids_allowed: [],
     acceptedSourceAuthorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
     accepted_source_authorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
+    distinctSourceIdentitiesRequired: true,
+    distinct_source_identities_required: true,
+    minimumDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimum_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     directSourceAuthoritiesRequiringIdentityEvidence:
       [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
     direct_source_authorities_requiring_identity_evidence:
@@ -22482,6 +22489,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'full_runtime_evidence_authority_schema_accepted',
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
+      'distinct_source_first_visual_source_identities_observed',
       'no_gpu_hmr_success_claims_from_support_facets',
     ],
     required_signals: [
@@ -22498,6 +22506,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'full_runtime_evidence_authority_schema_accepted',
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
+      'distinct_source_first_visual_source_identities_observed',
       'no_gpu_hmr_success_claims_from_support_facets',
     ],
     ignoredForAcceptance: [
@@ -23118,9 +23127,12 @@ function computeBroadLibraryAgnosticProof(rows) {
           : randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
             ? 'broad_acceptance_requires_distinct_random_large_project_cold_sources'
             : 'broad_acceptance_requires_more_random_large_project_cold_paths',
-    sourceFirstVisualRows.length > 0
+    sourceFirstVisualSourceIdentityHashes.length
+      >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT
       ? null
-      : 'broad_acceptance_requires_source_first_visual_full_runtime_row',
+      : sourceFirstVisualRows.length === 0
+        ? 'broad_acceptance_requires_source_first_visual_full_runtime_row'
+        : 'broad_acceptance_requires_distinct_source_first_visual_full_runtime_sources',
   ]);
   const accepted = openGaps.length === 0;
   const broadRuntimeRows = fullRuntimeRows.filter((row) =>
@@ -23179,6 +23191,8 @@ function computeBroadLibraryAgnosticProof(rows) {
     sourceFirstVisualRowIds,
     sourceFirstVisualSourceIdentityHashes,
     sourceFirstVisualSelectionPredicateHash: sourceFirstVisualSelectionPredicate.predicateHash,
+    sourceFirstVisualDistinctSourceIdentityThreshold:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     openGaps,
   });
   return {
@@ -23300,8 +23314,14 @@ function computeBroadLibraryAgnosticProof(rows) {
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     minimum_random_cold_path_source_relevant_file_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
-    minimumSourceFirstVisualFullRuntimeCount: 1,
-    minimum_source_first_visual_full_runtime_count: 1,
+    minimumSourceFirstVisualFullRuntimeCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimum_source_first_visual_full_runtime_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimumSourceFirstVisualDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimum_source_first_visual_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     openGaps,
     open_gaps: openGaps,
   };
@@ -23499,6 +23519,10 @@ function broadLibraryAgnosticReadiness(
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
+    minimumSourceFirstVisualDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimum_source_first_visual_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     openGaps,
   };
 }
@@ -24580,6 +24604,9 @@ function planCoverage(rows) {
     });
   const sourceFirstFullRuntimeSourceIdentities =
     sourceFirstVisualSourceIdentityHashList(sourceFirstFullRuntimeRows);
+  const sourceFirstFullRuntimeDistinctSourceAccepted =
+    sourceFirstFullRuntimeSourceIdentities.length
+      >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT;
   const fissionRows = deterministicFissionRows(rows, () => true);
   const randomColdRefusalRows = refusalRows(rows, (row) =>
     row.proofMode === 'random_large_project_cold_path'
@@ -24610,11 +24637,17 @@ function planCoverage(rows) {
     coverageEntry({
       id: 'source_first_uncompiled_project_validation',
       requirement: 'Source-first uncompiled project ingestion through split, compile, runtime proof, and output oracle',
-      status: sourceFirstFullRuntimeRows.length > 0 ? 'accepted' : 'missing',
+      status: sourceFirstFullRuntimeDistinctSourceAccepted
+        ? 'accepted'
+        : sourceFirstFullRuntimeRows.length > 0
+          ? 'candidate_only'
+          : 'missing',
       rows: sourceFirstFullRuntimeRows,
-      openGaps: sourceFirstFullRuntimeRows.length > 0
+      openGaps: sourceFirstFullRuntimeDistinctSourceAccepted
         ? []
-        : ['source_first_full_runtime_visual_or_compute_proof_with_async_cas_support_required'],
+        : sourceFirstFullRuntimeRows.length > 0
+          ? ['distinct_source_first_visual_full_runtime_sources_required']
+          : ['source_first_full_runtime_visual_or_compute_proof_with_async_cas_support_required'],
       proofAuthority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
       proof_authority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
       sourceFirstEvidenceAuthority: 'source_first_provenance_only_plus_strict_runtime_ledger',
@@ -24623,6 +24656,10 @@ function planCoverage(rows) {
       async_visual_cas_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
       sourceIdentityCount: sourceFirstFullRuntimeSourceIdentities.length,
       source_identity_count: sourceFirstFullRuntimeSourceIdentities.length,
+      minimumDistinctSourceIdentityCount:
+        BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+      minimum_distinct_source_identity_count:
+        BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
       sourceIdentityHashes: sourceFirstFullRuntimeSourceIdentities,
       source_identity_hashes: sourceFirstFullRuntimeSourceIdentities,
     }),
