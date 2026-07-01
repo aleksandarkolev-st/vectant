@@ -5608,8 +5608,8 @@ function attachLinkedRunModeSupportRows({ rowsByTarget, fullRuntimeRowsByTarget,
 }
 
 function broadLibraryAgnosticScopeProven(row = {}, context = {}) {
-  // Broad acceptance is a matrix-level generalization claim. A single row, even
-  // with a broad-looking facet, cannot authorize it.
+  // Matrix-level broad readiness can be accepted from a portfolio of strict rows,
+  // but that must not rewrite a scoped row into row-local arbitrary-project proof.
   const proof = compactObject(context.broadLibraryAgnosticProof ?? context.broadProof);
   if (proof.accepted !== true) return false;
   const rowIds = new Set(compactStringList(proof.broadRuntimeRowIds ?? proof.broad_runtime_row_ids));
@@ -21300,6 +21300,8 @@ function rowIsScopedOnlyFullRuntime(row) {
 
 function rowIsBroadFullRuntime(row, broadProof = {}) {
   return acceptedFullRuntimeRow(row)
+    && firstText(row.acceptanceScope, row.acceptance_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+    && firstText(row.claimScope, row.claim_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
     && broadLibraryAgnosticScopeProven(row, { broadProof }) === true;
 }
 
@@ -21765,14 +21767,22 @@ function computeBroadLibraryAgnosticProof(rows) {
       : 'broad_acceptance_requires_source_first_visual_full_runtime_row',
   ]);
   const accepted = openGaps.length === 0;
-  const broadRuntimeRows = accepted ? fullRuntimeRows : [];
+  const broadRuntimeRows = fullRuntimeRows.filter((row) =>
+    firstText(row.acceptanceScope, row.acceptance_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+    && firstText(row.claimScope, row.claim_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
+  );
+  const matrixGeneralizationRuntimeRows = accepted ? fullRuntimeRows : [];
   const scopedRuntimeRows = fullRuntimeRows.filter((row) =>
     !broadRuntimeRows.includes(row) && rowIsScopedOnlyFullRuntime(row)
   );
   const broadRuntimeRowIds = compactStringList(broadRuntimeRows.map((row) => row.rowId));
+  const matrixGeneralizationRuntimeRowIds = compactStringList(
+    matrixGeneralizationRuntimeRows.map((row) => row.rowId),
+  );
   const evidenceRefs = compactStringList([
     ...broadRuntimeRowIds,
-    ...compactStringList(broadRuntimeRows.flatMap((row) => row.proofIds ?? row.proof_ids)),
+    ...matrixGeneralizationRuntimeRowIds,
+    ...compactStringList(matrixGeneralizationRuntimeRows.flatMap((row) => row.proofIds ?? row.proof_ids)),
     ...compactStringList(refusalRowsForReadiness.map((row) => row.rowId)),
     ...randomColdPathRowIds,
     ...randomColdPathCandidateRowIds,
@@ -21782,6 +21792,7 @@ function computeBroadLibraryAgnosticProof(rows) {
     schemaVersion: BROAD_LIBRARY_AGNOSTIC_PROOF_SCHEMA_VERSION,
     accepted,
     broadRuntimeRowIds,
+    matrixGeneralizationRuntimeRowIds,
     backends,
     acceptanceScopes,
     proofModes,
@@ -21814,6 +21825,12 @@ function computeBroadLibraryAgnosticProof(rows) {
     broad_runtime_row_ids: broadRuntimeRowIds,
     rowRefs: rowRefs(broadRuntimeRows),
     row_refs: rowRefs(broadRuntimeRows),
+    matrixGeneralizationRuntimeRows: matrixGeneralizationRuntimeRows.length,
+    matrix_generalization_runtime_rows: matrixGeneralizationRuntimeRows.length,
+    matrixGeneralizationRuntimeRowIds,
+    matrix_generalization_runtime_row_ids: matrixGeneralizationRuntimeRowIds,
+    matrixGeneralizationRowRefs: rowRefs(matrixGeneralizationRuntimeRows),
+    matrix_generalization_row_refs: rowRefs(matrixGeneralizationRuntimeRows),
     scopedRuntimeRows: scopedRuntimeRows.length,
     scoped_runtime_rows: scopedRuntimeRows.length,
     acceptedFullRuntimeRows: fullRuntimeRows.length,
@@ -21922,6 +21939,12 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
     broad_runtime_rows_computed: broadRuntimeRowsComputed,
     broadRuntimeRowsMissing,
     broad_runtime_rows_missing: broadRuntimeRowsMissing,
+    matrixGeneralizationRuntimeRows:
+      finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
+      ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0),
+    matrix_generalization_runtime_rows:
+      finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
+      ?? (broadProof.accepted === true ? fullRuntimeRows.length : 0),
     scopedRuntimeRows: scopedRuntimeRows.length,
     scoped_runtime_rows: scopedRuntimeRows.length,
     acceptedFullRuntimeRows: fullRuntimeRows.length,

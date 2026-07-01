@@ -8756,13 +8756,14 @@ const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
 });
 assert.equal(broadReadinessQuery.accepted, true);
 assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
-assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 4);
+assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.equal(broadReadinessQuery.summary.scopedFullRuntimeGpuHmrRows, 4);
 assert.equal(
-  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.broad_library_agnostic,
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.scoped_profile,
   4,
 );
 assert.equal(
-  broadReadinessQuery.summary.fullRuntimeGeneralityBreakdown.broad_library_agnostic,
+  broadReadinessQuery.summary.fullRuntimeGeneralityBreakdown.profile_scoped_only,
   4,
 );
 assert.equal(
@@ -8780,6 +8781,19 @@ assert.equal(
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .broadRuntimeRows,
+  0,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .matrixGeneralizationRuntimeRows,
+  4,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRows,
+  0,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationRuntimeRows,
   4,
 );
 assert.equal(
