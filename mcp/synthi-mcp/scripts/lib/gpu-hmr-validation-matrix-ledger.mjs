@@ -1509,8 +1509,46 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       buildDiscovery.buildSystemSignals
       ?? buildDiscovery.build_system_signals,
     ),
-    gpuSourceSignalCount: listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
-    gpu_source_signal_count: listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
+    gpuSourceSignalCount: finiteNumber(
+      facet.gpuSourceSignalCount
+      ?? facet.gpu_source_signal_count
+    ) ?? listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
+    gpu_source_signal_count: finiteNumber(
+      facet.gpuSourceSignalCount
+      ?? facet.gpu_source_signal_count
+    ) ?? listCount(facet.gpuSourceSignals ?? facet.gpu_source_signals),
+    sourceRelevantFileCount: finiteNumber(
+      facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
+      ?? result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+    ) ?? 0,
+    source_relevant_file_count: finiteNumber(
+      facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
+      ?? result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+    ) ?? 0,
+    sourceOrBuildRelevantFileCount: finiteNumber(
+      facet.sourceOrBuildRelevantFileCount
+      ?? facet.source_or_build_relevant_file_count
+      ?? result.sourceOrBuildRelevantFileCount
+      ?? result.source_or_build_relevant_file_count
+      ?? facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
+      ?? result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+    ) ?? 0,
+    source_or_build_relevant_file_count: finiteNumber(
+      facet.sourceOrBuildRelevantFileCount
+      ?? facet.source_or_build_relevant_file_count
+      ?? result.sourceOrBuildRelevantFileCount
+      ?? result.source_or_build_relevant_file_count
+      ?? facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
+      ?? result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+    ) ?? 0,
     buildMetadataDiscoveryAccepted: firstBool(
       facet.buildMetadataDiscoveryAccepted,
       facet.build_metadata_discovery_accepted,
@@ -2013,6 +2051,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     result.canSatisfyRuntimeProof,
     result.can_satisfy_runtime_proof,
   );
+  const resultSourceIntake = firstCompactObject(
+    result.sourceIntakeEvidence,
+    result.source_intake_evidence,
+  );
   const candidateSource = firstText(candidate.candidateSource, candidate.candidate_source);
   const sourceUrl = firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url);
   const repoPath = firstText(
@@ -2132,6 +2174,42 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     repo_path: repoPath,
     immutableCommit,
     immutable_commit: immutableCommit,
+    sourceRelevantFileCount: finiteNumber(
+      result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+      ?? resultSourceIntake.sourceRelevantFileCount
+      ?? resultSourceIntake.source_relevant_file_count
+    ) ?? null,
+    source_relevant_file_count: finiteNumber(
+      result.sourceRelevantFileCount
+      ?? result.source_relevant_file_count
+      ?? resultSourceIntake.sourceRelevantFileCount
+      ?? resultSourceIntake.source_relevant_file_count
+    ) ?? null,
+    sourceOrBuildRelevantFileCount: finiteNumber(
+      result.sourceOrBuildRelevantFileCount
+      ?? result.source_or_build_relevant_file_count
+      ?? resultSourceIntake.sourceOrBuildRelevantFileCount
+      ?? resultSourceIntake.source_or_build_relevant_file_count
+    ) ?? null,
+    source_or_build_relevant_file_count: finiteNumber(
+      result.sourceOrBuildRelevantFileCount
+      ?? result.source_or_build_relevant_file_count
+      ?? resultSourceIntake.sourceOrBuildRelevantFileCount
+      ?? resultSourceIntake.source_or_build_relevant_file_count
+    ) ?? null,
+    gpuSourceFileCount: finiteNumber(
+      result.gpuSourceFileCount
+      ?? result.gpu_source_file_count
+      ?? resultSourceIntake.gpuSourceSignalCount
+      ?? resultSourceIntake.gpu_source_signal_count
+    ) ?? null,
+    gpu_source_file_count: finiteNumber(
+      result.gpuSourceFileCount
+      ?? result.gpu_source_file_count
+      ?? resultSourceIntake.gpuSourceSignalCount
+      ?? resultSourceIntake.gpu_source_signal_count
+    ) ?? null,
     selectionHash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
     selection_hash: normalizeSha256(firstText(selection.selectionHash, selection.selection_hash)),
     pendingManifestHash: normalizeSha256(firstText(
@@ -21681,6 +21759,12 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     build_metadata_discovery_accepted: coldSourceTreeIntake.buildMetadataDiscoveryAccepted === true,
     buildMetadataContentAccepted: coldSourceTreeIntake.buildMetadataContentAccepted === true,
     build_metadata_content_accepted: coldSourceTreeIntake.buildMetadataContentAccepted === true,
+    sourceRelevantFileCount: coldSourceTreeIntake.sourceRelevantFileCount,
+    source_relevant_file_count: coldSourceTreeIntake.sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount: coldSourceTreeIntake.sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: coldSourceTreeIntake.sourceOrBuildRelevantFileCount,
+    gpuSourceFileCount: coldSourceTreeIntake.gpuSourceSignalCount,
+    gpu_source_file_count: coldSourceTreeIntake.gpuSourceSignalCount,
     runtimeBoundaryEventManifestTemplateAccepted:
       coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence === true,
     runtime_boundary_event_manifest_template_accepted:
@@ -22599,22 +22683,22 @@ function randomColdPathRowsForBroadReadiness(rows, { requireLargeSourceTree = tr
       ?? intake.total_known_bytes,
     ) ?? 0;
     const sourceRelevantFileCount = finiteNumber(
-      row.sourceRelevantFileCount
-      ?? row.source_relevant_file_count
-      ?? row.sourceOrBuildRelevantFileCount
+      row.sourceOrBuildRelevantFileCount
       ?? row.source_or_build_relevant_file_count
+      ?? row.sourceRelevantFileCount
+      ?? row.source_relevant_file_count
       ?? row.gpuSourceFileCount
       ?? row.gpu_source_file_count
-      ?? facet.sourceRelevantFileCount
-      ?? facet.source_relevant_file_count
       ?? facet.sourceOrBuildRelevantFileCount
       ?? facet.source_or_build_relevant_file_count
+      ?? facet.sourceRelevantFileCount
+      ?? facet.source_relevant_file_count
       ?? facet.gpuSourceFileCount
       ?? facet.gpu_source_file_count
-      ?? intake.sourceRelevantFileCount
-      ?? intake.source_relevant_file_count
       ?? intake.sourceOrBuildRelevantFileCount
       ?? intake.source_or_build_relevant_file_count
+      ?? intake.sourceRelevantFileCount
+      ?? intake.source_relevant_file_count
       ?? intake.gpuSourceFileCount
       ?? intake.gpu_source_file_count,
     ) ?? 0;

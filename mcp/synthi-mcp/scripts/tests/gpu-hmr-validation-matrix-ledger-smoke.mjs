@@ -1781,6 +1781,9 @@ function randomColdPathManifest({
 } = {}) {
   const sourceUrl = 'https://example.invalid/arbitrary/user-project.git';
   const immutableCommit = '1111111111111111111111111111111111111111';
+  const sourceRelevantFileCount = 73;
+  const sourceOrBuildRelevantFileCount = 75;
+  const gpuSourceFileCount = 31;
   const directInputEvidence = randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit });
   const sourceIntakeEvidence = {
     proofAuthority: 'unprofiled_source_tree_intake_only_not_gpu_hmr_success',
@@ -1802,6 +1805,16 @@ function randomColdPathManifest({
     file_count: 2445,
     totalKnownBytes: 35885065,
     total_known_bytes: 35885065,
+    gpuSourceSignals: ['src/shaders/sample.wgsl'],
+    gpu_source_signals: ['src/shaders/sample.wgsl'],
+    gpuSourceSignalCount: gpuSourceFileCount,
+    gpu_source_signal_count: gpuSourceFileCount,
+    sourceRelevantFiles: ['src/shaders/sample.wgsl', 'src/lib.rs'],
+    source_relevant_files: ['src/shaders/sample.wgsl', 'src/lib.rs'],
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
     backendCandidates: ['vulkan', 'webgpu_wgsl'],
     backend_candidates: ['vulkan', 'webgpu_wgsl'],
     detectedBuildSystems: ['cargo', 'npm_or_node'],
@@ -1819,6 +1832,12 @@ function randomColdPathManifest({
       detected_build_systems: ['cargo', 'npm_or_node'],
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      gpuSourceSignalCount: gpuSourceFileCount,
+      gpu_source_signal_count: gpuSourceFileCount,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
+      sourceOrBuildRelevantFileCount,
+      source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
       buildSystemSignals: {
         cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
         npm_or_node: ['tests/wasm/runner/package.json'],
@@ -1892,6 +1911,12 @@ function randomColdPathManifest({
     source_url: sourceUrl,
     immutableCommit,
     immutable_commit: immutableCommit,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
+    gpuSourceFileCount,
+    gpu_source_file_count: gpuSourceFileCount,
     sourceTreeIntakeAccepted: true,
     source_tree_intake_accepted: true,
     buildMetadataDiscoveryAccepted: true,
@@ -2035,7 +2060,16 @@ assert.equal(
   randomColdRow.randomLargeProjectColdPath.directInputEvidence.proofAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
+assert.equal(randomColdRow.randomLargeProjectColdPath.sourceRelevantFileCount, 73);
+assert.equal(randomColdRow.randomLargeProjectColdPath.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.randomLargeProjectColdPath.gpuSourceFileCount, 31);
 assert.equal(randomColdRow.coldSourceTreeIntake.accepted, true);
+assert.equal(randomColdRow.coldSourceTreeIntake.sourceRelevantFileCount, 73);
+assert.equal(randomColdRow.coldSourceTreeIntake.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.coldSourceTreeIntake.gpuSourceSignalCount, 31);
+assert.equal(randomColdRow.sourceRelevantFileCount, 73);
+assert.equal(randomColdRow.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.gpuSourceFileCount, 31);
 assert.equal(randomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, true);
 assert.equal(
   randomColdRow.coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence,

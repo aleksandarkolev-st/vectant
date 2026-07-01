@@ -811,6 +811,46 @@ function classifySourceListing(files) {
     '.ll',
     '.mlir',
   ]);
+  const sourceRelevantExtensions = new Set([
+    ...gpuExtensions,
+    '.c',
+    '.cc',
+    '.cpp',
+    '.cxx',
+    '.h',
+    '.hh',
+    '.hpp',
+    '.hxx',
+    '.ipp',
+    '.inl',
+    '.rs',
+    '.zig',
+    '.go',
+    '.swift',
+    '.m',
+    '.mm',
+    '.java',
+    '.kt',
+    '.kts',
+    '.scala',
+    '.cs',
+    '.ts',
+    '.tsx',
+    '.js',
+    '.jsx',
+    '.mjs',
+    '.cjs',
+    '.py',
+    '.rb',
+    '.lua',
+    '.nim',
+    '.d',
+    '.f',
+    '.for',
+    '.f90',
+    '.f95',
+    '.jl',
+  ]);
   const backendSignals = new Map();
   const addBackend = (backend, pathName, reason) => {
     if (!backendSignals.has(backend)) backendSignals.set(backend, []);
@@ -819,17 +859,33 @@ function classifySourceListing(files) {
   };
   const buildSignals = [];
   const gpuSourceSignals = [];
+  const sourceRelevantFiles = [];
+  let buildSignalCount = 0;
+  let gpuSourceSignalCount = 0;
+  let sourceRelevantFileCount = 0;
+  let sourceOrBuildRelevantFileCount = 0;
   for (const file of files) {
     const pathName = String(file.path ?? '');
     const lower = pathName.toLowerCase();
     const basename = lower.split('/').pop() ?? lower;
     const ext = path.extname(lower);
-    if (buildFileBasenames.has(basename) || buildFileExtensions.has(ext)) {
+    const isBuildSignal = buildFileBasenames.has(basename) || buildFileExtensions.has(ext);
+    const isGpuSourceSignal = gpuExtensions.has(ext);
+    const isSourceRelevant = sourceRelevantExtensions.has(ext);
+    const isSourceOrBuildRelevant = isSourceRelevant || isBuildSignal;
+    if (isBuildSignal) {
+      buildSignalCount += 1;
       if (buildSignals.length < 80) buildSignals.push(pathName);
     }
-    if (gpuExtensions.has(ext)) {
+    if (isGpuSourceSignal) {
+      gpuSourceSignalCount += 1;
       if (gpuSourceSignals.length < 80) gpuSourceSignals.push(pathName);
     }
+    if (isSourceRelevant) {
+      sourceRelevantFileCount += 1;
+      if (sourceRelevantFiles.length < 80) sourceRelevantFiles.push(pathName);
+    }
+    if (isSourceOrBuildRelevant) sourceOrBuildRelevantFileCount += 1;
     if (ext === '.hip' || lower.includes('/hip/') || lower.includes('rocm')) addBackend('hip_rocm', pathName, 'path_or_extension');
     if (ext === '.cu' || ext === '.cuh' || lower.includes('cuda')) addBackend('cuda', pathName, 'path_or_extension');
     if (ext === '.cl' || ext === '.clh' || lower.includes('opencl')) addBackend('opencl', pathName, 'path_or_extension');
@@ -845,12 +901,18 @@ function classifySourceListing(files) {
   return {
     buildSignals,
     build_signals: buildSignals,
-    buildSignalCount: buildSignals.length,
-    build_signal_count: buildSignals.length,
+    buildSignalCount,
+    build_signal_count: buildSignalCount,
     gpuSourceSignals,
     gpu_source_signals: gpuSourceSignals,
-    gpuSourceSignalCount: gpuSourceSignals.length,
-    gpu_source_signal_count: gpuSourceSignals.length,
+    gpuSourceSignalCount,
+    gpu_source_signal_count: gpuSourceSignalCount,
+    sourceRelevantFiles,
+    source_relevant_files: sourceRelevantFiles,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
     backendCandidates,
     backend_candidates: backendCandidates,
     backendSignals: Object.fromEntries(backendSignals),
@@ -1251,6 +1313,19 @@ function discoverBuildMetadata({ candidate, files, classification, contentEviden
   const blockingGaps = [];
   if (detectedFamilies.length === 0) blockingGaps.push('build_metadata_not_detected');
   const sourceFilesWithKnownBytes = files.filter((file) => Number.isFinite(file.byteLength)).length;
+  const buildSignalCount = Number.isFinite(Number(classification?.buildSignalCount))
+    ? Number(classification.buildSignalCount)
+    : buildSignals.length;
+  const gpuSourceSignalCount = Number.isFinite(Number(classification?.gpuSourceSignalCount))
+    ? Number(classification.gpuSourceSignalCount)
+    : 0;
+  const sourceRelevantFileCount = Number.isFinite(Number(classification?.sourceRelevantFileCount))
+    ? Number(classification.sourceRelevantFileCount)
+    : 0;
+  const sourceOrBuildRelevantFileCount =
+    Number.isFinite(Number(classification?.sourceOrBuildRelevantFileCount))
+      ? Number(classification.sourceOrBuildRelevantFileCount)
+      : sourceRelevantFileCount;
   const discovery = {
     schemaVersion: BUILD_METADATA_DISCOVERY_SCHEMA,
     schema_version: BUILD_METADATA_DISCOVERY_SCHEMA,
@@ -1276,8 +1351,14 @@ function discoverBuildMetadata({ candidate, files, classification, contentEviden
     build_system_signals: Object.fromEntries([...families.entries()].map(([family, paths]) => [family, paths])),
     rootBuildFiles,
     root_build_files: rootBuildFiles,
-    buildSignalCount: buildSignals.length,
-    build_signal_count: buildSignals.length,
+    buildSignalCount,
+    build_signal_count: buildSignalCount,
+    gpuSourceSignalCount,
+    gpu_source_signal_count: gpuSourceSignalCount,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
     sourceFileCount: files.length,
     source_file_count: files.length,
     sourceFilesWithKnownBytes,
@@ -2623,6 +2704,26 @@ async function runSelectedCandidate(
       sourceIntakeEvidence?.runtimeBoundaryExpectationAccepted === true;
     const runtimeBoundaryEventManifestTemplateAccepted =
       sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplateAccepted === true;
+    const evidenceCount = (...values) => {
+      for (const value of values) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) return numeric;
+      }
+      return 0;
+    };
+    const sourceRelevantFileCount = evidenceCount(
+      sourceIntakeEvidence?.sourceRelevantFileCount,
+      sourceIntakeEvidence?.source_relevant_file_count,
+    );
+    const sourceOrBuildRelevantFileCount = evidenceCount(
+      sourceIntakeEvidence?.sourceOrBuildRelevantFileCount,
+      sourceIntakeEvidence?.source_or_build_relevant_file_count,
+      sourceRelevantFileCount,
+    );
+    const gpuSourceFileCount = evidenceCount(
+      sourceIntakeEvidence?.gpuSourceSignalCount,
+      sourceIntakeEvidence?.gpu_source_signal_count,
+    );
     const buildMetadataGap = buildMetadataContentAccepted
       ? 'semantic_build_metadata_execution_missing'
       : (buildMetadataDiscoveryAccepted
@@ -2659,6 +2760,12 @@ async function runSelectedCandidate(
       local_repo_path: candidate.localRepoPath,
       immutableCommit: candidate.immutableCommit,
       immutable_commit: candidate.immutableCommit,
+      sourceRelevantFileCount,
+      source_relevant_file_count: sourceRelevantFileCount,
+      sourceOrBuildRelevantFileCount,
+      source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
+      gpuSourceFileCount,
+      gpu_source_file_count: gpuSourceFileCount,
       sourceTreeIntakeAccepted,
       source_tree_intake_accepted: sourceTreeIntakeAccepted,
       buildMetadataDiscoveryAccepted,
@@ -3159,6 +3266,14 @@ async function selfCheck() {
     '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tsrc/vulkan/shader.comp',
   ].join('\n'));
   const listingClassification = classifySourceListing(parsedListing);
+  const wideSourceClassification = classifySourceListing(parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    ...Array.from({ length: 120 }, (_, index) => {
+      const object = index.toString(16).slice(-1).repeat(40);
+      return `100644 blob ${object} ${index + 1}\tsrc/module_${index}.cpp`;
+    }),
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
+  ].join('\n')));
   const buildDiscovery = discoverBuildMetadata({
     candidate: candidates[0],
     files: parsedListing,
@@ -3217,12 +3332,23 @@ async function selfCheck() {
     || parsedNoSizeListing[0]?.byteLength !== null
     || parsedNoSizeListing[0]?.path !== 'package.json'
     || listingClassification.buildSignalCount !== 3
+    || listingClassification.sourceRelevantFileCount !== 2
+    || listingClassification.sourceOrBuildRelevantFileCount !== 5
     || !listingClassification.backendCandidates.includes('hip_rocm')
     || !listingClassification.backendCandidates.includes('vulkan')
+    || wideSourceClassification.buildSignalCount !== 1
+    || wideSourceClassification.gpuSourceSignalCount !== 1
+    || wideSourceClassification.sourceRelevantFileCount !== 121
+    || wideSourceClassification.sourceOrBuildRelevantFileCount !== 122
+    || wideSourceClassification.sourceRelevantFiles.length !== 80
     || buildDiscovery.acceptedAsBuildMetadataDiscovery !== true
     || !buildDiscovery.detectedBuildSystems.includes('cmake')
     || !buildDiscovery.detectedBuildSystems.includes('cargo')
     || !buildDiscovery.detectedBuildSystems.includes('gn')
+    || buildDiscovery.buildSignalCount !== 3
+    || buildDiscovery.gpuSourceSignalCount !== 2
+    || buildDiscovery.sourceRelevantFileCount !== 2
+    || buildDiscovery.sourceOrBuildRelevantFileCount !== 5
     || buildDiscovery.buildMetadataContentAccepted !== false
     || runtimeExpectation.acceptedAsRuntimeBoundaryExpectation !== true
     || runtimeExpectation.gpuHmrSuccess !== false
@@ -3421,9 +3547,18 @@ async function selfCheck() {
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
     || localResult.buildMetadataContentAccepted !== true
+    || localResult.sourceRelevantFileCount !== 1
+    || localResult.sourceOrBuildRelevantFileCount !== 2
+    || localResult.gpuSourceFileCount !== 1
     || localResult.runtimeBoundaryExpectationAccepted !== true
     || localResult.runtimeBoundaryEventManifestTemplateAccepted !== true
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
+    || localResult.sourceIntakeEvidence?.sourceRelevantFileCount !== 1
+    || localResult.sourceIntakeEvidence?.sourceOrBuildRelevantFileCount !== 2
+    || localResult.sourceIntakeEvidence?.gpuSourceSignalCount !== 1
+    || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.sourceRelevantFileCount !== 1
+    || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.sourceOrBuildRelevantFileCount !== 2
+    || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.gpuSourceSignalCount !== 1
     || !localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.detectedBuildSystems?.includes('cmake')
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.requiredBoundaryStages?.includes('same_process_loader')
     || localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.gpuHmrSuccess !== false
