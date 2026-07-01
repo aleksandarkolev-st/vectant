@@ -1764,6 +1764,15 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'inbox-1' },
       data: expect.objectContaining({ status: 'acknowledged' }),
     }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: 'project-1',
+        eventType: 'transponder_update',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: expect.stringContaining('inbox_acknowledged'),
+      }),
+    }));
   });
 
   it('summarizes documents and inbox payloads in project-wide snapshots', async () => {

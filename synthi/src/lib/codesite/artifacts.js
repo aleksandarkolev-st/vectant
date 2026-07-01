@@ -5,6 +5,8 @@ import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
+const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
+const artifactWriteQueues = new Map();
 
 export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_file_flight_plan',
@@ -422,18 +424,65 @@ export async function writeArtifactProjection(project, controlState, artifactRoo
     };
   }
   const root = path.resolve(artifactRoot);
-  const files = buildArtifactProjection(project, controlState);
-  const written = [];
-  for (const file of files) {
-    const target = path.resolve(root, file.relativePath);
-    if (!isPathInside(root, target)) {
-      throw new Error('codesite_artifact_path_escape');
+  return enqueueArtifactWrite(root, async () => {
+    const files = buildArtifactProjection(project, controlState);
+    const currentPaths = new Set(files.map((file) => file.relativePath));
+    const written = [];
+    const manifest = files.filter((file) => file.relativePath === 'manifest.json');
+    const bodyFiles = files.filter((file) => file.relativePath !== 'manifest.json');
+    for (const file of bodyFiles) {
+      await writeArtifactFile(root, file);
+      written.push(file.relativePath);
     }
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, file.content, 'utf8');
-    written.push(file.relativePath);
+    await removeStaleProjectionFiles(root, currentPaths);
+    for (const file of manifest) {
+      await writeArtifactFile(root, file);
+      written.push(file.relativePath);
+    }
+    await writeArtifactFile(root, jsonFile(ARTIFACT_FILE_INDEX, [...currentPaths].sort()));
+    return { written: true, root, files: written };
+  });
+}
+
+function enqueueArtifactWrite(root, task) {
+  const previous = artifactWriteQueues.get(root) || Promise.resolve();
+  let queued;
+  queued = previous.catch(() => null).then(task).finally(() => {
+    if (artifactWriteQueues.get(root) === queued) artifactWriteQueues.delete(root);
+  });
+  artifactWriteQueues.set(root, queued);
+  return queued;
+}
+
+async function writeArtifactFile(root, file) {
+  const target = path.resolve(root, file.relativePath);
+  if (!isPathInside(root, target)) {
+    throw new Error('codesite_artifact_path_escape');
   }
-  return { written: true, root, files: written };
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tmp, file.content, 'utf8');
+  await fs.rename(tmp, target);
+}
+
+async function removeStaleProjectionFiles(root, currentPaths) {
+  const previous = await readProjectionFileIndex(root);
+  for (const rel of previous) {
+    if (currentPaths.has(rel)) continue;
+    const target = path.resolve(root, rel);
+    if (!isPathInside(root, target)) continue;
+    await fs.rm(target, { force: true });
+  }
+}
+
+async function readProjectionFileIndex(root) {
+  try {
+    const indexPath = path.join(root, ARTIFACT_FILE_INDEX);
+    const parsed = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+    return asArray(parsed).map(String).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
 }
 
 function isPathInside(root, target) {

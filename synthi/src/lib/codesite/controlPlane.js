@@ -2461,6 +2461,7 @@ export async function createDocument(workspaceSlug, projectId, body = {}, actor 
     },
   });
   const inboxItems = await routeDocumentToInbox(project.id, document, event, body, routing.targetSessions);
+  await syncArtifactsForProject(project.id, { reason: 'document_inbox_routed', eventId: event.id });
   return { document: documentProjection(document), inboxItems: inboxItems.map(inboxProjection) };
 }
 
@@ -2807,6 +2808,19 @@ export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventI
     where: { id: item.id },
     data: { status: 'acknowledged', acknowledgedAt: new Date() },
   });
+  await recordEvent(session.projectId, {
+    eventType: 'transponder_update',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      type: 'inbox_acknowledged',
+      inboxItemId: item.id,
+      eventId: item.eventId,
+      documentId: item.documentId,
+      status: 'acknowledged',
+    },
+  });
   return inboxProjection(updated);
 }
 
@@ -2966,6 +2980,7 @@ async function finalizeIncidentReplay(project, incident, body = {}, context = {}
       replayDigest: digest(replay),
     },
   });
+  await syncArtifactsForProject(project.id, { reason: 'incident_replay_finalized' });
   return incidentProjection(updated);
 }
 
@@ -3978,9 +3993,13 @@ export async function getSchemas() {
 }
 
 export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
-  const project = await getProject(workspaceSlug, projectId);
-  if (!project) throw notFound('project_not_found');
-  const controlState = await getControlState(workspaceSlug, projectId);
+  const projectRow = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!projectRow) throw notFound('project_not_found');
+  const project = artifactProjectProjection(projectRow);
+  const controlState = buildControlState(workspaceSlug, project);
   const files = buildArtifactProjection(project, controlState);
   const includeContent = Boolean(options.includeContent || options.include_content);
   const maxContentBytes = Number.isFinite(options.maxContentBytes) ? Math.max(0, options.maxContentBytes) : 4096;
@@ -3995,22 +4014,26 @@ export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
 }
 
 export async function exportArtifacts(workspaceSlug, projectId) {
-  const project = await getProject(workspaceSlug, projectId);
-  if (!project) throw notFound('project_not_found');
-  const controlState = await getControlState(workspaceSlug, projectId);
-  const result = await writeArtifactProjection(project, controlState);
-  await recordEvent(projectId, {
+  const projectRow = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!projectRow) throw notFound('project_not_found');
+  const project = artifactProjectProjection(projectRow);
+  const controlState = buildControlState(workspaceSlug, project);
+  const files = buildArtifactProjection(project, controlState).map((file) => file.relativePath);
+  const event = await recordEvent(projectId, {
     eventType: 'black_box_closed',
     actorType: 'artifact_projection',
     actorId: projectId,
     details: {
-      written: result.written,
-      root: result.root || null,
-      reason: result.reason || null,
-      files: result.files,
+      written: true,
+      root: null,
+      reason: 'explicit_export',
+      files,
     },
   });
-  return result;
+  return syncArtifactsForProject(projectId, { reason: 'artifact_export_closed', eventId: event.id, force: true });
 }
 
 export async function collisionPredict(workspaceSlug, projectId) {
@@ -4781,7 +4804,7 @@ async function recordEvent(projectId, input) {
           logicalTime: logicalTime + 1,
         },
       });
-      await syncArtifactsAfterEvent(projectId, event);
+      await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
       return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;
@@ -4790,25 +4813,27 @@ async function recordEvent(projectId, input) {
   throw new Error('codesite_event_logical_time_conflict');
 }
 
-async function syncArtifactsAfterEvent(projectId, event) {
-  if (!autoArtifactSyncEnabled()) return null;
+async function syncArtifactsForProject(projectId, context = {}) {
+  if (!context.force && !autoArtifactSyncEnabled()) return null;
   try {
     const project = await prisma.codeSiteProject.findUnique({
       where: { id: projectId },
       include: PROJECT_INCLUDE,
     });
     if (!project) return null;
-    const projection = projectProjection(project);
+    const projection = artifactProjectProjection(project);
     const controlState = buildControlState(project.workspaceSlug, projection);
     const result = await writeArtifactProjection(projection, controlState);
     return {
-      eventId: event?.id || null,
+      eventId: context.eventId || null,
+      reason: context.reason || null,
       ...result,
     };
   } catch (error) {
     console.warn('[CodeSite] artifact auto-sync failed', {
       projectId,
-      eventId: event?.id || null,
+      eventId: context.eventId || null,
+      reason: context.reason || null,
       error: error?.message || String(error),
     });
     return null;
@@ -5021,6 +5046,13 @@ function projectProjection(project) {
     counterfactualRuns: asArray(project.counterfactualRuns).map(counterfactualProjection),
     policyDeltas: asArray(project.policyDeltas).map(policyDeltaProjection),
     inboxItems: asArray(project.inboxItems).map(inboxSummaryProjection),
+  };
+}
+
+function artifactProjectProjection(project) {
+  return {
+    ...projectProjection(project),
+    inboxItems: asArray(project.inboxItems).map(inboxProjection),
   };
 }
 

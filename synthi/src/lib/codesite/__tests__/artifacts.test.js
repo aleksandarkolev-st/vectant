@@ -58,7 +58,15 @@ function projectFixture() {
     documents: [],
     counterfactualRuns: [],
     policyDeltas: [],
-    inboxItems: [],
+    inboxItems: [{
+      id: 'inbox-1',
+      agentSessionId: 'ags-1',
+      eventId: 'evt-rfi',
+      kind: 'rfi',
+      status: 'pending',
+      requiresResponse: true,
+      redactedPayload: { body: { question: 'Confirm payload', apiToken: '[redacted]' } },
+    }],
   };
 }
 
@@ -103,6 +111,8 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transponder.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/landing.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
+    expect(paths).toContain('projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json').content).redactedPayload.body.apiToken).toBe('[redacted]');
     expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
@@ -152,6 +162,24 @@ describe('CodeSite artifact projection', () => {
     expect(result.written).toBe(true);
     expect(result.files).toContain('manifest.json');
     await expect(fs.readFile(path.join(root, '.synthi', 'codesite', 'manifest.json'), 'utf8')).resolves.toContain('synthi_codesite_get_radar');
+  });
+
+  it('atomically refreshes the repo-local artifact tree and removes stale projected files', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-refresh-'));
+    const artifactRoot = path.join(root, '.synthi', 'codesite');
+    await writeArtifactProjection(projectFixture(), null, artifactRoot);
+    const proofPath = path.join(artifactRoot, 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
+    await expect(fs.readFile(proofPath, 'utf8')).resolves.toContain('proof-1');
+
+    const withoutProof = {
+      ...projectFixture(),
+      proofBundles: [],
+      lineProvenance: [],
+    };
+    await writeArtifactProjection(withoutProof, null, artifactRoot);
+
+    await expect(fs.readFile(proofPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.readFile(path.join(artifactRoot, '.codesite-projection-files.json'), 'utf8')).resolves.toContain('manifest.json');
   });
 });
 
