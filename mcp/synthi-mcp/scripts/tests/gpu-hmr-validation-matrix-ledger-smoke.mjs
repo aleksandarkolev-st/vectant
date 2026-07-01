@@ -10831,6 +10831,42 @@ assert.ok(
   forgedSourceIntakeAuthorityColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const profileIdOnlyRandomColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'profile-id-only-random-cold',
+    sourceUrl: 'https://example.invalid/profile-id-only/random-cold.git',
+    immutableCommit: '2424242424242424242424242424242424242424',
+  });
+  row.profileId = 'unprofiled_arbitrary_project_cold_intake';
+  row.profile_id = 'unprofiled_arbitrary_project_cold_intake';
+  delete row.profileMode;
+  delete row.profile_mode;
+  delete row.randomLargeProjectColdPath.profileMode;
+  delete row.randomLargeProjectColdPath.profile_mode;
+  delete row.random_large_project_cold_path.profileMode;
+  delete row.random_large_project_cold_path.profile_mode;
+  return row;
+})());
+const profileIdOnlyRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    profileIdOnlyRandomColdRow,
+  ],
+});
+assert.equal(profileIdOnlyRandomColdQuery.accepted, true);
+assert.equal(
+  profileIdOnlyRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  profileIdOnlyRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  profileIdOnlyRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({
   targetId: 'stale-unsafe-accepted-source-first-visual',
   backend: 'hip',

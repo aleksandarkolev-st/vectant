@@ -23569,8 +23569,6 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       facet.profile_mode,
       row.profileMode,
       row.profile_mode,
-      row.profileId,
-      row.profile_id,
     );
     const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
     const repoPath = firstText(
