@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Broad Proof Oracle-Kind Boundary
+
+Broad-readiness compute coverage now requires an accepted `outputOracleFacet` with `kind=compute_oracle` or an explicit compute-card proof flag. An accepted visual output-oracle facet no longer counts as compute evidence. This closes a type-confusion path where visual-only full-runtime rows could satisfy both visual and compute oracle coverage in the aggregate broad proof.
+
+Smoke coverage now builds a visual-only broad-readiness matrix with HIP, WebGPU, OpenCL, and Vulkan full-runtime rows, adversarial refusals, direct large random cold paths, and source-first visual evidence. The matrix query remains internally valid, but broad readiness stays closed with `computeOracleTargetCount=0` and `broad_acceptance_requires_compute_oracle_rows`.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including visual-only broad-readiness compute-oracle refusal, latest observed proof gpu-validation-matrix-ledger:sha256:82a3dfd67b74cae350f280fe49d85d6e645ebc3c822471cd823b2a236fbff071, rows=66
+```
+
 ## 2026-07-01 Random Cold-Path Coverage Boundary
 
 The `random_large_arbitrary_project_cold_path` plan coverage entry no longer reports `refused` for every random cold-path refusal. It now reports `refused` only when at least one row also satisfies the direct large arbitrary-project cold selector: direct CLI/env source input, unprofiled arbitrary cold intake, immutable source identity, source-derived backend candidates, content-backed build metadata, validated support-only runtime-boundary template, no success/runtime/dispatch authority claims, and the large-source threshold. Sub-threshold direct rows report `candidate_only`; configured-pool, profile-backed, or otherwise non-qualifying refusal rows report `diagnostic_only`; preflight-only rows remain `preflight_only`.

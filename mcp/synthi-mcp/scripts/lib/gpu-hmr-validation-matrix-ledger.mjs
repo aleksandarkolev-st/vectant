@@ -21384,8 +21384,12 @@ function fullRuntimeGeneralityBreakdown(rows, broadProof = {}) {
 }
 
 function rowHasAcceptedComputeEvidence(row) {
-  return row.outputOracleFacet?.accepted === true
-    || row.output_oracle_facet?.accepted === true
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  return (
+    firstBool(outputOracle.accepted) === true
+    && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
+      === 'compute_oracle'
+  )
     || row.computeCardOnlyProofAccepted === true
     || row.compute_card_only_proof_accepted === true;
 }

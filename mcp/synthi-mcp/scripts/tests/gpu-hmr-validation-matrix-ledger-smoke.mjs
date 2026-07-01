@@ -8469,6 +8469,36 @@ const broadReadinessRows = [
     refusalMatrixRow(`broad-readiness-adversarial-refusal-${index + 1}`)
   ),
 ];
+const broadReadinessVisualOnlyRows = [
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-only-hip',
+    backend: 'hip',
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    oracle: 'visual',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-only-webgpu',
+    backend: 'webgpu',
+    acceptanceScope: 'webgpu_declared_compute_readback',
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    oracle: 'visual',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-only-opencl',
+    backend: 'opencl',
+    acceptanceScope: 'opencl_declared_compute_readback',
+    oracle: 'visual',
+  }),
+  acceptedBroadReadinessCandidate({
+    targetId: 'broad-readiness-visual-only-vulkan',
+    backend: 'vulkan',
+    acceptanceScope: 'vulkan_declared_pipeline_visual',
+    oracle: 'visual',
+  }),
+  ...Array.from({ length: 8 }, (_, index) =>
+    refusalMatrixRow(`broad-readiness-visual-only-refusal-${index + 1}`)
+  ),
+];
 const broadReadinessRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `random-cold-readiness-user-project-${index + 1}`,
@@ -8949,6 +8979,27 @@ const broadReadinessRowsWithRandomCold = [
   ...broadReadinessRows,
   ...broadReadinessRandomColdRows,
 ];
+const broadReadinessVisualOnlyWithRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessVisualOnlyRows,
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessVisualOnlyWithRandomColdQuery.accepted, true);
+assert.equal(
+  broadReadinessVisualOnlyWithRandomColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessVisualOnlyWithRandomColdQuery.summary.broadLibraryAgnosticReadiness
+    .computeOracleTargetCount,
+  0,
+);
+assert.ok(
+  broadReadinessVisualOnlyWithRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_compute_oracle_rows'),
+);
 const broadReadinessQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRowsWithRandomCold,
