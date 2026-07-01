@@ -21390,7 +21390,11 @@ function rowHasAcceptedComputeEvidence(row) {
     || row.compute_card_only_proof_accepted === true;
 }
 
-function sourceFirstVisualRowsForBroadReadiness(rows) {
+function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
+  const {
+    requireOutputOracleFacet = true,
+    requireUserOwnedSource = true,
+  } = options;
   return rows.filter((row) => {
     if (!acceptedFullRuntimeRow(row)) return false;
     const sourceFirst = compactObject(row.sourceFirstIngestion ?? row.source_first_ingestion);
@@ -21408,7 +21412,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
-      && userOwnedSourceFirst
+      && (requireUserOwnedSource ? userOwnedSourceFirst : true)
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false
@@ -21438,9 +21442,11 @@ function sourceFirstVisualRowsForBroadReadiness(rows) {
       && firstText(runtimeAuthority.authority) === 'strict_runtime_proof_artifact'
       && firstBool(runtimeAuthority.accepted) === true
       && firstBool(runtimeAuthority.visualOracleAccepted, runtimeAuthority.visual_oracle_accepted) === true
-      && firstBool(outputOracle.accepted) === true
-      && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
-        === 'visual_oracle';
+      && (!requireOutputOracleFacet || (
+        firstBool(outputOracle.accepted) === true
+        && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
+          === 'visual_oracle'
+      ));
   });
 }
 
@@ -23115,27 +23121,11 @@ function planCoverage(rows) {
     rowHasAcceptedVisualEvidence(row)
     && rowHasAcceptedExternalProjectContract(row, { profileClass: 'external_engine_visual_profile' })
   );
-  const sourceFirstFullRuntimeRows = acceptedRows(rows, (row) =>
-    row.sourceFirstIngestion?.accepted === true
-    && row.sourceFirstIngestion?.proofAuthority === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
-    && row.sourceFirstIngestion?.acceptedForGpuHmr === false
-    && row.sourceFirstIngestion?.gpuHmrSuccess === false
-    && row.sourceFirstIngestion?.canSatisfyRuntimeProof === false
-    && row.asyncVisualCasBundle?.accepted === true
-    && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
-    && row.asyncVisualCasBundle?.gpuHmrSuccess === false
-    && row.asyncVisualCasBundle?.proofAuthority === ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY
-    && row.fullRuntimeEvidenceAuthority?.schemaVersion === FULL_RUNTIME_EVIDENCE_AUTHORITY_SCHEMA_VERSION
-    && row.fullRuntimeEvidenceAuthority?.proofAuthority
-      === FULL_RUNTIME_EVIDENCE_AUTHORITY_PROOF_AUTHORITY
-    && row.fullRuntimeEvidenceAuthority?.authority === 'strict_runtime_proof_artifact'
-    && row.fullRuntimeEvidenceAuthority?.accepted === true
-    && (
-      row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
-      || row.fullRuntimeEvidenceAuthority?.computeOracleAccepted === true
-      || row.outputOracleFacet?.accepted === true
-    )
-  );
+  const sourceFirstFullRuntimeRows =
+    sourceFirstVisualRowsForBroadReadiness(rows, {
+      requireOutputOracleFacet: false,
+      requireUserOwnedSource: false,
+    });
   const fissionRows = deterministicFissionRows(rows, () => true);
   const randomColdRefusalRows = refusalRows(rows, (row) =>
     row.proofMode === 'random_large_project_cold_path'

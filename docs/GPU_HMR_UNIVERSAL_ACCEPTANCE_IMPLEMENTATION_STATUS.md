@@ -4,6 +4,20 @@ Status date: 2026-07-01
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
+## 2026-07-01 Source-First Visual Coverage Boundary
+
+The `source_first_uncompiled_project_validation` plan coverage entry now uses the same source-first visual selector family as broad readiness, with only the broad-only source-authority and explicit output-oracle-facet requirements relaxed. It still requires typed source-first ingestion, support-only async visual/CAS evidence, accepted visual artifacts, schema-bound matrix-recomputed full-runtime authority, `authority=strict_runtime_proof_artifact`, and strict runtime visual authority. The old coverage path could count a row through a weaker compute/output fallback; that shortcut is removed.
+
+Smoke coverage now proves that forged source-first schemas and forged async visual runtime/dispatch authority fail both broad readiness and the source-first plan coverage entry. Missing explicit `outputOracleFacet` still fails broad readiness, while generic source-first coverage can remain accepted when strict runtime visual authority and visual artifacts are present; this keeps the aggregate arbitrary-user proof stricter than ordinary source-first validation inventory.
+
+Verification for this patch:
+
+```text
+node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
+node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed, including source-first plan coverage refusal for forged source-first schema and forged async visual authority, latest observed proof gpu-validation-matrix-ledger:sha256:07cedbe5bf03bd91a747a0b47388012966dc72d9be207c85049a60b032dbf954, rows=66
+```
+
 ## 2026-07-01 Source-First Visual Full-Runtime Authority Boundary
 
 The recomputed `fullRuntimeEvidenceAuthority` facet now carries the explicit schema `synthi.gpu_hmr.full_runtime_evidence_authority.v1` and proof authority `matrix_recomputed_full_runtime_evidence_authority_not_row_declared`. Source-first visual broad-readiness selection and source-first coverage require that schema, proof authority, and `authority=strict_runtime_proof_artifact` before a visual row can count toward aggregate broad readiness.

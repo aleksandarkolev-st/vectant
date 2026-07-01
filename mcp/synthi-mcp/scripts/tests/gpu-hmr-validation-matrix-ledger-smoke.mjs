@@ -8789,6 +8789,13 @@ assert.ok(
   broadReadinessWithForgedSourceFirstSchemaQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
+const forgedSourceFirstSchemaCoverage = new Map(
+  broadReadinessWithForgedSourceFirstSchemaQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  forgedSourceFirstSchemaCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
 const broadReadinessWithForgedAsyncVisualAuthorityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -8814,6 +8821,15 @@ assert.equal(
 assert.ok(
   broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const forgedAsyncVisualAuthorityCoverage = new Map(
+  broadReadinessWithForgedAsyncVisualAuthorityQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  forgedAsyncVisualAuthorityCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
 );
 const broadReadinessWithoutVisualOutputOracleFacetQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -11327,6 +11343,8 @@ assert.ok(sourceFirstCoverage?.rows.length >= 1);
 assert.ok(sourceFirstCoverage.rows.every((row) =>
   row.matrixOutcome === 'full_runtime_gpu_hmr'
   && row.sourceFirstIngestion?.accepted === true
+  && row.sourceFirstIngestion?.schemaVersion
+    === 'synthi.gpu.hmr.agent_split_source_first_ingestion.v1'
   && row.sourceFirstIngestion?.acceptedForGpuHmr === false
   && row.asyncVisualCasBundle?.accepted === true
   && row.asyncVisualCasBundle?.acceptedForGpuHmr === false
@@ -11344,10 +11362,7 @@ assert.ok(sourceFirstCoverage.rows.every((row) =>
     === 'matrix_recomputed_full_runtime_evidence_authority_not_row_declared'
   && row.fullRuntimeEvidenceAuthority?.authority === 'strict_runtime_proof_artifact'
   && row.fullRuntimeEvidenceAuthority?.accepted === true
-  && (
-    row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
-    || row.fullRuntimeEvidenceAuthority?.computeOracleAccepted === true
-  )
+  && row.fullRuntimeEvidenceAuthority?.visualOracleAccepted === true
 ));
 assert.ok(!sourceFirstCoverage.rows.some((row) =>
   row.targetId === 'flow-smuggled-precompiled'
