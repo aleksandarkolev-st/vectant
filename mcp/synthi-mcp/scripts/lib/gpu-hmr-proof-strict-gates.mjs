@@ -45,6 +45,7 @@ const DEFAULT_VISUAL_ARTIFACT_ROOTS = [
   path.resolve(MODULE_DIR, '../../..'),
   path.resolve(MODULE_DIR, '../../../..'),
 ];
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 function sortedCodes(values) {
   return compactStrings((Array.isArray(values) ? values : [])
@@ -214,6 +215,43 @@ function sha256Bytes(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
 }
 
+function pngHeaderEvidence(buffer) {
+  const failedGates = [];
+  let width = null;
+  let height = null;
+  if (!Buffer.isBuffer(buffer) || buffer.length < 33) {
+    failedGates.push('png_header_too_short');
+  } else {
+    if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      failedGates.push('png_signature_mismatch');
+    }
+    const ihdrLength = buffer.readUInt32BE(8);
+    const chunkType = buffer.subarray(12, 16).toString('ascii');
+    width = buffer.readUInt32BE(16);
+    height = buffer.readUInt32BE(20);
+    const bitDepth = buffer[24];
+    const colorType = buffer[25];
+    const compression = buffer[26];
+    const filter = buffer[27];
+    const interlace = buffer[28];
+    if (ihdrLength !== 13) failedGates.push('png_ihdr_length_invalid');
+    if (chunkType !== 'IHDR') failedGates.push('png_ihdr_missing');
+    if (!Number.isFinite(width) || width <= 0) failedGates.push('png_width_invalid');
+    if (!Number.isFinite(height) || height <= 0) failedGates.push('png_height_invalid');
+    if (![1, 2, 4, 8, 16].includes(bitDepth)) failedGates.push('png_bit_depth_invalid');
+    if (![0, 2, 3, 4, 6].includes(colorType)) failedGates.push('png_color_type_invalid');
+    if (compression !== 0) failedGates.push('png_compression_method_invalid');
+    if (filter !== 0) failedGates.push('png_filter_method_invalid');
+    if (interlace !== 0 && interlace !== 1) failedGates.push('png_interlace_method_invalid');
+  }
+  return {
+    accepted: failedGates.length === 0,
+    width,
+    height,
+    failedGates,
+  };
+}
+
 function fileUrlToPathMaybe(value) {
   const text = String(value ?? '').trim();
   if (!text) return null;
@@ -281,9 +319,11 @@ function visualArtifactByteHash(entry, roots) {
   const resolvedPath = resolveReadableVisualArtifactPath(entry?.path, roots);
   if (!resolvedPath) return null;
   try {
+    const bytes = readFileSync(resolvedPath);
     return {
       resolvedPath,
-      hash: sha256Bytes(readFileSync(resolvedPath)),
+      hash: sha256Bytes(bytes),
+      pngHeader: pngHeaderEvidence(bytes),
     };
   } catch {
     return null;
@@ -419,9 +459,14 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
     const matched = readable.some((validation) =>
       validation.expectedHash === validation.actual.hash
     );
+    const matchedPng = readable.some((validation) =>
+      validation.expectedHash === validation.actual.hash
+      && validation.actual.pngHeader?.accepted === true
+    );
     return compactStrings([
       readable.length > 0 ? null : `visual_oracle_${role}_image_bytes_unreadable`,
       matched ? null : `visual_oracle_${role}_image_hash_mismatch`,
+      matched && !matchedPng ? `visual_oracle_${role}_image_png_invalid` : null,
     ]);
   });
   return compactStrings([

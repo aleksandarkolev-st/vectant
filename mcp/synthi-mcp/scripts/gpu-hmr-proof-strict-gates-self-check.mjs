@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import {
   adversarialPreflightStrictGate,
   runtimeProofArtifactStrictGate,
@@ -40,9 +41,34 @@ function writeVisualArtifact(name, bytes) {
   };
 }
 
-const VISUAL_BEFORE = writeVisualArtifact('before-frame.bin', [0x89, 0x50, 0x4e, 0x47, 1]);
-const VISUAL_AFTER = writeVisualArtifact('after-frame.bin', [0x89, 0x50, 0x4e, 0x47, 2]);
-const VISUAL_DIFF = writeVisualArtifact('diff-frame.bin', [0x89, 0x50, 0x4e, 0x47, 3]);
+async function rgbaPng(width, height, pixelAt) {
+  const data = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const [r, g, b, a] = pixelAt(x, y);
+      const offset = (y * width + x) * 4;
+      data[offset] = r;
+      data[offset + 1] = g;
+      data[offset + 2] = b;
+      data[offset + 3] = a;
+    }
+  }
+  return sharp(data, { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+const VISUAL_BEFORE = writeVisualArtifact(
+  'before-frame.png',
+  await rgbaPng(2, 2, () => [12, 20, 28, 255]),
+);
+const VISUAL_AFTER = writeVisualArtifact(
+  'after-frame.png',
+  await rgbaPng(2, 2, (x, y) => [80 + x, 96 + y, 120, 255]),
+);
+const VISUAL_DIFF = writeVisualArtifact(
+  'diff-frame.png',
+  await rgbaPng(2, 2, () => [255, 255, 255, 255]),
+);
+const VISUAL_INVALID = writeVisualArtifact('invalid-frame.bin', [0x89, 0x50, 0x4e, 0x47, 1]);
 
 function modelAvailabilityFields() {
   return {
@@ -731,6 +757,34 @@ assert.match(
     deterministicVisualModeEvaluation: { accepted: true },
   })).detail,
   /visual_oracle_before_image_bytes_unreadable/,
+);
+const invalidPngLedger = buildGpuHmrProofLedger(visualLedgerRecord({
+  oracle_artifacts: {
+    visual_oracle_artifacts: byteBackedVisualOracleArtifacts({
+      before_image: VISUAL_INVALID.path,
+      beforeImage: VISUAL_INVALID.path,
+      before_image_hash: VISUAL_INVALID.hash,
+      beforeImageHash: VISUAL_INVALID.hash,
+      visual_pixel_verification: {
+        before_image_hash: VISUAL_INVALID.hash,
+        after_image_hash: VISUAL_AFTER.hash,
+        diff_image_hash: VISUAL_DIFF.hash,
+        before_image_hash_verified: true,
+        after_image_hash_verified: true,
+        diff_image_hash_verified: true,
+        metrics_verified: true,
+      },
+    }),
+  },
+}));
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-visual-runtime-proof-artifact:invalid-png-refused',
+    proofLedger: invalidPngLedger,
+    proofLedgerQuery: invalidPngLedger.query,
+    deterministicVisualModeEvaluation: { accepted: true },
+  })).detail,
+  /visual_oracle_before_image_png_invalid/,
 );
 const forgedVisualLedger = buildGpuHmrProofLedger(visualLedgerRecord({
   oracle_artifacts: {
