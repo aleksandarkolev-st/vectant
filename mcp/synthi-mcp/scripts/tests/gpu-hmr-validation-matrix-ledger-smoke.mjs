@@ -7973,6 +7973,93 @@ assert.equal(
   false,
 );
 
+const ledgerOnlyNativeAuthorityRow = withQueryRecomputedRowId((() => {
+  const row = acceptedAuthoritativeMatrixRow('strict-artifact-ledger-only-native-authority', {
+    proofMode: 'strict_runtime_ledger',
+    proofChain: 'embedded_runtime_proof_artifact_recomputed_ledger',
+    proofChainAccepted: true,
+    fullRuntimeEvidenceAuthority: null,
+    full_runtime_evidence_authority: null,
+  });
+  delete row.runtimeTrace;
+  delete row.runtime_trace;
+  delete row.runtimeResourceTrace;
+  delete row.runtime_resource_trace;
+  delete row.nativeHipApiEvidence;
+  delete row.native_hip_api_evidence;
+  delete row.nativeOpenClApiEvidence;
+  delete row.native_opencl_api_evidence;
+  delete row.nativeVulkanApiEvidence;
+  delete row.native_vulkan_api_evidence;
+  delete row.nativeWebGpuApiEvidence;
+  delete row.native_webgpu_api_evidence;
+  const artifact = { ...(row.runtimeProofArtifact ?? row.runtime_proof_artifact ?? {}) };
+  delete artifact.runtimeTrace;
+  delete artifact.runtime_trace;
+  delete artifact.runtimeResourceTrace;
+  delete artifact.runtime_resource_trace;
+  delete artifact.nativeHipApiEvidence;
+  delete artifact.native_hip_api_evidence;
+  delete artifact.nativeOpenClApiEvidence;
+  delete artifact.native_opencl_api_evidence;
+  delete artifact.nativeVulkanApiEvidence;
+  delete artifact.native_vulkan_api_evidence;
+  delete artifact.nativeWebGpuApiEvidence;
+  delete artifact.native_webgpu_api_evidence;
+  row.runtimeProofArtifact = artifact;
+  row.runtime_proof_artifact = artifact;
+  return row;
+})());
+const ledgerOnlyNativeAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [ledgerOnlyNativeAuthorityRow],
+});
+assert.equal(ledgerOnlyNativeAuthorityQuery.accepted, false);
+assert.equal(ledgerOnlyNativeAuthorityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(ledgerOnlyNativeAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'full_runtime_authority_native_runtime_trace_missing'
+));
+assert.ok(ledgerOnlyNativeAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'native_runtime_trace_cannot_be_ledger_only'
+));
+
+const observedOutputMismatchRow = withQueryRecomputedRowId((() => {
+  const row = acceptedAuthoritativeMatrixRow('strict-artifact-runtime-output-mismatch', {
+    proofMode: 'strict_runtime_ledger',
+    proofChain: 'embedded_runtime_proof_artifact_recomputed_ledger',
+    proofChainAccepted: true,
+    fullRuntimeEvidenceAuthority: null,
+    full_runtime_evidence_authority: null,
+  });
+  const trace = JSON.parse(JSON.stringify(
+    row.runtimeTrace
+    ?? row.runtime_trace
+    ?? row.runtimeProofArtifact?.runtimeTrace
+    ?? row.runtimeProofArtifact?.runtime_trace
+    ?? row.runtime_proof_artifact?.runtimeTrace
+    ?? row.runtime_proof_artifact?.runtime_trace,
+  ));
+  trace.outputEvents[0].afterDispatchId = 'dispatch:forged-observed-output';
+  trace.outputEvents[0].after_dispatch_id = 'dispatch:forged-observed-output';
+  trace.output_events[0].afterDispatchId = 'dispatch:forged-observed-output';
+  trace.output_events[0].after_dispatch_id = 'dispatch:forged-observed-output';
+  row.runtimeTrace = trace;
+  row.runtime_trace = trace;
+  row.runtimeProofArtifact.runtimeTrace = trace;
+  row.runtimeProofArtifact.runtime_trace = trace;
+  row.runtime_proof_artifact = row.runtimeProofArtifact;
+  return row;
+})());
+const observedOutputMismatchQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [observedOutputMismatchRow],
+});
+assert.equal(observedOutputMismatchQuery.accepted, false);
+assert.equal(observedOutputMismatchQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(observedOutputMismatchQuery.failedGates.some((gate) =>
+  gate.code === 'native_runtime_trace_ledger_output_mismatch'
+));
+
 const strictMissingArtifact = ledger.rows.find((row) => row.targetId === 'strict-runtime-missing-artifact');
 assert.equal(strictMissingArtifact?.proofMode, 'strict_runtime_ledger');
 assert.equal(strictMissingArtifact.matrixOutcome, 'unproven');

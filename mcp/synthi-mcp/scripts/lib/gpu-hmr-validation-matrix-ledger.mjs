@@ -11852,6 +11852,208 @@ function fullRuntimeLedgerAuthorityFailures(row) {
   return failures;
 }
 
+function eventObjectList(...values) {
+  const out = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      out.push(...compactObjectList(value));
+    } else {
+      const object = compactObject(value);
+      if (Object.keys(object).length > 0) out.push(object);
+    }
+  }
+  return out;
+}
+
+function eventObjectsFromSource(source = {}, camelPlural, snakePlural, camelSingle, snakeSingle) {
+  const object = compactObject(source);
+  return eventObjectList(
+    object[camelPlural],
+    object[snakePlural],
+    object[camelSingle],
+    object[snakeSingle],
+  );
+}
+
+function firstObservedEvent(sources, camelPlural, snakePlural, camelSingle, snakeSingle) {
+  for (const source of sources) {
+    const events = eventObjectsFromSource(source, camelPlural, snakePlural, camelSingle, snakeSingle);
+    if (events.length > 0) return events[0];
+  }
+  return {};
+}
+
+function nativeRuntimeApiEvidenceObjects(row = {}, runtimeProofArtifact = {}) {
+  const candidates = [
+    row.nativeHipApiEvidence,
+    row.native_hip_api_evidence,
+    runtimeProofArtifact.nativeHipApiEvidence,
+    runtimeProofArtifact.native_hip_api_evidence,
+    row.nativeOpenClApiEvidence,
+    row.native_opencl_api_evidence,
+    runtimeProofArtifact.nativeOpenClApiEvidence,
+    runtimeProofArtifact.native_opencl_api_evidence,
+    row.nativeVulkanApiEvidence,
+    row.native_vulkan_api_evidence,
+    runtimeProofArtifact.nativeVulkanApiEvidence,
+    runtimeProofArtifact.native_vulkan_api_evidence,
+    row.nativeWebGpuApiEvidence,
+    row.native_webgpu_api_evidence,
+    runtimeProofArtifact.nativeWebGpuApiEvidence,
+    runtimeProofArtifact.native_webgpu_api_evidence,
+    row.nativeApiEvidence,
+    row.native_api_evidence,
+    runtimeProofArtifact.nativeApiEvidence,
+    runtimeProofArtifact.native_api_evidence,
+    row.nativeRuntimeEvidence,
+    row.native_runtime_evidence,
+    runtimeProofArtifact.nativeRuntimeEvidence,
+    runtimeProofArtifact.native_runtime_evidence,
+  ];
+  return candidates
+    .map(compactObject)
+    .filter((candidate) => Object.keys(candidate).length > 0);
+}
+
+function nativeRuntimeEvidenceClaimsAuthority(evidence = {}) {
+  const object = compactObject(evidence);
+  return firstBool(object.acceptedForGpuHmr, object.accepted_for_gpu_hmr) === true
+    || firstBool(object.gpuHmrSuccess, object.gpu_hmr_success) === true
+    || firstBool(object.canSatisfyRuntimeProof, object.can_satisfy_runtime_proof) === true
+    || firstBool(object.canSatisfyDispatchProof, object.can_satisfy_dispatch_proof) === true;
+}
+
+function nativeRuntimeApiEvidenceAccepted(evidence = {}) {
+  const object = compactObject(evidence);
+  return firstBool(
+    object.accepted,
+    object.acceptedAsRuntimeEvidence,
+    object.accepted_as_runtime_evidence,
+    object.acceptedAsNativeRuntimeEvidence,
+    object.accepted_as_native_runtime_evidence,
+  ) === true
+    && !nativeRuntimeEvidenceClaimsAuthority(object);
+}
+
+function nativeRuntimeApiObservationTokens(evidence = {}) {
+  const object = compactObject(evidence);
+  const counts = compactObject(object.counts ?? object.apiCounts ?? object.api_counts);
+  const trace = [
+    ...(Array.isArray(object.apiTrace) ? object.apiTrace : []),
+    ...(Array.isArray(object.api_trace) ? object.api_trace : []),
+    ...(Array.isArray(object.events) ? object.events : []),
+    ...(Array.isArray(object.nativeEvents) ? object.nativeEvents : []),
+    ...(Array.isArray(object.native_events) ? object.native_events : []),
+  ];
+  return compactStringList([
+    ...Object.entries(counts)
+      .filter(([, value]) => Number(value) > 0)
+      .map(([key]) => key),
+    ...(Array.isArray(object.required) ? object.required : []),
+    ...(Array.isArray(object.observed) ? object.observed : []),
+    ...(Array.isArray(object.observedFunctions) ? object.observedFunctions : []),
+    ...(Array.isArray(object.observed_functions) ? object.observed_functions : []),
+    ...trace.flatMap((entry) => {
+      const traceEntry = compactObject(entry);
+      return [
+        traceEntry.name,
+        traceEntry.api,
+        traceEntry.command,
+        traceEntry.kind,
+        traceEntry.event,
+      ];
+    }),
+  ]);
+}
+
+function nativeRuntimeApiBoundaryProof(evidenceObjects = []) {
+  const tokens = evidenceObjects
+    .filter(nativeRuntimeApiEvidenceAccepted)
+    .flatMap((evidence) => nativeRuntimeApiObservationTokens(evidence));
+  const loader = tokens.some((tokenValue) =>
+    /(moduleload|getfunction|buildprogram|create(program|kernel|shader|module|pipeline|pipelinelayout|computepipeline|renderpipeline)|compil|load)/i
+      .test(tokenValue)
+  );
+  const dispatch = tokens.some((tokenValue) =>
+    /(launch|dispatch|dispatchworkgroups|enqueuendrange|enqueue.*kernel|cmd.*dispatch|cmd.*draw|queuesubmit|queue\.?submit|draw)/i
+      .test(tokenValue)
+  );
+  const output = tokens.some((tokenValue) =>
+    /(read|readback|readbuffer|mapasync|mapmemory|copy.*buffer|capture|present|frame|output|onsubmittedworkdone|submittedworkdone)/i
+      .test(tokenValue)
+  );
+  return {
+    accepted: tokens.length > 0,
+    loader,
+    dispatch,
+    output,
+    tokens,
+  };
+}
+
+function targetProcessBoundaryEvidenceFacet(row = {}) {
+  const stageEvents = compactObject(
+    row.realRocmRuntimeAdapterStageEvents
+    ?? row.real_rocm_runtime_adapter_stage_events
+    ?? row.runtimeAdapterStageEvents
+    ?? row.runtime_adapter_stage_events,
+  );
+  const provenance = compactObject(
+    row.realRocmRuntimeBoundaryTargetProcessProvenance
+    ?? row.real_rocm_runtime_boundary_target_process_provenance
+    ?? row.runtimeBoundaryTargetProcessProvenance
+    ?? row.runtime_boundary_target_process_provenance,
+  );
+  const stageAccepted =
+    firstBool(stageEvents.accepted, stageEvents.acceptedAsSupportEvidence, stageEvents.accepted_as_support_evidence) === true
+    && firstBool(stageEvents.complete) === true
+    && !nativeRuntimeEvidenceClaimsAuthority(stageEvents);
+  const provenanceAccepted =
+    firstBool(provenance.accepted, provenance.acceptedAsSupportEvidence, provenance.accepted_as_support_evidence) === true
+    && firstBool(provenance.complete) === true
+    && !nativeRuntimeEvidenceClaimsAuthority(provenance);
+  const accepted = stageAccepted && provenanceAccepted;
+  const evidenceRefs = compactStringList([
+    ...evidenceRefsFromValue(stageEvents),
+    ...evidenceRefsFromValue(provenance),
+  ]);
+  return {
+    accepted,
+    loader: accepted,
+    dispatch: accepted,
+    output: accepted,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
+function observedOutputOracleBoundaryPresent(row = {}) {
+  return rowHasAcceptedComputeEvidence(row) || rowHasAcceptedVisualOutputOracle(row);
+}
+
+function eventTextField(event = {}, ...keys) {
+  const object = compactObject(event);
+  return firstText(...keys.map((key) => object[key]));
+}
+
+function firstEventMismatch(observedEvent = {}, ledgerEvent = {}, comparisons = []) {
+  const observed = compactObject(observedEvent);
+  const ledger = compactObject(ledgerEvent);
+  if (Object.keys(observed).length === 0 || Object.keys(ledger).length === 0) return null;
+  for (const comparison of comparisons) {
+    const observedValue = eventTextField(observed, ...comparison.observed);
+    const ledgerValue = eventTextField(ledger, ...comparison.ledger);
+    if (observedValue && ledgerValue && observedValue !== ledgerValue) {
+      return {
+        field: comparison.field,
+        observed: observedValue,
+        ledger: ledgerValue,
+      };
+    }
+  }
+  return null;
+}
+
 function nativeRuntimeTraceEvidenceFacet(row = {}) {
   const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
   const runtimeTrace = compactObject({
@@ -11864,74 +12066,197 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
     ),
     ...compactObject(row.runtimeResourceTrace ?? row.runtime_resource_trace),
   });
-  const nativeHipApiEvidence = compactObject(row.nativeHipApiEvidence ?? row.native_hip_api_evidence);
+  const nativeApiEvidenceObjects = nativeRuntimeApiEvidenceObjects(row, runtimeProofArtifact);
+  const nativeApiBoundaryProof = nativeRuntimeApiBoundaryProof(nativeApiEvidenceObjects);
+  const targetProcessBoundaryEvidence = targetProcessBoundaryEvidenceFacet(row);
   const ledgerRecord = ledgerRecordForRow(row);
   const traceDispatchEvent = compactObject(
-    eventList(runtimeTrace.dispatchEvents, runtimeTrace.dispatch_events, runtimeTrace.dispatchEvent, runtimeTrace.dispatch_event)[0],
+    firstObservedEvent(
+      [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      'dispatchEvents',
+      'dispatch_events',
+      'dispatchEvent',
+      'dispatch_event',
+    ),
   );
   const traceLoaderEvent = compactObject(
-    eventList(runtimeTrace.loaderEvents, runtimeTrace.loader_events, runtimeTrace.loaderEvent, runtimeTrace.loader_event)[0],
+    firstObservedEvent(
+      [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      'loaderEvents',
+      'loader_events',
+      'loaderEvent',
+      'loader_event',
+    ),
   );
   const traceOutputEvent = compactObject(
-    eventList(runtimeTrace.outputEvents, runtimeTrace.output_events, runtimeTrace.outputEvent, runtimeTrace.output_event)[0],
+    firstObservedEvent(
+      [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      'outputEvents',
+      'output_events',
+      'outputEvent',
+      'output_event',
+    ),
   );
   const ledgerDispatchEvent = compactObject(ledgerRecord.dispatchEvent ?? ledgerRecord.dispatch_event);
   const ledgerLoaderEvent = compactObject(ledgerRecord.loaderEvent ?? ledgerRecord.loader_event);
   const ledgerOutputEvent = compactObject(ledgerRecord.outputEvent ?? ledgerRecord.output_event);
-  const dispatchEvent = compactObject({ ...traceDispatchEvent, ...ledgerDispatchEvent });
-  const loaderEvent = compactObject({ ...traceLoaderEvent, ...ledgerLoaderEvent });
-  const outputEvent = compactObject({ ...traceOutputEvent, ...ledgerOutputEvent });
   const evidenceObjects = [
     runtimeTrace,
     runtimeResourceTrace,
-    nativeHipApiEvidence,
-    ledgerRecord,
+    ...nativeApiEvidenceObjects,
+    targetProcessBoundaryEvidence,
     traceDispatchEvent,
     traceLoaderEvent,
     traceOutputEvent,
-    dispatchEvent,
-    loaderEvent,
-    outputEvent,
   ].filter((value) => Object.keys(value).length > 0);
-  const topLevelRuntimeTracePresent = Object.keys(runtimeTrace).length > 0
-    || Object.keys(runtimeResourceTrace).length > 0
-    || Object.keys(nativeHipApiEvidence).length > 0;
-  const dispatchBoundaryPresent = firstText(
-    dispatchEvent.command,
-    dispatchEvent.launch_api,
-    dispatchEvent.launchApi,
-    dispatchEvent.pipeline_id,
-    dispatchEvent.pipelineId,
+  const traceDispatchBoundaryPresent = firstText(
+    traceDispatchEvent.command,
+    traceDispatchEvent.launch_api,
+    traceDispatchEvent.launchApi,
+    traceDispatchEvent.pipeline_id,
+    traceDispatchEvent.pipelineId,
+    traceDispatchEvent.dispatch_id,
+    traceDispatchEvent.dispatchId,
   ) !== null;
-  const loaderBoundaryPresent = firstText(
-    loaderEvent.source,
-    loaderEvent.command,
-    loaderEvent.loader_api,
-    loaderEvent.loaderApi,
-    loaderEvent.pipeline_id,
-    loaderEvent.pipelineId,
+  const traceLoaderBoundaryPresent = firstText(
+    traceLoaderEvent.source,
+    traceLoaderEvent.command,
+    traceLoaderEvent.loader_api,
+    traceLoaderEvent.loaderApi,
+    traceLoaderEvent.pipeline_id,
+    traceLoaderEvent.pipelineId,
+    traceLoaderEvent.artifact_hash,
+    traceLoaderEvent.artifactHash,
   ) !== null;
-  const outputBoundaryPresent = Object.keys(outputEvent).length > 0;
-  const runtimeTracePresent = topLevelRuntimeTracePresent
-    || (dispatchBoundaryPresent && loaderBoundaryPresent && outputBoundaryPresent);
+  const traceOutputBoundaryPresent = Object.keys(traceOutputEvent).length > 0;
+  const outputOracleBoundaryPresent = observedOutputOracleBoundaryPresent(row);
+  const targetObservedRuntimeTracePresent =
+    traceDispatchBoundaryPresent
+    || traceLoaderBoundaryPresent
+    || traceOutputBoundaryPresent
+    || nativeApiBoundaryProof.accepted === true
+    || targetProcessBoundaryEvidence.accepted === true;
+  const dispatchBoundaryPresent =
+    traceDispatchBoundaryPresent
+    || nativeApiBoundaryProof.dispatch === true
+    || targetProcessBoundaryEvidence.dispatch === true;
+  const loaderBoundaryPresent =
+    traceLoaderBoundaryPresent
+    || nativeApiBoundaryProof.loader === true
+    || targetProcessBoundaryEvidence.loader === true;
+  const outputBoundaryPresent =
+    traceOutputBoundaryPresent
+    || nativeApiBoundaryProof.output === true
+    || targetProcessBoundaryEvidence.output === true
+    || outputOracleBoundaryPresent;
+  const ledgerDispatchBoundaryPresent = Object.keys(ledgerDispatchEvent).length > 0;
+  const ledgerLoaderBoundaryPresent = Object.keys(ledgerLoaderEvent).length > 0;
+  const ledgerOutputBoundaryPresent = Object.keys(ledgerOutputEvent).length > 0;
+  const ledgerBoundaryPresent =
+    ledgerDispatchBoundaryPresent
+    && ledgerLoaderBoundaryPresent
+    && ledgerOutputBoundaryPresent;
+  const ledgerOnlyTrace =
+    targetObservedRuntimeTracePresent !== true
+    && ledgerBoundaryPresent;
+  const loaderMismatch = firstEventMismatch(traceLoaderEvent, ledgerLoaderEvent, [
+    {
+      field: 'artifact_hash',
+      observed: ['artifactHash', 'artifact_hash'],
+      ledger: ['artifactHash', 'artifact_hash'],
+    },
+    {
+      field: 'epoch',
+      observed: ['epoch'],
+      ledger: ['epoch'],
+    },
+  ]);
+  const dispatchMismatch = firstEventMismatch(traceDispatchEvent, ledgerDispatchEvent, [
+    {
+      field: 'dispatch_id',
+      observed: ['dispatchId', 'dispatch_id', 'id'],
+      ledger: ['dispatchId', 'dispatch_id', 'id'],
+    },
+    {
+      field: 'epoch',
+      observed: ['epoch'],
+      ledger: ['epoch'],
+    },
+    {
+      field: 'artifact_hash',
+      observed: ['artifactHash', 'artifact_hash'],
+      ledger: ['artifactHash', 'artifact_hash'],
+    },
+  ]);
+  const outputMismatch = firstEventMismatch(traceOutputEvent, ledgerOutputEvent, [
+    {
+      field: 'after_dispatch_id',
+      observed: ['afterDispatchId', 'after_dispatch_id'],
+      ledger: ['afterDispatchId', 'after_dispatch_id'],
+    },
+    {
+      field: 'output_target_id',
+      observed: ['outputTargetId', 'output_target_id', 'targetId', 'target_id'],
+      ledger: ['outputTargetId', 'output_target_id', 'targetId', 'target_id'],
+    },
+    {
+      field: 'epoch',
+      observed: ['epoch'],
+      ledger: ['epoch'],
+    },
+    {
+      field: 'artifact_hash',
+      observed: ['artifactHash', 'artifact_hash'],
+      ledger: ['artifactHash', 'artifact_hash'],
+    },
+  ]);
+  const runtimeTracePresent = targetObservedRuntimeTracePresent === true;
   const evidenceRefs = compactStringList(evidenceObjects.flatMap((value) => evidenceRefsFromValue(value)));
   const failedGates = compactStringList([
     runtimeTracePresent ? null : 'native_runtime_trace_missing',
+    ledgerOnlyTrace ? 'native_runtime_trace_cannot_be_ledger_only' : null,
     dispatchBoundaryPresent ? null : 'native_runtime_dispatch_boundary_missing',
     loaderBoundaryPresent ? null : 'native_runtime_loader_boundary_missing',
     outputBoundaryPresent ? null : 'native_runtime_output_boundary_missing',
+    loaderMismatch ? 'native_runtime_trace_ledger_loader_mismatch' : null,
+    dispatchMismatch ? 'native_runtime_trace_ledger_dispatch_mismatch' : null,
+    outputMismatch ? 'native_runtime_trace_ledger_output_mismatch' : null,
     evidenceRefs.length > 0 ? null : 'native_runtime_trace_evidence_refs_missing',
   ]);
   return {
     accepted: failedGates.length === 0,
     runtimeTracePresent,
     runtime_trace_present: runtimeTracePresent,
+    targetObservedRuntimeTracePresent,
+    target_observed_runtime_trace_present: targetObservedRuntimeTracePresent,
+    ledgerBoundaryPresent,
+    ledger_boundary_present: ledgerBoundaryPresent,
+    ledgerOnlyTrace,
+    ledger_only_trace: ledgerOnlyTrace,
     dispatchBoundaryPresent,
     dispatch_boundary_present: dispatchBoundaryPresent,
     loaderBoundaryPresent,
     loader_boundary_present: loaderBoundaryPresent,
     outputBoundaryPresent,
     output_boundary_present: outputBoundaryPresent,
+    traceDispatchBoundaryPresent,
+    trace_dispatch_boundary_present: traceDispatchBoundaryPresent,
+    traceLoaderBoundaryPresent,
+    trace_loader_boundary_present: traceLoaderBoundaryPresent,
+    traceOutputBoundaryPresent,
+    trace_output_boundary_present: traceOutputBoundaryPresent,
+    nativeApiBoundaryProof,
+    native_api_boundary_proof: nativeApiBoundaryProof,
+    targetProcessBoundaryEvidence,
+    target_process_boundary_evidence: targetProcessBoundaryEvidence,
+    outputOracleBoundaryPresent,
+    output_oracle_boundary_present: outputOracleBoundaryPresent,
+    loaderLedgerMismatch: loaderMismatch,
+    loader_ledger_mismatch: loaderMismatch,
+    dispatchLedgerMismatch: dispatchMismatch,
+    dispatch_ledger_mismatch: dispatchMismatch,
+    outputLedgerMismatch: outputMismatch,
+    output_ledger_mismatch: outputMismatch,
     evidenceRefs,
     evidence_refs: evidenceRefs,
     failedGates: failedGates.map((code) => ({ code })),
@@ -11974,6 +12299,12 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
       nativeRuntimeTrace.accepted === true
         ? null
         : 'full_runtime_authority_native_runtime_trace_missing',
+      ...(nativeRuntimeTrace.accepted === true
+        ? []
+        : compactStringList(
+          compactObjectList(nativeRuntimeTrace.failedGates ?? nativeRuntimeTrace.failed_gates)
+            .map((failure) => failure.code),
+        )),
       strictRuntimeArtifactAccepted ? null : 'full_runtime_authority_strict_runtime_proof_artifact_missing',
       strictRuntimeArtifactAccepted ? null : 'full_runtime_authority_requires_strict_runtime_proof_artifact',
     ]);
