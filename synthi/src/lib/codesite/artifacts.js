@@ -87,7 +87,7 @@ export function codesiteSchemas() {
       mutationLeaseId: { type: 'string' },
       baseSnapshot: { type: 'string' },
       baseSnapshotEvidence: { type: ['object', 'null'] },
-      isolation: { type: 'string' },
+      isolation: { type: 'string', enum: ['serializable'] },
       status: { type: 'string' },
       readSet: { type: 'array', items: { type: 'string' } },
       writeSet: { type: 'array', items: { type: 'string' } },

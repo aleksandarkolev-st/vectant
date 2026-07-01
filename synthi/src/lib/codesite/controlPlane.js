@@ -36,6 +36,7 @@ import {
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
+const SUPPORTED_TRANSACTION_ISOLATION = 'serializable';
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -904,6 +905,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
   }
   const leaseJson = parseJson(lease.leaseJson, {});
   const readSet = normalizePathList(body.readSet || body.read_set || []);
+  const isolation = normalizeTransactionIsolation(body.isolation);
   const baseSnapshotEvidence = await buildTransactionSnapshotEvidence(readSet, body);
   const transaction = await prisma.codeSiteMutationTransaction.create({
     data: {
@@ -912,7 +914,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       agentSessionId: lease.agentSessionId,
       baseSnapshot: body.baseSnapshot || body.base_snapshot || baseSnapshotEvidence?.snapshotDigest || digest({ workspaceSlug, mutationLeaseId, openedAt: Date.now() }),
       baseSnapshotEvidenceJson: stringifyJson(baseSnapshotEvidence),
-      isolation: body.isolation || 'serializable',
+      isolation,
       status: 'open',
       readSetJson: stringifyJson(readSet),
       writeSetJson: stringifyJson(normalizePathList(body.writeSet || body.write_set || [])),
@@ -1719,7 +1721,23 @@ function serializableSnapshotReadSet(transaction, readSet = [], observedReadSet 
 }
 
 function usesSerializableIsolation(transaction) {
-  return String(transaction?.isolation || 'serializable').toLowerCase() === 'serializable';
+  return normalizeIsolationValue(transaction?.isolation) === SUPPORTED_TRANSACTION_ISOLATION;
+}
+
+function normalizeTransactionIsolation(value) {
+  const isolation = normalizeIsolationValue(value);
+  if (isolation !== SUPPORTED_TRANSACTION_ISOLATION) {
+    throw badRequest('unsupported_transaction_isolation', {
+      requestedIsolation: value,
+      supportedIsolation: SUPPORTED_TRANSACTION_ISOLATION,
+    });
+  }
+  return isolation;
+}
+
+function normalizeIsolationValue(value) {
+  if (value == null) return SUPPORTED_TRANSACTION_ISOLATION;
+  return String(value).trim().toLowerCase();
 }
 
 function enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet = []) {

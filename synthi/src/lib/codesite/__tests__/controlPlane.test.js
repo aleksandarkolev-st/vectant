@@ -1323,6 +1323,34 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
   });
 
+  it('rejects non-serializable transaction isolation requests', async () => {
+    await expect(openTransaction('acme', 'lease-1', {
+      isolation: 'read_committed',
+    })).rejects.toMatchObject({
+      code: 'unsupported_transaction_isolation',
+      status: 400,
+      detail: {
+        requestedIsolation: 'read_committed',
+        supportedIsolation: 'serializable',
+      },
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['', false, 0])('rejects invalid explicit transaction isolation value %j', async (isolation) => {
+    await expect(openTransaction('acme', 'lease-1', {
+      isolation,
+    })).rejects.toMatchObject({
+      code: 'unsupported_transaction_isolation',
+      status: 400,
+      detail: {
+        requestedIsolation: isolation,
+        supportedIsolation: 'serializable',
+      },
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+  });
+
   it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-'));
     await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });

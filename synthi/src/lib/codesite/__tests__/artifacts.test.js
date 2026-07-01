@@ -83,6 +83,9 @@ describe('CodeSite artifact projection', () => {
 
   it('shares schemas used by API schema discovery', () => {
     expect(codesiteSchemas()).toHaveProperty('mutation-transaction.schema.json');
+    expect(codesiteSchemas()['mutation-transaction.schema.json'].properties.isolation).toMatchObject({
+      enum: ['serializable'],
+    });
     expect(codesiteSchemas()['event.schema.json']).toMatchObject({
       title: 'CodeSite Event',
       required: ['eventType', 'details'],
