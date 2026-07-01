@@ -15402,6 +15402,70 @@ function externalVisualProofArtifactCandidatePaths(json = {}) {
   ]);
 }
 
+function externalVisualStateBindingFacet({
+  visualArtifacts = {},
+  deterministicVisualMode = {},
+  requiredContentHashes = [],
+} = {}) {
+  const cameraStateHash = firstText(
+    visualArtifacts.camera_state_hash,
+    visualArtifacts.cameraStateHash,
+  );
+  const deterministicCameraStateHash = firstText(
+    deterministicVisualMode.camera_state_hash,
+    deterministicVisualMode.cameraStateHash,
+  );
+  const seedPolicyHash = firstText(
+    deterministicVisualMode.seed_policy_hash,
+    deterministicVisualMode.seedPolicyHash,
+  );
+  const visualHashes = compactStringList(requiredContentHashes).filter(contentAddressedSha256);
+  const cameraHashesMatch =
+    !cameraStateHash
+    || !deterministicCameraStateHash
+    || cameraStateHash === deterministicCameraStateHash;
+  const failedGates = compactStringList([
+    contentAddressedSha256(cameraStateHash) ? null : 'external_visual_state_camera_hash_missing',
+    cameraHashesMatch ? null : 'external_visual_state_camera_hash_mismatch',
+    contentAddressedSha256(seedPolicyHash) ? null : 'external_visual_state_seed_hash_missing',
+    visualHashes.length >= 3 ? null : 'external_visual_state_visual_hashes_missing',
+  ]);
+  const material = {
+    schemaVersion: 'synthi.gpu_hmr.external_visual_state_binding.v1',
+    cameraStateHash: cameraStateHash ?? null,
+    camera_state_hash: cameraStateHash ?? null,
+    deterministicCameraStateHash: deterministicCameraStateHash ?? null,
+    deterministic_camera_state_hash: deterministicCameraStateHash ?? null,
+    seedPolicyHash: seedPolicyHash ?? null,
+    seed_policy_hash: seedPolicyHash ?? null,
+    visualHashes,
+    visual_hashes: visualHashes,
+  };
+  const bindingHash = `sha256:${sha256Hex(stableJson(material))}`;
+  return {
+    ...material,
+    schemaVersion: 'synthi.gpu_hmr.external_visual_state_binding.v1',
+    schema_version: 'synthi.gpu_hmr.external_visual_state_binding.v1',
+    proofAuthority: 'matrix_recomputed_external_visual_state_binding_not_gpu_hmr_success',
+    proof_authority: 'matrix_recomputed_external_visual_state_binding_not_gpu_hmr_success',
+    accepted: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    cameraHashesMatch,
+    camera_hashes_match: cameraHashesMatch,
+    bindingHash,
+    binding_hash: bindingHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, expectedProfileId = null) {
   const resolved = resolveEvidencePath(proofPath, repoRoot, baseDir);
   if (!resolved) {
@@ -15467,6 +15531,11 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
   const deterministicVisualModeEvaluation =
     evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode);
   const deterministicAccepted = deterministicVisualModeEvaluation.accepted === true;
+  const externalVisualStateBinding = externalVisualStateBindingFacet({
+    visualArtifacts,
+    deterministicVisualMode,
+    requiredContentHashes,
+  });
   const mcpPreviewRequiresFullProof = firstText(json.proofMode, json.proof_mode) === 'mcp_preview';
   const mcpPreviewFullProofAccepted = !mcpPreviewRequiresFullProof;
   const accepted = Boolean(
@@ -15479,6 +15548,7 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     && allRequiredHashesAccepted
     && visualDiff.accepted === true
     && deterministicAccepted
+    && externalVisualStateBinding.accepted === true
     && mcpPreviewFullProofAccepted,
   );
   const failedGates = compactStringList([
@@ -15497,6 +15567,8 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     visualDiff.accepted === true ? null : 'external_visual_proof_artifact_pair_diff_not_accepted',
     deterministicAccepted ? null : 'external_visual_proof_artifact_deterministic_mode_not_accepted',
     ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
+    externalVisualStateBinding.accepted === true ? null : 'external_visual_state_binding_not_accepted',
+    ...externalVisualStateBinding.failedGates,
     mcpPreviewFullProofAccepted ? null : 'external_visual_proof_artifact_mcp_preview_full_runtime_proof_missing',
     ...visualDiff.failedGates,
   ]);
@@ -15524,6 +15596,8 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministicAccepted,
     deterministic_accepted: deterministicAccepted,
+    externalVisualStateBinding,
+    external_visual_state_binding: externalVisualStateBinding,
     profileSelection: compactObject(json.profileSelection ?? json.profile_selection),
     profile_selection: compactObject(json.profileSelection ?? json.profile_selection),
     sourceDeltaEvidence: compactObject(json.sourceDeltaEvidence ?? json.source_delta_evidence),

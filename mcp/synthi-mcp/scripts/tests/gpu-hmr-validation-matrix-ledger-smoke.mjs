@@ -4229,6 +4229,7 @@ const externalVisualProjectContract = externalProjectContractForTest({
   manifestHash: externalVisualProfileSelection.manifestHash,
   runtimeEvidenceRefs: ['external-visual-proof:explicit-external-engine-visual'],
 });
+const externalVisualDeterministicMode = deterministicMode('explicit-external-engine-visual');
 const externalVisualEvidenceArtifacts = [];
 for (const artifactPath of [externalVisualBefore, externalVisualAfter, externalVisualDiff]) {
   const artifactBytes = await fs.readFile(artifactPath);
@@ -4283,13 +4284,14 @@ const externalVisualProofMaterial = {
     diff: externalVisualDiff,
   }, {
     capture_backend: 'external_runtime_screenshot',
+    camera_state_hash: externalVisualDeterministicMode.camera_state_hash,
   }),
   visualDiff: {
     changedPixelRatio: 0.5,
     meanAbsDelta8bit: 24,
     visiblePixelCount: 76800,
   },
-  deterministicVisualMode: deterministicMode('explicit-external-engine-visual'),
+  deterministicVisualMode: externalVisualDeterministicMode,
   deterministicVisualModeEvaluation: {
     accepted: true,
   },
@@ -4335,6 +4337,7 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-external-engi
     diff: externalVisualDiff,
   }, {
     capture_backend: 'external_runtime_screenshot',
+    camera_state_hash: externalVisualDeterministicMode.camera_state_hash,
   }),
   visualDiff: {
     changedPixelRatio: 0.5,
@@ -10528,6 +10531,8 @@ assert.equal(externalVisual.externalProfileSelection.accepted, true);
 assert.equal(externalVisual.externalSourceDelta.accepted, true);
 assert.equal(externalVisual.externalSourceDelta.matchCount, 1);
 assert.equal(externalVisual.externalVisualProofArtifact.accepted, true);
+assert.equal(externalVisual.externalVisualProofArtifact.externalVisualStateBinding.accepted, true);
+assert.equal(externalVisual.externalVisualProofArtifact.externalVisualStateBinding.acceptedForGpuHmr, false);
 assert.equal(externalVisual.externalVisualProofArtifact.requiredContentHashes.length, 3);
 assert.equal(externalVisual.externalVisualProofArtifact.visualDiff.accepted, true);
 assert.equal(externalVisual.deterministicVisualModeEvaluation.accepted, true);
@@ -10541,11 +10546,14 @@ assert.equal(seedlessExternalVisual.externalProjectContract.accepted, true);
 assert.equal(seedlessExternalVisual.externalProfileSelection.accepted, true);
 assert.equal(seedlessExternalVisual.externalSourceDelta.accepted, true);
 assert.equal(seedlessExternalVisual.externalVisualProofArtifact.accepted, false);
+assert.equal(seedlessExternalVisual.externalVisualProofArtifact.externalVisualStateBinding.accepted, false);
 assert.equal(seedlessExternalVisual.externalVisualProofArtifact.deterministicAccepted, false);
 assert.equal(seedlessExternalVisual.deterministicVisualModeEvaluation.accepted, false);
 assert.ok(seedlessExternalVisual.reasons.includes('seed_policy_unproven'));
 assert.ok(seedlessExternalVisual.openGaps.includes('deterministic_visual_mode_not_accepted'));
 assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('seed_policy_unproven'));
+assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('external_visual_state_binding_not_accepted'));
+assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('external_visual_state_seed_hash_missing'));
 
 const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
 assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');

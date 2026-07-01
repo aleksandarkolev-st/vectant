@@ -1919,6 +1919,20 @@ async function selfCheckVisualProofArtifact() {
   const expectedHashes = [beforeBytes, afterBytes, diffBytes]
     .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
     .sort();
+  const selfCheckCameraStateHash = sha256('external-visual-proof-self-check-camera-state');
+  const selfCheckSeedPolicyHash = sha256('external-visual-proof-self-check-seed-policy');
+  const selfCheckDeterministicVisualMode = {
+    frozen_camera: true,
+    fixed_resolution: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+    seed_policy_fixed: true,
+    seed_policy_hash: selfCheckSeedPolicyHash,
+    camera_state_hash: selfCheckCameraStateHash,
+    temporal_accumulation_not_applicable: true,
+    taa_not_applicable: true,
+    denoiser_not_applicable: true,
+  };
   const written = await writeExternalVisualProofArtifact({
     id: 'external-visual-proof-self-check',
   }, {
@@ -1940,6 +1954,7 @@ async function selfCheckVisualProofArtifact() {
       before_image: beforePath,
       after_image: afterPath,
       diff_image: diffPath,
+      camera_state_hash: selfCheckCameraStateHash,
       frame_capture_after_epoch_dispatch: true,
       wait_contract: {
         module: 'device',
@@ -1951,16 +1966,7 @@ async function selfCheckVisualProofArtifact() {
       changedPixelRatio: 0.5,
       meanAbsDelta8bit: 16,
     },
-    deterministicVisualMode: {
-      frozen_camera: true,
-      fixed_resolution: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
-      seed_policy_fixed: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-    },
+    deterministicVisualMode: selfCheckDeterministicVisualMode,
     deterministicVisualModeEvaluation: {
       accepted: true,
     },
