@@ -69,6 +69,10 @@ const SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES = [
   'workspace_source_files',
   'cli_or_env_direct_source',
 ];
+const SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES = new Set([
+  'direct_source_url_commit',
+  'direct_local_git_repo_path',
+]);
 const SCOPED_FULL_RUNTIME_ACCEPTANCE_SCOPES = new Set([
   'generated_rocm_hip_preview_visual',
   'hip_module_declared_compute_readback',
@@ -4652,6 +4656,60 @@ function sourceFirstIngestionFacet(row = {}) {
     row.sourceAuthority,
     row.source_authority,
   );
+  const sourceUrl = firstText(
+    supplied.sourceUrl,
+    supplied.source_url,
+    compileContract.sourceUrl,
+    compileContract.source_url,
+    row.sourceUrl,
+    row.source_url,
+  );
+  const repoPath = firstText(
+    supplied.repoPath,
+    supplied.repo_path,
+    compileContract.repoPath,
+    compileContract.repo_path,
+    row.repoPath,
+    row.repo_path,
+  );
+  const immutableCommit = firstText(
+    supplied.immutableCommit,
+    supplied.immutable_commit,
+    compileContract.immutableCommit,
+    compileContract.immutable_commit,
+    row.immutableCommit,
+    row.immutable_commit,
+  );
+  const directSourceInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
+    supplied.directSourceInputEvidence,
+    supplied.direct_source_input_evidence,
+    supplied.directInputEvidence,
+    supplied.direct_input_evidence,
+    compileContract.directSourceInputEvidence,
+    compileContract.direct_source_input_evidence,
+    compileContract.directInputEvidence,
+    compileContract.direct_input_evidence,
+  ), {
+    requireSourceIdentityHash: true,
+    sourceUrl,
+    repoPath,
+    immutableCommit,
+  });
+  const directSourceIdentityRequired =
+    SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority);
+  const directSourceIdentityAccepted =
+    !directSourceIdentityRequired
+    || (
+      directSourceInputEvidence.acceptedAsDirectInputEvidence === true
+      && directSourceInputEvidence.candidateSource === sourceAuthority
+      && directSourceInputEvidence.inputMode === 'cli_or_env_direct_source'
+      && directSourceInputEvidence.targetNameIndependent === true
+      && directSourceInputEvidence.projectNameWhitelist.length === 0
+      && directSourceInputEvidence.specificTargetIdsAllowed.length === 0
+      && directSourceInputEvidence.sourceIdentityHashMatchesContext === true
+      && Boolean(immutableCommit)
+      && Boolean(sourceUrl || repoPath)
+    );
   const canSatisfyRuntimeProof = firstBool(
     supplied.canSatisfyRuntimeProof,
     supplied.can_satisfy_runtime_proof,
@@ -5026,6 +5084,18 @@ function sourceFirstIngestionFacet(row = {}) {
     proof_id_matches: proofIdMatches,
     sourceAuthority,
     source_authority: sourceAuthority,
+    sourceUrl,
+    source_url: sourceUrl,
+    repoPath,
+    repo_path: repoPath,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    directSourceInputEvidence,
+    direct_source_input_evidence: directSourceInputEvidence,
+    directSourceIdentityRequired,
+    direct_source_identity_required: directSourceIdentityRequired,
+    directSourceIdentityAccepted,
+    direct_source_identity_accepted: directSourceIdentityAccepted,
     sourceContentHash,
     source_content_hash: sourceContentHash,
     entryPath,
@@ -21517,6 +21587,41 @@ function rowHasAcceptedOutputOracleClosure(row) {
   return rowHasAcceptedComputeEvidence(row);
 }
 
+function sourceFirstVisualSourceIdentityHash(row = {}) {
+  const sourceFirst = sourceFirstIngestionFacet(row);
+  const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
+  if (SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority)) {
+    if (sourceFirst.directSourceIdentityAccepted !== true) return null;
+    return normalizeSha256(firstText(
+      sourceFirst.directSourceInputEvidence?.sourceIdentityHash,
+      sourceFirst.directSourceInputEvidence?.source_identity_hash,
+      sourceFirst.direct_source_input_evidence?.sourceIdentityHash,
+      sourceFirst.direct_source_input_evidence?.source_identity_hash,
+    ));
+  }
+  const sourceSeed = compactObject({
+    sourceAuthority,
+    sourceContentHash: sourceFirst.sourceContentHash,
+    initialManifestHash: sourceFirst.initialManifestHash,
+    sourcePurityManifestHash: sourceFirst.sourcePurityManifestHash,
+    sourcePurityInitialManifestHash: sourceFirst.sourcePurityInitialManifestHash,
+  });
+  if (
+    !sourceSeed.sourceAuthority
+    || !contentAddressedSha256(sourceSeed.sourceContentHash)
+    || !contentAddressedSha256(sourceSeed.initialManifestHash)
+  ) {
+    return null;
+  }
+  return `sha256:${sha256Hex(stableJson(sourceSeed))}`;
+}
+
+function sourceFirstVisualSourceIdentityHashList(rows = []) {
+  return [...new Set(compactStringList(rows.map((row) =>
+    sourceFirstVisualSourceIdentityHash(row)
+  )))];
+}
+
 function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
   const {
     requireOutputOracleFacet = true,
@@ -21535,12 +21640,18 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
     const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
     const userOwnedSourceFirst =
       SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority);
+    const directSourceIdentityAccepted =
+      firstBool(
+        sourceFirst.directSourceIdentityAccepted,
+        sourceFirst.direct_source_identity_accepted,
+      ) === true;
     return firstBool(sourceFirst.accepted) === true
       && firstText(sourceFirst.schemaVersion, sourceFirst.schema_version)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION
       && firstText(sourceFirst.proofAuthority, sourceFirst.proof_authority)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY
       && (requireUserOwnedSource ? userOwnedSourceFirst : true)
+      && directSourceIdentityAccepted
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false
@@ -21592,6 +21703,14 @@ function sourceFirstVisualBroadReadinessPredicate() {
     specific_target_ids_allowed: [],
     acceptedSourceAuthorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
     accepted_source_authorities: SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES,
+    directSourceAuthoritiesRequiringIdentityEvidence:
+      [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
+    direct_source_authorities_requiring_identity_evidence:
+      [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
+    requiredDirectInputEvidenceAuthority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
+    required_direct_input_evidence_authority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
+    requiredDirectSourceIdentityRole: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    required_direct_source_identity_role: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     rejectedSourceAuthoritiesForBroadReadiness: [
       'profile_source_files',
       'builtin_fixture_source',
@@ -21618,6 +21737,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'strict_full_runtime_row_accepted',
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
+      'direct_source_identity_evidence_accepted_when_direct_authority',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
@@ -21633,6 +21753,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'strict_full_runtime_row_accepted',
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
+      'direct_source_identity_evidence_accepted_when_direct_authority',
       'source_first_ingestion_non_authoritative',
       'async_visual_cas_support_accepted',
       'async_visual_proof_ready',
@@ -22046,6 +22167,8 @@ function computeBroadLibraryAgnosticProof(rows) {
   );
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualRowIds = compactStringList(sourceFirstVisualRows.map((row) => row.rowId));
+  const sourceFirstVisualSourceIdentityHashes =
+    sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
   const openGaps = compactStringList([
     fullRuntimeRows.length > 0 ? null : 'broad_runtime_rows_missing',
     backends.length >= BROAD_LIBRARY_MIN_BACKEND_COUNT
@@ -22118,6 +22241,7 @@ function computeBroadLibraryAgnosticProof(rows) {
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
+    sourceFirstVisualSourceIdentityHashes,
     sourceFirstVisualSelectionPredicateHash: sourceFirstVisualSelectionPredicate.predicateHash,
     openGaps,
   });
@@ -22193,6 +22317,10 @@ function computeBroadLibraryAgnosticProof(rows) {
     source_first_visual_row_ids: sourceFirstVisualRowIds,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
+    sourceFirstVisualSourceIdentityHashes,
+    source_first_visual_source_identity_hashes: sourceFirstVisualSourceIdentityHashes,
+    sourceFirstVisualSourceIdentityCount: sourceFirstVisualSourceIdentityHashes.length,
+    source_first_visual_source_identity_count: sourceFirstVisualSourceIdentityHashes.length,
     sourceFirstVisualSelectionPredicate,
     source_first_visual_selection_predicate: sourceFirstVisualSelectionPredicate,
     sourceFirstVisualSelectionTargetNameIndependent:
@@ -22252,6 +22380,8 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
   const randomColdPathCandidateDistinctSourceIdentityHashes =
     randomColdPathDistinctSourceIdentityHashList(randomColdPathCandidateRows);
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
+  const sourceFirstVisualSourceIdentityHashes =
+    sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
   const broadRuntimeRowsComputed = true;
   const matrixGeneralizationRuntimeRows =
     finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
@@ -22309,6 +22439,10 @@ function broadLibraryAgnosticReadiness(rows, broadProof = computeBroadLibraryAgn
       randomColdPathCandidateDistinctSourceIdentityHashes,
     sourceFirstVisualRowCount: sourceFirstVisualRows.length,
     source_first_visual_row_count: sourceFirstVisualRows.length,
+    sourceFirstVisualSourceIdentityCount: sourceFirstVisualSourceIdentityHashes.length,
+    source_first_visual_source_identity_count: sourceFirstVisualSourceIdentityHashes.length,
+    sourceFirstVisualSourceIdentityHashes,
+    source_first_visual_source_identity_hashes: sourceFirstVisualSourceIdentityHashes,
     backends,
     acceptanceScopes,
     proofModes,
@@ -23342,6 +23476,8 @@ function planCoverage(rows) {
       requireOutputOracleFacet: true,
       requireUserOwnedSource: false,
     });
+  const sourceFirstFullRuntimeSourceIdentities =
+    sourceFirstVisualSourceIdentityHashList(sourceFirstFullRuntimeRows);
   const fissionRows = deterministicFissionRows(rows, () => true);
   const randomColdRefusalRows = refusalRows(rows, (row) =>
     row.proofMode === 'random_large_project_cold_path'
@@ -23383,6 +23519,10 @@ function planCoverage(rows) {
       source_first_evidence_authority: 'source_first_provenance_only_plus_strict_runtime_ledger',
       asyncVisualCasSupportAuthority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
       async_visual_cas_support_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
+      sourceIdentityCount: sourceFirstFullRuntimeSourceIdentities.length,
+      source_identity_count: sourceFirstFullRuntimeSourceIdentities.length,
+      sourceIdentityHashes: sourceFirstFullRuntimeSourceIdentities,
+      source_identity_hashes: sourceFirstFullRuntimeSourceIdentities,
     }),
     coverageEntry({
       id: 'random_large_arbitrary_project_cold_path',

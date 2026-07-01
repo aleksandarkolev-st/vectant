@@ -2205,6 +2205,10 @@ function sourceFirstIngestionEvidenceFor({
   entryPath = 'src/main.cpp',
   sourceHash = hashValue(`${targetId}:seed-source`),
   sourceAuthority = 'builtin_fixture_source',
+  sourceUrl = `https://example.invalid/source-first/${targetId}.git`,
+  repoPath = null,
+  immutableCommit = '2222222222222222222222222222222222222222',
+  directSourceInputEvidence = undefined,
   sourceTreeManifestHash = null,
   useAiSplit = true,
   userRequestedAi = true,
@@ -2272,6 +2276,26 @@ function sourceFirstIngestionEvidenceFor({
   const sourcePurityInitialManifestHash = contentHashFor(sourcePurityInitialManifestEntries);
   const effectiveSourceTreeManifestHash = sourceTreeManifestHash
     ?? (sourceAuthority === 'profile_source_files' ? initialManifestHash : null);
+  const directSourceAuthority =
+    sourceAuthority === 'direct_source_url_commit'
+    || sourceAuthority === 'direct_local_git_repo_path';
+  const effectiveSourceUrl = sourceAuthority === 'direct_source_url_commit'
+    ? sourceUrl
+    : null;
+  const effectiveRepoPath = sourceAuthority === 'direct_local_git_repo_path'
+    ? (repoPath ?? `C:/example/source-first/${targetId}`)
+    : null;
+  const effectiveDirectSourceInputEvidence =
+    directSourceInputEvidence !== undefined
+      ? directSourceInputEvidence
+      : directSourceAuthority
+        ? randomColdDirectInputEvidenceFixture({
+          candidateSource: sourceAuthority,
+          sourceUrl: effectiveSourceUrl,
+          repoPath: effectiveRepoPath,
+          immutableCommit,
+        })
+        : null;
   const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson({
     sourceContentHash: sourceHash,
     entryPath,
@@ -2295,6 +2319,16 @@ function sourceFirstIngestionEvidenceFor({
     canSatisfyRuntimeProof: false,
     sourceAuthority,
     source_authority: sourceAuthority,
+    ...(directSourceAuthority ? {
+      sourceUrl: effectiveSourceUrl,
+      source_url: effectiveSourceUrl,
+      repoPath: effectiveRepoPath,
+      repo_path: effectiveRepoPath,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+      directSourceInputEvidence: effectiveDirectSourceInputEvidence,
+      direct_source_input_evidence: effectiveDirectSourceInputEvidence,
+    } : {}),
     sourceContentHash: sourceHash,
     noSynthiAbiInSeedSource,
     no_synthi_abi_in_seed_source: noSynthiAbiInSeedSource,
@@ -2314,6 +2348,16 @@ function sourceFirstIngestionEvidenceFor({
       sourceTreeManifestHash: effectiveSourceTreeManifestHash,
       sourcePurityManifestHash: normalizedSourcePurityEvidence.purityManifestHash,
       sourcePurityInitialManifestHash,
+      ...(directSourceAuthority ? {
+        sourceUrl: effectiveSourceUrl,
+        source_url: effectiveSourceUrl,
+        repoPath: effectiveRepoPath,
+        repo_path: effectiveRepoPath,
+        immutableCommit,
+        immutable_commit: immutableCommit,
+        directSourceInputEvidence: effectiveDirectSourceInputEvidence,
+        direct_source_input_evidence: effectiveDirectSourceInputEvidence,
+      } : {}),
       useAiSplit,
       userRequestedAi,
       preferGpuPipeline,
@@ -2346,6 +2390,8 @@ function sourceFirstIngestionEvidenceFor({
       sourcePurityInitialManifestHash,
       normalizedSourcePurityEvidence.purityManifestHash,
       effectiveSourceTreeManifestHash,
+      effectiveDirectSourceInputEvidence?.sourceIdentityHash,
+      effectiveDirectSourceInputEvidence?.source_identity_hash,
       sidecarHash,
       compileManifestHash,
       ...generatedArtifactHashes,
@@ -7693,6 +7739,26 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withoutSourceFirstDirectSourceIdentity(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+  };
+  delete sourceFirst.directSourceInputEvidence;
+  delete sourceFirst.direct_source_input_evidence;
+  if (sourceFirst.initialCompileContract) {
+    delete sourceFirst.initialCompileContract.directSourceInputEvidence;
+    delete sourceFirst.initialCompileContract.direct_source_input_evidence;
+  }
+  if (sourceFirst.initial_compile_contract) {
+    delete sourceFirst.initial_compile_contract.directSourceInputEvidence;
+    delete sourceFirst.initial_compile_contract.direct_source_input_evidence;
+  }
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withSourceFirstSchemaVersion(row, schemaVersion) {
   const cloned = JSON.parse(JSON.stringify(row));
   const sourceFirst = {
@@ -8934,6 +9000,47 @@ assert.ok(
   broadReadinessWithProfiledSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
+const broadReadinessWithDirectSourceFirstMissingIdentityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withoutSourceFirstDirectSourceIdentity(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithDirectSourceFirstMissingIdentityQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualSourceIdentityCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const missingDirectSourceIdentityCoverage = new Map(
+  broadReadinessWithDirectSourceFirstMissingIdentityQuery.summary.planCoverage.map((entry) =>
+    [entry.id, entry]
+  )
+);
+assert.equal(
+  missingDirectSourceIdentityCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'missing',
+);
 const broadReadinessWithForgedSourceFirstSchemaQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
@@ -9301,6 +9408,19 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSourceIdentityCount,
+  2,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualSourceIdentityCount,
+  2,
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSourceIdentityHashes.every((hash) => /^sha256:[a-f0-9]{64}$/.test(hash)),
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionTargetNameIndependent,
   true,
 );
@@ -9329,6 +9449,19 @@ assert.deepEqual(
     'workspace_source_files',
     'cli_or_env_direct_source',
   ],
+);
+assert.deepEqual(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.directSourceAuthoritiesRequiringIdentityEvidence,
+  [
+    'direct_source_url_commit',
+    'direct_local_git_repo_path',
+  ],
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredDirectInputEvidenceAuthority,
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
 assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -9361,6 +9494,12 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
       'visual_output_oracle_accepted',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'direct_source_identity_evidence_accepted_when_direct_authority',
     ),
 );
 assert.ok(
