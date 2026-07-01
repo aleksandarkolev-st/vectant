@@ -8125,6 +8125,28 @@ function withForgedComputeCardOnlyFlag(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withComputeCardOnlyButNoOutputOracleFacet(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  delete cloned.outputOracleFacet;
+  delete cloned.output_oracle_facet;
+  cloned.computeCardOnlyProofAccepted = true;
+  cloned.compute_card_only_proof_accepted = true;
+  cloned.computeCardEvidence = {
+    accepted: true,
+    proofAuthority: 'compute_card_render_only_not_output_oracle',
+    proof_authority: 'compute_card_render_only_not_output_oracle',
+  };
+  cloned.compute_card_evidence = cloned.computeCardEvidence;
+  cloned.visual = {
+    ...(cloned.visual ?? {}),
+    present: true,
+    accepted: true,
+    evidenceKind: 'compute_card_not_runtime_visual_oracle',
+    evidence_kind: 'compute_card_not_runtime_visual_oracle',
+  };
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutOutputOracleFacet(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   delete cloned.outputOracleFacet;
@@ -9712,6 +9734,21 @@ assert.ok(
   broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
+const forgedComputeCardOnlyOutputClosureQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    withComputeCardOnlyButNoOutputOracleFacet(acceptedBroadReadinessCandidate({
+      targetId: 'forged-compute-card-output-closure',
+      backend: 'opencl',
+      acceptanceScope: 'opencl_declared_compute_readback',
+      oracle: 'compute',
+    })),
+  ],
+});
+assert.equal(forgedComputeCardOnlyOutputClosureQuery.accepted, false);
+assert.ok(forgedComputeCardOnlyOutputClosureQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_accepted_output_oracle_facet'
+));
 const broadReadinessRowsWithOneRandomCold = [
   ...broadReadinessRows,
   randomColdReadinessMatrixRow(),

@@ -22201,7 +22201,7 @@ function rowHasAcceptedOutputOracleClosure(row) {
   const kind = firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind);
   if (kind === 'visual_oracle') return rowHasAcceptedVisualOutputOracle(row);
   if (kind === 'compute_oracle') return rowHasAcceptedComputeEvidence(row);
-  return rowHasAcceptedComputeEvidence(row);
+  return false;
 }
 
 function sourceFirstVisualSourceIdentityHash(row = {}) {
