@@ -243,7 +243,7 @@ function uniqueSortedStrings(values) {
   )].sort();
 }
 
-function cleanCandidate(raw, index = 0) {
+function cleanCandidate(raw, index = 0, { candidateSource = 'configured_candidate_pool' } = {}) {
   const candidate = raw && typeof raw === 'object' ? raw : {};
   const id = String(candidate.id ?? '').trim();
   const backendFamily = String(
@@ -288,8 +288,8 @@ function cleanCandidate(raw, index = 0) {
     profilePath: resolvedProfilePath,
     profileMode,
     profile_mode: profileMode,
-    candidateSource: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
-    candidate_source: candidate.candidateSource ?? candidate.candidate_source ?? 'configured_candidate_pool',
+    candidateSource,
+    candidate_source: candidateSource,
     sourceUrl,
     localRepoPath: localRepoPath ? path.resolve(localRepoPath) : null,
     local_repo_path: localRepoPath ? path.resolve(localRepoPath) : null,
@@ -322,35 +322,40 @@ function directCandidateFromInput({
   const effectiveSourceUrl = url || pathToFileURL(resolvedRepo).href;
   const id = String(sourceId ?? '').trim()
     || `direct-${safeSlug(url || resolvedRepo)}-${sha256(`${effectiveSourceUrl}\0${commit}`).slice(0, 12)}`;
-  return cleanCandidate({
-    id,
-    backendFamily: backendFamily || 'unknown_gpu_project',
-    candidateSource: resolvedRepo ? 'direct_local_git_repo_path' : 'direct_source_url_commit',
-    sourceUrl: effectiveSourceUrl,
-    localRepoPath: resolvedRepo,
-    immutableCommit: commit,
-    sizeSignals: {
-      class: 'large_arbitrary_user_project',
-      coldPathKind: resolvedRepo
-        ? 'direct_local_git_repo_cold_intake'
-        : 'direct_source_url_commit_cold_intake',
-      inputMode: 'cli_or_env_direct_source',
+  return cleanCandidate(
+    {
+      id,
+      backendFamily: backendFamily || 'unknown_gpu_project',
+      sourceUrl: effectiveSourceUrl,
+      localRepoPath: resolvedRepo,
+      immutableCommit: commit,
+      sizeSignals: {
+        class: 'large_arbitrary_user_project',
+        coldPathKind: resolvedRepo
+          ? 'direct_local_git_repo_cold_intake'
+          : 'direct_source_url_commit_cold_intake',
+        inputMode: 'cli_or_env_direct_source',
+      },
+      runtimeBoundaryHints: {
+        required: [
+          'runtime_profile_contract',
+          'same_process_loader',
+          'epoch_publication',
+          'dispatch_trace',
+          'host_identity',
+          'output_oracle',
+        ],
+      },
+      oracleHints: {
+        acceptedByDeclaration: false,
+        expectedKinds: ['compute_readback', 'deterministic_visual_oracle'],
+      },
     },
-    runtimeBoundaryHints: {
-      required: [
-        'runtime_profile_contract',
-        'same_process_loader',
-        'epoch_publication',
-        'dispatch_trace',
-        'host_identity',
-        'output_oracle',
-      ],
+    0,
+    {
+      candidateSource: resolvedRepo ? 'direct_local_git_repo_path' : 'direct_source_url_commit',
     },
-    oracleHints: {
-      acceptedByDeclaration: false,
-      expectedKinds: ['compute_readback', 'deterministic_visual_oracle'],
-    },
-  });
+  );
 }
 
 async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
@@ -364,7 +369,8 @@ async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error('large-project cold-path candidates must be a non-empty array');
   }
-  const cleaned = candidates.map(cleanCandidate);
+  const cleaned = candidates.map((candidate, index) =>
+    cleanCandidate(candidate, index, { candidateSource: 'configured_candidate_pool' }));
   const ids = new Set();
   for (const candidate of cleaned) {
     if (ids.has(candidate.id)) throw new Error(`duplicate candidate id: ${candidate.id}`);
@@ -2860,6 +2866,23 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct source input normalization failed');
   }
+  const spoofedDirectPool = await loadCandidates({
+    candidatesJson: JSON.stringify([
+      {
+        id: 'spoofed-direct-candidate',
+        candidateSource: 'direct_source_url_commit',
+        candidate_source: 'direct_source_url_commit',
+        sourceUrl: 'https://example.invalid/spoofed-direct.git',
+        immutableCommit: '1212121212121212121212121212121212121212',
+      },
+    ]),
+  });
+  if (
+    spoofedDirectPool[0]?.candidateSource !== 'configured_candidate_pool'
+    || spoofedDirectPool[0]?.candidate_source !== 'configured_candidate_pool'
+  ) {
+    throw new Error('random large-project cold-path candidate JSON was allowed to forge direct source authority');
+  }
   const parsedListing = parseGitLsTree([
     '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
     '100644 blob dddddddddddddddddddddddddddddddddddddddd 78\tcrates/gpu/Cargo.toml',
@@ -3054,7 +3077,12 @@ async function selfCheck() {
     },
   );
   if (localGitInit.exitCode !== 0 || localGitAdd.exitCode !== 0 || localGitCommit.exitCode !== 0) {
-    throw new Error('random large-project cold-path local git fixture setup failed');
+    throw new Error(
+      `random large-project cold-path local git fixture setup failed: `
+      + `init=${localGitInit.exitCode}:${tail(localGitInit.stderr || localGitInit.stdout || localGitInit.error || '', 240)} `
+      + `add=${localGitAdd.exitCode}:${tail(localGitAdd.stderr || localGitAdd.stdout || localGitAdd.error || '', 240)} `
+      + `commit=${localGitCommit.exitCode}:${tail(localGitCommit.stderr || localGitCommit.stdout || localGitCommit.error || '', 240)}`,
+    );
   }
   const localGitHead = await runProcess('git', ['-C', localRepoPath, 'rev-parse', 'HEAD'], {
     cwd: REPO_ROOT,
