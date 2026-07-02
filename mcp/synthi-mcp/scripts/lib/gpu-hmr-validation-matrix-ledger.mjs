@@ -4368,9 +4368,12 @@ function rowKey(row) {
   )
     ? row.runMode?.metricScope ?? 'unknown'
     : null;
+  const targetKey = randomColdPathCanonicalTargetKey(row)
+    ?? row.targetId
+    ?? 'unknown';
   return [
     row.backend ?? 'unknown',
-    row.targetId ?? 'unknown',
+    targetKey,
     row.profileId ?? 'unknown',
     row.proofMode ?? 'unknown',
     runModeKey,
@@ -4380,6 +4383,8 @@ function rowKey(row) {
 }
 
 function canonicalTargetKey(row) {
+  const randomColdKey = randomColdPathCanonicalTargetKey(row);
+  if (randomColdKey) return randomColdKey;
   const supportedScope = firstText(
     row.supportedPipelineScope,
     row.supported_pipeline_scope,
@@ -4390,6 +4395,21 @@ function canonicalTargetKey(row) {
     return `${row.proofMode}:${supportedScope}`;
   }
   return firstText(row.targetId, row.profileId) ?? 'unknown';
+}
+
+function randomColdPathCanonicalTargetKey(row = {}) {
+  if (row.proofMode !== 'random_large_project_cold_path') return null;
+  const sourceIdentityHash = normalizeSha256(firstText(
+    row.randomColdPathSourceIdentityHash,
+    row.random_cold_path_source_identity_hash,
+  )) ?? randomColdPathSourceIdentityHash(row);
+  if (sourceIdentityHash) return `random-cold-source:${sourceIdentityHash}`;
+  const sourceContentOnlyIdentityHash = normalizeSha256(firstText(
+    row.randomColdPathSourceContentOnlyIdentityHash,
+    row.random_cold_path_source_content_only_identity_hash,
+  )) ?? randomColdPathSourceContentOnlyIdentityHash(row);
+  if (sourceContentOnlyIdentityHash) return `random-cold-content:${sourceContentOnlyIdentityHash}`;
+  return null;
 }
 
 function rowAttemptKey(row) {
@@ -7605,6 +7625,19 @@ function finalizeRow(seed) {
     accepted: safetyFailures.length === 0,
     failedGates: safetyFailures,
   };
+  if (row.proofMode === 'random_large_project_cold_path') {
+    const sourceIdentityHash = randomColdPathSourceIdentityHash(row);
+    const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
+    const sourceContentOnlyIdentityHash = randomColdPathSourceContentOnlyIdentityHash(row);
+    row.randomColdPathSourceIdentityHash = sourceIdentityHash;
+    row.random_cold_path_source_identity_hash = sourceIdentityHash;
+    row.randomColdPathSourceContentIdentityHash = sourceContentIdentityHash;
+    row.random_cold_path_source_content_identity_hash = sourceContentIdentityHash;
+    row.randomColdPathSourceContentOnlyIdentityHash = sourceContentOnlyIdentityHash;
+    row.random_cold_path_source_content_only_identity_hash = sourceContentOnlyIdentityHash;
+    row.randomColdPathCanonicalTargetKey = randomColdPathCanonicalTargetKey(row);
+    row.random_cold_path_canonical_target_key = row.randomColdPathCanonicalTargetKey;
+  }
   row.rowId = rowIdFor(row);
   row.matrixKey = rowKey(row);
   row.attemptKey = rowAttemptKey(row);

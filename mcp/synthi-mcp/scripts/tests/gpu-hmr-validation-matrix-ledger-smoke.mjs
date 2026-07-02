@@ -1830,12 +1830,12 @@ function randomColdSourceListingManifestFixture({
 
 function randomColdPathManifest({
   candidateId = 'direct-random-arbitrary-cold',
+  sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
+  immutableCommit = '1111111111111111111111111111111111111111',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
-  const sourceUrl = 'https://example.invalid/arbitrary/user-project.git';
-  const immutableCommit = '1111111111111111111111111111111111111111';
   const sourceRelevantFileCount = 73;
   const sourceOrBuildRelevantFileCount = 75;
   const gpuSourceFileCount = 31;
@@ -2123,6 +2123,12 @@ assert.deepEqual(
   randomColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
   ['vulkan', 'webgpu_wgsl'],
 );
+assert.equal(randomColdRow.targetId, 'direct-random-arbitrary-cold');
+assert.ok(randomColdRow.randomColdPathSourceIdentityHash?.startsWith('sha256:'));
+assert.ok(randomColdRow.randomColdPathCanonicalTargetKey?.startsWith('random-cold-source:sha256:'));
+assert.notEqual(randomColdRow.randomColdPathCanonicalTargetKey, randomColdRow.targetId);
+assert.ok(randomColdRow.matrixKey.includes(randomColdRow.randomColdPathCanonicalTargetKey));
+assert.ok(randomColdRow.attemptKey.includes(randomColdRow.randomColdPathCanonicalTargetKey));
 assert.equal(
   randomColdRow.randomLargeProjectColdPath.directInputEvidence.proofAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
@@ -2179,7 +2185,11 @@ const multiColdCandidateIds = [
 const multiColdUnselectedCandidateId = 'direct-random-arbitrary-multi-unselected';
 const multiColdCandidateManifests = multiColdCandidateIds
   .concat(multiColdUnselectedCandidateId)
-  .map((candidateId) => randomColdPathManifest({ candidateId }));
+  .map((candidateId, index) => randomColdPathManifest({
+    candidateId,
+    sourceUrl: `https://example.invalid/arbitrary/${candidateId}.git`,
+    immutableCommit: `${String(index + 2).repeat(40)}`,
+  }));
 const multiColdSelectionHash = hashValue('direct-random-arbitrary-multi:selection');
 await writeJson(
   path.join(multiRandomColdPathDir, 'random-cold-multi-result.json'),
@@ -2245,6 +2255,54 @@ assert.ok(
   multiRandomColdUnselectedRow?.safety.failedGates
     .some((gate) => gate.code === 'random_large_project_cold_path_result_not_selected'),
 );
+
+const aliasRandomColdPathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-source-alias-smoke',
+);
+const aliasColdCandidateIds = [
+  'direct-random-arbitrary-alias-a',
+  'direct-random-arbitrary-alias-b',
+];
+const aliasSourceUrl = 'https://example.invalid/arbitrary/same-user-project.git';
+const aliasImmutableCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const aliasColdCandidateManifests = aliasColdCandidateIds
+  .map((candidateId) => randomColdPathManifest({
+    candidateId,
+    sourceUrl: aliasSourceUrl,
+    immutableCommit: aliasImmutableCommit,
+  }));
+await writeJson(
+  path.join(aliasRandomColdPathDir, 'random-cold-source-aliases.json'),
+  {
+    ...aliasColdCandidateManifests[0],
+    runId: 'direct-random-arbitrary-source-alias-run',
+    run_id: 'direct-random-arbitrary-source-alias-run',
+    selection: {
+      ...aliasColdCandidateManifests[0].selection,
+      selectedIds: aliasColdCandidateIds,
+      selected_ids: aliasColdCandidateIds,
+      selectionHash: hashValue('direct-random-arbitrary-source-alias:selection'),
+      selection_hash: hashValue('direct-random-arbitrary-source-alias:selection'),
+    },
+    candidates: aliasColdCandidateManifests.flatMap((manifest) => manifest.candidates),
+    selectedCandidates: aliasColdCandidateManifests.flatMap((manifest) => manifest.selectedCandidates),
+    selected_candidates: aliasColdCandidateManifests.flatMap((manifest) => manifest.selectedCandidates),
+    results: aliasColdCandidateManifests.flatMap((manifest) => manifest.results),
+  },
+);
+const aliasRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [aliasRandomColdPathDir],
+});
+const aliasRandomColdRows = aliasRandomColdLedger.rows.filter(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(aliasRandomColdRows.length, 1);
+assert.ok(aliasColdCandidateIds.includes(aliasRandomColdRows[0].targetId));
+assert.ok(aliasRandomColdRows[0].randomColdPathCanonicalTargetKey?.startsWith('random-cold-source:sha256:'));
+assert.ok(aliasRandomColdRows[0].attemptKey.includes(aliasRandomColdRows[0].randomColdPathCanonicalTargetKey));
 
 const forgedCandidateBackendDir = path.join(tmpRoot, 'random-large-project-cold-path-backend-forged');
 const forgedBackendSourceUrl = 'https://example.invalid/arbitrary/user-project.git';
