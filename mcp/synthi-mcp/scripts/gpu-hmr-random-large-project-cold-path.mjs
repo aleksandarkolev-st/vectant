@@ -1178,12 +1178,10 @@ async function readBuildFileContent({
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(sourceIntakeTimeoutMs, 60000));
     timer.unref?.();
+    const githubApi = githubApiHeaders();
     try {
       const response = await fetch(apiUrl, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'synthi-gpu-hmr-random-cold-intake',
-        },
+        headers: githubApi.headers,
         signal: controller.signal,
       });
       const text = await response.text();
@@ -1195,6 +1193,8 @@ async function readBuildFileContent({
           reason: 'github_build_file_blob_fetch_failed',
           apiUrl,
           api_url: apiUrl,
+          githubApiAuthentication: githubApi.authEvidence,
+          github_api_authentication: githubApi.authEvidence,
           httpStatus: response.status,
           http_status: response.status,
           bodyTail: tail(text, 1000),
@@ -1210,6 +1210,8 @@ async function readBuildFileContent({
           reason: 'github_build_file_blob_encoding_unsupported',
           apiUrl,
           api_url: apiUrl,
+          githubApiAuthentication: githubApi.authEvidence,
+          github_api_authentication: githubApi.authEvidence,
         };
       }
       const bytes = Buffer.from(payload.content.replace(/\s/g, ''), 'base64');
@@ -1219,6 +1221,8 @@ async function readBuildFileContent({
         transport: 'github_git_blob_api',
         apiUrl,
         api_url: apiUrl,
+        githubApiAuthentication: githubApi.authEvidence,
+        github_api_authentication: githubApi.authEvidence,
         content: bytes.toString('utf8', 0, Math.min(bytes.length, BUILD_METADATA_CONTENT_MAX_BYTES)),
         byteLength: bytes.length,
         byte_length: bytes.length,
@@ -1236,6 +1240,8 @@ async function readBuildFileContent({
           : 'github_build_file_blob_error',
         apiUrl,
         api_url: apiUrl,
+        githubApiAuthentication: githubApi.authEvidence,
+        github_api_authentication: githubApi.authEvidence,
         error: error?.message || String(error),
       };
     } finally {
@@ -1289,6 +1295,8 @@ async function collectBuildMetadataContentEvidence({
         transport: result.transport,
         lazyBlobFetchAllowed: result.lazyBlobFetchAllowed === true,
         lazy_blob_fetch_allowed: result.lazyBlobFetchAllowed === true,
+        githubApiAuthentication: result.githubApiAuthentication ?? null,
+        github_api_authentication: result.github_api_authentication ?? null,
         semanticSummary: summarizeBuildMetadataContent(file.path, content),
         semantic_summary: summarizeBuildMetadataContent(file.path, content),
       });
@@ -2111,6 +2119,45 @@ function parseGitHubRepoUrl(sourceUrl) {
   return { owner, repo };
 }
 
+function githubApiAuthentication(env = process.env) {
+  const sources = ['GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_PAT'];
+  const source = sources.find((name) => String(env[name] ?? '').trim());
+  const token = source ? String(env[source]).trim() : '';
+  const evidence = {
+    proofAuthority: 'github_api_authentication_transport_only_not_gpu_hmr_success',
+    proof_authority: 'github_api_authentication_transport_only_not_gpu_hmr_success',
+    tokenPresent: Boolean(token),
+    token_present: Boolean(token),
+    tokenSource: source ?? null,
+    token_source: source ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  return {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    evidence,
+  };
+}
+
+function githubApiHeaders(env = process.env) {
+  const auth = githubApiAuthentication(env);
+  return {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'synthi-gpu-hmr-random-cold-intake',
+      ...auth.headers,
+    },
+    authEvidence: auth.evidence,
+    auth_evidence: auth.evidence,
+  };
+}
+
 async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   const parsed = parseGitHubRepoUrl(candidate.sourceUrl);
   if (!parsed) return { attempted: false };
@@ -2119,12 +2166,10 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   timer.unref?.();
   const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${candidate.immutableCommit}?recursive=1`;
   const startedAt = new Date().toISOString();
+  const githubApi = githubApiHeaders();
   try {
     const response = await fetch(apiUrl, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'synthi-gpu-hmr-random-cold-intake',
-      },
+      headers: githubApi.headers,
       signal: controller.signal,
     });
     const text = await response.text();
@@ -2138,6 +2183,8 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
         api_url: apiUrl,
         httpStatus: response.status,
         http_status: response.status,
+        githubApiAuthentication: githubApi.authEvidence,
+        github_api_authentication: githubApi.authEvidence,
         bodyTail: tail(text, 2000),
         body_tail: tail(text, 2000),
         startedAt,
@@ -2155,6 +2202,8 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
         reason: 'source_tree_github_tree_truncated',
         apiUrl,
         api_url: apiUrl,
+        githubApiAuthentication: githubApi.authEvidence,
+        github_api_authentication: githubApi.authEvidence,
         startedAt,
         started_at: startedAt,
         finishedAt: new Date().toISOString(),
@@ -2178,6 +2227,8 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
       accepted: true,
       apiUrl,
       api_url: apiUrl,
+      githubApiAuthentication: githubApi.authEvidence,
+      github_api_authentication: githubApi.authEvidence,
       transport: 'github_git_tree_api_recursive',
       files,
       startedAt,
@@ -2197,6 +2248,8 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
         : 'source_tree_github_tree_error',
       apiUrl,
       api_url: apiUrl,
+      githubApiAuthentication: githubApi.authEvidence,
+      github_api_authentication: githubApi.authEvidence,
       error: error?.message || String(error),
       startedAt,
       started_at: startedAt,
@@ -2644,6 +2697,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         transportEvidence: {
           apiUrl: githubTree.apiUrl,
           api_url: githubTree.api_url,
+          githubApiAuthentication: githubTree.githubApiAuthentication,
+          github_api_authentication: githubTree.github_api_authentication,
           startedAt: githubTree.startedAt,
           started_at: githubTree.started_at,
           finishedAt: githubTree.finishedAt,
@@ -3274,6 +3329,21 @@ async function selfCheck() {
     || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== true
   ) {
     throw new Error('random large-project cold-path blobless tree size listing opt-in failed');
+  }
+  const unauthenticatedGitHubApi = githubApiHeaders({});
+  const authenticatedGitHubApi = githubApiHeaders({ GH_TOKEN: 'self-check-secret-token' });
+  if (
+    unauthenticatedGitHubApi.headers.Authorization
+    || unauthenticatedGitHubApi.authEvidence.tokenPresent !== false
+    || authenticatedGitHubApi.headers.Authorization !== 'Bearer self-check-secret-token'
+    || authenticatedGitHubApi.authEvidence.tokenPresent !== true
+    || authenticatedGitHubApi.authEvidence.tokenSource !== 'GH_TOKEN'
+    || stableJson(authenticatedGitHubApi.authEvidence).includes('self-check-secret-token')
+    || authenticatedGitHubApi.authEvidence.acceptedForGpuHmr !== false
+    || authenticatedGitHubApi.authEvidence.gpuHmrSuccess !== false
+    || authenticatedGitHubApi.authEvidence.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error('random large-project cold-path GitHub API auth evidence self-check failed');
   }
   let rejectedMissingDirectSource = false;
   try {
