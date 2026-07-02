@@ -9168,6 +9168,23 @@ function withQueryRecomputedRowId(row) {
   };
 }
 
+const artifactPathTieBreakFirstRow = withQueryRecomputedRowId({
+  ...refusalMatrixRow('artifact-path-tie-break-target'),
+  artifactPath: 'selection/a-first.json',
+  artifact_path: 'selection/a-first.json',
+});
+const artifactPathTieBreakLexicalRow = withQueryRecomputedRowId({
+  ...JSON.parse(JSON.stringify(artifactPathTieBreakFirstRow)),
+  artifactPath: 'selection/z-path-should-not-win.json',
+  artifact_path: 'selection/z-path-should-not-win.json',
+});
+const artifactPathTieBreakLedger = buildGpuHmrValidationMatrixLedger(
+  [artifactPathTieBreakFirstRow, artifactPathTieBreakLexicalRow],
+  { includeUnproven: true },
+);
+assert.equal(artifactPathTieBreakLedger.rows.length, 1);
+assert.equal(artifactPathTieBreakLedger.rows[0].artifactPath, 'selection/a-first.json');
+
 function mutateAcceptedLedgerRecord(row, mutate) {
   const cloned = JSON.parse(JSON.stringify(row));
   mutate(cloned.ledger.record, cloned);

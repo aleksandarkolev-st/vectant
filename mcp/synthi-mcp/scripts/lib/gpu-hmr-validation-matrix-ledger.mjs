@@ -23377,6 +23377,26 @@ function randomColdPathBroadReadinessFreshnessGaps(rows, context = {}) {
     .flatMap((row) => randomColdPathBroadReadinessFreshness(row, context).openGaps ?? []));
 }
 
+function rowSelectionTieBreakKey(row = {}) {
+  const sequence = finiteNumber(
+    row.attemptSequence
+    ?? row.attempt_sequence
+    ?? row.collectorSequence
+    ?? row.collector_sequence
+  );
+  if (sequence !== null) {
+    return `sequence:${String(sequence).padStart(20, '0')}`;
+  }
+  const seed = { ...row };
+  delete seed.artifactPath;
+  delete seed.artifact_path;
+  delete seed.rowId;
+  delete seed.row_id;
+  delete seed.matrixKey;
+  delete seed.matrix_key;
+  return `content:sha256:${sha256Hex(stableJson(seed))}`;
+}
+
 function selectBestRows(rows) {
   const selected = new Map();
   for (const row of rows) {
@@ -23391,6 +23411,8 @@ function selectBestRows(rows) {
     const runtimeBoundarySupportDelta =
       rowRuntimeBoundarySupportScore(row) - rowRuntimeBoundarySupportScore(existing);
     const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
+    const tieBreakDelta =
+      rowSelectionTieBreakKey(row).localeCompare(rowSelectionTieBreakKey(existing));
     if (
       priorityDelta > 0
       || (
@@ -23407,7 +23429,7 @@ function selectBestRows(rows) {
                   updatedDelta > 0
                   || (
                     updatedDelta === 0
-                    && String(row.artifactPath) > String(existing.artifactPath)
+                    && tieBreakDelta > 0
                   )
                 )
               )
@@ -23432,11 +23454,13 @@ function selectLatestAttemptRows(rows) {
       continue;
     }
     const updatedDelta = rowUpdatedAtMs(row) - rowUpdatedAtMs(existing);
+    const tieBreakDelta =
+      rowSelectionTieBreakKey(row).localeCompare(rowSelectionTieBreakKey(existing));
     if (
       updatedDelta > 0
       || (
         updatedDelta === 0
-        && String(row.artifactPath) > String(existing.artifactPath)
+        && tieBreakDelta > 0
       )
     ) {
       selected.set(key, row);
@@ -23511,11 +23535,11 @@ function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
       ? 'collector_file_mtime'
       : 'collector_file_mtime_counts_only_without_unproven_row_details',
     selectionPolicy:
-      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
+      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_path_stripped_content_hash',
     selection_policy:
-      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_artifact_path',
-    latestPolicy: 'updated_at_then_artifact_path',
-    latest_policy: 'updated_at_then_artifact_path',
+      'priority_then_attempt_completeness_then_runtime_boundary_support_then_updated_at_then_path_stripped_content_hash',
+    latestPolicy: 'updated_at_then_path_stripped_content_hash',
+    latest_policy: 'updated_at_then_path_stripped_content_hash',
     latestAttemptCount: allAttempts.length,
     latest_attempt_count: allAttempts.length,
     attemptCount: attempts.length,
