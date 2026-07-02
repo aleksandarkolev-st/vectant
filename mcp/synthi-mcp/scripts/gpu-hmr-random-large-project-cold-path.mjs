@@ -194,6 +194,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--count') out.count = argv[++i];
     else if (arg === '--candidate') out.candidateId = argv[++i];
     else if (arg === '--candidates') out.candidatesPath = argv[++i];
+    else if (arg === '--direct-candidates') out.directCandidatesPath = argv[++i];
     else if (arg === '--require-direct-source') out.requireDirectSource = true;
     else if (arg === '--sample-pool') out.samplePool = true;
     else if (arg === '--source-url') out.sourceUrl = argv[++i];
@@ -513,6 +514,36 @@ async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
     ids.add(candidate.id);
   }
   return cleaned;
+}
+
+async function loadDirectCandidates({ candidatesJson, candidatesPath } = {}) {
+  if (!candidatesJson && !candidatesPath) return [];
+  const raw = candidatesJson
+    ? JSON.parse(candidatesJson)
+    : JSON.parse(await readFile(path.resolve(candidatesPath), 'utf8'));
+  const candidates = Array.isArray(raw) ? raw : raw?.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    throw new Error('direct large-project cold-path candidates must be a non-empty array');
+  }
+  const out = candidates.map((candidate, index) => {
+    const item = candidate && typeof candidate === 'object' ? candidate : {};
+    const direct = directCandidateFromInput({
+      sourceUrl: item.sourceUrl ?? item.source_url ?? item.repo?.url,
+      repoPath: item.repoPath ?? item.repo_path ?? item.localRepoPath ?? item.local_repo_path,
+      immutableCommit: item.immutableCommit ?? item.immutable_commit ?? item.commit ?? item.repo?.commit,
+      sourceId: item.sourceId ?? item.source_id ?? item.id,
+      backendFamily: item.backendFamily ?? item.backend_family ?? item.backend,
+      inputChannels: ['cli_arg_direct_candidates'],
+    });
+    if (!direct) throw new Error(`direct candidate[${index}] did not contain a source`);
+    return direct;
+  });
+  const ids = new Set();
+  for (const candidate of out) {
+    if (ids.has(candidate.id)) throw new Error(`duplicate direct candidate id: ${candidate.id}`);
+    ids.add(candidate.id);
+  }
+  return out;
 }
 
 function selectCandidates({ candidates, seed, count, candidateId }) {
@@ -3266,6 +3297,48 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct source input normalization failed');
   }
+  const directBatchCandidates = await loadDirectCandidates({
+    candidatesJson: JSON.stringify([
+      {
+        id: 'direct-batch-project-a',
+        sourceUrl: 'https://example.invalid/direct-batch-a.git',
+        immutableCommit: '2222222222222222222222222222222222222222',
+        backendFamily: 'unknown_gpu_project',
+      },
+      {
+        id: 'direct-batch-project-b',
+        sourceUrl: 'https://example.invalid/direct-batch-b.git',
+        immutableCommit: '3333333333333333333333333333333333333333',
+        backendFamily: 'unknown_gpu_project',
+      },
+    ]),
+  });
+  const { manifest: directBatchManifest } = await buildManifest({
+    seed: 'direct-batch-self-check-seed',
+    count: 2,
+    dryRun: true,
+    timeoutMs: 1,
+    runnerTimeoutMs: 1,
+    sourceIntake: false,
+    sourceIntakeTimeoutMs: 1,
+    candidates: directBatchCandidates,
+    outputDir: path.join(LOG_DIR, 'self-check'),
+  });
+  if (
+    directBatchCandidates.length !== 2
+    || directBatchManifest.selection.selectedIds.length !== 2
+    || directBatchManifest.results.length !== 2
+    || directBatchManifest.candidates.some((candidate) =>
+      candidate.candidateSource !== 'direct_source_url_commit'
+      || candidate.directInputEvidence?.acceptedAsDirectInputEvidence !== true
+      || !candidate.directInputEvidence?.inputChannels?.includes('cli_arg_direct_candidates')
+      || candidate.directInputEvidence?.projectNameWhitelist?.length !== 0
+      || candidate.acceptedForGpuHmr === true
+      || candidate.gpuHmrSuccess === true
+    )
+  ) {
+    throw new Error('random large-project cold-path direct candidate batch self-check failed');
+  }
   const spoofedDirectPool = await loadCandidates({
     candidatesJson: JSON.stringify([
       {
@@ -3763,7 +3836,6 @@ async function main() {
     return;
   }
   const seed = String(args.seed ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SEED ?? '2026-06-30-random-large-project-cold-path');
-  const count = Number(args.count ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_COUNT ?? 1);
   const dryRun = Boolean(args.dryRun || process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DRY_RUN === '1');
   const candidateId = args.candidateId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATE_ID ?? '';
   const timeoutMs = Number(process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_TIMEOUT_MS ?? process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? 120000);
@@ -3785,12 +3857,22 @@ async function main() {
     backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
     inputChannels: directInputChannelsFromArgsEnv(args),
   });
-  assertDirectSourceRequirement({ requireDirectSource, directCandidate });
-  const candidates = directCandidate ? [directCandidate] : await loadCandidates({
+  const directCandidates = directCandidate ? [] : await loadDirectCandidates({
+    candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DIRECT_CANDIDATES_JSON,
+    candidatesPath: args.directCandidatesPath
+      ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DIRECT_CANDIDATES_PATH,
+  });
+  assertDirectSourceRequirement({
+    requireDirectSource,
+    directCandidate: directCandidate ?? directCandidates[0] ?? null,
+  });
+  const candidates = directCandidate ? [directCandidate] : directCandidates.length > 0 ? directCandidates : await loadCandidates({
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
   });
   const effectiveCandidateId = directCandidate ? directCandidate.id : candidateId;
+  const defaultCount = directCandidate ? 1 : directCandidates.length > 0 ? directCandidates.length : 1;
+  const count = Number(args.count ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_COUNT ?? defaultCount);
   const effectiveCount = directCandidate ? 1 : count;
   const { manifest, written } = await buildManifest({
     seed,
@@ -3809,7 +3891,11 @@ async function main() {
     schemaVersion: SCHEMA,
     manifestPath: written.filePath,
     manifestHash: written.hash,
-    sourceMode: directCandidate ? 'direct_user_source' : 'configured_sample_pool',
+    sourceMode: directCandidate
+      ? 'direct_user_source'
+      : directCandidates.length > 0
+        ? 'direct_user_source_batch'
+        : 'configured_sample_pool',
     selectedIds: manifest.selection.selectedIds,
     dryRun,
     resultStatuses: manifest.results.map((result) => result.status),
