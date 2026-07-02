@@ -128,7 +128,9 @@ function radarState() {
       },
       proofBundles: [{
         id: 'proof-1',
+        transactionId: 'txn-1',
         bundleDigest: 'digest-proof-1',
+        incidentReplayDigest: 'sha256:incident',
         readSetDigest: 'digest-read',
         evidenceRefs: ['test:checkout'],
         trailers: {
@@ -137,16 +139,69 @@ function radarState() {
           'CodeSite-Clearance': 'lease-1',
           'CodeSite-Landing': 'completed',
           'CodeSite-Transaction': 'txn-1',
+          'CodeSite-Black-Box': 'sha256:incident',
         },
       }],
       incidents: [{
         id: 'incident-1',
-        category: 'near_miss',
-        severity: 'medium',
+        category: 'black_box',
+        severity: 'low',
         participants: ['ATLAS-1'],
         affectedZones: ['api/**'],
         evidenceRefs: ['incident:evidence'],
         replayDigest: 'sha256:incident',
+        createdAt: '2026-06-29T23:36:00.000Z',
+        incidentReplay: {
+          schemaVersion: 'synthi.codesite.incidentReplay.v1',
+          summary: 'Transaction txn-1 black-box handover committed.',
+          transactionId: 'txn-1',
+          transaction: {
+            id: 'txn-1',
+            mutationLeaseId: 'lease-1',
+            displayCallsign: 'ATLAS-1',
+            status: 'committed',
+            readSet: ['api/checkout/schema.ts'],
+            writeSet: ['api/checkout/route.js'],
+          },
+          proofBundle: {
+            id: 'proof-1',
+            bundleDigest: 'digest-proof-1',
+            incidentReplayDigest: 'sha256:incident',
+          },
+          handover: {
+            exportPaths: [
+              'projects/proj-1/incidents/incident-replay-incident-1.jsonl',
+              'projects/proj-1/handover.md',
+              'projects/proj-1/proof-bundles/proof-1.proof.json',
+            ],
+          },
+          completeness: {
+            score: 0.62,
+            presentEventTypes: ['transaction.committed', 'black_box.closed'],
+            missingEventTypes: ['write.denied', 'transaction.aborted'],
+          },
+          causalEvents: [
+            {
+              eventId: 'event-commit',
+              type: 'transaction.committed',
+              transactionId: 'txn-1',
+              logicalTime: 10,
+              displayCallsign: 'ATLAS-1',
+              path: 'api/checkout/route.js',
+              evidenceRefs: ['test:checkout'],
+              details: { transactionId: 'txn-1', proofBundleId: 'proof-1' },
+            },
+            {
+              eventId: 'event-close',
+              type: 'black_box.closed',
+              transactionId: 'txn-1',
+              logicalTime: 11,
+              displayCallsign: 'ATLAS-1',
+              evidenceRefs: ['incident:evidence'],
+              details: { transactionId: 'txn-1', proofBundleId: 'proof-1' },
+            },
+          ],
+        },
       }],
       inspectionRuns: [{
         id: 'inspection-1',
@@ -623,6 +678,16 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
     expect(container.textContent).toContain('pilot:active');
     expect(container.textContent).toContain('min:IFR');
+    const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
+    expect(replayHandover).toBeTruthy();
+    expect(replayHandover.textContent).toContain('txn-1');
+    expect(replayHandover.textContent).toContain('proof-1');
+    expect(replayHandover.textContent).toContain('sha256:incident');
+    expect(replayHandover.textContent).toContain('CodeSite-Black-Box');
+    expect(replayHandover.textContent).toContain('transaction.committed');
+    expect(replayHandover.textContent).toContain('black_box.closed');
+    expect(replayHandover.textContent).toContain('write.denied');
+    expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
     expect(container.textContent).toContain('Filesystem Boundary Proofs');
     const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
     expect(boundaryProof).toBeTruthy();

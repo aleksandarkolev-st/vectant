@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -460,9 +460,10 @@ function riskTone(level) {
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
 }
 
-function Pill({ children, tone = 'idle', className = '' }) {
+function Pill({ children, tone = 'idle', className = '', testId }) {
   return (
     <span
+      data-testid={testId}
       className={`inline-flex h-6 items-center rounded px-2 text-[11px] font-medium ${className}`}
       style={typeof tone === 'string' ? statusTone(tone) : tone}
     >
@@ -481,7 +482,7 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-9 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
         background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
@@ -552,8 +553,8 @@ function MetricsGroup({ title, rows }) {
     <div className="min-w-0">
       <div className="mb-1 text-[11px] font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>{title}</div>
       <div className="min-w-0">
-        {asArray(rows).map((metric) => (
-          <MetricRow key={metric.key} metric={metric} />
+        {asArray(rows).map((metric, index) => (
+          <MetricRow key={metric.key || metric.label || `${title}-metric-${index}`} metric={metric} />
         ))}
       </div>
     </div>
@@ -747,9 +748,9 @@ function ProofValueList({ values, empty = 'none', maxVisible = 3 }) {
   }
   return (
     <div className="flex min-w-0 max-w-full flex-wrap gap-1">
-      {visible.map((value) => (
+      {visible.map((value, index) => (
         <code
-          key={value}
+          key={`${value}-${index}`}
           className="block min-w-0 max-w-full whitespace-normal break-all rounded border px-1.5 py-0.5 text-[10px] leading-4"
           style={{
             borderColor: 'var(--border-subtle)',
@@ -1008,9 +1009,9 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
 
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-start gap-1 self-start overflow-hidden">
-      {visible.map((path) => (
+      {visible.map((path, index) => (
         <code
-          key={path}
+          key={`${path}-${index}`}
           className="inline-block min-w-0 truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
           style={{
             maxWidth: 'min(100%, 18rem)',
@@ -1037,9 +1038,9 @@ function TagList({ items, empty = null, maxVisible = 5 }) {
 
   return (
     <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-      {visible.map((item) => (
+      {visible.map((item, index) => (
         <code
-          key={item}
+          key={`${item}-${index}`}
           className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
           title={item}
@@ -1242,6 +1243,54 @@ function replayTailFromNewestFirst(events) {
   return events.slice(0, 7).reverse();
 }
 
+function causalReplayHandovers(incidents, proofBundles) {
+  return asArray(incidents)
+    .filter((incident) => incident?.replayDigest || incident?.incidentReplay)
+    .map((incident) => {
+      const replay = incident.incidentReplay || {};
+      const transactionId = replay.transaction?.id
+        || replay.transactionId
+        || asArray(replay.causalEvents).map((event) => event.transactionId || event.details?.transactionId).find(Boolean)
+        || null;
+      const proofBundle = asArray(proofBundles).find((bundle) => (
+        bundle.incidentReplayDigest === incident.replayDigest
+        || bundle.id === replay.proofBundle?.id
+        || (transactionId && bundle.transactionId === transactionId)
+      )) || null;
+      const codeSiteBlackBox = proofBundle?.trailers?.['CodeSite-Black-Box']
+        || proofBundle?.incidentReplayDigest
+        || incident.replayDigest
+        || replay.proofBundle?.incidentReplayDigest
+        || null;
+      const exportPaths = uniqueValues([
+        ...asArray(replay.handover?.exportPaths),
+        `incidents/incident-replay-${incident.id}.jsonl`,
+        'handover.md',
+        proofBundle?.id && `proof-bundles/${proofBundle.id}.proof.json`,
+        proofBundle?.id && `proof-bundles/${proofBundle.id}.trailers.txt`,
+      ]);
+      return {
+        incident,
+        replay,
+        transactionId,
+        proofBundle,
+        codeSiteBlackBox,
+        exportPaths,
+        causalEvents: asArray(replay.causalEvents),
+        completeness: replay.completeness || null,
+      };
+    })
+    .sort((left, right) => Date.parse(right.incident.createdAt || 0) - Date.parse(left.incident.createdAt || 0));
+}
+
+function replayCompletenessTone(completeness) {
+  const score = Number(completeness?.score);
+  if (!Number.isFinite(score)) return 'pending';
+  if (score >= 0.75) return 'active';
+  if (score >= 0.45) return 'warning';
+  return 'blocked';
+}
+
 function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
@@ -1385,8 +1434,8 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                       <PathList paths={zonePaths(zone)} empty="route pending" />
                     </div>
                     <div className="col-start-2 row-start-1 flex min-w-0 justify-end gap-1 sm:col-auto sm:row-auto">
-                      {relatedFlights.length ? relatedFlights.map((flight) => (
-                        <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
+                      {relatedFlights.length ? relatedFlights.map((flight, flightIndex) => (
+                        <Pill key={flight.id || flight.displayCallsign || `related-flight-${flightIndex}`} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
                           {compact(flight.displayCallsign, 'agent')}
                         </Pill>
                       )) : <Pill>clear</Pill>}
@@ -1400,8 +1449,8 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                 <span className="font-medium">Landing queue</span>
                 <Pill tone={landingRuns.some((run) => String(run.status).includes('failed')) ? 'failed' : 'active'}>{landingRuns.length}</Pill>
               </div>
-              {landingRuns.length ? landingRuns.map((run) => (
-                <div key={run.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
+              {landingRuns.length ? landingRuns.map((run, runIndex) => (
+                <div key={run.id || `landing-run-${runIndex}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
                   <span className="min-w-0 truncate">{compact(run.displayCallsign, 'inspection')}</span>
                   <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(run.status, 'pending')}</span>
                 </div>
@@ -1577,6 +1626,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
+  const replayHandovers = useMemo(() => causalReplayHandovers(incidents, proofBundles), [incidents, proofBundles]);
   const inboxItems = asArray(currentProject?.inboxItems);
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
@@ -1664,7 +1714,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const handleInspectLine = useCallback(async (row) => {
     if (!row?.filePath) return;
     const range = lineRange(row);
-    setLineInspector({ status: 'loading', row, rows: [row], error: null });
+    setLineInspector({ status: 'loading', row, rows: [], error: null });
     try {
       const rows = await fetchCodeSiteLineProvenance(workspaceSlug, {
         projectId: currentProject?.id,
@@ -1823,11 +1873,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 data-testid="codesite-project-select"
                 value={radarState.selectedProjectId || ''}
                 onChange={(event) => setSelectedProjectId(event.target.value || null)}
-                className="h-8 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
+                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid] sm:h-8"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
               >
-                {radarState.projects.map((project) => (
-                  <option key={project.id} value={project.id}>{project.title}</option>
+                {radarState.projects.map((project, index) => (
+                  <option key={project.id || project.slug || `project-${index}`} value={project.id}>{project.title}</option>
                 ))}
               </select>
             </div>
@@ -2010,7 +2060,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 <div data-testid="codesite-tower-simulator" className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Compare route strategies against repo policy, tests, incidents, and active clearances.
+                      Compare route strategies against repo policy, inspection evidence, incidents, and active clearances.
                     </div>
                     <IconButton
                       title="Run Tower simulation"
@@ -2038,11 +2088,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <Metric label="Confidence" value={formatPercent(selectedUniverse?.confidence)} />
                       </div>
                       <div className="space-y-1">
-                        {towerUniverses.map((universe) => {
+                        {towerUniverses.map((universe, index) => {
                           const selected = universe.strategy === towerSimulation?.selected;
                           return (
                             <div
-                              key={universe.strategy}
+                              key={universe.strategy || universe.id || `tower-universe-${index}`}
                               data-testid="codesite-tower-universe"
                               className="rounded border px-3 py-2 text-xs"
                               style={{
@@ -2118,8 +2168,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No active flights</EmptyLine>
                 ) : (
                   <div>
-                    {activeFlights.map((plan) => (
-                      <Row key={plan.id} testId={`codesite-flight-${plan.id}`}>
+                    {activeFlights.map((plan, index) => (
+                      <Row key={plan.id || plan.displayCallsign || `flight-${index}`} testId={`codesite-flight-${plan.id || index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(plan.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(plan.domain, 'implementation')}</div>
@@ -2140,8 +2190,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No active clearances</EmptyLine>
                 ) : (
                   <div>
-                    {activeLeases.map((lease) => (
-                      <Row key={lease.id}>
+                    {activeLeases.map((lease, index) => (
+                      <Row key={lease.id || lease.displayCallsign || `lease-${index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(lease.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(lease.expiresAt) || 'open'}</div>
@@ -2179,8 +2229,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No open transactions</EmptyLine>
                 ) : (
                   <div>
-                    {activeTransactions.map((transaction) => (
-                      <Row key={transaction.id}>
+                    {activeTransactions.map((transaction, index) => (
+                      <Row key={transaction.id || `transaction-${index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-mono text-[11px]">{transaction.id}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(transaction.openedAt)}</div>
@@ -2191,8 +2241,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="justify-self-end"><Pill tone={transaction.status}>{transaction.status}</Pill></div>
                       </Row>
                     ))}
-                    {proofBundles.slice(-3).reverse().map((bundle) => (
-                      <div key={bundle.id} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                    {proofBundles.slice(-3).reverse().map((bundle, index) => (
+                      <div key={bundle.id || `proof-bundle-${index}`} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
                         <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 text-xs">
                           <div className="min-w-0">
                             <div className="truncate font-mono text-[11px]">{bundle.id}</div>
@@ -2234,8 +2284,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No inspections or incidents</EmptyLine>
                 ) : (
                   <div className="space-y-2">
-                    {inspectionRuns.slice(-3).reverse().map((run) => (
-                      <div key={run.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inspectionRuns.slice(-3).reverse().map((run, index) => (
+                      <div key={run.id || `inspection-run-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(run.displayCallsign, 'inspection')}</span>
                           <Pill tone={run.status}>{run.status}</Pill>
@@ -2251,8 +2301,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="mt-1"><PathList paths={run.evidenceRefs || []} empty="no evidence refs" /></div>
                       </div>
                     ))}
-                    {incidents.slice(-3).reverse().map((incident) => (
-                      <div key={incident.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+                    {incidents.slice(-3).reverse().map((incident, index) => (
+                      <div key={incident.id || `incident-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(incident.category, 'incident')}</span>
                           <Pill tone={incident.severity}>{incident.severity}</Pill>
@@ -2271,6 +2321,84 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
+              <Section title="Causal Replay Handover" icon={ScrollText} right={<Pill tone={replayHandovers.length ? replayCompletenessTone(replayHandovers[0].completeness) : 'pending'}>{replayHandovers.length}</Pill>}>
+                <div data-testid="codesite-causal-replay-handover" className="min-w-0">
+                  {replayHandovers.length === 0 ? (
+                    <EmptyLine>No black-box handover closed yet</EmptyLine>
+                  ) : (
+                    <div className="space-y-2">
+                      {replayHandovers.slice(0, 2).map((handover, index) => {
+                        const score = Number(handover.completeness?.score);
+                        const eventTypes = handover.causalEvents.map((event) => event.type).filter(Boolean);
+                        const latestEvents = handover.causalEvents.slice(-6);
+                        return (
+                          <div key={handover.incident.id || handover.transactionId || `handover-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                            <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                              <div className="min-w-0">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="min-w-0 truncate font-medium">{compact(handover.transactionId, handover.incident.category)}</span>
+                                  <Pill tone={handover.incident.severity}>{handover.incident.severity}</Pill>
+                                  <Pill tone={replayCompletenessTone(handover.completeness)}>
+                                    {Number.isFinite(score) ? formatPercent(score) : 'pending'}
+                                  </Pill>
+                                </div>
+                                <div className="mt-1 grid min-w-0 gap-1 sm:grid-cols-3">
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Replay digest</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.incident.replayDigest || 'missing'}>
+                                      {compact(handover.incident.replayDigest, 'missing')}
+                                    </div>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Proof bundle</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.proofBundle?.id || 'none'}>
+                                      {compact(handover.proofBundle?.id, 'none')}
+                                    </div>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>CodeSite-Black-Box</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.codeSiteBlackBox || 'missing'}>
+                                      {compact(handover.codeSiteBlackBox, 'missing')}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="min-w-0 md:w-44">
+                                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Export refs</div>
+                                <PathList paths={handover.exportPaths} empty="no export refs" maxVisible={4} />
+                              </div>
+                            </div>
+                            <div className="mt-2 grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+                              <div className="min-w-0 space-y-1">
+                                <div className="text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Coverage</div>
+                                <PathList paths={handover.completeness?.presentEventTypes || eventTypes} empty="no present event types" maxVisible={6} />
+                                <PathList paths={handover.completeness?.missingEventTypes || []} empty="no missing event types" maxVisible={6} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="mb-1 text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Causal timeline</div>
+                                {latestEvents.length === 0 ? (
+                                  <EmptyLine>No replay events indexed</EmptyLine>
+                                ) : (
+                                  <div className="space-y-1">
+                                    {latestEvents.map((event, index) => (
+                                      <div key={`${handover.incident.id}-${event.eventId || index}`} className="grid min-h-7 grid-cols-[40px_minmax(0,1fr)_minmax(72px,auto)] items-center gap-2 rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{event.logicalTime || index + 1}</span>
+                                        <span className="min-w-0 truncate">{compact(event.type, 'event')}</span>
+                                        <span className="min-w-0 truncate text-right font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(event.path || event.displayCallsign, '')}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </Section>
+
               <Section title="Artifact Projection" icon={FileJson} right={<Pill>{artifacts.length}</Pill>}>
                 {exportResult ? (
                   <div className="mb-2 rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
@@ -2281,8 +2409,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No artifact preview</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {artifacts.slice(0, 10).map((file) => (
-                      <div key={file.path} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {artifacts.slice(0, 10).map((file, index) => (
+                      <div key={file.path || `artifact-${index}`} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <code className="min-w-0 truncate text-[10px]" title={file.path}>{file.path}</code>
                         <span className="shrink-0 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{file.bytes}b</span>
                       </div>
@@ -2305,8 +2433,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No events recorded</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {events.map((event) => (
-                      <div key={event.id} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {events.map((event, index) => (
+                      <div key={event.id || event.eventId || `${event.eventType || 'event'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
                           <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
                           <span className="min-w-0 truncate">{event.eventType}</span>
@@ -2336,8 +2464,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No blocking actions</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {controlState.requiredActions.map((action) => (
-                      <div key={action} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {controlState.requiredActions.map((action, index) => (
+                      <div key={`${action}-${index}`} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         {action}
                       </div>
                     ))}
@@ -2350,8 +2478,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No routed inbox items</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {inboxItems.slice(-5).reverse().map((item) => (
-                      <div key={item.id || item.eventId} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inboxItems.slice(-5).reverse().map((item, index) => (
+                      <div key={item.id || item.eventId || `${item.kind || 'inbox'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="truncate font-medium">{compact(item.kind, 'inbox')}</div>
@@ -2390,11 +2518,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 ) : (
                   <div className="grid min-w-0 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)]">
                     <div className="min-w-0 space-y-1">
-                      {lineProvenance.slice(-8).reverse().map((row) => {
+                      {lineProvenance.slice(-8).reverse().map((row, index) => {
                         const selected = lineProvenanceKey(row) === lineProvenanceKey(selectedLineRow);
                         return (
                           <button
-                            key={lineProvenanceKey(row)}
+                            key={lineProvenanceKey(row) || `${row.filePath || 'line'}-${index}`}
                             type="button"
                             data-testid="codesite-line-provenance-row"
                             aria-pressed={selected}
@@ -2406,11 +2534,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                               color: 'var(--text-primary)',
                             }}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
-                              <div className="flex shrink-0 items-center gap-1">
+                            <div className="flex flex-wrap items-start justify-between gap-1.5">
+                              <code className="min-w-0 flex-1 basis-[11rem] truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
+                              <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
                                 <Pill>{lineRangeLabel(row)}</Pill>
-                                <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
+                                <Pill className="max-w-[8rem] truncate">{compact(row.displayCallsign, 'agent')}</Pill>
                               </div>
                             </div>
                             <div className="mt-1 grid gap-1 sm:grid-cols-2">
@@ -2437,8 +2565,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                                 {selectedLineRow.filePath}
                               </code>
                             </div>
-                            <Pill tone={lineInspector.status === 'error' ? 'failed' : 'active'}>
-                              {lineInspector.status === 'loading' ? 'loading' : `${lineInspector.rows.length || 1} rows`}
+                            <Pill testId="codesite-line-inspector-status" tone={lineInspector.status === 'error' ? 'failed' : lineInspector.status === 'loading' ? 'running' : 'active'}>
+                              {lineInspector.status === 'loading' && lineInspector.rows.length === 0 ? 'loading' : `${lineInspector.rows.length || 1} rows`}
                             </Pill>
                           </div>
                           <div className="grid gap-1 text-[11px]">
