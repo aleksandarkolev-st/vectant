@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import crypto from 'crypto';
 import { asArray, stableJson } from './json';
 import { CODE_SITE_EVENT_TYPES } from './policy';
 import { buildProofBundle, formatCommitTrailers } from './proof';
@@ -9,6 +10,7 @@ import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
+const ARTIFACT_PATH_HISTORY = 'artifact-path-history.jsonl';
 const artifactWriteQueues = new Map();
 
 export const CODESITE_MCP_TOOLS = [
@@ -51,6 +53,7 @@ export function codesiteSchemas() {
       ownerUserId: { type: 'string' },
       agentProvider: { type: 'string' },
       agentRuntime: { type: ['string', 'null'] },
+      providerSessionRef: { type: ['string', 'null'] },
       displayCallsign: { type: 'string' },
       status: { type: 'string' },
       permissions: { type: 'array' },
@@ -259,7 +262,8 @@ export function codesiteSchemas() {
       lineProvenance: { type: 'array' },
       createdAt: { type: 'string' },
       portableDigest: { type: 'string' },
-    }, ['schemaVersion', 'projectId', 'transactionId', 'mutationLeaseId', 'readSetDigest', 'writeSetDigest', 'invariants', 'evidenceRefs', 'portableDigest']),
+      proofSignature: { type: 'object' },
+    }, ['schemaVersion', 'projectId', 'transactionId', 'mutationLeaseId', 'readSetDigest', 'writeSetDigest', 'invariants', 'evidenceRefs', 'portableDigest', 'proofSignature']),
     'line-provenance.schema.json': schema('LineProvenance', {
       filePath: { type: 'string' },
       lineAnchor: { type: 'string' },
@@ -422,6 +426,7 @@ export function buildArtifactProjection(project, controlState = null) {
         || asArray(record.inspectedLeases).some((inspected) => inspected.mutationLeaseId === lease.id)
       ))
     ));
+    const sessionIncidents = incidentsForSession(project.incidents, session, transactions, proofs);
 
     files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
     files.push(jsonFile(`${projectDir}/flights/${callsign}/pilot-license-health.json`, pilotHealth));
@@ -435,9 +440,13 @@ export function buildArtifactProjection(project, controlState = null) {
       status: landings.some((run) => run.status === 'failed') ? 'go-around' : landings.at(-1)?.status || 'not-requested',
     }));
     for (const plan of flightPlans) {
+      files.push(jsonFile(`${projectDir}/flight-plans/${plan.id}.json`, plan));
+      files.push(jsonFile(`${projectDir}/flights/${callsign}/flight-plans/${plan.id}.json`, plan));
       files.push(jsonFile(`${projectDir}/flights/${callsign}/flight-plan.json`, plan));
     }
     for (const lease of clearances) {
+      files.push(jsonFile(`${projectDir}/clearances/${lease.id}.json`, lease));
+      files.push(jsonFile(`${projectDir}/flights/${callsign}/clearances/${lease.id}.json`, lease));
       files.push(jsonFile(`${projectDir}/flights/${callsign}/clearance.json`, lease));
     }
     for (const txn of transactions) {
@@ -461,6 +470,7 @@ export function buildArtifactProjection(project, controlState = null) {
       proofBundles: proofs,
       quarantines: sessionQuarantines,
       filesystemBoundaryProofs: sessionFilesystemBoundaryProofs,
+      causalReplays: sessionIncidents.map((incident) => incidentHandoverSummary(project, incident)),
     }));
     for (const item of inbox) {
       files.push(jsonFile(`${projectDir}/inbox/${callsign}/${item.eventId || item.id}.json`, item));
@@ -752,6 +762,10 @@ function appendUnique(current, values) {
   return next;
 }
 
+function unique(values) {
+  return [...new Set(asArray(values).filter(Boolean).map((value) => String(value)))];
+}
+
 function appendUniqueObjects(current, values) {
   const next = [...asArray(current)];
   const seen = new Set(next.map((item) => stableJson(item)));
@@ -805,6 +819,21 @@ function minimalControlState(project) {
 
 function handoverMarkdown(project, controlState) {
   const forecast = controlState?.collisionForecast;
+  const replaySummaries = asArray(project.incidents)
+    .filter((incident) => incident.replayDigest || incident.incidentReplay)
+    .map((incident) => incidentHandoverSummary(project, incident));
+  const proofSummaries = asArray(project.proofBundles).map((proof) => {
+    const transaction = asArray(project.mutationTxns).find((item) => item.id === proof.transactionId);
+    const replay = replaySummaries.find((item) => (
+      item.replayDigest && item.replayDigest === proof.incidentReplayDigest
+    )) || null;
+    return {
+      proof,
+      transaction,
+      replay,
+      blackBoxTrailer: proof.trailers?.['CodeSite-Black-Box'] || proof.incidentReplayDigest || proof.bundleDigest,
+    };
+  });
   const lines = [
     `# CodeSite Handover: ${project.title}`,
     '',
@@ -820,14 +849,92 @@ function handoverMarkdown(project, controlState) {
     `- Incidents replayable: ${asArray(project.incidents).length}`,
     `- Proof bundles: ${asArray(project.proofBundles).length}`,
     '',
+    '## Proof-Carrying Commits',
+    '',
+  ];
+  if (proofSummaries.length === 0) {
+    lines.push('- No proof bundles exported yet.');
+  }
+  for (const item of proofSummaries) {
+    lines.push(`- ${item.proof.id}: transaction ${item.proof.transactionId || item.transaction?.id || 'unknown'}, CodeSite-Black-Box ${item.blackBoxTrailer || 'missing'}, replay ${item.replay?.replayDigest || item.proof.incidentReplayDigest || 'missing'}`);
+  }
+  lines.push(
+    '',
+    '## Causal Replay Packets',
+    '',
+  );
+  if (replaySummaries.length === 0) {
+    lines.push('- No causal replay packets closed yet.');
+  }
+  for (const replay of replaySummaries) {
+    lines.push(`- ${replay.incidentId}: ${replay.category} ${replay.replayDigest || 'missing digest'} (${Math.round((Number(replay.completeness?.score) || 0) * 100)}% complete)`);
+    if (replay.transactionId || replay.proofBundleId) {
+      lines.push(`  Transaction: ${replay.transactionId || 'n/a'}; proof: ${replay.proofBundleId || 'n/a'}`);
+    }
+    if (asArray(replay.missingEventTypes).length) {
+      lines.push(`  Missing event kinds: ${replay.missingEventTypes.join(', ')}`);
+    }
+    if (asArray(replay.exportPaths).length) {
+      lines.push(`  Export refs: ${replay.exportPaths.slice(0, 4).join(', ')}`);
+    }
+  }
+  lines.push(
+    '',
     '## Collision Forecast',
     '',
     `Risk level: ${forecast?.riskLevel || 'unknown'}`,
-  ];
+  );
   for (const risk of asArray(forecast?.risks)) {
     lines.push(`- ${risk.severity}: ${risk.risk} in ${risk.conflictZone}`);
   }
   return `${lines.join('\n')}\n`;
+}
+
+function incidentsForSession(incidents, session, transactions, proofBundles) {
+  const transactionIds = new Set(transactions.map((txn) => txn.id));
+  const proofReplayDigests = new Set(proofBundles.map((proof) => proof.incidentReplayDigest).filter(Boolean));
+  return asArray(incidents).filter((incident) => {
+    const summary = incidentHandoverSummary({ proofBundles: [], mutationTxns: [] }, incident);
+    return asArray(incident.participants).includes(session.displayCallsign)
+      || transactionIds.has(summary.transactionId)
+      || proofReplayDigests.has(summary.replayDigest);
+  });
+}
+
+function incidentHandoverSummary(project, incident) {
+  const replay = incident.incidentReplay || {};
+  const transactionId = replay.transaction?.id
+    || replay.transactionId
+    || asArray(replay.causalEvents).map((event) => event.transactionId || event.details?.transactionId).find(Boolean)
+    || null;
+  const proofBundle = asArray(project.proofBundles).find((proof) => (
+    proof.incidentReplayDigest === incident.replayDigest
+    || proof.id === replay.proofBundle?.id
+    || (transactionId && proof.transactionId === transactionId)
+  )) || null;
+  return {
+    incidentId: incident.id,
+    category: incident.category,
+    severity: incident.severity,
+    replayDigest: incident.replayDigest || null,
+    transactionId,
+    proofBundleId: proofBundle?.id || replay.proofBundle?.id || null,
+    proofBundleDigest: proofBundle?.bundleDigest || replay.proofBundle?.bundleDigest || null,
+    codeSiteBlackBox: proofBundle?.trailers?.['CodeSite-Black-Box'] || proofBundle?.incidentReplayDigest || incident.replayDigest || null,
+    completeness: replay.completeness || null,
+    presentEventTypes: asArray(replay.completeness?.presentEventTypes),
+    missingEventTypes: asArray(replay.completeness?.missingEventTypes),
+    totalEvents: asArray(replay.causalEvents).length,
+    exportPaths: unique([
+      `projects/${project.id || '<project-id>'}/incidents/incident-replay-${incident.id}.jsonl`,
+      `projects/${project.id || '<project-id>'}/handover.md`,
+      ...(proofBundle?.id ? [
+        `projects/${project.id || '<project-id>'}/proof-bundles/${proofBundle.id}.proof.json`,
+        `projects/${project.id || '<project-id>'}/proof-bundles/${proofBundle.id}.trailers.txt`,
+      ] : []),
+      ...asArray(replay.handover?.exportPaths),
+    ]),
+  };
 }
 
 function jsonFile(relativePath, value) {
@@ -860,18 +967,25 @@ export async function writeArtifactProjection(project, controlState, artifactRoo
     const files = buildArtifactProjection(project, controlState);
     const currentPaths = new Set(files.map((file) => file.relativePath));
     const written = [];
+    const historyEntries = [];
+    const generationId = artifactGenerationId(project, files);
     const manifest = files.filter((file) => file.relativePath === 'manifest.json');
     const bodyFiles = files.filter((file) => file.relativePath !== 'manifest.json');
     for (const file of bodyFiles) {
-      await writeArtifactFile(root, file);
+      const metadata = await writeArtifactFile(root, file);
       written.push(file.relativePath);
+      historyEntries.push(artifactHistoryEntry('write', generationId, project, metadata));
     }
-    await removeStaleProjectionFiles(root, currentPaths);
+    const removed = await removeStaleProjectionFiles(root, currentPaths);
+    historyEntries.push(...removed.map((metadata) => artifactHistoryEntry('remove', generationId, project, metadata)));
     for (const file of manifest) {
-      await writeArtifactFile(root, file);
+      const metadata = await writeArtifactFile(root, file);
       written.push(file.relativePath);
+      historyEntries.push(artifactHistoryEntry('write', generationId, project, metadata));
     }
-    await writeArtifactFile(root, jsonFile(ARTIFACT_FILE_INDEX, [...currentPaths].sort()));
+    const indexMetadata = await writeArtifactFile(root, jsonFile(ARTIFACT_FILE_INDEX, [...currentPaths].sort()));
+    historyEntries.push(artifactHistoryEntry('write', generationId, project, indexMetadata));
+    await appendArtifactPathHistory(root, historyEntries);
     return { written: true, root, files: written };
   });
 }
@@ -895,16 +1009,25 @@ async function writeArtifactFile(root, file) {
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(tmp, file.content, 'utf8');
   await fs.rename(tmp, target);
+  return {
+    relativePath: file.relativePath,
+    digest: artifactContentDigest(file.content),
+    bytes: Buffer.byteLength(file.content, 'utf8'),
+  };
 }
 
 async function removeStaleProjectionFiles(root, currentPaths) {
   const previous = await readProjectionFileIndex(root);
+  const removed = [];
   for (const rel of previous) {
     if (currentPaths.has(rel)) continue;
     const target = path.resolve(root, rel);
     if (!isPathInside(root, target)) continue;
+    const metadata = await artifactFileMetadata(root, rel);
     await fs.rm(target, { force: true });
+    removed.push(metadata || { relativePath: rel, digest: null, bytes: null });
   }
+  return removed;
 }
 
 async function readProjectionFileIndex(root) {
@@ -920,6 +1043,59 @@ async function readProjectionFileIndex(root) {
 function isPathInside(root, target) {
   const rel = path.relative(root, target);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function artifactGenerationId(project, files) {
+  return `artifact-generation:${artifactContentDigest(stableJson({
+    projectId: project.id,
+    workspaceSlug: project.workspaceSlug,
+    projectedPaths: files.map((file) => file.relativePath).sort(),
+    generatedAt: new Date().toISOString(),
+  }))}`;
+}
+
+function artifactContentDigest(content) {
+  return `sha256:${crypto.createHash('sha256').update(String(content ?? '')).digest('hex')}`;
+}
+
+async function artifactFileMetadata(root, relativePath) {
+  const target = path.resolve(root, relativePath);
+  if (!isPathInside(root, target)) return null;
+  try {
+    const content = await fs.readFile(target, 'utf8');
+    return {
+      relativePath,
+      digest: artifactContentDigest(content),
+      bytes: Buffer.byteLength(content, 'utf8'),
+    };
+  } catch (_) {
+    return {
+      relativePath,
+      digest: null,
+      bytes: null,
+    };
+  }
+}
+
+function artifactHistoryEntry(action, generationId, project, metadata = {}) {
+  return {
+    schemaVersion: 'synthi.codesite.artifactPathHistory.v1',
+    action,
+    generationId,
+    workspaceSlug: project.workspaceSlug,
+    projectId: project.id,
+    relativePath: metadata.relativePath,
+    digest: metadata.digest || null,
+    bytes: metadata.bytes ?? null,
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+async function appendArtifactPathHistory(root, entries) {
+  if (!entries.length) return;
+  const target = path.join(root, ARTIFACT_PATH_HISTORY);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.appendFile(target, `${entries.map((entry) => stableJson(entry)).join('\n')}\n`, 'utf8');
 }
 
 function resolveRepoRootCandidate() {

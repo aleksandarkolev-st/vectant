@@ -1,6 +1,7 @@
 import {
   abortTransaction,
   acknowledgeInboxItem,
+  attachProofBundleCommit,
   collisionPredict,
   commitTransaction,
   completeInspectionRun,
@@ -27,6 +28,7 @@ import {
   getSchemas,
   getSourceStateSince,
   getTransaction,
+  listProjectMembers,
   listProjects,
   openTransaction,
   preflightCodeSiteFsWrite,
@@ -36,11 +38,14 @@ import {
   recordTransactionRead,
   recordTransactionWrite,
   requestMutationLease,
+  resumeMaydayIncident,
   previewArtifacts,
   promotePolicyDelta,
+  revokeProjectMember,
   revokeMutationLease,
   rejectPolicyDelta,
   shadowMergeSimulate,
+  upsertProjectMember,
   updateControlPlan,
   updateZonePolicy,
   validateTransaction,
@@ -68,40 +73,44 @@ export async function GET(request, { params }) {
 
   try {
     if (route.length === 0 || route.join('/') === 'projects') {
-      return okJson({ projects: await listProjects(slug) });
+      return okJson({ projects: await listProjects(slug, access.actor) });
     }
 
     if (route[0] === 'projects' && route.length === 2) {
-      const project = await getProject(slug, route[1]);
+      const project = await getProject(slug, route[1], access.actor);
       if (!project) return errorJson(404, 'project_not_found');
       return okJson({ project });
     }
 
     if (route[0] === 'projects' && route[2] === 'control-state') {
-      return okJson(await getControlState(slug, route[1]));
+      return okJson(await getControlState(slug, route[1], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'metrics') {
-      return okJson({ metrics: await getCodeSiteMetrics(slug, route[1]) });
+      return okJson({ metrics: await getCodeSiteMetrics(slug, route[1], access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'members') {
+      return okJson({ members: await listProjectMembers(slug, route[1], access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'events' && route[3] !== 'stream') {
       const since = new URL(request.url).searchParams.get('since');
-      return okJson({ events: await getEvents(slug, route[1], since) });
+      return okJson({ events: await getEvents(slug, route[1], since, access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'events' && route[3] === 'stream') {
       return eventStreamResponse({
         signal: request.signal,
         initialSince: new URL(request.url).searchParams.get('since'),
-        load: (since) => getEvents(slug, route[1], since),
+        load: (since) => getEvents(slug, route[1], since, access.actor),
         eventName: (event) => event.eventType || 'codesite_event',
         idOf: eventCursor,
       });
     }
 
     if (route[0] === 'projects' && route[2] === 'agent-manifest') {
-      return okJson(await getAgentManifest(slug, route[1]));
+      return okJson(await getAgentManifest(slug, route[1], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'schemas') {
@@ -114,7 +123,7 @@ export async function GET(request, { params }) {
       return okJson(await previewArtifacts(slug, route[1], {
         includeContent: search.get('include') === 'content',
         ...(Number.isFinite(maxContentBytes) ? { maxContentBytes } : {}),
-      }));
+      }, access.actor));
     }
 
     if (route[0] === 'transactions' && route.length === 2) {
@@ -158,16 +167,16 @@ export async function GET(request, { params }) {
           filePath: search.get('filePath') || search.get('path'),
           lineAnchor: search.get('lineAnchor'),
           lineNumber: search.get('lineNumber') || search.get('line'),
-        }),
+        }, access.actor),
       });
     }
 
     if (route[0] === 'proof-bundles' && route[1]) {
-      return okJson({ proofBundle: await getProofBundle(slug, route[1]) });
+      return okJson({ proofBundle: await getProofBundle(slug, route[1], access.actor) });
     }
 
     if (route[0] === 'incidents' && route[2] === 'replay') {
-      return okJson(await getIncidentReplay(slug, route[1]));
+      return okJson(await getIncidentReplay(slug, route[1], access.actor));
     }
 
     return routeNotFound(route);
@@ -191,11 +200,11 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'zone-policy') {
-      return okJson({ project: await updateZonePolicy(slug, route[1], body) });
+      return okJson({ project: await updateZonePolicy(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'control-plan') {
-      return okJson({ project: await updateControlPlan(slug, route[1], body) });
+      return okJson({ project: await updateControlPlan(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'agent-sessions') {
@@ -215,11 +224,11 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'revoke') {
-      return okJson({ mutationLease: await revokeMutationLease(slug, route[1], body) });
+      return okJson({ mutationLease: await revokeMutationLease(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'policy-decisions') {
-      return okJson({ policyDecision: await recordPolicyDecision(slug, route[1], body) }, { status: 201 });
+      return okJson({ policyDecision: await recordPolicyDecision(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'transactions' && route[2] === 'record-read') {
@@ -266,12 +275,24 @@ export async function POST(request, { params }) {
       return okJson(await getSourceStateSince(slug, route[1], access.actor));
     }
 
+    if (route[0] === 'proof-bundles' && route[2] === 'commit') {
+      return okJson({ proofBundle: await attachProofBundleCommit(slug, route[1], body, access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'members' && route.length === 3) {
+      return okJson({ member: await upsertProjectMember(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'members' && route[4] === 'revoke') {
+      return okJson({ member: await revokeProjectMember(slug, route[1], route[3], body, access.actor) });
+    }
+
     if (route[0] === 'projects' && route[2] === 'collision-predict') {
-      return okJson(await collisionPredict(slug, route[1]));
+      return okJson(await collisionPredict(slug, route[1], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'shadow-merge-simulate') {
-      return okJson(await shadowMergeSimulate(slug, route[1], body));
+      return okJson(await shadowMergeSimulate(slug, route[1], body, access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'codesitefs-events') {
@@ -283,11 +304,15 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'incidents') {
-      return okJson({ incident: await createIncident(slug, route[1], body) }, { status: 201 });
+      return okJson({ incident: await createIncident(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'incident-replays') {
-      return okJson({ incident: await createIncident(slug, route[1], body) }, { status: 201 });
+      return okJson({ incident: await createIncident(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
+    if (route[0] === 'incidents' && route[2] === 'resume') {
+      return okJson(await resumeMaydayIncident(slug, route[1], body, access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'policy-deltas' && route[4] === 'promote') {
@@ -299,23 +324,23 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'policy-deltas') {
-      return okJson({ policyDelta: await createPolicyDelta(slug, route[1], body) }, { status: 201 });
+      return okJson({ policyDelta: await createPolicyDelta(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'counterfactual-runs') {
-      return okJson({ counterfactualRun: await createCounterfactualRun(slug, route[1], body) }, { status: 201 });
+      return okJson({ counterfactualRun: await createCounterfactualRun(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'inspection-runs') {
-      return okJson({ inspectionRun: await createInspectionRun(slug, route[1], body) }, { status: 201 });
+      return okJson({ inspectionRun: await createInspectionRun(slug, route[1], body, access.actor) }, { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'artifacts' && route[3] === 'export') {
-      return okJson(await exportArtifacts(slug, route[1]));
+      return okJson(await exportArtifacts(slug, route[1], access.actor));
     }
 
     if (route[0] === 'inspection-runs' && route[2] === 'complete') {
-      return okJson({ inspectionRun: await completeInspectionRun(slug, route[1], body) });
+      return okJson({ inspectionRun: await completeInspectionRun(slug, route[1], body, access.actor) });
     }
 
     if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) {
@@ -349,10 +374,16 @@ function postAccessMode(route) {
   if (route[0] === 'projects' && [
     'codesitefs-events',
     'documents',
+    'incidents',
+    'incident-replays',
+    'counterfactual-runs',
+    'inspection-runs',
+    'members',
     'collision-predict',
-    'shadow-merge-simulate',
   ].includes(route[2])) return 'read';
+  if (route[0] === 'incidents' && route[2] === 'resume') return 'read';
   if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) return 'read';
+  if (route[0] === 'proof-bundles' && route[2] === 'commit') return 'read';
   return 'write';
 }
 
@@ -503,11 +534,30 @@ async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null)
     });
   }
 
-  const response = await fetch(targetUrl, {
-    method: action ? 'POST' : 'GET',
-    headers,
-    body: nextBody,
-  });
+  let response;
+  try {
+    response = await fetch(targetUrl, {
+      method: action ? 'POST' : 'GET',
+      headers,
+      body: nextBody,
+    });
+  } catch (error) {
+    const detail = {
+      target: targetUrl.origin,
+      reason: error?.cause?.code || error?.code || error?.message || 'fetch_failed',
+    };
+    if (!action) {
+      return okJson({
+        ok: false,
+        quarantines: [],
+        quarantine: null,
+        unavailable: true,
+        error: 'quarantine_runtime_unavailable',
+        detail,
+      });
+    }
+    return errorJson(503, 'quarantine_runtime_unavailable', detail);
+  }
   const text = await response.text();
   let payload = {};
   try {

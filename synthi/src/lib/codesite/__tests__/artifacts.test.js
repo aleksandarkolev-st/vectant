@@ -134,8 +134,31 @@ function projectFixture() {
         createdAt: '2026-07-01T00:02:00.000Z',
       },
     ],
-    incidents: [{ id: 'inc-1', category: 'near_miss', severity: 'medium', replayDigest: 'sha256:replay', incidentReplay: { events: ['evt-1'] } }],
-	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' }],
+    incidents: [{
+      id: 'inc-1',
+      category: 'black_box',
+      severity: 'low',
+      replayDigest: 'sha256:replay',
+      participants: ['CODEX-04'],
+      incidentReplay: {
+        transactionId: 'txn-1',
+        transaction: { id: 'txn-1', readSet: ['packages/schemas/auth/signup.ts'], writeSet: ['packages/schemas/auth/signup.ts'] },
+        proofBundle: { id: 'proof-1', bundleDigest: 'sha256:bundle', incidentReplayDigest: 'sha256:replay' },
+        handover: { exportPaths: ['projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl'] },
+        events: ['evt-1'],
+        completeness: {
+          score: 0.62,
+          presentEventTypes: ['clearance.issued', 'transaction.committed', 'black_box.closed'],
+          missingEventTypes: ['write.denied'],
+        },
+        causalEvents: [
+          { eventId: 'evt-1', type: 'clearance.issued', transactionId: 'txn-1', details: { mutationLeaseId: 'lease-1' } },
+          { eventId: 'evt-commit', type: 'transaction.committed', transactionId: 'txn-1', details: { proofBundleId: 'proof-1' } },
+          { eventId: 'evt-close', type: 'black_box.closed', transactionId: 'txn-1', details: { proofBundleId: 'proof-1' } },
+        ],
+      },
+    }],
+	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, incidentReplayDigest: 'sha256:replay', bundleDigest: 'sha256:bundle' }],
     lineProvenance: [{ filePath: 'packages/schemas/auth/signup.ts', lineAnchor: 'L1', displayCallsign: 'CODEX-04', proofBundleId: 'proof-1' }],
     policyDecisions: [{
       id: 'decision-deny-1',
@@ -275,22 +298,43 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/landing.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/pilot-license-health.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flight-plans/plan-1.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/flight-plans/plan-1.json');
+    expect(paths).toContain('projects/site_signup_email_verification/clearances/lease-1.json');
+    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/clearances/lease-1.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).quarantines).toEqual([
       expect.objectContaining({ quarantineId: 'qtn-signup-1' }),
     ]);
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).filesystemBoundaryProofs).toEqual(expect.arrayContaining([
       expect.objectContaining({ eventId: 'evt-q1', path: 'docs/review.md' }),
     ]));
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).causalReplays).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        replayDigest: 'sha256:replay',
+        transactionId: 'txn-1',
+        proofBundleId: 'proof-1',
+        codeSiteBlackBox: 'sha256:replay',
+      }),
+    ]));
     expect(paths).toContain('projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json').content).redactedPayload.body.apiToken).toBe('[redacted]');
-    expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
+    expect(paths).toContain('projects/site_signup_email_verification/incidents/inc-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
 	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
 	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).landingStatus).toBe('passed');
+	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).incidentReplayDigest).toBe('sha256:replay');
+	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).proofSignature).toMatchObject({ algorithm: 'hmac-sha256' });
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt');
 	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Clearance: lease-1');
+	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Black-Box: sha256:replay');
+	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Proof-Signature: hmac-sha256:');
     expect(paths).toContain('projects/site_signup_email_verification/handover.md');
+    const handover = files.find((file) => file.relativePath === 'projects/site_signup_email_verification/handover.md').content;
+    expect(handover).toContain('## Causal Replay Packets');
+    expect(handover).toContain('sha256:replay');
+    expect(handover).toContain('CodeSite-Black-Box sha256:replay');
+    expect(handover).toContain('Missing event kinds: write.denied');
   });
 
   it('shares schemas used by API schema discovery', () => {
@@ -625,6 +669,10 @@ describe('CodeSite artifact projection', () => {
 
     await expect(fs.readFile(proofPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.readFile(path.join(artifactRoot, '.codesite-projection-files.json'), 'utf8')).resolves.toContain('manifest.json');
+    const history = await fs.readFile(path.join(artifactRoot, 'artifact-path-history.jsonl'), 'utf8');
+    expect(history).toContain('"action":"write"');
+    expect(history).toContain('"action":"remove"');
+    expect(history).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
   });
 });
 
@@ -639,6 +687,7 @@ describe('CodeSite proof utilities', () => {
 	    });
 
 	    expect(verifyProofBundle(bundle)).toMatchObject({ ok: true });
+	    expect(bundle.proofSignature).toMatchObject({ algorithm: 'hmac-sha256' });
 	    expect(bundle.repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
     expect(bundle.landingStatus).toBe('passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Project: project-1');
@@ -647,5 +696,6 @@ describe('CodeSite proof utilities', () => {
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Landing: passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Transaction: txn-1');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Lease: lease-1');
+    expect(formatCommitTrailers(bundle)).toContain('CodeSite-Proof-Signature: hmac-sha256:');
   });
 });
