@@ -9418,6 +9418,7 @@ function randomColdReadinessMatrixRow({
   actualAttempt = eventType === 'cold_path_complete' && dryRun !== true,
   updatedAt = '2026-06-30T21:00:00.000Z',
   artifactPath = `random-cold-readiness/${targetId}.json`,
+  runtimeBoundaryEventManifestTemplate = undefined,
 } = {}) {
   const sourceContentSeed = {
     sourceUrl: sourceUrl ?? null,
@@ -9481,6 +9482,12 @@ function randomColdReadinessMatrixRow({
       direct_input_evidence: directInputEvidenceFacet,
     }
     : {};
+  const coldRuntimeBoundaryTemplate = runtimeBoundaryEventManifestTemplate === undefined
+    ? JSON.parse(JSON.stringify(acceptedColdRuntimeBoundaryTemplate))
+    : runtimeBoundaryEventManifestTemplate;
+  const coldRuntimeBoundaryTemplateSnake = JSON.parse(
+    JSON.stringify(coldRuntimeBoundaryTemplate ?? {}),
+  );
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
@@ -9697,34 +9704,8 @@ function randomColdReadinessMatrixRow({
       failedGates: [],
       failed_gates: [],
     },
-    coldRuntimeBoundaryEventManifestTemplate: {
-      present: true,
-      validated: true,
-      acceptedAsSupportEvidence: true,
-      accepted_as_support_evidence: true,
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      canSatisfyRuntimeProof: false,
-      can_satisfy_runtime_proof: false,
-      failedGates: [],
-      failed_gates: [],
-    },
-    cold_runtime_boundary_event_manifest_template: {
-      present: true,
-      validated: true,
-      acceptedAsSupportEvidence: true,
-      accepted_as_support_evidence: true,
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      canSatisfyRuntimeProof: false,
-      can_satisfy_runtime_proof: false,
-      failedGates: [],
-      failed_gates: [],
-    },
+    coldRuntimeBoundaryEventManifestTemplate: coldRuntimeBoundaryTemplate,
+    cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryTemplateSnake,
     sourceTreeIntakeAccepted: true,
     source_tree_intake_accepted: true,
     sourceTreeFileCount: fileCount,
@@ -10449,6 +10430,56 @@ assert.equal(
 assert.ok(
   configuredColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
+const summaryOnlyRuntimeBoundaryTemplate = {
+  present: true,
+  validated: true,
+  acceptedAsSupportEvidence: true,
+  accepted_as_support_evidence: true,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  failedGates: [],
+  failed_gates: [],
+};
+const broadReadinessSummaryOnlyTemplateRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `summary-only-runtime-template-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/summary-only-runtime-template/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`summary-only-runtime-template-commit-${index + 1}`).slice(0, 40),
+    runtimeBoundaryEventManifestTemplate: summaryOnlyRuntimeBoundaryTemplate,
+  })
+);
+const broadReadinessWithSummaryOnlyTemplateQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessSummaryOnlyTemplateRows,
+  ],
+});
+assert.equal(broadReadinessWithSummaryOnlyTemplateQuery.accepted, false);
+assert.ok(broadReadinessWithSummaryOnlyTemplateQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_template_not_validated'
+));
+assert.ok(broadReadinessWithSummaryOnlyTemplateQuery.failedGates.some((gate) =>
+  gate.code === 'cold_runtime_boundary_event_manifest_template_hash_mismatch'
+));
+assert.equal(
+  broadReadinessWithSummaryOnlyTemplateQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithSummaryOnlyTemplateQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithSummaryOnlyTemplateQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const broadReadinessForgedDirectSourceRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({

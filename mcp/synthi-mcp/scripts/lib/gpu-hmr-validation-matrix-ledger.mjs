@@ -979,6 +979,17 @@ function coldTemplateContentHash(value = {}) {
   return normalizeSha256(`sha256:${sha256Hex(stableJson(coldTemplateHashSeed(value)))}`);
 }
 
+function coldRuntimeBoundaryTemplateInput(value = {}) {
+  const object = compactObject(value);
+  return firstCompactObject(
+    object.runtimeBoundaryEventManifestTemplateInput,
+    object.runtime_boundary_event_manifest_template_input,
+    object.templateInput,
+    object.template_input,
+    object,
+  );
+}
+
 function runtimeBoundaryTemplateEventKind(event = {}) {
   return firstText(
     event.eventKind,
@@ -991,8 +1002,9 @@ function runtimeBoundaryTemplateEventKind(event = {}) {
 }
 
 export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
-  const facet = compactObject(input);
-  const present = Object.keys(facet).length > 0;
+  const envelope = compactObject(input);
+  const facet = coldRuntimeBoundaryTemplateInput(envelope);
+  const present = Object.keys(envelope).length > 0 || Object.keys(facet).length > 0;
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
@@ -1388,6 +1400,8 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       candidateOracleHintClaimsAcceptance === true,
     nonSourceDerivedAcceptableOracleKinds,
     non_source_derived_acceptable_oracle_kinds: nonSourceDerivedAcceptableOracleKinds,
+    runtimeBoundaryEventManifestTemplateInput: facet,
+    runtime_boundary_event_manifest_template_input: facet,
     observedEventKinds: eventKinds,
     observed_event_kinds: eventKinds,
     missingRequiredEventKinds: missingRequiredKinds,
@@ -13667,11 +13681,13 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_path_cannot_claim_runtime_authority' });
     }
-    const coldTemplate = compactObject(
-      row.coldRuntimeBoundaryEventManifestTemplate
-      ?? row.cold_runtime_boundary_event_manifest_template,
+    const coldTemplateRaw = firstCompactObject(
+      row.coldRuntimeBoundaryEventManifestTemplate,
+      row.cold_runtime_boundary_event_manifest_template,
     );
-    const coldTemplatePresent = coldTemplate.present === true
+    const coldTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(coldTemplateRaw);
+    const coldTemplatePresent = Object.keys(coldTemplateRaw).length > 0
+      || coldTemplate.present === true
       || row.runtimeBoundaryEventManifestTemplateAccepted === true
       || row.runtime_boundary_event_manifest_template_accepted === true;
     if (coldTemplatePresent && coldTemplate.validated !== true) {
@@ -25009,10 +25025,11 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     );
     const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
     const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
-    const template = compactObject(
-      row.coldRuntimeBoundaryEventManifestTemplate
-      ?? row.cold_runtime_boundary_event_manifest_template,
+    const templateRaw = firstCompactObject(
+      row.coldRuntimeBoundaryEventManifestTemplate,
+      row.cold_runtime_boundary_event_manifest_template,
     );
+    const template = coldRuntimeBoundaryEventManifestTemplateFacet(templateRaw);
     const backendEvidence = compactObject(
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
@@ -25122,12 +25139,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && buildMetadataContentAccepted
       && Boolean(buildMetadataContentHash);
     const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
-    const templateAccepted = firstBool(
-      row.runtimeBoundaryEventManifestTemplateAccepted,
-      row.runtime_boundary_event_manifest_template_accepted,
-      template.acceptedAsSupportEvidence,
-      template.accepted_as_support_evidence,
-    ) === true;
+    const templateAccepted = template.acceptedAsSupportEvidence === true;
     const sourceListingManifest = compactObject(
       sourceIntakeEvidence.sourceListingManifest
       ?? sourceIntakeEvidence.source_listing_manifest,
