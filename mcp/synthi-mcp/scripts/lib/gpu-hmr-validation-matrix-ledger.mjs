@@ -390,6 +390,7 @@ const RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS = Object.freeze({
   requireDeclaredHashes: true,
   requireDiff: true,
   allowSingleFrameProof: false,
+  requireRuntimeVisualProofBinding: true,
 });
 
 function stableJson(value) {
@@ -2729,6 +2730,14 @@ function visualArtifactEntryFromCasLocator(locator, index, count) {
   };
 }
 
+function runtimeVisualProofBindingInput(value) {
+  const binding = compactObject(
+    value?.runtimeVisualProofBinding
+    ?? value?.runtime_visual_proof_binding,
+  );
+  return Object.keys(binding).length > 0 ? binding : null;
+}
+
 function visualArtifactEntries(input) {
   if (Array.isArray(input)) {
     return input.flatMap((value, index) => {
@@ -2762,6 +2771,7 @@ function visualArtifactEntries(input) {
         sourcePath,
         expectedHash,
         artifactCasLocator: visualArtifactCasLocatorForEntry(locators, role, expectedHash),
+        runtimeVisualProofBinding: runtimeVisualProofBindingInput(value),
       }];
     });
   }
@@ -2790,6 +2800,7 @@ function visualArtifactEntries(input) {
       sourcePath: directSourcePath,
       expectedHash,
       artifactCasLocator: visualArtifactCasLocatorForEntry(locators, role, expectedHash),
+      runtimeVisualProofBinding: runtimeVisualProofBindingInput(object),
     });
   }
   const push = (role, pathValues, hashValues = []) => {
@@ -2843,6 +2854,13 @@ function visualArtifactEvidenceOptions(required) {
           required.requireDiffImage,
           required.require_diff_image,
         ) === true,
+      requireRuntimeVisualProofBinding:
+        firstBool(
+          required.requireRuntimeVisualProofBinding,
+          required.require_runtime_visual_proof_binding,
+          required.requireRuntimeBinding,
+          required.require_runtime_binding,
+        ) === true,
       allowSingleFrameProof:
         firstBool(
           required.allowSingleFrameProof,
@@ -2868,6 +2886,7 @@ function visualArtifactEvidenceOptions(required) {
     required: required === true,
     requireDeclaredHashes: false,
     requireDiff: false,
+    requireRuntimeVisualProofBinding: false,
     allowSingleFrameProof: false,
     artifactCasRoots: [],
   };
@@ -3119,13 +3138,27 @@ async function validateComputeArtifactCasLocator(locator, repoRoot, baseDir, art
   }
 }
 
-function runtimeVisualOracleEvidenceRequirements({ allowSingleFrameProof = false } = {}) {
+function runtimeVisualOracleEvidenceRequirements({
+  allowSingleFrameProof = false,
+  requireRuntimeVisualProofBinding = true,
+} = {}) {
   return {
     ...RUNTIME_VISUAL_ORACLE_EVIDENCE_REQUIREMENTS,
     requireDeclaredHashes: allowSingleFrameProof ? false : true,
     requireDiff: allowSingleFrameProof ? false : true,
+    requireRuntimeVisualProofBinding,
     allowSingleFrameProof,
   };
+}
+
+function runtimeVisualProofBindingCoverageAccepted(visual) {
+  const imageCount = Number(visual?.imageCount ?? visual?.image_count ?? 0);
+  const acceptedCount = Number(
+    visual?.runtimeVisualProofBindingAcceptedCount
+    ?? visual?.runtime_visual_proof_binding_accepted_count
+    ?? 0,
+  );
+  return imageCount > 0 && acceptedCount === imageCount;
 }
 
 function visualThresholdRequirements(metrics = {}) {
@@ -3946,9 +3979,16 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       baseDir,
       options,
     );
-    let fileEvidence = entry.resolvedPath
-      ? await pngEvidence(entry.resolvedPath)
-      : {
+    const acceptedCasPath =
+      casValidation?.accepted === true
+        ? firstText(casValidation.localPath, casValidation.local_path)
+        : null;
+    let resolvedFromCas = false;
+    let fileEvidence = acceptedCasPath
+      ? await pngEvidence(acceptedCasPath)
+      : entry.resolvedPath
+        ? await pngEvidence(entry.resolvedPath)
+        : {
           path: null,
           exists: false,
           sizeBytes: null,
@@ -3960,7 +4000,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
           width: null,
           height: null,
         };
-    let resolvedFromCas = false;
+    resolvedFromCas = Boolean(acceptedCasPath);
     if (
       (!fileEvidence.exists || !fileEvidence.decoded)
       && casValidation?.accepted === true
@@ -3983,6 +4023,25 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     const expectedHash = normalizeSha256(entry.expectedHash) ?? casContentHash;
     const hashMatches = expectedHash ? fileEvidence.sha256 === expectedHash : null;
     const artifactCasHashMatches = casContentHash ? fileEvidence.sha256 === casContentHash : null;
+    const runtimeVisualProofBinding = compactObject(entry.runtimeVisualProofBinding);
+    const runtimeVisualProofBindingPresent = Object.keys(runtimeVisualProofBinding).length > 0;
+    const runtimeVisualProofBindingAuthority = firstText(
+      runtimeVisualProofBinding.proofAuthority,
+      runtimeVisualProofBinding.proof_authority,
+    );
+    const runtimeVisualProofBindingHash = normalizeSha256(firstText(
+      runtimeVisualProofBinding.contentHash,
+      runtimeVisualProofBinding.content_hash,
+      runtimeVisualProofBinding.matchedOracleHash,
+      runtimeVisualProofBinding.matched_oracle_hash,
+    ));
+    const runtimeVisualProofBindingAccepted =
+      runtimeVisualProofBindingPresent
+      && firstBool(runtimeVisualProofBinding.accepted) === true
+      && runtimeVisualProofBindingAuthority
+        === 'proof_ledger_visual_oracle_hash_binding_not_image_only'
+      && contentAddressedSha256(runtimeVisualProofBindingHash)
+      && fileEvidence.sha256 === runtimeVisualProofBindingHash;
     evidence.push({
       ...fileEvidence,
       role: entry.role,
@@ -4011,6 +4070,16 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       artifact_cas_resolved_path: firstText(casValidation?.localPath, casValidation?.local_path),
       resolvedFromCas,
       resolved_from_cas: resolvedFromCas,
+      runtimeVisualProofBindingPresent,
+      runtime_visual_proof_binding_present: runtimeVisualProofBindingPresent,
+      runtimeVisualProofBindingAccepted,
+      runtime_visual_proof_binding_accepted: runtimeVisualProofBindingAccepted,
+      runtimeVisualProofBindingAuthority,
+      runtime_visual_proof_binding_authority: runtimeVisualProofBindingAuthority,
+      runtimeVisualProofBindingHash,
+      runtime_visual_proof_binding_hash: runtimeVisualProofBindingHash,
+      runtimeVisualProofBinding: runtimeVisualProofBindingPresent ? runtimeVisualProofBinding : null,
+      runtime_visual_proof_binding: runtimeVisualProofBindingPresent ? runtimeVisualProofBinding : null,
       artifactCasValidation: casValidation ? {
         accepted: casValidation.accepted === true,
         acceptedAsTransportEvidence: casValidation.acceptedAsTransportEvidence === true,
@@ -4059,6 +4128,12 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
   const artifactCasHashMatchedCount = evidence.filter((item) =>
     item.artifactCasLocatorPresent && item.artifactCasHashMatches === true
   ).length;
+  const runtimeVisualProofBindingCount = evidence.filter((item) =>
+    item.runtimeVisualProofBindingPresent === true
+  ).length;
+  const runtimeVisualProofBindingAcceptedCount = evidence.filter((item) =>
+    item.runtimeVisualProofBindingAccepted === true
+  ).length;
   const allImagesExist = imageCount > 0 && existingImageCount === imageCount;
   const allImagesArePng = imageCount > 0 && pngImageCount === imageCount;
   const allImagesDecode = imageCount > 0 && decodedImageCount === imageCount;
@@ -4072,6 +4147,9 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     artifactCasLocatorCount === 0 || artifactCasLocatorAcceptedCount === artifactCasLocatorCount;
   const allCasLocatorHashesMatch =
     artifactCasLocatorCount === 0 || artifactCasHashMatchedCount === artifactCasLocatorCount;
+  const allRuntimeVisualProofBindingsAccepted =
+    !options.requireRuntimeVisualProofBinding
+    || (imageCount > 0 && runtimeVisualProofBindingAcceptedCount === imageCount);
   const visualPair = await recomputeVisualPairEvidence(evidence);
   const singleFrame = await recomputeSingleVisualFrameEvidence(evidence);
   const visualThresholds = visualThresholdRequirements(metrics);
@@ -4102,6 +4180,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     allDeclaredHashesMatch ? null : 'visual_artifact_hash_mismatch',
     allCasLocatorsAccepted ? null : 'visual_artifact_cas_locator_validation_failed',
     allCasLocatorHashesMatch ? null : 'visual_artifact_cas_locator_hash_mismatch',
+    allRuntimeVisualProofBindingsAccepted ? null : 'visual_runtime_proof_binding_missing_or_invalid',
     options.required === true && options.allowSingleFrameProof !== true && !hasBeforeImage ? 'visual_before_artifact_missing' : null,
     options.required === true && options.allowSingleFrameProof !== true && !hasAfterImage ? 'visual_after_artifact_missing' : null,
     options.requireDiff === true && !hasDiffImage ? 'visual_diff_artifact_missing' : null,
@@ -4124,6 +4203,7 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
       && allDeclaredHashesMatch
       && allCasLocatorsAccepted
       && allCasLocatorHashesMatch
+      && allRuntimeVisualProofBindingsAccepted
       && (options.requireDiff !== true || hasDiffImage)
       && visualThresholdValidation.accepted === true
       && (!requiresPixelProof || pixelProofAccepted === true);
@@ -4133,6 +4213,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     require_declared_hashes: options.requireDeclaredHashes,
     requireDiff: options.requireDiff,
     require_diff: options.requireDiff,
+    requireRuntimeVisualProofBinding: options.requireRuntimeVisualProofBinding,
+    require_runtime_visual_proof_binding: options.requireRuntimeVisualProofBinding,
     allowSingleFrameProof: options.allowSingleFrameProof,
     allow_single_frame_proof: options.allowSingleFrameProof,
     present: imageCount > 0,
@@ -4150,6 +4232,10 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     artifact_cas_locator_accepted_count: artifactCasLocatorAcceptedCount,
     artifactCasHashMatchedCount,
     artifact_cas_hash_matched_count: artifactCasHashMatchedCount,
+    runtimeVisualProofBindingCount,
+    runtime_visual_proof_binding_count: runtimeVisualProofBindingCount,
+    runtimeVisualProofBindingAcceptedCount,
+    runtime_visual_proof_binding_accepted_count: runtimeVisualProofBindingAcceptedCount,
     allRequiredHashesDeclared,
     all_required_hashes_declared: allRequiredHashesDeclared,
     allDeclaredHashesContentAddressed,
@@ -4163,6 +4249,8 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     all_cas_locators_accepted: allCasLocatorsAccepted,
     allCasLocatorHashesMatch,
     all_cas_locator_hashes_match: allCasLocatorHashesMatch,
+    allRuntimeVisualProofBindingsAccepted,
+    all_runtime_visual_proof_bindings_accepted: allRuntimeVisualProofBindingsAccepted,
     hasBeforeImage,
     has_before_image: hasBeforeImage,
     hasAfterImage,
@@ -5023,6 +5111,13 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     ?? worker.native_dependency_count
     ?? 0,
   );
+  const asyncMetricsEventType = firstText(asyncMetrics.eventType, asyncMetrics.event_type);
+  const proofReady =
+    !asyncVisualProofJobPending
+    && asyncMetricsEventType === 'proof_ready';
+  const completedAsyncMetricsPresent =
+    !asyncVisualProofJobPending
+    && Object.keys(asyncMetrics).length > 0;
   const nativeImageDependencyBound =
     contentAddressedSha256(workerNativeDependencyManifestHash)
     && workerNativeDependencyManifestSchemaVersion
@@ -5030,9 +5125,10 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     && Number.isSafeInteger(workerNativeDependencyCount)
     && workerNativeDependencyCount > 0;
   const asyncMetricsAccepted =
-    firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
+    !asyncVisualProofJobPending
+    && firstText(asyncMetrics.schemaVersion, asyncMetrics.schema_version)
       === GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION
-    && firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
+    && asyncMetricsEventType === 'proof_ready'
     && asyncMetrics.accepted === true
     && firstBool(asyncMetrics.acceptedAsAsyncVisualMetrics, asyncMetrics.accepted_as_async_visual_metrics) === true
     && firstText(asyncMetrics.proofAuthority, asyncMetrics.proof_authority)
@@ -5079,18 +5175,14 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
   const failedGates = compactStringList([
     Object.keys(visualArtifacts).length > 0 ? null : 'async_visual_cas_artifacts_missing',
     visual.accepted === true ? null : 'visual_artifacts_not_accepted',
-    Object.keys(asyncMetrics).length > 0 ? null : 'async_visual_metrics_missing',
-    asyncVisualProofJobPending && !(
-      firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
-    )
-      ? 'async_visual_proof_pending_not_ready'
-      : null,
+    completedAsyncMetricsPresent ? null : 'async_visual_metrics_missing',
+    asyncVisualProofJobPending ? 'async_visual_proof_pending_not_ready' : null,
     asyncVisualProofJobPresent && asyncVisualProofJobBinding.accepted !== true
       ? 'async_visual_proof_job_binding_not_accepted'
       : null,
     ...compactStringList(asyncVisualProofJobBinding.failedGates),
     asyncMetricsAccepted ? null : 'async_visual_worker_proof_not_accepted',
-    firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready'
+    proofReady
       ? null
       : 'async_visual_proof_ready_event_missing',
     firstBool(worker.offMainThread, worker.off_main_thread) === true
@@ -5138,8 +5230,8 @@ function asyncVisualCasBundleFacet(row = {}, visual = {}) {
     proof_authority: ASYNC_VISUAL_CAS_SUPPORT_AUTHORITY,
     asyncVisualProofAccepted: asyncMetricsAccepted,
     async_visual_proof_accepted: asyncMetricsAccepted,
-    proofReady: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
-    proof_ready: firstText(asyncMetrics.eventType, asyncMetrics.event_type) === 'proof_ready',
+    proofReady,
+    proof_ready: proofReady,
     asyncVisualProofJobPresent,
     async_visual_proof_job_present: asyncVisualProofJobPresent,
     asyncVisualProofJobPending,
@@ -13529,7 +13621,9 @@ async function visualOracleArtifactOverlayResolutionForLedger(ledger, repoRoot, 
       repoRoot,
       baseDir,
       artifacts,
-      runtimeVisualOracleEvidenceRequirements(),
+      runtimeVisualOracleEvidenceRequirements({
+        requireRuntimeVisualProofBinding: false,
+      }),
     );
     const locatorCount = Number(visual.artifactCasLocatorCount ?? visual.artifact_cas_locator_count ?? 0);
     if (locatorCount <= 0) continue;
@@ -13804,6 +13898,40 @@ function visualEvidenceInputsFromValue(value) {
   if (Array.isArray(value)) return value.flatMap((item) => visualEvidenceInputsFromValue(item));
   if (isObject(value)) return [value];
   return [];
+}
+
+function visualEvidenceInputsWithSharedTransport(evidenceInputs = [], transportSource = {}) {
+  const inputs = Array.isArray(evidenceInputs) ? evidenceInputs : visualEvidenceInputsFromValue(evidenceInputs);
+  const source = compactObject(transportSource);
+  const locators = compactObjectList(
+    source.artifactCasLocators
+    ?? source.artifact_cas_locators,
+  );
+  const transportEvidence = compactObject(
+    source.visualArtifactTransportEvidence
+    ?? source.visual_artifact_transport_evidence,
+  );
+  if (locators.length === 0 && Object.keys(transportEvidence).length === 0) return inputs;
+  return inputs.map((input) => {
+    if (!isObject(input)) return input;
+    return {
+      ...input,
+      ...(locators.length > 0 && !input.artifactCasLocators && !input.artifact_cas_locators
+        ? {
+            artifactCasLocators: locators,
+            artifact_cas_locators: locators,
+          }
+        : {}),
+      ...(Object.keys(transportEvidence).length > 0
+        && !input.visualArtifactTransportEvidence
+        && !input.visual_artifact_transport_evidence
+        ? {
+            visualArtifactTransportEvidence: transportEvidence,
+            visual_artifact_transport_evidence: transportEvidence,
+          }
+        : {}),
+    };
+  });
 }
 
 async function runtimeProofRow(json, filePath, context) {
@@ -14402,8 +14530,11 @@ async function agentSplitRow(records, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     deltaMetrics,
-    runtimeVisualOracleEvidenceRequirements(),
+    runtimeVisualOracleEvidenceRequirements({
+      requireRuntimeVisualProofBinding: false,
+    }),
   );
+  const runtimeVisualProofBindingAccepted = runtimeVisualProofBindingCoverageAccepted(visual);
   const proofLedger = compactObject(
     waitDetail?.proofLedger
     ?? waitDetail?.proof_ledger
@@ -14795,8 +14926,11 @@ async function hiprtWarmRow(json, filePath, context) {
         ?? diff.visual_proof_thresholds
         ?? diff.thresholds,
     },
-    runtimeVisualOracleEvidenceRequirements(),
+    runtimeVisualOracleEvidenceRequirements({
+      requireRuntimeVisualProofBinding: false,
+    }),
   );
+  const runtimeVisualProofBindingAccepted = runtimeVisualProofBindingCoverageAccepted(visual);
   const proofLedger = compactObject(
     json.proofLedger
     ?? json.proof_ledger
@@ -14858,6 +14992,7 @@ async function hiprtWarmRow(json, filePath, context) {
     && processRestarted === false;
   const strictVisualProofAccepted =
     strictVisualProfileAccepted === true
+    && runtimeVisualProofBindingAccepted
     && outputOracleFacet.accepted === true
     && runtimeProofArtifactProof.accepted === true
     && strict.fullRuntimeProven === true
@@ -14944,6 +15079,8 @@ async function hiprtWarmRow(json, filePath, context) {
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
     visual,
+    runtimeVisualProofBindingAccepted,
+    runtime_visual_proof_binding_accepted: runtimeVisualProofBindingAccepted,
     runMode,
     cpuHmrUsed,
     fullRebuildUsed,
@@ -14956,6 +15093,9 @@ async function hiprtWarmRow(json, filePath, context) {
     reasons: accepted ? [] : compactStringList([
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      runtimeVisualProofBindingAccepted
+        ? null
+        : 'visual_runtime_proof_binding_missing_or_invalid',
       outputOracleFacet.accepted === true ? null : 'visual_oracle_not_bound_to_runtime_ledger',
       strict.fullRuntimeProven === true ? null : 'strict_full_runtime_not_proven',
       ledger.present === true ? null : 'proof_ledger_missing',
@@ -14991,6 +15131,9 @@ async function hiprtWarmRow(json, filePath, context) {
               outputOracleFacet.accepted === true
                 ? null
                 : 'hiprt_visual_oracle_runtime_ledger_binding_required',
+              runtimeVisualProofBindingAccepted
+                ? null
+                : 'visual_runtime_proof_binding_required',
               ...visual.failedGates,
               ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
               ...hiprtContract.failedGates,
@@ -15009,14 +15152,36 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     ?? json.visual_oracle_artifacts
     ?? json.artifacts,
   );
+  const explicitVisualEvidenceCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualEvidenceArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_evidence_artifacts');
+  const explicitVisualArtifactCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualOracleArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_oracle_artifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'artifacts');
+  const visualEvidenceArtifacts = visualEvidenceInputsFromValue(
+    explicitVisualEvidenceCarrier
+      ? (json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts)
+      : explicitVisualArtifactCarrier
+        ? null
+      : (
+          runtimeProofArtifact.visualEvidenceArtifacts
+          ?? runtimeProofArtifact.visual_evidence_artifacts
+        ),
+  );
   const metrics = compactObject(json.metrics);
   const visual = await visualArtifactEvidence(
-    visualArtifacts,
+    visualEvidenceArtifacts.length > 0
+      ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
+      : visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     metrics,
-    runtimeVisualOracleEvidenceRequirements(),
+    runtimeVisualOracleEvidenceRequirements({
+      requireRuntimeVisualProofBinding: false,
+    }),
   );
+  const runtimeVisualProofBindingAccepted = runtimeVisualProofBindingCoverageAccepted(visual);
   const ledger = ledgerFacet(json);
   const proofLedger = compactObject(
     json.proofLedger
@@ -15096,6 +15261,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && deterministicVisualModeEvaluation.accepted === true;
   const strictRuntimeVisualProofAccepted =
     strictVisualProofAccepted === true
+    && runtimeVisualProofBindingAccepted
     && outputOracleFacet.accepted === true;
   const accepted =
     strictRuntimeVisualProofAccepted === true
@@ -15166,6 +15332,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
     visual,
+    runtimeVisualProofBindingAccepted,
+    runtime_visual_proof_binding_accepted: runtimeVisualProofBindingAccepted,
     runMode: timingEvidence(
       ledgerRecord,
       json.timingMetrics,
@@ -15185,6 +15353,9 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       ledger.present === true ? null : 'proof_ledger_record_missing',
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      runtimeVisualProofBindingAccepted
+        ? null
+        : 'visual_runtime_proof_binding_missing_or_invalid',
       outputOracleFacet.accepted === true ? null : 'visual_oracle_not_bound_to_runtime_ledger',
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
@@ -15199,6 +15370,9 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
+      runtimeVisualProofBindingAccepted
+        ? null
+        : 'webgpu_runtime_visual_proof_binding_required',
       outputOracleFacet.accepted === true
         ? null
         : 'webgpu_visual_oracle_runtime_ledger_binding_required',
@@ -16335,7 +16509,14 @@ async function externalProjectRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     visualDiff,
-    json.status === 'pass' ? runtimeVisualOracleEvidenceRequirements() : false,
+    json.status === 'pass'
+      ? {
+          ...runtimeVisualOracleEvidenceRequirements({
+            requireRuntimeVisualProofBinding: false,
+          }),
+          requireRuntimeVisualProofBinding: false,
+        }
+      : false,
   );
   const declaredDeterministicMode = compactObject(
     json.deterministicVisualMode
@@ -21635,7 +21816,11 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
     compactObject(json.visual_evidence_quality ?? json.visualEvidenceQuality),
-    visualInputs.length > 0 ? runtimeVisualOracleEvidenceRequirements() : false,
+    visualInputs.length > 0
+      ? runtimeVisualOracleEvidenceRequirements({
+          requireRuntimeVisualProofBinding: normalizedTargetProgression.nonFinalPhase !== true,
+        })
+      : false,
   );
   const outputOracleFacet = await realRocmLedgerOutputOracleFacet(
     ledger,
@@ -22495,7 +22680,30 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     json.acceptance_contract,
   );
   const telemetry = compactObject(json.gpuProofTelemetry ?? json.gpu_proof_telemetry);
-  const visualArtifacts = compactObject(json.visualArtifacts ?? json.visual_oracle_artifacts);
+  const explicitVisualEvidenceCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualEvidenceArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_evidence_artifacts');
+  const explicitVisualArtifactCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_artifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visualOracleArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_oracle_artifacts');
+  const visualEvidenceArtifacts = visualEvidenceInputsFromValue(
+    explicitVisualEvidenceCarrier
+      ? (json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts)
+      : explicitVisualArtifactCarrier
+        ? null
+        : (
+            runtimeProofArtifact.visualEvidenceArtifacts
+            ?? runtimeProofArtifact.visual_evidence_artifacts
+          ),
+  );
+  const visualArtifacts = compactObject(
+    json.visualArtifacts
+    ?? json.visual_artifacts
+    ?? json.visualOracleArtifacts
+    ?? json.visual_oracle_artifacts,
+  );
   const visualDelta = compactObject(json.visualDelta ?? json.visual_delta);
   const declaredVisualMetrics = compactObject(json.visualMetrics ?? json.visual_metrics ?? visualArtifacts);
   const visualProofThresholds =
@@ -22508,15 +22716,22 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     visualProofThresholds,
     visual_proof_thresholds: visualProofThresholds,
   };
+  const metricScope = runMode.metricScope;
+  const isCold = metricScope === 'cold';
   const visual = await visualArtifactEvidence(
-    visualArtifacts,
+    visualEvidenceArtifacts.length > 0
+      ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
+      : visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     visualMetrics,
     runtimeVisualOracleEvidenceRequirements({
-      allowSingleFrameProof: runMode.metricScope === 'cold',
+      allowSingleFrameProof: isCold,
+      requireRuntimeVisualProofBinding: false,
     }),
   );
+  const runtimeVisualProofBindingAccepted =
+    isCold || runtimeVisualProofBindingCoverageAccepted(visual);
   const asyncVisualProofJob = rawAsyncVisualProofJob(json);
   const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
   const proofLedger = compactObject(
@@ -22549,8 +22764,6 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     Number(asyncVisualCasBundle.rejectedNonVisualLocatorCount
       ?? asyncVisualCasBundle.rejected_non_visual_locator_count
       ?? 0) === 0;
-  const metricScope = runMode.metricScope;
-  const isCold = metricScope === 'cold';
   const cpuHmrUsed = boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used);
   const fullRebuildUsed = boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used);
   const processRestarted = boolOrNull(json.processRestarted ?? json.process_restarted);
@@ -22606,6 +22819,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noFullRebuild
     && noRestart
     && (!requiresSourceFirstIngestion || sourceFirstIngestion.accepted === true)
+    && runtimeVisualProofBindingAccepted
     && asyncVisualProofJobBindingAccepted
     && visualTransportLocatorsAccepted
     && (backend !== 'hiprt' || (
@@ -22748,6 +22962,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
     visual,
+    runtimeVisualProofBindingAccepted,
+    runtime_visual_proof_binding_accepted: runtimeVisualProofBindingAccepted,
     runMode,
     cpuHmrUsed,
     fullRebuildUsed,
@@ -22757,6 +22973,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runMode.accepted ? null : 'run_mode_timing_not_accepted',
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      runtimeVisualProofBindingAccepted
+        ? null
+        : 'visual_runtime_proof_binding_missing_or_invalid',
       !isCold && outputOracleFacet.accepted !== true
         ? 'visual_oracle_not_bound_to_runtime_ledger'
         : null,
@@ -22806,6 +23025,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
             : null,
           asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_required',
           visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_visual_locator_required',
+          runtimeVisualProofBindingAccepted ? null : 'visual_runtime_proof_binding_required',
           !isCold && outputOracleFacet.accepted !== true
             ? 'visual_oracle_runtime_ledger_binding_required'
             : null,
@@ -24284,6 +24504,16 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
         sourceFirst.directSourceIdentityAccepted,
         sourceFirst.direct_source_identity_accepted,
       ) === true;
+    const directSourceAuthority =
+      SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority);
+    const sourceIdentityHash = sourceFirstVisualSourceIdentityHash(row);
+    const sourceIdentityAccepted =
+      contentAddressedSha256(sourceIdentityHash)
+      && (
+        directSourceAuthority
+          ? directSourceIdentityAccepted
+          : workspaceSourceProvenance.accepted === true
+      );
     return firstBool(sourceFirst.accepted) === true
       && firstText(sourceFirst.schemaVersion, sourceFirst.schema_version)
         === AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION
@@ -24292,7 +24522,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       && (requireUserOwnedSource ? userOwnedSourceFirst : true)
       && directLocalPathOrigin.accepted === true
       && workspaceSourceProvenance.accepted === true
-      && directSourceIdentityAccepted
+      && sourceIdentityAccepted
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false

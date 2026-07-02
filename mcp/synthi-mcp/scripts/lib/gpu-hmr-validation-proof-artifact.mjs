@@ -2172,6 +2172,59 @@ function bindRuntimeVisualProofArtifacts(artifacts, {
   });
 }
 
+export function visualEvidenceArtifactsFromVisualOracleArtifacts(visualOracleArtifacts, {
+  proofLedgerQuery,
+  proofLedgerRecord,
+  producerSubsystem = 'mcp.gpu_hmr_validation',
+} = {}) {
+  const source = objectOrNull(visualOracleArtifacts) ?? {};
+  const entries = [
+    {
+      role: 'before',
+      path: firstString(source.before_image, source.beforeImage),
+      hash: firstString(source.before_image_hash, source.beforeImageHash),
+    },
+    {
+      role: 'after',
+      path: firstString(source.after_image, source.afterImage),
+      hash: firstString(source.after_image_hash, source.afterImageHash),
+    },
+    {
+      role: 'diff',
+      path: firstString(source.diff_image, source.diffImage),
+      hash: firstString(source.diff_image_hash, source.diffImageHash),
+    },
+  ];
+  const artifacts = entries
+    .filter((entry) => entry.path || contentAddressedSha256(entry.hash))
+    .map((entry) => ({
+      kind: 'visual-artifact',
+      role: entry.role,
+      artifactRole: entry.role,
+      artifact_role: entry.role,
+      path: entry.path ?? null,
+      sourcePath: entry.path ?? null,
+      source_path: entry.path ?? null,
+      contentHash: contentAddressedSha256(entry.hash) ? entry.hash : null,
+      content_hash: contentAddressedSha256(entry.hash) ? entry.hash : null,
+      expectedHash: contentAddressedSha256(entry.hash) ? entry.hash : null,
+      expected_hash: contentAddressedSha256(entry.hash) ? entry.hash : null,
+      acceptedAsVisualEvidence: contentAddressedSha256(entry.hash),
+      accepted_as_visual_evidence: contentAddressedSha256(entry.hash),
+      acceptedAsImageEvidence: contentAddressedSha256(entry.hash),
+      accepted_as_image_evidence: contentAddressedSha256(entry.hash),
+      acceptedAsRuntimeVisualProof: false,
+      accepted_as_runtime_visual_proof: false,
+      producerSubsystem,
+      producer_subsystem: producerSubsystem,
+      summary: entry.path ?? entry.hash ?? `${entry.role}-visual-artifact`,
+    }));
+  return bindRuntimeVisualProofArtifacts(artifacts, {
+    proofLedgerQuery,
+    proofLedgerRecord,
+  });
+}
+
 function visualLedgerOracleLimitations({
   visualEvidenceRequired,
   derivedProofLedgerRecord,

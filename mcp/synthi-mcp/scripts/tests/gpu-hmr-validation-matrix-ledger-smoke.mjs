@@ -41,6 +41,7 @@ import {
 import {
   buildValidationRuntimeProofArtifact,
   computeOracleArtifactsFromFiles,
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from '../lib/gpu-hmr-validation-proof-artifact.mjs';
 import {
   buildGpuHmrValidationProofSummary,
@@ -1136,6 +1137,14 @@ function runtimeProofMaterials(scope, options = {}) {
   const deterministicVisualModeEvaluation =
     evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode);
   assert.equal(deterministicVisualModeEvaluation.accepted, true);
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualArtifacts,
+    {
+      proofLedgerQuery,
+      proofLedgerRecord: proofLedger.records[0],
+      producerSubsystem: 'validation_matrix_smoke_runtime_visual',
+    },
+  );
   const runtimeTrace = {
     loaderEvents: [{
       source: 'hipModuleLoadData',
@@ -1212,6 +1221,8 @@ function runtimeProofMaterials(scope, options = {}) {
     },
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     runtimeTrace,
     runtime_trace: runtimeTrace,
   };
@@ -1222,6 +1233,8 @@ function runtimeProofMaterials(scope, options = {}) {
     proof_ledger_query: proofLedgerQuery,
     runtimeProofArtifact,
     runtime_proof_artifact: runtimeProofArtifact,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     runtimeTrace,
     runtime_trace: runtimeTrace,
   };
@@ -3690,6 +3703,8 @@ await writeJson(path.join(visualDir, 'run-mode-forged-readable-no-hash-diff.json
     beforeImage: path.join(visualDir, 'before-hmr-first.png'),
     afterImage: path.join(visualDir, 'after-hmr-first.png'),
   },
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
   runMode: {
     metricClock: 'monotonic_ns',
     metricScope: 'hot_delta_1',
@@ -6325,12 +6340,24 @@ function withVisualOracleArtifacts(materials, visualOracleArtifacts) {
   copy.proof_ledger_query = proofLedgerQuery;
   copy.visualOracleArtifacts = visualOracleArtifacts;
   copy.visual_oracle_artifacts = visualOracleArtifacts;
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualOracleArtifacts,
+    {
+      proofLedgerQuery,
+      proofLedgerRecord: proofLedger.records[0],
+      producerSubsystem: 'validation_matrix_smoke_runtime_visual',
+    },
+  );
+  copy.visualEvidenceArtifacts = visualEvidenceArtifacts;
+  copy.visual_evidence_artifacts = visualEvidenceArtifacts;
   for (const key of ['runtimeProofArtifact', 'runtime_proof_artifact']) {
     if (!copy[key]) continue;
     copy[key].proofLedger = proofLedger;
     copy[key].proof_ledger = proofLedger;
     copy[key].proofLedgerQuery = proofLedgerQuery;
     copy[key].proof_ledger_query = proofLedgerQuery;
+    copy[key].visualEvidenceArtifacts = visualEvidenceArtifacts;
+    copy[key].visual_evidence_artifacts = visualEvidenceArtifacts;
   }
   return copy;
 }
@@ -7676,6 +7703,8 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-single-image-pro
   visualOracleArtifacts: {
     diagnosticScreenshot: path.join(forgedWebGpuVisualDir, 'forged-single-screenshot.png'),
   },
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -7747,6 +7776,8 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-hash-mismatch-pr
     afterImage: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
     diffImage: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
   },
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -7782,6 +7813,8 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-path-escape-proo
     afterImage: path.join(outsideVisualDir, 'outside-after.png'),
     diffImage: path.join(outsideVisualDir, 'outside-diff.png'),
   },
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -7840,6 +7873,14 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
   },
 });
 
+const forgedSeedlessWebGpuVisualArtifacts = visualArtifactSet({
+  before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
+  after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
+  diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
+});
+Object.assign(forgedSeedlessWebGpuVisualArtifacts, {
+  ...completeVisualOracleArtifacts('hot_delta_1', forgedWebGpuVisualDir, forgedSeedlessWebGpuVisualArtifacts),
+});
 await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-seedless-visual-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:seedless-forged',
@@ -7853,10 +7894,10 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-seedless-visual-
       supported_pipeline_scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
     },
   },
-  ...runtimeProofMaterials('hot_delta_1', {
+  ...withVisualOracleArtifacts(runtimeProofMaterials('hot_delta_1', {
     projectId: 'forged-webgpu-seedless-visual',
     visualRoot: forgedWebGpuVisualDir,
-  }),
+  }), forgedSeedlessWebGpuVisualArtifacts),
   deterministicVisualMode: {
     ...deterministicMode('hot_delta_1'),
     fixed_seed: false,
@@ -7867,11 +7908,7 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-seedless-visual-
     accepted: true,
     forgedByFixture: true,
   },
-  visualOracleArtifacts: visualArtifactSet({
-    before: path.join(forgedWebGpuVisualDir, 'forged-before.png'),
-    after: path.join(forgedWebGpuVisualDir, 'forged-after.png'),
-    diff: path.join(forgedWebGpuVisualDir, 'forged-diff.png'),
-  }),
+  visualOracleArtifacts: forgedSeedlessWebGpuVisualArtifacts,
   visualThresholdValidation: { accepted: true },
   browser: { processContinuity: { accepted: true, processRestarted: false } },
   nativeWebGpuApiEvidence: { accepted: true },
@@ -8129,6 +8166,10 @@ await writeJson(path.join(noVisualOptOutDir, 'hot1.json'), {
   gpuHmrSuccess: true,
   visualRequired: false,
   visual_required: false,
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
+  visualArtifacts: {},
+  visual_artifacts: {},
   cpuHmrUsed: false,
   fullRebuildUsed: false,
   processRestarted: false,
@@ -15069,7 +15110,8 @@ assert.ok(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.failedGates.inclu
 assert.ok(sourceFirstPendingVisualJobOnly.asyncVisualCasBundle.failedGates.includes(
   'async_visual_metrics_missing',
 ));
-assert.ok(sourceFirstPendingVisualJobOnly.reasons.includes('visual_artifacts_not_readable'));
+assert.ok(sourceFirstPendingVisualJobOnly.reasons.includes('async_visual_proof_pending_not_ready'));
+assert.ok(sourceFirstPendingVisualJobOnly.reasons.includes('async_visual_metrics_missing'));
 
 const sourceFirstCasOnlyRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-cas-only'
@@ -17732,6 +17774,17 @@ const acceptedVisualCasProofMaterials = withVisualOracleArtifacts(
   acceptedVisualCasBaseMaterials,
   acceptedVisualCasArtifacts,
 );
+const acceptedVisualCasEvidenceArtifacts = (
+  acceptedVisualCasProofMaterials.visualEvidenceArtifacts
+  ?? acceptedVisualCasProofMaterials.visual_evidence_artifacts
+  ?? []
+).map((entry) => ({
+  ...entry,
+  artifactCasLocators: acceptedVisualCasArtifacts.artifactCasLocators,
+  artifact_cas_locators: acceptedVisualCasArtifacts.artifactCasLocators,
+  visualArtifactTransportEvidence: acceptedVisualCasArtifacts.visualArtifactTransportEvidence,
+  visual_artifact_transport_evidence: acceptedVisualCasArtifacts.visualArtifactTransportEvidence,
+}));
 await writeJson(path.join(acceptedVisualCasRocmDir, 'real-rocm-accepted-visual-cas.json'), {
   slug: 'gpu-real-rocm-accepted-visual-cas-lib-20260630',
   real_rocm_profile: { id: 'real-rocm-accepted-visual-cas-lib' },
@@ -17767,8 +17820,8 @@ await writeJson(path.join(acceptedVisualCasRocmDir, 'real-rocm-accepted-visual-c
   ...acceptedVisualCasProofMaterials,
   visualOracleArtifacts: acceptedVisualCasArtifacts,
   visual_oracle_artifacts: acceptedVisualCasArtifacts,
-  visualEvidenceArtifacts: [acceptedVisualCasArtifacts],
-  visual_evidence_artifacts: [acceptedVisualCasArtifacts],
+  visualEvidenceArtifacts: acceptedVisualCasEvidenceArtifacts,
+  visual_evidence_artifacts: acceptedVisualCasEvidenceArtifacts,
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',
@@ -23547,6 +23600,10 @@ await writeJson(path.join(forgedRealRocmDir, 'real-rocm-forged-no-oracle.json'),
     projectId: 'real-rocm-forged-no-oracle',
     visualRoot: forgedRealRocmDir,
   }),
+  visualEvidenceArtifacts: [],
+  visual_evidence_artifacts: [],
+  visualArtifactPaths: [],
+  visual_artifact_paths: [],
   timingMetrics: {
     schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
     source: 'real_rocm_validation',

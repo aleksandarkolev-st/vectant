@@ -20,6 +20,9 @@ import {
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
+import {
   buildAsyncVisualProofBundle,
   evaluateGpuHmrDeterministicVisualMode,
 } from './lib/gpu-hmr-visual-evidence.mjs';
@@ -1858,6 +1861,15 @@ function buildRuntimeProofArtifact({
   const limitations = fullRuntimeProven
     ? []
     : [...new Set(limitationCodes)].map((code) => ({ code }));
+  const visualOracleArtifacts = visualArtifactsForWebgpuRunMode(artifacts);
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualOracleArtifacts,
+    {
+      proofLedgerQuery: proof.proofLedgerQuery,
+      proofLedgerRecord: proof.proofLedger.records?.[0],
+      producerSubsystem: 'mcp.webgpu_runtime_visual_proof',
+    },
+  );
   const runtimeProofArtifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
     proofId: webgpuRuntimeProofArtifactId({
@@ -1920,6 +1932,10 @@ function buildRuntimeProofArtifact({
     deterministic_visual_mode: proof.deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     visualThresholdValidation,
     visual_threshold_validation: visualThresholdValidation,
     nativeWebGpuApiEvidence: nativeWebGpuEvidence,
@@ -1948,6 +1964,18 @@ function buildRuntimeProofArtifact({
 async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts, metrics, runMode }) {
   const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const firewallEvidence = webgpuCompanionFirewallEvidence(proof);
+  const visualOracleArtifacts = visualArtifactsForWebgpuRunMode(artifacts);
+  const visualEvidenceArtifacts =
+    proof.runtimeProofArtifact?.visualEvidenceArtifacts
+    ?? proof.runtimeProofArtifact?.visual_evidence_artifacts
+    ?? visualEvidenceArtifactsFromVisualOracleArtifacts(
+      visualOracleArtifacts,
+      {
+        proofLedgerQuery: proof.proofLedgerQuery,
+        proofLedgerRecord: proof.proofLedger.records?.[0],
+        producerSubsystem: 'mcp.webgpu_runtime_visual_proof',
+      },
+    );
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1979,8 +2007,10 @@ async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts
     firewall_evidence: firewallEvidence,
     visualRequired: true,
     visual_required: true,
-    visualArtifacts: visualArtifactsForWebgpuRunMode(artifacts),
-    visual_oracle_artifacts: visualArtifactsForWebgpuRunMode(artifacts),
+    visualArtifacts: visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     visualMetrics: visualMetricsForWebgpuRunMode(metrics),
     visual_metrics: visualMetricsForWebgpuRunMode(metrics),
     runMode,
