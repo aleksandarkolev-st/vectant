@@ -1772,6 +1772,11 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     ?? facet.gpu_source_signal_count
   );
   const entryObjectCount = entries.filter((entry) => firstText(entry.object)).length;
+  const entryObjectVerifiableCount = entries.filter((entry) => {
+    const objectId = firstText(entry.object);
+    return /^(sha1:)?[a-f0-9]{40}$/i.test(objectId ?? '')
+      || /^(sha256:)?[a-f0-9]{64}$/i.test(objectId ?? '');
+  }).length;
   const entryByteLengthCount = entries.filter((entry) =>
     Number.isFinite(entry.byteLength) && entry.byteLength >= 0
   ).length;
@@ -1788,6 +1793,9 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
       : null,
     present && entries.length > 0 && entryObjectCount < entries.length
       ? 'random_cold_source_listing_manifest_entry_object_missing'
+      : null,
+    present && entries.length > 0 && entryObjectVerifiableCount < entries.length
+      ? 'random_cold_source_listing_manifest_entry_object_unverifiable'
       : null,
     present && entries.length > 0 && entryByteLengthCount < entries.length
       ? 'random_cold_source_listing_manifest_entry_byte_length_missing'
@@ -1855,6 +1863,8 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     entry_count: entries.length,
     entryObjectCount,
     entry_object_count: entryObjectCount,
+    entryObjectVerifiableCount,
+    entry_object_verifiable_count: entryObjectVerifiableCount,
     entryByteLengthCount,
     entry_byte_length_count: entryByteLengthCount,
     entries,

@@ -1882,7 +1882,7 @@ function randomColdSourceListingManifestFixture({
     }
     return {
       path: filePath,
-      object: `fixture-object-${targetId}-${index}`,
+      object: sha256Hex(`fixture-object-${targetId}-${index}`).slice(0, 40),
       byteLength: perFileBytes,
     };
   });
@@ -10678,6 +10678,49 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const broadReadinessWithUnverifiableListingObjectRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `unverifiable-listing-object-${index + 1}`,
+  });
+  sourceListingManifest.entries = sourceListingManifest.entries.map((entry, entryIndex) => ({
+    ...entry,
+    object: `fixture-object-${index + 1}-${entryIndex + 1}`,
+  }));
+  sourceListingManifest.sourceListingHash = sourceListingHashForEntries(sourceListingManifest.entries);
+  sourceListingManifest.source_listing_hash = sourceListingManifest.sourceListingHash;
+  return randomColdReadinessMatrixRow({
+    targetId: `unverifiable-listing-object-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/unverifiable-listing-object/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`unverifiable-listing-object-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest,
+  });
+});
+const broadReadinessWithUnverifiableListingObjectQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessWithUnverifiableListingObjectRows,
+  ],
+});
+assert.equal(broadReadinessWithUnverifiableListingObjectQuery.accepted, false);
+assert.ok(broadReadinessWithUnverifiableListingObjectQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(broadReadinessWithUnverifiableListingObjectQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_listing_manifest_invalid'
+));
+assert.ok(broadReadinessWithUnverifiableListingObjectQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_entry_object_unverifiable'
+));
+assert.equal(
+  broadReadinessWithUnverifiableListingObjectQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithUnverifiableListingObjectQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
