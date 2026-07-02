@@ -25209,6 +25209,10 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       { candidateSource, repoPath },
       context,
     );
+    const directSourceUrlOrigin = randomColdPathDirectSourceUrlOrigin(
+      { candidateSource, sourceUrl },
+      context,
+    );
     const immutableCommit = firstText(
       facet.immutableCommit,
       facet.immutable_commit,
@@ -25247,6 +25251,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
       && localRepoPathOrigin.accepted === true
+      && directSourceUrlOrigin.accepted === true
       && directInputModeProven
       && directInputEvidenceAccepted
       && Boolean(immutableCommit)
@@ -25342,16 +25347,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
   });
 }
 
-function randomColdPathDirectLocalRepoPathOrigin({ candidateSource, repoPath } = {}, context = {}) {
-  if (candidateSource !== 'direct_local_git_repo_path') {
-    return {
-      accepted: true,
-      applies: false,
-      openGaps: [],
-      open_gaps: [],
-    };
-  }
-  const normalized = normalizeMaybeWindowsPath(repoPath);
+function randomColdInternalLocalPathReason(normalized, context = {}) {
   const normalizedForSegments = String(normalized ?? '').replace(/\\/g, '/').toLowerCase();
   const segments = normalizedForSegments.split('/').filter(Boolean);
   const segmentSet = new Set(segments);
@@ -25386,6 +25382,20 @@ function randomColdPathDirectLocalRepoPathOrigin({ candidateSource, repoPath } =
     containsPair('scripts', 'tests') ? 'script_test_root' : null,
     insideContextRoot ? 'context_internal_collection_root' : null,
   ])[0] ?? null;
+  return internalSegmentReason;
+}
+
+function randomColdPathDirectLocalRepoPathOrigin({ candidateSource, repoPath } = {}, context = {}) {
+  if (candidateSource !== 'direct_local_git_repo_path') {
+    return {
+      accepted: true,
+      applies: false,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const normalized = normalizeMaybeWindowsPath(repoPath);
+  const internalSegmentReason = randomColdInternalLocalPathReason(normalized, context);
   const openGaps = compactStringList([
     normalized ? null : 'random_cold_direct_local_repo_path_missing',
     internalSegmentReason
@@ -25399,6 +25409,62 @@ function randomColdPathDirectLocalRepoPathOrigin({ candidateSource, repoPath } =
     repo_path: repoPath ?? null,
     normalizedRepoPath: normalized ?? null,
     normalized_repo_path: normalized ?? null,
+    rejectedInternalPathKind: internalSegmentReason,
+    rejected_internal_path_kind: internalSegmentReason,
+    openGaps,
+    open_gaps: openGaps,
+  };
+}
+
+function randomColdPathDirectSourceUrlOrigin({ candidateSource, sourceUrl } = {}, context = {}) {
+  if (candidateSource !== 'direct_source_url_commit') {
+    return {
+      accepted: true,
+      applies: false,
+      openGaps: [],
+      open_gaps: [],
+    };
+  }
+  const rawSourceUrl = String(sourceUrl ?? '').trim();
+  let localPath = null;
+  let localPathKind = null;
+  try {
+    const parsed = new URL(rawSourceUrl);
+    if (parsed.protocol === 'file:') {
+      localPathKind = 'file_url';
+      localPath = decodeURIComponent(parsed.pathname).replace(/^\/([A-Za-z]:)/, '$1');
+    }
+  } catch {
+    if (/^[A-Za-z]:[\\/]/.test(rawSourceUrl) || /^[\\/]/.test(rawSourceUrl)) {
+      localPathKind = 'local_path';
+      localPath = rawSourceUrl;
+    }
+  }
+  const normalizedLocalPath = localPath ? normalizeMaybeWindowsPath(localPath) : null;
+  const internalSegmentReason = normalizedLocalPath
+    ? randomColdInternalLocalPathReason(normalizedLocalPath, context)
+    : null;
+  const openGaps = compactStringList([
+    rawSourceUrl ? null : 'random_cold_direct_source_url_missing',
+    localPathKind === 'file_url'
+      ? 'random_cold_direct_source_url_file_url_not_external'
+      : null,
+    localPathKind === 'local_path'
+      ? 'random_cold_direct_source_url_local_path_not_external'
+      : null,
+    internalSegmentReason
+      ? `random_cold_direct_source_url_internal_${internalSegmentReason}`
+      : null,
+  ]);
+  return {
+    accepted: openGaps.length === 0,
+    applies: true,
+    sourceUrl: sourceUrl ?? null,
+    source_url: sourceUrl ?? null,
+    localPathKind: localPathKind ?? null,
+    local_path_kind: localPathKind ?? null,
+    normalizedLocalPath: normalizedLocalPath ?? null,
+    normalized_local_path: normalizedLocalPath ?? null,
     rejectedInternalPathKind: internalSegmentReason,
     rejected_internal_path_kind: internalSegmentReason,
     openGaps,

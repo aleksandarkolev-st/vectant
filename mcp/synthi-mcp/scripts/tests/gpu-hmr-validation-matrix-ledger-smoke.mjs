@@ -11780,6 +11780,38 @@ assert.ok(
     .rejectedDirectLocalRepoPathRootsForBroadReadiness
     .includes('.gpu-hmr-test-logs'),
 );
+const directSourceFileUrlColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `direct-source-file-url-cold-readiness-${index + 1}`,
+    candidateSource: 'direct_source_url_commit',
+    sourceUrl:
+      `file:///tmp/.gpu-hmr-test-logs/random-large-project-cold-path/source-${index + 1}`,
+    localRepoPath: null,
+    immutableCommit: sha256Hex(`direct-source-file-url-cold-readiness-${index + 1}`).slice(0, 40),
+  })
+);
+const broadReadinessWithDirectSourceFileUrlQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...directSourceFileUrlColdRows,
+  ],
+});
+assert.equal(broadReadinessWithDirectSourceFileUrlQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDirectSourceFileUrlQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDirectSourceFileUrlQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDirectSourceFileUrlQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const repeatedSourceRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `replayed-source-random-cold-readiness-${index + 1}`,
