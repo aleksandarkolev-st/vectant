@@ -13810,25 +13810,19 @@ async function runtimeProofRow(json, filePath, context) {
     isObject(contract.backend) ? contract.backend.value : contract.backend,
     json.backend,
   ) ?? 'unknown';
-  const ledgerProjectId = firstText(
-    ledger.record?.projectId,
-    ledger.record?.project_id,
-    ledgerRecord.projectId,
-    ledgerRecord.project_id,
-  );
-  const contractProjectId = firstText(contract.project_id, contract.projectId);
-  const diagnosticTargetLabel = firstText(
-    json.target_name,
-    json.targetName,
-    artifactIdentity.entry_points?.join('+'),
-    json.workspaceSlug,
-    json.workspace_slug,
-  );
-  const targetId = firstText(
-    ledgerProjectId,
-    contractProjectId,
-    diagnosticTargetLabel,
-  );
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.target_name,
+      json.targetName,
+      artifactIdentity.entry_points?.join('+'),
+      json.workspaceSlug,
+      json.workspace_slug,
+    ],
+  });
+  const targetId = runtimeTargetIdentity.targetId;
   const oracleArtifacts = compactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts);
   const hasVisualOracle = isObject(oracleArtifacts.visual_oracle_artifacts ?? oracleArtifacts.visualOracleArtifacts);
   const hasComputeOracle = isObject(oracleArtifacts.compute_oracle_artifacts ?? oracleArtifacts.computeOracleArtifacts);
@@ -13895,30 +13889,6 @@ async function runtimeProofRow(json, filePath, context) {
   const accepted = baseAccepted && outputOracleFacet.accepted === true;
   const outputOracleFailureCodes = (outputOracleFacet.failedGates ?? [])
     .map((failure) => compactObject(failure).code);
-  const runtimeTargetIdentity = {
-    schemaVersion: 'synthi.gpu_hmr.runtime_target_identity.v1',
-    schema_version: 'synthi.gpu_hmr.runtime_target_identity.v1',
-    proofAuthority: 'ledger_or_contract_project_identity_preferred_not_target_label',
-    proof_authority: 'ledger_or_contract_project_identity_preferred_not_target_label',
-    targetId,
-    target_id: targetId,
-    ledgerProjectId: ledgerProjectId ?? null,
-    ledger_project_id: ledgerProjectId ?? null,
-    contractProjectId: contractProjectId ?? null,
-    contract_project_id: contractProjectId ?? null,
-    diagnosticTargetLabel: diagnosticTargetLabel ?? null,
-    diagnostic_target_label: diagnosticTargetLabel ?? null,
-    diagnosticLabelAuthority: diagnosticTargetLabel
-      ? 'target_name_entrypoint_or_workspace_slug_for_debug_only'
-      : null,
-    diagnostic_label_authority: diagnosticTargetLabel
-      ? 'target_name_entrypoint_or_workspace_slug_for_debug_only'
-      : null,
-    acceptedForGpuHmr: false,
-    accepted_for_gpu_hmr: false,
-    gpuHmrSuccess: false,
-    gpu_hmr_success: false,
-  };
   return finalizeRow({
     artifactSchema: json.schemaVersion,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -14045,6 +14015,75 @@ function backendFromVendorText(value) {
   if (/\bwebgpu\b/.test(raw)) return 'webgpu';
   if (/\bbevy_wgsl\b/.test(raw)) return 'bevy_wgsl';
   return null;
+}
+
+function runtimeTargetIdentityFacet({
+  ledger = {},
+  ledgerRecord = {},
+  contract = {},
+  projectIdentityAliases = [],
+  diagnosticLabels = [],
+} = {}) {
+  const ledgerObject = compactObject(ledger);
+  const ledgerRecordObject = compactObject(ledgerRecord ?? ledgerObject.record);
+  const contractObject = compactObject(contract);
+  const aliasList = Array.isArray(projectIdentityAliases)
+    ? projectIdentityAliases
+    : [projectIdentityAliases];
+  const labelList = Array.isArray(diagnosticLabels) ? diagnosticLabels : [diagnosticLabels];
+  const projectIdentityAlias = firstText(...aliasList);
+  const ledgerProjectId = firstText(
+    ledgerObject.record?.projectId,
+    ledgerObject.record?.project_id,
+    ledgerRecordObject.projectId,
+    ledgerRecordObject.project_id,
+  );
+  const contractProjectId = firstText(contractObject.project_id, contractObject.projectId);
+  const diagnosticTargetLabel = firstText(...labelList);
+  const identitySource = projectIdentityAlias
+    ? 'project_identity_alias'
+    : ledgerProjectId
+    ? 'ledger_project_id'
+    : contractProjectId
+      ? 'contract_project_id'
+      : diagnosticTargetLabel
+        ? 'diagnostic_label_fallback'
+        : 'unknown';
+  const targetId = firstText(
+    projectIdentityAlias,
+    ledgerProjectId,
+    contractProjectId,
+    diagnosticTargetLabel,
+    'unknown',
+  );
+  return {
+    schemaVersion: 'synthi.gpu_hmr.runtime_target_identity.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_target_identity.v1',
+    proofAuthority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+    proof_authority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+    targetId,
+    target_id: targetId,
+    identitySource,
+    identity_source: identitySource,
+    projectIdentityAlias: projectIdentityAlias ?? null,
+    project_identity_alias: projectIdentityAlias ?? null,
+    ledgerProjectId: ledgerProjectId ?? null,
+    ledger_project_id: ledgerProjectId ?? null,
+    contractProjectId: contractProjectId ?? null,
+    contract_project_id: contractProjectId ?? null,
+    diagnosticTargetLabel: diagnosticTargetLabel ?? null,
+    diagnostic_target_label: diagnosticTargetLabel ?? null,
+    diagnosticLabelAuthority: diagnosticTargetLabel
+      ? 'target_name_profile_slug_or_workspace_slug_for_debug_only'
+      : null,
+    diagnostic_label_authority: diagnosticTargetLabel
+      ? 'target_name_profile_slug_or_workspace_slug_for_debug_only'
+      : null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
 }
 
 function runtimePayloadIdentity(value) {
@@ -14768,7 +14807,18 @@ async function hiprtWarmRow(json, filePath, context) {
     && finiteNumber(oracleRegionRecomputed.changedPixelsThreshold4) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) !== null
     && finiteNumber(oracleRegion.changed?.visiblePixels) !== null;
-  const profileId = firstText(json.profile?.id, json.profileId, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract: acceptanceContract,
+    diagnosticLabels: [
+      json.profile?.id,
+      json.profileId,
+      json.profile_id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   const runMode = timingEvidence(json.timingMetrics, json.timing_metrics, json.timings);
   return finalizeRow({
     artifactSchema: json.schemaVersion,
@@ -14777,6 +14827,8 @@ async function hiprtWarmRow(json, filePath, context) {
     backend: 'hiprt',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: firstText(json.mode, 'same-process'),
     evidenceKind: 'raytraced_visual_oracle',
     matrixOutcome: accepted
@@ -14956,7 +15008,18 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const sourceAdaptedVisualProfileAccepted =
     strictVisualProofAccepted === true
     && sourceAdaptation.sourceAdaptedProfile === true;
-  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.profile?.targetId,
+      json.profile?.target_id,
+      json.profile?.id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -14964,6 +15027,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     backend: 'webgpu',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'webgpu_wgsl_runtime_visual',
     evidenceKind: 'deterministic_visual_oracle',
     matrixOutcome: accepted
@@ -15142,7 +15207,18 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && webGpuComputeRuntimeProfileAccepted === true
     && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
-  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.profile?.targetId,
+      json.profile?.target_id,
+      json.profile?.id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -15150,6 +15226,8 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     backend: 'webgpu',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'webgpu_wgsl_runtime_compute',
     evidenceKind: 'compute_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
@@ -15387,7 +15465,18 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     && computeCardOnlyProofAccepted
     && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
-  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.profile?.targetId,
+      json.profile?.target_id,
+      json.profile?.id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -15395,6 +15484,8 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     backend: 'hip',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'hip_module_runtime_readback',
     evidenceKind: 'compute_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
@@ -15651,7 +15742,18 @@ async function openClRuntimeRow(json, filePath, context) {
     && epoch2ArtifactHashProofAccepted
     && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
-  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.profile?.targetId,
+      json.profile?.target_id,
+      json.profile?.id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -15659,6 +15761,8 @@ async function openClRuntimeRow(json, filePath, context) {
     backend: 'opencl',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'opencl_runtime_readback',
     evidenceKind: 'compute_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
@@ -15929,7 +16033,18 @@ async function vulkanRuntimeRow(json, filePath, context) {
     && deterministicVisualModeEvaluation.accepted === true
     && runtimeProofArtifactGate.accepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
-  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord,
+    contract,
+    diagnosticLabels: [
+      json.profile?.targetId,
+      json.profile?.target_id,
+      json.profile?.id,
+      json.slug,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -15937,6 +16052,8 @@ async function vulkanRuntimeRow(json, filePath, context) {
     backend: 'vulkan',
     targetId: profileId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'vulkan_runtime_pipeline_visual',
     evidenceKind: 'visual_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
@@ -21361,8 +21478,27 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
   const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
-  const profileId = firstText(profile.id, json.profileId, json.profile_id, json.slug);
-  const targetId = firstText(profileId, json.slug, json.target_name, json.targetName);
+  const acceptanceContract = compactObject(
+    json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract,
+  );
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord: ledger.record,
+    contract: acceptanceContract,
+    diagnosticLabels: [
+      profile.id,
+      json.profileId,
+      json.profile_id,
+      json.slug,
+      json.target_name,
+      json.targetName,
+    ],
+  });
+  const profileId = runtimeTargetIdentity.targetId;
+  const targetId = runtimeTargetIdentity.targetId;
   const targetProgressionTargetName = firstText(
     targetProgression.targetName,
     targetProgression.target_name,
@@ -21684,6 +21820,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     backend,
     targetId,
     profileId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'real_rocm_repo_validation',
     evidenceKind: accepted
       ? 'large_repo_output_oracle'
@@ -21723,18 +21861,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       }),
     ),
     ledger,
-    acceptanceContract: compactObject(
-      json.acceptanceContract
-      ?? json.acceptance_contract
-      ?? runtimeProofArtifact.acceptanceContract
-      ?? runtimeProofArtifact.acceptance_contract,
-    ),
-    acceptance_contract: compactObject(
-      json.acceptanceContract
-      ?? json.acceptance_contract
-      ?? runtimeProofArtifact.acceptanceContract
-      ?? runtimeProofArtifact.acceptance_contract,
-    ),
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
     artifactAfterHash: firstText(
       json.artifactAfterHash,
       json.artifact_after_hash,
@@ -22232,16 +22360,6 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     json.timings,
   );
   const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'unknown';
-  const targetId = firstText(
-    json.targetId,
-    json.target_id,
-    json.contract?.projectId,
-    json.contract?.project_id,
-    json.acceptanceContract?.projectId,
-    json.acceptanceContract?.project_id,
-    json.acceptance_contract?.projectId,
-    json.acceptance_contract?.project_id,
-  ) ?? 'unknown';
   const fixtureId = firstText(json.fixtureId, json.fixture_id);
   const validationProfileId = firstText(json.validationProfileId, json.validation_profile_id);
   const proofValidation = compactObject(json.gpuProofValidation ?? json.gpu_proof_validation ?? json.proofValidation);
@@ -22346,6 +22464,27 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ?? runtimeProofArtifact.acceptanceContract
     ?? runtimeProofArtifact.acceptance_contract,
   );
+  const runtimeIdentityContract = Object.keys(acceptanceContract).length > 0
+    ? acceptanceContract
+    : compactObject(json.contract);
+  const runtimeTargetIdentity = runtimeTargetIdentityFacet({
+    ledger,
+    ledgerRecord: ledger.record,
+    contract: runtimeIdentityContract,
+    projectIdentityAliases: sourceFirstIngestion.accepted === true
+      ? [
+        sourceFirstIngestion.targetId,
+        sourceFirstIngestion.target_id,
+      ]
+      : [],
+    diagnosticLabels: [
+      json.targetId,
+      json.target_id,
+      fixtureId,
+      validationProfileId,
+    ],
+  });
+  const targetId = runtimeTargetIdentity.targetId;
   const hiprtContract = backend === 'hiprt'
     ? hiprtContractEvidenceFacet(
       { acceptanceContract },
@@ -22421,6 +22560,8 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       fixtureId,
       targetId === 'unknown' ? null : targetId,
     ) ?? 'unknown',
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     fixtureId,
     fixture_id: fixtureId,
     validationProfileId,

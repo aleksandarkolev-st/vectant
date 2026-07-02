@@ -7745,7 +7745,7 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-source-adapted-v
   schema: 'synthi.gpu_hmr.webgpu_runtime_visual_proof.v1',
   proofId: 'webgpu-runtime-visual-proof:sha256:source-adapted-forged',
   gpuHmrSuccess: true,
-  profile: { id: 'forged-webgpu-source-adapted-visual' },
+  profile: { id: 'scenario-label-forged-webgpu-source-adapted-visual' },
   contract: {
     artifact_identity: {
       supported_pipeline_scope: 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list',
@@ -14456,6 +14456,25 @@ assert.equal(forgedSourceAdaptedWebGpuVisual.gpuHmrSuccess, false);
 assert.equal(forgedSourceAdaptedWebGpuVisual.visualProfileAccepted, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.sourceAdaptedProfile, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.ledger.gpuHmrSuccess, true);
+assert.equal(
+  forgedSourceAdaptedWebGpuVisual.runtimeTargetIdentity.targetId,
+  'forged-webgpu-source-adapted-visual',
+);
+assert.equal(
+  forgedSourceAdaptedWebGpuVisual.runtimeTargetIdentity.diagnosticTargetLabel,
+  'scenario-label-forged-webgpu-source-adapted-visual',
+);
+assert.equal(
+  forgedSourceAdaptedWebGpuVisual.runtimeTargetIdentity.identitySource,
+  'ledger_project_id',
+);
+assert.equal(
+  ledger.rows.some((row) =>
+    row.proofMode === 'webgpu_wgsl_runtime_visual'
+    && row.targetId === 'scenario-label-forged-webgpu-source-adapted-visual'
+  ),
+  false,
+);
 assert.equal(forgedSourceAdaptedWebGpuVisual.visual.accepted, true);
 assert.equal(forgedSourceAdaptedWebGpuVisual.declaredScopeEvidence.accepted, true);
 assert.ok(forgedSourceAdaptedWebGpuVisual.reasons.includes(
