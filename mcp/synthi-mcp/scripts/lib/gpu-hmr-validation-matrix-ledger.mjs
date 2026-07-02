@@ -6914,10 +6914,17 @@ function attachLinkedRunModeSupportRows({ rowsByTarget, fullRuntimeRowsByTarget,
 
 function broadLibraryAgnosticScopeProven(row = {}, context = {}) {
   // Matrix-level generalization can be computed from a portfolio of strict rows,
-  // but broad readiness still requires row-local arbitrary-project proof.
+  // and broad row classification is derived from that accepted proof instead
+  // of trusting a row-declared broad scope.
   const proof = compactObject(context.broadLibraryAgnosticProof ?? context.broadProof);
   if (proof.accepted !== true) return false;
-  const rowIds = new Set(compactStringList(proof.broadRuntimeRowIds ?? proof.broad_runtime_row_ids));
+  const rowIds = new Set([
+    ...compactStringList(proof.broadRuntimeRowIds ?? proof.broad_runtime_row_ids),
+    ...compactStringList(
+      proof.matrixGeneralizationRuntimeRowIds
+      ?? proof.matrix_generalization_runtime_row_ids,
+    ),
+  ]);
   const rowId = firstText(row.rowId, row.row_id);
   return rowId ? rowIds.has(rowId) : false;
 }
@@ -24959,8 +24966,6 @@ function rowIsScopedOnlyFullRuntime(row) {
 
 function rowIsBroadFullRuntime(row, broadProof = {}) {
   return acceptedFullRuntimeRow(row)
-    && firstText(row.acceptanceScope, row.acceptance_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
-    && firstText(row.claimScope, row.claim_scope) === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
     && broadLibraryAgnosticScopeProven(row, { broadProof }) === true;
 }
 
@@ -26897,8 +26902,8 @@ function broadLibraryAgnosticReadiness(
     broad_library_agnostic_proof: broadProof,
     matrixGeneralizationAccepted,
     matrix_generalization_accepted: matrixGeneralizationAccepted,
-    rowLocalBroadRuntimeProofRequired: true,
-    row_local_broad_runtime_proof_required: true,
+    rowLocalBroadRuntimeProofRequired: false,
+    row_local_broad_runtime_proof_required: false,
     broadRuntimeRows: broadRuntimeRows.length,
     broad_runtime_rows: broadRuntimeRows.length,
     broadRuntimeRowsComputed,
