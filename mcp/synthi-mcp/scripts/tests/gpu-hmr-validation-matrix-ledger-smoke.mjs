@@ -13277,14 +13277,14 @@ assert.ok(
 const validScopedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row'),
+    withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row')),
   ],
 });
 assert.equal(validScopedSummaryQuery.accepted, true);
 const inflatedSummaryQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [
-    acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row'),
+    withQueryRecomputedRowId(acceptedAuthoritativeMatrixRow('accepted-scoped-summary-row')),
   ],
   summary: {
     ...validScopedSummaryQuery.summary,
@@ -19196,7 +19196,9 @@ const acceptedComputeSafetyLedger = buildGpuHmrValidationMatrixLedger([
   },
 ], { includeUnproven: true, latestPerTarget: false });
 assert.equal(acceptedComputeSafetyLedger.rows.length, 1);
-assert.equal(acceptedComputeSafetyLedger.rows[0].acceptedForGpuHmr, true);
+assert.equal(acceptedComputeSafetyLedger.rows[0].matrixOutcome, 'unproven');
+assert.equal(acceptedComputeSafetyLedger.rows[0].acceptedForGpuHmr, false);
+assert.equal(acceptedComputeSafetyLedger.rows[0].gpuHmrSuccess, false);
 assert.equal(acceptedComputeSafetyLedger.rows[0].safety.accepted, false);
 assert.ok(acceptedComputeSafetyLedger.rows[0].safety.failedGates.some(
   (gate) => gate.code === 'gpu_hmr_success_cannot_have_real_rocm_missing_dependency_probe',
@@ -19214,7 +19216,9 @@ const acceptedComputeExternalHeaderSafetyLedger = buildGpuHmrValidationMatrixLed
   },
 ], { includeUnproven: true, latestPerTarget: false });
 assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows.length, 1);
-assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].acceptedForGpuHmr, true);
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].matrixOutcome, 'unproven');
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].acceptedForGpuHmr, false);
+assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].gpuHmrSuccess, false);
 assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].safety.accepted, false);
 assert.ok(acceptedComputeExternalHeaderSafetyLedger.rows[0].safety.failedGates.some(
   (gate) =>

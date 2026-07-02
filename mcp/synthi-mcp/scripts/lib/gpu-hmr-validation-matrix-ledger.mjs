@@ -4858,12 +4858,9 @@ function randomColdPathCanonicalTargetKey(row = {}) {
 }
 
 function rowAttemptKey(row) {
-  const runModeKey = (
-    row.proofMode === 'run_mode_proof'
-    || row.matrixOutcome === 'full_runtime_gpu_hmr'
-    || row.matrixOutcome === 'cold_split_proven'
-  )
-    ? row.runMode?.metricScope ?? 'unknown'
+  const runMode = compactObject(row.runMode ?? row.run_mode);
+  const runModeKey = Object.keys(runMode).length > 0
+    ? firstText(runMode.metricScope, runMode.metric_scope) ?? 'unknown'
     : null;
   return [
     row.backend ?? 'unknown',
@@ -6668,7 +6665,6 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
   const sourceFirstAliasBoundToLedger =
     sourceFirstTargetBoundToRow
     && validationProfile.accepted === true
-    && validationProfileBinding.proofIdsBoundToRow === true
     && validationProfileProofIdsBindStrictRuntime
     && validationProfileTargetBoundToEvidenceRefs
     && validationProfileProfileBoundToRow;
@@ -6719,6 +6715,12 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
     failedGates: failedGates.map((code) => ({ code })),
     failed_gates: failedGates.map((code) => ({ code })),
   };
+}
+
+function realRocmOptionalFacetInputPresent(input = {}) {
+  const object = compactObject(input);
+  if (Object.keys(object).length === 0) return false;
+  return firstBool(object.present) !== false;
 }
 
 function rawRunModeCoverageSupport(row = {}) {
@@ -11981,6 +11983,8 @@ function realRocmRuntimeBoundaryTargetProcessProvenanceFacet(input = {}) {
     boundary_line_count: boundaryLineCount,
     boundaryLineHashes,
     boundary_line_hashes: boundaryLineHashes,
+    sourceRuntimeBoundaryLines,
+    source_runtime_boundary_lines: sourceRuntimeBoundaryLines,
     sourceBoundaryLinesProven,
     source_boundary_lines_proven: sourceBoundaryLinesProven,
     sourceBoundaryLineCount: sourceRuntimeBoundaryLines.length,
@@ -12808,6 +12812,109 @@ function runtimeCapabilityPreflightFromSources({
   return candidates.find((candidate) => Object.keys(candidate).length > 0) ?? {};
 }
 
+function computeOracleArtifactOverlayFromResolution(resolution = {}) {
+  const object = compactObject(resolution);
+  if (object.accepted !== true) return {};
+  const overlay = {};
+  for (const entry of compactObjectList(object.entries)) {
+    if (entry.accepted !== true) continue;
+    const role = firstText(entry.role);
+    const resolvedPath = firstText(entry.path, entry.absolutePath, entry.absolute_path);
+    if (!role || !resolvedPath) continue;
+    if (role === 'raw_readback') {
+      overlay.raw_readback_bin = resolvedPath;
+      overlay.rawReadbackBin = resolvedPath;
+    } else if (role === 'readback_schema') {
+      overlay.readback_schema_json = resolvedPath;
+      overlay.readbackSchemaJson = resolvedPath;
+    } else if (role === 'rendered_card') {
+      overlay.rendered_card_png = resolvedPath;
+      overlay.renderedCardPng = resolvedPath;
+    }
+  }
+  if (Object.keys(overlay).length === 0) return {};
+  return {
+    ...overlay,
+    proofAuthority: 'resolved_compute_artifact_overlay_transport_integrity_only',
+    proof_authority: 'resolved_compute_artifact_overlay_transport_integrity_only',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+}
+
+function visualOracleArtifactOverlayFromResolution(resolution = {}) {
+  const object = compactObject(resolution);
+  if (object.accepted !== true) return {};
+  const overlay = {};
+  for (const entry of compactObjectList(object.entries)) {
+    if (entry.accepted !== true) continue;
+    const role = normalizedVisualArtifactRole(entry.role);
+    const resolvedPath = firstText(entry.path, entry.absolutePath, entry.absolute_path);
+    if (!role || !resolvedPath) continue;
+    if (role === 'before') {
+      overlay.before_image = resolvedPath;
+      overlay.beforeImage = resolvedPath;
+    } else if (role === 'after') {
+      overlay.after_image = resolvedPath;
+      overlay.afterImage = resolvedPath;
+    } else if (role === 'diff') {
+      overlay.diff_image = resolvedPath;
+      overlay.diffImage = resolvedPath;
+    }
+  }
+  if (Object.keys(overlay).length === 0) return {};
+  return {
+    ...overlay,
+    proofAuthority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+    proof_authority: 'resolved_visual_artifact_overlay_transport_integrity_only',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+}
+
+function ledgerInvariantOverlayOptionsFromRow(row = {}) {
+  const ledger = compactObject(row.ledger ?? row.proofLedger ?? row.proof_ledger);
+  const computeResolutions = compactObjectList(
+    ledger.computeArtifactCasResolutions
+    ?? ledger.compute_artifact_cas_resolutions
+    ?? row.computeArtifactCasResolutions
+    ?? row.compute_artifact_cas_resolutions,
+  );
+  const visualResolutions = compactObjectList(
+    ledger.visualArtifactCasResolutions
+    ?? ledger.visual_artifact_cas_resolutions
+    ?? row.visualArtifactCasResolutions
+    ?? row.visual_artifact_cas_resolutions,
+  );
+  const computeOracleArtifactOverlays = [];
+  for (const resolution of computeResolutions) {
+    const overlay = computeOracleArtifactOverlayFromResolution(resolution);
+    if (Object.keys(overlay).length === 0) continue;
+    const index = finiteNumber(resolution.recordIndex ?? resolution.record_index) ?? 0;
+    computeOracleArtifactOverlays[index] = overlay;
+  }
+  const visualOracleArtifactOverlays = [];
+  for (const resolution of visualResolutions) {
+    const overlay = visualOracleArtifactOverlayFromResolution(resolution);
+    if (Object.keys(overlay).length === 0) continue;
+    const index = finiteNumber(resolution.recordIndex ?? resolution.record_index) ?? 0;
+    visualOracleArtifactOverlays[index] = overlay;
+  }
+  const hasOverlay = computeOracleArtifactOverlays.some(Boolean)
+    || visualOracleArtifactOverlays.some(Boolean);
+  return hasOverlay
+    ? {
+        computeOracleArtifactOverlays,
+        visualOracleArtifactOverlays,
+        ignoreSuppliedLedgerQueryAndSuccess: true,
+      }
+    : {};
+}
+
 function fullRuntimeLedgerAuthorityFailures(row) {
   const failures = [];
   const ledger = compactObject(row.ledger);
@@ -12822,7 +12929,7 @@ function fullRuntimeLedgerAuthorityFailures(row) {
   const rowBackend = valueFieldText(row.backend);
   const recordBackend = valueFieldText(record.backend);
   const recomputed = Object.keys(record).length > 0
-    ? queryGpuHmrLedgerInvariants({ records: [record] })
+    ? queryGpuHmrLedgerInvariants({ records: [record] }, ledgerInvariantOverlayOptionsFromRow(row))
     : null;
   const proofIds = compactStringList(row.proofIds ?? row.proof_ids);
   if (ledger.present !== true) {
@@ -12923,6 +13030,59 @@ function firstObservedEvent(sources, camelPlural, snakePlural, camelSingle, snak
     if (events.length > 0) return events[0];
   }
   return {};
+}
+
+function eventFieldText(event = {}, ...keys) {
+  const object = compactObject(event);
+  return firstText(...keys.map((key) => object[key]));
+}
+
+function observedEventMatchesLedgerEvent(observedEvent = {}, ledgerEvent = {}) {
+  const observed = compactObject(observedEvent);
+  const ledger = compactObject(ledgerEvent);
+  if (Object.keys(observed).length === 0 || Object.keys(ledger).length === 0) return false;
+  const observedId = eventFieldText(observed, 'id', 'dispatchId', 'dispatch_id');
+  const ledgerId = eventFieldText(ledger, 'id', 'dispatchId', 'dispatch_id');
+  if (observedId && ledgerId && observedId === ledgerId) return true;
+  const observedEpoch = eventFieldText(observed, 'epoch');
+  const ledgerEpoch = eventFieldText(ledger, 'epoch');
+  const observedArtifact = eventFieldText(observed, 'artifactHash', 'artifact_hash');
+  const ledgerArtifact = eventFieldText(ledger, 'artifactHash', 'artifact_hash');
+  return Boolean(observedEpoch && ledgerEpoch && observedEpoch === ledgerEpoch)
+    && (!observedArtifact || !ledgerArtifact || observedArtifact === ledgerArtifact);
+}
+
+function bestObservedEventForLedgerEvent(
+  sources,
+  ledgerEvent,
+  camelPlural,
+  snakePlural,
+  camelSingle,
+  snakeSingle,
+) {
+  const eventLists = sources.map((source) =>
+    eventObjectsFromSource(source, camelPlural, snakePlural, camelSingle, snakeSingle)
+  );
+  for (const events of eventLists) {
+    const exact = events.find((event) => observedEventMatchesLedgerEvent(event, ledgerEvent));
+    if (exact) return exact;
+  }
+  for (const events of eventLists) {
+    if (events.length > 0) return events[events.length - 1];
+  }
+  return {};
+}
+
+function runtimeBoundaryEventEvidenceRef(kind, event = {}) {
+  const object = compactObject(event);
+  if (Object.keys(object).length === 0) return null;
+  return `runtime-boundary-${kind}:sha256:${sha256Hex(stableJson(object))}`;
+}
+
+function nativeRuntimeApiEvidenceRef(evidence = {}) {
+  const object = compactObject(evidence);
+  if (!nativeRuntimeApiEvidenceAccepted(object)) return null;
+  return `native-runtime-api-evidence:sha256:${sha256Hex(stableJson(object))}`;
 }
 
 function nativeRuntimeApiEvidenceObjects(row = {}, runtimeProofArtifact = {}) {
@@ -13112,9 +13272,13 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
   const nativeApiBoundaryProof = nativeRuntimeApiBoundaryProof(nativeApiEvidenceObjects);
   const targetProcessBoundaryEvidence = targetProcessBoundaryEvidenceFacet(row);
   const ledgerRecord = ledgerRecordForRow(row);
+  const ledgerDispatchEvent = compactObject(ledgerRecord.dispatchEvent ?? ledgerRecord.dispatch_event);
+  const ledgerLoaderEvent = compactObject(ledgerRecord.loaderEvent ?? ledgerRecord.loader_event);
+  const ledgerOutputEvent = compactObject(ledgerRecord.outputEvent ?? ledgerRecord.output_event);
   const traceDispatchEvent = compactObject(
-    firstObservedEvent(
+    bestObservedEventForLedgerEvent(
       [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      ledgerDispatchEvent,
       'dispatchEvents',
       'dispatch_events',
       'dispatchEvent',
@@ -13122,8 +13286,9 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
     ),
   );
   const traceLoaderEvent = compactObject(
-    firstObservedEvent(
+    bestObservedEventForLedgerEvent(
       [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      ledgerLoaderEvent,
       'loaderEvents',
       'loader_events',
       'loaderEvent',
@@ -13131,17 +13296,15 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
     ),
   );
   const traceOutputEvent = compactObject(
-    firstObservedEvent(
+    bestObservedEventForLedgerEvent(
       [runtimeTrace, runtimeResourceTrace, ...nativeApiEvidenceObjects],
+      ledgerOutputEvent,
       'outputEvents',
       'output_events',
       'outputEvent',
       'output_event',
     ),
   );
-  const ledgerDispatchEvent = compactObject(ledgerRecord.dispatchEvent ?? ledgerRecord.dispatch_event);
-  const ledgerLoaderEvent = compactObject(ledgerRecord.loaderEvent ?? ledgerRecord.loader_event);
-  const ledgerOutputEvent = compactObject(ledgerRecord.outputEvent ?? ledgerRecord.output_event);
   const evidenceObjects = [
     runtimeTrace,
     runtimeResourceTrace,
@@ -13253,7 +13416,13 @@ function nativeRuntimeTraceEvidenceFacet(row = {}) {
     },
   ]);
   const runtimeTracePresent = targetObservedRuntimeTracePresent === true;
-  const evidenceRefs = compactStringList(evidenceObjects.flatMap((value) => evidenceRefsFromValue(value)));
+  const evidenceRefs = compactStringList([
+    ...evidenceObjects.flatMap((value) => evidenceRefsFromValue(value)),
+    ...nativeApiEvidenceObjects.map(nativeRuntimeApiEvidenceRef),
+    runtimeBoundaryEventEvidenceRef('loader', traceLoaderEvent),
+    runtimeBoundaryEventEvidenceRef('dispatch', traceDispatchEvent),
+    runtimeBoundaryEventEvidenceRef('output', traceOutputEvent),
+  ]);
   const failedGates = compactStringList([
     runtimeTracePresent ? null : 'native_runtime_trace_missing',
     ledgerOnlyTrace ? 'native_runtime_trace_cannot_be_ledger_only' : null,
@@ -13438,15 +13607,18 @@ function rowSafetyFailures(row, context = {}) {
       ?? row.missingDependencyProbe
       ?? row.missing_dependency_probe,
     );
-    if (Object.keys(missingDependencyProbe).length > 0) {
+    if (realRocmOptionalFacetInputPresent(missingDependencyProbe)) {
       failures.push({ code: 'gpu_hmr_success_cannot_have_real_rocm_missing_dependency_probe' });
     }
-    const externalHeaderPrerequisites = realRocmExternalHeaderPrerequisitesFacet(compactObject(
+    const externalHeaderPrerequisitesInput = compactObject(
       row.realRocmExternalHeaderPrerequisites
       ?? row.real_rocm_external_header_prerequisites
       ?? row.externalHeaderPrerequisites
       ?? row.external_header_prerequisites,
-    ));
+    );
+    const externalHeaderPrerequisites = realRocmOptionalFacetInputPresent(externalHeaderPrerequisitesInput)
+      ? realRocmExternalHeaderPrerequisitesFacet(externalHeaderPrerequisitesInput)
+      : { present: false, accepted: null, failedGates: [] };
     if (
       externalHeaderPrerequisites.present === true
       && externalHeaderPrerequisites.accepted !== true
@@ -13615,18 +13787,24 @@ function rowSafetyFailures(row, context = {}) {
     if (runtimeChain.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_real_rocm_runtime_chain' });
     }
-    const runtimeProfileAdapterResult = realRocmRuntimeProfileAdapterResultFacet(compactObject(
+    const runtimeProfileAdapterResultInput = compactObject(
       row.realRocmRuntimeProfileAdapterResult
       ?? row.real_rocm_runtime_profile_adapter_result
       ?? row.runtimeProfileAdapterResult
       ?? row.runtime_profile_adapter_result,
-    ));
-    const runtimeAdapterExecution = realRocmRuntimeAdapterExecutionFacet(compactObject(
+    );
+    const runtimeProfileAdapterResult = realRocmOptionalFacetInputPresent(runtimeProfileAdapterResultInput)
+      ? realRocmRuntimeProfileAdapterResultFacet(runtimeProfileAdapterResultInput)
+      : { present: false, accepted: null, failedGates: [] };
+    const runtimeAdapterExecutionInput = compactObject(
       row.realRocmRuntimeAdapterExecution
       ?? row.real_rocm_runtime_adapter_execution
       ?? row.runtimeAdapterExecution
       ?? row.runtime_adapter_execution,
-    ));
+    );
+    const runtimeAdapterExecution = realRocmOptionalFacetInputPresent(runtimeAdapterExecutionInput)
+      ? realRocmRuntimeAdapterExecutionFacet(runtimeAdapterExecutionInput)
+      : { present: false, accepted: null, failedGates: [] };
     if (
       runtimeAdapterExecution.present === true
       && runtimeAdapterExecution.accepted !== true
@@ -13636,19 +13814,27 @@ function rowSafetyFailures(row, context = {}) {
       });
       failures.push(...runtimeAdapterExecution.failedGates.map((code) => ({ code })));
     }
-    const runtimeAdapterResultTransport = realRocmRuntimeAdapterResultTransportFacet(compactObject(
+    const runtimeAdapterResultTransportInput = compactObject(
       row.realRocmRuntimeAdapterResultTransport
       ?? row.real_rocm_runtime_adapter_result_transport
       ?? row.runtimeAdapterResultTransport
       ?? row.runtime_adapter_result_transport,
-    ));
+    );
+    const runtimeAdapterResultTransport = realRocmOptionalFacetInputPresent(runtimeAdapterResultTransportInput)
+      ? realRocmRuntimeAdapterResultTransportFacet(runtimeAdapterResultTransportInput)
+      : { present: false, accepted: null, failedGates: [] };
     const runtimeAdapterEventManifestTransport =
-      realRocmRuntimeAdapterEventManifestTransportFacet(compactObject(
+      (() => {
+        const input = compactObject(
         row.realRocmRuntimeAdapterEventManifestTransport
         ?? row.real_rocm_runtime_adapter_event_manifest_transport
         ?? row.runtimeAdapterEventManifestTransport
-      ?? row.runtime_adapter_event_manifest_transport,
-    ));
+        ?? row.runtime_adapter_event_manifest_transport,
+        );
+        return realRocmOptionalFacetInputPresent(input)
+          ? realRocmRuntimeAdapterEventManifestTransportFacet(input)
+          : { present: false, accepted: null, failedGates: [] };
+      })();
     const runtimeAdapterBoundaryOnlyTransportUsable =
       realRocmRuntimeAdapterBoundaryOnlyTransportUsable({
         adapterResult: runtimeProfileAdapterResult,
@@ -13685,12 +13871,16 @@ function rowSafetyFailures(row, context = {}) {
       });
       failures.push(...runtimeAdapterEventManifestTransport.failedGates.map((code) => ({ code })));
     }
-    const runtimeBoundaryTargetEnvironment = realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
+    const runtimeBoundaryTargetEnvironmentInput = compactObject(
       row.realRocmRuntimeBoundaryTargetEnvironment
       ?? row.real_rocm_runtime_boundary_target_environment
       ?? row.runtimeBoundaryTargetEnvironment
       ?? row.runtime_boundary_target_environment,
-    ));
+    );
+    const runtimeBoundaryTargetEnvironment =
+      realRocmOptionalFacetInputPresent(runtimeBoundaryTargetEnvironmentInput)
+        ? realRocmRuntimeBoundaryTargetEnvironmentFacet(runtimeBoundaryTargetEnvironmentInput)
+        : { present: false, accepted: null, failedGates: [] };
     if (
       runtimeBoundaryTargetEnvironment.present === true
       && runtimeBoundaryTargetEnvironment.accepted !== true
@@ -15603,16 +15793,24 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     ?? runtimeProofArtifact.proofLedger
     ?? runtimeProofArtifact.proof_ledger,
   );
+  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const outputOracleFacet = await ledgerOutputOracleFacet(
     ledger,
     proofLedger,
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    {
+      supplementalBindings: [
+        outputOracleTargetSupplementalBinding(
+          json.outputOracleTarget ?? json.output_oracle_target,
+          ledgerRecord,
+        ),
+      ],
+    },
   );
-  const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
-  const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
+  const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence ?? json.native_webgpu_api_evidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
   const visualArtifactAfterHash = firstText(
@@ -15673,9 +15871,14 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && runtimeProofArtifactGate.accepted === true
     && visual.accepted === true
     && deterministicVisualModeEvaluation.accepted === true;
+  const ledgerVisualArtifactBindingAccepted =
+    outputOracleFacet.visualArtifactBinding?.accepted === true
+    || outputOracleFacet.visual_artifact_binding?.accepted === true;
+  const runtimeVisualLedgerBindingAccepted =
+    runtimeVisualProofBindingAccepted || ledgerVisualArtifactBindingAccepted;
   const strictRuntimeVisualProofAccepted =
     strictVisualProofAccepted === true
-    && runtimeVisualProofBindingAccepted
+    && runtimeVisualLedgerBindingAccepted
     && outputOracleFacet.accepted === true;
   const accepted =
     strictRuntimeVisualProofAccepted === true
@@ -15743,11 +15946,17 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
+    nativeWebGpuApiEvidence: nativeApiEvidence,
+    native_webgpu_api_evidence: nativeApiEvidence,
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
     visual,
     runtimeVisualProofBindingAccepted,
     runtime_visual_proof_binding_accepted: runtimeVisualProofBindingAccepted,
+    ledgerVisualArtifactBindingAccepted,
+    ledger_visual_artifact_binding_accepted: ledgerVisualArtifactBindingAccepted,
+    runtimeVisualLedgerBindingAccepted,
+    runtime_visual_ledger_binding_accepted: runtimeVisualLedgerBindingAccepted,
     runMode: timingEvidence(
       ledgerRecord,
       json.timingMetrics,
@@ -15767,7 +15976,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       ledger.present === true ? null : 'proof_ledger_record_missing',
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       visual.accepted ? null : 'visual_artifacts_not_readable',
-      runtimeVisualProofBindingAccepted
+      runtimeVisualLedgerBindingAccepted
         ? null
         : 'visual_runtime_proof_binding_missing_or_invalid',
       outputOracleFacet.accepted === true ? null : 'visual_oracle_not_bound_to_runtime_ledger',
@@ -15784,7 +15993,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
-      runtimeVisualProofBindingAccepted
+      runtimeVisualLedgerBindingAccepted
         ? null
         : 'webgpu_runtime_visual_proof_binding_required',
       outputOracleFacet.accepted === true
@@ -15808,7 +16017,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
   const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
   const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
-  const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
+  const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence ?? json.native_webgpu_api_evidence);
   const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
   const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
   const sourceAdaptation = sourceAdaptationProofFacet(
@@ -15950,6 +16159,8 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     expected_output_hash: directComputeArtifacts.expected_output_hash,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
+    nativeWebGpuApiEvidence: nativeApiEvidence,
+    native_webgpu_api_evidence: nativeApiEvidence,
     visual: {
       required: false,
       accepted: false,
@@ -16578,6 +16789,7 @@ async function vulkanRuntimeRow(json, filePath, context) {
     contract,
   );
   const nativeApiEvidence = compactObject(json.nativeVulkanApiEvidence ?? json.native_vulkan_api_evidence);
+  const runtimeTrace = compactObject(json.runtimeTrace ?? json.runtime_trace);
   const nativeCounts = compactObject(nativeApiEvidence.counts);
   const negativeLayoutRefusal = compactObject(json.negativeLayoutRefusal ?? json.negative_layout_refusal);
   const executableStaticCheck = compactObject(
@@ -16791,6 +17003,8 @@ async function vulkanRuntimeRow(json, filePath, context) {
     declared_scope_evidence: declaredScopeEvidence,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     nativeVulkanApiEvidence: nativeApiEvidence,
     native_vulkan_api_evidence: nativeApiEvidence,
     nativeVulkanApiAccepted,
@@ -20397,6 +20611,64 @@ function runtimeChainOutputOracleBindingOverlay(runtimeChain) {
   };
 }
 
+function outputOracleTargetSupplementalBinding(targetValue = {}, ledgerRecord = {}) {
+  const explicitTarget = typeof targetValue === 'string'
+    ? { target: targetValue }
+    : compactObject(targetValue);
+  const recordTargetValue = ledgerRecord.outputOracleTarget ?? ledgerRecord.output_oracle_target;
+  const recordTarget = typeof recordTargetValue === 'string'
+    ? { target: recordTargetValue }
+    : compactObject(recordTargetValue);
+  const target = { ...recordTarget, ...explicitTarget };
+  if (Object.keys(target).length === 0) return null;
+  const outputTargetId = firstText(
+    target.outputTargetId,
+    target.output_target_id,
+    target.oracleTargetId,
+    target.oracle_target_id,
+    target.targetId,
+    target.target_id,
+    target.target,
+    target.id,
+    target.name,
+  );
+  if (!outputTargetId) return null;
+  const dispatchEvent = compactObject(ledgerRecord.dispatchEvent ?? ledgerRecord.dispatch_event);
+  const outputEvent = compactObject(ledgerRecord.outputEvent ?? ledgerRecord.output_event);
+  const dispatchId = firstText(dispatchEvent.id, dispatchEvent.dispatch_id, dispatchEvent.dispatchId);
+  const afterDispatchId = firstText(
+    outputEvent.after_dispatch_id,
+    outputEvent.afterDispatchId,
+    outputEvent.dispatch_id,
+    outputEvent.dispatchId,
+  );
+  return {
+    source: 'proof_artifact_output_oracle_target_binding',
+    outputTargetId,
+    output_target_id: outputTargetId,
+    dispatchTargetId: outputTargetId,
+    dispatch_target_id: outputTargetId,
+    oracleTargetId: outputTargetId,
+    oracle_target_id: outputTargetId,
+    dispatchId,
+    dispatch_id: dispatchId,
+    afterDispatchId,
+    after_dispatch_id: afterDispatchId,
+    evidenceRef: `output-oracle-target:sha256:${sha256Hex(stableJson({
+      outputTargetId,
+      dispatchId,
+      afterDispatchId,
+      target,
+    }))}`,
+    evidence_ref: `output-oracle-target:sha256:${sha256Hex(stableJson({
+      outputTargetId,
+      dispatchId,
+      afterDispatchId,
+      target,
+    }))}`,
+  };
+}
+
 function ledgerOutputOracleBindingEvidence(proofLedger, options = {}) {
   const records = ledgerRecordsFromValue(proofLedger);
   const supplementalBindings = compactObjectList([
@@ -23172,6 +23444,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ?? runtimeProofArtifact.proofLedger
     ?? runtimeProofArtifact.proof_ledger,
   );
+  const runtimeTrace = compactObject({
+    ...compactObject(runtimeProofArtifact.runtimeTrace ?? runtimeProofArtifact.runtime_trace),
+    ...compactObject(json.runtimeTrace ?? json.runtime_trace),
+  });
+  const runtimeResourceTrace = compactObject({
+    ...compactObject(runtimeProofArtifact.runtimeResourceTrace ?? runtimeProofArtifact.runtime_resource_trace),
+    ...compactObject(json.runtimeResourceTrace ?? json.runtime_resource_trace),
+  });
   const declaredOutputOracleFacet = compactObject(
     json.outputOracleFacet
     ?? json.output_oracle_facet
@@ -23375,6 +23655,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ledger,
     runtimeProofArtifact: runtimeProofArtifactGate,
     runtime_proof_artifact: runtimeProofArtifactGate,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
+    runtimeResourceTrace,
+    runtime_resource_trace: runtimeResourceTrace,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     acceptanceContract,
@@ -26630,13 +26914,57 @@ function rowWithEvaluatedSafety(row, context = {}) {
     ...rowSafetyFailures(row, context),
     ...suppliedFailures,
   ]);
-  return {
+  const safetyAccepted = failedGates.length === 0;
+  const safetyFailureCodes = compactStringList(
+    failedGates.map((failure) => failure?.code ?? failure),
+  );
+  const safetyInvalidatesGpuHmr =
+    safetyAccepted !== true
+    && (
+      row.acceptedForGpuHmr === true
+      || row.accepted_for_gpu_hmr === true
+      || row.gpuHmrSuccess === true
+      || row.gpu_hmr_success === true
+      || row.matrixOutcome === 'full_runtime_gpu_hmr'
+    );
+  const evaluatedRow = {
     ...row,
+    acceptedForGpuHmr: safetyInvalidatesGpuHmr ? false : row.acceptedForGpuHmr,
+    accepted_for_gpu_hmr: safetyInvalidatesGpuHmr ? false : row.accepted_for_gpu_hmr,
+    gpuHmrSuccess: safetyInvalidatesGpuHmr ? false : row.gpuHmrSuccess,
+    gpu_hmr_success: safetyInvalidatesGpuHmr ? false : row.gpu_hmr_success,
+    matrixOutcome: safetyInvalidatesGpuHmr ? 'unproven' : row.matrixOutcome,
+    proofChainAccepted: safetyInvalidatesGpuHmr ? false : row.proofChainAccepted,
+    proof_chain_accepted: safetyInvalidatesGpuHmr ? false : row.proof_chain_accepted,
+    reasons: safetyInvalidatesGpuHmr
+      ? compactStringList([
+          ...(Array.isArray(row.reasons) ? row.reasons : []),
+          'gpu_hmr_success_invalidated_by_matrix_safety',
+          ...safetyFailureCodes,
+        ])
+      : row.reasons,
+    openGaps: safetyInvalidatesGpuHmr
+      ? compactStringList([
+          ...(Array.isArray(row.openGaps) ? row.openGaps : []),
+          'gpu_hmr_success_invalidated_by_matrix_safety',
+          ...safetyFailureCodes,
+        ])
+      : row.openGaps,
     safety: {
-      accepted: failedGates.length === 0,
+      accepted: safetyAccepted,
       failedGates,
     },
   };
+  if (context.preserveSuppliedIdentity !== true) {
+    const evaluatedRowId = rowIdFor(evaluatedRow);
+    evaluatedRow.rowId = evaluatedRowId;
+    evaluatedRow.row_id = evaluatedRowId;
+    evaluatedRow.matrixKey = rowKey(evaluatedRow);
+    evaluatedRow.matrix_key = evaluatedRow.matrixKey;
+    evaluatedRow.attemptKey = rowAttemptKey(evaluatedRow);
+    evaluatedRow.attempt_key = evaluatedRow.attemptKey;
+  }
+  return evaluatedRow;
 }
 
 function rowDerivedSummaryFields(summary = {}) {
@@ -27905,11 +28233,16 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
     enforceRandomColdPathFreshness: Boolean(generatedAt),
     enforce_random_cold_path_freshness: Boolean(generatedAt),
   };
-  const preliminaryRows = rows.map((row) => rowWithEvaluatedSafety(row));
+  const preliminaryRows = rows.map((row) =>
+    rowWithEvaluatedSafety(row, { preserveSuppliedIdentity: true })
+  );
   const preliminaryBroadProof =
     computeBroadLibraryAgnosticProof(preliminaryRows, randomColdPathFreshnessContext);
   const evaluatedRows = rows.map((row) =>
-    rowWithEvaluatedSafety(row, { broadProof: preliminaryBroadProof })
+    rowWithEvaluatedSafety(row, {
+      broadProof: preliminaryBroadProof,
+      preserveSuppliedIdentity: true,
+    })
   );
   const failures = [];
   if (ledger.schemaVersion !== GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION) {
