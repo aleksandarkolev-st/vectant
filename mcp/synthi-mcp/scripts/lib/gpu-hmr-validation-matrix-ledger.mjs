@@ -1863,6 +1863,15 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   };
 }
 
+function randomColdSourceIntakeFacetHashSeed(facet) {
+  const seed = JSON.parse(JSON.stringify(compactObject(facet)));
+  delete seed.facetHash;
+  delete seed.facet_hash;
+  delete seed.recomputedFacetHash;
+  delete seed.recomputed_facet_hash;
+  return seed;
+}
+
 function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const facet = compactObject(sourceIntake);
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
@@ -1896,8 +1905,6 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const acceptedFlag = firstBool(
     facet.acceptedAsIntakeEvidence,
     facet.accepted_as_intake_evidence,
-    result.sourceTreeIntakeAccepted,
-    result.source_tree_intake_accepted,
   );
   const sourceListingHash = normalizeSha256(firstText(
     facet.sourceListingHash,
@@ -1906,6 +1913,9 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     facet.listing_hash,
   ));
   const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
+  const recomputedFacetHash = present
+    ? normalizeSha256(`sha256:${sha256Hex(stableJson(randomColdSourceIntakeFacetHashSeed(facet)))}`)
+    : null;
   const backendCandidates = compactStringList([
     ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
     ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
@@ -1944,8 +1954,23 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     present && !sourceListingHash
       ? 'random_cold_source_intake_listing_hash_missing'
       : null,
+    present && sourceListingManifest.acceptedAsSourceListingEvidence !== true
+      ? 'random_cold_source_intake_listing_manifest_invalid'
+      : null,
+    ...(present && sourceListingManifest.acceptedAsSourceListingEvidence !== true
+      ? compactStringList(sourceListingManifest.failedGates ?? sourceListingManifest.failed_gates)
+      : []),
+    present
+      && sourceListingHash
+      && sourceListingManifest.recomputedSourceListingHash
+      && sourceListingHash !== sourceListingManifest.recomputedSourceListingHash
+      ? 'random_cold_source_intake_listing_hash_mismatch'
+      : null,
     present && !facetHash
       ? 'random_cold_source_intake_facet_hash_missing'
+      : null,
+    present && facetHash && recomputedFacetHash && facetHash !== recomputedFacetHash
+      ? 'random_cold_source_intake_facet_hash_mismatch'
       : null,
     present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       ? 'random_cold_source_intake_claimed_gpu_hmr_acceptance'
@@ -1987,6 +2012,8 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     source_listing_manifest: sourceListingManifest,
     facetHash,
     facet_hash: facetHash,
+    recomputedFacetHash,
+    recomputed_facet_hash: recomputedFacetHash,
     fileCount: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
     file_count: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
     totalKnownBytes: finiteNumber(facet.totalKnownBytes ?? facet.total_known_bytes) ?? 0,
@@ -13631,10 +13658,10 @@ function rowSafetyFailures(row, context = {}) {
       failures.push({ code: 'random_large_project_cold_template_claimed_runtime_authority' });
     }
     const coldSourceIntakeRaw = compactObject(
-      row.coldSourceTreeIntake
-      ?? row.cold_source_tree_intake
-      ?? row.sourceIntakeEvidence
-      ?? row.source_intake_evidence,
+      row.sourceIntakeEvidence
+      ?? row.source_intake_evidence
+      ?? row.coldSourceTreeIntake
+      ?? row.cold_source_tree_intake,
     );
     const coldSourceIntakeDeclaredAccepted = firstBool(
       row.sourceTreeIntakeAccepted,
@@ -23516,6 +23543,8 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     random_cold_backend_evidence: randomColdBackendEvidence,
     coldSourceTreeIntake,
     cold_source_tree_intake: coldSourceTreeIntake,
+    sourceIntakeEvidence: sourceIntake,
+    source_intake_evidence: sourceIntake,
     coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
     sourceUrl,
@@ -25285,31 +25314,37 @@ function randomColdPathSourceContentIdentityHash(row) {
     row.immutableCommit,
     row.immutable_commit,
   );
+  const sourceIntake = randomColdSourceIntakeSummary(intake, row);
   const sourceListingHash = normalizeSha256(firstText(
-    intake.sourceListingHash,
-    intake.source_listing_hash,
+    sourceIntake.sourceListingManifest?.recomputedSourceListingHash,
+    sourceIntake.source_listing_manifest?.recomputed_source_listing_hash,
+    sourceIntake.sourceListingHash,
+    sourceIntake.source_listing_hash,
     facet.sourceListingHash,
     facet.source_listing_hash,
     row.sourceListingHash,
     row.source_listing_hash,
   ));
   const sourceIntakeFacetHash = normalizeSha256(firstText(
-    intake.facetHash,
-    intake.facet_hash,
+    sourceIntake.recomputedFacetHash,
+    sourceIntake.recomputed_facet_hash,
+    sourceIntake.facetHash,
+    sourceIntake.facet_hash,
     facet.sourceIntakeFacetHash,
     facet.source_intake_facet_hash,
     row.sourceIntakeFacetHash,
     row.source_intake_facet_hash,
   ));
-  const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
-    intake.buildMetadataContentEvidence,
-    intake.build_metadata_content_evidence,
-    row.buildMetadataContentEvidence,
-    row.build_metadata_content_evidence,
-    facet.buildMetadataContentEvidence,
-    facet.build_metadata_content_evidence,
-  ));
-  const buildMetadataContentHash = buildContentEvidence.contentEvidenceHash
+  const buildContentEvidence = compactObject(
+    sourceIntake.buildMetadataContentEvidence
+    ?? sourceIntake.build_metadata_content_evidence,
+  );
+  const buildMetadataContentHash = normalizeSha256(firstText(
+    buildContentEvidence.recomputedContentEvidenceHash,
+    buildContentEvidence.recomputed_content_evidence_hash,
+    buildContentEvidence.contentEvidenceHash,
+    buildContentEvidence.content_evidence_hash,
+  ))
     ?? normalizeSha256(firstText(
       intake.buildMetadataContentHash,
       intake.build_metadata_content_hash,
@@ -25331,6 +25366,7 @@ function randomColdPathSourceContentIdentityHash(row) {
   });
   if (
     directInputEvidence.acceptedAsDirectInputEvidence !== true
+    || sourceIntake.accepted !== true
     || !sourceListingHash
     || !sourceIntakeFacetHash
     || !buildMetadataContentHash
@@ -25364,6 +25400,8 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
   const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
   const sourceIntake = randomColdSourceIntakeSummary(intake, row);
   const sourceListingHash = normalizeSha256(firstText(
+    sourceIntake.sourceListingManifest?.recomputedSourceListingHash,
+    sourceIntake.source_listing_manifest?.recomputed_source_listing_hash,
     sourceIntake.sourceListingHash,
     sourceIntake.source_listing_hash,
     intake.sourceListingHash,

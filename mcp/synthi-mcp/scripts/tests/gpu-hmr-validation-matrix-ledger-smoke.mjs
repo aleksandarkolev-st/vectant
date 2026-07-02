@@ -99,6 +99,15 @@ function contentHashFor(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
 }
 
+function sourceIntakeFacetHashFor(value) {
+  const seed = JSON.parse(JSON.stringify(value));
+  delete seed.facetHash;
+  delete seed.facet_hash;
+  delete seed.recomputedFacetHash;
+  delete seed.recomputed_facet_hash;
+  return contentHashFor(seed);
+}
+
 const COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY =
   'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
 const COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS = [
@@ -1937,8 +1946,6 @@ function randomColdPathManifest({
     source_listing_hash: sourceListingManifest.sourceListingHash,
     sourceListingManifest,
     source_listing_manifest: sourceListingManifest,
-    facetHash: hashValue(`${candidateId}:source-intake`),
-    facet_hash: hashValue(`${candidateId}:source-intake`),
     fileCount: sourceListingManifest.fileCount,
     file_count: sourceListingManifest.fileCount,
     totalKnownBytes: sourceListingManifest.totalKnownBytes,
@@ -2036,6 +2043,8 @@ function randomColdPathManifest({
     runtimeBoundaryEventManifestTemplate: template,
     runtime_boundary_event_manifest_template: template,
   };
+  sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(sourceIntakeEvidence);
+  sourceIntakeEvidence.facet_hash = sourceIntakeEvidence.facetHash;
   const result = {
     candidateId,
     status: 'unprofiled_arbitrary_project_cold_intake_refused',
@@ -9409,10 +9418,6 @@ function randomColdReadinessMatrixRow({
     gpuSourceSignalCount: Math.min(31, sourceRelevantFileCount),
   });
   sourceListingHash = sourceListingManifest.sourceListingHash;
-  sourceIntakeFacetHash ??= contentHashFor({
-    schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_intake_identity.v1',
-    ...sourceContentSeed,
-  });
   const sourceContentEvidenceId = contentHashFor({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_build_metadata_content_identity.v1',
     ...sourceContentSeed,
@@ -9458,7 +9463,7 @@ function randomColdReadinessMatrixRow({
       direct_input_evidence: directInputEvidenceFacet,
     }
     : {};
-  return withQueryRecomputedRowId({
+  const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
     backend: 'webgpu',
@@ -9737,7 +9742,15 @@ function randomColdReadinessMatrixRow({
     reasons: ['strict_runtime_ledger_missing'],
     openGaps: ['strict_runtime_ledger_missing'],
     open_gaps: ['strict_runtime_ledger_missing'],
-  });
+  };
+  if (!sourceIntakeFacetHash) {
+    const recomputedSourceIntakeFacetHash = sourceIntakeFacetHashFor(row.coldSourceTreeIntake);
+    row.coldSourceTreeIntake.facetHash = recomputedSourceIntakeFacetHash;
+    row.coldSourceTreeIntake.facet_hash = recomputedSourceIntakeFacetHash;
+    row.cold_source_tree_intake.facetHash = recomputedSourceIntakeFacetHash;
+    row.cold_source_tree_intake.facet_hash = recomputedSourceIntakeFacetHash;
+  }
+  return withQueryRecomputedRowId(row);
 }
 
 function withQueryRecomputedRowId(row) {
@@ -10622,7 +10635,19 @@ const broadReadinessWithPathOnlyListingQuery = queryGpuHmrValidationMatrixLedger
     ...broadReadinessPathOnlyListingRows,
   ],
 });
-assert.equal(broadReadinessWithPathOnlyListingQuery.accepted, true);
+assert.equal(broadReadinessWithPathOnlyListingQuery.accepted, false);
+assert.ok(broadReadinessWithPathOnlyListingQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(broadReadinessWithPathOnlyListingQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_listing_manifest_invalid'
+));
+assert.ok(broadReadinessWithPathOnlyListingQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_entry_object_missing'
+));
+assert.ok(broadReadinessWithPathOnlyListingQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_entry_byte_length_missing'
+));
 assert.equal(
   broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness.accepted,
   false,
@@ -11679,7 +11704,6 @@ const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, 
     sourceListingManifest: randomColdSourceListingManifestFixture({
       targetId: `forged-content-identity-listing-${index + 1}`,
     }),
-    sourceIntakeFacetHash: hashValue(`forged-content-identity:intake:${index + 1}`),
     buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
       targetId: `forged-content-identity-build-${index + 1}`,
     }),
@@ -11717,6 +11741,70 @@ assert.equal(
 assert.ok(
   broadReadinessWithForgedContentIdentitySameSourceColdQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
+);
+const forgedSourceIntakeFacetHashColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'forged-source-intake-facet-hash-random-cold',
+    sourceUrl: 'https://example.invalid/forged/source-intake-facet-hash.git',
+    immutableCommit: '2525252525252525252525252525252525252525',
+  });
+  row.coldSourceTreeIntake.facetHash = hashValue('forged-source-intake-facet-hash');
+  row.coldSourceTreeIntake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.facetHash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  return row;
+})());
+const forgedSourceIntakeFacetHashColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    forgedSourceIntakeFacetHashColdRow,
+  ],
+});
+assert.equal(forgedSourceIntakeFacetHashColdQuery.accepted, false);
+assert.ok(forgedSourceIntakeFacetHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(forgedSourceIntakeFacetHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_facet_hash_mismatch'
+));
+assert.equal(
+  forgedSourceIntakeFacetHashColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+const forgedSourceIntakeListingHashColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'forged-source-intake-listing-hash-random-cold',
+    sourceUrl: 'https://example.invalid/forged/source-intake-listing-hash.git',
+    immutableCommit: '2626262626262626262626262626262626262626',
+  });
+  row.coldSourceTreeIntake.sourceListingHash = hashValue('forged-source-intake-listing-hash');
+  row.coldSourceTreeIntake.source_listing_hash = row.coldSourceTreeIntake.sourceListingHash;
+  row.coldSourceTreeIntake.facetHash = sourceIntakeFacetHashFor(row.coldSourceTreeIntake);
+  row.coldSourceTreeIntake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.sourceListingHash = row.coldSourceTreeIntake.sourceListingHash;
+  row.cold_source_tree_intake.source_listing_hash = row.coldSourceTreeIntake.sourceListingHash;
+  row.cold_source_tree_intake.facetHash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  return row;
+})());
+const forgedSourceIntakeListingHashColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    forgedSourceIntakeListingHashColdRow,
+  ],
+});
+assert.equal(forgedSourceIntakeListingHashColdQuery.accepted, false);
+assert.ok(forgedSourceIntakeListingHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(forgedSourceIntakeListingHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_listing_hash_mismatch'
+));
+assert.equal(
+  forgedSourceIntakeListingHashColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
 );
 const forgedSourceIntakeAuthorityColdRow = withQueryRecomputedRowId((() => {
   const row = randomColdReadinessMatrixRow({
