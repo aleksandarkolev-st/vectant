@@ -4057,6 +4057,101 @@ function generatedSplitArtifactManifest(split) {
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function sourceFirstWorkspaceSourceProvenanceEvidence({
+  sourceAuthority,
+  sourceContentHash,
+  sourceTreeManifestHash,
+  initialManifestHash,
+  initialFiles,
+} = {}) {
+  if (!['user_source_files', 'workspace_source_files'].includes(sourceAuthority)) return null;
+  const sourceRoot =
+    ACTIVE_AGENT_PROFILE?.source?.directSourceRoot
+    ?? ACTIVE_AGENT_PROFILE?.source?.direct_source_root
+    ?? ACTIVE_AGENT_PROFILE?.source?.sourceRoot
+    ?? ACTIVE_AGENT_PROFILE?.source?.source_root
+    ?? null;
+  const normalizedSourceRoot =
+    sourceRoot && existsSync(sourceRoot)
+      ? realpathSync(sourceRoot)
+      : sourceRoot;
+  const fileManifest = Array.isArray(initialFiles)
+    ? initialFiles.map((entry) => ({
+        path: cleanRel(entry?.path ?? ''),
+        contentHash: entry?.contentHash ?? entry?.content_hash ?? null,
+        content_hash: entry?.contentHash ?? entry?.content_hash ?? null,
+        byteLength: Number.isFinite(Number(entry?.byteLength ?? entry?.byte_length))
+          ? Number(entry.byteLength ?? entry.byte_length)
+          : null,
+        byte_length: Number.isFinite(Number(entry?.byteLength ?? entry?.byte_length))
+          ? Number(entry.byteLength ?? entry.byte_length)
+          : null,
+      })).filter((entry) => entry.path)
+    : [];
+  const sourceTreeSnapshotHash = sourceTreeManifestHash || (
+    fileManifest.length > 0
+      ? `sha256:${sha256Hex(stableJson(fileManifest))}`
+      : null
+  );
+  const accepted =
+    Boolean(normalizedSourceRoot)
+    && /^sha256:[a-f0-9]{64}$/.test(String(sourceTreeSnapshotHash ?? ''))
+    && /^sha256:[a-f0-9]{64}$/.test(String(sourceContentHash ?? ''))
+    && /^sha256:[a-f0-9]{64}$/.test(String(initialManifestHash ?? ''));
+  const provenanceSeed = {
+    sourceAuthority,
+    sourceRoot: normalizedSourceRoot,
+    sourceContentHash,
+    sourceTreeSnapshotHash,
+    initialManifestHash,
+    fileManifest,
+  };
+  const provenanceHash = `sha256:${sha256Hex(stableJson(provenanceSeed))}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    schema_version: 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
+    proofAuthority: 'workspace_source_tree_provenance_only_not_gpu_hmr_success',
+    proof_authority: 'workspace_source_tree_provenance_only_not_gpu_hmr_success',
+    accepted,
+    acceptedAsSourceProvenance: accepted,
+    accepted_as_source_provenance: accepted,
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    sourceRoot: normalizedSourceRoot,
+    source_root: normalizedSourceRoot,
+    workspaceRoot: normalizedSourceRoot,
+    workspace_root: normalizedSourceRoot,
+    sourceContentHash,
+    source_content_hash: sourceContentHash,
+    sourceTreeSnapshotHash,
+    source_tree_snapshot_hash: sourceTreeSnapshotHash,
+    sourceTreeManifestHash,
+    source_tree_manifest_hash: sourceTreeManifestHash,
+    initialManifestHash,
+    initial_manifest_hash: initialManifestHash,
+    fileManifest,
+    file_manifest: fileManifest,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    provenanceHash,
+    provenance_hash: provenanceHash,
+    evidenceRef: `workspace-source-provenance:${provenanceHash}`,
+    evidence_ref: `workspace-source-provenance:${provenanceHash}`,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
 function sourceFirstIngestionEvidence({
   source,
   entryPath,
@@ -4165,6 +4260,14 @@ function sourceFirstIngestionEvidence({
     ?? ACTIVE_AGENT_PROFILE?.source?.manifest_hash
     ?? initialManifestHash;
   const sourceTreeManifestHashMatches = sourceTreeManifestHash === initialManifestHash;
+  const sourceAuthority = ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source';
+  const workspaceSourceProvenance = sourceFirstWorkspaceSourceProvenanceEvidence({
+    sourceAuthority,
+    sourceContentHash,
+    sourceTreeManifestHash,
+    initialManifestHash,
+    initialFiles,
+  });
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactPathsInGeneratedNamespace =
@@ -4244,8 +4347,10 @@ function sourceFirstIngestionEvidence({
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
-    sourceAuthority: ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source',
-    source_authority: ACTIVE_AGENT_PROFILE?.sourceAuthority ?? 'builtin_fixture_source',
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    workspaceSourceProvenance: workspaceSourceProvenance ?? {},
+    workspace_source_provenance: workspaceSourceProvenance ?? {},
     entryPath: normalizedEntryPath,
     entry_path: normalizedEntryPath,
     seededWorkspacePath: normalizedEntryPath,
@@ -4367,8 +4472,16 @@ function sourceFirstIngestionEvidence({
     profile_id: validationProfileId(),
     validationProfileId: validationProfileId(),
     validation_profile_id: validationProfileId(),
-    evidenceRefs: [...new Set(evidenceRefs)],
-    evidence_refs: [...new Set(evidenceRefs)],
+    evidenceRefs: [...new Set([
+      ...evidenceRefs,
+      workspaceSourceProvenance?.evidenceRef,
+      workspaceSourceProvenance?.evidence_ref,
+    ].filter(Boolean))],
+    evidence_refs: [...new Set([
+      ...evidenceRefs,
+      workspaceSourceProvenance?.evidenceRef,
+      workspaceSourceProvenance?.evidence_ref,
+    ].filter(Boolean))],
     failedGates: accepted ? [] : [
       sourcePurityEvidence?.accepted === true ? null : 'source_first_seed_source_contains_synthi_abi',
       sourcePurityCoversInitialManifest ? null : 'source_first_seed_purity_manifest_incomplete',
@@ -5333,6 +5446,18 @@ function selfCheckAgentVisualProfile() {
       || acceptedDirectSourceFirst.accepted !== true
       || acceptedDirectSourceFirst.sourceAuthority !== 'user_source_files'
       || acceptedDirectSourceFirst.sourceTreeManifestHashMatches !== true
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.schemaVersion
+        !== 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1'
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.proofAuthority
+        !== 'workspace_source_tree_provenance_only_not_gpu_hmr_success'
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.accepted !== true
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.targetNameIndependent !== true
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.acceptedForGpuHmr !== false
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.gpuHmrSuccess !== false
+      || acceptedDirectSourceFirst.workspaceSourceProvenance?.canSatisfyRuntimeProof !== false
+      || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
+        String(entry).startsWith('workspace-source-provenance:sha256:')
+      )
       || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
         String(entry).startsWith('evidence:agent-direct-source-file:sha256:')
       )
