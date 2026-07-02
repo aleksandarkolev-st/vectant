@@ -16005,20 +16005,68 @@ async function vulkanRuntimeRow(json, filePath, context) {
   });
 }
 
+function externalProfileIdentityEvidence({
+  declaredProfileId = null,
+  observedProfileIds = [],
+  diagnosticProfileLabel = null,
+} = {}) {
+  const explicitProfileIds = compactStringList([declaredProfileId, ...observedProfileIds]);
+  const uniqueProfileIds = [...new Set(explicitProfileIds)];
+  const accepted = uniqueProfileIds.length === 1;
+  const failedGates = compactStringList([
+    uniqueProfileIds.length > 0 ? null : 'external_profile_id_missing',
+    uniqueProfileIds.length <= 1 ? null : 'external_profile_id_mismatch',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_profile_identity_evidence.v1',
+    schema_version: 'synthi.gpu_hmr.external_profile_identity_evidence.v1',
+    accepted,
+    proofAuthority: 'explicit_external_profile_identity_only_not_filename',
+    proof_authority: 'explicit_external_profile_identity_only_not_filename',
+    profileId: accepted ? uniqueProfileIds[0] : declaredProfileId,
+    profile_id: accepted ? uniqueProfileIds[0] : declaredProfileId,
+    declaredProfileId: declaredProfileId ?? null,
+    declared_profile_id: declaredProfileId ?? null,
+    observedProfileIds: explicitProfileIds,
+    observed_profile_ids: explicitProfileIds,
+    diagnosticProfileLabel: diagnosticProfileLabel ?? null,
+    diagnostic_profile_label: diagnosticProfileLabel ?? null,
+    diagnosticLabelAuthority: diagnosticProfileLabel
+      ? 'filename_label_for_debug_only_not_profile_identity'
+      : null,
+    diagnostic_label_authority: diagnosticProfileLabel
+      ? 'filename_label_for_debug_only_not_profile_identity'
+      : null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 async function externalProjectRow(json, filePath, context) {
-  const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
+  const diagnosticProfileLabel = path.basename(filePath).replace(/(?:-\d+)?-report\.json$/, '');
+  const declaredProfileId = firstText(
+    json.profile?.id,
+    json.profile?.profileId,
+    json.profile?.profile_id,
+    json.profileId,
+    json.profile_id,
+  );
   const externalProjectContract = externalProjectContractEvidence(json);
   const backend = externalProjectContract.backend;
   const externalVisualProofArtifact = await externalVisualProofArtifactEvidence(
     json,
     context.repoRoot,
     path.dirname(filePath),
-    profileId,
+    declaredProfileId,
   );
   const externalProfileSelection = externalProfileSelectionEvidence(
     json,
     externalVisualProofArtifact,
-    profileId,
+    declaredProfileId,
   );
   const externalSourceDelta = externalSourceDeltaEvidence(json, externalVisualProofArtifact);
   const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
@@ -16039,25 +16087,39 @@ async function externalProjectRow(json, filePath, context) {
   const deterministicVisualModeEvaluation =
     evaluateGpuHmrDeterministicVisualMode(declaredDeterministicMode);
   const deterministicAccepted = deterministicVisualModeEvaluation.accepted === true;
+  const rejection = compactObject(json.rejectionProofArtifact ?? json.rejection_proof_artifact);
+  const linkedRejection = await readExternalRejectionProof(
+    firstText(rejection.path, rejection.localPath, rejection.local_path),
+    context.repoRoot,
+    path.dirname(filePath),
+    declaredProfileId,
+  );
+  const externalProfileIdentity = externalProfileIdentityEvidence({
+    declaredProfileId,
+    observedProfileIds: [
+      externalProfileSelection.profileId,
+      externalVisualProofArtifact.profileId,
+      linkedRejection.profileId,
+    ],
+    diagnosticProfileLabel,
+  });
+  const profileId = externalProfileIdentity.profileId;
   const visualProfileAccepted =
     json.status === 'pass'
+    && externalProfileIdentity.accepted === true
+    && externalProjectContract.accepted === true
     && visual.accepted === true
     && deterministicAccepted
     && externalProfileSelection.accepted === true
     && externalSourceDelta.accepted === true
     && externalVisualProofArtifact.accepted === true;
-  const rejection = compactObject(json.rejectionProofArtifact ?? json.rejection_proof_artifact);
   const refusalProven =
     json.status === 'fail'
+    && externalProfileIdentity.accepted === true
+    && externalProjectContract.accepted === true
     && Boolean(firstText(rejection.proofId, rejection.proof_id))
     && Array.isArray(rejection.reasons)
     && rejection.reasons.length > 0;
-  const linkedRejection = await readExternalRejectionProof(
-    firstText(rejection.path, rejection.localPath, rejection.local_path),
-    context.repoRoot,
-    path.dirname(filePath),
-    profileId,
-  );
   const rejectionReasons = compactStringList([
     ...(Array.isArray(rejection.reasons) ? rejection.reasons : []),
     ...linkedRejection.reasons,
@@ -16076,6 +16138,10 @@ async function externalProjectRow(json, filePath, context) {
     external_source_delta: externalSourceDelta,
     externalVisualProofArtifact,
     external_visual_proof_artifact: externalVisualProofArtifact,
+    externalProfileIdentity,
+    external_profile_identity: externalProfileIdentity,
+    diagnosticProfileLabel,
+    diagnostic_profile_label: diagnosticProfileLabel,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     backendEvidence: externalProjectContract,
@@ -16127,6 +16193,8 @@ async function externalProjectRow(json, filePath, context) {
       visualProfileAccepted || visual.accepted ? null : 'visual_artifacts_not_readable',
       deterministicAccepted ? null : 'deterministic_visual_mode_not_accepted',
       ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
+      ...externalProfileIdentity.failedGates,
+      ...(externalProjectContract.accepted === true ? [] : externalProjectContract.failedGates),
       externalProfileSelection.accepted === true ? null : 'external_profile_selection_not_accepted',
       externalSourceDelta.accepted === true ? null : 'external_source_delta_not_accepted',
       externalVisualProofArtifact.accepted === true ? null : 'external_visual_proof_artifact_not_accepted',
@@ -16140,6 +16208,7 @@ async function externalProjectRow(json, filePath, context) {
           ...externalProjectContract.failedGates,
           ...(deterministicAccepted ? [] : ['deterministic_visual_mode_not_accepted']),
           ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
+          ...externalProfileIdentity.failedGates,
           ...externalProfileSelection.failedGates,
           ...externalSourceDelta.failedGates,
           ...externalVisualProofArtifact.failedGates,
@@ -16803,25 +16872,40 @@ async function readExternalRejectionProof(proofPath, repoRoot, baseDir, expected
   const schema = firstText(json.schemaVersion, json.schema);
   const profileId = firstText(json.profileId, json.profile_id);
   const rejection = compactObject(json.rejection);
+  const proofIdEvidence = externalRejectionProofIdEvidence(json);
+  const externalProjectContract = externalProjectContractEvidence(json);
   const accepted = schema === 'synthi.gpu.hmr.external_project_rejection.v1'
+    && profileId
+    && proofIdEvidence.accepted === true
+    && externalProjectContract.accepted === true
     && (!expectedProfileId || profileId === expectedProfileId)
     && json.status === 'fail'
     && rejection.accepted === false
     && Array.isArray(rejection.reasons)
     && rejection.reasons.length > 0;
   return accepted
-    ? { proof: json, reasons: compactStringList(rejection.reasons) }
-    : { proof: null, reasons: [] };
+    ? { proof: json, profileId, profile_id: profileId, reasons: compactStringList(rejection.reasons) }
+    : { proof: null, profileId: null, profile_id: null, reasons: [] };
 }
 
 async function externalProjectRejectionRow(json, filePath, context) {
-  const profileId = firstText(json.profileId, json.profile_id, path.basename(filePath).replace(/-\d+-rejection-proof\.json$/, ''));
+  const diagnosticProfileLabel = path.basename(filePath).replace(/(?:-\d+)?-rejection-proof\.json$/, '');
+  const declaredProfileId = firstText(json.profileId, json.profile_id);
+  const externalProfileIdentity = externalProfileIdentityEvidence({
+    declaredProfileId,
+    diagnosticProfileLabel,
+  });
+  const profileId = externalProfileIdentity.profileId;
   const externalProjectContract = externalProjectContractEvidence(json);
+  const externalRejectionProofId = externalRejectionProofIdEvidence(json);
   const backend = externalProjectContract.backend;
   const rejection = compactObject(json.rejection);
   const reasons = compactStringList(rejection.reasons);
   const refusalProven =
     firstText(json.schemaVersion, json.schema) === 'synthi.gpu.hmr.external_project_rejection.v1'
+    && externalProfileIdentity.accepted === true
+    && externalRejectionProofId.accepted === true
+    && externalProjectContract.accepted === true
     && json.status === 'fail'
     && rejection.accepted === false
     && reasons.length > 0;
@@ -16832,10 +16916,16 @@ async function externalProjectRejectionRow(json, filePath, context) {
     backend,
     externalProjectContract,
     external_project_contract: externalProjectContract,
+    externalRejectionProofId,
+    external_rejection_proof_id: externalRejectionProofId,
     backendEvidence: externalProjectContract,
     backend_evidence: externalProjectContract,
     targetId: profileId,
     profileId,
+    externalProfileIdentity,
+    external_profile_identity: externalProfileIdentity,
+    diagnosticProfileLabel,
+    diagnostic_profile_label: diagnosticProfileLabel,
     proofMode: firstText(json.proofMode, json.proof_mode, 'external_rejection'),
     evidenceKind: 'external_profile_result',
     matrixOutcome: refusalProven ? 'refusal_proven' : 'unproven',
@@ -16873,11 +16963,53 @@ async function externalProjectRejectionRow(json, filePath, context) {
     fullRebuildUsed: null,
     processRestarted: null,
     timings: {},
-    reasons,
+    reasons: compactStringList([
+      ...reasons,
+      ...externalProfileIdentity.failedGates,
+      ...externalRejectionProofId.failedGates,
+      ...(externalProjectContract.accepted === true ? [] : externalProjectContract.failedGates),
+    ]),
     openGaps: refusalProven
       ? compactStringList(['full_runtime_gpu_hmr_not_proven', ...externalProjectContract.failedGates])
-      : compactStringList(['external_rejection_artifact_not_accepted', ...externalProjectContract.failedGates]),
+      : compactStringList([
+        'external_rejection_artifact_not_accepted',
+        ...externalProfileIdentity.failedGates,
+        ...externalRejectionProofId.failedGates,
+        ...externalProjectContract.failedGates,
+      ]),
   });
+}
+
+function externalRejectionProofIdEvidence(json = {}) {
+  const proofId = firstText(json.proofId, json.proof_id);
+  const material = { ...json };
+  delete material.proofId;
+  delete material.proof_id;
+  const recomputedProofId = `external-rejection-proof:${sha256Hex(stableJson(material))}`;
+  const accepted = Boolean(proofId && proofId === recomputedProofId);
+  const failedGates = compactStringList([
+    proofId ? null : 'external_rejection_proof_id_missing',
+    proofId && proofId === recomputedProofId
+      ? null
+      : 'external_rejection_proof_id_hash_mismatch',
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_rejection_proof_id_evidence.v1',
+    schema_version: 'synthi.gpu_hmr.external_rejection_proof_id_evidence.v1',
+    accepted,
+    proofId: proofId ?? null,
+    proof_id: proofId ?? null,
+    recomputedProofId,
+    recomputed_proof_id: recomputedProofId,
+    proofAuthority: 'matrix_recomputed_external_rejection_hash_not_gpu_hmr_success',
+    proof_authority: 'matrix_recomputed_external_rejection_hash_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    failedGates,
+    failed_gates: failedGates,
+  };
 }
 
 function evidenceRefList(value) {

@@ -4612,7 +4612,14 @@ function externalProjectContractForTest({
   };
 }
 
-await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), {
+function externalRejectionProofForTest(material) {
+  return {
+    ...material,
+    proofId: `external-rejection-proof:${sha256Hex(stableJson(material))}`,
+  };
+}
+
+await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-rejection-proof.json'), externalRejectionProofForTest({
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'bevy-wgsl-name-only',
   proofMode: 'mcp_preview',
@@ -4627,10 +4634,9 @@ await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-name-only-re
       'visual_oracle_not_accepted',
     ],
   },
-  proofId: 'external-rejection-proof:sha256:synthetic-bevy-name-only',
-});
+}));
 
-await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-shader-material-rejection-proof.json'), {
+await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-shader-material-rejection-proof.json'), externalRejectionProofForTest({
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'explicit-bevy-wgsl-shader-material',
   proofMode: 'mcp_preview',
@@ -4660,10 +4666,9 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-bevy-wgsl-sha
       'visual_oracle_not_accepted',
     ],
   },
-  proofId: 'external-rejection-proof:sha256:synthetic-bevy',
-});
+}));
 
-await writeJson(path.join(logsRoot, 'external-projects', 'explicit-self-check-named-project-rejection-proof.json'), {
+await writeJson(path.join(logsRoot, 'external-projects', 'explicit-self-check-named-project-rejection-proof.json'), externalRejectionProofForTest({
   schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
   profileId: 'explicit-self-check-named-project',
   proofMode: 'mcp_preview',
@@ -4691,8 +4696,21 @@ await writeJson(path.join(logsRoot, 'external-projects', 'explicit-self-check-na
       'visual_oracle_not_accepted',
     ],
   },
-  proofId: 'external-rejection-proof:sha256:synthetic-self-check-named-project',
-});
+}));
+
+await writeJson(path.join(logsRoot, 'external-projects', 'filename-only-external-engine-rejection-proof.json'), externalRejectionProofForTest({
+  schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+  proofMode: 'mcp_preview',
+  status: 'fail',
+  rejection: {
+    accepted: false,
+    reasons: [
+      'external_profile_failed',
+      'visual_frame_missing',
+      'visual_oracle_not_accepted',
+    ],
+  },
+}));
 
 const externalVisualDir = path.join(logsRoot, 'external-projects', 'explicit-external-engine-visual');
 await writeRgbaPng(path.join(externalVisualDir, 'before.png'), 320, 240, (x, y) => [
@@ -5062,6 +5080,32 @@ await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine
     accepted: true,
   },
   proofId: 'external-profile-report:sha256:forged-engine-visual',
+});
+
+await writeJson(path.join(logsRoot, 'external-projects', 'filename-only-external-engine-visual-report.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+  proofMode: 'external_runtime_screenshot',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  status: 'pass',
+  visualOracleArtifacts: {
+    before_image: path.join(forgedExternalVisualDir, 'before.png'),
+    after_image: path.join(forgedExternalVisualDir, 'after.png'),
+    diff_image: path.join(forgedExternalVisualDir, 'diff.png'),
+    capture_backend: 'external_runtime_screenshot',
+  },
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 76800,
+  },
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  proofId: 'external-profile-report:sha256:filename-only-engine-visual',
 });
 
 const noDeviceRuntimeCapabilityPreflight = {
@@ -12632,9 +12676,11 @@ assert.ok(bevy.reasons.includes('mcp_request_timeout'));
 assert.ok(bevy.reasons.includes('visual_frame_missing'));
 
 const bevyNameOnly = ledger.rows.find((row) => row.targetId === 'bevy-wgsl-name-only');
-assert.equal(bevyNameOnly?.matrixOutcome, 'refusal_proven');
+assert.equal(bevyNameOnly?.matrixOutcome, 'unproven');
 assert.equal(bevyNameOnly.backend, 'unknown');
 assert.equal(bevyNameOnly.externalProjectContract.accepted, false);
+assert.equal(bevyNameOnly.externalRejectionProofId.accepted, true);
+assert.equal(bevyNameOnly.refusalProven, false);
 assert.ok(bevyNameOnly.openGaps.includes('external_backend_metadata_missing'));
 assert.ok(bevyNameOnly.openGaps.includes('external_profile_class_missing'));
 
@@ -12648,9 +12694,25 @@ assert.equal(selfCheckNamedExternalRejection.gpuHmrSuccess, false);
 assert.equal(selfCheckNamedExternalRejection.refusalProven, true);
 assert.equal(selfCheckNamedExternalRejection.proofChainAccepted, true);
 assert.equal(selfCheckNamedExternalRejection.externalProjectContract.accepted, true);
+assert.equal(selfCheckNamedExternalRejection.externalRejectionProofId.accepted, true);
 assert.ok(selfCheckNamedExternalRejection.reasons.includes('external_profile_failed'));
 assert.ok(selfCheckNamedExternalRejection.reasons.includes('visual_frame_missing'));
 assert.ok(selfCheckNamedExternalRejection.reasons.includes('visual_oracle_not_accepted'));
+
+const filenameOnlyExternalRejection = ledger.rows.find(
+  (row) => row.diagnosticProfileLabel === 'filename-only-external-engine',
+);
+assert.equal(filenameOnlyExternalRejection?.matrixOutcome, 'unproven');
+assert.equal(filenameOnlyExternalRejection.targetId, null);
+assert.equal(filenameOnlyExternalRejection.externalProfileIdentity.accepted, false);
+assert.equal(filenameOnlyExternalRejection.externalRejectionProofId.accepted, true);
+assert.equal(filenameOnlyExternalRejection.refusalProven, false);
+assert.ok(filenameOnlyExternalRejection.reasons.includes('external_profile_id_missing'));
+assert.ok(filenameOnlyExternalRejection.openGaps.includes('external_rejection_artifact_not_accepted'));
+assert.equal(
+  ledger.rows.some((row) => row.targetId === 'filename-only-external-engine'),
+  false,
+);
 
 const externalVisual = ledger.rows.find((row) => row.targetId === 'explicit-external-engine-visual');
 assert.equal(externalVisual?.matrixOutcome, 'visual_profile_accepted');
@@ -12700,6 +12762,20 @@ assert.ok(forgedExternalVisual.openGaps.includes('external_contract_schema_missi
 assert.ok(forgedExternalVisual.openGaps.includes('external_profile_selection_schema_missing'));
 assert.ok(forgedExternalVisual.openGaps.includes('external_source_delta_schema_missing'));
 assert.ok(forgedExternalVisual.openGaps.includes('external_visual_proof_artifact_path_missing'));
+
+const filenameOnlyExternalVisual = ledger.rows.find(
+  (row) => row.diagnosticProfileLabel === 'filename-only-external-engine-visual',
+);
+assert.equal(filenameOnlyExternalVisual?.matrixOutcome, 'unproven');
+assert.equal(filenameOnlyExternalVisual.targetId, null);
+assert.equal(filenameOnlyExternalVisual.externalProfileIdentity.accepted, false);
+assert.equal(filenameOnlyExternalVisual.visualProfileAccepted, false);
+assert.ok(filenameOnlyExternalVisual.reasons.includes('external_profile_id_missing'));
+assert.ok(filenameOnlyExternalVisual.openGaps.includes('external_profile_id_missing'));
+assert.equal(
+  ledger.rows.some((row) => row.targetId === 'filename-only-external-engine-visual'),
+  false,
+);
 
 const largeRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
@@ -14365,7 +14441,7 @@ assert.equal(
 const retainedRealRocmRefusalCount = retainedRealRocmRows
   .filter((row) => row.matrixOutcome === 'refusal_proven').length;
 assert.equal(retainedRealRocmRefusalCount, 2);
-assert.equal(ledger.summary.refusalProvenRows, 5 + retainedRealRocmRefusalCount);
+assert.equal(ledger.summary.refusalProvenRows, 4 + retainedRealRocmRefusalCount);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
