@@ -1792,11 +1792,25 @@ function randomColdBuildMetadataContentEvidenceFixture({
   includeByteLength = true,
   includeTransport = true,
   buildFilePath = 'CMakeLists.txt',
+  buildFileObject = null,
+  declaredByteLength = null,
 } = {}) {
   const buildFiles = accepted
     ? [
       {
         path: buildFilePath,
+        ...(buildFileObject
+          ? {
+            object: buildFileObject,
+            object_id: buildFileObject,
+          }
+          : {}),
+        ...(Number.isFinite(declaredByteLength)
+          ? {
+            declaredByteLength,
+            declared_byte_length: declaredByteLength,
+          }
+          : {}),
         contentHash: hashValue(`random-cold-build-file:${targetId}:${buildFilePath}`),
         content_hash: hashValue(`random-cold-build-file:${targetId}:${buildFilePath}`),
         ...(includeByteLength
@@ -1869,13 +1883,27 @@ function randomColdSourceListingManifestFixture({
   totalKnownBytes = 15 * 1024 * 1024,
   sourceRelevantFileCount = fileCount,
   gpuSourceSignalCount = 31,
+  buildFilePath = 'CMakeLists.txt',
+  buildFileByteLength = 4096,
 } = {}) {
   const perFileBytes = Math.max(1, Math.floor(totalKnownBytes / Math.max(fileCount, 1)));
-  const entries = Array.from({ length: fileCount }, (_, index) => {
+  const buildEntries = buildFilePath && fileCount > 0
+    ? [
+      {
+        path: buildFilePath,
+        object: sha256Hex(`fixture-object-${targetId}-build-${buildFilePath}`).slice(0, 40),
+        byteLength: buildFileByteLength,
+      },
+    ]
+    : [];
+  const remainingFileCount = Math.max(0, fileCount - buildEntries.length);
+  const actualSourceRelevantFileCount = Math.min(sourceRelevantFileCount, remainingFileCount);
+  const actualGpuSourceSignalCount = Math.min(gpuSourceSignalCount, actualSourceRelevantFileCount);
+  const generatedEntries = Array.from({ length: remainingFileCount }, (_, index) => {
     let filePath;
-    if (index < gpuSourceSignalCount) {
+    if (index < actualGpuSourceSignalCount) {
       filePath = `src/gpu/${targetId}-kernel-${index}.hip`;
-    } else if (index < sourceRelevantFileCount) {
+    } else if (index < actualSourceRelevantFileCount) {
       filePath = `src/core/${targetId}-source-${index}.cpp`;
     } else {
       filePath = `assets/${targetId}-asset-${index}.bin`;
@@ -1886,8 +1914,11 @@ function randomColdSourceListingManifestFixture({
       byteLength: perFileBytes,
     };
   });
+  const entries = [...buildEntries, ...generatedEntries];
   const sourceListingHash = sourceListingHashForEntries(entries);
   const recomputedKnownBytes = entries.reduce((sum, entry) => sum + entry.byteLength, 0);
+  const actualSourceOrBuildRelevantFileCount =
+    actualSourceRelevantFileCount + buildEntries.length;
   return {
     schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
     schema_version: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
@@ -1908,13 +1939,37 @@ function randomColdSourceListingManifestFixture({
     file_count: fileCount,
     totalKnownBytes: recomputedKnownBytes,
     total_known_bytes: recomputedKnownBytes,
-    sourceRelevantFileCount,
-    source_relevant_file_count: sourceRelevantFileCount,
-    sourceOrBuildRelevantFileCount: sourceRelevantFileCount,
-    source_or_build_relevant_file_count: sourceRelevantFileCount,
-    gpuSourceSignalCount,
-    gpu_source_signal_count: gpuSourceSignalCount,
+    sourceRelevantFileCount: actualSourceRelevantFileCount,
+    source_relevant_file_count: actualSourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount: actualSourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: actualSourceOrBuildRelevantFileCount,
+    gpuSourceSignalCount: actualGpuSourceSignalCount,
+    gpu_source_signal_count: actualGpuSourceSignalCount,
   };
+}
+
+function randomColdFirstBuildListingEntry(manifest, preferredPath = 'CMakeLists.txt') {
+  const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
+  return entries.find((entry) => entry.path === preferredPath)
+    ?? entries.find((entry) => /(^|\/)(cmakelists\.txt|makefile|package\.json|cargo\.toml)$/i.test(
+      String(entry.path ?? ''),
+    ))
+    ?? null;
+}
+
+function randomColdBuildMetadataContentEvidenceForListing({
+  targetId,
+  sourceListingManifest,
+  buildFilePath = 'CMakeLists.txt',
+} = {}) {
+  const buildEntry = randomColdFirstBuildListingEntry(sourceListingManifest, buildFilePath);
+  return randomColdBuildMetadataContentEvidenceFixture({
+    targetId,
+    accepted: true,
+    buildFilePath: buildEntry?.path ?? buildFilePath,
+    buildFileObject: buildEntry?.object ?? null,
+    declaredByteLength: buildEntry?.byteLength ?? null,
+  });
 }
 
 function randomColdPathManifest({
@@ -9443,9 +9498,9 @@ function randomColdReadinessMatrixRow({
   });
   if (buildMetadataContentEvidence === undefined) {
     buildMetadataContentEvidence = buildMetadataContentAccepted
-      ? randomColdBuildMetadataContentEvidenceFixture({
+      ? randomColdBuildMetadataContentEvidenceForListing({
         targetId: sourceContentEvidenceId,
-        accepted: true,
+        sourceListingManifest,
       })
       : null;
   }
@@ -10958,6 +11013,52 @@ assert.ok(
   unrecognizedBuildContentCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
+const broadReadinessDetachedBuildMetadataRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `detached-build-metadata-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/detached-build-metadata/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`detached-build-metadata-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest: randomColdSourceListingManifestFixture({
+      targetId: `detached-build-metadata-listing-${index + 1}`,
+      buildFilePath: null,
+    }),
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
+      targetId: `detached-build-metadata-${index + 1}`,
+      buildFilePath: 'CMakeLists.txt',
+    }),
+  })
+);
+const broadReadinessWithDetachedBuildMetadataQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessDetachedBuildMetadataRows,
+  ],
+});
+assert.equal(broadReadinessWithDetachedBuildMetadataQuery.accepted, false);
+assert.ok(broadReadinessWithDetachedBuildMetadataQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(broadReadinessWithDetachedBuildMetadataQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_build_metadata_listing_binding_invalid'
+));
+assert.ok(broadReadinessWithDetachedBuildMetadataQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_build_metadata_listing_entry_missing'
+));
+assert.equal(
+  broadReadinessWithDetachedBuildMetadataQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDetachedBuildMetadataQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDetachedBuildMetadataQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSmallRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `small-random-cold-readiness-user-project-${index + 1}`,
@@ -11783,8 +11884,9 @@ assert.ok(
 const sharedContentSourceListingManifest = randomColdSourceListingManifestFixture({
   targetId: 'shared-random-cold-content-only',
 });
-const sharedContentBuildEvidence = randomColdBuildMetadataContentEvidenceFixture({
+const sharedContentBuildEvidence = randomColdBuildMetadataContentEvidenceForListing({
   targetId: 'shared-random-cold-content-only',
+  sourceListingManifest: sharedContentSourceListingManifest,
 });
 const differentSourceLabelsSameContentColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
@@ -11832,8 +11934,9 @@ assert.ok(
 const rotatedContentSourceListingManifest = randomColdSourceListingManifestFixture({
   targetId: 'rotated-random-cold-content-only',
 });
-const rotatedContentBuildEvidence = randomColdBuildMetadataContentEvidenceFixture({
+const rotatedContentBuildEvidence = randomColdBuildMetadataContentEvidenceForListing({
   targetId: 'rotated-random-cold-content-only',
+  sourceListingManifest: rotatedContentSourceListingManifest,
 });
 const rotatedSourceListingSameContentColdRows = Array.from({ length: 5 }, (_, index) => {
   const rotatedManifest = JSON.parse(JSON.stringify(rotatedContentSourceListingManifest));
@@ -11881,19 +11984,21 @@ assert.ok(
   broadReadinessWithRotatedListingsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_content'),
 );
-const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, (_, index) =>
-  randomColdReadinessMatrixRow({
+const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `forged-content-identity-listing-${index + 1}`,
+  });
+  return randomColdReadinessMatrixRow({
     targetId: `forged-content-identity-source-random-cold-readiness-${index + 1}`,
     sourceUrl: 'https://example.invalid/replayed/content-identity-large-project.git',
     immutableCommit: '6666666666666666666666666666666666666666',
-    sourceListingManifest: randomColdSourceListingManifestFixture({
-      targetId: `forged-content-identity-listing-${index + 1}`,
-    }),
-    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
+    sourceListingManifest,
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceForListing({
       targetId: `forged-content-identity-build-${index + 1}`,
+      sourceListingManifest,
     }),
-  })
-);
+  });
+});
 const broadReadinessWithForgedContentIdentitySameSourceColdQuery =
   queryGpuHmrValidationMatrixLedger({
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,

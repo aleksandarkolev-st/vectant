@@ -1636,14 +1636,25 @@ const RANDOM_COLD_SOURCE_RELEVANT_EXTENSIONS = Object.freeze(new Set([
   '.jl',
 ]));
 
+function randomColdNormalizeRepoRelativePath(value) {
+  const pathName = firstText(value);
+  if (!pathName) return null;
+  return pathName
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\/+/, '');
+}
+
 function randomColdNormalizeSourceListingEntries(entries) {
   return (Array.isArray(entries) ? entries : [])
     .map((entry) => {
       const object = compactObject(entry);
-      const pathName = firstText(object.path, object.sourcePath, object.source_path);
+      const pathName = randomColdNormalizeRepoRelativePath(
+        firstText(object.path, object.sourcePath, object.source_path),
+      );
       if (!pathName) return null;
       return {
-        path: pathName.replace(/\\/g, '/'),
+        path: pathName,
         object: firstText(object.object, object.objectId, object.object_id, object.sha, object.hash) ?? null,
         byteLength: finiteNumber(
           object.byteLength
@@ -1900,6 +1911,97 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   };
 }
 
+function normalizeColdListingObjectId(value) {
+  const objectId = firstText(value);
+  if (!objectId) return null;
+  return objectId.replace(/^sha(?:1|256):/i, '').toLowerCase();
+}
+
+function randomColdBuildMetadataListingBinding(sourceListingManifest = {}, buildContentEvidence = {}) {
+  const listingEntries = randomColdNormalizeSourceListingEntries(
+    sourceListingManifest.entries
+    ?? sourceListingManifest.sourceListingEntries
+    ?? sourceListingManifest.source_listing_entries
+    ?? sourceListingManifest.files,
+  );
+  const listingByPath = new Map(listingEntries.map((entry) => [entry.path, entry]));
+  const buildFiles = compactObjectList(
+    buildContentEvidence.buildFiles
+    ?? buildContentEvidence.build_files,
+  ).map((file) => ({
+    path: randomColdNormalizeRepoRelativePath(
+      firstText(file.path, file.relativePath, file.relative_path),
+    ),
+    object: firstText(file.object, file.objectId, file.object_id, file.sha, file.hash) ?? null,
+    declaredByteLength: finiteNumber(
+      file.declaredByteLength
+      ?? file.declared_byte_length
+      ?? file.sourceListingByteLength
+      ?? file.source_listing_byte_length,
+    ),
+  }));
+  const missingPaths = [];
+  const missingObjects = [];
+  const objectMismatches = [];
+  const byteLengthMismatches = [];
+  const matchedPaths = [];
+  for (const buildFile of buildFiles) {
+    if (!buildFile.path) continue;
+    const listingEntry = listingByPath.get(buildFile.path);
+    if (!listingEntry) {
+      missingPaths.push(buildFile.path);
+      continue;
+    }
+    matchedPaths.push(buildFile.path);
+    const buildObject = normalizeColdListingObjectId(buildFile.object);
+    const listingObject = normalizeColdListingObjectId(listingEntry.object);
+    if (!buildObject) {
+      missingObjects.push(buildFile.path);
+    } else if (listingObject && buildObject !== listingObject) {
+      objectMismatches.push(buildFile.path);
+    }
+    if (
+      Number.isFinite(buildFile.declaredByteLength)
+      && Number.isFinite(listingEntry.byteLength)
+      && buildFile.declaredByteLength !== listingEntry.byteLength
+    ) {
+      byteLengthMismatches.push(buildFile.path);
+    }
+  }
+  const failedGates = compactStringList([
+    buildFiles.length === 0
+      ? 'random_cold_source_intake_build_metadata_listing_build_files_missing'
+      : null,
+    missingPaths.length > 0
+      ? 'random_cold_source_intake_build_metadata_listing_entry_missing'
+      : null,
+    missingObjects.length > 0
+      ? 'random_cold_source_intake_build_metadata_listing_object_missing'
+      : null,
+    objectMismatches.length > 0
+      ? 'random_cold_source_intake_build_metadata_listing_object_mismatch'
+      : null,
+    byteLengthMismatches.length > 0
+      ? 'random_cold_source_intake_build_metadata_listing_byte_length_mismatch'
+      : null,
+  ]);
+  return {
+    accepted: failedGates.length === 0,
+    matchedBuildFileCount: matchedPaths.length,
+    matched_build_file_count: matchedPaths.length,
+    missingBuildFilePaths: missingPaths,
+    missing_build_file_paths: missingPaths,
+    missingObjectPaths: missingObjects,
+    missing_object_paths: missingObjects,
+    objectMismatchPaths: objectMismatches,
+    object_mismatch_paths: objectMismatches,
+    byteLengthMismatchPaths: byteLengthMismatches,
+    byte_length_mismatch_paths: byteLengthMismatches,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdSourceIntakeFacetHashSeed(facet) {
   const seed = JSON.parse(JSON.stringify(compactObject(facet)));
   delete seed.facetHash;
@@ -1979,6 +2081,10 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ...(Array.isArray(buildDiscovery.detectedBuildSystems) ? buildDiscovery.detectedBuildSystems : []),
     ...(Array.isArray(buildDiscovery.detected_build_systems) ? buildDiscovery.detected_build_systems : []),
   ]);
+  const buildMetadataListingBinding = randomColdBuildMetadataListingBinding(
+    sourceListingManifest,
+    buildContentEvidence,
+  );
   const suppliedFailedGates = compactStringList([
     ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
     ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
@@ -2011,6 +2117,14 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       && sourceListingHash !== sourceListingManifest.recomputedSourceListingHash
       ? 'random_cold_source_intake_listing_hash_mismatch'
       : null,
+    present
+      && buildContentEvidence.acceptedAsBuildMetadataContent === true
+      && buildMetadataListingBinding.accepted !== true
+      ? 'random_cold_source_intake_build_metadata_listing_binding_invalid'
+      : null,
+    ...(present && buildContentEvidence.acceptedAsBuildMetadataContent === true
+      ? buildMetadataListingBinding.failedGates
+      : []),
     present && !facetHash
       ? 'random_cold_source_intake_facet_hash_missing'
       : null,
@@ -2055,6 +2169,8 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     source_listing_hash: sourceListingHash,
     sourceListingManifest,
     source_listing_manifest: sourceListingManifest,
+    buildMetadataListingBinding,
+    build_metadata_listing_binding: buildMetadataListingBinding,
     facetHash,
     facet_hash: facetHash,
     recomputedFacetHash,
@@ -2246,6 +2362,16 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
   const buildFiles = compactObjectList(facet.buildFiles ?? facet.build_files);
   const normalizedBuildFiles = buildFiles.map((file) => {
     const contentHash = normalizeSha256(firstText(file.contentHash, file.content_hash));
+    const repoPath = randomColdNormalizeRepoRelativePath(
+      firstText(file.path, file.relativePath, file.relative_path),
+    );
+    const objectId = firstText(file.object, file.objectId, file.object_id, file.sha, file.hash) ?? null;
+    const declaredByteLength = finiteNumber(
+      file.declaredByteLength
+      ?? file.declared_byte_length
+      ?? file.sourceListingByteLength
+      ?? file.source_listing_byte_length,
+    );
     const byteLength = finiteNumber(
       file.byteLength
       ?? file.byte_length
@@ -2253,9 +2379,13 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
       ?? file.observed_byte_length,
     );
     return {
-      path: firstText(file.path, file.relativePath, file.relative_path) ?? null,
+      path: repoPath,
+      object: objectId,
+      object_id: objectId,
       contentHash,
       content_hash: contentHash,
+      declaredByteLength,
+      declared_byte_length: declaredByteLength,
       byteLength,
       byte_length: byteLength,
       transport: firstText(file.transport) ?? null,
@@ -25469,20 +25599,26 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     ?? buildContentEvidence.build_files,
   )
     .map((file) => ({
-      path: firstText(file.path, file.relativePath, file.relative_path) ?? null,
-      contentHash: normalizeSha256(firstText(file.contentHash, file.content_hash)),
-      byteLength: finiteNumber(file.byteLength ?? file.byte_length),
+      path: randomColdNormalizeRepoRelativePath(
+        firstText(file.path, file.relativePath, file.relative_path),
+      ),
+      object: normalizeColdListingObjectId(
+        firstText(file.object, file.objectId, file.object_id, file.sha, file.hash),
+      ),
+      declaredByteLength: finiteNumber(file.declaredByteLength ?? file.declared_byte_length),
     }))
     .filter((file) =>
       typeof file.path === 'string'
       && file.path.length > 0
-      && /^sha256:[a-f0-9]{64}$/i.test(file.contentHash ?? '')
-      && Number.isFinite(file.byteLength)
-      && file.byteLength > 0
+      && /^[a-f0-9]{40}$|^[a-f0-9]{64}$/i.test(file.object ?? '')
+      && Number.isFinite(file.declaredByteLength)
+      && file.declaredByteLength >= 0
     )
     .sort((a, b) =>
-      `${a.path}\0${a.contentHash}\0${a.byteLength}`
-        .localeCompare(`${b.path}\0${b.contentHash}\0${b.byteLength}`)
+      `${a.path}\0${a.object}\0${a.declaredByteLength}`
+        .localeCompare(
+          `${b.path}\0${b.object}\0${b.declaredByteLength}`,
+        )
     );
   if (
     sourceIntake.accepted !== true
