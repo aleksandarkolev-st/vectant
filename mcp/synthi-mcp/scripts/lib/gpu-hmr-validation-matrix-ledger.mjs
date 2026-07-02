@@ -16230,8 +16230,26 @@ async function vulkanRuntimeRow(json, filePath, context) {
     ?? ledgerRecord.oracle_artifacts?.visual_oracle_artifacts
     ?? ledgerRecord.oracleArtifacts?.visualOracleArtifacts,
   );
+  const explicitVisualEvidenceCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualEvidenceArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_evidence_artifacts');
+  const explicitVisualArtifactCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualOracleArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_oracle_artifacts');
+  const visualEvidenceArtifacts = visualEvidenceInputsFromValue(
+    explicitVisualEvidenceCarrier
+      ? (json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts)
+      : explicitVisualArtifactCarrier
+        ? null
+        : (
+            runtimeProofArtifact.visualEvidenceArtifacts
+            ?? runtimeProofArtifact.visual_evidence_artifacts
+          ),
+  );
   const visual = await visualArtifactEvidence(
-    visualArtifacts,
+    visualEvidenceArtifacts.length > 0
+      ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
+      : visualArtifacts,
     context.repoRoot,
     path.dirname(filePath),
     {

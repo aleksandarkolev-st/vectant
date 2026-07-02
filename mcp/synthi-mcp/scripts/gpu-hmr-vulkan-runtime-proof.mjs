@@ -20,6 +20,9 @@ import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates
 import {
   collectGpuHmrValidationMatrixLedger,
 } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
+import {
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,7 +94,12 @@ function safeSlug(value) {
 }
 
 function relRepo(filePath) {
-  return path.relative(REPO_ROOT, filePath).replace(/\\/g, '/');
+  const resolved = path.resolve(filePath);
+  const relative = path.relative(REPO_ROOT, resolved);
+  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    return relative.replace(/\\/g, '/');
+  }
+  return resolved;
 }
 
 function firstText(...values) {
@@ -1776,6 +1784,14 @@ function runtimeProofArtifact({ beforeHash, afterHash, proofLedger, ledger, cont
     && deterministicVisualModeEvaluation.accepted === true
     && beforeHash !== afterHash
     && limitationCodes.length === 0;
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualArtifacts,
+    {
+      proofLedgerQuery: ledger,
+      proofLedgerRecord: record,
+      producerSubsystem: 'mcp.vulkan_runtime_visual',
+    },
+  );
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
     proofId: `vulkan-runtime-proof-artifact:${sha256Text(stableJson({
@@ -1818,6 +1834,8 @@ function runtimeProofArtifact({ beforeHash, afterHash, proofLedger, ledger, cont
     native_vulkan_api_evidence: nativeApiEvidence,
     visualThresholdValidation,
     visual_threshold_validation: visualThresholdValidation,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     runMode,
     run_mode: runMode,
   };
@@ -2004,6 +2022,7 @@ async function buildAcceptedSelfCheckProof(outDir) {
     nativeApiEvidence,
     runMode,
   });
+  const visualEvidenceArtifacts = artifact.visualEvidenceArtifacts ?? artifact.visual_evidence_artifacts ?? [];
   return {
     schemaVersion: SCHEMA,
     schema: SCHEMA,
@@ -2040,6 +2059,8 @@ async function buildAcceptedSelfCheckProof(outDir) {
     runtime_proof_artifact: artifact,
     visualOracleArtifacts: visualArtifacts,
     visual_oracle_artifacts: visualArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     visualThresholdValidation: artifact.visualThresholdValidation,
     visual_threshold_validation: artifact.visualThresholdValidation,
     deterministicVisualMode: ledgerRecord.deterministicVisualMode,
@@ -2243,6 +2264,7 @@ async function buildLiveWindowsProof({ outDir, preflight }) {
     nativeApiEvidence,
     runMode,
   });
+  const visualEvidenceArtifacts = artifact.visualEvidenceArtifacts ?? artifact.visual_evidence_artifacts ?? [];
   const proof = {
     schemaVersion: SCHEMA,
     schema: SCHEMA,
@@ -2325,6 +2347,8 @@ async function buildLiveWindowsProof({ outDir, preflight }) {
     runtime_proof_artifact: artifact,
     visualOracleArtifacts: visualArtifacts,
     visual_oracle_artifacts: visualArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     visualThresholdValidation: artifact.visualThresholdValidation,
     visual_threshold_validation: artifact.visualThresholdValidation,
     deterministicVisualMode: ledgerRecord.deterministicVisualMode,
@@ -2490,6 +2514,16 @@ async function selfCheck() {
     }
   };
   forged.proofId = 'vulkan-runtime-proof:sha256:forged';
+  forged.visualEvidenceArtifacts = [];
+  forged.visual_evidence_artifacts = [];
+  if (forged.runtimeProofArtifact) {
+    forged.runtimeProofArtifact.visualEvidenceArtifacts = [];
+    forged.runtimeProofArtifact.visual_evidence_artifacts = [];
+  }
+  if (forged.runtime_proof_artifact) {
+    forged.runtime_proof_artifact.visualEvidenceArtifacts = [];
+    forged.runtime_proof_artifact.visual_evidence_artifacts = [];
+  }
   corruptVisualArtifacts(forged.visualOracleArtifacts);
   corruptVisualArtifacts(forged.visual_oracle_artifacts);
   const forgedRecord = forged.proofLedger?.records?.[0];
