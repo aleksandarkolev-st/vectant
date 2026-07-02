@@ -1950,6 +1950,192 @@ fn runtime_full_proof_line(
         "gpuHmrSuccess": true,
         "records": [ledger_record],
     });
+    let runtime_trace = json!({
+        "schemaVersion": "synthi.gpu_hmr.worker_runtime_trace.v1",
+        "schema_version": "synthi.gpu_hmr.worker_runtime_trace.v1",
+        "proofAuthority": "worker_observed_runtime_boundaries_not_gpu_hmr_acceptance",
+        "proof_authority": "worker_observed_runtime_boundaries_not_gpu_hmr_acceptance",
+        "acceptedForGpuHmr": false,
+        "accepted_for_gpu_hmr": false,
+        "gpuHmrSuccess": false,
+        "gpu_hmr_success": false,
+        "runtimeSessionId": runtime_session_id(),
+        "runtime_session_id": runtime_session_id(),
+        "processId": process_id,
+        "process_id": process_id,
+        "loaderEvents": [{
+            "source": loader_transport.loader_api(),
+            "loader_api": loader_transport.loader_api(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": loader_ts,
+            "timestamp_monotonic_ns": loader_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "loader_events": [{
+            "source": loader_transport.loader_api(),
+            "loader_api": loader_transport.loader_api(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": loader_ts,
+            "timestamp_monotonic_ns": loader_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "epochEvents": [{
+            "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "epoch": active_generation.to_string(),
+            "previousEpoch": previous_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": publish_ts,
+            "timestamp_monotonic_ns": publish_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "epoch_events": [{
+            "id": format!("epoch-publish:{active_generation}:{new_artifact_id}"),
+            "epoch": active_generation.to_string(),
+            "previousEpoch": previous_generation.to_string(),
+            "previous_epoch": previous_generation.to_string(),
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": publish_ts,
+            "timestamp_monotonic_ns": publish_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "dispatchEvents": [{
+            "command": vendor.launch_kernel_symbol(),
+            "launch_api": vendor.launch_kernel_symbol(),
+            "dispatchId": after_dispatch_id,
+            "dispatch_id": after_dispatch_id,
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "kernelName": dispatch_record.kernel_name,
+            "kernel_name": dispatch_record.kernel_name,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": dispatch_ts,
+            "timestamp_monotonic_ns": dispatch_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "dispatch_events": [{
+            "command": vendor.launch_kernel_symbol(),
+            "launch_api": vendor.launch_kernel_symbol(),
+            "dispatchId": after_dispatch_id,
+            "dispatch_id": after_dispatch_id,
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "kernelName": dispatch_record.kernel_name,
+            "kernel_name": dispatch_record.kernel_name,
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": dispatch_ts,
+            "timestamp_monotonic_ns": dispatch_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "outputEvents": [{
+            "id": output_record.oracle_id,
+            "kind": output_record.kind,
+            "passed": true,
+            "afterDispatchId": after_dispatch_id,
+            "after_dispatch_id": after_dispatch_id,
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": output_ts,
+            "timestamp_monotonic_ns": output_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "output_events": [{
+            "id": output_record.oracle_id,
+            "kind": output_record.kind,
+            "passed": true,
+            "afterDispatchId": after_dispatch_id,
+            "after_dispatch_id": after_dispatch_id,
+            "artifactHash": new_artifact_id,
+            "artifact_hash": new_artifact_id,
+            "artifactId": new_artifact_id,
+            "artifact_id": new_artifact_id,
+            "epoch": active_generation.to_string(),
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": output_ts,
+            "timestamp_monotonic_ns": output_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        }],
+        "retirementEvent": {
+            "id": format!("retire:{previous_generation}->{active_generation}:{previous_artifact_id}"),
+            "epoch": previous_generation.to_string(),
+            "artifactHash": previous_artifact_id,
+            "artifact_hash": previous_artifact_id,
+            "artifactId": previous_artifact_id,
+            "artifact_id": previous_artifact_id,
+            "status": "retired_after_quiescent",
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": retirement_ts,
+            "timestamp_monotonic_ns": retirement_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        },
+        "retirement_event": {
+            "id": format!("retire:{previous_generation}->{active_generation}:{previous_artifact_id}"),
+            "epoch": previous_generation.to_string(),
+            "artifactHash": previous_artifact_id,
+            "artifact_hash": previous_artifact_id,
+            "artifactId": previous_artifact_id,
+            "artifact_id": previous_artifact_id,
+            "status": "retired_after_quiescent",
+            "processId": process_id,
+            "process_id": process_id,
+            "timestampMonotonicNs": retirement_ts,
+            "timestamp_monotonic_ns": retirement_ts,
+            "evidenceRefs": evidence_refs,
+            "evidence_refs": evidence_refs,
+        },
+        "sameProcess": true,
+        "same_process": true,
+        "processRestarted": false,
+        "process_restarted": false,
+        "evidenceRefs": evidence_refs,
+        "evidence_refs": evidence_refs,
+    });
     let acceptance_contract = runtime_acceptance_contract(
         req,
         vendor,
@@ -1973,6 +2159,7 @@ fn runtime_full_proof_line(
         "proofLedger": proof_ledger,
         "acceptanceContract": acceptance_contract,
         "stageResults": runtime_proof_stage_results(),
+        "runtimeTrace": runtime_trace.clone(),
         "runtimeSessionId": runtime_session_id(),
         "artifactBefore": previous_artifact_id,
         "artifactAfter": new_artifact_id,
@@ -1992,6 +2179,8 @@ fn runtime_full_proof_line(
         "limitations": [],
         "proofLedger": proof_ledger,
         "proofLedgerQuery": proof_ledger_query,
+        "runtimeTrace": runtime_trace.clone(),
+        "runtime_trace": runtime_trace,
         "acceptanceContract": acceptance_contract,
         "acceptanceContractEvaluation": {
             "accepted": true,
@@ -3594,6 +3783,10 @@ mod tests {
         serde_json::from_str(graph_json).expect("valid epoch graph JSON")
     }
 
+    fn proof_json_from_line(line: &str) -> serde_json::Value {
+        serde_json::from_str(line).expect("valid GPU HMR proof JSON")
+    }
+
     #[test]
     fn kernel_resolution_specs_keep_logical_launch_names() {
         let specs = vec![
@@ -4505,6 +4698,73 @@ mod tests {
             context_fallback.retirement_strategy_for_log(),
             "conservative_drain_fallback"
         );
+    }
+
+    #[test]
+    fn full_runtime_proof_retains_worker_runtime_trace() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        launch_vec_add_on_stream(0x77);
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &second_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let proof_line = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("\"type\":\"gpu_hmr_proof\""))
+            .expect("full runtime proof JSON");
+        let proof = proof_json_from_line(proof_line);
+        let runtime_trace = &proof["runtimeProofArtifact"]["runtimeTrace"];
+        let ledger_record = &proof["proofLedger"]["records"][0];
+        assert_eq!(
+            runtime_trace["schemaVersion"],
+            json!("synthi.gpu_hmr.worker_runtime_trace.v1")
+        );
+        assert_eq!(
+            runtime_trace["proofAuthority"],
+            json!("worker_observed_runtime_boundaries_not_gpu_hmr_acceptance")
+        );
+        assert_eq!(runtime_trace["acceptedForGpuHmr"], json!(false));
+        assert_eq!(runtime_trace["gpuHmrSuccess"], json!(false));
+        assert!(runtime_trace["loaderEvents"]
+            .as_array()
+            .map(|events| !events.is_empty())
+            .unwrap_or(false));
+        assert_eq!(
+            runtime_trace["loaderEvents"][0]["artifactHash"],
+            ledger_record["loader_event"]["artifact_hash"]
+        );
+        assert_eq!(
+            runtime_trace["dispatchEvents"][0]["dispatchId"],
+            ledger_record["dispatch_event"]["dispatch_id"]
+        );
+        assert_eq!(
+            runtime_trace["outputEvents"][0]["afterDispatchId"],
+            ledger_record["output_event"]["after_dispatch_id"]
+        );
+        reset_for_test();
     }
 
     #[test]
