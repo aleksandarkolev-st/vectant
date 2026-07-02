@@ -1846,13 +1846,17 @@ function randomColdPathManifest({
   sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
   immutableCommit = '1111111111111111111111111111111111111111',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
+  directInputEvidenceOverrides = null,
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
   const sourceRelevantFileCount = 73;
   const sourceOrBuildRelevantFileCount = 75;
   const gpuSourceFileCount = 31;
-  const directInputEvidence = randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit });
+  const directInputEvidence = {
+    ...randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit }),
+    ...(directInputEvidenceOverrides ?? {}),
+  };
   const sourceListingManifest = randomColdSourceListingManifestFixture({
     targetId: candidateId,
     fileCount: 2445,
@@ -2184,6 +2188,93 @@ assert.equal(
 assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
+
+const forgedDirectInputPathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-direct-input-forged',
+);
+const forgedDirectInputCases = [
+  {
+    fileName: 'random-cold-target-dependent.json',
+    candidateId: 'direct-random-arbitrary-target-dependent',
+    overrides: {
+      targetNameIndependent: false,
+      target_name_independent: false,
+    },
+    expectedGate: 'random_cold_direct_input_not_target_name_independent',
+  },
+  {
+    fileName: 'random-cold-project-whitelist.json',
+    candidateId: 'direct-random-arbitrary-project-whitelist',
+    overrides: {
+      projectNameWhitelist: ['special-project'],
+      project_name_whitelist: ['special-project'],
+    },
+    expectedGate: 'random_cold_direct_input_project_whitelist_not_empty',
+  },
+  {
+    fileName: 'random-cold-target-whitelist.json',
+    candidateId: 'direct-random-arbitrary-target-whitelist',
+    overrides: {
+      specificTargetIdsAllowed: ['direct-random-arbitrary-target-whitelist'],
+      specific_target_ids_allowed: ['direct-random-arbitrary-target-whitelist'],
+    },
+    expectedGate: 'random_cold_direct_input_target_whitelist_not_empty',
+  },
+  {
+    fileName: 'random-cold-source-hash-mismatch.json',
+    candidateId: 'direct-random-arbitrary-source-hash-mismatch',
+    overrides: {
+      sourceIdentityHash: hashValue('forged-random-cold-direct-source-identity'),
+      source_identity_hash: hashValue('forged-random-cold-direct-source-identity'),
+      evidenceHash: hashValue('forged-random-cold-direct-source-identity'),
+      evidence_hash: hashValue('forged-random-cold-direct-source-identity'),
+    },
+    expectedGate: 'random_cold_direct_input_source_identity_hash_mismatch',
+  },
+];
+for (const testCase of forgedDirectInputCases) {
+  await writeJson(
+    path.join(forgedDirectInputPathDir, testCase.fileName),
+    randomColdPathManifest({
+      candidateId: testCase.candidateId,
+      sourceUrl: `https://example.invalid/arbitrary/${testCase.candidateId}.git`,
+      immutableCommit: sha256Hex(`${testCase.candidateId}:commit`).slice(0, 40),
+      directInputEvidenceOverrides: testCase.overrides,
+    }),
+  );
+}
+const forgedDirectInputLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedDirectInputPathDir],
+  includeInvalidated: true,
+});
+const forgedDirectInputRows = forgedDirectInputLedger.rows.filter(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedDirectInputRows.length, forgedDirectInputCases.length);
+for (const testCase of forgedDirectInputCases) {
+  const row = forgedDirectInputRows.find((candidateRow) => candidateRow.targetId === testCase.candidateId);
+  assert.equal(row?.safety.accepted, false);
+  assert.ok(row?.safety.failedGates.some((gate) =>
+    gate.code === 'random_large_project_cold_path_facet_invalid'
+  ));
+  assert.ok(row?.safety.failedGates.some((gate) => gate.code === testCase.expectedGate));
+  assert.equal(row?.acceptedForGpuHmr, false);
+  assert.equal(row?.gpuHmrSuccess, false);
+}
+const forgedDirectInputDefaultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedDirectInputPathDir],
+});
+assert.equal(forgedDirectInputDefaultLedger.summary.omittedInvalidatedRows, forgedDirectInputCases.length);
+assert.equal(
+  forgedDirectInputDefaultLedger.summary.planCoverage
+    .find((entry) => entry.id === 'random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
+  0,
 );
 
 const multiRandomColdPathDir = path.join(

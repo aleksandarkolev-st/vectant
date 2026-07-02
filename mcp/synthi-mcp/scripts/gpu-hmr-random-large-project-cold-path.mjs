@@ -3312,7 +3312,12 @@ async function selfCheck() {
     || directCandidate.sizeSignals?.coldPathKind !== 'direct_source_url_commit_cold_intake'
     || directCandidate.directInputEvidence?.acceptedAsDirectInputEvidence !== true
     || directCandidate.directInputEvidence?.proofAuthority !== DIRECT_SOURCE_INPUT_AUTHORITY
+    || directCandidate.directInputEvidence?.targetNameIndependent !== true
     || directCandidate.directInputEvidence?.projectNameWhitelist?.length !== 0
+    || directCandidate.directInputEvidence?.specificTargetIdsAllowed?.length !== 0
+    || !/^sha256:[a-f0-9]{64}$/i.test(directCandidate.directInputEvidence?.sourceIdentityHash ?? '')
+    || directCandidate.directInputEvidence?.evidenceHash
+      !== directCandidate.directInputEvidence?.sourceIdentityHash
     || directCandidate.oracleHints?.acceptedByDeclaration !== false
   ) {
     throw new Error('random large-project cold-path direct source input normalization failed');
@@ -3352,7 +3357,12 @@ async function selfCheck() {
       candidate.candidateSource !== 'direct_source_url_commit'
       || candidate.directInputEvidence?.acceptedAsDirectInputEvidence !== true
       || !candidate.directInputEvidence?.inputChannels?.includes('cli_arg_direct_candidates')
+      || candidate.directInputEvidence?.targetNameIndependent !== true
       || candidate.directInputEvidence?.projectNameWhitelist?.length !== 0
+      || candidate.directInputEvidence?.specificTargetIdsAllowed?.length !== 0
+      || !/^sha256:[a-f0-9]{64}$/i.test(candidate.directInputEvidence?.sourceIdentityHash ?? '')
+      || candidate.directInputEvidence?.evidenceHash
+        !== candidate.directInputEvidence?.sourceIdentityHash
       || candidate.acceptedForGpuHmr === true
       || candidate.gpuHmrSuccess === true
     )
