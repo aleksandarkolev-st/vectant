@@ -243,12 +243,31 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function canonicalSourceListingIdentity(files = []) {
+  return (Array.isArray(files) ? files : [])
+    .map((file) => ({
+      path: String(file.path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, ''),
+      object: file.object ?? null,
+      byteLength: Number.isFinite(file.byteLength) ? file.byteLength : null,
+    }))
+    .filter((file) => file.path)
+    .sort((a, b) =>
+      `${a.path}\0${a.object}\0${a.byteLength}`
+        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+    );
+}
+
 function uniqueSortedStrings(values) {
   return [...new Set(
     (Array.isArray(values) ? values : [])
       .map((value) => String(value ?? '').trim())
       .filter(Boolean),
   )].sort();
+}
+
+function bloblessGitTreeSizeListingEnabled(env = process.env) {
+  return env.SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING === '1'
+    || env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
 }
 
 function cleanCandidate(
@@ -2344,11 +2363,7 @@ async function buildAcceptedSourceIntakeFacet({
   transportEvidence = {},
   sourceIntakeTimeoutMs,
 }) {
-  const listingIdentity = files.map((file) => ({
-    path: file.path,
-    object: file.object,
-    byteLength: file.byteLength,
-  }));
+  const listingIdentity = canonicalSourceListingIdentity(files);
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
   const classification = classifySourceListing(files);
   const sourceListingHash = contentHash(stableJson(listingIdentity));
@@ -2710,9 +2725,12 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       commit_check: commitCheck,
     });
   }
+  const bloblessSizeListing = bloblessGitTreeSizeListingEnabled();
   const lsTree = await runProcess(
     'git',
-    ['-C', localPath, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit],
+    bloblessSizeListing
+      ? ['-C', localPath, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit]
+      : ['-C', localPath, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit],
     {
       cwd: REPO_ROOT,
       timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
@@ -2744,10 +2762,24 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     transportEvidence: {
       githubTreeFallback,
       github_tree_fallback: githubTreeFallback,
-      listingMode: 'git_ls_tree_no_size_blobless',
-      listing_mode: 'git_ls_tree_no_size_blobless',
-      byteLengthMode: 'unknown_avoids_blob_fetch',
-      byte_length_mode: 'unknown_avoids_blob_fetch',
+      listingMode: bloblessSizeListing
+        ? 'git_ls_tree_with_size_blobless_opt_in'
+        : 'git_ls_tree_no_size_blobless',
+      listing_mode: bloblessSizeListing
+        ? 'git_ls_tree_with_size_blobless_opt_in'
+        : 'git_ls_tree_no_size_blobless',
+      byteLengthMode: bloblessSizeListing
+        ? 'declared_from_git_ls_tree_l_blobless_opt_in'
+        : 'unknown_avoids_blob_fetch',
+      byte_length_mode: bloblessSizeListing
+        ? 'declared_from_git_ls_tree_l_blobless_opt_in'
+        : 'unknown_avoids_blob_fetch',
+      byteLengthOptInEnv: bloblessSizeListing
+        ? 'SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING'
+        : null,
+      byte_length_opt_in_env: bloblessSizeListing
+        ? 'SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING'
+        : null,
       resolvedLocalPath: localPath,
       resolved_local_path: localPath,
       localPath: relativeLocalPath,
@@ -3236,6 +3268,13 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
   }
+  if (
+    bloblessGitTreeSizeListingEnabled({}) !== false
+    || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING: '1' }) !== true
+    || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== true
+  ) {
+    throw new Error('random large-project cold-path blobless tree size listing opt-in failed');
+  }
   let rejectedMissingDirectSource = false;
   try {
     assertDirectSourceRequirement({ requireDirectSource: true, directCandidate: null });
@@ -3444,6 +3483,13 @@ async function selfCheck() {
     '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
     '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tsrc/vulkan/shader.comp',
   ].join('\n'));
+  const shuffledListing = [parsedListing[3], parsedListing[0], parsedListing[4], parsedListing[1], parsedListing[2]];
+  if (
+    stableJson(canonicalSourceListingIdentity(parsedListing))
+      !== stableJson(canonicalSourceListingIdentity(shuffledListing))
+  ) {
+    throw new Error('random large-project cold-path listing identity depended on transport order');
+  }
   const listingClassification = classifySourceListing(parsedListing);
   const wideSourceClassification = classifySourceListing(parseGitLsTree([
     '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
