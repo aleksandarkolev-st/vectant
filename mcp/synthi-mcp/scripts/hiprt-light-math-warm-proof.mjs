@@ -31,6 +31,9 @@ import {
 } from './lib/gpu-hmr-acceptance-contract.mjs';
 import { evaluateGpuHmrDeterministicVisualMode } from './lib/gpu-hmr-visual-evidence.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -2358,10 +2361,12 @@ function deterministicVisualModeForLedger({ proof, dispatchId, epoch }) {
 }
 
 function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, epoch, outputTimestampNs }) {
+  const width = Number(proof.dimensions?.width ?? CFG.width);
+  const height = Number(proof.dimensions?.height ?? CFG.height);
   const cameraStateHash = sha256Json({
     runtimeArgs: CFG.runtimeArgs,
-    width: CFG.width,
-    height: CFG.height,
+    width,
+    height,
     fixedSeed: CFG.deterministicVisualMode?.fixedSeed ?? CFG.deterministicVisualMode?.fixed_seed ?? 42,
     profileId: CFG.profileId,
   });
@@ -2388,8 +2393,8 @@ function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, 
       `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
     camera_state_hash: cameraStateHash,
     cameraStateHash,
-    swapchain_size: [CFG.width, CFG.height],
-    swapchainSize: [CFG.width, CFG.height],
+    swapchain_size: [width, height],
+    swapchainSize: [width, height],
     capture_backend: 'hiprt_same_process_framebuffer_readback',
     captureBackend: 'hiprt_same_process_framebuffer_readback',
     frame_number: proof.runtime.changed.postRecompileEvidence?.dispatch?.sequence ?? 1,
@@ -2478,6 +2483,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const stream = dispatch.stream ?? 'unknown-stream';
   const epoch = hiprtRuntimeEpochFor({ proof, dispatch });
   const dispatchId = hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter });
+  const outputTargetId = changedRun.workerCapturePath;
   const loaderTs = addNs(changedRun.triggerFinishedMonotonicNs ?? monotonicNowNs(), 1);
   const publishTs = addNs(loaderTs, 1);
   const dispatchTs = addNs(publishTs, 1);
@@ -2834,6 +2840,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       epoch,
       artifact_hash: artifactHashAfter,
       artifact_id: artifactHashAfter,
+      output_target_id: outputTargetId,
+      outputTargetId,
       process_id: processId,
       timestamp_monotonic_ns: Number(dispatchTs),
       kernel_name: CFG.reloadKernelSymbol,
@@ -2852,6 +2860,10 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       artifact_id: artifactHashAfter,
       process_id: processId,
       after_dispatch_id: dispatchId,
+      output_target_id: outputTargetId,
+      outputTargetId,
+      oracle_target_id: outputTargetId,
+      oracleTargetId: outputTargetId,
       passed: proof.accepted === true,
       timestamp_monotonic_ns: Number(outputTs),
       visual_oracle_artifacts: visualArtifacts,
@@ -2904,6 +2916,15 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   };
   const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const proofLedgerRecord = proofLedger.records?.[0] ?? ledgerRecord;
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualArtifacts,
+    {
+      proofLedgerQuery,
+      proofLedgerRecord,
+      producerSubsystem: 'mcp.hiprt_same_process_visual_runtime',
+    },
+  );
   const proofLedgerSourceConsistency = {
     accepted: proofLedgerQuery.gpuHmrSuccess === true,
     mode: 'derived_only',
@@ -3007,6 +3028,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     runtimeProbeInstrumentation,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     runtimeBoundaryAppHook,
@@ -3016,7 +3039,14 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     postRecompileEvidence: post,
     post_recompile_evidence: post,
   };
-  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact, {
+    visualArtifactRoots: [
+      CFG.outputDir,
+      path.dirname(proof.baseline.path),
+      path.dirname(proof.changed.path),
+      path.dirname(proof.diff.path),
+    ],
+  });
   return {
     runtimeProofArtifact: {
       ...runtimeProofArtifact,
@@ -3029,6 +3059,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     },
     proofLedger,
     proofLedgerQuery,
+    visualEvidenceArtifacts,
     acceptanceContract,
     acceptanceContractEvaluation,
     acceptanceContractConsistency,
@@ -3199,6 +3230,23 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
   artifacts.push({ kind: 'cold_runtime_initial', path: coldPath, proofId: coldArtifact.proofId });
 
   const hotRunMode = hiprtHotRuntimeRunModeMetadata(proof);
+  const hotVisualArtifacts =
+    proof.visualOracleArtifacts
+    ?? proof.visual_oracle_artifacts
+    ?? visualArtifactsForHiprtRunMode(proof);
+  const hotVisualEvidenceArtifacts =
+    proof.visualEvidenceArtifacts
+    ?? proof.visual_evidence_artifacts
+    ?? proof.runtimeProofArtifact.visualEvidenceArtifacts
+    ?? proof.runtimeProofArtifact.visual_evidence_artifacts
+    ?? visualEvidenceArtifactsFromVisualOracleArtifacts(
+      hotVisualArtifacts,
+      {
+        proofLedgerQuery: proof.proofLedgerQuery,
+        proofLedgerRecord: proof.proofLedger?.records?.[0] ?? proof.proof_ledger?.records?.[0],
+        producerSubsystem: 'mcp.hiprt_same_process_visual_runtime',
+      },
+    );
   const hotArtifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: hiprtRunModeProofId(CFG.metricScope, {
@@ -3229,8 +3277,11 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
     process_restarted: false,
     visualRequired: true,
     visual_required: true,
-    visualArtifacts: visualArtifactsForHiprtRunMode(proof),
-    visual_oracle_artifacts: visualArtifactsForHiprtRunMode(proof),
+    visualArtifacts: hotVisualArtifacts,
+    visual_oracle_artifacts: hotVisualArtifacts,
+    visualOracleArtifacts: hotVisualArtifacts,
+    visualEvidenceArtifacts: hotVisualEvidenceArtifacts,
+    visual_evidence_artifacts: hotVisualEvidenceArtifacts,
     visualMetrics: visualMetricsForHiprtRunMode(proof),
     visual_metrics: visualMetricsForHiprtRunMode(proof),
     runMode: hotRunMode,
@@ -3784,6 +3835,8 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
   proof.proof_ledger = strictRuntimeProof.proofLedger;
   proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
   proof.proof_ledger_query = strictRuntimeProof.proofLedgerQuery;
+  proof.visualEvidenceArtifacts = strictRuntimeProof.runtimeProofArtifact.visualEvidenceArtifacts;
+  proof.visual_evidence_artifacts = strictRuntimeProof.runtimeProofArtifact.visual_evidence_artifacts;
   proof.acceptanceContract = strictRuntimeProof.acceptanceContract;
   proof.acceptance_contract = strictRuntimeProof.acceptanceContract;
   proof.acceptanceContractEvaluation = strictRuntimeProof.acceptanceContractEvaluation;

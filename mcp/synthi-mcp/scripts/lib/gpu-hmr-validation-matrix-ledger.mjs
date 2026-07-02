@@ -14858,6 +14858,13 @@ async function hiprtWarmRow(json, filePath, context) {
     runtimeProofArtifact.runtimeProbeInstrumentation,
     runtimeProofArtifact.runtime_probe_instrumentation,
   );
+  const sourceAdaptedProfile =
+    compactStringList(
+      runtimeProbeInstrumentation.sourceAdaptations
+      ?? runtimeProbeInstrumentation.source_adaptations,
+    ).length > 0
+    || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
+    || runtimeProbeInstrumentation.adapted_or_already_present === true;
   const ledgerRecord = compactObject(
     json.proofLedger?.records?.[0]
     ?? json.proof_ledger?.records?.[0]
@@ -14874,45 +14881,76 @@ async function hiprtWarmRow(json, filePath, context) {
     changedPath: changedCapturePath,
     oracleRegion,
   });
-  const visual = await visualArtifactEvidence(
-    [
-      {
-        role: 'before',
-        path: baseline.localCapturePath,
-        contentHash: firstText(
-          baseline.contentHash,
-          baseline.content_hash,
-          baseline.localCaptureHash,
-          baseline.local_capture_hash,
-          baseline.localCaptureSha256,
-          baseline.local_capture_sha256,
-        ),
-      },
-      {
-        role: 'after',
-        path: changed.localCapturePath,
-        contentHash: firstText(
-          changed.contentHash,
-          changed.content_hash,
-          changed.localCaptureHash,
-          changed.local_capture_hash,
-          changed.localCaptureSha256,
-          changed.local_capture_sha256,
-        ),
-      },
-      {
-        role: 'diff',
-        path: diff.path,
-        contentHash: firstText(
-          diff.contentHash,
-          diff.content_hash,
-          diff.diffHash,
-          diff.diff_hash,
-          diff.diffSha256,
-          diff.diff_sha256,
-        ),
-      },
-    ],
+  const legacyVisualEvidenceInputs = [
+    {
+      role: 'before',
+      path: baseline.localCapturePath,
+      contentHash: firstText(
+        baseline.contentHash,
+        baseline.content_hash,
+        baseline.localCaptureHash,
+        baseline.local_capture_hash,
+        baseline.localCaptureSha256,
+        baseline.local_capture_sha256,
+      ),
+    },
+    {
+      role: 'after',
+      path: changed.localCapturePath,
+      contentHash: firstText(
+        changed.contentHash,
+        changed.content_hash,
+        changed.localCaptureHash,
+        changed.local_capture_hash,
+        changed.localCaptureSha256,
+        changed.local_capture_sha256,
+      ),
+    },
+    {
+      role: 'diff',
+      path: diff.path,
+      contentHash: firstText(
+        diff.contentHash,
+        diff.content_hash,
+        diff.diffHash,
+        diff.diff_hash,
+        diff.diffSha256,
+        diff.diff_sha256,
+      ),
+    },
+  ];
+  const visualArtifacts = compactObject(
+    json.visualOracleArtifacts
+    ?? json.visual_oracle_artifacts
+    ?? json.visualArtifacts
+    ?? json.visual_artifacts
+    ?? runtimeProofArtifact.visualOracleArtifacts
+    ?? runtimeProofArtifact.visual_oracle_artifacts
+    ?? ledgerRecord.oracleArtifacts?.visualOracleArtifacts
+    ?? ledgerRecord.oracle_artifacts?.visual_oracle_artifacts,
+  );
+  const explicitVisualEvidenceCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualEvidenceArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_evidence_artifacts');
+  const explicitVisualArtifactCarrier =
+    Object.prototype.hasOwnProperty.call(json, 'visualOracleArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_oracle_artifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visualArtifacts')
+    || Object.prototype.hasOwnProperty.call(json, 'visual_artifacts');
+  const visualEvidenceArtifacts = visualEvidenceInputsFromValue(
+    explicitVisualEvidenceCarrier
+      ? (json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts)
+      : explicitVisualArtifactCarrier
+        ? null
+        : (
+            runtimeProofArtifact.visualEvidenceArtifacts
+            ?? runtimeProofArtifact.visual_evidence_artifacts
+          ),
+  );
+  const visualRuntime = await visualArtifactEvidence(
+    visualEvidenceArtifacts.length > 0
+      ? visualEvidenceInputsWithSharedTransport(visualEvidenceArtifacts, visualArtifacts)
+      : legacyVisualEvidenceInputs,
     context.repoRoot,
     path.dirname(filePath),
     {
@@ -14930,7 +14968,31 @@ async function hiprtWarmRow(json, filePath, context) {
       requireRuntimeVisualProofBinding: false,
     }),
   );
-  const runtimeVisualProofBindingAccepted = runtimeVisualProofBindingCoverageAccepted(visual);
+  const visualProfile = sourceAdaptedProfile === true
+    ? await visualArtifactEvidence(
+      legacyVisualEvidenceInputs,
+      context.repoRoot,
+      path.dirname(filePath),
+      {
+        changedPixelRatio: diff.changedPixelRatioThreshold4,
+        meanAbsDelta8bit: diff.meanAbsDelta8bit,
+        visualProofThresholds:
+          json.visualProofThresholds
+          ?? json.visual_proof_thresholds
+          ?? json.thresholds
+          ?? diff.visualProofThresholds
+          ?? diff.visual_proof_thresholds
+          ?? diff.thresholds,
+      },
+      runtimeVisualOracleEvidenceRequirements({
+        requireRuntimeVisualProofBinding: false,
+      }),
+    )
+    : visualRuntime;
+  const runtimeVisualProofBindingAccepted = runtimeVisualProofBindingCoverageAccepted(visualRuntime);
+  const visual = sourceAdaptedProfile === true && visualProfile.accepted === true
+    ? visualProfile
+    : visualRuntime;
   const proofLedger = compactObject(
     json.proofLedger
     ?? json.proof_ledger
@@ -14953,13 +15015,6 @@ async function hiprtWarmRow(json, filePath, context) {
     && oracleRegionRecomputed.blankFrameRejected === true
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixels) > 0;
-  const sourceAdaptedProfile =
-    compactStringList(
-      runtimeProbeInstrumentation.sourceAdaptations
-      ?? runtimeProbeInstrumentation.source_adaptations,
-    ).length > 0
-    || runtimeProbeInstrumentation.adaptedOrAlreadyPresent === true
-    || runtimeProbeInstrumentation.adapted_or_already_present === true;
   const acceptanceContract = compactObject(
     json.acceptanceContract
     ?? json.acceptance_contract
