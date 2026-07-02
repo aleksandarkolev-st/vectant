@@ -2189,6 +2189,14 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   }
 }
 
+function githubTreeFailureCanUseAutomaticGitFallback(githubTree = {}) {
+  const status = String(githubTree?.status ?? '');
+  if (status !== 'source_intake_github_tree_failed') return false;
+  const httpStatus = Number(githubTree?.httpStatus ?? githubTree?.http_status);
+  const bodyTail = String(githubTree?.bodyTail ?? githubTree?.body_tail ?? '').toLowerCase();
+  return httpStatus === 429 || ((httpStatus === 403 || httpStatus === 429) && bodyTail.includes('rate limit'));
+}
+
 async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   if (!candidate.localRepoPath) return { attempted: false };
   const repoPath = path.resolve(candidate.localRepoPath);
@@ -2585,6 +2593,18 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         }
         githubTreeFallback = {
           reason: 'github_recursive_tree_truncated_falling_back_to_blobless_git_tree',
+          githubTree,
+          github_tree: githubTree,
+        };
+      } else if (githubTreeFailureCanUseAutomaticGitFallback(githubTree)) {
+        githubTreeFallback = {
+          reason: 'github_tree_rate_limited_falling_back_to_blobless_git_tree',
+          fallbackAuthority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+          fallback_authority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+          automatic: true,
+          automatic_reason: 'github_api_rate_limited',
+          recommendedTransport: 'git_fetch_depth_1_blobless',
+          recommended_transport: 'git_fetch_depth_1_blobless',
           githubTree,
           github_tree: githubTree,
         };
@@ -3511,6 +3531,29 @@ async function selfCheck() {
     || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');
+  }
+  if (
+    githubTreeFailureCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_failed',
+      httpStatus: 403,
+      bodyTail: 'API rate limit exceeded for this source',
+    }) !== true
+    || githubTreeFailureCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_failed',
+      httpStatus: 429,
+      bodyTail: 'too many requests',
+    }) !== true
+    || githubTreeFailureCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_failed',
+      httpStatus: 403,
+      bodyTail: 'resource not accessible by integration',
+    }) !== false
+    || githubTreeFailureCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_truncated',
+      httpStatus: 200,
+    }) !== false
+  ) {
+    throw new Error('random large-project cold-path GitHub rate-limit fallback self-check failed');
   }
   const { manifest } = await buildManifest({
     seed: 'self-check-seed',
