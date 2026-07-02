@@ -266,8 +266,12 @@ function uniqueSortedStrings(values) {
 }
 
 function bloblessGitTreeSizeListingEnabled(env = process.env) {
-  return env.SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING === '1'
-    || env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
+  return env.SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING === '1';
+}
+
+function bloblessBuildMetadataContentFetchEnabled(env = process.env) {
+  return env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1'
+    || bloblessGitTreeSizeListingEnabled(env);
 }
 
 function cleanCandidate(
@@ -1065,7 +1069,7 @@ async function readBuildFileContent({
     const dirtyCommitSnapshotTransport =
       transport === 'local_git_ls_tree_commit_snapshot_dirty_worktree';
     const lazyBlobFetchAllowed = !noSizeLocalTransport
-      || process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
+      || bloblessBuildMetadataContentFetchEnabled();
     const repoPath = transportEvidence?.resolvedTopLevel ?? transportEvidence?.resolved_top_level ?? candidate.localRepoPath;
     const show = await runProcess(
       'git',
@@ -1109,7 +1113,7 @@ async function readBuildFileContent({
     };
   }
   if (transport === 'git_fetch_depth_1_blobless') {
-    const lazyBlobFetchAllowed = process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH === '1';
+    const lazyBlobFetchAllowed = bloblessBuildMetadataContentFetchEnabled();
     const repoPath = transportEvidence?.resolvedLocalPath
       ?? transportEvidence?.resolved_local_path
       ?? transportEvidence?.localPath
@@ -3326,9 +3330,12 @@ async function selfCheck() {
   if (
     bloblessGitTreeSizeListingEnabled({}) !== false
     || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING: '1' }) !== true
-    || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== true
+    || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== false
+    || bloblessBuildMetadataContentFetchEnabled({}) !== false
+    || bloblessBuildMetadataContentFetchEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== true
+    || bloblessBuildMetadataContentFetchEnabled({ SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING: '1' }) !== true
   ) {
-    throw new Error('random large-project cold-path blobless tree size listing opt-in failed');
+    throw new Error('random large-project cold-path blobless fetch opt-in separation failed');
   }
   const unauthenticatedGitHubApi = githubApiHeaders({});
   const authenticatedGitHubApi = githubApiHeaders({ GH_TOKEN: 'self-check-secret-token' });
@@ -3974,6 +3981,41 @@ async function selfCheck() {
     || noSizeFallbackFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.lazyBlobFetchAllowed !== false
   ) {
     throw new Error('random large-project cold-path no-size git fallback facet self-check failed');
+  }
+  const previousBloblessContentFetch = process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH;
+  process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH = '1';
+  try {
+    const noSizeContentFetchFacet = await buildAcceptedSourceIntakeFacet({
+      base: noSizeFallbackBase,
+      candidate: localCandidate,
+      files: noSizeFiles,
+      transport: 'git_fetch_depth_1_blobless',
+      transportEvidence: {
+        resolvedLocalPath: localRepoPath,
+        resolved_local_path: localRepoPath,
+        listingMode: 'git_ls_tree_no_size_blobless',
+        listing_mode: 'git_ls_tree_no_size_blobless',
+        byteLengthMode: 'unknown_avoids_blob_fetch',
+        byte_length_mode: 'unknown_avoids_blob_fetch',
+      },
+      sourceIntakeTimeoutMs: 30000,
+    });
+    if (
+      noSizeContentFetchFacet.totalKnownBytes !== 0
+      || noSizeContentFetchFacet.buildMetadataContentAccepted !== true
+      || noSizeContentFetchFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.transport
+        !== 'git_fetch_blobless_show'
+      || noSizeContentFetchFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.lazyBlobFetchAllowed
+        !== true
+    ) {
+      throw new Error('random large-project cold-path no-size build-content fetch opt-in self-check failed');
+    }
+  } finally {
+    if (previousBloblessContentFetch === undefined) {
+      delete process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH;
+    } else {
+      process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH = previousBloblessContentFetch;
+    }
   }
   await writeFile(path.join(localRepoPath, 'untracked-dirty.tmp'), 'dirty\n');
   const { manifest: dirtyManifest } = await buildManifest({
