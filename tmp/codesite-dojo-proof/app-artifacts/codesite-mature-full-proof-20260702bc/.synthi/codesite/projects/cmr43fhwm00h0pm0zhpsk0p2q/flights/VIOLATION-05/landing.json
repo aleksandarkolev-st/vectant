@@ -1,0 +1,64 @@
+{
+  "displayCallsign": "VIOLATION-05",
+  "inspections": [
+    {
+      "id": "cmr43gq3y00o3pm0z83furu8r",
+      "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+      "executionPlanId": "cmr43gow100nzpm0ziwd0n7dp",
+      "displayCallsign": "VIOLATION-05",
+      "status": "failed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "security",
+          "status": "failed",
+          "evidenceRefs": [
+            "security:failed:violation-proof-1"
+          ],
+          "adapter": {
+            "key": "security",
+            "label": "Security radar",
+            "evidencePrefix": "security:scan"
+          }
+        }
+      ],
+      "evidenceRefs": [
+        "security:failed:violation-proof-1"
+      ],
+      "requestedAt": "2026-07-02T22:46:57.071Z",
+      "completedAt": null
+    },
+    {
+      "id": "cmr43gqrr00o7pm0zcihd9xgh",
+      "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+      "executionPlanId": "cmr43gow100nzpm0ziwd0n7dp",
+      "displayCallsign": "VIOLATION-05",
+      "status": "failed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "tests",
+          "status": "failed",
+          "evidenceRefs": [
+            "test:failed:violation-proof-2"
+          ],
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          }
+        }
+      ],
+      "evidenceRefs": [
+        "test:failed:violation-proof-2"
+      ],
+      "requestedAt": "2026-07-02T22:46:57.927Z",
+      "completedAt": null
+    }
+  ],
+  "status": "go-around"
+}

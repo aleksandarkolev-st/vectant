@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite ControlState",
+  "type": "object",
+  "required": [
+    "projectId",
+    "workspaceSlug",
+    "towerState"
+  ],
+  "properties": {
+    "projectId": {
+      "type": "string"
+    },
+    "workspaceSlug": {
+      "type": "string"
+    },
+    "towerState": {
+      "type": "string"
+    },
+    "activeFlights": {
+      "type": "array"
+    },
+    "activeMutationLeases": {
+      "type": "array"
+    },
+    "activeTransactions": {
+      "type": "array"
+    },
+    "allowedPaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockedPaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pendingQuarantines": {
+      "type": "array"
+    },
+    "pilotLicenseHealth": {
+      "type": "array"
+    },
+    "pilotLicenseSummary": {
+      "type": "object"
+    },
+    "filesystemBoundaryProofs": {
+      "type": "array"
+    },
+    "requiredActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "collisionForecast": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

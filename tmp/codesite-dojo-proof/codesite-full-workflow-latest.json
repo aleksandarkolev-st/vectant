@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "synthi.codesite.fullWorkflowProofLatest.v1",
+  "status": "validated",
+  "slug": "codesite-mature-full-proof-20260702bc",
+  "publishedAt": "2026-07-02T22:50:42.279Z",
+  "runDir": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc",
+  "proof": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-proof.json",
+  "proofSha256": "sha256:b7e079e3020bd4803a9ede7dc27a70b9e8c80a94c08612e4925d0e9c419b0738",
+  "publication": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-publication.json",
+  "publicationSha256": "sha256:68d7bffe9fa84d47403221afbe4fa6fbfef86dc437bf67226aeb35d579fcaed9",
+  "html": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-proof.html",
+  "screenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-proof.png",
+  "summaryScreenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-proof-summary.png",
+  "browserScreenshots": [
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui-proof-section.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui-coordination.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui-line-inspector.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui-causal-replay-handover.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260702bc/codesite-full-workflow-ui-causal-replay-mobile.png"
+  ]
+}
