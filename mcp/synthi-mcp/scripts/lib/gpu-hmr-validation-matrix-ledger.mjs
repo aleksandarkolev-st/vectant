@@ -2077,6 +2077,10 @@ function randomColdBuildMetadataContentEvidenceHashSeed(facet) {
   const seed = JSON.parse(JSON.stringify(compactObject(facet)));
   delete seed.contentEvidenceHash;
   delete seed.content_evidence_hash;
+  delete seed.recomputedContentEvidenceHash;
+  delete seed.recomputed_content_evidence_hash;
+  delete seed.contentEvidenceHashVerificationMode;
+  delete seed.content_evidence_hash_verification_mode;
   return seed;
 }
 
@@ -2196,17 +2200,16 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     facet.recomputedContentEvidenceHash,
     facet.recomputed_content_evidence_hash,
   ));
-  const normalizedMatrixEvidence = present
-    && firstBool(facet.present) === true
-    && suppliedRecomputedContentEvidenceHash !== null;
+  const declaredVerificationMode = firstText(
+    facet.contentEvidenceHashVerificationMode,
+    facet.content_evidence_hash_verification_mode,
+  );
   const rawRecomputedContentEvidenceHash = present
     ? normalizeSha256(`sha256:${
       sha256Hex(stableJson(randomColdBuildMetadataContentEvidenceHashSeed(facet)))
     }`)
     : null;
-  const recomputedContentEvidenceHash = normalizedMatrixEvidence
-    ? suppliedRecomputedContentEvidenceHash
-    : rawRecomputedContentEvidenceHash;
+  const recomputedContentEvidenceHash = rawRecomputedContentEvidenceHash;
   const contentHashMatches = present
     && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
     && recomputedContentEvidenceHash === suppliedContentEvidenceHash;
@@ -2252,6 +2255,14 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
       && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
       && !contentHashMatches
       ? 'random_cold_build_metadata_content_hash_mismatch'
+      : null,
+    present
+      && suppliedRecomputedContentEvidenceHash
+      && suppliedRecomputedContentEvidenceHash !== recomputedContentEvidenceHash
+      ? 'random_cold_build_metadata_content_serialized_recomputed_hash_mismatch'
+      : null,
+    present && declaredVerificationMode === 'matrix_normalized_content_evidence_hash'
+      ? 'random_cold_build_metadata_content_serialized_recomputed_hash_untrusted'
       : null,
     present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       ? 'random_cold_build_metadata_content_claimed_gpu_hmr_acceptance'
@@ -2301,12 +2312,8 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     content_evidence_hash: accepted ? suppliedContentEvidenceHash : null,
     recomputedContentEvidenceHash,
     recomputed_content_evidence_hash: recomputedContentEvidenceHash,
-    contentEvidenceHashVerificationMode: normalizedMatrixEvidence
-      ? 'matrix_normalized_content_evidence_hash'
-      : 'raw_content_evidence_hash_recomputed',
-    content_evidence_hash_verification_mode: normalizedMatrixEvidence
-      ? 'matrix_normalized_content_evidence_hash'
-      : 'raw_content_evidence_hash_recomputed',
+    contentEvidenceHashVerificationMode: 'raw_content_evidence_hash_recomputed',
+    content_evidence_hash_verification_mode: 'raw_content_evidence_hash_recomputed',
     failedGates,
     failed_gates: failedGates,
   };
@@ -25337,14 +25344,14 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     row.source_listing_hash,
   ));
   const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
-    sourceIntake.buildMetadataContentEvidence,
-    sourceIntake.build_metadata_content_evidence,
     intake.buildMetadataContentEvidence,
     intake.build_metadata_content_evidence,
     row.buildMetadataContentEvidence,
     row.build_metadata_content_evidence,
     facet.buildMetadataContentEvidence,
     facet.build_metadata_content_evidence,
+    sourceIntake.buildMetadataContentEvidence,
+    sourceIntake.build_metadata_content_evidence,
   ));
   const buildFileContentRefs = compactObjectList(
     buildContentEvidence.buildFiles
