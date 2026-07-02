@@ -3,7 +3,7 @@ import { authenticatePat } from '@/lib/integrations/patAuth';
 import { canWriteScope } from '@/lib/integrations/scope';
 import { listPermissionGrants } from '@/lib/programs/store';
 import { execInWorkspaceRuntime } from '@/lib/programs/runtimeClient';
-import { PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
+import { codeSiteContextFromBody, PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 
 export const runtime = 'nodejs';
@@ -38,6 +38,7 @@ export async function POST(req) {
   const body = await req.json().catch(() => ({}));
   const workspaceSlug = String(body.workspaceSlug || '').trim();
   const command = String(body.command || '').trim();
+  const codeSiteContext = codeSiteContextFromBody(body);
   if (!workspaceSlug) return NextResponse.json({ error: 'workspace_required' }, { status: 400 });
   if (!command) return NextResponse.json({ error: 'command_required' }, { status: 400 });
 
@@ -56,7 +57,7 @@ export async function POST(req) {
   const timeout = Number.isFinite(Number(body.timeout)) ? Number(body.timeout) : undefined;
 
   try {
-    const result = await execInWorkspaceRuntime(workspaceSlug, { command, timeout });
+    const result = await execInWorkspaceRuntime(workspaceSlug, { command, timeout, codeSiteContext });
     return NextResponse.json({
       runtimeScope: result.runtimeScope ?? null,
       stdout: result.stdout || '',

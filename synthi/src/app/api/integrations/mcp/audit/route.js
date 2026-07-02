@@ -3,6 +3,11 @@ import prisma from '@/lib/prisma';
 import { authenticatePat } from '@/lib/integrations/patAuth';
 import { canReadScope } from '@/lib/integrations/scope';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
+import {
+  codeSiteEvidenceRefsJson,
+  emptyCodeSiteIdentityFields,
+  firstCodeSiteRef,
+} from '@/lib/codesite/substrateIdentity';
 
 export const runtime = 'nodejs';
 
@@ -12,6 +17,42 @@ const str = (v) => (typeof v === 'string' ? v : null);
 const bounded = (v, max) => { const s = str(v); return s && s.length <= max ? s : null; };
 const HASH_RE = /^[0-9a-f]{64}$/i; // sha-256 hex is always exactly 64 chars
 const hex64 = (v) => { const s = str(v); return s && HASH_RE.test(s) ? s : null; };
+
+async function resolveTrustedCodeSiteRefs(workspaceSlug, body) {
+  if (!workspaceSlug) return emptyCodeSiteIdentityFields();
+  const codeSiteContext = body.codeSiteContext && typeof body.codeSiteContext === 'object' && !Array.isArray(body.codeSiteContext) ? body.codeSiteContext : {};
+  const projectId = firstCodeSiteRef(body.codeSiteProjectId, body.code_site_project_id, body.projectId, codeSiteContext.codeSiteProjectId, codeSiteContext.projectId);
+  if (!projectId) return emptyCodeSiteIdentityFields();
+
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    select: { id: true },
+  });
+  if (!project) return emptyCodeSiteIdentityFields();
+
+  const requestedTransactionId = firstCodeSiteRef(body.codeSiteTransactionId, body.code_site_transaction_id, body.transactionId, codeSiteContext.codeSiteTransactionId, codeSiteContext.transactionId);
+  const requestedLeaseId = firstCodeSiteRef(body.codeSiteMutationLeaseId, body.code_site_mutation_lease_id, body.mutationLeaseId, body.mutation_lease_id, body.leaseId, codeSiteContext.codeSiteMutationLeaseId, codeSiteContext.mutationLeaseId, codeSiteContext.leaseId);
+  const requestedAgentSessionId = firstCodeSiteRef(body.codeSiteAgentSessionId, body.code_site_agent_session_id, body.agentSessionId, body.agent_session_id, codeSiteContext.codeSiteAgentSessionId, codeSiteContext.agentSessionId);
+  const [transaction, lease, agentSession] = await Promise.all([
+    requestedTransactionId
+      ? prisma.codeSiteMutationTransaction.findFirst({ where: { id: requestedTransactionId, projectId }, select: { id: true } })
+      : null,
+    requestedLeaseId
+      ? prisma.codeSiteMutationLease.findFirst({ where: { id: requestedLeaseId, projectId }, select: { id: true } })
+      : null,
+    requestedAgentSessionId
+      ? prisma.codeSiteAgentSession.findFirst({ where: { id: requestedAgentSessionId, projectId }, select: { id: true } })
+      : null,
+  ]);
+
+  return {
+    codeSiteProjectId: projectId,
+    codeSiteTransactionId: transaction?.id || null,
+    codeSiteMutationLeaseId: lease?.id || null,
+    codeSiteAgentSessionId: agentSession?.id || null,
+    codeSiteEvidenceRefsJson: codeSiteEvidenceRefsJson(body.codeSiteEvidenceRefs || body.code_site_evidence_refs || body.evidenceRefs || codeSiteContext.codeSiteEvidenceRefs || codeSiteContext.evidenceRefs),
+  };
+}
 
 export async function POST(req) {
   const actor = await authenticatePat(req);
@@ -34,6 +75,7 @@ export async function POST(req) {
     workspaceSlug = b.workspaceSlug;
   }
   const outcome = ['ok', 'error', 'blocked'].includes(b.outcome) ? b.outcome : 'error';
+  const codeSiteRefs = await resolveTrustedCodeSiteRefs(workspaceSlug, b);
 
   try {
     await prisma.mcpCallAudit.create({
@@ -51,6 +93,7 @@ export async function POST(req) {
         argsHash: hex64(b.argsHash),
         argsBytes: num(b.argsBytes),
         resultBytes: num(b.resultBytes),
+        ...codeSiteRefs,
       },
     });
   } catch {

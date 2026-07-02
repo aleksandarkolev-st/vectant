@@ -20,11 +20,21 @@ const {
     eventCursor: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
+    getCodeSiteMetrics: vi.fn(),
     getAgentInbox: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
+    getLineProvenance: vi.fn(),
     getSourceStateSince: vi.fn(),
+    listProjectMembers: vi.fn(),
+    preflightCodeSiteFsWrite: vi.fn(),
+    recordTransactionRead: vi.fn(),
     validateTransaction: vi.fn(),
+    recordTransactionQuarantineEvent: vi.fn(),
+    resumeMaydayIncident: vi.fn(),
+    revokeProjectMember: vi.fn(),
+    shadowMergeSimulate: vi.fn(),
+    upsertProjectMember: vi.fn(),
   },
 }));
 
@@ -65,6 +75,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'exportArtifacts',
     'getAgentInbox',
     'getAgentManifest',
+    'getCodeSiteMetrics',
     'getControlState',
     'getEvents',
     'getIncidentReplay',
@@ -74,18 +85,24 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getSchemas',
     'getSourceStateSince',
     'getTransaction',
+    'listProjectMembers',
     'listProjects',
     'openTransaction',
+    'preflightCodeSiteFsWrite',
     'recordPolicyDecision',
     'recordAssumption',
     'recordTransactionRead',
+    'recordTransactionQuarantineEvent',
     'recordTransactionWrite',
     'requestMutationLease',
     'previewArtifacts',
     'revokeMutationLease',
+    'resumeMaydayIncident',
+    'revokeProjectMember',
     'shadowMergeSimulate',
     'updateControlPlan',
     'updateZonePolicy',
+    'upsertProjectMember',
     'validateTransaction',
   ];
   return Object.fromEntries(names.map((name) => [name, controlPlane[name] || vi.fn()]));
@@ -104,6 +121,8 @@ async function json(response) {
 describe('CodeSite catch-all route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.SYNTHI_WORKSPACE_AUTH_BYPASS;
+    delete process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS;
     resolveActor.mockResolvedValue({ userId: 'user-1', email: 'u@example.test' });
     canReadScope.mockResolvedValue(true);
     canWriteScope.mockResolvedValue(true);
@@ -111,6 +130,8 @@ describe('CodeSite catch-all route', () => {
     controlPlane.eventCursor.mockImplementation((event) => (
       Number.isSafeInteger(Number(event?.logicalTime)) ? `lt:${Number(event.logicalTime)}` : event?.id
     ));
+    delete process.env.COLLAB_SERVER_URL;
+    delete process.env.SYNTHI_CODESITE_API_BASE_URL;
   });
 
   it('lists projects through the read-gated projects endpoint', async () => {
@@ -144,6 +165,40 @@ describe('CodeSite catch-all route', () => {
     );
   });
 
+  it('keeps project creation write-gated for plain workspace members', async () => {
+    canWriteScope.mockResolvedValue(false);
+    const request = new Request('http://test/api/workspace/acme/codesite/projects', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Signup' }),
+    });
+
+    const response = await POST(request, params(['projects']));
+
+    expect(response.status).toBe(403);
+    expect(controlPlane.createProject).not.toHaveBeenCalled();
+    expect(canWriteScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+  });
+
+  it('keeps shadow merge simulation write-gated because it records counterfactual evidence', async () => {
+    canWriteScope.mockResolvedValue(false);
+    const request = new Request('http://test/api/workspace/acme/codesite/projects/proj-1/shadow-merge-simulate', {
+      method: 'POST',
+      body: JSON.stringify({ strategies: ['schema-first'] }),
+    });
+
+    const response = await POST(request, params(['projects', 'proj-1', 'shadow-merge-simulate']));
+
+    expect(response.status).toBe(403);
+    expect(controlPlane.shadowMergeSimulate).not.toHaveBeenCalled();
+    expect(canWriteScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+  });
+
   it('dispatches transaction write records to the control plane', async () => {
     controlPlane.recordTransactionWrite.mockResolvedValue({ ok: false, policyDecision: { decision: 'block' } });
     const request = new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/record-write', {
@@ -161,6 +216,397 @@ describe('CodeSite catch-all route', () => {
       { path: 'api/auth/signup.ts' },
       expect.objectContaining({ userId: 'user-1' }),
     );
+  });
+
+  it('dispatches transaction read records to the control plane', async () => {
+    controlPlane.recordTransactionRead.mockResolvedValue({
+      id: 'txn-1',
+      observedReadSet: ['openapi/auth.yaml'],
+    });
+    const request = new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/record-read', {
+      method: 'POST',
+      body: JSON.stringify({ path: 'openapi/auth.yaml' }),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'record-read']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      transaction: {
+        id: 'txn-1',
+        observedReadSet: ['openapi/auth.yaml'],
+      },
+    });
+    expect(controlPlane.recordTransactionRead).toHaveBeenCalledWith(
+      'acme',
+      'txn-1',
+      { path: 'openapi/auth.yaml' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('dispatches transaction quarantine lifecycle events to the control plane', async () => {
+    controlPlane.recordTransactionQuarantineEvent.mockResolvedValue({
+      id: 'event-quarantine-applied',
+      eventType: 'quarantine_applied',
+    });
+    const body = {
+      eventType: 'quarantine_applied',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+    };
+    const request = new Request('http://test/api/workspace/acme/codesite/transactions/txn-1/quarantine-events', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'quarantine-events']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      event: {
+        id: 'event-quarantine-applied',
+        eventType: 'quarantine_applied',
+      },
+    });
+    expect(controlPlane.recordTransactionQuarantineEvent).toHaveBeenCalledWith(
+      'acme',
+      'txn-1',
+      body,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('proxies quarantine manifest review through the read-gated CodeSite facade', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      quarantines: [{ quarantineId: 'qtn-1', status: 'reviewable' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const response = await GET(
+      new Request('http://app.test/api/workspace/acme/codesite/quarantines?transactionId=txn-1&status=reviewable'),
+      params(['quarantines']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      ok: true,
+      quarantines: [{ quarantineId: 'qtn-1', status: 'reviewable' }],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesitefs/quarantines/acme?userId=user-1&filesystemUserId=user-1&transactionId=txn-1&status=reviewable'),
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'x-user-id': 'user-1',
+          'x-runtime-fs-user-id': 'user-1',
+          'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+        }),
+      }),
+    );
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('returns an empty quarantine list when the runtime manifest is unavailable', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('connect failed'), {
+      cause: { code: 'ECONNREFUSED' },
+    }));
+
+    const response = await GET(
+      new Request('http://app.test/api/workspace/acme/codesite/quarantines?transactionId=txn-1'),
+      params(['quarantines']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      ok: false,
+      quarantines: [],
+      quarantine: null,
+      unavailable: true,
+      error: 'quarantine_runtime_unavailable',
+      detail: {
+        target: 'http://collab.test',
+        reason: 'ECONNREFUSED',
+      },
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('proxies quarantine replay with selected paths and transaction metadata', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesitefs/quarantines/acme/qtn-1/replay'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-user-id': 'user-1',
+          'x-runtime-fs-user-id': 'user-1',
+          'x-codesite-mode': 'enforce',
+          'x-codesite-transaction-id': 'txn-1',
+          'x-codesite-lease-id': 'lease-1',
+        }),
+      }),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      paths: ['docs/review.md'],
+      userId: 'user-1',
+      filesystemUserId: 'user-1',
+      codesite: {
+        enforce: true,
+        mode: 'enforce',
+        workspaceSlug: 'acme',
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+      },
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('does not forward caller-injected quarantine changes to the collab manifest endpoint', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        paths: ['docs/review.md'],
+        changes: [{ path: 'secrets/override.txt', afterText: 'bad' }],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    const forwarded = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(forwarded).toMatchObject({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      paths: ['docs/review.md'],
+      userId: 'user-1',
+      filesystemUserId: 'user-1',
+    });
+    expect(forwarded).not.toHaveProperty('changes');
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('rejects quarantine proxy requests that impersonate a different runtime filesystem user', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+        filesystemUserId: 'user-2',
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(403);
+    expect(await json(response)).toEqual({
+      error: 'codesite_runtime_identity_mismatch',
+      detail: {
+        field: 'filesystemUserId',
+        actorUserId: 'user-1',
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('keeps quarantine apply write-gated because it can mutate the workspace', async () => {
+    canWriteScope.mockResolvedValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'apply']));
+
+    expect(response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(canWriteScope).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('rejects quarantine replay without explicit selected paths before proxying', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const request = new Request('http://app.test/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: [],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(400);
+    expect(await json(response)).toEqual({
+      error: 'missing_selected_paths',
+      detail: { quarantineId: 'qtn-1', action: 'replay' },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('uses forwarded host instead of a 0.0.0.0 bind origin for quarantine callbacks', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      replay: [{ path: 'docs/review.md' }],
+      rejected: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const request = new Request('http://0.0.0.0:3000/api/workspace/acme/codesite/quarantines/qtn-1/replay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        host: 'codesite-proof-app:3000',
+        'x-forwarded-proto': 'http',
+      },
+      body: JSON.stringify({
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+      }),
+    });
+
+    const response = await POST(request, params(['quarantines', 'qtn-1', 'replay']));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      codesite: {
+        controlPlaneUrl: 'http://codesite-proof-app:3000/api/workspace/acme/codesite',
+      },
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('reads project success metrics through the read-gated metrics endpoint', async () => {
+    controlPlane.getCodeSiteMetrics.mockResolvedValue({
+      schemaVersion: 'synthi.codesite.metrics.v1',
+      projectId: 'proj-1',
+      summary: { collisionsAvoided: 2 },
+      sections: { atc: [] },
+    });
+
+    const response = await GET(new Request('http://test/api/workspace/acme/codesite/projects/proj-1/metrics'), params(['projects', 'proj-1', 'metrics']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      metrics: {
+        schemaVersion: 'synthi.codesite.metrics.v1',
+        projectId: 'proj-1',
+        summary: { collisionsAvoided: 2 },
+        sections: { atc: [] },
+      },
+    });
+    expect(controlPlane.getCodeSiteMetrics).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({ userId: 'user-1' }));
+  });
+
+  it('dispatches CodeSiteFS preflight events before external adapters mutate files', async () => {
+    controlPlane.preflightCodeSiteFsWrite.mockResolvedValue({
+      ok: false,
+      disposition: 'write_denied',
+      reasonCodes: ['active_clearance_required'],
+    });
+    const body = {
+      path: 'backend/collab-server/terminalService.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+    };
+    const request = new Request('http://test/api/workspace/acme/codesite/projects/proj-1/codesitefs-events', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const response = await POST(request, params(['projects', 'proj-1', 'codesitefs-events']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      ok: false,
+      disposition: 'write_denied',
+      reasonCodes: ['active_clearance_required'],
+    });
+    expect(controlPlane.preflightCodeSiteFsWrite).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      body,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('dispatches line provenance lookups with project and line filters', async () => {
+    controlPlane.getLineProvenance.mockResolvedValue([{
+      id: 'line-1',
+      filePath: 'api/checkout/route.js',
+      startLine: 42,
+    }]);
+
+    const response = await GET(
+      new Request('http://test/api/workspace/acme/codesite/provenance/line?projectId=proj-1&filePath=api%2Fcheckout%2Froute.js&lineNumber=42'),
+      params(['provenance', 'line']),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      lineProvenance: [{ id: 'line-1', filePath: 'api/checkout/route.js', startLine: 42 }],
+    });
+    expect(controlPlane.getLineProvenance).toHaveBeenCalledWith('acme', {
+      projectId: 'proj-1',
+      filePath: 'api/checkout/route.js',
+      lineAnchor: null,
+      lineNumber: '42',
+    }, expect.objectContaining({ userId: 'user-1' }));
   });
 
   it('previews dry-run patches without dispatching transaction write records', async () => {
@@ -197,10 +643,11 @@ describe('CodeSite catch-all route', () => {
     expect(controlPlane.recordPolicyDecision).toHaveBeenCalledWith('acme', 'lease-1', {
       decision: 'hold',
       reasonCodes: ['schema_first'],
-    });
+    }, expect.objectContaining({ userId: 'user-1' }));
   });
 
   it('passes the resolved actor through tower-mediated document routes', async () => {
+    canWriteScope.mockResolvedValue(false);
     controlPlane.createDocument.mockResolvedValue({
       document: { id: 'doc-1', kind: 'rfi' },
       inboxItems: [{ id: 'inbox-1' }],
@@ -230,6 +677,7 @@ describe('CodeSite catch-all route', () => {
       body,
       expect.objectContaining({ userId: 'user-1' }),
     );
+    expect(canWriteScope).not.toHaveBeenCalled();
   });
 
   it('serves source-state-since through the documented read endpoint', async () => {
@@ -258,15 +706,12 @@ describe('CodeSite catch-all route', () => {
     controlPlane.getEvents.mockResolvedValueOnce([
       { id: 'a-later-event', logicalTime: 8, eventType: 'flight_plan_filed', displayCallsign: 'ATLAS-1' },
     ]);
-    const controller = new AbortController();
-
     const response = await GET(
-      new Request('http://test/api/workspace/acme/codesite/projects/proj-1/events/stream', { signal: controller.signal }),
+      new Request('http://test/api/workspace/acme/codesite/projects/proj-1/events/stream'),
       params(['projects', 'proj-1', 'events', 'stream']),
     );
     const reader = response.body.getReader();
     const chunk = await reader.read();
-    controller.abort();
     await reader.cancel().catch(() => {});
     const text = new TextDecoder().decode(chunk.value);
 
@@ -274,10 +719,11 @@ describe('CodeSite catch-all route', () => {
     expect(text).toContain('id: lt:8');
     expect(text).toContain('event: flight_plan_filed');
     expect(text).toContain('data:');
-    expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null);
+    expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null, expect.objectContaining({ userId: 'user-1' }));
   });
 
   it('passes the resolved actor through agent inbox read and ack routes', async () => {
+    canWriteScope.mockResolvedValue(false);
     controlPlane.getAgentInbox.mockResolvedValue([{ id: 'inbox-1', eventId: 'evt-1' }]);
     controlPlane.acknowledgeInboxItem.mockResolvedValue({ id: 'inbox-1', status: 'acknowledged' });
 
@@ -306,6 +752,7 @@ describe('CodeSite catch-all route', () => {
       'evt-1',
       expect.objectContaining({ userId: 'user-1' }),
     );
+    expect(canWriteScope).not.toHaveBeenCalled();
   });
 
   it('rejects unauthenticated read access before dispatch', async () => {

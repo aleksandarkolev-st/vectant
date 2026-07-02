@@ -21,7 +21,7 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
 });
 
-test('CodeSite terminal launch mode quarantines local shells and blocks runtime-backed shells', () => {
+test('CodeSite terminal launch mode blocks host shells and permits container quarantine', () => {
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: null,
     workspaceSlug: 'repo',
@@ -30,7 +30,7 @@ test('CodeSite terminal launch mode quarantines local shells and blocks runtime-
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
     workspaceSlug: 'repo',
-  }), 'quarantine');
+  }), 'block-host');
 
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
@@ -43,7 +43,7 @@ test('CodeSite terminal launch mode quarantines local shells and blocks runtime-
     enableContainerRuntime: true,
     workspaceRuntime: {},
     workspaceSlug: 'repo',
-  }), 'block-runtime');
+  }), 'quarantine-runtime');
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec
@@ -75,7 +75,7 @@ test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
 });
 
-test('CodeSite program runtime mode permits headless quarantine, hybrid quarantine, and blocks unenforced runtimes', () => {
+test('CodeSite program runtime mode blocks headless host launches and permits hybrid quarantine', () => {
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: null,
     runtimeType: 'container',
@@ -87,7 +87,7 @@ test('CodeSite program runtime mode permits headless quarantine, hybrid quaranti
     runtimeType: 'web',
     sysboxEnabled: true,
     hasHybrid: true,
-  }), 'quarantine');
+  }), 'block-host');
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: { active: true },
     runtimeType: 'container',

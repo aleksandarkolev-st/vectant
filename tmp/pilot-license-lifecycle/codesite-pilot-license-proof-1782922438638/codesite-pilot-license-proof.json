@@ -1,0 +1,3983 @@
+{
+  "schemaVersion": "synthi.codesite.pilotLicenseProof.v1",
+  "slug": "codesite-pilot-license-proof-1782922438638",
+  "baseUrl": "http://host.docker.internal:3121",
+  "project": {
+    "id": "cmr29znt00000ql0lvrapjsw1",
+    "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+    "title": "Pilot license lifecycle proof",
+    "request": "Prove active, drift-expired, and visually observable pilot-license lifecycle gates",
+    "status": "active",
+    "createdByUserId": "codesite-dev-bypass",
+    "createdAt": "2026-07-01T16:14:05.893Z",
+    "updatedAt": "2026-07-01T16:14:05.893Z",
+    "counts": {
+      "agentSessions": 2,
+      "executionPlans": 2,
+      "mutationLeases": 2,
+      "incidents": 0,
+      "inspectionRuns": 3
+    },
+    "zonePolicy": {
+      "version": 1,
+      "generatedAt": "2026-07-01T16:14:05.821Z",
+      "zones": [
+        {
+          "zoneKey": "class_a",
+          "label": "Critical controlled airspace",
+          "class": "A",
+          "paths": [
+            "api/auth/**",
+            "billing/**",
+            "db/migrations/**",
+            "infra/prod/**",
+            "infra/production/**",
+            "**/.env",
+            "**/.env.*"
+          ],
+          "rules": [
+            "explicit_tower_clearance_required",
+            "licensed_pilot_required",
+            "inspector_signoff_required",
+            "black_box_required"
+          ],
+          "risk": "critical",
+          "source": "compiled_default"
+        },
+        {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default"
+        },
+        {
+          "zoneKey": "class_c",
+          "label": "Feature implementation airspace",
+          "class": "C",
+          "paths": [
+            "apps/web/**",
+            "components/**",
+            "synthi/src/app/**",
+            "synthi/src/components/**",
+            "backend/collab-server/**"
+          ],
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ],
+          "risk": "medium",
+          "source": "compiled_default"
+        },
+        {
+          "zoneKey": "class_d",
+          "label": "Low-risk support airspace",
+          "class": "D",
+          "paths": [
+            "docs/**",
+            "tests/**",
+            "**/__tests__/**",
+            "**/*.test.js",
+            "**/*.test.jsx",
+            "**/*.test.ts",
+            "**/*.test.tsx",
+            "**/*.md"
+          ],
+          "rules": [
+            "micro_clearance_allowed",
+            "sample_inspection"
+          ],
+          "risk": "low",
+          "source": "compiled_default"
+        },
+        {
+          "zoneKey": "contracts",
+          "label": "Contract runway",
+          "class": "B",
+          "paths": [
+            "packages/contracts/**"
+          ],
+          "rules": [],
+          "risk": "high",
+          "source": "custom"
+        }
+      ],
+      "noFlyZones": [
+        "**/.env",
+        "**/.env.*",
+        "secrets/**",
+        "**/*secret*",
+        "**/*.pem",
+        "**/*.key"
+      ],
+      "classRules": {
+        "A": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required"
+        ],
+        "B": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "C": [
+          "auto_clearance_allowed",
+          "landing_inspection_required"
+        ],
+        "D": [
+          "micro_clearance_allowed",
+          "sample_inspection"
+        ]
+      },
+      "semanticGraph": {
+        "files": [],
+        "importEdges": [],
+        "testOwnership": [],
+        "packageExports": [],
+        "generatedClients": [],
+        "migrationLocks": [],
+        "deploymentConfig": [],
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1"
+      },
+      "policySources": {
+        "defaults": 4,
+        "repoSignals": 0,
+        "custom": 1,
+        "codeowners": 0,
+        "openapi": 0,
+        "prismaSchemas": 0,
+        "prismaMigrations": 0,
+        "packageExports": 0,
+        "importEdges": 0,
+        "testOwnership": 0,
+        "deployment": 0,
+        "pastIncidents": 0,
+        "secretPatterns": 6
+      },
+      "policyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+      "compiler": {
+        "compilerVersion": "2026-07-01.1",
+        "repoRoot": null,
+        "maxFiles": null,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "policyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+        "compiledAt": "2026-07-01T16:14:05.822Z",
+        "fileCount": 0,
+        "truncated": false,
+        "source": "repo_policy_compiler",
+        "error": null
+      }
+    },
+    "controlPlan": {
+      "version": 1,
+      "title": "Pilot license lifecycle proof",
+      "request": "Prove active, drift-expired, and visually observable pilot-license lifecycle gates",
+      "towerState": "planning",
+      "selectedStrategy": "airspace_survey_first",
+      "missions": [],
+      "routeIntersections": [],
+      "requiredRadar": [
+        "clearance",
+        "type",
+        "test",
+        "handover"
+      ],
+      "zoneDigest": "sha256:8ceb14f377777523e60054a1fcb8ad6df2b7e3f2d4c92e730a7c2079c27e3cc8",
+      "createdAt": "2026-07-01T16:14:05.822Z"
+    },
+    "agentSessions": [
+      {
+        "id": "cmr29zrgd0009ql0lwotlnhzz",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "ownerUserId": "codesite-dev-bypass",
+        "agentProvider": "codex",
+        "agentRuntime": "tmp-codex-cli",
+        "providerSessionRef": null,
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "registered",
+        "permissions": [],
+        "redactionPolicy": {
+          "acceptsTowerMessages": true,
+          "redactSecrets": true,
+          "redactPrivatePrompts": true,
+          "allowAttachments": false,
+          "visibleZones": [
+            "**"
+          ],
+          "allowedDocumentKinds": [
+            "rfi",
+            "change_order",
+            "inspection_request",
+            "inspection_result",
+            "mayday",
+            "handoff",
+            "stop_work",
+            "punch",
+            "tower_instruction"
+          ]
+        },
+        "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+        "dojoProofRef": "proof:active-ifr",
+        "dojoEvidenceRefs": [
+          "dojo:evidence:active-checkride"
+        ],
+        "dojoDecisionDigest": "sha256:active-license-decision",
+        "pilotLicenseSnapshot": {
+          "level": 2,
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:active-checkride"
+          ],
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1"
+        },
+        "createdAt": "2026-07-01T16:14:10.621Z",
+        "endedAt": null
+      },
+      {
+        "id": "cmr29zs25000dql0lb7thw8hg",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "ownerUserId": "codesite-dev-bypass",
+        "agentProvider": "codex",
+        "agentRuntime": "tmp-codex-cli",
+        "providerSessionRef": null,
+        "displayCallsign": "STALE-IFR",
+        "status": "registered",
+        "permissions": [],
+        "redactionPolicy": {
+          "acceptsTowerMessages": true,
+          "redactSecrets": true,
+          "redactPrivatePrompts": true,
+          "allowAttachments": false,
+          "visibleZones": [
+            "**"
+          ],
+          "allowedDocumentKinds": [
+            "rfi",
+            "change_order",
+            "inspection_request",
+            "inspection_result",
+            "mayday",
+            "handoff",
+            "stop_work",
+            "punch",
+            "tower_instruction"
+          ]
+        },
+        "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+        "dojoProofRef": "proof:stale-ifr",
+        "dojoEvidenceRefs": [
+          "dojo:evidence:stale-checkride"
+        ],
+        "dojoDecisionDigest": "sha256:stale-license-decision",
+        "pilotLicenseSnapshot": {
+          "level": 2,
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:stale-checkride"
+          ],
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDigest": "sha256:pilot-license-source-v1"
+        },
+        "createdAt": "2026-07-01T16:14:11.405Z",
+        "endedAt": null
+      }
+    ],
+    "executionPlans": [
+      {
+        "id": "cmr29zsua000hql0ljgwohm26",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+        "displayCallsign": "ACTIVE-IFR",
+        "mission": "Land contract schema change with current pilot license",
+        "domain": "schema",
+        "status": "filed",
+        "route": [
+          "packages/contracts/**"
+        ],
+        "blockedZones": [],
+        "abortConditions": [],
+        "requestedTools": [
+          "file_write"
+        ],
+        "estimatedDurationMs": null,
+        "filedAt": "2026-07-01T16:14:12.419Z",
+        "closedAt": null
+      },
+      {
+        "id": "cmr29ztyb000lql0l1vyg4z24",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+        "displayCallsign": "STALE-IFR",
+        "mission": "Attempt contract schema change with source-drift-expired license",
+        "domain": "schema",
+        "status": "filed",
+        "route": [
+          "packages/contracts/**"
+        ],
+        "blockedZones": [],
+        "abortConditions": [],
+        "requestedTools": [
+          "file_write"
+        ],
+        "estimatedDurationMs": null,
+        "filedAt": "2026-07-01T16:14:13.860Z",
+        "closedAt": null
+      }
+    ],
+    "mutationLeases": [
+      {
+        "id": "cmr29zuud000pql0lrr2b6hde",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+        "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "active",
+        "lease": {
+          "allowedPaths": [
+            "packages/contracts/**"
+          ],
+          "blockedPaths": [],
+          "allowedTools": [
+            "file_write"
+          ],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure",
+            "restricted_airspace.inspector_required"
+          ],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "expiresAt": null,
+          "issuedBy": "codesite_policy_engine",
+          "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProofVerification": {
+            "ok": true,
+            "status": "verified",
+            "checkedAt": "2026-07-01T16:14:14.971Z",
+            "source": "dojo_public_proof_verifier",
+            "capsuleId": "pcap-active-ifr",
+            "keyId": "dojo-pilot-license-key",
+            "proofKeyStatus": "active",
+            "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+            "proofKeySigningProvider": "ed25519-local",
+            "proofKeyCustody": "local",
+            "signatureVerified": true,
+            "blockedBy": [],
+            "expected": {
+              "required_evidence_claims": [
+                "codesite.restricted_mutation"
+              ],
+              "ledger_checkpoint_hash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+              "requested_action": "codesite.mutation.clearance"
+            },
+            "digest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb"
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zrgd0009ql0lwotlnhzz",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "ACTIVE-IFR",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:active-ifr",
+            "dojoDecisionDigest": "sha256:active-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:active-checkride",
+              "active-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_from_verified_dojo_proof"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:active-checkride",
+              "pcap-active-ifr",
+              "schema.level_2@2026-07-01",
+              "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+              "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+              "active-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:10.621Z",
+              "checkedAt": "2026-07-01T16:14:15.012Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put ACTIVE-IFR in holding",
+                      "Put STALE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr29zrgd0009ql0lwotlnhzz",
+          "projectId": "cmr29znt00000ql0lvrapjsw1",
+          "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+          "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+          "ownerUserId": "codesite-dev-bypass",
+          "displayCallsign": "ACTIVE-IFR",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+          "dojoLicenseRef": "schema.level_2@2026-07-01",
+          "dojoProofRef": "proof:active-ifr",
+          "dojoDecisionDigest": "sha256:active-license-decision",
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:active-checkride",
+            "active-ifr-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:active-checkride",
+            "pcap-active-ifr",
+            "schema.level_2@2026-07-01",
+            "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+            "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+            "active-ifr-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-01T16:14:10.621Z",
+            "checkedAt": "2026-07-01T16:14:15.012Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+            "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "dojoProofRef": "pcap-active-ifr",
+        "dojoLicenseRef": "schema.level_2@2026-07-01",
+        "dojoEvidenceRefs": [
+          "active-ifr-checkride"
+        ],
+        "dojoLedgerCheckpointHash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+        "dojoDecisionDigest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+        "implementationStatus": {
+          "executable": true,
+          "productionRuntime": false
+        },
+        "issuedAt": "2026-07-01T16:14:15.014Z",
+        "expiresAt": null,
+        "revokedAt": null
+      },
+      {
+        "id": "cmr29zwm7000xql0lklo9acv5",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "executionPlanId": "cmr29ztyb000lql0l1vyg4z24",
+        "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+        "displayCallsign": "STALE-IFR",
+        "status": "blocked",
+        "lease": {
+          "allowedPaths": [
+            "packages/contracts/**"
+          ],
+          "blockedPaths": [],
+          "allowedTools": [
+            "file_write"
+          ],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure",
+            "restricted_airspace.inspector_required"
+          ],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "expiresAt": null,
+          "issuedBy": "codesite_policy_engine",
+          "towerInstruction": "Hold STALE-IFR: IFR pilot license health is required for Class B mutation airspace.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProofVerification": {
+            "ok": true,
+            "status": "verified",
+            "checkedAt": "2026-07-01T16:14:17.268Z",
+            "source": "dojo_public_proof_verifier",
+            "capsuleId": "pcap-stale-ifr",
+            "keyId": "dojo-pilot-license-key",
+            "proofKeyStatus": "active",
+            "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+            "proofKeySigningProvider": "ed25519-local",
+            "proofKeyCustody": "local",
+            "signatureVerified": true,
+            "blockedBy": [],
+            "expected": {
+              "required_evidence_claims": [
+                "codesite.restricted_mutation"
+              ],
+              "ledger_checkpoint_hash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+              "requested_action": "codesite.mutation.clearance"
+            },
+            "digest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad"
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zs25000dql0lb7thw8hg",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "STALE-IFR",
+            "status": "expired",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:stale-ifr",
+            "dojoDecisionDigest": "sha256:stale-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:stale-checkride",
+              "stale-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:pilot-license-source-v1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": true
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_source_drift_expired"
+            ],
+            "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+            "evidenceRefs": [
+              "dojo:evidence:stale-checkride",
+              "pcap-stale-ifr",
+              "schema.level_2@2026-07-01",
+              "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+              "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+              "stale-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:11.405Z",
+              "checkedAt": "2026-07-01T16:14:17.310Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put STALE-IFR in holding",
+                      "Put ACTIVE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                },
+                {
+                  "risk": "restricted_airspace_occupancy",
+                  "severity": "medium",
+                  "aircraft": [
+                    "ACTIVE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "recommendedResolution": {
+                    "action": "inspect_before_landing",
+                    "steps": [
+                      "Keep route locked",
+                      "Run required radar before commit",
+                      "Attach proof bundle at landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [
+                {
+                  "runway": "packages/contracts/**",
+                  "route": [
+                    "packages/contracts/**"
+                  ],
+                  "occupiedBy": "ACTIVE-IFR",
+                  "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                  "runwayClass": "B",
+                  "diffPaths": [
+                    "packages/contracts/**"
+                  ],
+                  "pendingInspections": [
+                    "landing_inspection"
+                  ],
+                  "eligibleFlights": []
+                }
+              ],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr29zs25000dql0lb7thw8hg",
+          "projectId": "cmr29znt00000ql0lvrapjsw1",
+          "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+          "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+          "ownerUserId": "codesite-dev-bypass",
+          "displayCallsign": "STALE-IFR",
+          "status": "expired",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+          "dojoLicenseRef": "schema.level_2@2026-07-01",
+          "dojoProofRef": "proof:stale-ifr",
+          "dojoDecisionDigest": "sha256:stale-license-decision",
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:stale-checkride",
+            "stale-ifr-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:pilot-license-source-v1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": true
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_source_drift_expired"
+          ],
+          "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+          "evidenceRefs": [
+            "dojo:evidence:stale-checkride",
+            "pcap-stale-ifr",
+            "schema.level_2@2026-07-01",
+            "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+            "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+            "stale-ifr-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-01T16:14:11.405Z",
+            "checkedAt": "2026-07-01T16:14:17.310Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+            "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "dojoProofRef": "pcap-stale-ifr",
+        "dojoLicenseRef": "schema.level_2@2026-07-01",
+        "dojoEvidenceRefs": [
+          "stale-ifr-checkride"
+        ],
+        "dojoLedgerCheckpointHash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+        "dojoDecisionDigest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+        "implementationStatus": {
+          "executable": true,
+          "productionRuntime": false
+        },
+        "issuedAt": "2026-07-01T16:14:17.312Z",
+        "expiresAt": null,
+        "revokedAt": null
+      }
+    ],
+    "mutationTxns": [],
+    "assumptions": [],
+    "policyDecisions": [
+      {
+        "id": "cmr29zuun000rql0lz9jgqlt5",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+        "displayCallsign": "ACTIVE-IFR",
+        "decision": "inspect",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof",
+          "pilot_license_level_authorized"
+        ],
+        "inputDigest": "sha256:a4b6aa4da9dd4f256e9424b5e49f1a0473dedf8eef598466998cad82580155c9",
+        "decisionBody": {
+          "status": "active",
+          "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProof": {
+            "proofRef": "pcap-active-ifr",
+            "licenseRef": "schema.level_2@2026-07-01",
+            "evidenceRefs": [
+              "active-ifr-checkride"
+            ],
+            "ledgerCheckpointHash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+            "decisionDigest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+            "implementationStatus": {
+              "executable": true,
+              "productionRuntime": false
+            },
+            "verification": {
+              "ok": true,
+              "status": "verified",
+              "checkedAt": "2026-07-01T16:14:14.971Z",
+              "source": "dojo_public_proof_verifier",
+              "capsuleId": "pcap-active-ifr",
+              "keyId": "dojo-pilot-license-key",
+              "proofKeyStatus": "active",
+              "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+              "proofKeySigningProvider": "ed25519-local",
+              "proofKeyCustody": "local",
+              "signatureVerified": true,
+              "blockedBy": [],
+              "expected": {
+                "required_evidence_claims": [
+                  "codesite.restricted_mutation"
+                ],
+                "ledger_checkpoint_hash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+                "requested_action": "codesite.mutation.clearance"
+              },
+              "digest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb"
+            }
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zrgd0009ql0lwotlnhzz",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "ACTIVE-IFR",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:active-ifr",
+            "dojoDecisionDigest": "sha256:active-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:active-checkride",
+              "active-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_from_verified_dojo_proof"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:active-checkride",
+              "pcap-active-ifr",
+              "schema.level_2@2026-07-01",
+              "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+              "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+              "active-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:10.621Z",
+              "checkedAt": "2026-07-01T16:14:15.012Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put ACTIVE-IFR in holding",
+                      "Put STALE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "createdAt": "2026-07-01T16:14:15.023Z"
+      },
+      {
+        "id": "cmr29zwme000zql0ltb9fd17k",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+        "displayCallsign": "STALE-IFR",
+        "decision": "block",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_source_drift_expired",
+          "pilot_license_expired"
+        ],
+        "inputDigest": "sha256:1898943a49d14c8bc99423a616ebc1b086fd32009969d39859cb4844701c98e9",
+        "decisionBody": {
+          "status": "blocked",
+          "towerInstruction": "Hold STALE-IFR: IFR pilot license health is required for Class B mutation airspace.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProof": {
+            "proofRef": "pcap-stale-ifr",
+            "licenseRef": "schema.level_2@2026-07-01",
+            "evidenceRefs": [
+              "stale-ifr-checkride"
+            ],
+            "ledgerCheckpointHash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+            "decisionDigest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+            "implementationStatus": {
+              "executable": true,
+              "productionRuntime": false
+            },
+            "verification": {
+              "ok": true,
+              "status": "verified",
+              "checkedAt": "2026-07-01T16:14:17.268Z",
+              "source": "dojo_public_proof_verifier",
+              "capsuleId": "pcap-stale-ifr",
+              "keyId": "dojo-pilot-license-key",
+              "proofKeyStatus": "active",
+              "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+              "proofKeySigningProvider": "ed25519-local",
+              "proofKeyCustody": "local",
+              "signatureVerified": true,
+              "blockedBy": [],
+              "expected": {
+                "required_evidence_claims": [
+                  "codesite.restricted_mutation"
+                ],
+                "ledger_checkpoint_hash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+                "requested_action": "codesite.mutation.clearance"
+              },
+              "digest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad"
+            }
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zs25000dql0lb7thw8hg",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "STALE-IFR",
+            "status": "expired",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:stale-ifr",
+            "dojoDecisionDigest": "sha256:stale-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:stale-checkride",
+              "stale-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:pilot-license-source-v1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": true
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_source_drift_expired"
+            ],
+            "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+            "evidenceRefs": [
+              "dojo:evidence:stale-checkride",
+              "pcap-stale-ifr",
+              "schema.level_2@2026-07-01",
+              "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+              "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+              "stale-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:11.405Z",
+              "checkedAt": "2026-07-01T16:14:17.310Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put STALE-IFR in holding",
+                      "Put ACTIVE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                },
+                {
+                  "risk": "restricted_airspace_occupancy",
+                  "severity": "medium",
+                  "aircraft": [
+                    "ACTIVE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "recommendedResolution": {
+                    "action": "inspect_before_landing",
+                    "steps": [
+                      "Keep route locked",
+                      "Run required radar before commit",
+                      "Attach proof bundle at landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [
+                {
+                  "runway": "packages/contracts/**",
+                  "route": [
+                    "packages/contracts/**"
+                  ],
+                  "occupiedBy": "ACTIVE-IFR",
+                  "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                  "runwayClass": "B",
+                  "diffPaths": [
+                    "packages/contracts/**"
+                  ],
+                  "pendingInspections": [
+                    "landing_inspection"
+                  ],
+                  "eligibleFlights": []
+                }
+              ],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "createdAt": "2026-07-01T16:14:17.318Z"
+      },
+      {
+        "id": "cmr2a01cu001hql0lovz7axy0",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "displayCallsign": "STALE-IFR",
+        "decision": "block",
+        "reasonCodes": [
+          "entered_no_fly_zone"
+        ],
+        "inputDigest": "sha256:f92de15479be7666264bb95444aff234df8a8928463ffc866f3b860a8d589a8c",
+        "decisionBody": {
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "source": "codesitefs",
+          "zone": {
+            "zoneKey": "unclassified",
+            "label": "Unclassified repo airspace",
+            "class": "C",
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ],
+            "path": "secrets/prod.env"
+          },
+          "matchedLeaseId": null,
+          "inspectedLeases": [
+            {
+              "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+              "displayCallsign": "ACTIVE-IFR",
+              "ok": false,
+              "reasonCodes": [
+                "entered_no_fly_zone"
+              ]
+            }
+          ],
+          "towerInstruction": "Write preflight blocked for secrets/prod.env. Request clearance or quarantine outside the real repo."
+        },
+        "createdAt": "2026-07-01T16:14:23.454Z"
+      }
+    ],
+    "events": [
+      {
+        "id": "cmr29znuj0007ql0lnwksykx1",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "tower_instruction",
+        "displayCallsign": null,
+        "actorType": "human",
+        "actorId": "codesite-dev-bypass",
+        "details": {
+          "instruction": "CodeSite project opened. File flight plans before mutation.",
+          "controlPlan": {
+            "version": 1,
+            "title": "Pilot license lifecycle proof",
+            "request": "Prove active, drift-expired, and visually observable pilot-license lifecycle gates",
+            "towerState": "planning",
+            "selectedStrategy": "airspace_survey_first",
+            "missions": [],
+            "routeIntersections": [],
+            "requiredRadar": [
+              "clearance",
+              "type",
+              "test",
+              "handover"
+            ],
+            "zoneDigest": "sha256:8ceb14f377777523e60054a1fcb8ad6df2b7e3f2d4c92e730a7c2079c27e3cc8",
+            "createdAt": "2026-07-01T16:14:05.822Z"
+          },
+          "automaticWorkflow": null
+        },
+        "evidenceRefs": [],
+        "logicalTime": 1,
+        "createdAt": "2026-07-01T16:14:05.948Z"
+      },
+      {
+        "id": "cmr29zrgm000bql0ljorgfpjg",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "transponder_update",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "agent_session",
+        "actorId": "cmr29zrgd0009ql0lwotlnhzz",
+        "details": {
+          "status": "registered",
+          "provider": "codex",
+          "runtime": "tmp-codex-cli",
+          "instruction": "ACTIVE-IFR registered with tower."
+        },
+        "evidenceRefs": [],
+        "logicalTime": 2,
+        "createdAt": "2026-07-01T16:14:10.631Z"
+      },
+      {
+        "id": "cmr29zs2c000fql0la1wazfyo",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "transponder_update",
+        "displayCallsign": "STALE-IFR",
+        "actorType": "agent_session",
+        "actorId": "cmr29zs25000dql0lb7thw8hg",
+        "details": {
+          "status": "registered",
+          "provider": "codex",
+          "runtime": "tmp-codex-cli",
+          "instruction": "STALE-IFR registered with tower."
+        },
+        "evidenceRefs": [],
+        "logicalTime": 3,
+        "createdAt": "2026-07-01T16:14:11.412Z"
+      },
+      {
+        "id": "cmr29zsuj000jql0l1oea4mkt",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "flight_plan_filed",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "agent_session",
+        "actorId": "cmr29zrgd0009ql0lwotlnhzz",
+        "details": {
+          "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+          "mission": "Land contract schema change with current pilot license",
+          "route": [
+            "packages/contracts/**"
+          ],
+          "blockedZones": []
+        },
+        "evidenceRefs": [],
+        "logicalTime": 4,
+        "createdAt": "2026-07-01T16:14:12.428Z"
+      },
+      {
+        "id": "cmr29ztyj000nql0lahvquxpk",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "flight_plan_filed",
+        "displayCallsign": "STALE-IFR",
+        "actorType": "agent_session",
+        "actorId": "cmr29zs25000dql0lb7thw8hg",
+        "details": {
+          "executionPlanId": "cmr29ztyb000lql0l1vyg4z24",
+          "mission": "Attempt contract schema change with source-drift-expired license",
+          "route": [
+            "packages/contracts/**"
+          ],
+          "blockedZones": []
+        },
+        "evidenceRefs": [],
+        "logicalTime": 5,
+        "createdAt": "2026-07-01T16:14:13.867Z"
+      },
+      {
+        "id": "cmr29zuuw000tql0lgaxdbhr7",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+        "eventType": "clearance_issued",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "policy_engine",
+        "actorId": "cmr29zuun000rql0lz9jgqlt5",
+        "details": {
+          "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+          "policyDecisionId": "cmr29zuun000rql0lz9jgqlt5",
+          "status": "active",
+          "reasonCodes": [
+            "restricted_airspace_requires_inspection",
+            "dojo_clearance_proof_verified",
+            "dojo_public_proof_signature_verified",
+            "schema_first_leader_clearance",
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof",
+            "pilot_license_level_authorized"
+          ],
+          "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands.",
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zrgd0009ql0lwotlnhzz",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "ACTIVE-IFR",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:active-ifr",
+            "dojoDecisionDigest": "sha256:active-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:active-checkride",
+              "active-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_from_verified_dojo_proof"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:active-checkride",
+              "pcap-active-ifr",
+              "schema.level_2@2026-07-01",
+              "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+              "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+              "active-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:10.621Z",
+              "checkedAt": "2026-07-01T16:14:15.012Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put ACTIVE-IFR in holding",
+                      "Put STALE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "evidenceRefs": [],
+        "logicalTime": 6,
+        "createdAt": "2026-07-01T16:14:15.032Z"
+      },
+      {
+        "id": "cmr29zvdj000vql0l9ennpbfx",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+        "eventType": "near_miss",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "policy_engine",
+        "actorId": "cmr29zuun000rql0lz9jgqlt5",
+        "details": {
+          "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+          "policyDecisionId": "cmr29zuun000rql0lz9jgqlt5",
+          "prevented": true,
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put ACTIVE-IFR in holding",
+                      "Put STALE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          }
+        },
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5"
+        ],
+        "logicalTime": 7,
+        "createdAt": "2026-07-01T16:14:15.704Z"
+      },
+      {
+        "id": "cmr29zwml0011ql0l9k8wl346",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+        "eventType": "holding_pattern",
+        "displayCallsign": "STALE-IFR",
+        "actorType": "policy_engine",
+        "actorId": "cmr29zwme000zql0ltb9fd17k",
+        "details": {
+          "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+          "policyDecisionId": "cmr29zwme000zql0ltb9fd17k",
+          "status": "blocked",
+          "reasonCodes": [
+            "restricted_airspace_requires_inspection",
+            "dojo_clearance_proof_verified",
+            "dojo_public_proof_signature_verified",
+            "schema_first_leader_clearance",
+            "pilot_license_source_drift_expired",
+            "pilot_license_expired"
+          ],
+          "towerInstruction": "Hold STALE-IFR: IFR pilot license health is required for Class B mutation airspace.",
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zs25000dql0lb7thw8hg",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "STALE-IFR",
+            "status": "expired",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:stale-ifr",
+            "dojoDecisionDigest": "sha256:stale-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:stale-checkride",
+              "stale-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:pilot-license-source-v1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": true
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_source_drift_expired"
+            ],
+            "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+            "evidenceRefs": [
+              "dojo:evidence:stale-checkride",
+              "pcap-stale-ifr",
+              "schema.level_2@2026-07-01",
+              "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+              "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+              "stale-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:11.405Z",
+              "checkedAt": "2026-07-01T16:14:17.310Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put STALE-IFR in holding",
+                      "Put ACTIVE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                },
+                {
+                  "risk": "restricted_airspace_occupancy",
+                  "severity": "medium",
+                  "aircraft": [
+                    "ACTIVE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "recommendedResolution": {
+                    "action": "inspect_before_landing",
+                    "steps": [
+                      "Keep route locked",
+                      "Run required radar before commit",
+                      "Attach proof bundle at landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [
+                {
+                  "runway": "packages/contracts/**",
+                  "route": [
+                    "packages/contracts/**"
+                  ],
+                  "occupiedBy": "ACTIVE-IFR",
+                  "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                  "runwayClass": "B",
+                  "diffPaths": [
+                    "packages/contracts/**"
+                  ],
+                  "pendingInspections": [
+                    "landing_inspection"
+                  ],
+                  "eligibleFlights": []
+                }
+              ],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "evidenceRefs": [],
+        "logicalTime": 8,
+        "createdAt": "2026-07-01T16:14:17.325Z"
+      },
+      {
+        "id": "cmr29zxkd0013ql0l8098hk7p",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+        "eventType": "near_miss",
+        "displayCallsign": "STALE-IFR",
+        "actorType": "policy_engine",
+        "actorId": "cmr29zwme000zql0ltb9fd17k",
+        "details": {
+          "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+          "policyDecisionId": "cmr29zwme000zql0ltb9fd17k",
+          "prevented": true,
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put STALE-IFR in holding",
+                      "Put ACTIVE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                },
+                {
+                  "risk": "restricted_airspace_occupancy",
+                  "severity": "medium",
+                  "aircraft": [
+                    "ACTIVE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "recommendedResolution": {
+                    "action": "inspect_before_landing",
+                    "steps": [
+                      "Keep route locked",
+                      "Run required radar before commit",
+                      "Attach proof bundle at landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [
+                {
+                  "runway": "packages/contracts/**",
+                  "route": [
+                    "packages/contracts/**"
+                  ],
+                  "occupiedBy": "ACTIVE-IFR",
+                  "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                  "runwayClass": "B",
+                  "diffPaths": [
+                    "packages/contracts/**"
+                  ],
+                  "pendingInspections": [
+                    "landing_inspection"
+                  ],
+                  "eligibleFlights": []
+                }
+              ],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          }
+        },
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k"
+        ],
+        "logicalTime": 9,
+        "createdAt": "2026-07-01T16:14:18.542Z"
+      },
+      {
+        "id": "cmr29zyjf0017ql0lll9eacyq",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "landing_requested",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "inspection",
+        "actorId": "cmr29zyj60015ql0lujj1hygf",
+        "details": {
+          "inspectionRunId": "cmr29zyj60015ql0lujj1hygf",
+          "status": "passed",
+          "changedPaths": [
+            "packages/contracts/schema.ts"
+          ],
+          "inspectionEvidenceRefs": [
+            "inspection:active-license:1"
+          ]
+        },
+        "evidenceRefs": [
+          "inspection:active-license:1"
+        ],
+        "logicalTime": 10,
+        "createdAt": "2026-07-01T16:14:19.803Z"
+      },
+      {
+        "id": "cmr29zzbt001bql0lhhl3ud5m",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "landing_requested",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "inspection",
+        "actorId": "cmr29zzbk0019ql0ljdd8j03j",
+        "details": {
+          "inspectionRunId": "cmr29zzbk0019ql0ljdd8j03j",
+          "status": "passed",
+          "changedPaths": [
+            "packages/contracts/schema.ts"
+          ],
+          "inspectionEvidenceRefs": [
+            "inspection:active-license:2"
+          ]
+        },
+        "evidenceRefs": [
+          "inspection:active-license:2"
+        ],
+        "logicalTime": 11,
+        "createdAt": "2026-07-01T16:14:20.825Z"
+      },
+      {
+        "id": "cmr2a0052001fql0l5yakxdck",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "landing_requested",
+        "displayCallsign": "ACTIVE-IFR",
+        "actorType": "inspection",
+        "actorId": "cmr2a004v001dql0ljx4tbbwu",
+        "details": {
+          "inspectionRunId": "cmr2a004v001dql0ljx4tbbwu",
+          "status": "passed",
+          "changedPaths": [
+            "packages/contracts/schema.ts"
+          ],
+          "inspectionEvidenceRefs": [
+            "inspection:active-license:3"
+          ]
+        },
+        "evidenceRefs": [
+          "inspection:active-license:3"
+        ],
+        "logicalTime": 12,
+        "createdAt": "2026-07-01T16:14:21.879Z"
+      },
+      {
+        "id": "cmr2a01d2001jql0lcbs060gz",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "write_denied",
+        "displayCallsign": "STALE-IFR",
+        "actorType": "codesitefs",
+        "actorId": "cmr2a01cu001hql0lovz7axy0",
+        "details": {
+          "projectId": "cmr29znt00000ql0lvrapjsw1",
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "source": "codesitefs",
+          "disposition": "write_denied",
+          "prevented": true,
+          "reasonCodes": [
+            "entered_no_fly_zone"
+          ],
+          "policyDecisionId": "cmr2a01cu001hql0lovz7axy0",
+          "matchedLeaseId": null,
+          "zone": {
+            "zoneKey": "unclassified",
+            "label": "Unclassified repo airspace",
+            "class": "C",
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ],
+            "path": "secrets/prod.env"
+          },
+          "codesiteFsEvent": {
+            "type": null,
+            "source": "codesitefs",
+            "operation": "write",
+            "path": "secrets/prod.env",
+            "details": {
+              "workflow": "pilot_license_lifecycle",
+              "expectedDisposition": "write_denied"
+            },
+            "evidence_refs": [
+              "codesite:pipeline-proof:no-fly-denial"
+            ]
+          },
+          "evidenceRefs": [
+            "codesite:pipeline-proof:no-fly-denial"
+          ]
+        },
+        "evidenceRefs": [
+          "codesite:pipeline-proof:no-fly-denial"
+        ],
+        "logicalTime": 13,
+        "createdAt": "2026-07-01T16:14:23.462Z"
+      },
+      {
+        "id": "cmr2a02gk001lql0lixsqz51b",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "eventType": "black_box_closed",
+        "displayCallsign": null,
+        "actorType": "artifact_projection",
+        "actorId": "cmr29znt00000ql0lvrapjsw1",
+        "details": {
+          "written": true,
+          "root": null,
+          "reason": "explicit_export",
+          "files": [
+            "manifest.json",
+            "airspace/zones.json",
+            "airspace/no-fly-zones.json",
+            "airspace/class-rules.json",
+            "airspace/compiler-output.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/tower-plan.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/control-state.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/radar-snapshot.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/collision-forecast.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/pilot-license-health.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/metrics.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/events.jsonl",
+            "projects/cmr29znt00000ql0lvrapjsw1/quarantines/index.jsonl",
+            "projects/cmr29znt00000ql0lvrapjsw1/provenance/line-provenance.jsonl",
+            "projects/cmr29znt00000ql0lvrapjsw1/handover.md",
+            "schemas/agent-session.schema.json",
+            "schemas/execution-plan.schema.json",
+            "schemas/mutation-lease.schema.json",
+            "schemas/clearance.schema.json",
+            "schemas/pilot-license-health.schema.json",
+            "schemas/mutation-transaction.schema.json",
+            "schemas/assumption-lease.schema.json",
+            "schemas/document.schema.json",
+            "schemas/event.schema.json",
+            "schemas/codesitefs-prewrite.schema.json",
+            "schemas/codesitefs-quarantine.schema.json",
+            "schemas/inspection-run.schema.json",
+            "schemas/incident.schema.json",
+            "schemas/incident-replay.schema.json",
+            "schemas/proof-bundle.schema.json",
+            "schemas/line-provenance.schema.json",
+            "schemas/control-state.schema.json",
+            "schemas/metrics.schema.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zuun000rql0lz9jgqlt5.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zwme000zql0ltb9fd17k.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr2a01cu001hql0lovz7axy0.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/agent-session.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/pilot-license-health.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/transponder.jsonl",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/landing.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/flight-plan.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/clearance.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/assumptions.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/black-box.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/agent-session.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/pilot-license-health.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/transponder.jsonl",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/landing.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/flight-plan.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/clearance.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/assumptions.json",
+            "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/black-box.json"
+          ]
+        },
+        "evidenceRefs": [],
+        "logicalTime": 14,
+        "createdAt": "2026-07-01T16:14:24.885Z"
+      }
+    ],
+    "incidents": [],
+    "inspectionRuns": [
+      {
+        "id": "cmr29zyj60015ql0lujj1hygf",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "passed",
+        "changedPaths": [
+          "packages/contracts/schema.ts"
+        ],
+        "inspectionSignals": [
+          {
+            "key": "tests",
+            "status": "passed",
+            "evidenceRefs": [
+              "test:active-license:1"
+            ],
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            }
+          }
+        ],
+        "evidenceRefs": [
+          "inspection:active-license:1"
+        ],
+        "requestedAt": "2026-07-01T16:14:19.795Z",
+        "completedAt": null
+      },
+      {
+        "id": "cmr29zzbk0019ql0ljdd8j03j",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "passed",
+        "changedPaths": [
+          "packages/contracts/schema.ts"
+        ],
+        "inspectionSignals": [
+          {
+            "key": "tests",
+            "status": "passed",
+            "evidenceRefs": [
+              "test:active-license:2"
+            ],
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            }
+          }
+        ],
+        "evidenceRefs": [
+          "inspection:active-license:2"
+        ],
+        "requestedAt": "2026-07-01T16:14:20.817Z",
+        "completedAt": null
+      },
+      {
+        "id": "cmr2a004v001dql0ljx4tbbwu",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "passed",
+        "changedPaths": [
+          "packages/contracts/schema.ts"
+        ],
+        "inspectionSignals": [
+          {
+            "key": "tests",
+            "status": "passed",
+            "evidenceRefs": [
+              "test:active-license:3"
+            ],
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            }
+          }
+        ],
+        "evidenceRefs": [
+          "inspection:active-license:3"
+        ],
+        "requestedAt": "2026-07-01T16:14:21.871Z",
+        "completedAt": null
+      }
+    ],
+    "proofBundles": [],
+    "lineProvenance": [],
+    "documents": [],
+    "counterfactualRuns": [],
+    "policyDeltas": [],
+    "inboxItems": []
+  },
+  "leases": {
+    "active": {
+      "id": "cmr29zuud000pql0lrr2b6hde",
+      "projectId": "cmr29znt00000ql0lvrapjsw1",
+      "executionPlanId": "cmr29zsua000hql0ljgwohm26",
+      "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+      "displayCallsign": "ACTIVE-IFR",
+      "status": "active",
+      "lease": {
+        "allowedPaths": [
+          "packages/contracts/**"
+        ],
+        "blockedPaths": [],
+        "allowedTools": [
+          "file_write"
+        ],
+        "invariants": [
+          "clearance.diff.inside_route",
+          "no.secret.exposure",
+          "restricted_airspace.inspector_required"
+        ],
+        "requiredRadar": [
+          "api_contract",
+          "security",
+          "tests"
+        ],
+        "expiresAt": null,
+        "issuedBy": "codesite_policy_engine",
+        "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands.",
+        "inspectedZones": [
+          {
+            "zoneKey": "contracts",
+            "label": "Contract runway",
+            "class": "B",
+            "paths": [
+              "packages/contracts/**"
+            ],
+            "rules": [],
+            "risk": "high",
+            "source": "custom",
+            "path": "packages/contracts/**"
+          }
+        ],
+        "dojoProofVerification": {
+          "ok": true,
+          "status": "verified",
+          "checkedAt": "2026-07-01T16:14:14.971Z",
+          "source": "dojo_public_proof_verifier",
+          "capsuleId": "pcap-active-ifr",
+          "keyId": "dojo-pilot-license-key",
+          "proofKeyStatus": "active",
+          "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+          "proofKeySigningProvider": "ed25519-local",
+          "proofKeyCustody": "local",
+          "signatureVerified": true,
+          "blockedBy": [],
+          "expected": {
+            "required_evidence_claims": [
+              "codesite.restricted_mutation"
+            ],
+            "ledger_checkpoint_hash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+            "requested_action": "codesite.mutation.clearance"
+          },
+          "digest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb"
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr29zrgd0009ql0lwotlnhzz",
+          "projectId": "cmr29znt00000ql0lvrapjsw1",
+          "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+          "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+          "ownerUserId": "codesite-dev-bypass",
+          "displayCallsign": "ACTIVE-IFR",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+          "dojoLicenseRef": "schema.level_2@2026-07-01",
+          "dojoProofRef": "proof:active-ifr",
+          "dojoDecisionDigest": "sha256:active-license-decision",
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:active-checkride",
+            "active-ifr-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:active-checkride",
+            "pcap-active-ifr",
+            "schema.level_2@2026-07-01",
+            "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+            "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+            "active-ifr-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-01T16:14:10.621Z",
+            "checkedAt": "2026-07-01T16:14:15.012Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+            "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "ACTIVE-IFR",
+                  "STALE-IFR"
+                ],
+                "conflictZone": "packages/contracts/**",
+                "overlaps": [
+                  [
+                    "packages/contracts/**",
+                    "packages/contracts/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put ACTIVE-IFR in holding",
+                    "Put STALE-IFR in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null
+      },
+      "pilotLicenseHealth": {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr29zrgd0009ql0lwotlnhzz",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+        "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+        "ownerUserId": "codesite-dev-bypass",
+        "displayCallsign": "ACTIVE-IFR",
+        "status": "active",
+        "level": "IFR",
+        "levelRank": 3,
+        "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+        "dojoLicenseRef": "schema.level_2@2026-07-01",
+        "dojoProofRef": "proof:active-ifr",
+        "dojoDecisionDigest": "sha256:active-license-decision",
+        "repoScope": "codesite-pilot-license-proof-1782922438638",
+        "authorizedAirspace": [
+          "packages/contracts/**"
+        ],
+        "restrictedAirspace": [],
+        "requiredRadar": [
+          "api_contract",
+          "security",
+          "tests"
+        ],
+        "earnedBy": [
+          "dojo:evidence:active-checkride",
+          "active-ifr-checkride"
+        ],
+        "expiresAt": null,
+        "expiresOn": [
+          "source_drift"
+        ],
+        "sourceDrift": {
+          "monitored": true,
+          "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [
+          "dojo:evidence:active-checkride",
+          "pcap-active-ifr",
+          "schema.level_2@2026-07-01",
+          "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+          "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+          "active-ifr-checkride"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-01T16:14:10.621Z",
+          "checkedAt": "2026-07-01T16:14:15.012Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+          "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+        }
+      },
+      "pilotLicenseRequirement": {
+        "required": true,
+        "classes": [
+          "B"
+        ],
+        "minimumLevel": "IFR",
+        "minimumLevelRank": 3
+      },
+      "dojoProofRef": "pcap-active-ifr",
+      "dojoLicenseRef": "schema.level_2@2026-07-01",
+      "dojoEvidenceRefs": [
+        "active-ifr-checkride"
+      ],
+      "dojoLedgerCheckpointHash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+      "dojoDecisionDigest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+      "implementationStatus": {
+        "executable": true,
+        "productionRuntime": false
+      },
+      "issuedAt": "2026-07-01T16:14:15.014Z",
+      "expiresAt": null,
+      "revokedAt": null,
+      "policyDecision": {
+        "id": "cmr29zuun000rql0lz9jgqlt5",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+        "displayCallsign": "ACTIVE-IFR",
+        "decision": "inspect",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof",
+          "pilot_license_level_authorized"
+        ],
+        "inputDigest": "sha256:a4b6aa4da9dd4f256e9424b5e49f1a0473dedf8eef598466998cad82580155c9",
+        "decisionBody": {
+          "status": "active",
+          "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProof": {
+            "proofRef": "pcap-active-ifr",
+            "licenseRef": "schema.level_2@2026-07-01",
+            "evidenceRefs": [
+              "active-ifr-checkride"
+            ],
+            "ledgerCheckpointHash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+            "decisionDigest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+            "implementationStatus": {
+              "executable": true,
+              "productionRuntime": false
+            },
+            "verification": {
+              "ok": true,
+              "status": "verified",
+              "checkedAt": "2026-07-01T16:14:14.971Z",
+              "source": "dojo_public_proof_verifier",
+              "capsuleId": "pcap-active-ifr",
+              "keyId": "dojo-pilot-license-key",
+              "proofKeyStatus": "active",
+              "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+              "proofKeySigningProvider": "ed25519-local",
+              "proofKeyCustody": "local",
+              "signatureVerified": true,
+              "blockedBy": [],
+              "expected": {
+                "required_evidence_claims": [
+                  "codesite.restricted_mutation"
+                ],
+                "ledger_checkpoint_hash": "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+                "requested_action": "codesite.mutation.clearance"
+              },
+              "digest": "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb"
+            }
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zrgd0009ql0lwotlnhzz",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "ACTIVE-IFR",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:active-ifr",
+            "dojoDecisionDigest": "sha256:active-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:active-checkride",
+              "active-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_from_verified_dojo_proof"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:active-checkride",
+              "pcap-active-ifr",
+              "schema.level_2@2026-07-01",
+              "fea197bc81a8f431677887bf6b95a1d326040e9b0dfb8e8f1264ad4da4c40258",
+              "sha256:ac33b2ae883edc8166ded8936dcf855fcfbf8a793ebc78d4ad429664a76ca0bb",
+              "active-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:10.621Z",
+              "checkedAt": "2026-07-01T16:14:15.012Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:14.971Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put ACTIVE-IFR in holding",
+                      "Put STALE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for ACTIVE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "createdAt": "2026-07-01T16:14:15.023Z"
+      }
+    },
+    "stale": {
+      "id": "cmr29zwm7000xql0lklo9acv5",
+      "projectId": "cmr29znt00000ql0lvrapjsw1",
+      "executionPlanId": "cmr29ztyb000lql0l1vyg4z24",
+      "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+      "displayCallsign": "STALE-IFR",
+      "status": "blocked",
+      "lease": {
+        "allowedPaths": [
+          "packages/contracts/**"
+        ],
+        "blockedPaths": [],
+        "allowedTools": [
+          "file_write"
+        ],
+        "invariants": [
+          "clearance.diff.inside_route",
+          "no.secret.exposure",
+          "restricted_airspace.inspector_required"
+        ],
+        "requiredRadar": [
+          "api_contract",
+          "security",
+          "tests"
+        ],
+        "expiresAt": null,
+        "issuedBy": "codesite_policy_engine",
+        "towerInstruction": "Hold STALE-IFR: IFR pilot license health is required for Class B mutation airspace.",
+        "inspectedZones": [
+          {
+            "zoneKey": "contracts",
+            "label": "Contract runway",
+            "class": "B",
+            "paths": [
+              "packages/contracts/**"
+            ],
+            "rules": [],
+            "risk": "high",
+            "source": "custom",
+            "path": "packages/contracts/**"
+          }
+        ],
+        "dojoProofVerification": {
+          "ok": true,
+          "status": "verified",
+          "checkedAt": "2026-07-01T16:14:17.268Z",
+          "source": "dojo_public_proof_verifier",
+          "capsuleId": "pcap-stale-ifr",
+          "keyId": "dojo-pilot-license-key",
+          "proofKeyStatus": "active",
+          "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+          "proofKeySigningProvider": "ed25519-local",
+          "proofKeyCustody": "local",
+          "signatureVerified": true,
+          "blockedBy": [],
+          "expected": {
+            "required_evidence_claims": [
+              "codesite.restricted_mutation"
+            ],
+            "ledger_checkpoint_hash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+            "requested_action": "codesite.mutation.clearance"
+          },
+          "digest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad"
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr29zs25000dql0lb7thw8hg",
+          "projectId": "cmr29znt00000ql0lvrapjsw1",
+          "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+          "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+          "ownerUserId": "codesite-dev-bypass",
+          "displayCallsign": "STALE-IFR",
+          "status": "expired",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+          "dojoLicenseRef": "schema.level_2@2026-07-01",
+          "dojoProofRef": "proof:stale-ifr",
+          "dojoDecisionDigest": "sha256:stale-license-decision",
+          "repoScope": "codesite-pilot-license-proof-1782922438638",
+          "authorizedAirspace": [
+            "packages/contracts/**"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "api_contract",
+            "security",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:evidence:stale-checkride",
+            "stale-ifr-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:pilot-license-source-v1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": true
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_source_drift_expired"
+          ],
+          "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+          "evidenceRefs": [
+            "dojo:evidence:stale-checkride",
+            "pcap-stale-ifr",
+            "schema.level_2@2026-07-01",
+            "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+            "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+            "stale-ifr-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-01T16:14:11.405Z",
+            "checkedAt": "2026-07-01T16:14:17.310Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+            "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "ACTIVE-IFR",
+                  "STALE-IFR"
+                ],
+                "conflictZone": "packages/contracts/**",
+                "overlaps": [
+                  [
+                    "packages/contracts/**",
+                    "packages/contracts/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put STALE-IFR in holding",
+                    "Put ACTIVE-IFR in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              },
+              {
+                "risk": "restricted_airspace_occupancy",
+                "severity": "medium",
+                "aircraft": [
+                  "ACTIVE-IFR"
+                ],
+                "conflictZone": "packages/contracts/**",
+                "recommendedResolution": {
+                  "action": "inspect_before_landing",
+                  "steps": [
+                    "Keep route locked",
+                    "Run required radar before commit",
+                    "Attach proof bundle at landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [
+              {
+                "runway": "packages/contracts/**",
+                "route": [
+                  "packages/contracts/**"
+                ],
+                "occupiedBy": "ACTIVE-IFR",
+                "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                "runwayClass": "B",
+                "diffPaths": [
+                  "packages/contracts/**"
+                ],
+                "pendingInspections": [
+                  "landing_inspection"
+                ],
+                "eligibleFlights": []
+              }
+            ],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null
+      },
+      "pilotLicenseHealth": {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr29zs25000dql0lb7thw8hg",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+        "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+        "ownerUserId": "codesite-dev-bypass",
+        "displayCallsign": "STALE-IFR",
+        "status": "expired",
+        "level": "IFR",
+        "levelRank": 3,
+        "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+        "dojoLicenseRef": "schema.level_2@2026-07-01",
+        "dojoProofRef": "proof:stale-ifr",
+        "dojoDecisionDigest": "sha256:stale-license-decision",
+        "repoScope": "codesite-pilot-license-proof-1782922438638",
+        "authorizedAirspace": [
+          "packages/contracts/**"
+        ],
+        "restrictedAirspace": [],
+        "requiredRadar": [
+          "api_contract",
+          "security",
+          "tests"
+        ],
+        "earnedBy": [
+          "dojo:evidence:stale-checkride",
+          "stale-ifr-checkride"
+        ],
+        "expiresAt": null,
+        "expiresOn": [
+          "source_drift"
+        ],
+        "sourceDrift": {
+          "monitored": true,
+          "sourceDigest": "sha256:pilot-license-source-v1",
+          "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "expired": true
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_source_drift_expired"
+        ],
+        "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+        "evidenceRefs": [
+          "dojo:evidence:stale-checkride",
+          "pcap-stale-ifr",
+          "schema.level_2@2026-07-01",
+          "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+          "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+          "stale-ifr-checkride"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-01T16:14:11.405Z",
+          "checkedAt": "2026-07-01T16:14:17.310Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+          "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+        }
+      },
+      "pilotLicenseRequirement": {
+        "required": true,
+        "classes": [
+          "B"
+        ],
+        "minimumLevel": "IFR",
+        "minimumLevelRank": 3
+      },
+      "dojoProofRef": "pcap-stale-ifr",
+      "dojoLicenseRef": "schema.level_2@2026-07-01",
+      "dojoEvidenceRefs": [
+        "stale-ifr-checkride"
+      ],
+      "dojoLedgerCheckpointHash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+      "dojoDecisionDigest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+      "implementationStatus": {
+        "executable": true,
+        "productionRuntime": false
+      },
+      "issuedAt": "2026-07-01T16:14:17.312Z",
+      "expiresAt": null,
+      "revokedAt": null,
+      "policyDecision": {
+        "id": "cmr29zwme000zql0ltb9fd17k",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": "cmr29zwm7000xql0lklo9acv5",
+        "displayCallsign": "STALE-IFR",
+        "decision": "block",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_source_drift_expired",
+          "pilot_license_expired"
+        ],
+        "inputDigest": "sha256:1898943a49d14c8bc99423a616ebc1b086fd32009969d39859cb4844701c98e9",
+        "decisionBody": {
+          "status": "blocked",
+          "towerInstruction": "Hold STALE-IFR: IFR pilot license health is required for Class B mutation airspace.",
+          "inspectedZones": [
+            {
+              "zoneKey": "contracts",
+              "label": "Contract runway",
+              "class": "B",
+              "paths": [
+                "packages/contracts/**"
+              ],
+              "rules": [],
+              "risk": "high",
+              "source": "custom",
+              "path": "packages/contracts/**"
+            }
+          ],
+          "dojoProof": {
+            "proofRef": "pcap-stale-ifr",
+            "licenseRef": "schema.level_2@2026-07-01",
+            "evidenceRefs": [
+              "stale-ifr-checkride"
+            ],
+            "ledgerCheckpointHash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+            "decisionDigest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+            "implementationStatus": {
+              "executable": true,
+              "productionRuntime": false
+            },
+            "verification": {
+              "ok": true,
+              "status": "verified",
+              "checkedAt": "2026-07-01T16:14:17.268Z",
+              "source": "dojo_public_proof_verifier",
+              "capsuleId": "pcap-stale-ifr",
+              "keyId": "dojo-pilot-license-key",
+              "proofKeyStatus": "active",
+              "proofKeyIssuer": "dojo-pilot-license-proof-issuer",
+              "proofKeySigningProvider": "ed25519-local",
+              "proofKeyCustody": "local",
+              "signatureVerified": true,
+              "blockedBy": [],
+              "expected": {
+                "required_evidence_claims": [
+                  "codesite.restricted_mutation"
+                ],
+                "ledger_checkpoint_hash": "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+                "requested_action": "codesite.mutation.clearance"
+              },
+              "digest": "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad"
+            }
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zs25000dql0lb7thw8hg",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "STALE-IFR",
+            "status": "expired",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:stale-ifr",
+            "dojoDecisionDigest": "sha256:stale-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:stale-checkride",
+              "stale-ifr-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:pilot-license-source-v1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": true
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_source_drift_expired"
+            ],
+            "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+            "evidenceRefs": [
+              "dojo:evidence:stale-checkride",
+              "pcap-stale-ifr",
+              "schema.level_2@2026-07-01",
+              "d893d4be8a834f6480fe073fb1fbe96527a33e87a616d46468a036d3f1ca7869",
+              "sha256:e7fb6f7ce04842d2d25f786da6dd113dae96e9c43291921e1c431283d373b5ad",
+              "stale-ifr-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:11.405Z",
+              "checkedAt": "2026-07-01T16:14:17.310Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770",
+              "clearanceProofCheckedAt": "2026-07-01T16:14:17.268Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "ACTIVE-IFR",
+                    "STALE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "overlaps": [
+                    [
+                      "packages/contracts/**",
+                      "packages/contracts/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put STALE-IFR in holding",
+                      "Put ACTIVE-IFR in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                },
+                {
+                  "risk": "restricted_airspace_occupancy",
+                  "severity": "medium",
+                  "aircraft": [
+                    "ACTIVE-IFR"
+                  ],
+                  "conflictZone": "packages/contracts/**",
+                  "recommendedResolution": {
+                    "action": "inspect_before_landing",
+                    "steps": [
+                      "Keep route locked",
+                      "Run required radar before commit",
+                      "Attach proof bundle at landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [
+                {
+                  "runway": "packages/contracts/**",
+                  "route": [
+                    "packages/contracts/**"
+                  ],
+                  "occupiedBy": "ACTIVE-IFR",
+                  "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+                  "runwayClass": "B",
+                  "diffPaths": [
+                    "packages/contracts/**"
+                  ],
+                  "pendingInspections": [
+                    "landing_inspection"
+                  ],
+                  "eligibleFlights": []
+                }
+              ],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for STALE-IFR. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null
+        },
+        "createdAt": "2026-07-01T16:14:17.318Z"
+      }
+    }
+  },
+  "health": {
+    "active": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr29zrgd0009ql0lwotlnhzz",
+      "projectId": "cmr29znt00000ql0lvrapjsw1",
+      "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+      "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+      "ownerUserId": "codesite-dev-bypass",
+      "displayCallsign": "ACTIVE-IFR",
+      "status": "active",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+      "dojoLicenseRef": "schema.level_2@2026-07-01",
+      "dojoProofRef": "proof:active-ifr",
+      "dojoDecisionDigest": "sha256:active-license-decision",
+      "repoScope": "codesite-pilot-license-proof-1782922438638",
+      "authorizedAirspace": [
+        "packages/contracts/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "api_contract",
+        "security",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:active-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "evidenceRefs": [
+          "inspection:active-license:1",
+          "inspection:active-license:2",
+          "inspection:active-license:3"
+        ]
+      },
+      "violationStats": {
+        "total": 1,
+        "critical": 0,
+        "latestAt": "2026-07-01T16:14:15.704Z",
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5"
+        ]
+      },
+      "reasonCodes": [
+        "pilot_license_health_active",
+        "pilot_license_source_current",
+        "pilot_license_privileges_earned_by_landings"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:active-checkride",
+        "active-ifr-checkride",
+        "inspection:active-license:1",
+        "inspection:active-license:2",
+        "inspection:active-license:3",
+        "codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-01T16:14:10.621Z",
+        "checkedAt": "2026-07-01T16:14:27.866Z",
+        "latestLandingAt": "2026-07-01T16:14:21.871Z",
+        "latestViolationAt": "2026-07-01T16:14:15.704Z",
+        "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770"
+      }
+    },
+    "stale": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr29zs25000dql0lb7thw8hg",
+      "projectId": "cmr29znt00000ql0lvrapjsw1",
+      "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+      "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+      "ownerUserId": "codesite-dev-bypass",
+      "displayCallsign": "STALE-IFR",
+      "status": "expired",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+      "dojoLicenseRef": "schema.level_2@2026-07-01",
+      "dojoProofRef": "proof:stale-ifr",
+      "dojoDecisionDigest": "sha256:stale-license-decision",
+      "repoScope": "codesite-pilot-license-proof-1782922438638",
+      "authorizedAirspace": [
+        "packages/contracts/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "api_contract",
+        "security",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:stale-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:pilot-license-source-v1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": true
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 4,
+        "critical": 2,
+        "latestAt": "2026-07-01T16:14:23.454Z",
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k",
+          "codesite:pipeline-proof:no-fly-denial",
+          "codesite:cmr29zwme000zql0ltb9fd17k",
+          "codesite:cmr2a01cu001hql0lovz7axy0"
+        ]
+      },
+      "reasonCodes": [
+        "pilot_license_source_drift_expired"
+      ],
+      "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+      "evidenceRefs": [
+        "dojo:evidence:stale-checkride",
+        "stale-ifr-checkride",
+        "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k",
+        "codesite:pipeline-proof:no-fly-denial",
+        "codesite:policy-decision:cmr2a01cu001hql0lovz7axy0"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-01T16:14:11.405Z",
+        "checkedAt": "2026-07-01T16:14:27.866Z",
+        "latestLandingAt": null,
+        "latestViolationAt": "2026-07-01T16:14:23.454Z",
+        "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770"
+      }
+    }
+  },
+  "metrics": {
+    "pilotLicenseViolationRate": {
+      "key": "pilotLicenseViolationRate",
+      "label": "Pilot license violation rate",
+      "unit": "ratio",
+      "value": 0.6667,
+      "sampleSize": 7,
+      "status": "measured",
+      "evidenceRefs": [
+        "cmr29zwme000zql0ltb9fd17k",
+        "dojo:evidence:stale-checkride",
+        "stale-ifr-checkride",
+        "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k",
+        "codesite:pipeline-proof:no-fly-denial",
+        "codesite:policy-decision:cmr2a01cu001hql0lovz7axy0",
+        "cmr2a01d2001jql0lcbs060gz"
+      ],
+      "source": "codesite_control_plane",
+      "generatedAt": "2026-07-01T16:14:27.932Z",
+      "detail": {
+        "numerator": 2,
+        "denominator": 3
+      }
+    }
+  },
+  "controlState": {
+    "towerState": "holding",
+    "requiredActions": [
+      "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg"
+    ],
+    "pilotLicenseSummary": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "statusCounts": {
+        "active": 1,
+        "expired": 1
+      },
+      "active": 1,
+      "blocked": 1,
+      "requiredActions": [
+        "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg"
+      ]
+    }
+  },
+  "artifacts": {
+    "paths": [
+      "manifest.json",
+      "airspace/zones.json",
+      "airspace/no-fly-zones.json",
+      "airspace/class-rules.json",
+      "airspace/compiler-output.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/tower-plan.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/control-state.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/radar-snapshot.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/collision-forecast.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/pilot-license-health.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/metrics.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/events.jsonl",
+      "projects/cmr29znt00000ql0lvrapjsw1/quarantines/index.jsonl",
+      "projects/cmr29znt00000ql0lvrapjsw1/provenance/line-provenance.jsonl",
+      "projects/cmr29znt00000ql0lvrapjsw1/handover.md",
+      "schemas/agent-session.schema.json",
+      "schemas/execution-plan.schema.json",
+      "schemas/mutation-lease.schema.json",
+      "schemas/clearance.schema.json",
+      "schemas/pilot-license-health.schema.json",
+      "schemas/mutation-transaction.schema.json",
+      "schemas/assumption-lease.schema.json",
+      "schemas/document.schema.json",
+      "schemas/event.schema.json",
+      "schemas/codesitefs-prewrite.schema.json",
+      "schemas/codesitefs-quarantine.schema.json",
+      "schemas/inspection-run.schema.json",
+      "schemas/incident.schema.json",
+      "schemas/incident-replay.schema.json",
+      "schemas/proof-bundle.schema.json",
+      "schemas/line-provenance.schema.json",
+      "schemas/control-state.schema.json",
+      "schemas/metrics.schema.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zuun000rql0lz9jgqlt5.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zwme000zql0ltb9fd17k.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr2a01cu001hql0lovz7axy0.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/agent-session.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/pilot-license-health.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/transponder.jsonl",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/landing.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/flight-plan.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/clearance.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/assumptions.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/black-box.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/agent-session.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/pilot-license-health.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/transponder.jsonl",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/landing.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/flight-plan.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/clearance.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/assumptions.json",
+      "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/black-box.json"
+    ],
+    "pilotLicenseHealthPreview": "{\n  \"schemaVersion\": \"synthi.codesite.pilotLicenseHealth.index.v1\",\n  \"summary\": {\n    \"schemaVersion\": \"synthi.codesite.pilotLicenseHealth.v1\",\n    \"statusCounts\": {\n      \"active\": 1,\n      \"expired\": 1\n    },\n    \"active\": 1,\n    \"blocked\": 1,\n    \"requiredActions\": [\n      \"renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg\"\n    ]\n  },\n  \"records\": [\n    {\n      \"schemaVersion\": \"synthi.codesite.pilotLicenseHealth.v1\",\n      \"key\": \"cmr29zrgd0009ql0lwotlnhzz\",\n      \"projectId\": \"cmr29znt00000ql0lvrapjsw1\",\n      \"workspaceSlug\": \"codesite-pilot-license-proof-1782922438638\",\n      \"agentSessionId\": \"cmr29zrgd0009ql0lwotlnhzz\",\n      \"ownerUserId\": \"codesite-dev-bypass\",\n      \"displayCallsign\": \"ACTIVE-IFR\",\n      \"status\": \"active\",\n      \"level\": \"IFR\",\n      \"levelRank\": 3,\n      \"dojoPilotLicenseRef\": \"schema.level_2@2026-07-01\",\n      \"dojoLicenseRef\": \"schema.level_2@2026-07-01\",\n      \"dojoProofRef\": \"proof:active-ifr\",\n      \"dojoDecisionDigest\": \"sha256:active-license-decision\",\n      \"repoScope\": \"codesite-pilot-license-proof-1782922438638\",\n      \"authorizedAirspace\": [\n        \"packages/contracts/**\"\n      ],\n      \"restrictedAirspace\": [],\n      \"requiredRadar\": [\n        \"api_contract\",\n        \"security\",\n        \"tests\"\n      ],\n      \"earnedBy\": [\n        \"dojo:evidence:active-checkride\"\n      ],\n      \"expiresAt\": null,\n      \"expiresOn\": [\n        \"source_drift\"\n      ],\n      \"sourceDrift\": {\n        \"monitored\": true,\n        \"sourceDigest\": \"sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1\",\n        \"currentSourceDigest\": \"sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1\",\n        \"expired\": false\n      },\n      \"landingStats\": {\n        \"total\": 3,\n        \"passed\": 3,\n        \"failed\": 0,\n        \"evidenceRefs\": [\n          \"inspection:active-license:1\",\n          \"inspection:active-license:2\",\n          \"inspection:active-license:3\"\n        ]\n      },\n      \"violationStats\": {\n        \"total\": 1,\n        \"critical\": 0,\n        \"latestAt\": \"2026-07-01T16:14:15.704Z\",\n        \"evidenceRefs\": [\n          \"codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5\"\n        ]\n      },\n      \"reasonCodes\": [\n        \"pilot_license_health_active\",\n        \"pilot_license_source_current\",\n        \"pilot_license_privileges_earned_by_landings\"\n      ],\n      \"requiredAction\": null,\n      \"evidenceRefs\": [\n        \"dojo:evidence:active-checkride\",\n        \"active-ifr-checkride\",\n        \"inspection:active-license:1\",\n        \"inspection:active-license:2\",\n        \"inspection:active-license:3\",\n        \"codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5\"\n      ],\n      \"lifecycle\": {\n        \"issuedAt\": \"2026-07-01T16:14:10.621Z\",\n        \"checkedAt\": \"2026-07-01T16:14:27.926Z\",\n        \"latestLandingAt\": \"2026-07-01T16:14:21.871Z\",\n        \"latestViolationAt\": \"2026-07-01T16:14:15.704Z\",\n        \"sourcePolicyDigest\": \"sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770\"\n      }\n    },\n    {\n      \"schemaVersion\": \"synthi.codesite.pilotLicenseHealth.v1\",\n      \"key\": \"cmr29zs25000dql0lb7thw8hg\",\n      \"projectId\": \"cmr29znt00000ql0lvrapjsw1\",\n      \"workspaceSlug\": \"codesite-pilot-license-proof-1782922438638\",\n      \"agentSessionId\": \"cmr29zs25000dql0lb7thw8hg\",\n      \"ownerUserId\": \"codesite-dev-bypass\",\n      \"displayCallsign\": \"STALE-IFR\",\n      \"status\": \"expired\",\n      \"level\": \"IFR\",\n      \"levelRank\": 3,\n      \"dojoPilotLicenseRef\": \"schema.level_2@2026-07-01\",\n      \"dojoLicenseRef\": \"schema.level_2@2026-07-01\",\n      \"dojoProofRef\": \"proof:stale-ifr\",\n      \"dojoDecisionDigest\": \"sha256:stale-license-decision\",\n      \"repoScope\": \"codesite-pilot-license-proof-1782922438638\",\n      \"authorizedAirspace\": [\n        \"packages/contracts/**\"\n      ],\n      \"restrictedAirspace\": [],\n      \"requiredRadar\": [\n        \"api_contract\",\n        \"security\",\n        \"tests\"\n      ],\n      \"earnedBy\": [\n        \"dojo:evidence:stale-checkride\"\n      ],\n      \"expiresAt\": null,\n      \"expiresOn\": [\n        \"source_drift\"\n      ],\n      \"sourceDrift\": {\n        \"monitored\": true,\n        \"sourceDigest\": \"sha256:pilot-license-source-v1\",\n        \"currentSourceDigest\": \"sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1\",\n        \"expired\": true\n      },\n      \"landingStats\": {\n        \"total\": 0,\n        \"passed\": 0,\n        \"failed\": 0,\n        \"evidenceRefs\": []\n      },\n      \"violationStats\": {\n        \"total\": 4,\n        \"critical\": 2,\n        \"latestAt\": \"2026-07-01T16:14:23.454Z\",\n        \"evidenceRefs\": [\n          \"codesite:policy-decision:cmr29zwme000zql0ltb9fd17k\",\n          \"codesite:pipeline-proof:no-fly-denial\",\n          \"codesite:cmr29zwme000zql0ltb9fd17k\",\n          \"codesite:cmr2a01cu001hql0lovz7axy0\"\n        ]\n      },\n      \"reasonCodes\": [\n        \"pilot_license_source_drift_expired\"\n      ],\n      \"requiredAction\": \"renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg\",\n      \"evidenceRefs\": [\n        \"dojo:evidence:stale-checkride\",\n        \"stale-ifr-checkride\",\n        \"codesite:policy-decision:cmr29zwme000zql0ltb9fd17k\",\n        \"codesite:pipeline-proof:no-fly-denial\",\n        \"codesite:policy-decision:cmr2a01cu001hql0lovz7axy0\"\n      ],\n      \"lifecycle\": {\n        \"issuedAt\": \"2026-07-01T16:14:11.405Z\",\n        \"checkedAt\": \"2026-07-01T16:14:27.926Z\",\n        \"latestLandingAt\": null,\n        \"latestViolationAt\": \"2026-07-01T16:14:23.454Z\",\n        \"sourcePolicyDigest\": \"sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770\"\n      }\n    }\n  ]\n}\n",
+    "export": {
+      "written": true,
+      "root": "/workspace/.synthi/codesite",
+      "files": [
+        "airspace/zones.json",
+        "airspace/no-fly-zones.json",
+        "airspace/class-rules.json",
+        "airspace/compiler-output.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/tower-plan.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/control-state.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/radar-snapshot.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/collision-forecast.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/pilot-license-health.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/metrics.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/events.jsonl",
+        "projects/cmr29znt00000ql0lvrapjsw1/quarantines/index.jsonl",
+        "projects/cmr29znt00000ql0lvrapjsw1/provenance/line-provenance.jsonl",
+        "projects/cmr29znt00000ql0lvrapjsw1/handover.md",
+        "schemas/agent-session.schema.json",
+        "schemas/execution-plan.schema.json",
+        "schemas/mutation-lease.schema.json",
+        "schemas/clearance.schema.json",
+        "schemas/pilot-license-health.schema.json",
+        "schemas/mutation-transaction.schema.json",
+        "schemas/assumption-lease.schema.json",
+        "schemas/document.schema.json",
+        "schemas/event.schema.json",
+        "schemas/codesitefs-prewrite.schema.json",
+        "schemas/codesitefs-quarantine.schema.json",
+        "schemas/inspection-run.schema.json",
+        "schemas/incident.schema.json",
+        "schemas/incident-replay.schema.json",
+        "schemas/proof-bundle.schema.json",
+        "schemas/line-provenance.schema.json",
+        "schemas/control-state.schema.json",
+        "schemas/metrics.schema.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zuun000rql0lz9jgqlt5.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr29zwme000zql0ltb9fd17k.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/policy-decisions/cmr2a01cu001hql0lovz7axy0.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/agent-session.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/pilot-license-health.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/transponder.jsonl",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/landing.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/flight-plan.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/clearance.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/assumptions.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/ACTIVE-IFR/black-box.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/agent-session.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/pilot-license-health.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/transponder.jsonl",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/landing.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/flight-plan.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/clearance.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/assumptions.json",
+        "projects/cmr29znt00000ql0lvrapjsw1/flights/STALE-IFR/black-box.json",
+        "manifest.json"
+      ],
+      "pilotLicenseHealthPath": ".synthi/codesite/projects/cmr29znt00000ql0lvrapjsw1/pilot-license-health.json",
+      "pilotLicenseHealth": {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.index.v1",
+        "summary": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "statusCounts": {
+            "active": 1,
+            "expired": 1
+          },
+          "active": 1,
+          "blocked": 1,
+          "requiredActions": [
+            "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg"
+          ]
+        },
+        "records": [
+          {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zrgd0009ql0lwotlnhzz",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zrgd0009ql0lwotlnhzz",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "ACTIVE-IFR",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:active-ifr",
+            "dojoDecisionDigest": "sha256:active-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:active-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 3,
+              "passed": 3,
+              "failed": 0,
+              "evidenceRefs": [
+                "inspection:active-license:1",
+                "inspection:active-license:2",
+                "inspection:active-license:3"
+              ]
+            },
+            "violationStats": {
+              "total": 1,
+              "critical": 0,
+              "latestAt": "2026-07-01T16:14:15.704Z",
+              "evidenceRefs": [
+                "codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5"
+              ]
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_privileges_earned_by_landings"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:active-checkride",
+              "active-ifr-checkride",
+              "inspection:active-license:1",
+              "inspection:active-license:2",
+              "inspection:active-license:3",
+              "codesite:policy-decision:cmr29zuun000rql0lz9jgqlt5"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:10.621Z",
+              "checkedAt": "2026-07-01T16:14:25.726Z",
+              "latestLandingAt": "2026-07-01T16:14:21.871Z",
+              "latestViolationAt": "2026-07-01T16:14:15.704Z",
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770"
+            }
+          },
+          {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr29zs25000dql0lb7thw8hg",
+            "projectId": "cmr29znt00000ql0lvrapjsw1",
+            "workspaceSlug": "codesite-pilot-license-proof-1782922438638",
+            "agentSessionId": "cmr29zs25000dql0lb7thw8hg",
+            "ownerUserId": "codesite-dev-bypass",
+            "displayCallsign": "STALE-IFR",
+            "status": "expired",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-07-01",
+            "dojoLicenseRef": "schema.level_2@2026-07-01",
+            "dojoProofRef": "proof:stale-ifr",
+            "dojoDecisionDigest": "sha256:stale-license-decision",
+            "repoScope": "codesite-pilot-license-proof-1782922438638",
+            "authorizedAirspace": [
+              "packages/contracts/**"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "api_contract",
+              "security",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:evidence:stale-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:pilot-license-source-v1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": true
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 4,
+              "critical": 2,
+              "latestAt": "2026-07-01T16:14:23.454Z",
+              "evidenceRefs": [
+                "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k",
+                "codesite:pipeline-proof:no-fly-denial",
+                "codesite:cmr29zwme000zql0ltb9fd17k",
+                "codesite:cmr2a01cu001hql0lovz7axy0"
+              ]
+            },
+            "reasonCodes": [
+              "pilot_license_source_drift_expired"
+            ],
+            "requiredAction": "renew_pilot_license_source:cmr29zs25000dql0lb7thw8hg",
+            "evidenceRefs": [
+              "dojo:evidence:stale-checkride",
+              "stale-ifr-checkride",
+              "codesite:policy-decision:cmr29zwme000zql0ltb9fd17k",
+              "codesite:pipeline-proof:no-fly-denial",
+              "codesite:policy-decision:cmr2a01cu001hql0lovz7axy0"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-01T16:14:11.405Z",
+              "checkedAt": "2026-07-01T16:14:25.727Z",
+              "latestLandingAt": null,
+              "latestViolationAt": "2026-07-01T16:14:23.454Z",
+              "sourcePolicyDigest": "sha256:87be9b9e0803ff738fe4ebaf838995c83ca8bf2eb9ae68c4324869128ca8b770"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "codesiteFs": {
+    "deniedWrite": {
+      "ok": false,
+      "disposition": "write_denied",
+      "path": "secrets/prod.env",
+      "source": "codesitefs",
+      "tool": "file_write",
+      "matchedLease": null,
+      "policyDecision": {
+        "id": "cmr2a01cu001hql0lovz7axy0",
+        "projectId": "cmr29znt00000ql0lvrapjsw1",
+        "mutationLeaseId": null,
+        "displayCallsign": "STALE-IFR",
+        "decision": "block",
+        "reasonCodes": [
+          "entered_no_fly_zone"
+        ],
+        "inputDigest": "sha256:f92de15479be7666264bb95444aff234df8a8928463ffc866f3b860a8d589a8c",
+        "decisionBody": {
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "source": "codesitefs",
+          "zone": {
+            "zoneKey": "unclassified",
+            "label": "Unclassified repo airspace",
+            "class": "C",
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ],
+            "path": "secrets/prod.env"
+          },
+          "matchedLeaseId": null,
+          "inspectedLeases": [
+            {
+              "mutationLeaseId": "cmr29zuud000pql0lrr2b6hde",
+              "displayCallsign": "ACTIVE-IFR",
+              "ok": false,
+              "reasonCodes": [
+                "entered_no_fly_zone"
+              ]
+            }
+          ],
+          "towerInstruction": "Write preflight blocked for secrets/prod.env. Request clearance or quarantine outside the real repo."
+        },
+        "createdAt": "2026-07-01T16:14:23.454Z"
+      },
+      "reasonCodes": [
+        "entered_no_fly_zone"
+      ]
+    },
+    "repoMutated": false
+  },
+  "events": [
+    {
+      "id": "cmr29znuj0007ql0lnwksykx1",
+      "eventType": "tower_instruction",
+      "displayCallsign": null,
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zrgm000bql0ljorgfpjg",
+      "eventType": "transponder_update",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zs2c000fql0la1wazfyo",
+      "eventType": "transponder_update",
+      "displayCallsign": "STALE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zsuj000jql0l1oea4mkt",
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29ztyj000nql0lahvquxpk",
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "STALE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zuuw000tql0lgaxdbhr7",
+      "eventType": "clearance_issued",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": [
+        "restricted_airspace_requires_inspection",
+        "dojo_clearance_proof_verified",
+        "dojo_public_proof_signature_verified",
+        "schema_first_leader_clearance",
+        "pilot_license_health_active",
+        "pilot_license_source_current",
+        "pilot_license_from_verified_dojo_proof",
+        "pilot_license_level_authorized"
+      ]
+    },
+    {
+      "id": "cmr29zvdj000vql0l9ennpbfx",
+      "eventType": "near_miss",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zwml0011ql0l9k8wl346",
+      "eventType": "holding_pattern",
+      "displayCallsign": "STALE-IFR",
+      "reasonCodes": [
+        "restricted_airspace_requires_inspection",
+        "dojo_clearance_proof_verified",
+        "dojo_public_proof_signature_verified",
+        "schema_first_leader_clearance",
+        "pilot_license_source_drift_expired",
+        "pilot_license_expired"
+      ]
+    },
+    {
+      "id": "cmr29zxkd0013ql0l8098hk7p",
+      "eventType": "near_miss",
+      "displayCallsign": "STALE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zyjf0017ql0lll9eacyq",
+      "eventType": "landing_requested",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr29zzbt001bql0lhhl3ud5m",
+      "eventType": "landing_requested",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr2a0052001fql0l5yakxdck",
+      "eventType": "landing_requested",
+      "displayCallsign": "ACTIVE-IFR",
+      "reasonCodes": []
+    },
+    {
+      "id": "cmr2a01d2001jql0lcbs060gz",
+      "eventType": "write_denied",
+      "displayCallsign": "STALE-IFR",
+      "reasonCodes": [
+        "entered_no_fly_zone"
+      ]
+    },
+    {
+      "id": "cmr2a02gk001lql0lixsqz51b",
+      "eventType": "black_box_closed",
+      "displayCallsign": null,
+      "reasonCodes": []
+    }
+  ],
+  "visual": {
+    "desktop": "codesite-pilot-license-desktop.png",
+    "panel": "codesite-pilot-license-panel.png",
+    "mobile": "codesite-pilot-license-mobile.png"
+  },
+  "generatedAt": "2026-07-01T16:14:56.815Z",
+  "assertions": {
+    "activeLeaseIssued": true,
+    "staleLeaseBlocked": true,
+    "activeHealthActive": true,
+    "activeHealthEarnedPrivilege": true,
+    "staleHealthExpired": true,
+    "staleSourceDriftExpired": true,
+    "staleReasonRecorded": true,
+    "requiredActionQueued": true,
+    "metricMeasured": true,
+    "metricBoundedByClearanceAttempts": true,
+    "artifactProjected": true,
+    "durableArtifactProjected": true,
+    "noFlyWriteDeniedBeforeMutation": true,
+    "uiScreenshotsCaptured": true
+  }
+}

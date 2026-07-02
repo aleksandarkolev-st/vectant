@@ -1,0 +1,103 @@
+{
+  "generatedAt": "2026-07-01T04:55:32.548Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-repo-local-autosync-proof-1782881583775",
+  "artifactRoot": "/workspace/.synthi/codesite",
+  "project": {
+    "id": "cmr1lpkdl0000ob5cvl6p4hvm",
+    "title": "Repo-local autosync proof",
+    "route": "/workspace/codesite-repo-local-autosync-proof-1782881583775/codesite"
+  },
+  "sessions": {
+    "ui": "cmr1lpsh3001sob5c7cpw8mdh",
+    "contract": "cmr1lpu8h001wob5ckxg9wn5h"
+  },
+  "transactions": {
+    "ui": "cmr1lq52l002kob5crxtobl2l",
+    "contract": "cmr1lqkcz0030ob5c4fe5ykw6"
+  },
+  "proofBundle": {
+    "id": "cmr1lqzvt003gob5cywghyw67",
+    "path": "/workspace/.synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.proof.json",
+    "trailersPath": "/workspace/.synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.trailers.txt"
+  },
+  "controlStateSummary": {
+    "afterRfi": [
+      "ack_event:cmr1lqab8002uob5c8d27jpm3"
+    ],
+    "afterAck": [],
+    "afterInvalidation": [
+      "rebase_assumption:cmr1lq7t8002oob5c8wyzqo3f"
+    ],
+    "final": [
+      "rebase_assumption:cmr1lq7t8002oob5c8wyzqo3f"
+    ]
+  },
+  "checkpoints": [
+    {
+      "name": "Project opened",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/control-state.json",
+      "state": "tower=active"
+    },
+    {
+      "name": "RFI inbox routed",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/inbox/CONTRACT-01/cmr1lqab8002uob5c8d27jpm3.json",
+      "state": "status=pending, redacted=[redacted]"
+    },
+    {
+      "name": "Inbox acknowledged",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/inbox/CONTRACT-01/cmr1lqab8002uob5c8d27jpm3.json",
+      "state": "status=acknowledged"
+    },
+    {
+      "name": "Assumption invalidated",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/flights/UI-01/assumptions.json",
+      "state": "signup.contract.v1:invalidated"
+    },
+    {
+      "name": "Proof bundle projected",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.proof.json",
+      "state": "landing=completed"
+    },
+    {
+      "name": "Proof trailers projected",
+      "path": ".synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.trailers.txt",
+      "state": "contains transaction cmr1lqkcz0030ob5c4fe5ykw6"
+    }
+  ],
+  "verifier": {
+    "ok": true,
+    "reasonCodes": [
+      "proof_bundle_schema_valid",
+      "proof_bundle_required_fields_present",
+      "proof_bundle_digest_valid",
+      "proof_commit_trailers_match"
+    ],
+    "errors": [],
+    "warnings": [],
+    "bundlePath": "/workspace/.synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.proof.json",
+    "trailersPath": "/workspace/.synthi/codesite/projects/cmr1lpkdl0000ob5cvl6p4hvm/proof-bundles/cmr1lqzvt003gob5cywghyw67.trailers.txt",
+    "expectedPortableDigest": "sha256:bba1e5fc6344604987c8a6a9303be96d5b069bd5b51d10b4f1e70c625ffd091b",
+    "legacyDatePortableDigest": "sha256:9984005651da2ee0ef3b398b463a1953b0d6a65da5f3ed6e696197863607694f",
+    "observedPortableDigest": "sha256:bba1e5fc6344604987c8a6a9303be96d5b069bd5b51d10b4f1e70c625ffd091b",
+    "transactionId": "cmr1lqkcz0030ob5c4fe5ykw6",
+    "mutationLeaseId": "cmr1lq26o002eob5c15kayar3",
+    "readSetDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "writeSetDigest": "sha256:be46e36a6ea7b043e35851ba3256858fc6c40ce78edcaeb820e7aabb96252370",
+    "blackBoxDigest": "sha256:8d95df4b73c910b4cc9cfd11d8770a5f709fdddea2c066439920f16e96698313"
+  },
+  "assertions": {
+    "noExplicitArtifactExport": true,
+    "manifestWrittenAfterProjectCreate": true,
+    "projectControlStateWritten": true,
+    "eventJsonlWritten": true,
+    "rfiInboxWrittenAfterRouting": true,
+    "rfiPayloadRedacted": true,
+    "ackRequiredActionProjected": true,
+    "ackStatusProjected": true,
+    "assumptionInvalidatedProjected": true,
+    "proofBundleProjected": true,
+    "proofBundleVerifierPassed": true,
+    "finalControlStillRequiresRebase": true
+  }
+}

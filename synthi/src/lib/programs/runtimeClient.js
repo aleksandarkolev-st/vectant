@@ -47,10 +47,10 @@ export async function getProgramRuntimeSession(workspaceSlug, sessionId) {
   return data.session || null;
 }
 
-export async function launchProgramRuntime({ workspaceSlug, sessionId, command, userId, title = null, timeout = 60000, env = {} }) {
+export async function launchProgramRuntime({ workspaceSlug, sessionId, command, userId, title = null, timeout = 60000, env = {}, codeSiteContext = null }) {
   const launch = await requestJson(`/exec-terminal/${encodeURIComponent(workspaceSlug)}`, {
     method: 'POST',
-    body: JSON.stringify({ sessionId, command, userId, name: title, timeout, env }),
+    body: JSON.stringify({ sessionId, command, userId, name: title, timeout, env, codeSiteContext }),
   });
   const runtimeSession = await getProgramRuntimeSession(workspaceSlug, sessionId).catch(() => null);
   return {
@@ -66,10 +66,10 @@ export async function launchProgramRuntime({ workspaceSlug, sessionId, command, 
  * `{ runtimeScope, stdout, stderr, exitCode, timedOut }`. Throws with
  * `error.status === 409` (`runtime_pod_not_ready`) when no runtime pod is ready.
  */
-export async function execInWorkspaceRuntime(workspaceSlug, { command, timeout } = {}) {
+export async function execInWorkspaceRuntime(workspaceSlug, { command, timeout, codeSiteContext = null } = {}) {
   return requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/exec`, {
     method: 'POST',
-    body: JSON.stringify({ command, ...(timeout != null ? { timeout } : {}) }),
+    body: JSON.stringify({ command, ...(timeout != null ? { timeout } : {}), codeSiteContext }),
   });
 }
 
@@ -141,10 +141,10 @@ export async function fetchDetectedRepoProgram(workspaceSlug, userId = '') {
  *
  * @returns {Promise<object|null>} the managed session snapshot
  */
-export async function launchInstalledProgram({ workspaceSlug, sessionId, config, userId = '', title = null }) {
+export async function launchInstalledProgram({ workspaceSlug, sessionId, config, userId = '', title = null, codeSiteContext = null }) {
   const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/launch-program`, {
     method: 'POST',
-    body: JSON.stringify({ sessionId, userId, title, config }),
+    body: JSON.stringify({ sessionId, userId, title, config, codeSiteContext }),
   });
   return data.session || null;
 }

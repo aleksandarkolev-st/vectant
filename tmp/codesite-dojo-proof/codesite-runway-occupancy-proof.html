@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Runway Occupancy Proof</title>
+<style>
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0f;color:#f5f7fb}
+body{margin:0;padding:28px;background:#080a0f}
+main{max-width:1120px;margin:0 auto;display:grid;gap:18px}
+.hero,.card{border:1px solid #293246;border-radius:8px;background:#10151f;padding:18px}
+.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
+h1{font-size:25px;margin:8px 0 6px;letter-spacing:0}
+h2{font-size:16px;margin:0 0 10px;letter-spacing:0}
+p{margin:0;color:#afbad0;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.label{font-size:12px;color:#98a2b8}
+.value{margin-top:6px;font-size:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-top:1px solid #293246;padding:8px;text-align:left;vertical-align:top}
+th{color:#afbad0;font-weight:600}
+pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#05060a;padding:14px;color:#cbd3e7;font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<span class="pass">PASS</span>
+<h1>CodeSite Runway Occupancy Proof</h1>
+<p>Live Docker workflow proving runway occupancy is derived from real active clearances and transaction write sets, then rendered in the CodeSite operator UI.</p>
+</section>
+<section class="grid">
+<div class="card"><div class="label">Workspace</div><div class="value">codesite-runway-occupancy-proof-1782893977229</div></div>
+<div class="card"><div class="label">Project</div><div class="value">cmr1t1zrl002zob5bkwmoh342</div></div>
+<div class="card"><div class="label">Lease</div><div class="value">cmr1t2exy005fob5bb0qok7zl</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">cmr1t2h87005lob5bj4o4kebs</div></div>
+</section>
+<section class="card">
+<h2>Runway Board Source</h2>
+<table><thead><tr><th>Runway</th><th>Occupied by</th><th>Diff</th><th>Pending</th><th>Can land</th></tr></thead><tbody>
+<tr>
+<td>services/checkout/**</td>
+<td>RUNWAY-01</td>
+<td>services/checkout/handler.ts</td>
+<td>api_contract_radar, inspection:QA-RUNWAY-01</td>
+<td>DOCS-02</td>
+</tr>
+</tbody></table>
+</section>
+<section class="card"><h2>Assertions</h2><pre>{
+  &quot;runwayFromControlState&quot;: true,
+  &quot;occupiedByLeaseCallsign&quot;: true,
+  &quot;diffFromTransactionWriteSet&quot;: true,
+  &quot;pendingInspectionFromZoneRule&quot;: true,
+  &quot;pendingInspectionFromInspectionRun&quot;: true,
+  &quot;nonOverlappingFlightCanLand&quot;: true,
+  &quot;overlappingFlightCannotLand&quot;: true,
+  &quot;browserBoardVisible&quot;: true,
+  &quot;browserShowsRunwayDiff&quot;: true,
+  &quot;browserShowsPendingInspection&quot;: true,
+  &quot;browserShowsPendingInspectionRun&quot;: true,
+  &quot;browserShowsEligibleFlight&quot;: true,
+  &quot;browserHidesConflictingFlight&quot;: true,
+  &quot;browserNoHorizontalOverflow&quot;: true
+}</pre></section>
+</main>
+</body>
+</html>

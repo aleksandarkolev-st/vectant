@@ -1,14 +1,22 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import prisma from '@/lib/prisma';
-import { buildArtifactProjection, codesiteSchemas, writeArtifactProjection } from './artifacts';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
+import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
-import { buildProofBundle as buildPortableProofBundle } from './proof';
+import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
+import { buildCodeSiteMetrics } from './metrics';
 import {
   buildCodeSiteDojoProofInput,
   summarizeCodeSiteDojoProof,
   verifyCodeSiteDojoProof,
 } from './dojoProof';
+import {
+  applyPilotLicenseHealthGate,
+  buildPilotLicenseHealthForClearance,
+  buildPilotLicenseHealthRecords,
+  pilotLicenseHealthSummary,
+} from './pilotLicense';
 import {
   classifyPath,
   compileZonePolicy,
@@ -20,21 +28,49 @@ import {
   normalizePathList,
   pathsForRoute,
   predictCollisions,
+  validateCodeSiteEventType,
 } from './policy';
-import { discoverRepoPolicySignals } from './repoPolicyCompiler';
+import { discoverRepoPolicySignals, REPO_POLICY_COMPILER_VERSION } from './repoPolicyCompiler';
 import {
   buildReadSnapshotEvidence,
   normalizeReadSnapshotEvidence,
   resolveCodeSiteRepoRoot,
   validateReadSnapshotEvidence,
 } from './repoSnapshot';
+import {
+  codeSiteEvidenceRefsJson,
+  firstCodeSiteRef,
+} from './substrateIdentity';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
+const SUPPORTED_TRANSACTION_ISOLATION = 'serializable';
+const DEFAULT_TOWER_SIMULATION_STRATEGIES = [
+  'schema-first',
+  'backend-first',
+  'frontend-backend-parallel',
+  'single-fullstack-agent',
+  'test-first',
+];
+const RADAR_INSPECTION_ADAPTERS = [
+  { key: 'clearance', label: 'Clearance radar', evidencePrefix: 'clearance:run', aliases: ['clearance', 'diff', 'scope'] },
+  { key: 'type', label: 'Type radar', evidencePrefix: 'typecheck:run', aliases: ['type', 'typecheck', 'tsc', 'schema_compatibility'] },
+  { key: 'tests', label: 'Test radar', evidencePrefix: 'test:run', aliases: ['test', 'tests', 'unit_tests', 'integration_tests', 'e2e', 'vitest', 'jest', 'playwright'] },
+  { key: 'api_contract', label: 'API contract radar', evidencePrefix: 'api-contract:run', aliases: ['api', 'api_contract', 'contract', 'openapi', 'schema_contract'] },
+  { key: 'security', label: 'Security radar', evidencePrefix: 'security:scan', aliases: ['security', 'secret', 'secrets', 'auth', 'injection', 'rate_limit'] },
+  { key: 'migration', label: 'Migration radar', evidencePrefix: 'migration:plan', aliases: ['migration', 'migrations', 'rollback', 'database'] },
+  { key: 'ui', label: 'UI radar', evidencePrefix: 'ui:screenshot', aliases: ['ui', 'visual', 'screenshot', 'responsive', 'visual_drift'] },
+  { key: 'accessibility', label: 'Accessibility radar', evidencePrefix: 'accessibility:audit', aliases: ['accessibility', 'a11y', 'labels', 'keyboard', 'contrast'] },
+  { key: 'runtime', label: 'Runtime radar', evidencePrefix: 'runtime:event', aliases: ['runtime', 'health', 'ports', 'logs', 'start'] },
+  { key: 'performance', label: 'Performance radar', evidencePrefix: 'performance:budget', aliases: ['performance', 'perf', 'latency', 'bundle', 'query_budget'] },
+  { key: 'handover', label: 'Handover radar', evidencePrefix: 'handover:packet', aliases: ['handover', 'handoff', 'packet', 'review_packet'] },
+];
+const PROMOTED_POLICY_DELTA_STATES = new Set(['accepted', 'active', 'promoted', 'validated']);
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
   'clearance.issued',
+  'read.observed',
   'write.attempted',
   'write.denied',
   'snapshot.taken',
@@ -46,8 +82,47 @@ const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.committed',
   'transaction.aborted',
 ];
+const TRANSACTION_BLACK_BOX_EVENT_TYPES = new Set([
+  'flight_plan_filed',
+  'clearance_requested',
+  'clearance_issued',
+  'transaction_opened',
+  'transaction_validated',
+  'transaction_committed',
+  'transaction_aborted',
+  'assumption_recorded',
+  'assumption_invalidated',
+  'read_observed',
+  'write_attempted',
+  'write_allowed',
+  'write_denied',
+  'write_quarantined',
+  'quarantine_reviewed',
+  'quarantine_replayed',
+  'quarantine_applied',
+  'snapshot_taken',
+  'transponder_update',
+  'route_deviation',
+  'holding_pattern',
+  'tower_instruction',
+  'rfi',
+  'change_order',
+  'mayday',
+  'ground_stop',
+  'landing_requested',
+  'radar_result',
+  'inspection_result',
+  'shadow_run',
+  'arbiter_verdict',
+  'near_miss',
+  'policy_delta_proposed',
+  'policy_delta_promoted',
+  'policy_delta_rejected',
+  'black_box_closed',
+]);
 
 const PROJECT_INCLUDE = {
+  members: true,
   agentSessions: true,
   executionPlans: true,
   mutationLeases: true,
@@ -65,11 +140,247 @@ const PROJECT_INCLUDE = {
   inboxItems: true,
 };
 
-export async function listProjects(workspaceSlug) {
+const PROJECT_READ_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'observer', 'viewer', 'read']);
+const PROJECT_WRITE_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'write']);
+const PROJECT_MEMBER_MANAGE_ROLES = new Set(['owner', 'admin', 'tower']);
+const PROJECT_MAYDAY_RESUME_ROLES = new Set(['owner', 'admin', 'tower']);
+
+function actorUserId(actor = null) {
+  return actor?.userId || actor?.workspaceUserId || null;
+}
+
+function projectMembershipDelegate() {
+  return prisma.codeSiteProjectMember || null;
+}
+
+function projectRoleAllows(role, mode = 'read') {
+  const normalized = String(role || '').toLowerCase();
+  if (mode === 'members:manage') return PROJECT_MEMBER_MANAGE_ROLES.has(normalized);
+  if (mode === 'mayday:resume') return PROJECT_MAYDAY_RESUME_ROLES.has(normalized);
+  if (mode === 'write') return PROJECT_WRITE_ROLES.has(normalized);
+  return PROJECT_READ_ROLES.has(normalized) || PROJECT_WRITE_ROLES.has(normalized);
+}
+
+function projectPermissionAllows(member, mode = 'read') {
+  if (!member || member.revokedAt || member.participationStatus === 'disabled') return false;
+  const permissions = parseJson(member.permissionsJson, null);
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    return projectRoleAllows(member.role, mode);
+  }
+  const set = new Set(permissions.map((permission) => String(permission || '').toLowerCase()));
+  if (set.has('*') || set.has('project:*')) return true;
+  if (mode === 'members:manage') return set.has('project:members:manage');
+  if (mode === 'mayday:resume') return set.has('mayday:resume') || set.has('mayday:override_resume');
+  if (mode === 'write') return set.has('project:write');
+  return set.has('project:read') || set.has('project:write');
+}
+
+function rolePermissions(role) {
+  const normalized = String(role || '').toLowerCase();
+  if (['owner', 'admin', 'tower'].includes(normalized)) {
+    return [
+      'project:read',
+      'project:write',
+      'project:members:manage',
+      'agent:any',
+      'document:file',
+      'inspection:manage',
+      'mayday:declare',
+      'mayday:resume',
+      'mayday:override_resume',
+    ];
+  }
+  if (['operator', 'agent', 'contributor'].includes(normalized)) {
+    return ['project:read', 'project:write', 'agent:own', 'document:file', 'mayday:declare'];
+  }
+  if (normalized === 'inspector') {
+    return ['project:read', 'document:file', 'inspection:manage', 'mayday:declare'];
+  }
+  return ['project:read'];
+}
+
+function projectMembershipProjection(member) {
+  return {
+    id: member.id,
+    projectId: member.projectId,
+    workspaceSlug: member.workspaceSlug,
+    userId: member.userId,
+    role: member.role,
+    permissions: parseJson(member.permissionsJson, []),
+    redactionPolicy: parseJson(member.redactionPolicyJson, null),
+    participationStatus: member.participationStatus || 'enabled',
+    source: member.source,
+    createdByUserId: member.createdByUserId || null,
+    revokedAt: member.revokedAt || null,
+    createdAt: member.createdAt,
+    updatedAt: member.updatedAt,
+  };
+}
+
+export async function upsertProjectMember(workspaceSlugOrInput, projectIdArg, bodyArg = {}, actorArg = null) {
+  if (typeof workspaceSlugOrInput === 'object' && workspaceSlugOrInput) {
+    return upsertProjectMemberRecord(workspaceSlugOrInput);
+  }
+  const workspaceSlug = workspaceSlugOrInput;
+  const project = await requireProject(workspaceSlug, projectIdArg, actorArg, 'members:manage');
+  const userId = bodyArg.userId || bodyArg.user_id || bodyArg.ownerUserId || bodyArg.owner_user_id;
+  if (!userId) throw badRequest('codesite_project_member_user_required');
+  const member = await upsertProjectMemberRecord({
+    projectId: project.id,
+    workspaceSlug,
+    userId,
+    role: bodyArg.role || 'agent',
+    permissions: bodyArg.permissions,
+    redactionPolicy: bodyArg.redactionPolicy || bodyArg.redaction_policy,
+    participationStatus: bodyArg.participationStatus || bodyArg.participation_status || 'enabled',
+    source: 'project_member_api',
+    createdByUserId: actorUserId(actorArg),
+  });
+  await recordEvent(project.id, {
+    eventType: 'tower_instruction',
+    actorType: 'human',
+    actorId: actorUserId(actorArg),
+    details: {
+      type: 'project_member_upserted',
+      userId,
+      role: member?.role || bodyArg.role || 'agent',
+      participationStatus: member?.participationStatus || bodyArg.participationStatus || 'enabled',
+    },
+  });
+  return projectMembershipProjection(member);
+}
+
+async function upsertProjectMemberRecord({ projectId, workspaceSlug, userId, role = 'agent', permissions = null, redactionPolicy = null, participationStatus = 'enabled', source = 'agent_session_owner', createdByUserId = null }) {
+  const delegate = projectMembershipDelegate();
+  if (!delegate || !projectId || !workspaceSlug || !userId) return null;
+  const existing = await delegate.findUnique({
+    where: { projectId_userId: { projectId, userId } },
+  }).catch(() => null);
+  const nextRole = projectPermissionAllows(existing, 'write') ? existing.role : role;
+  const nextPermissions = permissions || existing?.permissionsJson && parseJson(existing.permissionsJson, null) || rolePermissions(nextRole);
+  return delegate.upsert({
+    where: { projectId_userId: { projectId, userId } },
+    update: {
+      workspaceSlug,
+      role: nextRole,
+      source: existing?.source || source,
+      permissionsJson: stringifyJson(nextPermissions),
+      redactionPolicyJson: redactionPolicy == null ? existing?.redactionPolicyJson || null : stringifyJson(redactionPolicy),
+      participationStatus: participationStatus || existing?.participationStatus || 'enabled',
+      revokedAt: null,
+    },
+    create: {
+      projectId,
+      workspaceSlug,
+      userId,
+      role,
+      permissionsJson: stringifyJson(permissions || rolePermissions(role)),
+      redactionPolicyJson: redactionPolicy == null ? null : stringifyJson(redactionPolicy),
+      participationStatus: participationStatus || 'enabled',
+      source,
+      createdByUserId,
+    },
+  }).catch(() => null);
+}
+
+async function upsertMissionProjectMembers({ projectId, workspaceSlug, missions = [], createdByUserId = null }) {
+  const ownerIds = unique(asArray(missions).flatMap((mission) => [
+    mission?.ownerUserId,
+    mission?.owner_user_id,
+    mission?.userId,
+    mission?.user_id,
+  ]).filter(Boolean));
+  await Promise.all(ownerIds.map((userId) => upsertProjectMember({
+    projectId,
+    workspaceSlug,
+    userId,
+    role: 'agent',
+    source: 'mission_owner',
+    createdByUserId,
+  })));
+}
+
+export async function listProjectMembers(workspaceSlug, projectId, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const delegate = projectMembershipDelegate();
+  const members = delegate
+    ? await delegate.findMany({ where: { projectId: project.id }, orderBy: [{ revokedAt: 'asc' }, { createdAt: 'asc' }] }).catch(() => [])
+    : [];
+  return members.map(projectMembershipProjection);
+}
+
+export async function revokeProjectMember(workspaceSlug, projectId, userId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'members:manage');
+  const delegate = projectMembershipDelegate();
+  if (!delegate) throw badRequest('codesite_project_membership_unavailable');
+  const member = await delegate.findUnique({ where: { projectId_userId: { projectId: project.id, userId } } });
+  if (!member) throw notFound('codesite_project_member_not_found');
+  if (member.userId === project.createdByUserId && member.role === 'owner') {
+    throw badRequest('codesite_project_owner_revoke_forbidden');
+  }
+  const updated = await delegate.update({
+    where: { projectId_userId: { projectId: project.id, userId } },
+    data: {
+      revokedAt: new Date(),
+      participationStatus: 'disabled',
+      source: body.reason ? `revoked:${String(body.reason).slice(0, 80)}` : 'revoked',
+    },
+  });
+  await recordEvent(project.id, {
+    eventType: 'tower_instruction',
+    actorType: 'human',
+    actorId: actorUserId(actor),
+    details: {
+      type: 'project_member_revoked',
+      userId,
+      reason: body.reason || null,
+    },
+  });
+  return projectMembershipProjection(updated);
+}
+
+function projectHasLegacyActorAccess(project, actor = null, mode = 'read') {
+  const userId = actorUserId(actor);
+  if (!userId) return false;
+  if (project.createdByUserId && project.createdByUserId === userId) return true;
+  if (mode === 'read') {
+    return asArray(project.agentSessions).some((session) => session.ownerUserId === userId);
+  }
+  return false;
+}
+
+async function actorCanAccessProject(project, actor = null, mode = 'read') {
+  if (!actor || actor.bypass) return true;
+  const userId = actorUserId(actor);
+  if (!userId) return false;
+  if (projectHasLegacyActorAccess(project, actor, mode)) return true;
+  const embedded = asArray(project.members).find((member) => member.userId === userId);
+  if (projectPermissionAllows(embedded, mode)) return true;
+  const delegate = projectMembershipDelegate();
+  if (!delegate || !project?.id) return false;
+  const member = await delegate.findFirst({
+    where: {
+      projectId: project.id,
+      userId,
+    },
+  }).catch(() => null);
+  return projectPermissionAllows(member, mode);
+}
+
+async function requireProjectAccess(project, actor = null, mode = 'read') {
+  if (await actorCanAccessProject(project, actor, mode)) return project;
+  throw forbidden(mode === 'write' ? 'codesite_project_write_forbidden' : 'codesite_project_not_found', {
+    projectId: project?.id || null,
+    actorUserId: actorUserId(actor),
+  });
+}
+
+export async function listProjects(workspaceSlug, actor = null) {
   const projects = await prisma.codeSiteProject.findMany({
     where: { workspaceSlug },
     orderBy: { updatedAt: 'desc' },
     include: {
+      members: true,
       agentSessions: true,
       executionPlans: true,
       mutationLeases: true,
@@ -77,7 +388,13 @@ export async function listProjects(workspaceSlug) {
       inspectionRuns: true,
     },
   });
-  return projects.map(projectSummary);
+  const visible = [];
+  for (const project of projects) {
+    if (await actorCanAccessProject(project, actor, 'read')) {
+      visible.push(project);
+    }
+  }
+  return visible.map(projectSummary);
 }
 
 export async function createProject(workspaceSlug, actor, body = {}) {
@@ -96,6 +413,20 @@ export async function createProject(workspaceSlug, actor, body = {}) {
       controlPlanJson: stringifyJson(controlPlan),
       createdByUserId: actor?.userId || null,
     },
+  });
+  await upsertProjectMember({
+    projectId: project.id,
+    workspaceSlug,
+    userId: actor?.userId,
+    role: 'owner',
+    source: 'project_creator',
+    createdByUserId: actor?.userId || null,
+  });
+  await upsertMissionProjectMembers({
+    projectId: project.id,
+    workspaceSlug,
+    missions: asArray(controlPlan.missions),
+    createdByUserId: actor?.userId || null,
   });
 
   await upsertMutationZones(workspaceSlug, zonePolicy);
@@ -201,9 +532,22 @@ async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlP
         status: 'registered',
         permissionsJson: stringifyJson(['codesite:mutation', 'codesite:inbox']),
         redactionPolicyJson: stringifyJson(defaultRedactionPolicy()),
+        dojoPilotLicenseRef: firstCodeSiteRef(mission.dojoPilotLicenseRef, mission.dojo_license_ref),
+        dojoProofRef: firstCodeSiteRef(mission.dojoProofRef, mission.dojo_proof_ref),
+        dojoEvidenceRefsJson: codeSiteEvidenceRefsJson(mission.dojoEvidenceRefs || mission.dojo_evidence_refs),
+        dojoDecisionDigest: firstCodeSiteRef(mission.dojoDecisionDigest, mission.dojo_decision_digest),
+        pilotLicenseSnapshotJson: stringifyJson(mission.pilotLicenseSnapshot || mission.pilot_license_snapshot || null),
       },
     });
     agentSessions.push(session);
+    await upsertProjectMember({
+      projectId: project.id,
+      workspaceSlug: project.workspaceSlug,
+      userId: session.ownerUserId,
+      role: 'agent',
+      source: 'automatic_agent_session',
+      createdByUserId: actor?.userId || null,
+    });
     await recordEvent(project.id, {
       eventType: 'transponder_update',
       displayCallsign: session.displayCallsign,
@@ -319,6 +663,11 @@ function normalizeAutomaticMission(mission, index) {
     agentProvider: mission.agentProvider || mission.provider || 'codex',
     agentRuntime: mission.agentRuntime || mission.runtime || 'tower-auto-plan',
     ownerUserId: mission.ownerUserId || mission.owner_user_id || null,
+    dojoPilotLicenseRef: firstCodeSiteRef(mission.dojoPilotLicenseRef, mission.dojo_pilot_license_ref, mission.dojoLicenseRef, mission.dojo_license_ref),
+    dojoProofRef: firstCodeSiteRef(mission.dojoProofRef, mission.dojo_proof_ref),
+    dojoEvidenceRefs: asArray(mission.dojoEvidenceRefs || mission.dojo_evidence_refs || mission.evidenceRefs || mission.evidence_refs),
+    dojoDecisionDigest: firstCodeSiteRef(mission.dojoDecisionDigest, mission.dojo_decision_digest),
+    pilotLicenseSnapshot: mission.pilotLicenseSnapshot || mission.pilot_license_snapshot || null,
   };
 }
 
@@ -407,17 +756,18 @@ async function upsertMutationZones(workspaceSlug, zonePolicy) {
   }
 }
 
-export async function getProject(workspaceSlug, projectId) {
+export async function getProject(workspaceSlug, projectId, actor = null) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!project) return null;
+  await requireProjectAccess(project, actor, 'read');
   return projectProjection(project);
 }
 
-export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function updateZonePolicy(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const previous = parseJson(project.zonePolicyJson, {});
   const next = compileProjectZonePolicy({
     ...previous,
@@ -435,21 +785,33 @@ export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
       zoneDigest: digest(next),
     },
   });
-  return getProject(workspaceSlug, project.id);
+  return getProject(workspaceSlug, project.id, actor);
 }
 
 function compileProjectZonePolicy(input = {}, body = {}) {
   const requested = input || {};
+  const previousCompiler = requested.compiler || {};
+  const repoRoot = body.repoRoot
+    || body.repo_root
+    || requested.repoRoot
+    || requested.repo_root
+    || previousCompiler.repoRoot
+    || null;
   const repoSignals = requested.repoSignals
     || requested.repo_signals
     || body.repoSignals
     || body.repo_signals
     || (body.repoPolicyCompiler === false || body.repo_policy_compiler === false
       ? null
-      : safeDiscoverRepoPolicySignals(body.repoRoot || body.repo_root || requested.repoRoot || requested.repo_root));
-  return compileZonePolicy({
+      : safeDiscoverRepoPolicySignals(repoRoot));
+  const compiled = compileZonePolicy({
     ...requested,
     ...(repoSignals ? { repoSignals } : {}),
+  });
+  return attachRepoPolicyCompilerMetadata(compiled, {
+    repoSignals,
+    repoRoot,
+    previousCompiler,
   });
 }
 
@@ -461,12 +823,47 @@ function safeDiscoverRepoPolicySignals(root) {
       source: 'repo_policy_compiler_error',
       error: error?.message || String(error),
       files: [],
+      repoRoot: root || null,
+      compilerVersion: REPO_POLICY_COMPILER_VERSION,
+      maxFiles: null,
+      fileCount: 0,
+      truncated: false,
+      digest: digest({ source: 'repo_policy_compiler_error', root: root || null, error: error?.message || String(error) }),
     };
   }
 }
 
-export async function updateControlPlan(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+function attachRepoPolicyCompilerMetadata(policy, { repoSignals, repoRoot, previousCompiler } = {}) {
+  const sourceDigest = repoSignals?.digest || policy?.semanticGraph?.sourceDigest || previousCompiler?.sourceDigest || null;
+  const resolvedRepoRoot = repoSignals?.repoRoot || repoRoot || previousCompiler?.repoRoot || null;
+  const compilerVersion = repoSignals?.compilerVersion || previousCompiler?.compilerVersion || REPO_POLICY_COMPILER_VERSION;
+  return {
+    ...policy,
+    compiler: {
+      compilerVersion,
+      repoRoot: resolvedRepoRoot,
+      maxFiles: repoSignals?.maxFiles ?? previousCompiler?.maxFiles ?? null,
+      sourceDigest,
+      policyDigest: policy.policyDigest || digest({
+        zones: policy.zones,
+        noFlyZones: policy.noFlyZones,
+        classRules: policy.classRules,
+        semanticGraph: policy.semanticGraph,
+        policySources: policy.policySources,
+      }),
+      compiledAt: new Date().toISOString(),
+      fileCount: repoSignals
+        ? (repoSignals.fileCount ?? asArray(repoSignals.files).length)
+        : (previousCompiler?.fileCount ?? 0),
+      truncated: Boolean(repoSignals?.truncated ?? previousCompiler?.truncated ?? false),
+      source: repoSignals?.source || previousCompiler?.source || 'repo_policy_compiler',
+      error: repoSignals?.error || null,
+    },
+  };
+}
+
+export async function updateControlPlan(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const previous = parseJson(project.controlPlanJson, {});
   const next = {
     ...previous,
@@ -484,24 +881,41 @@ export async function updateControlPlan(workspaceSlug, projectId, body = {}) {
       controlPlan: next,
     },
   });
-  return getProject(workspaceSlug, project.id);
+  return getProject(workspaceSlug, project.id, actor);
 }
 
 export async function createAgentSession(workspaceSlug, projectId, actor, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const callsign = String(body.displayCallsign || body.callsign || nextCallsign(body.agentProvider || 'AGENT')).toUpperCase();
+  const requestedOwnerUserId = body.ownerUserId || body.owner_user_id || null;
+  const ownerUserId = requestedOwnerUserId || actor?.userId || 'unknown';
+  const permissions = body.permissions || body.toolList || body.tool_list || body.tools || [];
+  requireActorOwnsUserId(ownerUserId, actor, 'agent_session_owner_forbidden');
   const session = await prisma.codeSiteAgentSession.create({
     data: {
       projectId: project.id,
-      ownerUserId: body.ownerUserId || actor?.userId || 'unknown',
+      ownerUserId,
       agentProvider: String(body.agentProvider || body.provider || 'custom'),
       agentRuntime: body.agentRuntime || body.runtime || null,
       providerSessionRef: body.providerSessionRef || body.provider_session_ref || null,
       displayCallsign: callsign,
       status: body.status || 'registered',
-      permissionsJson: stringifyJson(body.permissions || []),
+      permissionsJson: stringifyJson(permissions),
       redactionPolicyJson: stringifyJson(body.redactionPolicy || body.redaction_policy || defaultRedactionPolicy()),
+      dojoPilotLicenseRef: firstCodeSiteRef(body.dojoPilotLicenseRef, body.dojo_pilot_license_ref, body.dojoLicenseRef, body.dojo_license_ref),
+      dojoProofRef: firstCodeSiteRef(body.dojoProofRef, body.dojo_proof_ref),
+      dojoEvidenceRefsJson: codeSiteEvidenceRefsJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || body.evidenceRefs || body.evidence_refs),
+      dojoDecisionDigest: firstCodeSiteRef(body.dojoDecisionDigest, body.dojo_decision_digest),
+      pilotLicenseSnapshotJson: stringifyJson(body.pilotLicenseSnapshot || body.pilot_license_snapshot || null),
     },
+  });
+  await upsertProjectMember({
+    projectId: project.id,
+    workspaceSlug,
+    userId: ownerUserId,
+    role: 'agent',
+    source: 'agent_session_owner',
+    createdByUserId: actor?.userId || null,
   });
   await recordEvent(project.id, {
     eventType: 'transponder_update',
@@ -512,6 +926,7 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
       status: session.status,
       provider: session.agentProvider,
       runtime: session.agentRuntime,
+      permissions,
       instruction: `${callsign} registered with tower.`,
     },
   });
@@ -528,7 +943,7 @@ function defaultRedactionPolicy() {
     acceptsTowerMessages: true,
     redactSecrets: true,
     redactPrivatePrompts: true,
-    allowAttachments: true,
+    allowAttachments: false,
     visibleZones: ['**'],
     allowedDocumentKinds: [
       'rfi',
@@ -544,9 +959,10 @@ function defaultRedactionPolicy() {
   };
 }
 
-export async function createExecutionPlan(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function createExecutionPlan(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const agentSession = await requireAgentSession(project.id, body.agentSessionId || body.agent_session_id);
+  requireAgentSessionOwnerAccess(agentSession, actor, 'execution_plan_agent_forbidden');
   const route = pathsForRoute(body.route || body.allowedPaths || []);
   const blockedZones = pathsForRoute(body.blockedZones || body.noFlyZones || body.no_fly_zones || []);
   const plan = await prisma.codeSiteExecutionPlan.create({
@@ -589,12 +1005,13 @@ function normalizeDurationMs(value) {
   return amount * ({ ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[unit] || 1);
 }
 
-export async function requestMutationLease(workspaceSlug, executionPlanId, body = {}) {
+export async function requestMutationLease(workspaceSlug, executionPlanId, body = {}, actor = null) {
   const plan = await prisma.codeSiteExecutionPlan.findFirst({
     where: { id: executionPlanId, project: { workspaceSlug } },
     include: { project: true, agentSession: true },
   });
   if (!plan) throw notFound('execution_plan_not_found');
+  requireAgentSessionOwnerAccess(plan.agentSession, actor, 'mutation_lease_agent_forbidden');
 
   const zonePolicy = parseJson(plan.project.zonePolicyJson, compileZonePolicy());
   const executionPlan = executionPlanProjection(plan);
@@ -622,7 +1039,35 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     requestedLease,
     zonePolicy,
   });
-  const clearancePolicy = applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance);
+  const counterfactualPolicy = await counterfactualPolicyGateForLeaseRequest({
+    workspaceSlug,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+    collisionAvoidance,
+  });
+  const pilotLicenseHealth = await pilotLicenseHealthForLeaseRequest({
+    workspaceSlug,
+    plan,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+    dojoProof,
+  });
+  const clearancePolicy = applyCounterfactualPolicyGate(
+    applyPilotLicenseHealthGate(
+      applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
+      pilotLicenseHealth,
+    ),
+    counterfactualPolicy,
+  );
+  const finalRequestedLease = {
+    ...requestedLease,
+    requiredRadar: unique([
+      ...asArray(requestedLease.requiredRadar),
+      ...asArray(counterfactualPolicy.requiredRadar),
+    ]),
+  };
   const lease = await prisma.codeSiteMutationLease.create({
     data: {
       projectId: plan.projectId,
@@ -631,12 +1076,15 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       displayCallsign: plan.displayCallsign,
       status: clearancePolicy.status,
       leaseJson: stringifyJson({
-        ...requestedLease,
+        ...finalRequestedLease,
         issuedBy: 'codesite_policy_engine',
         towerInstruction: clearancePolicy.towerInstruction,
         inspectedZones: clearancePolicy.inspectedZones,
         dojoProofVerification: dojoProofSummary.verification,
+        pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+        pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+        counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
       }),
       dojoProofRef: dojoProof.proofRef,
       dojoLicenseRef: dojoProof.licenseRef,
@@ -652,13 +1100,21 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     displayCallsign: lease.displayCallsign,
     decision: clearancePolicy.decision,
     reasonCodes: clearancePolicy.reasonCodes,
-    input: { executionPlan, requestedLease, dojoProof: dojoProofSummary },
+    input: {
+      executionPlan,
+      requestedLease: finalRequestedLease,
+      dojoProof: dojoProofSummary,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+    },
     decisionJson: {
       status: clearancePolicy.status,
       towerInstruction: clearancePolicy.towerInstruction,
       inspectedZones: clearancePolicy.inspectedZones,
       dojoProof: dojoProofSummary,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+      counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
   });
   await recordEvent(plan.projectId, {
@@ -673,7 +1129,10 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       status: clearancePolicy.status,
       reasonCodes: clearancePolicy.reasonCodes,
       towerInstruction: clearancePolicy.towerInstruction,
+      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
+      counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
   });
   if (clearancePolicy.collisionAvoidance) {
@@ -693,6 +1152,44 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     });
   }
   return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
+}
+
+async function pilotLicenseHealthForLeaseRequest({
+  workspaceSlug,
+  plan,
+  executionPlan,
+  requestedLease,
+  zonePolicy,
+  dojoProof,
+}) {
+  const project = await prisma.codeSiteProject.findUnique({
+    where: { id: plan.projectId },
+    include: PROJECT_INCLUDE,
+  });
+  const healthProject = project || {
+    ...plan.project,
+    id: plan.projectId,
+    workspaceSlug,
+    zonePolicyJson: plan.project?.zonePolicyJson || stringifyJson(zonePolicy),
+    agentSessions: [plan.agentSession].filter(Boolean),
+    executionPlans: [plan].filter(Boolean),
+    mutationLeases: [],
+    policyDecisions: [],
+    events: [],
+    inspectionRuns: [],
+    incidents: [],
+  };
+  return buildPilotLicenseHealthForClearance({
+    ...healthProject,
+    workspaceSlug: healthProject.workspaceSlug || workspaceSlug,
+    zonePolicy,
+    zonePolicyJson: healthProject.zonePolicyJson || stringifyJson(zonePolicy),
+  }, {
+    agentSession: plan.agentSession,
+    executionPlan,
+    requestedLease,
+    dojoProof,
+  });
 }
 
 async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, requestedLease, zonePolicy }) {
@@ -720,6 +1217,15 @@ async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, req
     .filter((item) => asArray(item.aircraft).includes(currentCallsign))
     .find((item) => item.severity === 'high');
   if (!risk) return { forecast, risk: null };
+  if (schemaFirstLeaderForRisk(requestedPlan, risk)) {
+    return {
+      forecast,
+      risk: null,
+      schemaFirstLeader: true,
+      reasonCodes: ['schema_first_leader_clearance'],
+      towerInstruction: `Schema-first clearance issued for ${currentCallsign}. Dependent overlapping flights remain in holding until this contract lands.`,
+    };
+  }
   return {
     forecast,
     risk,
@@ -731,6 +1237,14 @@ async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, req
 }
 
 function applyTowerCollisionGate(policy, collisionAvoidance = null) {
+  if (collisionAvoidance?.schemaFirstLeader && policy.decision !== 'block') {
+    return {
+      ...policy,
+      reasonCodes: unique([...policy.reasonCodes, ...collisionAvoidance.reasonCodes]),
+      towerInstruction: collisionAvoidance.towerInstruction || policy.towerInstruction,
+      collisionAvoidance,
+    };
+  }
   if (!collisionAvoidance?.risk || policy.decision === 'block') return policy;
   return {
     ...policy,
@@ -742,10 +1256,123 @@ function applyTowerCollisionGate(policy, collisionAvoidance = null) {
   };
 }
 
+function schemaFirstLeaderForRisk(plan, risk) {
+  if (risk?.recommendedResolution?.action !== 'schema_first') return false;
+  const declaredIntent = [
+    plan?.domain,
+    plan?.mission,
+    plan?.displayCallsign,
+  ].join(' ').toLowerCase();
+  if (declaredIntent.trim()) {
+    return /\b(schema|contract|openapi|prisma)\b|^schema-/.test(declaredIntent);
+  }
+  const routeIntent = pathsForRoute(plan?.route).join(' ').toLowerCase();
+  return /\b(schema|contract|openapi|prisma)\b|packages\/schemas/.test(routeIntent);
+}
+
 function towerCollisionInstruction(risk) {
   const action = risk.recommendedResolution?.action || 'sequence_flights';
   const aircraft = asArray(risk.aircraft).filter(Boolean).join(' and ') || 'affected flights';
   return `Hold position: ${risk.risk} risk in ${risk.conflictZone}. Tower recommends ${action} for ${aircraft}.`;
+}
+
+async function counterfactualPolicyGateForLeaseRequest({ workspaceSlug, executionPlan, requestedLease, zonePolicy, collisionAvoidance }) {
+  const learnedDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
+  if (!learnedDeltas.length) {
+    return emptyCounterfactualPolicyGate();
+  }
+  const route = pathsForRoute(requestedLease.allowedPaths || executionPlan.route);
+  const semanticGraph = zonePolicy?.semanticGraph || zonePolicy?.repoSignals || {};
+  const footprint = towerRouteFootprint({
+    plan: { ...executionPlan, route },
+    zonePolicy,
+    semanticGraph,
+    priorIncidents: [],
+    inspectionRuns: [],
+  });
+  const collisionRisks = asArray(collisionAvoidance?.risks || collisionAvoidance?.risk)
+    .map((risk) => (typeof risk === 'string' ? { risk } : risk))
+    .filter(Boolean);
+  const signals = {
+    footprints: [footprint],
+    forecast: { risks: collisionRisks },
+    migrationLocks: asArray(semanticGraph.migrationLocks).filter((lock) =>
+      route.some((pattern) => towerPathsOverlap(lock, pattern))),
+    packageExports: footprint.packageExports,
+  };
+  const applied = [];
+  const requiredRadar = [];
+  const requiredTowerActions = [];
+  for (const delta of learnedDeltas) {
+    if (!learnedPolicyDeltaApplies(delta, signals)) continue;
+    const candidate = delta.ruleCandidate || {};
+    applied.push(delta);
+    requiredRadar.push(...asArray(candidate.requiredRadar || candidate.required_radar || candidate.radar));
+    requiredTowerActions.push(...asArray(candidate.requiredTowerActions || candidate.required_tower_actions || candidate.actions));
+  }
+  const hold = applied.some((delta) => learnedPolicyDeltaHoldsLease(delta));
+  return {
+    appliedPolicyDeltas: applied.map((delta) => delta.id).filter(Boolean),
+    reasonCodes: unique([
+      ...(applied.length ? ['counterfactual_policy_delta_applied'] : []),
+      ...(hold ? ['counterfactual_policy_delta_hold'] : []),
+    ]),
+    requiredRadar: unique(requiredRadar.map(String).filter(Boolean)),
+    requiredTowerActions: unique(requiredTowerActions.map(String).filter(Boolean)),
+    status: hold ? 'holding' : null,
+    decision: hold ? 'hold' : null,
+    towerInstruction: hold
+      ? `Hold position: learned counterfactual policy requires tower sequencing for ${route.join(', ')}.`
+      : null,
+  };
+}
+
+function emptyCounterfactualPolicyGate() {
+  return {
+    appliedPolicyDeltas: [],
+    reasonCodes: [],
+    requiredRadar: [],
+    requiredTowerActions: [],
+    status: null,
+    decision: null,
+    towerInstruction: null,
+  };
+}
+
+function applyCounterfactualPolicyGate(policy, counterfactualPolicy = {}) {
+  if (policy.decision === 'block' || !asArray(counterfactualPolicy.appliedPolicyDeltas).length) return policy;
+  const reasonCodes = unique([
+    ...asArray(policy.reasonCodes),
+    ...asArray(counterfactualPolicy.reasonCodes),
+  ]);
+  const towerInstruction = counterfactualPolicy.towerInstruction || policy.towerInstruction;
+  if (counterfactualPolicy.decision === 'hold') {
+    return {
+      ...policy,
+      decision: 'hold',
+      status: 'holding',
+      reasonCodes,
+      towerInstruction,
+      counterfactualPolicy,
+    };
+  }
+  return {
+    ...policy,
+    reasonCodes,
+    towerInstruction,
+    counterfactualPolicy,
+  };
+}
+
+function learnedPolicyDeltaHoldsLease(delta) {
+  const candidate = delta.ruleCandidate || {};
+  const text = learnedRuleText(candidate);
+  const actions = asArray(candidate.requiredTowerActions || candidate.required_tower_actions || candidate.actions)
+    .map((action) => String(action || '').toLowerCase());
+  return candidate.hold === true
+    || ['hold', 'holding'].includes(String(candidate.decision || candidate.enforcement || '').toLowerCase())
+    || actions.some((action) => /(^|[_ -])(hold|wait|sequence|gate)([_ -]|$)/.test(action))
+    || /(^|[_ -])(hold|wait|sequence|gate)([_ -]|$)/.test(text);
 }
 
 function applyDojoClearanceGate(policy, dojoProof = {}) {
@@ -791,8 +1418,9 @@ function defaultRadarForRoute(route, zonePolicy) {
   return [...new Set(radar)];
 }
 
-export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body = {}) {
+export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
+  requireLeaseActorAccess(lease, actor);
   const updated = await prisma.codeSiteMutationLease.update({
     where: { id: lease.id },
     data: {
@@ -820,8 +1448,9 @@ export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body =
   return mutationLeaseProjection(updated);
 }
 
-export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body = {}) {
+export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
+  await requireProjectAccess(lease.project || await requireProject(workspaceSlug, lease.projectId), actor, 'write');
   const decision = await createPolicyDecision(lease.projectId, {
     mutationLeaseId: lease.id,
     displayCallsign: lease.displayCallsign,
@@ -853,6 +1482,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
   }
   const leaseJson = parseJson(lease.leaseJson, {});
   const readSet = normalizePathList(body.readSet || body.read_set || []);
+  const isolation = normalizeTransactionIsolation(body.isolation);
   const baseSnapshotEvidence = await buildTransactionSnapshotEvidence(readSet, body);
   const transaction = await prisma.codeSiteMutationTransaction.create({
     data: {
@@ -861,7 +1491,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       agentSessionId: lease.agentSessionId,
       baseSnapshot: body.baseSnapshot || body.base_snapshot || baseSnapshotEvidence?.snapshotDigest || digest({ workspaceSlug, mutationLeaseId, openedAt: Date.now() }),
       baseSnapshotEvidenceJson: stringifyJson(baseSnapshotEvidence),
-      isolation: body.isolation || 'serializable',
+      isolation,
       status: 'open',
       readSetJson: stringifyJson(readSet),
       writeSetJson: stringifyJson(normalizePathList(body.writeSet || body.write_set || [])),
@@ -886,6 +1516,29 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       isolation: transaction.isolation,
     },
   });
+  if (baseSnapshotEvidence?.snapshotDigest) {
+    await recordEvent(lease.projectId, {
+      mutationLeaseId: lease.id,
+      eventType: 'snapshot_taken',
+      displayCallsign: lease.displayCallsign,
+      actorType: 'transaction',
+      actorId: transaction.id,
+      evidenceRefs: [
+        baseSnapshotEvidence.evidenceDigest && `codesite:read-snapshot:${baseSnapshotEvidence.evidenceDigest}`,
+      ].filter(Boolean),
+      details: {
+        transactionId: transaction.id,
+        baseSnapshot: transaction.baseSnapshot,
+        snapshotDigest: baseSnapshotEvidence.snapshotDigest,
+        evidenceDigest: baseSnapshotEvidence.evidenceDigest || null,
+        status: baseSnapshotEvidence.status || 'recorded',
+        readSet: normalizePathList(baseSnapshotEvidence.readSet || readSet),
+        fileCount: asArray(baseSnapshotEvidence.fileDigests).length,
+        missingPaths: asArray(baseSnapshotEvidence.missingPaths),
+        reason: 'serializable_transaction_open',
+      },
+    });
+  }
   return transactionProjection(transaction);
 }
 
@@ -903,6 +1556,16 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
+  const codesiteFsEvent = body.codesiteFsEvent || body.codesite_fs_event || null;
+  const readEvidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+    ...asArray(codesiteFsEvent?.evidence_refs || codesiteFsEvent?.evidenceRefs),
+  ]);
+  const processAncestry = unique([
+    ...asArray(body.processAncestry || body.process_ancestry),
+    ...asArray(codesiteFsEvent?.details?.process_ancestry || codesiteFsEvent?.details?.processAncestry),
+  ]);
+  const isCodeSiteFsRead = codesiteFsEvent?.type === 'read_observed';
   const observed = appendUnique(parseJson(transaction.observedReadSetJson, []), path);
   const declared = appendUnique(parseJson(transaction.readSetJson, []), path);
   const updated = await prisma.codeSiteMutationTransaction.update({
@@ -914,11 +1577,19 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
   });
   await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
-    eventType: 'transponder_update',
+    eventType: isCodeSiteFsRead ? 'read_observed' : 'transponder_update',
     displayCallsign: transaction.mutationLease.displayCallsign,
-    actorType: 'transaction',
+    actorType: isCodeSiteFsRead ? 'codesitefs' : 'transaction',
     actorId: transaction.id,
-    details: { type: 'read_recorded', transactionId: transaction.id, path },
+    evidenceRefs: readEvidenceRefs,
+    details: {
+      type: 'read_recorded',
+      transactionId: transaction.id,
+      path,
+      tool: body.tool || codesiteFsEvent?.tool || 'file_read',
+      codesiteFsEvent,
+      processAncestry,
+    },
   });
   return transactionProjection(updated);
 }
@@ -1095,7 +1766,7 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
     semanticDependencyRefs,
     invalidatedBy: transaction.mutationLease.displayCallsign,
   });
-  await recordEvent(transaction.projectId, {
+  const allowedEvent = await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'write_allowed',
     displayCallsign: transaction.mutationLease.displayCallsign,
@@ -1111,7 +1782,48 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
       ...writeEvidence,
     },
   });
+  await persistAllowedWriteLineProvenance(transaction, allowedEvent, {
+    ...writeEvidence,
+    path,
+  });
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
+}
+
+const QUARANTINE_TRANSACTION_EVENT_TYPES = new Set([
+  'quarantine_reviewed',
+  'quarantine_replayed',
+  'quarantine_applied',
+]);
+
+export async function recordTransactionQuarantineEvent(workspaceSlug, transactionId, body = {}, actor = null) {
+  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
+  const eventType = String(body.eventType || body.event_type || '').trim();
+  if (!QUARANTINE_TRANSACTION_EVENT_TYPES.has(eventType)) {
+    throw badRequest('invalid_quarantine_event_type', {
+      eventType: eventType || null,
+      allowedEventTypes: [...QUARANTINE_TRANSACTION_EVENT_TYPES],
+    });
+  }
+  const quarantineId = body.quarantineId || body.quarantine_id || null;
+  const paths = asArray(body.paths || body.changedPaths || body.changed_paths)
+    .map((item) => normalizePath(item))
+    .filter(Boolean);
+  const event = await recordEvent(transaction.projectId, {
+    mutationLeaseId: transaction.mutationLeaseId,
+    eventType,
+    displayCallsign: transaction.mutationLease.displayCallsign,
+    actorType: 'codesitefs',
+    actorId: quarantineId || transaction.id,
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+    details: {
+      ...(body.details && typeof body.details === 'object' ? body.details : {}),
+      transactionId: transaction.id,
+      quarantineId,
+      paths,
+      rejected: asArray(body.rejected),
+    },
+  });
+  return eventProjection(event);
 }
 
 export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}, actor = null) {
@@ -1153,6 +1865,132 @@ export async function dryRunTransactionWrites(workspaceSlug, transactionId, body
   return { transaction: transactionProjection(transaction), results };
 }
 
+export async function preflightCodeSiteFsWrite(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const path = normalizePath(body.path || body.filePath || body.file_path);
+  if (!path) throw badRequest('invalid_path');
+  const tool = body.tool || body.operation || body.source || 'file_write';
+  const source = body.source || body.adapter || body.runtime || 'codesitefs';
+  const requestedDisposition = body.disposition || body.type || body.eventType || body.event_type || null;
+  const codesiteFsEvent = {
+    type: requestedDisposition,
+    source,
+    operation: body.operation || 'write',
+    path,
+    details: body.details || {},
+    evidence_refs: body.evidenceRefs || body.evidence_refs || [],
+  };
+  const writeEvidence = writeEvidenceFromBody(body, path, codesiteFsEvent);
+  const evidenceRefs = asArray(writeEvidence.evidenceRefs);
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const activeLeases = await prisma.codeSiteMutationLease.findMany({
+    where: { projectId: project.id, status: 'active' },
+    include: { agentSession: true },
+    orderBy: { issuedAt: 'desc' },
+  });
+  const requestedLeaseId = body.mutationLeaseId || body.mutation_lease_id || null;
+  const candidateLeases = requestedLeaseId
+    ? [requireActiveCodeSiteFsLease(activeLeases, requestedLeaseId, actor)]
+    : activeLeases.filter((lease) => actorCanUseLease(lease, actor));
+  const evaluations = candidateLeases.map((lease) => ({
+    lease,
+    evaluation: evaluatePathMutation({ lease, path, tool, zonePolicy }),
+  }));
+  const match = evaluations.find((item) => item.evaluation.ok);
+  const strongestBlock = chooseCodeSiteFsBlock(evaluations, path, zonePolicy);
+  const forcedQuarantine = requestedDisposition === 'write_quarantined' || body.quarantine === true;
+  const allowed = Boolean(match) && !forcedQuarantine && requestedDisposition !== 'write_denied';
+  const disposition = allowed ? 'write_allowed' : (forcedQuarantine ? 'write_quarantined' : 'write_denied');
+  const decision = await createPolicyDecision(project.id, {
+    mutationLeaseId: match?.lease?.id || null,
+    displayCallsign: match?.lease?.displayCallsign || body.displayCallsign || body.display_callsign || null,
+    decision: allowed ? 'allow' : (disposition === 'write_quarantined' ? 'quarantine' : 'block'),
+    reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+    input: {
+      projectId,
+      path,
+      tool,
+      source,
+      requestedDisposition,
+      activeLeaseIds: candidateLeases.map((lease) => lease.id),
+    },
+    decisionJson: {
+      path,
+      tool,
+      source,
+      zone: allowed ? match.evaluation.zone : strongestBlock.zone,
+      matchedLeaseId: match?.lease?.id || null,
+      inspectedLeases: evaluations.map((item) => ({
+        mutationLeaseId: item.lease.id,
+        displayCallsign: item.lease.displayCallsign,
+        ok: item.evaluation.ok,
+        reasonCodes: item.evaluation.reasonCodes,
+      })),
+      towerInstruction: allowed
+        ? `Write preflight allowed for ${path}. Apply through the active transaction-aware adapter.`
+        : `Write preflight blocked for ${path}. Request clearance or quarantine outside the real repo.`,
+    },
+  });
+  await recordEvent(project.id, {
+    mutationLeaseId: match?.lease?.id || null,
+    eventType: disposition,
+    displayCallsign: match?.lease?.displayCallsign || body.displayCallsign || body.display_callsign || null,
+    actorType: 'codesitefs',
+    actorId: decision.id,
+    evidenceRefs,
+    details: {
+      projectId,
+      path,
+      tool,
+      source,
+      disposition,
+      prevented: disposition !== 'write_allowed',
+      reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+      policyDecisionId: decision.id,
+      matchedLeaseId: match?.lease?.id || null,
+      zone: allowed ? match.evaluation.zone : strongestBlock.zone,
+      codesiteFsEvent,
+      ...writeEvidence,
+    },
+  });
+  return {
+    ok: allowed,
+    disposition,
+    path,
+    source,
+    tool,
+    matchedLease: match ? mutationLeaseProjection(match.lease) : null,
+    policyDecision: policyDecisionProjection(decision),
+    reasonCodes: allowed ? match.evaluation.reasonCodes : strongestBlock.reasonCodes,
+  };
+}
+
+function requireActiveCodeSiteFsLease(activeLeases, requestedLeaseId, actor) {
+  const lease = activeLeases.find((item) => item.id === requestedLeaseId);
+  if (!lease) throw badRequest('mutation_lease_not_active', { mutationLeaseId: requestedLeaseId });
+  requireLeaseActorAccess(lease, actor);
+  return lease;
+}
+
+function actorCanUseLease(lease, actor = null) {
+  if (!actor || actor.bypass) return true;
+  return Boolean(actor.userId && lease.agentSession?.ownerUserId === actor.userId);
+}
+
+function chooseCodeSiteFsBlock(evaluations, path, zonePolicy) {
+  if (!evaluations.length) {
+    return {
+      reasonCodes: ['active_clearance_required'],
+      zone: classifyPath(path, zonePolicy),
+    };
+  }
+  const noFly = evaluations.find((item) => item.evaluation.reasonCodes.includes('entered_no_fly_zone'));
+  if (noFly) return noFly.evaluation;
+  const outside = evaluations.find((item) => item.evaluation.reasonCodes.includes('outside_clearance_route'));
+  if (outside) return outside.evaluation;
+  return evaluations[0].evaluation;
+}
+
 function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
   const lineProvenance = normalizeLineProvenanceInput(
     body.lineProvenance
@@ -1172,9 +2010,24 @@ function writeEvidenceFromBody(body, path, codesiteFsEvent = null) {
     ...asArray(body.processAncestry || body.process_ancestry),
     ...asArray(codesiteFsEvent?.details?.process_ancestry || codesiteFsEvent?.details?.processAncestry),
   ].filter(Boolean));
+  const changedLineRanges = strictLineProvenanceRows(
+    body.changedLineRanges
+      || body.changed_line_ranges
+      || body.changedRanges
+      || body.changed_ranges
+      || codesiteFsEvent?.details?.changedLineRanges
+      || codesiteFsEvent?.details?.changed_line_ranges,
+    path,
+  );
+  const dojoSourceRefs = unique([
+    ...asArray(body.dojoSourceRefs || body.dojo_source_refs),
+    ...asArray(codesiteFsEvent?.details?.dojoSourceRefs || codesiteFsEvent?.details?.dojo_source_refs),
+  ].filter(Boolean));
   return {
     ...(lineProvenance.length ? { lineProvenance } : {}),
+    ...(changedLineRanges.length ? { changedLineRanges } : {}),
     ...(evidenceRefs.length ? { evidenceRefs } : {}),
+    ...(dojoSourceRefs.length ? { dojoSourceRefs } : {}),
     ...(processAncestry.length ? { processAncestry } : {}),
   };
 }
@@ -1206,6 +2059,7 @@ function normalizeLineProvenanceInput(value, defaultPath) {
       reasonRef: item.reasonRef || item.reason_ref || null,
       evidenceRefs: asArray(item.evidenceRefs || item.evidence_refs),
       processAncestry: asArray(item.processAncestry || item.process_ancestry),
+      dojoSourceRefs: asArray(item.dojoSourceRefs || item.dojo_source_refs),
       promptSummary: item.promptSummary || item.prompt_summary || null,
     }];
   });
@@ -1267,11 +2121,11 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
 }
 
 function assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs }) {
-  const assumptionRefs = [...dependsOn, ...usedBy];
-  if (assumptionRefs.some((item) => assumptionPathMatchesWrite(item, path))) return true;
+  void usedBy;
+  if (dependsOn.some((item) => assumptionPathMatchesWrite(item, path))) return true;
   const writeSignals = normalizeSemanticRefs(semanticDependencyRefs);
   if (!writeSignals.length) return false;
-  const assumptionSignals = normalizeSemanticRefs(assumptionRefs);
+  const assumptionSignals = normalizeSemanticRefs(dependsOn);
   return assumptionSignals.some((assumptionRef) => writeSignals.some((writeRef) => semanticRefsConflict(assumptionRef, writeRef)));
 }
 
@@ -1412,7 +2266,9 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
   const readSet = parseJson(transaction.readSetJson, []);
+  const observedReadSet = parseJson(transaction.observedReadSetJson, []);
   const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
+  const snapshotReadSet = serializableSnapshotReadSet(transaction, readSet, observedReadSet, semanticDependencyRefs);
   const lease = transaction.mutationLease;
   const blockedWrites = [...new Set([...writeSet, ...observedWriteSet])]
     .map((path) => ({ path, evaluation: evaluatePathMutation({ lease, path, zonePolicy }) }))
@@ -1424,7 +2280,7 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
     },
   });
   const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]));
-  const repoSnapshot = await validateTransactionSnapshot(transaction);
+  const repoSnapshot = await validateTransactionSnapshot(transaction, snapshotReadSet);
   const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0 && repoSnapshot.ok;
   const decision = {
     ok,
@@ -1468,6 +2324,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId, actor = 
   const observedReadSet = parseJson(transaction.observedReadSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
   const semanticDependencyRefs = dependencyPathRefs(parseJson(transaction.semanticDependencyRefsJson, []));
+  const snapshotReadSet = serializableSnapshotReadSet(transaction, readSet, observedReadSet, semanticDependencyRefs);
   const events = await sourceStateEventsSince(transaction);
   const externalEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
@@ -1487,7 +2344,7 @@ export async function getSourceStateSince(workspaceSlug, transactionId, actor = 
       writeSet,
       observedWriteSet,
       semanticDependencyRefs,
-      repoSnapshot: await validateTransactionSnapshot(transaction),
+      repoSnapshot: await validateTransactionSnapshot(transaction, snapshotReadSet),
       changedPaths,
       staleReads: staleReadEventsFrom(transaction, unique([...readSet, ...semanticDependencyRefs]), events),
     },
@@ -1523,9 +2380,69 @@ async function buildTransactionSnapshotEvidence(readSet, body = {}) {
   });
 }
 
-async function validateTransactionSnapshot(transaction) {
+async function validateTransactionSnapshot(transaction, requiredReadSet = null) {
   const evidence = parseJson(transaction.baseSnapshotEvidenceJson, null);
-  return validateReadSnapshotEvidence(evidence);
+  const validation = await validateReadSnapshotEvidence(evidence);
+  return enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet);
+}
+
+function serializableSnapshotReadSet(transaction, readSet = [], observedReadSet = [], semanticDependencyRefs = []) {
+  if (!usesSerializableIsolation(transaction)) return [];
+  return unique([
+    ...normalizePathList(readSet),
+    ...normalizePathList(observedReadSet),
+    ...normalizePathList(semanticDependencyRefs),
+  ]);
+}
+
+function usesSerializableIsolation(transaction) {
+  return normalizeIsolationValue(transaction?.isolation) === SUPPORTED_TRANSACTION_ISOLATION;
+}
+
+function normalizeTransactionIsolation(value) {
+  const isolation = normalizeIsolationValue(value);
+  if (isolation !== SUPPORTED_TRANSACTION_ISOLATION) {
+    throw badRequest('unsupported_transaction_isolation', {
+      requestedIsolation: value,
+      supportedIsolation: SUPPORTED_TRANSACTION_ISOLATION,
+    });
+  }
+  return isolation;
+}
+
+function normalizeIsolationValue(value) {
+  if (value == null) return SUPPORTED_TRANSACTION_ISOLATION;
+  return String(value).trim().toLowerCase();
+}
+
+function enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet = []) {
+  const required = normalizePathList(requiredReadSet);
+  if (!usesSerializableIsolation(transaction) || required.length === 0) return validation;
+
+  const expected = normalizeReadSnapshotEvidence(parseJson(transaction.baseSnapshotEvidenceJson, null));
+  const snapshotReadSet = normalizePathList(expected?.readSet || []);
+  const missingReadSet = required.filter((readPath) => (
+    !snapshotReadSet.some((snapshotPath) => snapshotCoversReadPath(snapshotPath, readPath))
+  ));
+  const requiresSnapshot = !expected || expected.status === 'empty' || validation.reasonCodes.includes('repo_snapshot_not_recorded');
+  if (!requiresSnapshot && missingReadSet.length === 0) return validation;
+
+  return {
+    ...validation,
+    ok: false,
+    reasonCodes: unique([
+      ...validation.reasonCodes,
+      ...(requiresSnapshot ? ['repo_snapshot_required_for_serializable'] : []),
+      ...(missingReadSet.length ? ['repo_snapshot_read_set_coverage_required'] : []),
+    ]),
+    requiredReadSet: required,
+    snapshotReadSet,
+    missingReadSet,
+  };
+}
+
+function snapshotCoversReadPath(snapshotPath, readPath) {
+  return snapshotPath === readPath || matchPathPattern(readPath, snapshotPath);
 }
 
 function staleReadEventsFrom(transaction, readSet, events = []) {
@@ -1651,6 +2568,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       isolation: transaction.isolation,
       reasonCodes: lineProvenanceDecision.reasonCodes,
       missingLineProvenancePaths: lineProvenanceDecision.missingPaths,
+      lineProvenance: lineProvenanceDecision,
       validatedAt: new Date().toISOString(),
     };
     const updated = await prisma.codeSiteMutationTransaction.update({
@@ -1675,11 +2593,13 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
     return { decision, transaction: transactionProjection(updated) };
   }
 
-  const bundle = await createProofBundleForTransaction(transaction, {
+  const landingStatus = inspectionDecision.inspectionRuns.at(-1)?.status || 'committed';
+  let bundle = await createProofBundleForTransaction(transaction, {
     ...body,
     inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
     repoState: repoStateDecision.repoState,
+    landingStatus,
   });
   const updated = await prisma.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
@@ -1690,7 +2610,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
     },
   });
   await seedLineProvenance(transaction, bundle);
-  await recordEvent(transaction.projectId, {
+  const commitEvent = await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'transaction_committed',
     displayCallsign: transaction.mutationLease.displayCallsign,
@@ -1706,7 +2626,30 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   });
-  return { transaction: transactionProjection(updated), proofBundle: proofBundleProjection(bundle) };
+  const closeout = await closeTransactionBlackBox(workspaceSlug, {
+    ...transaction,
+    status: updated.status,
+    proofBundleDigest: bundle.bundleDigest,
+    closedAt: updated.closedAt,
+  }, {
+    body,
+    bundle,
+    terminalEvent: commitEvent,
+    validationDecision: validation.decision,
+    inspectionDecision,
+    repoStateDecision,
+    lineProvenanceDecision,
+    landingStatus,
+  });
+  if (closeout?.proofBundle) bundle = closeout.proofBundle;
+  return {
+    transaction: transactionProjection(updated),
+    proofBundle: proofBundleProjection(bundle, {
+      transaction,
+      mutationLease: transaction.mutationLease,
+      landingRuns: inspectionDecision.inspectionRuns,
+    }),
+  };
 }
 
 export async function abortTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
@@ -1719,13 +2662,24 @@ export async function abortTransaction(workspaceSlug, transactionId, body = {}, 
       closedAt: new Date(),
     },
   });
-  await recordEvent(transaction.projectId, {
+  const abortEvent = await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'transaction_aborted',
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
     details: { transactionId: transaction.id, reason: body.reason || 'aborted_by_tower' },
+  });
+  await closeTransactionBlackBox(workspaceSlug, {
+    ...transaction,
+    status: updated.status,
+    commitDecisionJson: updated.commitDecisionJson,
+    closedAt: updated.closedAt,
+  }, {
+    body,
+    terminalEvent: abortEvent,
+    terminalStatus: 'aborted',
+    landingStatus: 'aborted',
   });
   return transactionProjection(updated);
 }
@@ -1752,7 +2706,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
     evidenceRefs,
     repoState,
   });
-  return prisma.codeSiteProofBundle.create({
+  const created = await prisma.codeSiteProofBundle.create({
     data: {
       projectId: transaction.projectId,
       transactionId: transaction.id,
@@ -1764,7 +2718,69 @@ async function createProofBundleForTransaction(transaction, body = {}) {
       dojoEvidenceRefsJson: stringifyJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || []),
       repoStateJson: stringifyJson(repoState),
       incidentReplayDigest: body.incidentReplayDigest || body.incident_replay_digest || null,
+      landingStatus: normalizeProofLandingStatus(body.landingStatus || body.landing_status),
       bundleDigest,
+    },
+  });
+  return signProofBundleRecord(created, {
+    project: transaction.project,
+    transaction,
+    mutationLease: transaction.mutationLease,
+  });
+}
+
+function normalizeProofLandingStatus(value) {
+  const status = String(value || '').trim();
+  return status || null;
+}
+
+async function signProofBundleRecord(bundle, context = {}) {
+  const transaction = context.transaction || bundle.transaction || null;
+  const mutationLease = context.mutationLease || transaction?.mutationLease || bundle.transaction?.mutationLease || null;
+  const project = context.project || bundle.project || transaction?.project || null;
+  const portable = buildPortableProofBundle({
+    project: project ? projectProjection(project) : { id: bundle.projectId },
+    transaction: transaction
+      ? transactionProjection(transaction)
+      : {
+        id: bundle.transactionId,
+        projectId: bundle.projectId,
+        mutationLeaseId: null,
+      },
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    proofBundle: {
+      id: bundle.id,
+      projectId: bundle.projectId,
+      transactionId: bundle.transactionId,
+      commitSha: bundle.commitSha,
+      readSetDigest: bundle.readSetDigest,
+      writeSetDigest: bundle.writeSetDigest,
+      invariants: parseJson(bundle.invariantsJson, []),
+      evidenceRefs: parseJson(bundle.evidenceRefsJson, []),
+      dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
+      repoState: parseJson(bundle.repoStateJson, null),
+      incidentReplayDigest: bundle.incidentReplayDigest,
+      landingStatus: bundle.landingStatus || context.landingStatus || null,
+      bundleDigest: bundle.bundleDigest,
+      proofSignature: parseJson(bundle.proofSignatureJson, null),
+      createdAt: bundle.createdAt,
+    },
+  });
+  return prisma.codeSiteProofBundle.update({
+    where: { id: bundle.id },
+    data: {
+      proofSignatureJson: stringifyJson(portable.proofSignature),
+      signatureKeyId: portable.proofSignature?.keyId || null,
+    },
+    include: {
+      project: true,
+      transaction: {
+        include: {
+          agentSession: true,
+          mutationLease: true,
+          project: true,
+        },
+      },
     },
   });
 }
@@ -1923,11 +2939,11 @@ function inspectionEvidenceRefs(run) {
 function requiredInspectionSignals(transaction) {
   const lease = parseJson(transaction.mutationLease.leaseJson, {});
   const requiredRadar = asArray(lease.requiredRadar || lease.required_radar)
-    .map(normalizeInspectionSignal)
+    .map(canonicalInspectionSignal)
     .filter(Boolean);
   const invariantSignals = asArray(parseJson(transaction.invariantsJson, []))
     .filter((invariant) => /[:_.-]pass$/i.test(String(invariant || '')))
-    .map(normalizeInspectionSignal)
+    .map(canonicalInspectionSignal)
     .filter(Boolean);
   const required = unique([...requiredRadar, ...invariantSignals]);
   return required.length ? required : ['landing'];
@@ -1937,14 +2953,18 @@ function inspectionSatisfiesSignal(run, requiredSignal) {
   const signals = asArray(parseJson(run.inspectionSignalsJson, []));
   return signals.some((signal) => {
     if (inspectionSignalFailed(signal)) return false;
-    return normalizeInspectionSignal(signalKey(signal)) === requiredSignal
+    return canonicalInspectionSignal(signalKey(signal)) === canonicalInspectionSignal(requiredSignal)
       && inspectionSignalHasDurableEvidence(run, signal);
   });
 }
 
 function signalKey(signal) {
   if (typeof signal === 'string') return signal;
-  return signal?.key || signal?.signal || signal?.type || signal?.name || signal?.inspector || '';
+  const adapter = signal?.adapter;
+  const adapterKey = typeof adapter === 'string'
+    ? adapter
+    : adapter?.key || adapter?.signal || adapter?.type || adapter?.name || '';
+  return signal?.key || signal?.signal || signal?.type || signal?.name || signal?.radar || adapterKey || signal?.inspector || '';
 }
 
 function normalizeInspectionSignal(value) {
@@ -1955,6 +2975,57 @@ function normalizeInspectionSignal(value) {
     .replace(/[^a-z0-9_]+/g, '_')
     .replace(/_pass(ed)?$/, '')
     .replace(/^_+|_+$/g, '');
+}
+
+function radarInspectionAdapterFor(value) {
+  const normalized = normalizeInspectionSignal(value);
+  if (!normalized) return null;
+  return RADAR_INSPECTION_ADAPTERS.find((adapter) =>
+    adapter.key === normalized || adapter.aliases.some((alias) => normalizeInspectionSignal(alias) === normalized)) || null;
+}
+
+function canonicalInspectionSignal(value) {
+  const normalized = normalizeInspectionSignal(value);
+  const adapter = radarInspectionAdapterFor(normalized);
+  return adapter?.key || normalized;
+}
+
+function inspectionSignalAdapterValue(signal) {
+  if (!signal || typeof signal !== 'object') return null;
+  const adapter = signal.adapter;
+  if (typeof adapter === 'string') return adapter;
+  if (adapter && typeof adapter === 'object') {
+    return adapter.key || adapter.signal || adapter.type || adapter.name || null;
+  }
+  return signal.radar || signal.radarKey || signal.radar_key || null;
+}
+
+function radarInspectionAdapterProjection(adapter) {
+  if (!adapter) return null;
+  return {
+    key: adapter.key,
+    label: adapter.label,
+    evidencePrefix: adapter.evidencePrefix,
+  };
+}
+
+function normalizeInspectionSignalPayload(signal) {
+  const key = normalizeInspectionSignal(signalKey(signal));
+  const adapter = radarInspectionAdapterFor(inspectionSignalAdapterValue(signal) || key);
+  if (typeof signal === 'string') {
+    return {
+      key: adapter?.key || key,
+      status: 'requested',
+      evidenceRefs: [],
+      ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
+    };
+  }
+  if (!signal || typeof signal !== 'object') return null;
+  return {
+    ...signal,
+    key: adapter?.key || key,
+    ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
+  };
 }
 
 function inspectionSignalHasDurableEvidence(run, signal) {
@@ -1969,7 +3040,7 @@ function signalEvidenceRefs(signal) {
 }
 
 function isDurableInspectionEvidenceRef(ref) {
-  return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
+  return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|api-contract:run|security:scan|migration:plan|ui:screenshot|accessibility:audit|performance:budget|handover:packet|clearance:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
 }
 
 async function seedLineProvenance(transaction, bundle) {
@@ -1995,16 +3066,37 @@ async function verifyLineProvenanceEvidence(transaction) {
     },
     orderBy: { createdAt: 'asc' },
   });
-  const coveredPaths = new Set(events
+  const transactionEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
-    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction))
+    .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction));
+  const coveredPaths = new Set(transactionEvents
     .flatMap(({ details }) => strictLineProvenanceRows(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
     .map((row) => row.filePath));
+  const uncoveredWriteEvents = transactionEvents
+    .map(({ event, details }) => {
+      const path = normalizePath(details.path);
+      const rows = strictLineProvenanceRows(details.lineProvenance || details.line_provenance, path);
+      const expectedRanges = strictLineProvenanceRows(details.changedLineRanges || details.changed_line_ranges, path);
+      const missingPathCoverage = path && !lineProvenanceRowsCoverPath(rows, path);
+      const missingRangeCoverage = expectedRanges.filter((expectedRange) => (
+        !rows.some((row) => lineProvenanceRowCoversRange(row, expectedRange))
+      ));
+      return {
+        eventId: event.id,
+        path,
+        missingPathCoverage,
+        missingRangeCoverage,
+      };
+    })
+    .filter((item) => item.path && (item.missingPathCoverage || item.missingRangeCoverage.length));
   const missingPaths = paths.filter((filePath) => !lineProvenanceCoversPath(coveredPaths, filePath));
+  const missingEventPaths = unique(uncoveredWriteEvents.map((event) => event.path));
+  const allMissingPaths = unique([...missingPaths, ...missingEventPaths]);
   return {
-    ok: missingPaths.length === 0,
-    reasonCodes: missingPaths.length ? ['line_provenance_required'] : ['line_provenance_verified'],
-    missingPaths,
+    ok: allMissingPaths.length === 0 && uncoveredWriteEvents.length === 0,
+    reasonCodes: allMissingPaths.length || uncoveredWriteEvents.length ? ['line_provenance_required'] : ['line_provenance_verified'],
+    missingPaths: allMissingPaths,
+    uncoveredWriteEvents,
   };
 }
 
@@ -2023,8 +3115,56 @@ function isStrictLineProvenanceRow(row) {
 function lineProvenanceCoversPath(coveredPaths, path) {
   if (coveredPaths.has(path)) return true;
   return [...coveredPaths].some((coveredPath) => (
-    matchPathPattern(coveredPath, path) || matchPathPattern(path, coveredPath)
+    lineProvenanceFileCoversPath(coveredPath, path)
   ));
+}
+
+function lineProvenanceRowsCoverPath(rows, path) {
+  return rows.some((row) => lineProvenanceFileCoversPath(row.filePath, path));
+}
+
+function lineProvenanceFileCoversPath(provenancePath, path) {
+  return provenancePath === path || matchPathPattern(provenancePath, path) || matchPathPattern(path, provenancePath);
+}
+
+function lineProvenanceRowCoversRange(row, expectedRange) {
+  if (!lineProvenanceFileCoversPath(row.filePath, expectedRange.filePath)) return false;
+  return row.startLine <= expectedRange.startLine && row.endLine >= expectedRange.endLine;
+}
+
+async function persistAllowedWriteLineProvenance(transaction, event, writeEvidence = {}) {
+  const defaultPath = normalizePath(writeEvidence.path);
+  const rows = strictLineProvenanceRows(writeEvidence.lineProvenance || writeEvidence.line_provenance, defaultPath);
+  for (const row of rows) {
+    await prisma.codeSiteLineProvenance.create({
+      data: {
+        projectId: transaction.projectId,
+        transactionId: transaction.id,
+        filePath: row.filePath,
+        lineAnchor: row.lineAnchor,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        displayCallsign: transaction.mutationLease.displayCallsign,
+        reasonRef: row.reasonRef || `event:${event.id}`,
+        evidenceRefsJson: stringifyJson(unique([
+          `transaction:${transaction.id}`,
+          `event:${event.id}`,
+          ...asArray(writeEvidence.evidenceRefs || writeEvidence.evidence_refs),
+          ...asArray(row.evidenceRefs),
+        ].filter(Boolean))),
+        dojoSourceRefsJson: stringifyJson(unique([
+          ...asArray(writeEvidence.dojoSourceRefs || writeEvidence.dojo_source_refs),
+          ...asArray(row.dojoSourceRefs || row.dojo_source_refs),
+        ].filter(Boolean))),
+        processAncestryJson: stringifyJson(unique([
+          ...asArray(writeEvidence.processAncestry || writeEvidence.process_ancestry),
+          ...asArray(row.processAncestry),
+        ].filter(Boolean))),
+        promptSummary: row.promptSummary || writeEvidence.promptSummary || writeEvidence.prompt_summary || 'CodeSite allowed write',
+      },
+    });
+  }
+  return rows.length;
 }
 
 async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
@@ -2046,6 +3186,8 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
         transactionId: transaction.id,
         filePath: row.filePath,
         lineAnchor: row.lineAnchor,
+        startLine: row.startLine,
+        endLine: row.endLine,
         displayCallsign: transaction.mutationLease.displayCallsign,
         reasonRef: row.reasonRef || `event:${event.id}`,
         evidenceRefsJson: stringifyJson(unique([
@@ -2055,7 +3197,10 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
           ...asArray(details.evidenceRefs || details.evidence_refs),
           ...asArray(row.evidenceRefs),
         ].filter(Boolean))),
-        dojoSourceRefsJson: stringifyJson([]),
+        dojoSourceRefsJson: stringifyJson(unique([
+          ...asArray(details.dojoSourceRefs || details.dojo_source_refs),
+          ...asArray(row.dojoSourceRefs || row.dojo_source_refs),
+        ].filter(Boolean))),
         proofBundleId: bundle.id,
         processAncestryJson: stringifyJson(unique([
           ...asArray(details.processAncestry || details.process_ancestry),
@@ -2067,9 +3212,9 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
 }
 
 export async function createDocument(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId);
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const kind = String(body.kind || body.type || 'rfi');
-  const routing = await validateDocumentRouting(project.id, body, actor);
+  const routing = await validateDocumentRouting(workspaceSlug, project.id, body, actor);
   const document = await prisma.codeSiteDocument.create({
     data: {
       projectId: project.id,
@@ -2102,6 +3247,7 @@ export async function createDocument(workspaceSlug, projectId, body = {}, actor 
     },
   });
   const inboxItems = await routeDocumentToInbox(project.id, document, event, body, routing.targetSessions);
+  await syncArtifactsForProject(project.id, { reason: 'document_inbox_routed', eventId: event.id });
   return { document: documentProjection(document), inboxItems: inboxItems.map(inboxProjection) };
 }
 
@@ -2126,7 +3272,7 @@ function eventTypeForDocument(kind) {
   }[kind] || 'tower_instruction';
 }
 
-async function validateDocumentRouting(projectId, body = {}, actor = null) {
+async function validateDocumentRouting(workspaceSlug, projectId, body = {}, actor = null) {
   const fromSessionId = body.fromSessionId || body.from_session || body.sourceSessionId || body.source_session || null;
   const targetSessionIds = unique(asArray(body.toSessionId || body.to_session || body.recipients || []));
   const kind = String(body.kind || body.type || 'rfi');
@@ -2134,6 +3280,7 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
     ? await prisma.codeSiteAgentSession.findFirst({ where: { id: fromSessionId, projectId } })
     : null;
   if (fromSessionId && !fromSession) throw notFound('source_agent_session_not_found');
+  if (actor && !actor.bypass && !fromSession) throw forbidden('document_sender_session_required');
   if (fromSession && actor && !actor.bypass && actor.userId !== fromSession.ownerUserId) {
     throw forbidden('document_sender_forbidden');
   }
@@ -2147,6 +3294,9 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
   const missingTargetIds = targetSessionIds.filter((id) => !foundTargetIds.has(id));
   if (missingTargetIds.length) {
     throw badRequest('document_recipient_not_in_project', { missingTargetIds });
+  }
+  if (!actor?.bypass) {
+    await requireWorkspaceSessionMembers(workspaceSlug, [fromSession, ...targetSessions].filter(Boolean));
   }
   const blockedRecipients = targetSessions
     .map((session) => ({
@@ -2165,6 +3315,20 @@ async function validateDocumentRouting(projectId, body = {}, actor = null) {
     throw badRequest('document_recipient_policy_blocked', { blockedRecipients });
   }
   return { fromSession, targetSessions };
+}
+
+async function requireWorkspaceSessionMembers(workspaceSlug, sessions = []) {
+  const ownerUserIds = unique(sessions.map((session) => session?.ownerUserId).filter(Boolean));
+  if (!ownerUserIds.length) return;
+  const workspace = await prisma.workspace.findUnique({
+    where: { slug: workspaceSlug },
+    include: { memberships: { where: { userId: { in: ownerUserIds } } } },
+  });
+  const memberUserIds = new Set(asArray(workspace?.memberships).map((membership) => membership.userId));
+  const missing = ownerUserIds.filter((userId) => !memberUserIds.has(userId));
+  if (missing.length) {
+    throw badRequest('document_session_owner_not_workspace_member', { userIds: missing });
+  }
 }
 
 function hasDocumentProjectRef(body = {}) {
@@ -2209,7 +3373,7 @@ function shouldRedactField(key, policy) {
   if (policy.redactSecrets !== false && /secret|token|password|api[_-]?key|credential|authorization|cookie/i.test(name)) {
     return true;
   }
-  if (policy.redactPrivatePrompts !== false && /private[_-]?prompt|prompt[_-]?transcript|raw[_-]?prompt/i.test(name)) {
+  if (policy.redactPrivatePrompts !== false && /private[_-]?prompt|prompt[_-]?transcript|raw[_-]?prompt|cli[_-]?history|terminal[_-]?(history|transcript|session)|session[_-]?memory|conversation[_-]?(history|transcript)|raw[_-]?(trace|session|memory)/i.test(name)) {
     return true;
   }
   return documentPolicyFields(policy, ['redactedFields', 'redacted_fields', 'privateFields', 'private_fields'])
@@ -2229,7 +3393,7 @@ function shouldDropField(key, policy) {
 function isSensitiveValue(value, policy = defaultRedactionPolicy()) {
   if (policy.redactSecrets === false) return false;
   if (typeof value !== 'string') return false;
-  return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/.test(value);
+  return /(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{12,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/-]+=*|(?:DATABASE_URL|[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*)\s*=|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s]+)/.test(value);
 }
 
 async function routeDocumentToInbox(projectId, document, event, body, targetSessions = null) {
@@ -2430,6 +3594,19 @@ export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventI
     where: { id: item.id },
     data: { status: 'acknowledged', acknowledgedAt: new Date() },
   });
+  await recordEvent(session.projectId, {
+    eventType: 'transponder_update',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      type: 'inbox_acknowledged',
+      inboxItemId: item.id,
+      eventId: item.eventId,
+      documentId: item.documentId,
+      status: 'acknowledged',
+    },
+  });
   return inboxProjection(updated);
 }
 
@@ -2443,8 +3620,8 @@ function requireAgentInboxAccess(session, actor) {
   }
 }
 
-export async function createIncident(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function createIncident(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const category = String(body.category || body.kind || 'near_miss').toLowerCase();
   const participants = unique([
     ...oneOrMany(body.participants),
@@ -2542,6 +3719,207 @@ export async function createIncident(workspaceSlug, projectId, body = {}) {
   };
 }
 
+export async function resumeMaydayIncident(workspaceSlug, incidentId, body = {}, actor = null) {
+  const incident = await prisma.codeSiteIncident.findFirst({
+    where: { id: incidentId, project: { workspaceSlug } },
+    include: { project: { include: PROJECT_INCLUDE } },
+  });
+  if (!incident) throw notFound('incident_not_found');
+  if (incident.category !== 'mayday') throw badRequest('incident_not_mayday');
+  await requireProjectAccess(incident.project, actor, 'mayday:resume');
+  const approval = body.approved === true || body.approval === true || body.humanApproval === true || body.human_approval === true;
+  const rationale = String(body.rationale || body.reason || body.summary || '').trim();
+  if (!approval) throw badRequest('mayday_resume_human_approval_required');
+  if (!rationale) throw badRequest('mayday_resume_rationale_required');
+
+  const stopWork = await findStopWorkDocumentForIncident(incident.projectId, incident.id);
+  if (!stopWork) throw badRequest('mayday_stop_work_document_required');
+  const stopWorkBody = parseJson(stopWork.bodyJson, {});
+  const suspendedLeaseIds = unique([
+    ...asArray(stopWorkBody.suspendedLeaseIds),
+    ...asArray(parseJson(incident.incidentReplayJson, {})?.maydayWorkflow?.suspendedLeases).map((lease) => lease.id),
+  ].filter(Boolean));
+  if (!suspendedLeaseIds.length) throw badRequest('mayday_resume_no_suspended_leases');
+  const inspectionRunIds = unique([
+    ...asArray(body.inspectionRunIds || body.inspection_run_ids),
+    stopWorkBody.inspectorRunId,
+    parseJson(incident.incidentReplayJson, {})?.maydayWorkflow?.inspectorRunId,
+  ].filter(Boolean));
+  const inspectionDecision = await validateMaydayResumeInspections(incident.projectId, inspectionRunIds, body);
+  if (!inspectionDecision.ok) {
+    throw badRequest('mayday_resume_inspection_required', inspectionDecision);
+  }
+
+  const leases = await prisma.codeSiteMutationLease.findMany({
+    where: { id: { in: suspendedLeaseIds }, projectId: incident.projectId },
+  });
+  const foundLeaseIds = new Set(leases.map((lease) => lease.id));
+  const missingLeaseIds = suspendedLeaseIds.filter((id) => !foundLeaseIds.has(id));
+  const blockedLeases = leases
+    .filter((lease) => lease.status !== 'suspended' || lease.revokedAt || (lease.expiresAt && new Date(lease.expiresAt).getTime() <= Date.now()))
+    .map((lease) => ({
+      id: lease.id,
+      status: lease.status,
+      revokedAt: lease.revokedAt || null,
+      expiresAt: lease.expiresAt || null,
+    }));
+  if (missingLeaseIds.length || blockedLeases.length) {
+    throw badRequest('mayday_resume_lease_blocked', { missingLeaseIds, blockedLeases });
+  }
+
+  const resumedLeases = [];
+  const policyDecisions = [];
+  const events = [];
+  for (const lease of leases) {
+    const updated = await prisma.codeSiteMutationLease.update({
+      where: { id: lease.id },
+      data: { status: 'active' },
+    });
+    resumedLeases.push(mutationLeaseProjection(updated));
+    const decision = await createPolicyDecision(incident.projectId, {
+      mutationLeaseId: lease.id,
+      displayCallsign: lease.displayCallsign,
+      decision: 'allow',
+      reasonCodes: ['human_resume_approved', 'inspection_passed', 'mayday_ground_stop_resolved'],
+      input: {
+        incidentId: incident.id,
+        approval,
+        rationale,
+        inspectionRunIds,
+      },
+      decisionJson: {
+        incidentId: incident.id,
+        previousStatus: lease.status,
+        status: 'active',
+        resumedByUserId: actorUserId(actor),
+        rationale,
+      },
+    });
+    policyDecisions.push(policyDecisionProjection(decision));
+  }
+
+  const approvedAt = new Date();
+  const resolvedBody = {
+    ...stopWorkBody,
+    resumeGate: {
+      ...(stopWorkBody.resumeGate || {}),
+      requiresHumanApproval: true,
+      status: 'approved',
+      approvedByUserId: actorUserId(actor),
+      approvedAt: approvedAt.toISOString(),
+      rationale,
+      inspectionRunIds,
+      resumedLeaseIds: resumedLeases.map((lease) => lease.id),
+    },
+  };
+  const resolvedDocument = await prisma.codeSiteDocument.update({
+    where: { id: stopWork.id },
+    data: {
+      status: 'resolved',
+      blocking: false,
+      resolvedAt: approvedAt,
+      bodyJson: stringifyJson(resolvedBody),
+    },
+  });
+  const resumeEvent = await recordEvent(incident.projectId, {
+    eventType: 'mayday_resumed',
+    actorType: 'human',
+    actorId: actorUserId(actor),
+    evidenceRefs: unique([
+      ...asArray(body.evidenceRefs || body.evidence_refs),
+      ...inspectionDecision.evidenceRefs,
+      `codesite:incident:${incident.id}`,
+      `codesite:document:${resolvedDocument.id}`,
+    ]),
+    details: {
+      incidentId: incident.id,
+      documentId: resolvedDocument.id,
+      resumedLeaseIds: resumedLeases.map((lease) => lease.id),
+      inspectionRunIds,
+      rationale,
+      reasonCodes: ['human_resume_approved', 'inspection_passed', 'mayday_ground_stop_resolved'],
+    },
+  });
+  events.push(resumeEvent);
+
+  const priorReplay = parseJson(incident.incidentReplayJson, {});
+  const updatedIncident = await finalizeIncidentReplay(incident.project, incident, {
+    ...body,
+    timelineEventRefs: unique([
+      ...asArray(priorReplay.eventRefs),
+      resumeEvent.id,
+    ]),
+  }, {
+    participants: parseJson(incident.participantsJson, []),
+    affectedZones: parseJson(incident.affectedZonesJson, []),
+    evidenceRefs: unique([
+      ...parseJson(incident.evidenceRefsJson, []),
+      ...asArray(body.evidenceRefs || body.evidence_refs),
+      ...inspectionDecision.evidenceRefs,
+    ]),
+    timelineEventRefs: unique([
+      ...asArray(priorReplay.eventRefs),
+      resumeEvent.id,
+    ]),
+    extraEvents: events,
+    maydayWorkflow: {
+      ...(priorReplay.maydayWorkflow || {}),
+      humanResumeRequired: false,
+      resumeGate: resolvedBody.resumeGate,
+      resumedLeases: resumedLeases.map((lease) => ({ id: lease.id, displayCallsign: lease.displayCallsign, status: lease.status })),
+      policyDecisionIds: policyDecisions.map((decision) => decision.id),
+    },
+  });
+
+  return {
+    ok: true,
+    incident: updatedIncident,
+    resumedLeases,
+    stopWorkDocument: documentProjection(resolvedDocument),
+    policyDecisions,
+    event: eventProjection(resumeEvent),
+  };
+}
+
+async function findStopWorkDocumentForIncident(projectId, incidentId) {
+  const documents = await prisma.codeSiteDocument.findMany({
+    where: { projectId, kind: 'stop_work', status: { in: ['open', 'blocked', 'pending'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  return documents.find((document) => parseJson(document.bodyJson, {})?.incidentId === incidentId) || null;
+}
+
+async function validateMaydayResumeInspections(projectId, inspectionRunIds = [], body = {}) {
+  if (!inspectionRunIds.length) {
+    return { ok: false, reasonCodes: ['mayday_resume_inspection_run_required'], inspectionRunIds: [] };
+  }
+  const runs = await prisma.codeSiteInspectionRun.findMany({
+    where: { projectId, id: { in: inspectionRunIds } },
+  });
+  const evidenceRefs = unique(runs.flatMap((run) => parseJson(run.evidenceRefsJson, [])));
+  const missingRunIds = inspectionRunIds.filter((id) => !runs.some((run) => run.id === id));
+  const incompleteRuns = runs.filter((run) => !['completed', 'passed', 'green'].includes(String(run.status || '').toLowerCase()));
+  const badSignals = runs.flatMap((run) => parseJson(run.inspectionSignalsJson, [])
+    .filter((signal) => ['failed', 'blocked', 'red'].includes(String(signal.status || '').toLowerCase()))
+    .map((signal) => ({ inspectionRunId: run.id, key: signal.key || null, status: signal.status })));
+  const override = body.override === true || body.overrideResume === true || body.override_resume === true;
+  const reasonCodes = [
+    ...(missingRunIds.length ? ['mayday_resume_inspection_missing'] : []),
+    ...(incompleteRuns.length ? ['mayday_resume_inspection_incomplete'] : []),
+    ...(!evidenceRefs.length ? ['mayday_resume_inspection_evidence_required'] : []),
+    ...(badSignals.length && !override ? ['mayday_resume_failed_signal_override_required'] : []),
+  ];
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes,
+    inspectionRunIds,
+    missingRunIds,
+    incompleteRunIds: incompleteRuns.map((run) => run.id),
+    badSignals,
+    evidenceRefs,
+  };
+}
+
 async function recordIncidentPolicyDeltaEvent(projectId, incident, policyDelta, evidenceRefs = []) {
   return recordEvent(projectId, {
     eventType: 'policy_delta_proposed',
@@ -2589,7 +3967,332 @@ async function finalizeIncidentReplay(project, incident, body = {}, context = {}
       replayDigest: digest(replay),
     },
   });
+  await syncArtifactsForProject(project.id, { reason: 'incident_replay_finalized' });
   return incidentProjection(updated);
+}
+
+async function closeTransactionBlackBox(workspaceSlug, transaction, context = {}) {
+  const project = await requireProject(workspaceSlug, transaction.projectId);
+  const body = transactionBlackBoxReplayBody(transaction, context);
+  const participants = body.participants;
+  const affectedZones = body.affectedZones;
+  const existing = await findExistingTransactionBlackBoxIncident(project.id, transaction.id);
+  const initialEvents = await findTransactionBlackBoxEvents(project.id, transaction, {
+    participants,
+    affectedZones,
+    extraEvents: [context.terminalEvent].filter(Boolean),
+    proofBundle: context.bundle,
+  });
+  const baseIncident = transactionBlackBoxIncidentEnvelope(existing, body, project);
+  const priorReplay = parseJson(existing?.incidentReplayJson, existing?.incidentReplay || {});
+  const initialReplay = buildIncidentReplayPacket({
+    project,
+    incident: baseIncident,
+    body,
+    events: initialEvents,
+  });
+  let incident = existing
+    ? await prisma.codeSiteIncident.update({
+      where: { id: existing.id },
+      data: {
+        severity: body.severity,
+        participantsJson: stringifyJson(participants),
+        affectedZonesJson: stringifyJson(affectedZones),
+        incidentReplayJson: stringifyJson(initialReplay),
+        replayDigest: digest(initialReplay),
+        timelineEventRefsJson: stringifyJson(initialReplay.eventRefs),
+        policyDeltaJson: stringifyJson(null),
+        evidenceRefsJson: stringifyJson(body.evidenceRefs),
+      },
+    })
+    : await prisma.codeSiteIncident.create({
+      data: {
+        projectId: project.id,
+        severity: body.severity,
+        category: 'black_box',
+        participantsJson: stringifyJson(participants),
+        affectedZonesJson: stringifyJson(affectedZones),
+        incidentReplayJson: stringifyJson(initialReplay),
+        replayDigest: digest(initialReplay),
+        timelineEventRefsJson: stringifyJson(initialReplay.eventRefs),
+        policyDeltaJson: stringifyJson(null),
+        evidenceRefsJson: stringifyJson(body.evidenceRefs),
+      },
+    });
+
+  const closeAlreadyRecorded = asArray(priorReplay.causalEvents).some((event) => (
+    event.type === 'black_box.closed'
+    && event.details?.transactionId === transaction.id
+    && (!context.bundle?.id || event.details?.proofBundleId === context.bundle.id)
+  ));
+  const closeEvent = closeAlreadyRecorded ? null : await recordEvent(project.id, {
+    mutationLeaseId: transaction.mutationLeaseId,
+    eventType: 'black_box_closed',
+    displayCallsign: transaction.mutationLease?.displayCallsign || null,
+    actorType: 'transaction',
+    actorId: transaction.id,
+    evidenceRefs: body.evidenceRefs,
+    details: {
+      transactionId: transaction.id,
+      incidentId: incident.id,
+      proofBundleId: context.bundle?.id || null,
+      proofBundleDigest: context.bundle?.bundleDigest || null,
+      landingStatus: context.landingStatus || context.terminalStatus || transaction.status,
+      status: context.terminalStatus || transaction.status,
+      readSet: body.transactionContext.readSet,
+      writeSet: body.transactionContext.writeSet,
+      exportedPaths: body.handover.exportPaths,
+      reason: 'transaction_black_box_closeout',
+    },
+  });
+
+  const finalEvents = await findTransactionBlackBoxEvents(project.id, transaction, {
+    participants,
+    affectedZones,
+    extraEvents: [context.terminalEvent, closeEvent].filter(Boolean),
+    proofBundle: context.bundle,
+  });
+  const finalReplay = buildIncidentReplayPacket({
+    project,
+    incident: {
+      ...baseIncident,
+      id: incident.id,
+      createdAt: incident.createdAt,
+    },
+    body,
+    events: finalEvents,
+  });
+  const replayDigest = digest(finalReplay);
+  incident = await prisma.codeSiteIncident.update({
+    where: { id: incident.id },
+    data: {
+      incidentReplayJson: stringifyJson(finalReplay),
+      replayDigest,
+      timelineEventRefsJson: stringifyJson(finalReplay.eventRefs),
+    },
+  });
+
+  let proofBundle = context.bundle || null;
+  if (context.bundle?.id) {
+    proofBundle = await prisma.codeSiteProofBundle.update({
+      where: { id: context.bundle.id },
+      data: {
+        incidentReplayDigest: replayDigest,
+        landingStatus: context.bundle.landingStatus || context.landingStatus || context.terminalStatus || transaction.status || null,
+      },
+    });
+    proofBundle = await signProofBundleRecord(proofBundle, {
+      project,
+      transaction,
+      mutationLease: transaction.mutationLease,
+      landingStatus: context.landingStatus || context.terminalStatus || transaction.status || null,
+    });
+  }
+  await syncArtifactsForProject(project.id, {
+    reason: 'transaction_black_box_closed',
+    eventId: closeEvent?.id || context.terminalEvent?.id || null,
+  });
+  return {
+    incident: incidentProjection(incident),
+    replay: finalReplay,
+    replayDigest,
+    proofBundle,
+    event: closeEvent,
+  };
+}
+
+function transactionBlackBoxReplayBody(transaction, context = {}) {
+  const readSet = parseJson(transaction.readSetJson, []);
+  const observedReadSet = parseJson(transaction.observedReadSetJson, []);
+  const writeSet = parseJson(transaction.writeSetJson, []);
+  const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
+  const semanticDependencyRefs = parseJson(transaction.semanticDependencyRefsJson, []);
+  const assumptionRefs = parseJson(transaction.assumptionRefsJson, []);
+  const changedPaths = unique([...writeSet, ...observedWriteSet]);
+  const affectedZones = unique(pathsForRoute([
+    ...readSet,
+    ...observedReadSet,
+    ...changedPaths,
+    ...dependencyPathRefs(semanticDependencyRefs),
+  ]));
+  const displayCallsign = transaction.mutationLease?.displayCallsign || null;
+  const repoState = context.repoStateDecision?.repoState || null;
+  const inspectionRuns = asArray(context.inspectionDecision?.inspectionRuns).map((run) => (
+    run?.changedPathsJson ? inspectionProjection(run) : run
+  ));
+  const proofBundle = proofBundleBlackBoxContext(context.bundle);
+  const evidenceRefs = unique([
+    ...asArray(context.body?.evidenceRefs || context.body?.evidence_refs),
+    ...proofBundle.evidenceRefs,
+    ...asArray(context.inspectionDecision?.evidenceRefs),
+    ...(repoState?.evidenceDigest ? [`codesite:repo-state:${repoState.evidenceDigest}`] : []),
+    ...(context.bundle?.id ? [`codesite:proof-bundle:${context.bundle.id}`] : []),
+    `codesite:transaction:${transaction.id}`,
+    `codesite:lease:${transaction.mutationLeaseId}`,
+  ]);
+  const transactionStatus = context.terminalStatus || transaction.status || 'closed';
+  const exportPaths = transactionBlackBoxExportPaths(transaction.projectId, transaction.id, displayCallsign, context.bundle?.id);
+  return {
+    category: 'black_box',
+    severity: transactionStatus === 'aborted' ? 'warning' : 'low',
+    summary: `Transaction ${transaction.id} black-box handover ${transactionStatus}.`,
+    participants: unique([displayCallsign].filter(Boolean)),
+    affectedZones,
+    evidenceRefs,
+    transactionContext: {
+      id: transaction.id,
+      projectId: transaction.projectId,
+      mutationLeaseId: transaction.mutationLeaseId,
+      agentSessionId: transaction.agentSessionId,
+      displayCallsign,
+      baseSnapshot: transaction.baseSnapshot,
+      baseSnapshotEvidence: parseJson(transaction.baseSnapshotEvidenceJson, null),
+      isolation: transaction.isolation,
+      status: transactionStatus,
+      readSet,
+      observedReadSet,
+      writeSet,
+      observedWriteSet,
+      semanticDependencyRefs,
+      assumptionRefs,
+      validationDecision: context.validationDecision || parseJson(transaction.commitDecisionJson, null),
+      repoState,
+      lineProvenance: context.lineProvenanceDecision || null,
+      openedAt: transaction.openedAt,
+      closedAt: transaction.closedAt,
+    },
+    proofBundle,
+    handover: {
+      status: transactionStatus,
+      landingStatus: context.landingStatus || transactionStatus,
+      changedPaths,
+      inspectionRuns,
+      inspectionRunIds: inspectionRuns.map((run) => run.id).filter(Boolean),
+      repoStateDigest: repoState?.evidenceDigest || null,
+      proofBundleId: context.bundle?.id || null,
+      proofBundleDigest: context.bundle?.bundleDigest || null,
+      exportPaths,
+    },
+  };
+}
+
+function transactionBlackBoxIncidentEnvelope(existing, body, project) {
+  return {
+    id: existing?.id || null,
+    severity: body.severity,
+    category: 'black_box',
+    participants: body.participants,
+    affectedZones: body.affectedZones,
+    evidenceRefs: body.evidenceRefs,
+    policyDelta: null,
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    projectId: project.id,
+  };
+}
+
+function proofBundleBlackBoxContext(bundle) {
+  if (!bundle) {
+    return {
+      id: null,
+      transactionId: null,
+      commitSha: null,
+      readSetDigest: null,
+      writeSetDigest: null,
+      bundleDigest: null,
+      incidentReplayDigest: null,
+      evidenceRefs: [],
+      repoState: null,
+    };
+  }
+  return {
+    id: bundle.id,
+    transactionId: bundle.transactionId,
+    commitSha: bundle.commitSha || null,
+    readSetDigest: bundle.readSetDigest,
+    writeSetDigest: bundle.writeSetDigest,
+    bundleDigest: bundle.bundleDigest,
+    incidentReplayDigest: bundle.incidentReplayDigest || null,
+    evidenceRefs: parseJson(bundle.evidenceRefsJson, bundle.evidenceRefs || []),
+    repoState: parseJson(bundle.repoStateJson, bundle.repoState || null),
+  };
+}
+
+function transactionBlackBoxExportPaths(projectId, transactionId, displayCallsign, proofBundleId) {
+  const projectDir = `projects/${projectId}`;
+  return [
+    `${projectDir}/handover.md`,
+    `${projectDir}/events.jsonl`,
+    `${projectDir}/incidents/incident-replay-<incident-id>.jsonl`,
+    `${projectDir}/flights/${safeArtifactSegment(displayCallsign || 'unknown')}/black-box.json`,
+    `${projectDir}/flights/${safeArtifactSegment(displayCallsign || 'unknown')}/transaction-${transactionId}.json`,
+    ...(proofBundleId ? [`${projectDir}/proof-bundles/${proofBundleId}.proof.json`] : []),
+    ...(proofBundleId ? [`${projectDir}/proof-bundles/${proofBundleId}.trailers.txt`] : []),
+  ];
+}
+
+function safeArtifactSegment(value) {
+  return String(value || 'unknown')
+    .replace(/[^a-z0-9_.-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || 'unknown';
+}
+
+async function findExistingTransactionBlackBoxIncident(projectId, transactionId) {
+  const incidents = await prisma.codeSiteIncident.findMany({
+    where: { projectId, category: 'black_box' },
+    orderBy: { createdAt: 'asc' },
+  });
+  return asArray(incidents).find((incident) => incidentBlackBoxReferencesTransaction(incident, transactionId)) || null;
+}
+
+function incidentBlackBoxReferencesTransaction(incident, transactionId) {
+  const replay = parseJson(incident.incidentReplayJson, incident.incidentReplay || {});
+  const evidenceRefs = parseJson(incident.evidenceRefsJson, incident.evidenceRefs || []);
+  return replay.transaction?.id === transactionId
+    || replay.transactionId === transactionId
+    || evidenceRefs.includes(`codesite:transaction:${transactionId}`)
+    || asArray(replay.causalEvents).some((event) => event.transactionId === transactionId || event.details?.transactionId === transactionId);
+}
+
+async function findTransactionBlackBoxEvents(projectId, transaction, context = {}) {
+  let rows = [];
+  try {
+    rows = asArray(await prisma.codeSiteEvent.findMany({
+      where: { projectId },
+      orderBy: EVENT_ORDER_BY,
+    }));
+  } catch (_) {
+    rows = [];
+  }
+  const events = rows.map(eventProjection);
+  const selected = events.filter((event) => transactionBlackBoxEventSelected(event, transaction, context));
+  const byId = new Map(selected.map((event) => [event.id, event]));
+  for (const event of asArray(context.extraEvents).map(safeReplayEventProjection).filter(Boolean)) {
+    if (event.id && !byId.has(event.id)) byId.set(event.id, event);
+  }
+  return [...byId.values()].sort(compareReplayEvents);
+}
+
+function transactionBlackBoxEventSelected(event, transaction, context = {}) {
+  if (!event) return false;
+  const details = event.details || {};
+  const explicitRefs = new Set([
+    ...asArray(context.timelineEventRefs),
+    ...asArray(context.eventRefs),
+    ...asArray(context.extraEvents).map((item) => item?.id).filter(Boolean),
+  ]);
+  if (explicitRefs.has(event.id) || explicitRefs.has(event.eventType) || explicitRefs.has(replayEventType(event.eventType))) {
+    return true;
+  }
+  if (!TRANSACTION_BLACK_BOX_EVENT_TYPES.has(event.eventType)) return false;
+  const eventTransactionId = details.transactionId || details.transaction_id || (event.actorType === 'transaction' ? event.actorId : null);
+  if (eventTransactionId === transaction.id) return true;
+  const eventLeaseId = event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id;
+  if (eventLeaseId && eventLeaseId === transaction.mutationLeaseId) return true;
+  if (context.proofBundle?.id && details.proofBundleId === context.proofBundle.id) return true;
+  const displayCallsign = transaction.mutationLease?.displayCallsign;
+  if (displayCallsign && event.displayCallsign === displayCallsign) return true;
+  return eventTouchesAffectedZones(event, context.affectedZones);
 }
 
 async function findIncidentReplayEvents(projectId, context = {}) {
@@ -2681,7 +4384,15 @@ function buildIncidentReplayPacket({ project, incident, body = {}, events = [], 
     ...asArray(incident.evidenceRefs),
     ...causalEvents.flatMap((event) => asArray(event.evidenceRefs)),
   ]);
-  const completeness = incidentReplayCompleteness(causalEvents);
+  const transactionContext = body.transactionContext || body.transaction_context || null;
+  const proofBundle = body.proofBundle || body.proof_bundle || null;
+  const handover = body.handover || null;
+  const completeness = incidentReplayCompleteness(causalEvents, {
+    category: incident.category,
+    transactionContext,
+    proofBundle,
+    handover,
+  });
   return {
     schemaVersion: 'synthi.codesite.incidentReplay.v1',
     incidentId: incident.id,
@@ -2698,6 +4409,9 @@ function buildIncidentReplayPacket({ project, incident, body = {}, events = [], 
     affectedZones: asArray(incident.affectedZones),
     policyDelta: incident.policyDelta || null,
     completeness,
+    ...(transactionContext ? { transaction: transactionContext, transactionId: transactionContext.id || null } : {}),
+    ...(proofBundle ? { proofBundle } : {}),
+    ...(handover ? { handover } : {}),
     ...(maydayWorkflow ? { maydayWorkflow } : {}),
     ...(body.incidentReplay || body.incident_replay ? { operatorSuppliedReplay: body.incidentReplay || body.incident_replay } : {}),
   };
@@ -2741,6 +4455,7 @@ function replayEventType(eventType) {
     assumption_invalidated: 'assumption.invalidated',
     clearance_issued: 'clearance.issued',
     holding_pattern: 'clearance.holding',
+    read_observed: 'read.observed',
     write_attempted: 'write.attempted',
     write_denied: 'write.denied',
     write_quarantined: 'write.quarantined',
@@ -2757,6 +4472,7 @@ function replayEventType(eventType) {
     transaction_validated: 'transaction.validated',
     ground_stop: 'ground_stop.issued',
     mayday: 'mayday.declared',
+    mayday_resumed: 'mayday.resumed',
     rfi: 'document.rfi',
     change_order: 'document.change_order',
     tower_instruction: 'tower.instruction',
@@ -2767,18 +4483,57 @@ function replayEventType(eventType) {
   }[eventType] || String(eventType || 'unknown').replace(/_/g, '.');
 }
 
-function incidentReplayCompleteness(causalEvents = []) {
+function incidentReplayCompleteness(causalEvents = [], context = {}) {
   const observedTypes = unique(causalEvents.map((event) => event.type).filter(Boolean));
   const observed = new Set(observedTypes);
-  const present = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => observed.has(type));
-  const missing = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => !observed.has(type));
+  const required = incidentReplayRequiredEventTypes(observed, context);
+  const present = required.filter((type) => observed.has(type));
+  const missing = required.filter((type) => !observed.has(type));
   return {
-    score: BLACK_BOX_MINIMUM_EVENT_TYPES.length ? Number((present.length / BLACK_BOX_MINIMUM_EVENT_TYPES.length).toFixed(2)) : 1,
+    score: required.length ? Number((present.length / required.length).toFixed(2)) : 1,
+    requiredEventTypes: required,
     presentEventTypes: present,
     missingEventTypes: missing,
     observedEventTypes: observedTypes,
     totalEvents: causalEvents.length,
   };
+}
+
+function incidentReplayRequiredEventTypes(observed, context = {}) {
+  const transactionContext = context.transactionContext || context.transaction || null;
+  if (context.category !== 'black_box' || !transactionContext) return BLACK_BOX_MINIMUM_EVENT_TYPES;
+  const hasProofBundle = Boolean(context.proofBundle?.id || context.proofBundle?.bundleDigest || context.handover?.proofBundleId);
+  if (hasProofBundle) return BLACK_BOX_MINIMUM_EVENT_TYPES;
+
+  const required = [
+    'transaction.opened',
+    'clearance.issued',
+    'black_box.closed',
+  ];
+  const optionalWhenObserved = [
+    'assumption.recorded',
+    'write.attempted',
+    'write.denied',
+    'write.quarantined',
+    'write.allowed',
+    'snapshot.taken',
+    'shadow.run',
+    'arbiter.verdict',
+    'inspection.result',
+    'near_miss.detected',
+    'policy_delta.proposed',
+  ];
+  for (const type of optionalWhenObserved) {
+    if (observed.has(type)) required.push(type);
+  }
+
+  const status = String(transactionContext.status || '').toLowerCase();
+  if (status === 'committed' || observed.has('transaction.committed')) {
+    required.push('transaction.committed');
+  } else if (status === 'aborted' || observed.has('transaction.aborted')) {
+    required.push('transaction.aborted');
+  }
+  return unique(required);
 }
 
 function incidentReplayRouteContext(project, affectedZones = []) {
@@ -3117,8 +4872,8 @@ function emergencySnapshot(project, incident, details = {}) {
   };
 }
 
-export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function createInspectionRun(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
   const shouldExecute = inspectionExecutionRequested(body);
   const run = await prisma.codeSiteInspectionRun.create({
     data: {
@@ -3127,7 +4882,9 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
       displayCallsign: body.displayCallsign || body.callsign || 'INSPECT-01',
       status: shouldExecute ? 'running' : body.status || 'requested',
       changedPathsJson: stringifyJson(normalizePathList(body.changedPaths || body.changed_paths || [])),
-      inspectionSignalsJson: stringifyJson(body.inspectionSignals || body.inspection_signals || []),
+      inspectionSignalsJson: stringifyJson(asArray(body.inspectionSignals || body.inspection_signals || [])
+        .map(normalizeInspectionSignalPayload)
+        .filter(Boolean)),
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
     },
   });
@@ -3149,13 +4906,14 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
   return inspectionProjection(executed);
 }
 
-export async function completeInspectionRun(workspaceSlug, inspectionRunId, body = {}) {
+export async function completeInspectionRun(workspaceSlug, inspectionRunId, body = {}, actor = null) {
   const run = await prisma.codeSiteInspectionRun.findFirst({
     where: { id: inspectionRunId, project: { workspaceSlug } },
   });
   if (!run) throw notFound('inspection_run_not_found');
+  await requireProject(workspaceSlug, run.projectId, actor, 'write');
   if (inspectionExecutionRequested(body)) {
-    const project = await requireProject(workspaceSlug, run.projectId);
+    const project = await requireProject(workspaceSlug, run.projectId, actor, 'write');
     const running = await prisma.codeSiteInspectionRun.update({
       where: { id: run.id },
       data: { status: 'running' },
@@ -3166,7 +4924,9 @@ export async function completeInspectionRun(workspaceSlug, inspectionRunId, body
     where: { id: run.id },
     data: {
       status: body.status || 'completed',
-      inspectionSignalsJson: stringifyJson(body.inspectionSignals || body.inspection_signals || parseJson(run.inspectionSignalsJson, [])),
+      inspectionSignalsJson: stringifyJson(asArray(body.inspectionSignals || body.inspection_signals || parseJson(run.inspectionSignalsJson, []))
+        .map(normalizeInspectionSignalPayload)
+        .filter(Boolean)),
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || parseJson(run.evidenceRefsJson, [])),
       completedAt: new Date(),
     },
@@ -3259,8 +5019,10 @@ function normalizeInspectionCommand(command, index) {
   if (Array.isArray(command)) {
     const [executable, ...args] = command.map((part) => String(part));
     if (!executable) return null;
+    const adapter = radarInspectionAdapterFor(executable);
     return {
-      key: normalizeInspectionSignal(executable) || `command_${index + 1}`,
+      key: adapter?.key || normalizeInspectionSignal(executable) || `command_${index + 1}`,
+      adapterKey: adapter?.key || null,
       executable,
       args,
       cwd: null,
@@ -3270,8 +5032,10 @@ function normalizeInspectionCommand(command, index) {
   if (!command || typeof command !== 'object') return null;
   const executable = String(command.command || command.executable || command.bin || '').trim();
   if (!executable) return null;
+  const adapter = radarInspectionAdapterFor(command.adapter || command.radar || command.key || command.signal || command.name || executable);
   return {
-    key: normalizeInspectionSignal(command.key || command.signal || command.name || executable) || `command_${index + 1}`,
+    key: adapter?.key || normalizeInspectionSignal(command.key || command.signal || command.name || executable) || `command_${index + 1}`,
+    adapterKey: adapter?.key || null,
     executable,
     args: asArray(command.args || command.argv).map((arg) => String(arg)),
     cwd: normalizePath(command.cwd || command.workingDirectory || command.working_directory) || null,
@@ -3283,6 +5047,7 @@ async function runInspectionCommand(spec, repoRoot) {
   const startedAt = new Date();
   const cwd = resolveInspectionCwd(repoRoot, spec.cwd);
   const timeoutMs = normalizeInspectionTimeout(spec.timeoutMs);
+  const adapter = radarInspectionAdapterFor(spec.adapterKey || spec.key);
   const result = await runCommand(spec.executable, spec.args, { cwd, timeoutMs });
   const completedAt = new Date();
   const status = result.exitCode === 0 && !result.timedOut ? 'passed' : 'failed';
@@ -3300,11 +5065,12 @@ async function runInspectionCommand(spec, repoRoot) {
     completedAt: completedAt.toISOString(),
   });
   const evidenceRefs = unique([
-    durableInspectionCommandRef(spec.key, evidenceDigest),
+    durableInspectionCommandRef(spec.key, evidenceDigest, adapter),
     `artifact:${evidenceDigest}`,
   ]);
   return {
     key: spec.key,
+    ...(adapter ? { adapter: radarInspectionAdapterProjection(adapter) } : {}),
     status,
     command: {
       executable: spec.executable,
@@ -3320,6 +5086,10 @@ async function runInspectionCommand(spec, repoRoot) {
     stderrTail: result.stderrTail,
     evidenceDigest,
     evidenceRefs,
+    reasonCodes: [
+      `${adapter?.key || spec.key}_radar_${status}`,
+      ...(adapter ? [`${adapter.key}_adapter_executed`] : []),
+    ],
     source: 'codesite_inspection_executor',
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
@@ -3396,12 +5166,59 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
   });
 }
 
+function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
+  return new Promise((resolve) => {
+    const child = spawn(executable, args, {
+      cwd,
+      env: process.env,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout = tail(`${stdout}${chunk.toString('utf8')}`);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = tail(`${stderr}${chunk.toString('utf8')}`);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({
+        exitCode: 127,
+        signal: null,
+        timedOut,
+        stdoutTail: stdout,
+        stderrTail: tail(`${stderr}${error?.message || String(error)}`),
+      });
+    });
+    child.on('close', (exitCode, signal) => {
+      clearTimeout(timer);
+      resolve({
+        exitCode: Number.isInteger(exitCode) ? exitCode : null,
+        signal,
+        timedOut,
+        stdoutTail: stdout,
+        stderrTail: stderr,
+      });
+    });
+    child.stdin.end(`${JSON.stringify(input || {})}\n`);
+  });
+}
+
 function tail(value, limit = 8000) {
   const text = String(value || '');
   return text.length > limit ? text.slice(-limit) : text;
 }
 
-function durableInspectionCommandRef(key, evidenceDigest) {
+function durableInspectionCommandRef(key, evidenceDigest, adapter = null) {
+  if (adapter?.evidencePrefix) return `${adapter.evidencePrefix}:${evidenceDigest}`;
   const normalized = normalizeInspectionSignal(key);
   if (/typecheck|tsc/.test(normalized)) return `typecheck:run:${evidenceDigest}`;
   if (/test|vitest|jest|playwright|spec/.test(normalized)) return `test:run:${evidenceDigest}`;
@@ -3434,66 +5251,398 @@ async function recordInspectionExecutionEvents(projectId, run, signals) {
   });
 }
 
-export async function createCounterfactualRun(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function createCounterfactualRun(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const arbiterVerdict = body.arbiterVerdict || body.arbiter_verdict || null;
+  const affectedZones = counterfactualAffectedZones(body, arbiterVerdict);
   const run = await prisma.codeSiteCounterfactualRun.create({
     data: {
       projectId: project.id,
       shadowJobRef: body.shadowJobRef || body.shadow_job_ref || null,
       baseSnapshot: body.baseSnapshot || body.base_snapshot || digest({ projectId, at: Date.now() }),
       universesJson: stringifyJson(body.universes || []),
-      arbiterVerdictJson: stringifyJson(body.arbiterVerdict || body.arbiter_verdict || null),
+      arbiterVerdictJson: stringifyJson(arbiterVerdict),
       userChoiceJson: stringifyJson(body.userChoice || body.user_choice || null),
       laterManualEditsJson: stringifyJson(body.laterManualEdits || body.later_manual_edits || []),
       validityStrength: body.validityStrength || body.validity_strength || 'weak',
       evidenceRefsJson: stringifyJson(body.evidenceRefs || body.evidence_refs || []),
     },
   });
+  await persistCounterfactualPolicyDeltaCandidates(project.id, run, arbiterVerdict, {
+    evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+  });
   await recordEvent(project.id, {
     eventType: 'shadow_run',
     actorType: 'counterfactual',
     actorId: run.id,
-    details: { counterfactualRunId: run.id, shadowJobRef: run.shadowJobRef, validityStrength: run.validityStrength },
+    details: {
+      counterfactualRunId: run.id,
+      shadowJobRef: run.shadowJobRef,
+      validityStrength: run.validityStrength,
+      affectedZones,
+    },
   });
+  if (arbiterVerdict) {
+    await recordEvent(project.id, {
+      eventType: 'arbiter_verdict',
+      actorType: 'counterfactual',
+      actorId: run.id,
+      evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+      details: {
+        counterfactualRunId: run.id,
+        shadowJobRef: run.shadowJobRef,
+        arbiterVerdict,
+        selected: arbiterVerdict.selected || arbiterVerdict.winner || arbiterVerdict.verdict || null,
+        validityStrength: run.validityStrength,
+        affectedZones,
+      },
+    });
+  }
   return counterfactualProjection(run);
 }
 
-export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId);
+export async function createPolicyDelta(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const requestedPromotionState = String(body.promotionState || body.promotion_state || 'proposed').toLowerCase();
+  if (requestedPromotionState !== 'proposed') {
+    throw badRequest('policy_delta_create_must_start_proposed', {
+      requestedPromotionState,
+      instruction: 'Create the policy delta as proposed, then promote it with replay validation evidence.',
+    });
+  }
+  const ruleCandidate = normalizePolicyDeltaRuleCandidate(body.ruleCandidate || body.rule_candidate || body);
+  const triggerConditions = asArray(body.triggerConditions || body.trigger_conditions || []);
+  const affectedZones = policyDeltaAffectedZones(ruleCandidate, triggerConditions, body);
   const delta = await prisma.codeSitePolicyDelta.create({
     data: {
       projectId: project.id,
       learnedFromIncidentsJson: stringifyJson(body.learnedFromIncidents || body.learned_from_incidents || []),
       affectedZoneKey: body.affectedZoneKey || body.affected_zone_key || null,
-      ruleCandidateJson: stringifyJson(body.ruleCandidate || body.rule_candidate || {}),
-      triggerConditionsJson: stringifyJson(body.triggerConditions || body.trigger_conditions || []),
+      ruleCandidateJson: stringifyJson(ruleCandidate),
+      triggerConditionsJson: stringifyJson(triggerConditions),
       expectedRiskReduction: typeof body.expectedRiskReduction === 'number' ? body.expectedRiskReduction : body.expected_risk_reduction,
       confidence: typeof body.confidence === 'number' ? body.confidence : 0.5,
-      promotionState: body.promotionState || body.promotion_state || 'proposed',
+      promotionState: 'proposed',
       replayRefsJson: stringifyJson(body.replayRefs || body.replay_refs || []),
+      promotedAt: null,
     },
   });
   await recordEvent(project.id, {
     eventType: 'policy_delta_proposed',
     actorType: 'policy_delta',
     actorId: delta.id,
-    details: { policyDeltaId: delta.id, affectedZoneKey: delta.affectedZoneKey, confidence: delta.confidence },
+    details: {
+      policyDeltaId: delta.id,
+      affectedZoneKey: delta.affectedZoneKey,
+      confidence: delta.confidence,
+      affectedZones,
+      triggerConditions,
+      ruleCandidate,
+    },
   });
   return policyDeltaProjection(delta);
 }
 
-export async function getControlState(workspaceSlug, projectId) {
+export async function promotePolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const delta = await prisma.codeSitePolicyDelta.findFirst({
+    where: { id: policyDeltaId, projectId: project.id },
+  });
+  if (!delta) throw notFound('policy_delta_not_found');
+  const targetState = String(body.targetState || body.target_state || body.promotionState || body.promotion_state || 'active').toLowerCase();
+  if (!PROMOTED_POLICY_DELTA_STATES.has(targetState)) {
+    throw badRequest('policy_delta_invalid_promotion_state', { targetState });
+  }
+  const validation = validatePolicyDeltaPromotion(delta, body, actor);
+  if (!validation.ok) {
+    throw badRequest('policy_delta_promotion_not_validated', validation);
+  }
+  const currentRuleCandidate = parseJson(delta.ruleCandidateJson, {});
+  const promotedAt = new Date();
+  const promotedRuleCandidate = {
+    ...currentRuleCandidate,
+    promotion: {
+      reviewedBy: validation.reviewedBy,
+      targetState,
+      validationStatus: validation.validationStatus,
+      replayRefs: validation.replayRefs,
+      evidenceRefs: validation.evidenceRefs,
+      reasonCodes: validation.reasonCodes,
+      promotedAt: promotedAt.toISOString(),
+    },
+  };
+  const updated = await prisma.codeSitePolicyDelta.update({
+    where: { id: delta.id },
+    data: {
+      promotionState: targetState,
+      promotedAt,
+      replayRefsJson: stringifyJson(validation.replayRefs),
+      ruleCandidateJson: stringifyJson(promotedRuleCandidate),
+    },
+  });
+  await recordEvent(project.id, {
+    eventType: 'policy_delta_promoted',
+    actorType: 'policy_delta',
+    actorId: delta.id,
+    evidenceRefs: validation.evidenceRefs,
+    details: {
+      policyDeltaId: delta.id,
+      targetState,
+      reviewedBy: validation.reviewedBy,
+      validationStatus: validation.validationStatus,
+      replayRefs: validation.replayRefs,
+      reasonCodes: validation.reasonCodes,
+    },
+  });
+  return policyDeltaProjection(updated);
+}
+
+export async function rejectPolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const delta = await prisma.codeSitePolicyDelta.findFirst({
+    where: { id: policyDeltaId, projectId: project.id },
+  });
+  if (!delta) throw notFound('policy_delta_not_found');
+  const reviewedBy = body.reviewedBy || body.reviewed_by || body.reviewerId || body.reviewer_id || actor?.userId || actor?.workspaceUserId || null;
+  const reason = body.reason || body.rationale || 'policy_delta_rejected';
+  const replayRefs = unique([
+    ...asArray(parseJson(delta.replayRefsJson, [])),
+    ...asArray(body.replayRefs || body.replay_refs),
+  ]);
+  const updated = await prisma.codeSitePolicyDelta.update({
+    where: { id: delta.id },
+    data: {
+      promotionState: 'rejected',
+      replayRefsJson: stringifyJson(replayRefs),
+      promotedAt: null,
+    },
+  });
+  await recordEvent(project.id, {
+    eventType: 'policy_delta_rejected',
+    actorType: 'policy_delta',
+    actorId: delta.id,
+    evidenceRefs: body.evidenceRefs || body.evidence_refs || [],
+    details: {
+      policyDeltaId: delta.id,
+      reviewedBy,
+      reason,
+      replayRefs,
+    },
+  });
+  return policyDeltaProjection(updated);
+}
+
+function validatePolicyDeltaPromotion(delta, body = {}, actor = null) {
+  const projection = policyDeltaProjection(delta);
+  const validation = body.validation || body.replayValidation || body.replay_validation || {};
+  const validationStatus = String(
+    body.validationStatus ||
+    body.validation_status ||
+    body.replayValidationStatus ||
+    body.replay_validation_status ||
+    validation.status ||
+    validation.result ||
+    '',
+  ).toLowerCase();
+  const replayRefs = unique([
+    ...asArray(projection.replayRefs),
+    ...asArray(body.replayRefs || body.replay_refs),
+    ...asArray(validation.replayRefs || validation.replay_refs),
+    ...asArray(body.validatedReplayRefs || body.validated_replay_refs),
+  ].map(String).filter(Boolean));
+  const evidenceRefs = unique([
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+    ...asArray(validation.evidenceRefs || validation.evidence_refs),
+  ].map(String).filter(Boolean));
+  const reviewedBy = body.reviewedBy ||
+    body.reviewed_by ||
+    body.reviewerId ||
+    body.reviewer_id ||
+    body.approvedBy ||
+    body.approved_by ||
+    actor?.userId ||
+    actor?.workspaceUserId ||
+    null;
+  const reasonCodes = [];
+  const confidence = Number(projection.confidence || 0);
+  if (confidence < 0.65) reasonCodes.push('policy_delta_confidence_below_threshold');
+  if (!reviewedBy) reasonCodes.push('policy_delta_reviewer_required');
+  if (!['ok', 'pass', 'passed', 'valid', 'validated', 'accepted', 'approved'].includes(validationStatus)) {
+    reasonCodes.push('policy_delta_replay_validation_required');
+  }
+  if (!replayRefs.some((ref) => /^(codesite:counterfactual-run:|shadow:job:|replay:|incident:)/.test(String(ref)))) {
+    reasonCodes.push('policy_delta_replay_ref_required');
+  }
+  if (!evidenceRefs.length) reasonCodes.push('policy_delta_validation_evidence_required');
+  if (!projection.ruleCandidate || !Object.keys(projection.ruleCandidate).length) {
+    reasonCodes.push('policy_delta_rule_candidate_required');
+  }
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes,
+    replayRefs,
+    evidenceRefs,
+    reviewedBy,
+    validationStatus,
+    confidence,
+  };
+}
+
+async function persistCounterfactualPolicyDeltaCandidates(projectId, run, arbiterVerdict, context = {}) {
+  const candidates = uniquePolicyDeltaCandidates(asArray(arbiterVerdict?.policyDeltaCandidates || arbiterVerdict?.policy_delta_candidates));
+  if (!candidates.length) return [];
+  const created = [];
+  for (const candidate of candidates) {
+    const ruleCandidate = normalizePolicyDeltaRuleCandidate(candidate);
+    const triggerConditions = asArray(candidate.triggerConditions || candidate.trigger_conditions || candidate.affectedRoutes || candidate.affected_routes)
+      .map((item) => (typeof item === 'string' ? { path: item } : item))
+      .filter(Boolean);
+    const affectedZones = policyDeltaAffectedZones(ruleCandidate, triggerConditions, candidate);
+    const delta = await prisma.codeSitePolicyDelta.create({
+      data: {
+        projectId,
+        learnedFromIncidentsJson: stringifyJson(candidate.learnedFromIncidents || candidate.learned_from_incidents || candidate.affectedIncidents || candidate.affected_incidents || []),
+        affectedZoneKey: candidate.affectedZoneKey || candidate.affected_zone_key || null,
+        ruleCandidateJson: stringifyJson(ruleCandidate),
+        triggerConditionsJson: stringifyJson(triggerConditions),
+        expectedRiskReduction: typeof candidate.expectedRiskReduction === 'number' ? candidate.expectedRiskReduction : candidate.expected_risk_reduction,
+        confidence: typeof candidate.confidence === 'number' ? candidate.confidence : 0.5,
+        promotionState: 'proposed',
+        replayRefsJson: stringifyJson(unique([
+          `codesite:counterfactual-run:${run.id}`,
+          run.shadowJobRef && `shadow:job:${run.shadowJobRef}`,
+          ...asArray(context.evidenceRefs),
+        ].filter(Boolean))),
+        promotedAt: null,
+      },
+    });
+    created.push(delta);
+    await recordEvent(projectId, {
+      eventType: 'policy_delta_proposed',
+      actorType: 'counterfactual',
+      actorId: run.id,
+      evidenceRefs: context.evidenceRefs,
+      details: {
+        policyDeltaId: delta.id,
+        counterfactualRunId: run.id,
+        shadowJobRef: run.shadowJobRef,
+        promotionState: 'proposed',
+        confidence: delta.confidence,
+        affectedZones,
+        triggerConditions,
+        ruleCandidate,
+      },
+    });
+  }
+  return created.map(policyDeltaProjection);
+}
+
+function counterfactualAffectedZones(body = {}, arbiterVerdict = null) {
+  const universes = asArray(body.universes || body.choices || body.choiceScene || body.choice_scene);
+  const candidates = asArray(arbiterVerdict?.policyDeltaCandidates || arbiterVerdict?.policy_delta_candidates);
+  return unique(pathsForRoute([
+    ...asArray(body.affectedZones || body.affected_zones || body.affectedRoutes || body.affected_routes),
+    ...universes.flatMap((universe) => [
+      ...asArray(universe?.route || universe?.routes || universe?.affectedRoutes || universe?.affected_routes),
+      ...asArray(universe?.changedPaths || universe?.changed_paths || universe?.writeSet || universe?.write_set),
+    ]),
+    ...candidates.flatMap(policyDeltaCandidateRoutes),
+  ]));
+}
+
+function policyDeltaAffectedZones(ruleCandidate = {}, triggerConditions = [], source = {}) {
+  return unique(pathsForRoute([
+    ...policyDeltaCandidateRoutes(ruleCandidate),
+    ...policyDeltaCandidateRoutes(source),
+    ...asArray(triggerConditions),
+  ]));
+}
+
+function policyDeltaCandidateRoutes(candidate = {}) {
+  return [
+    ...asArray(candidate.affectedRoutes || candidate.affected_routes),
+    ...asArray(candidate.routes || candidate.route),
+    ...asArray(candidate.changedPaths || candidate.changed_paths),
+    ...asArray(candidate.allowedPaths || candidate.allowed_paths),
+    ...asArray(candidate.writeSet || candidate.write_set),
+    ...asArray(candidate.triggerConditions || candidate.trigger_conditions),
+  ];
+}
+
+function uniquePolicyDeltaCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    const key = stableJson(normalizePolicyDeltaRuleCandidate(candidate));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizePolicyDeltaRuleCandidate(candidate = {}) {
+  const preferredStrategies = unique(asArray(candidate.preferredStrategies || candidate.preferred_strategies || candidate.preferredStrategy || candidate.preferred_strategy || candidate.strategy)
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  const avoidStrategies = unique(asArray(candidate.avoidStrategies || candidate.avoid_strategies || candidate.avoidStrategy || candidate.avoid_strategy || candidate.blockedStrategies || candidate.blocked_strategies)
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  return {
+    ...candidate,
+    rule: candidate.rule || candidate.candidate || candidate.name || 'counterfactual_policy_delta',
+    ...(preferredStrategies.length ? { preferredStrategies } : {}),
+    ...(avoidStrategies.length ? { avoidStrategies } : {}),
+    ...(candidate.requiredTowerActions || candidate.required_tower_actions
+      ? { requiredTowerActions: asArray(candidate.requiredTowerActions || candidate.required_tower_actions).map(String).filter(Boolean) }
+      : {}),
+  };
+}
+
+export async function getControlState(workspaceSlug, projectId, actor = null) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!project) throw notFound('project_not_found');
+  await requireProjectAccess(project, actor, 'write');
   const projection = projectProjection(project);
   return buildControlState(workspaceSlug, projection);
 }
 
+export async function getCodeSiteMetrics(workspaceSlug, projectId, actor = null) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!project) throw notFound('project_not_found');
+  await requireProjectAccess(project, actor, 'write');
+  const projection = projectProjection(project);
+  const controlState = buildControlState(workspaceSlug, projection);
+  return buildCodeSiteMetrics({ project: projection, controlState, workspaceSlug });
+}
+
 function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
+  const pilotLicenseHealth = buildPilotLicenseHealthRecords(projection);
+  const pilotLicenseSummary = pilotLicenseHealthSummary(pilotLicenseHealth);
+  const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(projection);
+  const pendingQuarantines = quarantineReviewRecords(projection)
+    .filter((record) => record.status !== 'applied')
+    .map((record) => ({
+      quarantineId: record.quarantineId,
+      status: record.status,
+      transactionId: record.transactionId,
+      mutationLeaseId: record.mutationLeaseId,
+      displayCallsign: record.displayCallsign,
+      paths: record.paths,
+      changeCount: record.changes.length,
+      appliedPaths: record.appliedPaths,
+      remainingPaths: record.remainingPaths,
+      latestReplayAttempt: record.latestReplayAttempt,
+      successfulReplay: record.successfulReplay,
+      evidenceRefs: record.evidenceRefs,
+      lifecycle: record.lifecycle,
+    }));
   const requiredActions = [
     ...projection.assumptions
       .filter((assumption) => assumption.status === 'invalidated')
@@ -3501,6 +5650,12 @@ function buildControlState(workspaceSlug, projection) {
     ...projection.inboxItems
       .filter((item) => item.status === 'pending' && item.requiresResponse)
       .map((item) => `ack_event:${item.eventId || item.id}`),
+    ...pendingQuarantines.map((record) => `review_quarantine:${record.quarantineId}`),
+    ...openMaydayResumeActions(projection),
+    ...filesystemBoundaryProofs
+      .filter((record) => !record.proofComplete)
+      .map((record) => `complete_filesystem_boundary_proof:${record.proofId}`),
+    ...pilotLicenseHealth.map((record) => record.requiredAction).filter(Boolean),
   ];
   return {
     projectId: projection.id,
@@ -3512,20 +5667,42 @@ function buildControlState(workspaceSlug, projection) {
     activeTransactions: projection.mutationTxns.filter((txn) => ['open', 'validated', 'blocked'].includes(txn.status)),
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
+    pendingQuarantines,
+    pilotLicenseHealth,
+    pilotLicenseSummary,
+    filesystemBoundaryProofs,
     requiredActions,
     eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,
     collisionForecast: predictCollisions({
       executionPlans: projection.executionPlans,
       leases: projection.mutationLeases,
+      transactions: projection.mutationTxns,
+      inspectionRuns: projection.inspectionRuns,
       zonePolicy: projection.zonePolicy,
     }),
     updatedAt: new Date().toISOString(),
   };
 }
 
-export async function getEvents(workspaceSlug, projectId, since) {
-  const project = await requireProject(workspaceSlug, projectId);
+function openMaydayResumeActions(projection) {
+  const hasOpenStopWork = asArray(projection.documents).some((document) => (
+    document.kind === 'stop_work'
+    && ['open', 'blocked', 'pending'].includes(String(document.status || '').toLowerCase())
+  ));
+  if (!hasOpenStopWork) return [];
+  const incidentIds = asArray(projection.incidents)
+    .filter((incident) => (
+      incident.category === 'mayday'
+      && incident.incidentReplay?.maydayWorkflow?.humanResumeRequired !== false
+      && incident.incidentReplay?.maydayWorkflow?.resumeGate?.status !== 'approved'
+    ))
+    .map((incident) => incident.id);
+  return unique(incidentIds).map((incidentId) => `resume_mayday:${incidentId}`);
+}
+
+export async function getEvents(workspaceSlug, projectId, since, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const where = await eventWhereSince(project.id, since);
   const events = await prisma.codeSiteEvent.findMany({
     where,
@@ -3566,8 +5743,8 @@ function parseEventCursor(value) {
   return { logicalTime: null, id: raw };
 }
 
-export async function getAgentManifest(workspaceSlug, projectId) {
-  await requireProject(workspaceSlug, projectId);
+export async function getAgentManifest(workspaceSlug, projectId, actor = null) {
+  await requireProject(workspaceSlug, projectId, actor, 'read');
   return {
     version: 1,
     projectId,
@@ -3575,15 +5752,10 @@ export async function getAgentManifest(workspaceSlug, projectId) {
     events: `projects/${projectId}/events.jsonl`,
     schemas: 'schemas/',
     inboxRoot: `projects/${projectId}/inbox/`,
+    quarantineRoot: `projects/${projectId}/quarantines/`,
+    quarantineIndex: `projects/${projectId}/quarantines/index.jsonl`,
     proofBundleRoot: `projects/${projectId}/proof-bundles/`,
-    mcpTools: [
-      'synthi_codesite_next_event',
-      'synthi_codesite_ack_event',
-      'synthi_codesite_open_transaction',
-      'synthi_codesite_validate_transaction',
-      'synthi_codesite_apply_patch',
-      'synthi_codesite_predict_collision',
-    ],
+    mcpTools: CODESITE_MCP_TOOLS,
   };
 }
 
@@ -3591,10 +5763,15 @@ export async function getSchemas() {
   return codesiteSchemas();
 }
 
-export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
-  const project = await getProject(workspaceSlug, projectId);
-  if (!project) throw notFound('project_not_found');
-  const controlState = await getControlState(workspaceSlug, projectId);
+export async function previewArtifacts(workspaceSlug, projectId, options = {}, actor = null) {
+  const projectRow = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!projectRow) throw notFound('project_not_found');
+  await requireProjectAccess(projectRow, actor, 'read');
+  const project = artifactProjectProjection(projectRow);
+  const controlState = buildControlState(workspaceSlug, project);
   const files = buildArtifactProjection(project, controlState);
   const includeContent = Boolean(options.includeContent || options.include_content);
   const maxContentBytes = Number.isFinite(options.maxContentBytes) ? Math.max(0, options.maxContentBytes) : 4096;
@@ -3608,31 +5785,37 @@ export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
   };
 }
 
-export async function exportArtifacts(workspaceSlug, projectId) {
-  const project = await getProject(workspaceSlug, projectId);
-  if (!project) throw notFound('project_not_found');
-  const controlState = await getControlState(workspaceSlug, projectId);
-  const result = await writeArtifactProjection(project, controlState);
-  await recordEvent(projectId, {
+export async function exportArtifacts(workspaceSlug, projectId, actor = null) {
+  const projectRow = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: PROJECT_INCLUDE,
+  });
+  if (!projectRow) throw notFound('project_not_found');
+  await requireProjectAccess(projectRow, actor, 'read');
+  const project = artifactProjectProjection(projectRow);
+  const controlState = buildControlState(workspaceSlug, project);
+  const files = buildArtifactProjection(project, controlState).map((file) => file.relativePath);
+  const event = await recordEvent(projectId, {
     eventType: 'black_box_closed',
     actorType: 'artifact_projection',
     actorId: projectId,
     details: {
-      written: result.written,
-      root: result.root || null,
-      reason: result.reason || null,
-      files: result.files,
+      written: true,
+      root: null,
+      reason: 'explicit_export',
+      files,
     },
   });
-  return result;
+  return syncArtifactsForProject(projectId, { reason: 'artifact_export_closed', eventId: event.id, force: true });
 }
 
-export async function collisionPredict(workspaceSlug, projectId) {
+export async function collisionPredict(workspaceSlug, projectId, actor = null) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
-    include: { executionPlans: true, mutationLeases: true },
+    include: { members: true, agentSessions: true, executionPlans: true, mutationLeases: true },
   });
   if (!project) throw notFound('project_not_found');
+  await requireProjectAccess(project, actor, 'read');
   return predictCollisions({
     executionPlans: project.executionPlans.map(executionPlanProjection),
     leases: project.mutationLeases.map(mutationLeaseProjection),
@@ -3640,63 +5823,949 @@ export async function collisionPredict(workspaceSlug, projectId) {
   });
 }
 
-export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
-  const forecast = await collisionPredict(workspaceSlug, projectId);
-  const strategies = asArray(body.strategies || [
-    'schema-first',
-    'frontend-backend-parallel',
-    'single-fullstack-agent',
-    'test-first',
-  ]);
-  const universes = strategies.map((strategy) => {
-    const schemaFirst = strategy === 'schema-first';
-    const riskPenalty = forecast.risks.length * (schemaFirst ? 1 : 3);
-    const staleAssumptions = schemaFirst ? 0 : forecast.risks.filter((risk) => risk.risk === 'contract_collision').length;
-    return {
-      strategy,
-      result: riskPenalty <= 2 ? 'passed' : 'risk',
-      predictedCollisionRisk: Math.min(1, riskPenalty / 10),
-      staleAssumptions,
-      inspectionCost: 2 + riskPenalty,
-    };
+export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: {
+      members: true,
+      agentSessions: true,
+      executionPlans: true,
+      mutationLeases: true,
+      incidents: true,
+      inspectionRuns: true,
+    },
   });
+  if (!project) throw notFound('project_not_found');
+  await requireProjectAccess(project, actor, 'write');
+  const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
+  const executionPlans = project.executionPlans.map(executionPlanProjection);
+  const mutationLeases = project.mutationLeases.map(mutationLeaseProjection);
+  const learnedPolicyDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
+  const forecast = predictCollisions({
+    executionPlans,
+    leases: mutationLeases,
+    zonePolicy,
+  });
+  const requestedStrategies = asArray(
+    body.strategies
+    ?? body.strategy
+    ?? body.coordinationStrategies
+    ?? body.coordination_strategies
+    ?? DEFAULT_TOWER_SIMULATION_STRATEGIES,
+  );
+  const strategies = unique(requestedStrategies
+    .map(normalizeTowerStrategyName)
+    .filter(Boolean));
+  const strategySet = strategies.length ? strategies : DEFAULT_TOWER_SIMULATION_STRATEGIES;
+  const towerSignals = buildTowerSimulationSignals({
+    project,
+    executionPlans,
+    mutationLeases,
+    forecast,
+    zonePolicy,
+    learnedPolicyDeltas,
+  });
+  const universes = strategySet.map((strategy) => scoreTowerStrategy(strategy, towerSignals));
   const selected = universes.slice().sort((a, b) => {
-    if (a.staleAssumptions !== b.staleAssumptions) return a.staleAssumptions - b.staleAssumptions;
-    return a.inspectionCost - b.inspectionCost;
+    if (a.predictedCollisionRisk !== b.predictedCollisionRisk) return a.predictedCollisionRisk - b.predictedCollisionRisk;
+    if (asArray(a.unresolvedRisks).length !== asArray(b.unresolvedRisks).length) {
+      return asArray(a.unresolvedRisks).length - asArray(b.unresolvedRisks).length;
+    }
+    if (a.inspectionCost !== b.inspectionCost) return a.inspectionCost - b.inspectionCost;
+    return a.staleAssumptions - b.staleAssumptions;
   })[0];
+  const shadowJobRef = body.shadowJobRef || body.shadow_job_ref || `codesite-shadow:${digest({
+    projectId,
+    strategies: strategySet,
+    forecast,
+    sourceDigest: towerSignals.sourceDigest,
+  })}`;
+  const baseSnapshot = body.baseSnapshot || body.base_snapshot || `repo@${digest({
+    projectId,
+    policyDigest: towerSignals.policyDigest,
+    routes: towerSignals.routeDigest,
+  })}`;
+  const evidenceRefs = unique([
+    'codesite:shadow_merge_simulator',
+    `codesite:repo-policy:${towerSignals.policyDigest}`,
+    `codesite:collision-forecast:${digest(forecast)}`,
+    ...towerSignals.priorIncidents.map((incident) => `codesite:incident:${incident.id}`).filter(Boolean),
+    ...towerSignals.inspectionRuns.map((run) => `codesite:inspection:${run.id}`).filter(Boolean),
+    ...towerSignals.learnedPolicyDeltas.map((delta) => `codesite:policy-delta:${delta.id}`).filter(Boolean),
+  ]);
+  const policyDeltaCandidates = buildTowerPolicyDeltaCandidates(towerSignals, selected);
+  const shadowExecutionPlan = normalizeShadowExecutionPlan(body);
+  const shadowExecution = await runConfiguredShadowRunner({
+    workspaceSlug,
+    projectId,
+    shadowJobRef,
+    baseSnapshot,
+    strategySet,
+    universes,
+    selected,
+    forecast,
+    towerSignals,
+    shadowExecutionPlan,
+  });
+  const shadowExecutionCompleted = shadowExecution?.status === 'completed';
+  const shadowExecutionEvidenceRefs = asArray(shadowExecution?.evidenceRefs || shadowExecution?.evidence_refs);
+  const mergedEvidenceRefs = unique([
+    ...evidenceRefs,
+    ...shadowExecutionEvidenceRefs,
+    ...(shadowExecution ? [`codesite:shadow-runner:${digest(shadowExecution)}`] : []),
+  ]);
+  const mergedUniverses = Array.isArray(shadowExecution?.universes) && shadowExecution.universes.length
+    ? mergeExecutedShadowUniverses(universes, shadowExecution.universes)
+    : universes;
   const result = {
     selected: selected.strategy,
+    appliedPolicyDeltas: selected.learnedPolicyDeltaRefs || [],
     reason: {
+      reasonCodes: selected.reasonCodes,
       staleAssumptions: selected.staleAssumptions,
       inspectionCost: selected.inspectionCost,
+      predictedCollisionRisk: selected.predictedCollisionRisk,
       riskLevel: forecast.riskLevel,
+      sourceSignals: selected.sourceSignals,
+      learnedPolicyDeltaRefs: selected.learnedPolicyDeltaRefs || [],
+      shadowExecutionMode: shadowExecution ? 'external_runner' : 'control_plane_simulator',
     },
-    universes,
+    universes: mergedUniverses,
+    shadowJobRef,
+    baseSnapshot,
+    evidenceRefs: mergedEvidenceRefs,
+    policyDeltaCandidates,
+    shadowExecution: shadowExecution ? {
+      status: shadowExecution.status || 'completed',
+      runner: shadowExecution.runner || shadowExecution.runnerId || shadowExecution.runner_id || 'configured-shadow-runner',
+      executionMode: shadowExecution.executionMode || shadowExecution.execution_mode || null,
+      evidenceRefs: shadowExecutionEvidenceRefs,
+      universeCount: asArray(shadowExecution.universes).length,
+      digest: digest(shadowExecution),
+    } : null,
+    repoSignals: towerSignals.summary,
   };
   await createCounterfactualRun(workspaceSlug, projectId, {
-    universes,
+    shadowJobRef,
+    baseSnapshot,
+    universes: mergedUniverses,
     arbiterVerdict: result,
-    validityStrength: 'simulated',
-    evidenceRefs: ['codesite:shadow_merge_simulator'],
-  });
+    validityStrength: shadowExecutionCompleted ? 'executed' : towerSignals.summary.signalStrength,
+    evidenceRefs: mergedEvidenceRefs,
+  }, actor);
   return result;
 }
 
-export async function getLineProvenance(workspaceSlug, { filePath, lineAnchor } = {}) {
-  const where = {
+function normalizeShadowExecutionPlan(body = {}) {
+  const plan = body.shadowExecutionPlan
+    || body.shadow_execution_plan
+    || body.shadowExecution
+    || body.shadow_execution
+    || null;
+  if (!plan || typeof plan !== 'object') return null;
+  return plan;
+}
+
+async function runConfiguredShadowRunner(input) {
+  const command = configuredShadowRunnerCommand();
+  if (!command) return null;
+  const timeoutMs = normalizeShadowRunnerTimeout();
+  const result = await runJsonCommand(command.executable, command.args, {
+    cwd: command.cwd || process.cwd(),
+    timeoutMs,
+    input: {
+      schemaVersion: 'synthi.codesite.shadowRunnerInput.v1',
+      ...input,
+    },
+  });
+  if (result.exitCode !== 0) {
+    return {
+      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+      status: 'failed',
+      runner: command.executable,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      stdoutTail: result.stdoutTail,
+      stderrTail: result.stderrTail,
+      evidenceRefs: [`codesite:shadow-runner-failed:${digest(result)}`],
+    };
+  }
+  try {
+    return {
+      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+      status: 'completed',
+      runner: command.executable,
+      ...JSON.parse(result.stdoutTail || '{}'),
+      stdoutDigest: digest(result.stdoutTail || ''),
+      stderrDigest: digest(result.stderrTail || ''),
+    };
+  } catch (error) {
+    return {
+      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+      status: 'failed',
+      runner: command.executable,
+      exitCode: result.exitCode,
+      parseError: error?.message || String(error),
+      stdoutTail: result.stdoutTail,
+      stderrTail: result.stderrTail,
+      evidenceRefs: [`codesite:shadow-runner-invalid-json:${digest(result)}`],
+    };
+  }
+}
+
+function configuredShadowRunnerCommand() {
+  const json = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+  if (json) {
+    try {
+      const parsed = JSON.parse(json);
+      const list = Array.isArray(parsed) ? parsed : asArray(parsed.command || parsed.argv);
+      const [executable, ...args] = list.map(String).filter(Boolean);
+      if (executable) return { executable, args, cwd: parsed.cwd || parsed.workingDirectory || parsed.working_directory || null };
+    } catch (_) {
+      return null;
+    }
+  }
+  const executable = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND;
+  if (!executable) return null;
+  const args = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON
+    ? parseJson(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON, [])
+    : [];
+  return { executable, args: asArray(args).map(String), cwd: process.env.SYNTHI_CODESITE_SHADOW_RUNNER_CWD || null };
+}
+
+function normalizeShadowRunnerTimeout() {
+  const requested = Number(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_TIMEOUT_MS || 120000);
+  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, 600000) : 120000;
+}
+
+function mergeExecutedShadowUniverses(simulatedUniverses, executedUniverses) {
+  const executedByStrategy = new Map(asArray(executedUniverses)
+    .map((universe) => [normalizeTowerStrategyName(universe.strategy || universe.universe), universe])
+    .filter(([strategy]) => strategy));
+  return asArray(simulatedUniverses).map((universe) => {
+    const executed = executedByStrategy.get(normalizeTowerStrategyName(universe.strategy));
+    if (!executed) return universe;
+    return {
+      ...universe,
+      execution: {
+        status: executed.status || executed.result || 'completed',
+        evidenceRefs: asArray(executed.evidenceRefs || executed.evidence_refs),
+        command: executed.command || null,
+        executionMode: executed.executionMode || executed.execution_mode || null,
+        exitCode: Number.isFinite(Number(executed.exitCode)) ? Number(executed.exitCode) : null,
+        outputDigest: executed.outputDigest || executed.output_digest || null,
+      },
+      reasonCodes: unique([...asArray(universe.reasonCodes), ...asArray(executed.reasonCodes || executed.reason_codes)]),
+      evidenceRefs: unique([...asArray(universe.evidenceRefs), ...asArray(executed.evidenceRefs || executed.evidence_refs)]),
+    };
+  });
+}
+
+function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, forecast, zonePolicy, learnedPolicyDeltas = [] }) {
+  const semanticGraph = zonePolicy?.semanticGraph || {};
+  const priorIncidents = asArray(project.incidents).map(towerIncidentSignal);
+  const inspectionRuns = asArray(project.inspectionRuns).map(towerInspectionSignal);
+  const learnedDeltas = asArray(learnedPolicyDeltas).map(normalizeLearnedPolicyDelta).filter(Boolean);
+  const activeLeases = mutationLeases.filter((lease) => lease.status === 'active');
+  const footprints = executionPlans.map((plan) => towerRouteFootprint({
+    plan,
+    zonePolicy,
+    semanticGraph,
+    priorIncidents,
+    inspectionRuns,
+  }));
+  const contractRisks = asArray(forecast.risks).filter((risk) =>
+    ['contract_collision', 'semantic_collision'].includes(risk.risk)
+    || (risk.risk === 'wake_turbulence' && risk.wake?.kind !== 'migration'));
+  const migrationRisks = asArray(forecast.risks).filter((risk) =>
+    risk.risk === 'migration_collision'
+    || (risk.risk === 'wake_turbulence' && risk.wake?.kind === 'migration'));
+  const severityPoints = asArray(forecast.risks).reduce((sum, risk) => {
+    const severity = String(risk.severity || '').toLowerCase();
+    return sum + ({ critical: 8, high: 5, medium: 3, low: 1 }[severity] || 2);
+  }, 0);
+  const zones = unique(footprints.flatMap((footprint) => footprint.zones.map((zone) => zone.zoneKey || zone.label || zone.class).filter(Boolean)));
+  const schemaOwners = unique(footprints.flatMap((footprint) => footprint.schemaOwners));
+  const testOwners = unique(footprints.flatMap((footprint) => footprint.tests));
+  const missingTestRoutes = footprints
+    .filter((footprint) => footprint.route.length > 0 && footprint.tests.length === 0)
+    .flatMap((footprint) => footprint.route);
+  const migrationLocks = unique(footprints.flatMap((footprint) => footprint.migrationLocks));
+  const packageExports = unique(footprints.flatMap((footprint) => footprint.packageExports));
+  const importEdges = unique(footprints.flatMap((footprint) => footprint.importEdges));
+  const downstreamDependents = unique(footprints.flatMap((footprint) => footprint.importedBy));
+  const restrictedClasses = unique(footprints.flatMap((footprint) => footprint.zoneClasses.filter((klass) => ['A', 'B'].includes(klass))));
+  const activeLeaseLocks = activeLeases.flatMap((lease) => pathsForRoute(lease.lease?.allowedPaths || lease.lease?.route || []));
+  const routeDigest = digest(footprints.map((footprint) => ({ planId: footprint.planId, route: footprint.route })));
+  const policyDigest = digest(zonePolicy);
+  const sourceDigest = digest({
+    semanticGraphDigest: semanticGraph.sourceDigest || digest(semanticGraph),
+    policyDigest,
+    routeDigest,
+    incidents: priorIncidents.map((incident) => incident.id),
+    inspections: inspectionRuns.map((run) => run.id),
+    learnedPolicyDeltas: learnedDeltas.map((delta) => ({
+      id: delta.id,
+      ruleCandidate: delta.ruleCandidate,
+      triggerConditions: delta.triggerConditions,
+      confidence: delta.confidence,
+    })),
+  });
+  const summary = {
+    signalStrength: sourceSignalStrength({ semanticGraph, priorIncidents, inspectionRuns }),
+    planCount: executionPlans.length,
+    activeLeaseCount: activeLeases.length,
+    forecastRiskCount: asArray(forecast.risks).length,
+    highRiskCount: asArray(forecast.risks).filter((risk) => ['critical', 'high'].includes(String(risk.severity || '').toLowerCase())).length,
+    contractRiskCount: contractRisks.length,
+    migrationRiskCount: migrationRisks.length,
+    classAOrBZones: restrictedClasses.length,
+    importGraphEdges: importEdges.length,
+    downstreamDependents: downstreamDependents.length,
+    testOwners: testOwners.length,
+    missingTestRoutes: unique(missingTestRoutes).length,
+    schemaOwners: schemaOwners.length,
+    migrationLocks: migrationLocks.length,
+    packageExports: packageExports.length,
+    priorIncidents: priorIncidents.length,
+    learnedPolicyDeltas: learnedDeltas.length,
+    activeLeaseLocks: unique(activeLeaseLocks).length,
+    inspectionRuns: inspectionRuns.length,
+  };
+  const rawStaleAssumptionPressure = contractRisks.length
+    + Math.ceil(downstreamDependents.length / 2)
+    + migrationLocks.length
+    + packageExports.length
+    + priorIncidents.filter((incident) => ['critical', 'high', 'medium'].includes(String(incident.severity).toLowerCase())).length;
+  const baseInspectionCost = 2
+    + executionPlans.length
+    + restrictedClasses.length
+    + Math.ceil(testOwners.length / 2)
+    + migrationLocks.length
+    + Math.ceil(priorIncidents.length / 2)
+    + unique(missingTestRoutes).length;
+  return {
+    project,
+    forecast,
+    footprints,
+    priorIncidents,
+    learnedPolicyDeltas: learnedDeltas,
+    inspectionRuns,
+    activeLeases,
+    semanticGraph,
+    severityPoints,
+    contractRisks,
+    migrationRisks,
+    schemaOwners,
+    testOwners,
+    missingTestRoutes: unique(missingTestRoutes),
+    migrationLocks,
+    packageExports,
+    importEdges,
+    downstreamDependents,
+    restrictedClasses,
+    activeLeaseLocks: unique(activeLeaseLocks),
+    rawStaleAssumptionPressure,
+    baseInspectionCost,
+    policyDigest,
+    routeDigest,
+    sourceDigest,
+    summary,
+  };
+}
+
+function towerRouteFootprint({ plan, zonePolicy, semanticGraph, priorIncidents, inspectionRuns }) {
+  const route = pathsForRoute(plan.route);
+  const files = normalizePathList(asArray(semanticGraph.files));
+  const routeFiles = files.filter((file) => route.some((pattern) => towerPathsOverlap(file, pattern)));
+  const routeSurface = unique([...route, ...routeFiles]);
+  const zones = route.map((pattern) => classifyPath(pattern.replace(/\*\*?$/, 'index.ts'), zonePolicy)).filter(Boolean);
+  const imports = [];
+  const importedBy = [];
+  const importEdges = [];
+  for (const edge of asArray(semanticGraph.importEdges)) {
+    const from = normalizePath(edge.from);
+    const imported = normalizePathList(edge.imports);
+    if (!from) continue;
+    if (routeSurface.some((pattern) => towerPathsOverlap(from, pattern))) {
+      imports.push(...imported);
+      importEdges.push(`${from}->${imported.join(',')}`);
+    }
+    if (imported.some((target) => routeSurface.some((pattern) => towerPathsOverlap(target, pattern)))) {
+      importedBy.push(from);
+      importEdges.push(`${from}->${imported.join(',')}`);
+    }
+  }
+  const tests = asArray(semanticGraph.testOwnership)
+    .filter((owner) => asArray(owner.covers).some((covered) =>
+      [...routeSurface, ...imports, ...importedBy].some((pattern) => towerPathsOverlap(covered, pattern))))
+    .map((owner) => owner.testPath)
+    .filter(Boolean);
+  const migrationLocks = asArray(semanticGraph.migrationLocks)
+    .filter((lock) => route.some((pattern) => towerPathsOverlap(lock, pattern)));
+  const packageExports = asArray(semanticGraph.packageExports)
+    .filter((entry) => {
+      const candidates = unique([
+        entry.root && `${String(entry.root).replace(/\/+$/, '')}/**`,
+        ...asArray(entry.exports),
+      ].filter(Boolean));
+      return candidates.some((candidate) => routeSurface.some((pattern) => towerPathsOverlap(candidate, pattern)));
+    })
+    .map((entry) => entry.packageName || entry.root)
+    .filter(Boolean);
+  const generatedClients = asArray(semanticGraph.generatedClients)
+    .filter((client) => routeSurface.some((pattern) => towerPathsOverlap(client, pattern)) || routeSurface.some(isSchemaSurface));
+  const incidents = priorIncidents.filter((incident) =>
+    incident.affectedZones.some((zone) => routeSurface.some((pattern) => towerPathsOverlap(zone, pattern))));
+  const inspections = inspectionRuns.filter((run) =>
+    run.changedPaths.some((changedPath) => routeSurface.some((pattern) => towerPathsOverlap(changedPath, pattern))));
+  const schemaOwners = routeSurface.filter(isSchemaSurface);
+  return {
+    planId: plan.id,
+    displayCallsign: plan.displayCallsign,
+    domain: plan.domain,
+    route,
+    routeFiles,
+    zones,
+    zoneClasses: unique(zones.map((zone) => String(zone.class || 'C').toUpperCase())),
+    zoneRules: unique(zones.flatMap((zone) => asArray(zone.rules))),
+    imports: unique(imports),
+    importedBy: unique(importedBy),
+    importEdges: unique(importEdges),
+    tests: unique(tests),
+    migrationLocks: unique(migrationLocks),
+    packageExports: unique(packageExports),
+    generatedClients: unique(generatedClients),
+    schemaOwners: unique(schemaOwners),
+    incidents,
+    inspections,
+  };
+}
+
+function normalizeTowerStrategyName(strategy) {
+  const normalized = String(strategy || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\/\s*/g, '-')
+    .replace(/[_\s]+/g, '-');
+  const aliases = {
+    'frontend-backend-parallel': 'frontend-backend-parallel',
+    'frontend-backend': 'frontend-backend-parallel',
+    parallel: 'frontend-backend-parallel',
+    'schema-first': 'schema-first',
+    'backend-first': 'backend-first',
+    'single-fullstack-agent': 'single-fullstack-agent',
+    'single-fullstack': 'single-fullstack-agent',
+    fullstack: 'single-fullstack-agent',
+    'test-first': 'test-first',
+  };
+  return aliases[normalized] || normalized;
+}
+
+function scoreTowerStrategy(strategy, signals) {
+  const normalized = normalizeTowerStrategyName(strategy);
+  const sourceSignals = strategySourceSignals(signals);
+  const baseRisk = signals.severityPoints
+    + (signals.summary.contractRiskCount * 3)
+    + (signals.summary.classAOrBZones * 2)
+    + signals.summary.migrationLocks
+    + Math.ceil(signals.summary.downstreamDependents / 2)
+    + signals.summary.activeLeaseLocks;
+  const staleBase = signals.rawStaleAssumptionPressure;
+  const costBase = signals.baseInspectionCost;
+  const hasSchemaContractPressure = signals.summary.contractRiskCount > 0
+    || signals.summary.schemaOwners > 0
+    || signals.summary.packageExports > 0;
+  const hasMigrationPressure = signals.summary.migrationLocks > 0
+    || signals.summary.migrationRiskCount > 0;
+  const hasSchemaPressure = hasSchemaContractPressure || hasMigrationPressure;
+  const hasTestPressure = signals.summary.testOwners > 0 || signals.summary.missingTestRoutes > 0;
+  const profiles = {
+    'schema-first': {
+      riskMultiplier: hasSchemaContractPressure ? 0.34 : (hasMigrationPressure ? 0.72 : 0.72),
+      staleMultiplier: hasSchemaContractPressure ? 0.12 : (hasMigrationPressure ? 0.5 : 0.45),
+      costDelta: hasSchemaContractPressure ? 1 : 2,
+      reasonCodes: hasSchemaContractPressure
+        ? ['schema_airspace_first', 'downstream_assumptions_refresh_after_contract']
+        : ['schema_first_has_limited_effect_without_contract_pressure'],
+    },
+    'backend-first': {
+      riskMultiplier: hasSchemaPressure ? 0.78 : 0.7,
+      staleMultiplier: hasSchemaPressure ? 0.72 : 0.45,
+      costDelta: 2 + Math.ceil(signals.summary.downstreamDependents / 3),
+      reasonCodes: ['backend_route_before_ui', 'api_surface_stabilized_before_frontend'],
+    },
+    'frontend-backend-parallel': {
+      riskMultiplier: hasSchemaPressure ? 1.25 : 0.58,
+      staleMultiplier: hasSchemaPressure ? 1.2 : 0.4,
+      costDelta: hasSchemaPressure ? 3 : -1,
+      reasonCodes: hasSchemaPressure
+        ? ['parallelism_crosses_contract_airspace', 'requires_extra_assumption_refresh']
+        : ['parallel_routes_have_low_semantic_overlap'],
+    },
+    'single-fullstack-agent': {
+      riskMultiplier: hasMigrationPressure && !hasSchemaContractPressure ? 0.3 : 0.44,
+      staleMultiplier: 0.3,
+      costDelta: Math.max(2, signals.summary.planCount * 2),
+      reasonCodes: hasMigrationPressure
+        ? ['single_writer_reduces_merge_collision', 'single_migration_runway_lock']
+        : ['single_writer_reduces_merge_collision', 'higher_serial_inspection_cost'],
+    },
+    'test-first': {
+      riskMultiplier: hasTestPressure ? 0.62 : 0.8,
+      staleMultiplier: hasSchemaPressure ? 0.45 : 0.28,
+      costDelta: 2 + Math.ceil(signals.summary.testOwners / 2),
+      reasonCodes: ['test_ownership_before_landing', 'inspection_radar_runs_before_mutation'],
+    },
+  };
+  const profile = profiles[normalized] || {
+    riskMultiplier: 0.9,
+    staleMultiplier: 0.7,
+    costDelta: 2,
+    reasonCodes: ['custom_strategy_scored_from_repo_signals'],
+  };
+  const learnedMemory = learnedPolicyMemoryForStrategy(normalized, signals);
+  const riskResolution = resolveTowerStrategyRisks(normalized, signals, {
+    hasSchemaContractPressure,
+    hasMigrationPressure,
+    hasTestPressure,
+  });
+  const adjustedRisk = Math.max(0, baseRisk * profile.riskMultiplier);
+  const unresolvedRiskPenalty = riskResolution.unresolvedRisks.length * 0.18;
+  const predictedCollisionRisk = clamp(roundTo((adjustedRisk / 28) + unresolvedRiskPenalty + learnedMemory.riskDelta, 3), 0, 1);
+  const staleAssumptions = Math.max(0, Math.round((staleBase * profile.staleMultiplier) + learnedMemory.staleDelta));
+  const inspectionCost = Math.max(1, Math.round(costBase + profile.costDelta + learnedMemory.costDelta + (predictedCollisionRisk * 4)));
+  const reworkRiskReduction = roundTo(Math.max(0, 1 - (adjustedRisk / Math.max(1, baseRisk || adjustedRisk || 1))), 3);
+  const result = riskResolution.unresolvedRisks.length > 0
+    ? (predictedCollisionRisk <= 0.55 ? 'review' : 'risk')
+    : (predictedCollisionRisk <= 0.28 && staleAssumptions <= 1 ? 'passed' : (predictedCollisionRisk <= 0.55 ? 'review' : 'risk'));
+  return {
+    strategy: normalized,
+    result,
+    predictedCollisionRisk,
+    staleAssumptions,
+    inspectionCost,
+    reworkRiskReduction,
+    confidence: confidenceForSignalStrength(signals.summary.signalStrength, sourceSignals),
+    avoidedRisks: riskResolution.avoidedRisks,
+    unresolvedRisks: riskResolution.unresolvedRisks,
+    requiredTowerActions: riskResolution.requiredTowerActions,
+    reasonCodes: unique([
+      ...profile.reasonCodes,
+      ...riskResolution.reasonCodes,
+      ...(signals.summary.priorIncidents ? ['prior_incidents_weighted'] : []),
+      ...(signals.summary.migrationLocks ? ['migration_lock_weighted'] : []),
+      ...(signals.summary.importGraphEdges ? ['import_graph_weighted'] : []),
+      ...(signals.summary.testOwners ? ['test_ownership_weighted'] : []),
+      ...learnedMemory.reasonCodes,
+    ]),
+    learnedPolicyDeltaRefs: learnedMemory.policyDeltaRefs,
+    sourceSignals,
+  };
+}
+
+function resolveTowerStrategyRisks(strategy, signals, pressure = {}) {
+  const avoidedRisks = [];
+  const unresolvedRisks = [];
+  const requiredTowerActions = [];
+  const reasonCodes = [];
+  for (const risk of asArray(signals.forecast.risks)) {
+    const riskName = risk.risk || risk.type || 'collision';
+    const recommendedAction = risk.recommendedResolution?.action || risk.wake?.requiredWaits?.[0] || null;
+    const towerAction = recommendedAction || actionForRiskName(riskName);
+    if (towerAction) requiredTowerActions.push(towerAction);
+    const resolved = strategyResolvesRisk(strategy, riskName, recommendedAction, pressure);
+    if (resolved) {
+      avoidedRisks.push(riskName);
+      reasonCodes.push(`${riskName}_mitigated`);
+    } else {
+      unresolvedRisks.push(riskName);
+    }
+  }
+  if (pressure.hasMigrationPressure) requiredTowerActions.push('single_migration_runway_lock');
+  if (pressure.hasSchemaContractPressure) requiredTowerActions.push('refresh_downstream_assumptions');
+  if (pressure.hasTestPressure) requiredTowerActions.push('run_owned_tests_before_landing');
+  return {
+    avoidedRisks: unique(avoidedRisks),
+    unresolvedRisks: unique(unresolvedRisks),
+    requiredTowerActions: unique(requiredTowerActions),
+    reasonCodes: unique(reasonCodes),
+  };
+}
+
+function strategyResolvesRisk(strategy, riskName, recommendedAction, pressure = {}) {
+  if (riskName === 'migration_collision' || recommendedAction === 'single_migration_runway_lock') {
+    return strategy === 'single-fullstack-agent' || strategy === 'test-first';
+  }
+  if (['contract_collision', 'semantic_collision', 'wake_turbulence'].includes(riskName) || recommendedAction === 'schema_first') {
+    return strategy === 'schema-first' || strategy === 'single-fullstack-agent' || strategy === 'test-first';
+  }
+  if (riskName === 'test_collision' || recommendedAction === 'sequence_test_radar') {
+    return strategy === 'test-first' || strategy === 'single-fullstack-agent';
+  }
+  if (riskName === 'file_collision') {
+    return strategy === 'single-fullstack-agent' || (!pressure.hasSchemaContractPressure && strategy !== 'frontend-backend-parallel');
+  }
+  return strategy === 'single-fullstack-agent';
+}
+
+function actionForRiskName(riskName) {
+  if (riskName === 'migration_collision') return 'single_migration_runway_lock';
+  if (['contract_collision', 'semantic_collision'].includes(riskName)) return 'schema_first';
+  if (riskName === 'test_collision') return 'sequence_test_radar';
+  if (riskName === 'wake_turbulence') return 'hold_for_wake_turbulence';
+  if (riskName === 'file_collision') return 'sequence_flights';
+  return null;
+}
+
+function confidenceForSignalStrength(signalStrength, sourceSignals) {
+  const base = { strong: 0.86, moderate: 0.7, simulated: 0.52 }[signalStrength] || 0.5;
+  const bonus = Math.min(0.1, (
+    sourceSignals.importGraphEdges
+    + sourceSignals.testOwners
+    + sourceSignals.priorIncidents
+    + sourceSignals.inspectionRuns
+  ) / 200);
+  return roundTo(Math.min(0.95, base + bonus), 2);
+}
+
+function strategySourceSignals(signals) {
+  return {
+    forecastRiskCount: signals.summary.forecastRiskCount,
+    highRiskCount: signals.summary.highRiskCount,
+    contractRiskCount: signals.summary.contractRiskCount,
+    migrationRiskCount: signals.summary.migrationRiskCount,
+    importGraphEdges: signals.summary.importGraphEdges,
+    downstreamDependents: signals.summary.downstreamDependents,
+    testOwners: signals.summary.testOwners,
+    missingTestRoutes: signals.summary.missingTestRoutes,
+    schemaOwners: signals.summary.schemaOwners,
+    migrationLocks: signals.summary.migrationLocks,
+    packageExports: signals.summary.packageExports,
+    priorIncidents: signals.summary.priorIncidents,
+    learnedPolicyDeltas: signals.summary.learnedPolicyDeltas,
+    activeLeaseLocks: signals.summary.activeLeaseLocks,
+    inspectionRuns: signals.summary.inspectionRuns,
+    signalStrength: signals.summary.signalStrength,
+  };
+}
+
+async function promotedPolicyDeltasForWorkspace(workspaceSlug) {
+  const rows = await prisma.codeSitePolicyDelta.findMany({
+    where: {
+      project: { workspaceSlug },
+      promotionState: { in: [...PROMOTED_POLICY_DELTA_STATES] },
+      confidence: { gte: 0.65 },
+    },
+    orderBy: [{ promotedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 50,
+  });
+  return rows.map(normalizeLearnedPolicyDelta).filter(Boolean);
+}
+
+function normalizeLearnedPolicyDelta(delta) {
+  if (!delta) return null;
+  const projection = delta.ruleCandidate ? delta : policyDeltaProjection(delta);
+  const promotionState = String(projection.promotionState || '').toLowerCase();
+  const confidence = Number(projection.confidence || 0);
+  if (!PROMOTED_POLICY_DELTA_STATES.has(promotionState) || confidence < 0.65) return null;
+  return {
+    id: projection.id,
+    projectId: projection.projectId,
+    learnedFromIncidents: asArray(projection.learnedFromIncidents),
+    affectedZoneKey: projection.affectedZoneKey || null,
+    ruleCandidate: normalizePolicyDeltaRuleCandidate(projection.ruleCandidate || {}),
+    triggerConditions: asArray(projection.triggerConditions),
+    expectedRiskReduction: typeof projection.expectedRiskReduction === 'number' ? projection.expectedRiskReduction : 0.12,
+    confidence,
+    promotionState,
+    replayRefs: asArray(projection.replayRefs),
+  };
+}
+
+function learnedPolicyMemoryForStrategy(strategy, signals) {
+  const memory = {
+    riskDelta: 0,
+    staleDelta: 0,
+    costDelta: 0,
+    reasonCodes: [],
+    policyDeltaRefs: [],
+  };
+  for (const delta of asArray(signals.learnedPolicyDeltas)) {
+    if (!learnedPolicyDeltaApplies(delta, signals)) continue;
+    const policy = learnedPolicyStrategyPolicy(delta);
+    if (!policy.preferredStrategies.length && !policy.avoidStrategies.length) continue;
+    const confidence = clamp(Number(delta.confidence || 0.5), 0, 1);
+    const riskReduction = clamp(Number(delta.expectedRiskReduction || 0.12), 0.02, 0.6) * confidence;
+    if (policy.preferredStrategies.includes(strategy)) {
+      memory.riskDelta -= riskReduction;
+      memory.staleDelta -= Math.max(1, Math.round(confidence * 2));
+      memory.costDelta -= Math.max(1, Math.round(confidence * 3));
+      memory.reasonCodes.push('learned_policy_delta_preferred_strategy');
+      memory.policyDeltaRefs.push(delta.id);
+    }
+    if (policy.avoidStrategies.includes(strategy)) {
+      memory.riskDelta += riskReduction;
+      memory.staleDelta += Math.max(1, Math.round(confidence * 2));
+      memory.costDelta += Math.max(1, Math.round(confidence * 2));
+      memory.reasonCodes.push('learned_policy_delta_avoided_strategy');
+      memory.policyDeltaRefs.push(delta.id);
+    }
+  }
+  return {
+    riskDelta: roundTo(memory.riskDelta, 3),
+    staleDelta: memory.staleDelta,
+    costDelta: memory.costDelta,
+    reasonCodes: unique([
+      ...(memory.policyDeltaRefs.length ? ['counterfactual_policy_delta_applied'] : []),
+      ...memory.reasonCodes,
+    ]),
+    policyDeltaRefs: unique(memory.policyDeltaRefs),
+  };
+}
+
+function learnedPolicyStrategyPolicy(delta) {
+  const candidate = delta.ruleCandidate || {};
+  const explicitPreferred = unique([
+    ...asArray(candidate.preferredStrategy || candidate.preferred_strategy || candidate.strategy),
+    ...asArray(candidate.preferredStrategies || candidate.preferred_strategies),
+  ].map(normalizeTowerStrategyName).filter(Boolean));
+  const explicitAvoid = unique([
+    ...asArray(candidate.avoidStrategy || candidate.avoid_strategy),
+    ...asArray(candidate.avoidStrategies || candidate.avoid_strategies),
+    ...asArray(candidate.blockedStrategies || candidate.blocked_strategies),
+  ].map(normalizeTowerStrategyName).filter(Boolean));
+  const fallbackPreferred = fallbackPreferredStrategiesForRule(candidate)
+    .map(normalizeTowerStrategyName)
+    .filter((strategy) => strategy && !explicitAvoid.includes(strategy));
+  const preferredStrategies = unique([...explicitPreferred, ...fallbackPreferred]);
+  const fallbackAvoid = fallbackAvoidStrategiesForRule(candidate)
+    .map(normalizeTowerStrategyName)
+    .filter((strategy) => strategy && !explicitPreferred.includes(strategy) && !preferredStrategies.includes(strategy));
+  const avoidStrategies = unique([...explicitAvoid, ...fallbackAvoid]);
+  return { preferredStrategies, avoidStrategies };
+}
+
+function fallbackPreferredStrategiesForRule(candidate = {}) {
+  const text = learnedRuleText(candidate);
+  if (/test[_ -]?first|require[_ -]?test[_ -]?owner|radar[_ -]?first/.test(text)) return ['test-first'];
+  if (/single[_ -]?migration[_ -]?runway|single[_ -]?writer/.test(text)) return ['single-fullstack-agent'];
+  if (/schema[_ -]?first|refresh[_ -]?downstream[_ -]?assumptions|contract/.test(text)) return ['schema-first'];
+  return [];
+}
+
+function fallbackAvoidStrategiesForRule(candidate = {}) {
+  const text = learnedRuleText(candidate);
+  if (/hold[_ -]?parallel|avoid[_ -]?parallel|parallel.*contract|contract.*parallel/.test(text)) return ['frontend-backend-parallel'];
+  if (/schema[_ -]?first|refresh[_ -]?downstream[_ -]?assumptions/.test(text)) return ['frontend-backend-parallel'];
+  return [];
+}
+
+function learnedRuleText(candidate = {}) {
+  return [
+    candidate.rule,
+    candidate.candidate,
+    candidate.name,
+    candidate.reason,
+    candidate.rationale,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+}
+
+function learnedPolicyDeltaApplies(delta, signals) {
+  const surface = learnedPolicySurface(signals);
+  const affectedZoneKey = String(delta.affectedZoneKey || '').toLowerCase();
+  if (affectedZoneKey && !surface.some((entry) => entry.includes(affectedZoneKey))) return false;
+  const conditions = asArray(delta.triggerConditions);
+  if (!conditions.length) return true;
+  return conditions.every((condition) => learnedTriggerMatches(condition, surface));
+}
+
+function learnedTriggerMatches(condition, surface) {
+  if (typeof condition === 'string') {
+    const value = condition.toLowerCase();
+    return surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value));
+  }
+  if (!condition || typeof condition !== 'object') return true;
+  const values = [
+    condition.path,
+    condition.route,
+    condition.zone,
+    condition.zoneKey,
+    condition.zone_key,
+    condition.risk,
+    condition.domain,
+    condition.packageName,
+    condition.package_name,
+  ].flatMap((value) => asArray(value)).map((value) => String(value || '').toLowerCase()).filter(Boolean);
+  if (!values.length) return true;
+  return values.every((value) => surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value)));
+}
+
+function learnedPolicySurface(signals) {
+  return unique([
+    ...asArray(signals.footprints).flatMap((footprint) => [
+      footprint.domain,
+      ...asArray(footprint.route),
+      ...asArray(footprint.routeFiles),
+      ...asArray(footprint.schemaOwners),
+      ...asArray(footprint.packageExports),
+      ...asArray(footprint.zones).flatMap((zone) => [zone.zoneKey, zone.label, zone.class, ...asArray(zone.paths)]),
+    ]),
+    ...asArray(signals.forecast?.risks).flatMap((risk) => [risk.risk, risk.type, risk.conflictZone, risk.recommendedResolution?.action]),
+    ...asArray(signals.migrationLocks),
+    ...asArray(signals.packageExports),
+  ].map((entry) => String(entry || '').toLowerCase()).filter(Boolean));
+}
+
+function buildTowerPolicyDeltaCandidates(signals, selected) {
+  const candidates = [];
+  if (signals.summary.missingTestRoutes > 0) {
+    candidates.push({
+      rule: 'require_test_owner_for_mutation_route',
+      affectedRoutes: signals.missingTestRoutes.slice(0, 8),
+      expectedRiskReduction: 0.18,
+      confidence: 0.72,
+    });
+  }
+  if (signals.summary.migrationLocks > 0) {
+    candidates.push({
+      rule: 'single_migration_runway_lock',
+      affectedRoutes: signals.migrationLocks.slice(0, 8),
+      expectedRiskReduction: 0.24,
+      confidence: 0.82,
+    });
+  }
+  if (signals.summary.priorIncidents > 0 && selected?.predictedCollisionRisk > 0.28) {
+    candidates.push({
+      rule: 'incident_weighted_preflight_hold',
+      affectedIncidents: signals.priorIncidents.map((incident) => incident.id).filter(Boolean).slice(0, 8),
+      expectedRiskReduction: 0.16,
+      confidence: 0.68,
+    });
+  }
+  return candidates;
+}
+
+function towerIncidentSignal(incident = {}) {
+  return {
+    id: incident.id,
+    severity: incident.severity || 'medium',
+    category: incident.category || 'near_miss',
+    participants: parseJson(incident.participantsJson, incident.participants || []),
+    affectedZones: normalizePathList(parseJson(incident.affectedZonesJson, incident.affectedZones || [])),
+    evidenceRefs: parseJson(incident.evidenceRefsJson, incident.evidenceRefs || []),
+  };
+}
+
+function towerInspectionSignal(run = {}) {
+  return {
+    id: run.id,
+    status: run.status || 'pending',
+    changedPaths: normalizePathList(parseJson(run.changedPathsJson, run.changedPaths || [])),
+    inspectionSignals: parseJson(run.inspectionSignalsJson, run.inspectionSignals || []),
+    evidenceRefs: parseJson(run.evidenceRefsJson, run.evidenceRefs || []),
+  };
+}
+
+function sourceSignalStrength({ semanticGraph, priorIncidents, inspectionRuns }) {
+  const signalCount = [
+    asArray(semanticGraph.importEdges).length,
+    asArray(semanticGraph.testOwnership).length,
+    asArray(semanticGraph.migrationLocks).length,
+    asArray(semanticGraph.packageExports).length,
+    asArray(priorIncidents).length,
+    asArray(inspectionRuns).length,
+  ].filter(Boolean).length;
+  if (signalCount >= 4) return 'strong';
+  if (signalCount >= 2) return 'moderate';
+  return 'simulated';
+}
+
+function isSchemaSurface(pathValue) {
+  return /(schema|prisma|openapi|packages\/schemas|package\.json|exports?)/i.test(String(pathValue || ''));
+}
+
+function towerPathsOverlap(left, right) {
+  const leftPath = normalizePath(left);
+  const rightPath = normalizePath(right);
+  if (!leftPath || !rightPath) return false;
+  if (leftPath === rightPath) return true;
+  if (matchPathPattern(leftPath, rightPath) || matchPathPattern(rightPath, leftPath)) return true;
+  const leftRoot = leftPath.split('*')[0].replace(/\/+$/, '');
+  const rightRoot = rightPath.split('*')[0].replace(/\/+$/, '');
+  return Boolean(leftRoot && rightRoot && (leftRoot.startsWith(rightRoot) || rightRoot.startsWith(leftRoot)));
+}
+
+function roundTo(value, places = 2) {
+  const factor = 10 ** places;
+  return Math.round(Number(value || 0) * factor) / factor;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+export async function getLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}, actor = null) {
+  if (projectId) await requireProject(workspaceSlug, projectId, actor, 'read');
+  const requestedLine = normalizeLineNumber(lineNumber);
+  const baseWhere = {
     project: { workspaceSlug },
+    ...(projectId ? { projectId } : {}),
     ...(filePath ? { filePath: normalizePath(filePath) || filePath } : {}),
     ...(lineAnchor ? { lineAnchor } : {}),
   };
+  const include = {
+    transaction: {
+      include: {
+        mutationLease: {
+          include: { agentSession: true },
+        },
+        agentSession: true,
+        proofBundles: true,
+      },
+    },
+  };
+  if (requestedLine) {
+    const [rangedRows, legacyRows] = await Promise.all([
+      prisma.codeSiteLineProvenance.findMany({
+        where: {
+          ...baseWhere,
+          startLine: { lte: requestedLine },
+          OR: [
+            { endLine: { gte: requestedLine } },
+            { endLine: null },
+          ],
+        },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+      prisma.codeSiteLineProvenance.findMany({
+        where: {
+          ...baseWhere,
+          startLine: null,
+        },
+        include,
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+    ]);
+    return uniqueById([...rangedRows, ...legacyRows])
+      .map(lineProvenanceProjection)
+      .filter((row) => lineProvenanceIncludesLine(row, requestedLine))
+      .slice(0, 50);
+  }
   const rows = await prisma.codeSiteLineProvenance.findMany({
-    where,
+    where: baseWhere,
+    include,
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
   return rows.map(lineProvenanceProjection);
 }
 
-export async function getProofBundle(workspaceSlug, bundleId) {
+export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
   const bundle = await prisma.codeSiteProofBundle.findFirst({
     where: { id: bundleId, project: { workspaceSlug } },
     include: {
@@ -3709,6 +6778,7 @@ export async function getProofBundle(workspaceSlug, bundleId) {
     },
   });
   if (!bundle) throw notFound('proof_bundle_not_found');
+  await requireProjectAccess(bundle.project, actor, 'read');
   const incidents = await prisma.codeSiteIncident.findMany({
     where: { projectId: bundle.projectId },
     orderBy: { createdAt: 'asc' },
@@ -3717,7 +6787,18 @@ export async function getProofBundle(workspaceSlug, bundleId) {
     where: { proofBundleId: bundle.id },
     orderBy: { createdAt: 'asc' },
   });
-  const projection = proofBundleProjection(bundle);
+  const landingRuns = await prisma.codeSiteInspectionRun.findMany({
+    where: {
+      projectId: bundle.projectId,
+      ...(bundle.transaction?.mutationLease?.executionPlanId ? { executionPlanId: bundle.transaction.mutationLease.executionPlanId } : {}),
+    },
+    orderBy: [{ completedAt: 'asc' }, { requestedAt: 'asc' }],
+  });
+  const projection = proofBundleProjection(bundle, {
+    transaction: bundle.transaction,
+    mutationLease: bundle.transaction?.mutationLease,
+    landingRuns,
+  });
   return {
     ...projection,
     portableProofBundle: buildPortableProofBundle({
@@ -3726,17 +6807,112 @@ export async function getProofBundle(workspaceSlug, bundleId) {
       mutationLease: bundle.transaction?.mutationLease ? mutationLeaseProjection(bundle.transaction.mutationLease) : null,
       proofBundle: projection,
       incidents: incidents.map(incidentProjection),
+      landingRuns: landingRuns.map(inspectionProjection),
       lineProvenance: lineProvenance.map(lineProvenanceProjection),
     }),
   };
 }
 
-export async function getIncidentReplay(workspaceSlug, incidentId) {
+export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}, actor = null) {
+  const bundle = await prisma.codeSiteProofBundle.findFirst({
+    where: { id: bundleId, project: { workspaceSlug } },
+    include: {
+      project: true,
+      transaction: {
+        include: {
+          agentSession: true,
+          mutationLease: true,
+        },
+      },
+    },
+  });
+  if (!bundle) throw notFound('proof_bundle_not_found');
+  requireTransactionActorAccess(bundle.transaction, actor);
+
+  const commitSha = normalizeGitCommitSha(body.commitSha || body.commit_sha || body.sha);
+  if (!commitSha) throw badRequest('git_commit_sha_required');
+  const suppliedTrailers = normalizeCommitTrailers(body.trailers || body.commitTrailers || body.commit_trailers);
+  const expectedTrailers = proofBundleProjection(bundle, {
+    transaction: bundle.transaction,
+    mutationLease: bundle.transaction?.mutationLease,
+  }).trailers;
+  const mismatchedTrailers = Object.entries(expectedTrailers)
+    .filter(([, value]) => value != null && value !== '')
+    .filter(([key, value]) => suppliedTrailers[key] !== String(value))
+    .map(([key, value]) => ({ key, expected: String(value), actual: suppliedTrailers[key] || null }));
+  if (mismatchedTrailers.length > 0) {
+    throw badRequest('proof_bundle_commit_trailers_mismatch', { mismatchedTrailers });
+  }
+
+  const trailerDigest = digest(suppliedTrailers);
+  const commitEvidenceRefs = unique([
+    `git:commit:${commitSha}`,
+    `git:trailers:${trailerDigest}`,
+    ...asArray(body.evidenceRefs || body.evidence_refs),
+  ]);
+  const updated = await prisma.codeSiteProofBundle.update({
+    where: { id: bundle.id },
+    data: {
+      commitSha,
+    },
+    include: {
+      project: true,
+      transaction: {
+        include: {
+          agentSession: true,
+          mutationLease: true,
+        },
+      },
+    },
+  });
+  await recordEvent(bundle.projectId, {
+    mutationLeaseId: bundle.transaction?.mutationLeaseId || null,
+    eventType: 'inspection_result',
+    displayCallsign: bundle.transaction?.mutationLease?.displayCallsign || null,
+    actorType: 'proof_bundle',
+    actorId: bundle.id,
+    evidenceRefs: commitEvidenceRefs,
+    details: {
+      type: 'proof_bundle_commit_attached',
+      proofBundleId: bundle.id,
+      transactionId: bundle.transactionId,
+      commitSha,
+      trailerDigest,
+      evidenceRefs: commitEvidenceRefs,
+      reasonCodes: ['proof_bundle_commit_trailers_verified'],
+    },
+  });
+  return proofBundleProjection(updated, {
+    transaction: updated.transaction,
+    mutationLease: updated.transaction?.mutationLease,
+  });
+}
+
+function normalizeGitCommitSha(value) {
+  const sha = String(value || '').trim();
+  return /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
+}
+
+function normalizeCommitTrailers(input) {
+  if (typeof input === 'string') {
+    return Object.fromEntries(input.split(/\r?\n/)
+      .map((line) => line.match(/^([A-Za-z0-9-]+):\s*(.*)$/))
+      .filter(Boolean)
+      .map((match) => [match[1], match[2]]));
+  }
+  if (!input || typeof input !== 'object') return {};
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key, value]) => key && value != null && value !== '')
+    .map(([key, value]) => [key, String(value)]));
+}
+
+export async function getIncidentReplay(workspaceSlug, incidentId, actor = null) {
   const incident = await prisma.codeSiteIncident.findFirst({
     where: { id: incidentId, project: { workspaceSlug } },
     include: { project: { include: { events: { orderBy: EVENT_ORDER_BY } } } },
   });
   if (!incident) throw notFound('incident_not_found');
+  await requireProjectAccess(incident.project, actor, 'read');
   const projectedIncident = incidentProjection(incident);
   const timeline = incidentReplayTimeline(projectedIncident, incident.project.events.map(eventProjection));
   const replay = projectedIncident.incidentReplay;
@@ -3807,6 +6983,7 @@ function incidentReplayTimeline(incident, events) {
 }
 
 async function recordEvent(projectId, input) {
+  const eventType = validateCodeSiteEventType(input.eventType);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
     try {
@@ -3814,7 +6991,7 @@ async function recordEvent(projectId, input) {
         data: {
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
-          eventType: input.eventType,
+          eventType,
           displayCallsign: input.displayCallsign || null,
           actorType: input.actorType || null,
           actorId: input.actorId || null,
@@ -3823,7 +7000,7 @@ async function recordEvent(projectId, input) {
           logicalTime: logicalTime + 1,
         },
       });
-      await syncArtifactsAfterEvent(projectId, event);
+      await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
       return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;
@@ -3832,25 +7009,27 @@ async function recordEvent(projectId, input) {
   throw new Error('codesite_event_logical_time_conflict');
 }
 
-async function syncArtifactsAfterEvent(projectId, event) {
-  if (!autoArtifactSyncEnabled()) return null;
+async function syncArtifactsForProject(projectId, context = {}) {
+  if (!context.force && !autoArtifactSyncEnabled()) return null;
   try {
     const project = await prisma.codeSiteProject.findUnique({
       where: { id: projectId },
       include: PROJECT_INCLUDE,
     });
     if (!project) return null;
-    const projection = projectProjection(project);
+    const projection = artifactProjectProjection(project);
     const controlState = buildControlState(project.workspaceSlug, projection);
     const result = await writeArtifactProjection(projection, controlState);
     return {
-      eventId: event?.id || null,
+      eventId: context.eventId || null,
+      reason: context.reason || null,
       ...result,
     };
   } catch (error) {
     console.warn('[CodeSite] artifact auto-sync failed', {
       projectId,
-      eventId: event?.id || null,
+      eventId: context.eventId || null,
+      reason: context.reason || null,
       error: error?.message || String(error),
     });
     return null;
@@ -3889,10 +7068,16 @@ async function createPolicyDecision(projectId, input) {
   });
 }
 
-async function requireProject(workspaceSlug, projectId) {
-  const project = await prisma.codeSiteProject.findFirst({ where: { id: projectId, workspaceSlug } });
+async function requireProject(workspaceSlug, projectId, actor = null, mode = 'read') {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: projectId, workspaceSlug },
+    include: {
+      members: true,
+      agentSessions: true,
+    },
+  });
   if (!project) throw notFound('project_not_found');
-  return project;
+  return requireProjectAccess(project, actor, mode);
 }
 
 async function requireAgentSession(projectId, agentSessionId) {
@@ -3914,7 +7099,7 @@ async function requireLease(workspaceSlug, mutationLeaseId) {
 async function requireTransaction(workspaceSlug, transactionId, actor = null) {
   const transaction = await prisma.codeSiteMutationTransaction.findFirst({
     where: { id: transactionId, project: { workspaceSlug } },
-    include: { mutationLease: true, agentSession: true },
+    include: { project: true, mutationLease: true, agentSession: true },
   });
   if (!transaction) throw notFound('transaction_not_found');
   requireTransactionActorAccess(transaction, actor);
@@ -3942,6 +7127,20 @@ function requireTransactionActorAccess(transaction, actor = null) {
       actorUserId: actor.userId || null,
     });
   }
+}
+
+function requireActorOwnsUserId(ownerUserId, actor = null, code = 'agent_owner_forbidden') {
+  if (!actor || actor.bypass) return;
+  if (!actor.userId || !ownerUserId || actor.userId !== ownerUserId) {
+    throw forbidden(code, {
+      ownerUserId: ownerUserId || null,
+      actorUserId: actor.userId || null,
+    });
+  }
+}
+
+function requireAgentSessionOwnerAccess(session, actor = null, code = 'agent_session_owner_forbidden') {
+  requireActorOwnsUserId(session?.ownerUserId, actor, code);
 }
 
 function requireLeaseActorAccess(lease, actor = null) {
@@ -3987,6 +7186,16 @@ function unique(values) {
   return [...new Set(values)];
 }
 
+function uniqueById(rows) {
+  const seen = new Set();
+  return asArray(rows).filter((row) => {
+    const key = row?.id || stableJson(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function projectSummary(project) {
   return {
     id: project.id,
@@ -3998,6 +7207,7 @@ function projectSummary(project) {
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     counts: {
+      members: project.members?.filter((member) => !member.revokedAt)?.length || 0,
       agentSessions: project.agentSessions?.length || 0,
       executionPlans: project.executionPlans?.length || 0,
       mutationLeases: project.mutationLeases?.length || 0,
@@ -4008,24 +7218,44 @@ function projectSummary(project) {
 }
 
 function projectProjection(project) {
+  const mutationTxns = asArray(project.mutationTxns);
+  const mutationLeases = asArray(project.mutationLeases);
+  const inspectionRuns = asArray(project.inspectionRuns);
   return {
     ...projectSummary(project),
     zonePolicy: parseJson(project.zonePolicyJson, {}),
     controlPlan: parseJson(project.controlPlanJson, {}),
+    members: asArray(project.members).map(projectMembershipProjection),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
-    mutationLeases: asArray(project.mutationLeases).map(mutationLeaseProjection),
-    mutationTxns: asArray(project.mutationTxns).map(transactionProjection),
+    mutationLeases: mutationLeases.map(mutationLeaseProjection),
+    mutationTxns: mutationTxns.map(transactionProjection),
     assumptions: asArray(project.assumptions).map(assumptionProjection),
     policyDecisions: asArray(project.policyDecisions).map(policyDecisionProjection),
     events: asArray(project.events).map(eventProjection),
     incidents: asArray(project.incidents).map(incidentProjection),
-    inspectionRuns: asArray(project.inspectionRuns).map(inspectionProjection),
-    proofBundles: asArray(project.proofBundles).map(proofBundleProjection),
+    inspectionRuns: inspectionRuns.map(inspectionProjection),
+    proofBundles: asArray(project.proofBundles).map((bundle) => {
+      const transaction = mutationTxns.find((item) => item.id === bundle.transactionId) || null;
+      const mutationLease = mutationLeases.find((item) => item.id === transaction?.mutationLeaseId) || null;
+      const landingRuns = inspectionRuns.filter((run) => (
+        mutationLease?.executionPlanId
+          ? run.executionPlanId === mutationLease.executionPlanId
+          : run.displayCallsign === mutationLease?.displayCallsign
+      ));
+      return proofBundleProjection(bundle, { transaction, mutationLease, landingRuns });
+    }),
     lineProvenance: asArray(project.lineProvenance).map(lineProvenanceProjection),
-    documents: asArray(project.documents).map(documentProjection),
+    documents: asArray(project.documents).map(documentSummaryProjection),
     counterfactualRuns: asArray(project.counterfactualRuns).map(counterfactualProjection),
     policyDeltas: asArray(project.policyDeltas).map(policyDeltaProjection),
+    inboxItems: asArray(project.inboxItems).map(inboxSummaryProjection),
+  };
+}
+
+function artifactProjectProjection(project) {
+  return {
+    ...projectProjection(project),
     inboxItems: asArray(project.inboxItems).map(inboxProjection),
   };
 }
@@ -4042,6 +7272,11 @@ function sessionProjection(session) {
     status: session.status,
     permissions: parseJson(session.permissionsJson, []),
     redactionPolicy: parseJson(session.redactionPolicyJson, {}),
+    dojoPilotLicenseRef: session.dojoPilotLicenseRef || null,
+    dojoProofRef: session.dojoProofRef || null,
+    dojoEvidenceRefs: parseJson(session.dojoEvidenceRefsJson, []),
+    dojoDecisionDigest: session.dojoDecisionDigest || null,
+    pilotLicenseSnapshot: parseJson(session.pilotLicenseSnapshotJson, null),
     createdAt: session.createdAt,
     endedAt: session.endedAt,
   };
@@ -4067,6 +7302,7 @@ function executionPlanProjection(plan) {
 }
 
 function mutationLeaseProjection(lease, extra = {}) {
+  const leaseBody = parseJson(lease.leaseJson, {});
   return {
     id: lease.id,
     projectId: lease.projectId,
@@ -4074,7 +7310,9 @@ function mutationLeaseProjection(lease, extra = {}) {
     agentSessionId: lease.agentSessionId,
     displayCallsign: lease.displayCallsign,
     status: lease.status,
-    lease: parseJson(lease.leaseJson, {}),
+    lease: leaseBody,
+    pilotLicenseHealth: leaseBody.pilotLicenseHealth || null,
+    pilotLicenseRequirement: leaseBody.pilotLicenseRequirement || null,
     dojoProofRef: lease.dojoProofRef,
     dojoLicenseRef: lease.dojoLicenseRef,
     dojoEvidenceRefs: parseJson(lease.dojoEvidenceRefsJson, []),
@@ -4158,8 +7396,10 @@ function eventProjection(event) {
   };
 }
 
-function proofBundleProjection(bundle) {
-  return {
+function proofBundleProjection(bundle, context = {}) {
+  const transaction = context.transaction || bundle.transaction || null;
+  const mutationLease = context.mutationLease || transaction?.mutationLease || null;
+  const projection = {
     id: bundle.id,
     projectId: bundle.projectId,
     transactionId: bundle.transactionId,
@@ -4171,24 +7411,48 @@ function proofBundleProjection(bundle) {
     dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
     repoState: parseJson(bundle.repoStateJson, null),
     incidentReplayDigest: bundle.incidentReplayDigest,
+    landingStatus: bundle.landingStatus || context.landingStatus || null,
     bundleDigest: bundle.bundleDigest,
+    proofSignature: parseJson(bundle.proofSignatureJson, null),
+    signatureKeyId: bundle.signatureKeyId || null,
     createdAt: bundle.createdAt,
-    trailers: {
-      'CodeSite-Transaction': bundle.transactionId,
-      'CodeSite-Read-Set': bundle.readSetDigest,
-      'CodeSite-Write-Set': bundle.writeSetDigest,
-      'CodeSite-Black-Box': bundle.incidentReplayDigest || bundle.bundleDigest,
-    },
+  };
+  const portable = buildPortableProofBundle({
+    project: bundle.project ? projectProjection(bundle.project) : { id: bundle.projectId },
+    transaction: transaction
+      ? transactionProjection(transaction)
+      : {
+        id: bundle.transactionId,
+        projectId: bundle.projectId,
+        mutationLeaseId: bundle.transaction?.mutationLeaseId || null,
+      },
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    proofBundle: projection,
+    landingRuns: asArray(context.landingRuns).map((run) => (
+      run?.changedPathsJson ? inspectionProjection(run) : run
+    )),
+  });
+  return {
+    ...projection,
+    trailers: proofCommitTrailers(portable),
   };
 }
 
 function lineProvenanceProjection(row) {
+  const anchorRange = parsedLineRange(row.lineAnchor);
+  const startLine = row.startLine || anchorRange.startLine;
+  const endLine = row.endLine || anchorRange.endLine;
+  const transaction = row.transaction || null;
+  const mutationLease = transaction?.mutationLease || null;
+  const agentSession = transaction?.agentSession || mutationLease?.agentSession || null;
   return {
     id: row.id,
     projectId: row.projectId,
     transactionId: row.transactionId,
     filePath: row.filePath,
     lineAnchor: row.lineAnchor,
+    startLine,
+    endLine,
     displayCallsign: row.displayCallsign,
     reasonRef: row.reasonRef,
     evidenceRefs: parseJson(row.evidenceRefsJson, []),
@@ -4196,8 +7460,37 @@ function lineProvenanceProjection(row) {
     proofBundleId: row.proofBundleId,
     processAncestry: parseJson(row.processAncestryJson, []),
     promptSummary: row.promptSummary,
+    transaction: transaction ? transactionProjection(transaction) : null,
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    agentSession: agentSession ? sessionProjection(agentSession) : null,
+    proofBundles: asArray(transaction?.proofBundles).map((bundle) => proofBundleProjection(bundle, {
+      transaction,
+      mutationLease,
+    })),
     createdAt: row.createdAt,
   };
+}
+
+function normalizeLineNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.floor(number) : null;
+}
+
+function lineProvenanceIncludesLine(row, lineNumber) {
+  const range = {
+    startLine: row.startLine || parsedLineRange(row.lineAnchor).startLine,
+    endLine: row.endLine || parsedLineRange(row.lineAnchor).endLine,
+  };
+  if (!range.startLine) return false;
+  return lineNumber >= range.startLine && lineNumber <= (range.endLine || range.startLine);
+}
+
+function parsedLineRange(lineAnchor) {
+  const match = String(lineAnchor || '').match(/#?L(\d+)(?:-L?(\d+))?/i);
+  if (!match) return { startLine: null, endLine: null };
+  const startLine = Math.max(1, Number(match[1]));
+  const endLine = Math.max(startLine, Number(match[2] || match[1]));
+  return { startLine, endLine };
 }
 
 function inspectionProjection(run) {
@@ -4246,6 +7539,19 @@ function documentProjection(document) {
   };
 }
 
+function documentSummaryProjection(document) {
+  return {
+    id: document.id,
+    projectId: document.projectId,
+    kind: document.kind,
+    status: document.status,
+    title: document.title,
+    blocking: document.blocking,
+    createdAt: document.createdAt,
+    resolvedAt: document.resolvedAt,
+  };
+}
+
 function inboxProjection(item) {
   return {
     id: item.id,
@@ -4258,6 +7564,22 @@ function inboxProjection(item) {
     requiresResponse: item.requiresResponse,
     status: item.status,
     redactedPayload: parseJson(item.redactedPayloadJson, {}),
+    createdAt: item.createdAt,
+    acknowledgedAt: item.acknowledgedAt,
+  };
+}
+
+function inboxSummaryProjection(item) {
+  return {
+    id: item.id,
+    projectId: item.projectId,
+    agentSessionId: item.agentSessionId,
+    eventId: item.eventId,
+    documentId: item.documentId,
+    kind: item.kind,
+    requiresResponse: item.requiresResponse,
+    status: item.status,
+    payloadAvailable: Boolean(item.redactedPayloadJson),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
   };

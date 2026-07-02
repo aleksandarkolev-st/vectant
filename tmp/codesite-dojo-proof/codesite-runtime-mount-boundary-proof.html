@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CodeSite Runtime Mount Boundary Proof</title>
+<style>
+:root { color-scheme: dark; --bg: #07090f; --panel: #111520; --line: #29324a; --text: #f7f9ff; --muted: #a7b2d6; --pass: #2fd17c; --warn: #ffcf5f; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+main { width: min(1160px, calc(100vw - 56px)); margin: 28px auto 44px; }
+.hero, .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.hero { padding: 24px; margin-bottom: 16px; }
+.badge { display: inline-flex; height: 24px; align-items: center; padding: 0 9px; border-radius: 4px; background: #09351f; color: #bff8d8; font-size: 12px; font-weight: 800; }
+h1 { margin: 8px 0 12px; font-size: 29px; line-height: 1.1; }
+p { color: var(--muted); max-width: 82ch; line-height: 1.55; margin: 0; font-size: 16px; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.card { padding: 14px; min-height: 92px; }
+.label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.value { overflow-wrap: anywhere; font-size: 15px; line-height: 1.35; }
+table, pre { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #05070c; overflow: hidden; }
+table { border-collapse: separate; border-spacing: 0; }
+td, th { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; }
+th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+pre { padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: #dce5ff; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+h2 { font-size: 20px; margin: 22px 0 10px; }
+@media (max-width: 860px) { main { width: min(100% - 24px, 720px); } .grid { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <span class="badge">PASS</span>
+    <h1>CodeSite Runtime Mount Boundary Proof</h1>
+    <p>An uninstrumented Docker shell attempted direct writes against a read-only base mount and a writable quarantine overlay. The base mutation was denied by the mount boundary; only the overlay changed.</p>
+  </section>
+  <section class="grid">
+    <div class="card"><div class="label">Docker image</div><div class="value">mcr.microsoft.com/playwright:v1.61.1-noble</div></div>
+    <div class="card"><div class="label">Base mount</div><div class="value">/codesite-base ro,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6</div></div>
+    <div class="card"><div class="label">Overlay mount</div><div class="value">/workspace rw,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6</div></div>
+    <div class="card"><div class="label">Base write status</div><div class="value">1</div></div>
+  </section>
+  <h2>Assertions</h2>
+  <table><thead><tr><th>Check</th><th>Result</th></tr></thead><tbody><tr><td>dockerContainerExecuted</td><td>pass</td></tr>
+<tr><td>baseMountAdvertisedReadOnly</td><td>pass</td></tr>
+<tr><td>overlayMountAdvertisedWritable</td><td>pass</td></tr>
+<tr><td>uninstrumentedBaseWriteDenied</td><td>pass</td></tr>
+<tr><td>baseDigestUnchanged</td><td>pass</td></tr>
+<tr><td>baseContentUnchanged</td><td>pass</td></tr>
+<tr><td>overlayDigestChanged</td><td>pass</td></tr>
+<tr><td>overlayMutationObserved</td><td>pass</td></tr>
+<tr><td>overlayNewFileCreated</td><td>pass</td></tr>
+<tr><td>baseNewFileAbsent</td><td>pass</td></tr></tbody></table>
+  <h2>Digest Evidence</h2>
+  <pre>{
+  &quot;baseDigestBefore&quot;: &quot;sha256:7e27c01c9326252d4871bc753edc13200ec5d64fa0eb17ef576462306276a6be&quot;,
+  &quot;baseDigestAfter&quot;: &quot;sha256:7e27c01c9326252d4871bc753edc13200ec5d64fa0eb17ef576462306276a6be&quot;,
+  &quot;overlayDigestBefore&quot;: &quot;sha256:7e27c01c9326252d4871bc753edc13200ec5d64fa0eb17ef576462306276a6be&quot;,
+  &quot;overlayDigestAfter&quot;: &quot;sha256:2cffebabfa077bbf9f58d56269b13ee5f8cc203d0083a1c20f81491f462e2ea6&quot;
+}</pre>
+  <h2>Docker Output</h2>
+  <pre>BASE_WRITE_STATUS=1
+BASE_MOUNT_FLAGS=ro,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6
+WORKSPACE_MOUNT_FLAGS=rw,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6
+BASE_WRITE_STDERR_BEGIN
+bash: line 5: /codesite-base/src/schema.prisma: Read-only file system
+
+BASE_WRITE_STDERR_END
+BASE_CONTENT_BEGIN
+model RuntimeBoundary {
+  id String @id
+  state String @default(&quot;base&quot;)
+}
+BASE_CONTENT_END
+OVERLAY_CONTENT_BEGIN
+overlay mutation from uninstrumented docker shell
+OVERLAY_CONTENT_END
+</pre>
+  <h2>Product Runtime Contract</h2>
+  <pre>{
+  &quot;readonlyRuntimeName&quot;: &quot;workspace-runtime-codesite-runtime-mount-boundary-20260702&quot;,
+  &quot;quarantineRuntimeName&quot;: &quot;workspace-runtime-codesite-runtime-mount-boundar-codesite-c242bda024&quot;,
+  &quot;quarantineVolumeSubpath&quot;: &quot;codesite-runtime-mount-boundary-20260702bb/overlay&quot;,
+  &quot;runtimeModes&quot;: {
+    &quot;base&quot;: &quot;read-only mount&quot;,
+    &quot;activeCodeSite&quot;: &quot;writable quarantine overlay mounted at /workspace&quot;
+  }
+}</pre>
+</main>
+</body>
+</html>

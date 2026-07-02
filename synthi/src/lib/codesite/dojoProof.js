@@ -1,5 +1,5 @@
 import { digest } from './policy';
-import { verifyDojoProofCapsulePublicWithKeyRecord } from '../../../../mcp/synthi-mcp/dist/dojo/proof/public_verifier.js';
+import { verifyDojoProofCapsulePublicWithKeyRecord } from './dojoPublicVerifier';
 
 export function buildCodeSiteDojoProofInput(body = {}) {
   const capsule = parseObject(body.dojoProofCapsule || body.dojo_proof_capsule || body.proofCapsule || body.proof_capsule);

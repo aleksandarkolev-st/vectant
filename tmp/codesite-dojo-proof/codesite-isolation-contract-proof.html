@@ -1,0 +1,60 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>CodeSite Isolation Contract Proof</title><style>
+:root { color-scheme: dark; --bg: #080a0f; --panel: #10131d; --panel-2: #0c0f17; --line: #273149; --text: #f3f6ff; --muted: #aab8df; --accent: #9fb7ff; }
+* { box-sizing: border-box; } body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+main { width: min(1180px, calc(100vw - 64px)); margin: 28px auto 48px; } .hero { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 22px 24px 28px; }
+.badge { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 4px; background: #09351f; color: #b9f6d3; font-weight: 800; font-size: 12px; letter-spacing: .04em; }
+h1 { margin: 6px 0 12px; font-size: 28px; line-height: 1.1; } p { margin: 0; max-width: 74ch; color: var(--muted); font-size: 17px; line-height: 1.55; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0 20px; } .metric { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; min-height: 86px; }
+.metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; } .metric strong { display: block; font-size: 17px; line-height: 1.25; overflow-wrap: anywhere; }
+h2 { margin: 20px 0 10px; font-size: 21px; } pre, table { border: 1px solid var(--line); border-radius: 8px; background: #05070c; width: 100%; }
+pre { margin: 0; padding: 14px; overflow: hidden; white-space: pre-wrap; color: #d8e1ff; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+table { border-collapse: separate; border-spacing: 0; overflow: hidden; } th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; background: var(--panel-2); } td { color: var(--text); font-size: 14px; } tr:last-child td { border-bottom: 0; }
+code { font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #dfe7ff; } @media (max-width: 860px) { main { width: min(100% - 28px, 720px); } .grid { grid-template-columns: 1fr 1fr; } }
+</style></head><body><main><section class="hero"><span class="badge">PASS</span><h1>CodeSite Isolation Contract Proof</h1><p>Live Docker CodeSite API rejected every explicit non-serializable transaction isolation request. The agent-readable schema advertises only serializable isolation.</p></section>
+<section class="grid" aria-label="proof summary"><div class="metric"><span>Workspace</span><strong>codesite-isolation-contract-proof-1782867432286</strong></div><div class="metric"><span>Clearance</span><strong>DOCS-01 active</strong></div><div class="metric"><span>Rejected cases</span><strong>4 / 4</strong></div><div class="metric"><span>Supported isolation</span><strong>serializable</strong></div></section>
+<h2>Rejected Requests</h2><table><thead><tr><th>Case</th><th>Requested</th><th>Status</th><th>Error</th><th>Supported</th></tr></thead><tbody>
+  <tr>
+    <td>read_committed</td>
+    <td><code>&quot;read_committed&quot;</code></td>
+    <td>400</td>
+    <td><code>unsupported_transaction_isolation</code></td>
+    <td><code>serializable</code></td>
+  </tr>
+  <tr>
+    <td>blank string</td>
+    <td><code>&quot;&quot;</code></td>
+    <td>400</td>
+    <td><code>unsupported_transaction_isolation</code></td>
+    <td><code>serializable</code></td>
+  </tr>
+  <tr>
+    <td>false boolean</td>
+    <td><code>false</code></td>
+    <td>400</td>
+    <td><code>unsupported_transaction_isolation</code></td>
+    <td><code>serializable</code></td>
+  </tr>
+  <tr>
+    <td>zero number</td>
+    <td><code>0</code></td>
+    <td>400</td>
+    <td><code>unsupported_transaction_isolation</code></td>
+    <td><code>serializable</code></td>
+  </tr></tbody></table>
+<h2>Assertions</h2><pre>{
+  &quot;liveDockerApiUsed&quot;: true,
+  &quot;clearanceIssued&quot;: true,
+  &quot;allUnsupportedIsolationRejected&quot;: true,
+  &quot;readCommittedRejected&quot;: true,
+  &quot;blankIsolationRejected&quot;: true,
+  &quot;falseIsolationRejected&quot;: true,
+  &quot;zeroIsolationRejected&quot;: true,
+  &quot;supportedIsolationAdvertised&quot;: true,
+  &quot;schemaRestrictsIsolation&quot;: true
+}</pre><h2>Schema Contract</h2><pre>{
+  &quot;type&quot;: &quot;string&quot;,
+  &quot;enum&quot;: [
+    &quot;serializable&quot;
+  ]
+}</pre></main></body></html>

@@ -48,13 +48,22 @@ beforeEach(() => {
 
 describe('POST /api/integrations/mcp/programs/launch', () => {
   it('launches a container install (slug-routed, Prisma userId) and returns the merged session', async () => {
-    const res = await POST(req({ workspaceSlug: 'team', installId: 'i1' }));
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' };
+    const res = await POST(req({ workspaceSlug: 'team', installId: 'i1', codeSiteContext }));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.session).toMatchObject({ id: 'ps-9', state: 'running', activePorts: [5900], webPort: 5900 });
     expect(h.launchInstalled).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-9', userId: 'u1' }),
+      expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-9', userId: 'u1', codeSiteContext }),
     );
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_requested',
+      codeSiteContext,
+    }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_ack',
+      codeSiteContext,
+    }));
   });
 
   it('rejects an unauthenticated request', async () => {
@@ -98,8 +107,13 @@ describe('POST /api/integrations/mcp/programs/launch', () => {
 
   it('maps a runtime launch failure to 502 and marks the session crashed', async () => {
     h.launchInstalled.mockRejectedValue(new Error('runtime_pod_not_ready'));
-    const res = await POST(req({ workspaceSlug: 'team', installId: 'i1' }));
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1' };
+    const res = await POST(req({ workspaceSlug: 'team', installId: 'i1', codeSiteContext }));
     expect(res.status).toBe(502);
     expect(h.updateProgramSession).toHaveBeenCalledWith('ps-9', expect.objectContaining({ state: 'crashed' }));
+    expect(h.appendProgramRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch_failed',
+      codeSiteContext,
+    }));
   });
 });

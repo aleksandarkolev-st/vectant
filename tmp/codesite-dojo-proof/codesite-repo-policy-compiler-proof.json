@@ -1,0 +1,741 @@
+{
+  "generatedAt": "2026-07-01T04:31:23.600Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-repo-policy-compiler-proof-1782880248312",
+  "fixtureRepo": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782880248312",
+  "project": {
+    "id": "cmr1kvu7c0000ob5aew06if6m",
+    "title": "Repo policy compiler proof",
+    "route": "/workspace/codesite-repo-policy-compiler-proof-1782880248312/codesite"
+  },
+  "signals": {
+    "files": [
+      ".env.example",
+      "package.json",
+      "synthi/prisma/schema.prisma",
+      "synthi/prisma/migrations/202607010001_auth/migration.sql",
+      "packages/contracts/package.json",
+      "packages/contracts/src/index.ts",
+      "packages/contracts/src/server.ts",
+      "packages/contracts/src/features/audit.ts",
+      "openapi/auth.yaml",
+      "infra/prod/kustomization.yaml",
+      "apps/web/signup/SignupForm.test.tsx",
+      "apps/web/signup/SignupForm.tsx",
+      "app/api/auth/signup/route.ts",
+      ".synthi/codesite/proof/incidents/auth-near-miss.json",
+      ".github/CODEOWNERS"
+    ],
+    "importEdges": [
+      {
+        "from": "apps/web/signup/SignupForm.test.tsx",
+        "imports": [
+          "apps/web/signup/SignupForm.tsx"
+        ]
+      },
+      {
+        "from": "apps/web/signup/SignupForm.tsx",
+        "imports": [
+          "packages/contracts/src/index.ts",
+          "packages/contracts/src/server.ts",
+          "packages/contracts/src/features/audit.ts"
+        ]
+      },
+      {
+        "from": "app/api/auth/signup/route.ts",
+        "imports": [
+          "packages/contracts/src/index.ts"
+        ]
+      }
+    ],
+    "testOwnership": [
+      {
+        "testPath": "apps/web/signup/SignupForm.test.tsx",
+        "covers": [
+          "apps/web/signup/SignupForm.tsx"
+        ]
+      }
+    ],
+    "packageExports": [
+      {
+        "packageName": "@acme/contracts",
+        "root": "packages/contracts",
+        "exports": [
+          "packages/contracts/src/index.d.ts",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/dist/index.cjs",
+          "packages/contracts/src/features/*.ts",
+          "packages/contracts/src/server.ts"
+        ],
+        "exportMap": {
+          ".": [
+            "packages/contracts/src/index.d.ts",
+            "packages/contracts/src/index.ts",
+            "packages/contracts/dist/index.cjs"
+          ],
+          "./features/*": [
+            "packages/contracts/src/features/*.ts"
+          ],
+          "./server": [
+            "packages/contracts/src/server.ts"
+          ]
+        }
+      }
+    ],
+    "generatedClients": [],
+    "migrationLocks": [
+      "synthi/prisma/migrations"
+    ],
+    "deploymentConfig": [
+      "infra/prod/kustomization.yaml"
+    ],
+    "sourceDigest": "sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092"
+  },
+  "policy": {
+    "version": 1,
+    "generatedAt": "2026-07-01T04:31:17.003Z",
+    "zones": [
+      {
+        "zoneKey": "class_a",
+        "label": "Critical controlled airspace",
+        "class": "A",
+        "paths": [
+          "api/auth/**",
+          "billing/**",
+          "db/migrations/**",
+          "infra/prod/**",
+          "infra/production/**",
+          "**/.env",
+          "**/.env.*"
+        ],
+        "rules": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required"
+        ],
+        "risk": "critical",
+        "source": "compiled_default"
+      },
+      {
+        "zoneKey": "class_b",
+        "label": "Shared contract airspace",
+        "class": "B",
+        "paths": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "risk": "high",
+        "source": "compiled_default"
+      },
+      {
+        "zoneKey": "class_c",
+        "label": "Feature implementation airspace",
+        "class": "C",
+        "paths": [
+          "apps/web/**",
+          "components/**",
+          "synthi/src/app/**",
+          "synthi/src/components/**",
+          "backend/collab-server/**"
+        ],
+        "rules": [
+          "auto_clearance_allowed",
+          "landing_inspection_required"
+        ],
+        "risk": "medium",
+        "source": "compiled_default"
+      },
+      {
+        "zoneKey": "class_d",
+        "label": "Low-risk support airspace",
+        "class": "D",
+        "paths": [
+          "docs/**",
+          "tests/**",
+          "**/__tests__/**",
+          "**/*.test.js",
+          "**/*.test.jsx",
+          "**/*.test.ts",
+          "**/*.test.tsx",
+          "**/*.md"
+        ],
+        "rules": [
+          "micro_clearance_allowed",
+          "sample_inspection"
+        ],
+        "risk": "low",
+        "source": "compiled_default"
+      },
+      {
+        "zoneKey": "codeowners_api_auth",
+        "label": "Owned airspace: api/auth/**",
+        "class": "A",
+        "paths": [
+          "api/auth/**"
+        ],
+        "rules": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required",
+          "owner_review_required"
+        ],
+        "risk": "critical",
+        "source": "repo_codeowners",
+        "owners": [
+          "@security"
+        ]
+      },
+      {
+        "zoneKey": "codeowners_packages_contracts",
+        "label": "Owned airspace: packages/contracts/**",
+        "class": "B",
+        "paths": [
+          "packages/contracts/**"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation",
+          "owner_review_required"
+        ],
+        "risk": "high",
+        "source": "repo_codeowners",
+        "owners": [
+          "@platform"
+        ]
+      },
+      {
+        "zoneKey": "openapi_contract_openapi_auth_yaml",
+        "label": "API contract: openapi/auth.yaml",
+        "class": "B",
+        "paths": [
+          "openapi/auth.yaml",
+          "api/auth/signup/**",
+          "app/api/auth/signup/**",
+          "src/app/api/auth/signup/**",
+          "pages/api/auth/signup/**"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation",
+          "api_contract_radar_required"
+        ],
+        "risk": "high",
+        "source": "repo_openapi",
+        "contractPaths": [
+          "/auth/signup"
+        ],
+        "operations": [
+          {
+            "path": "/auth/signup",
+            "method": "POST",
+            "operationId": null
+          }
+        ]
+      },
+      {
+        "zoneKey": "prisma_schema_synthi_prisma_schema_prisma",
+        "label": "Prisma schema: synthi/prisma/schema.prisma",
+        "class": "B",
+        "paths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation",
+          "migration_radar_required"
+        ],
+        "risk": "high",
+        "source": "repo_prisma_schema"
+      },
+      {
+        "zoneKey": "migration_runway_synthi_prisma_migrations",
+        "label": "Migration runway: synthi/prisma/migrations",
+        "class": "A",
+        "paths": [
+          "synthi/prisma/migrations/**"
+        ],
+        "rules": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required",
+          "single_migration_runway_lock"
+        ],
+        "risk": "critical",
+        "source": "repo_prisma_migration"
+      },
+      {
+        "zoneKey": "package_exports_packages_contracts",
+        "label": "Public package exports: @acme/contracts",
+        "class": "B",
+        "paths": [
+          "packages/contracts/**",
+          "packages/contracts/src/index.d.ts",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/dist/index.cjs",
+          "packages/contracts/src/features/*.ts",
+          "packages/contracts/src/server.ts"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation",
+          "downstream_package_radar_required"
+        ],
+        "risk": "high",
+        "source": "repo_package_exports"
+      },
+      {
+        "zoneKey": "deployment_infra_prod_kustomization_yaml",
+        "label": "Deployment config: infra/prod/kustomization.yaml",
+        "class": "A",
+        "paths": [
+          "infra/prod/kustomization.yaml"
+        ],
+        "rules": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required",
+          "runtime_radar_required"
+        ],
+        "risk": "critical",
+        "source": "repo_deployment_config"
+      },
+      {
+        "zoneKey": "incident_hot_zone_packages_contracts",
+        "label": "Incident hot zone: near_miss",
+        "class": "A",
+        "paths": [
+          "packages/contracts/**",
+          "api/auth/**"
+        ],
+        "rules": [
+          "explicit_tower_clearance_required",
+          "licensed_pilot_required",
+          "inspector_signoff_required",
+          "black_box_required",
+          "recurrent_incident_radar_required"
+        ],
+        "risk": "critical",
+        "source": "repo_past_incident",
+        "incidentRefs": [
+          ".synthi/codesite/proof/incidents/auth-near-miss.json"
+        ]
+      }
+    ],
+    "noFlyZones": [
+      "**/.env",
+      "**/.env.*",
+      "secrets/**",
+      "**/*secret*",
+      "**/*.pem",
+      "**/*.key"
+    ],
+    "classRules": {
+      "A": [
+        "explicit_tower_clearance_required",
+        "licensed_pilot_required",
+        "inspector_signoff_required",
+        "black_box_required"
+      ],
+      "B": [
+        "flight_plan_required",
+        "downstream_notification_required",
+        "change_order_for_mutation"
+      ],
+      "C": [
+        "auto_clearance_allowed",
+        "landing_inspection_required"
+      ],
+      "D": [
+        "micro_clearance_allowed",
+        "sample_inspection"
+      ]
+    },
+    "semanticGraph": {
+      "files": [
+        ".env.example",
+        "package.json",
+        "synthi/prisma/schema.prisma",
+        "synthi/prisma/migrations/202607010001_auth/migration.sql",
+        "packages/contracts/package.json",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/server.ts",
+        "packages/contracts/src/features/audit.ts",
+        "openapi/auth.yaml",
+        "infra/prod/kustomization.yaml",
+        "apps/web/signup/SignupForm.test.tsx",
+        "apps/web/signup/SignupForm.tsx",
+        "app/api/auth/signup/route.ts",
+        ".synthi/codesite/proof/incidents/auth-near-miss.json",
+        ".github/CODEOWNERS"
+      ],
+      "importEdges": [
+        {
+          "from": "apps/web/signup/SignupForm.test.tsx",
+          "imports": [
+            "apps/web/signup/SignupForm.tsx"
+          ]
+        },
+        {
+          "from": "apps/web/signup/SignupForm.tsx",
+          "imports": [
+            "packages/contracts/src/index.ts",
+            "packages/contracts/src/server.ts",
+            "packages/contracts/src/features/audit.ts"
+          ]
+        },
+        {
+          "from": "app/api/auth/signup/route.ts",
+          "imports": [
+            "packages/contracts/src/index.ts"
+          ]
+        }
+      ],
+      "testOwnership": [
+        {
+          "testPath": "apps/web/signup/SignupForm.test.tsx",
+          "covers": [
+            "apps/web/signup/SignupForm.tsx"
+          ]
+        }
+      ],
+      "packageExports": [
+        {
+          "packageName": "@acme/contracts",
+          "root": "packages/contracts",
+          "exports": [
+            "packages/contracts/src/index.d.ts",
+            "packages/contracts/src/index.ts",
+            "packages/contracts/dist/index.cjs",
+            "packages/contracts/src/features/*.ts",
+            "packages/contracts/src/server.ts"
+          ],
+          "exportMap": {
+            ".": [
+              "packages/contracts/src/index.d.ts",
+              "packages/contracts/src/index.ts",
+              "packages/contracts/dist/index.cjs"
+            ],
+            "./features/*": [
+              "packages/contracts/src/features/*.ts"
+            ],
+            "./server": [
+              "packages/contracts/src/server.ts"
+            ]
+          }
+        }
+      ],
+      "generatedClients": [],
+      "migrationLocks": [
+        "synthi/prisma/migrations"
+      ],
+      "deploymentConfig": [
+        "infra/prod/kustomization.yaml"
+      ],
+      "sourceDigest": "sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092"
+    },
+    "policySources": {
+      "defaults": 4,
+      "repoSignals": 8,
+      "custom": 0,
+      "codeowners": 2,
+      "openapi": 1,
+      "prismaSchemas": 1,
+      "prismaMigrations": 1,
+      "packageExports": 1,
+      "importEdges": 3,
+      "testOwnership": 1,
+      "deployment": 1,
+      "pastIncidents": 1,
+      "secretPatterns": 6
+    },
+    "policyDigest": "sha256:cfcb0c02679f4047515f40adfd77a54b75c46efddf71b0c754eaedc667f9c85b",
+    "compiler": {
+      "compilerVersion": "2026-07-01.1",
+      "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782880248312",
+      "maxFiles": 12000,
+      "sourceDigest": "sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092",
+      "policyDigest": "sha256:cfcb0c02679f4047515f40adfd77a54b75c46efddf71b0c754eaedc667f9c85b",
+      "compiledAt": "2026-07-01T04:31:17.003Z",
+      "fileCount": 15,
+      "truncated": false,
+      "source": "repo_policy_compiler",
+      "error": null
+    }
+  },
+  "artifactPreview": {
+    "compilerOutputPath": "airspace/compiler-output.json",
+    "compilerOutput": {
+      "schemaVersion": "synthi.codesite.repoPolicyCompilerOutput.v1",
+      "compiler": {
+        "compilerVersion": "2026-07-01.1",
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782880248312",
+        "maxFiles": 12000,
+        "sourceDigest": "sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092",
+        "policyDigest": "sha256:cfcb0c02679f4047515f40adfd77a54b75c46efddf71b0c754eaedc667f9c85b",
+        "compiledAt": "2026-07-01T04:31:17.003Z",
+        "fileCount": 15,
+        "truncated": false,
+        "source": "repo_policy_compiler",
+        "error": null
+      },
+      "policyDigest": "sha256:cfcb0c02679f4047515f40adfd77a54b75c46efddf71b0c754eaedc667f9c85b",
+      "policySources": {
+        "defaults": 4,
+        "repoSignals": 8,
+        "custom": 0,
+        "codeowners": 2,
+        "openapi": 1,
+        "prismaSchemas": 1,
+        "prismaMigrations": 1,
+        "packageExports": 1,
+        "importEdges": 3,
+        "testOwnership": 1,
+        "deployment": 1,
+        "pastIncidents": 1,
+        "secretPatterns": 6
+      },
+      "semanticGraph": {
+        "files": [
+          ".env.example",
+          "package.json",
+          "synthi/prisma/schema.prisma",
+          "synthi/prisma/migrations/202607010001_auth/migration.sql",
+          "packages/contracts/package.json",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/src/server.ts",
+          "packages/contracts/src/features/audit.ts",
+          "openapi/auth.yaml",
+          "infra/prod/kustomization.yaml",
+          "apps/web/signup/SignupForm.test.tsx",
+          "apps/web/signup/SignupForm.tsx",
+          "app/api/auth/signup/route.ts",
+          ".synthi/codesite/proof/incidents/auth-near-miss.json",
+          ".github/CODEOWNERS"
+        ],
+        "importEdges": [
+          {
+            "from": "apps/web/signup/SignupForm.test.tsx",
+            "imports": [
+              "apps/web/signup/SignupForm.tsx"
+            ]
+          },
+          {
+            "from": "apps/web/signup/SignupForm.tsx",
+            "imports": [
+              "packages/contracts/src/index.ts",
+              "packages/contracts/src/server.ts",
+              "packages/contracts/src/features/audit.ts"
+            ]
+          },
+          {
+            "from": "app/api/auth/signup/route.ts",
+            "imports": [
+              "packages/contracts/src/index.ts"
+            ]
+          }
+        ],
+        "testOwnership": [
+          {
+            "testPath": "apps/web/signup/SignupForm.test.tsx",
+            "covers": [
+              "apps/web/signup/SignupForm.tsx"
+            ]
+          }
+        ],
+        "packageExports": [
+          {
+            "packageName": "@acme/contracts",
+            "root": "packages/contracts",
+            "exports": [
+              "packages/contracts/src/index.d.ts",
+              "packages/contracts/src/index.ts",
+              "packages/contracts/dist/index.cjs",
+              "packages/contracts/src/features/*.ts",
+              "packages/contracts/src/server.ts"
+            ],
+            "exportMap": {
+              ".": [
+                "packages/contracts/src/index.d.ts",
+                "packages/contracts/src/index.ts",
+                "packages/contracts/dist/index.cjs"
+              ],
+              "./features/*": [
+                "packages/contracts/src/features/*.ts"
+              ],
+              "./server": [
+                "packages/contracts/src/server.ts"
+              ]
+            }
+          }
+        ],
+        "generatedClients": [],
+        "migrationLocks": [
+          "synthi/prisma/migrations"
+        ],
+        "deploymentConfig": [
+          "infra/prod/kustomization.yaml"
+        ],
+        "sourceDigest": "sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092"
+      }
+    },
+    "manifest": {
+      "version": 1,
+      "project_id": "cmr1kvu7c0000ob5aew06if6m",
+      "workspace_slug": "codesite-repo-policy-compiler-proof-1782880248312",
+      "control_state": "projects/cmr1kvu7c0000ob5aew06if6m/control-state.json",
+      "events": "projects/cmr1kvu7c0000ob5aew06if6m/events.jsonl",
+      "schemas": "schemas/",
+      "compiler_output": "airspace/compiler-output.json",
+      "inbox_root": "projects/cmr1kvu7c0000ob5aew06if6m/inbox/",
+      "proof_bundle_root": "projects/cmr1kvu7c0000ob5aew06if6m/proof-bundles/",
+      "mcp_tools": [
+        "synthi_codesite_file_flight_plan",
+        "synthi_codesite_request_clearance",
+        "synthi_codesite_open_transaction",
+        "synthi_codesite_get_transaction_status",
+        "synthi_codesite_preview_transaction",
+        "synthi_codesite_dry_run_patch",
+        "synthi_codesite_preflight_write",
+        "synthi_codesite_apply_patch",
+        "synthi_codesite_record_assumption",
+        "synthi_codesite_record_read",
+        "synthi_codesite_record_write",
+        "synthi_codesite_validate_transaction",
+        "synthi_codesite_request_commit",
+        "synthi_codesite_get_source_state_since",
+        "synthi_codesite_get_radar",
+        "synthi_codesite_next_event",
+        "synthi_codesite_get_inbox",
+        "synthi_codesite_ack_event",
+        "synthi_codesite_predict_collision",
+        "synthi_codesite_shadow_merge_simulate",
+        "synthi_codesite_report_counterfactual_run",
+        "synthi_codesite_file_rfi",
+        "synthi_codesite_file_change_order",
+        "synthi_codesite_declare_mayday",
+        "synthi_codesite_request_landing",
+        "synthi_codesite_generate_black_box",
+        "synthi_codesite_get_line_provenance"
+      ]
+    }
+  },
+  "contractZones": [
+    {
+      "zoneKey": "openapi_contract_openapi_auth_yaml",
+      "label": "API contract: openapi/auth.yaml",
+      "class": "B",
+      "paths": [
+        "openapi/auth.yaml",
+        "api/auth/signup/**",
+        "app/api/auth/signup/**",
+        "src/app/api/auth/signup/**",
+        "pages/api/auth/signup/**"
+      ],
+      "rules": [
+        "flight_plan_required",
+        "downstream_notification_required",
+        "change_order_for_mutation",
+        "api_contract_radar_required"
+      ],
+      "risk": "high",
+      "source": "repo_openapi",
+      "contractPaths": [
+        "/auth/signup"
+      ],
+      "operations": [
+        {
+          "path": "/auth/signup",
+          "method": "POST",
+          "operationId": null
+        }
+      ]
+    },
+    {
+      "zoneKey": "migration_runway_synthi_prisma_migrations",
+      "label": "Migration runway: synthi/prisma/migrations",
+      "class": "A",
+      "paths": [
+        "synthi/prisma/migrations/**"
+      ],
+      "rules": [
+        "explicit_tower_clearance_required",
+        "licensed_pilot_required",
+        "inspector_signoff_required",
+        "black_box_required",
+        "single_migration_runway_lock"
+      ],
+      "risk": "critical",
+      "source": "repo_prisma_migration"
+    },
+    {
+      "zoneKey": "package_exports_packages_contracts",
+      "label": "Public package exports: @acme/contracts",
+      "class": "B",
+      "paths": [
+        "packages/contracts/**",
+        "packages/contracts/src/index.d.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/dist/index.cjs",
+        "packages/contracts/src/features/*.ts",
+        "packages/contracts/src/server.ts"
+      ],
+      "rules": [
+        "flight_plan_required",
+        "downstream_notification_required",
+        "change_order_for_mutation",
+        "downstream_package_radar_required"
+      ],
+      "risk": "high",
+      "source": "repo_package_exports"
+    },
+    {
+      "zoneKey": "incident_hot_zone_packages_contracts",
+      "label": "Incident hot zone: near_miss",
+      "class": "A",
+      "paths": [
+        "packages/contracts/**",
+        "api/auth/**"
+      ],
+      "rules": [
+        "explicit_tower_clearance_required",
+        "licensed_pilot_required",
+        "inspector_signoff_required",
+        "black_box_required",
+        "recurrent_incident_radar_required"
+      ],
+      "risk": "critical",
+      "source": "repo_past_incident",
+      "incidentRefs": [
+        ".synthi/codesite/proof/incidents/auth-near-miss.json"
+      ]
+    }
+  ],
+  "assertions": {
+    "packageNameImportResolved": true,
+    "packageExportMapPreserved": true,
+    "openApiContractParsed": true,
+    "openApiRoutesClassified": true,
+    "testOwnershipResolved": true,
+    "prismaMigrationLockCompiled": true,
+    "pastIncidentCompiled": true,
+    "codeownersAndSecretsCompiled": true,
+    "apiProjectUsedCompiler": true,
+    "compilerArtifactExported": true
+  }
+}

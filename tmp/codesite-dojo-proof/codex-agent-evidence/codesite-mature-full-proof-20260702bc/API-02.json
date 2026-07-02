@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "synthi.codesite.codexAgentExecutionEvidence.v1",
+  "callsign": "API-02",
+  "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+  "providerSessionRef": "codex-api-20260702bc",
+  "providerSessionRefSource": "codesite_registered_session",
+  "role": "backend",
+  "agentSessionId": "cmr43fm0600i3pm0z3kh06yxx",
+  "executionPlanId": "cmr43fmgb00i9pm0zzf2mo088",
+  "codexExecThreadId": "019f2504-4720-7fd1-9ed9-d5eeb623377e",
+  "commands": [
+    {
+      "command": "/bin/bash -lc \"pwd && sed -n '1,220p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_0",
+      "outputDigest": "sha256:72f940db9c1c0f3e9c2581dca2a4ac5b16f9ba128128db6783aa6f8bc60730c3",
+      "evidenceDigest": "sha256:1b057d857ee364d2e4251a51cf677b783c73c80789b1eaff065c7eebbc8421f2"
+    },
+    {
+      "command": "/bin/bash -lc 'rg -n \"multi-user|inbox|tower|message|assumption|invalidation|stale|RFI|change-order|dependent-flight|providerSessionRef|SCHEMA-01|API-02|TEST-03|stale-assumption\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md /workspace/synthi/scripts/codesite-full-workflow-proof.mjs'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 127,
+      "status": "failed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_1",
+      "outputDigest": "sha256:1e44d4c89f9c471dd7fb9f5a1504313a390df318374a668cb58fbb0e71e5da11",
+      "evidenceDigest": "sha256:fe10a334684f672ca5d55e459c30758804f1302e19263eb992d004d6ebb5434e"
+    },
+    {
+      "command": "/bin/bash -lc 'grep -nE \"multi-user|inbox|tower|message|assumption|invalidation|stale|RFI|change-order|dependent-flight|providerSessionRef|SCHEMA-01|API-02|TEST-03|stale-assumption\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md /workspace/synthi/scripts/codesite-full-workflow-proof.mjs'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_2",
+      "outputDigest": "sha256:c5299bbbfd739380c4107a26407335a716f45027251fe0912e03bed245c487e6",
+      "evidenceDigest": "sha256:863d9aa240e7b5a4f12424674f5ee87a2cc2252f950f7ad27268398f74aebc17"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1960,2178p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_3",
+      "outputDigest": "sha256:4996349f0407733e4e5f4b1b7ee5757ce3ce7a5ce223e82c8e6a44f48d86eb66",
+      "evidenceDigest": "sha256:741fe0413bb46bff0f27b60ec92af0629d697c20461bd8b60c2e7959b25b035a"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2271,2319p;2480,2631p;3508,3553p;3578,3584p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_4",
+      "outputDigest": "sha256:fd2d70053138cc43b1996337883bd82237694a4f22776ded62069c3b1bf82576",
+      "evidenceDigest": "sha256:03fd74ae791c1c9e09ba1544633f34322a4084416700c0a60af801597e6bbd37"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2796,2810p;3548,3556p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_5",
+      "outputDigest": "sha256:d66895bb0a0d8d97773e7b1c879ab665ce46ea0406d33ec9a89058d76c2c7cc4",
+      "evidenceDigest": "sha256:f0a7dccd08b03c768ce1d2dfd6c6a4e0f810fe518d380438128bd3fb2b6f0377"
+    }
+  ],
+  "reportedCommands": [
+    "pwd && sed -n '1,220p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "rg -n \"multi-user|inbox|tower|message|assumption|invalidation|stale|RFI|change-order|dependent-flight|providerSessionRef|SCHEMA-01|API-02|TEST-03|stale-assumption\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "grep -nE \"multi-user|inbox|tower|message|assumption|invalidation|stale|RFI|change-order|dependent-flight|providerSessionRef|SCHEMA-01|API-02|TEST-03|stale-assumption\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '1960,2178p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "sed -n '2271,2319p;2480,2631p;3508,3553p;3578,3584p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '2796,2810p;3548,3556p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs"
+  ],
+  "workflowActions": [
+    {
+      "kind": "role_execution",
+      "callsign": "API-02",
+      "summary": "Verified the plan describes multi-user agent sessions communicating through tower-mediated structured documents, ACL/redaction gates, and per-agent inbox delivery, with assumption invalidation/stale-read controls. Verified the proof script registers SCHEMA-01, API-02, and TEST-03 with distinct providerSessionRefs from codexRuntime.providerSessionRefs[0], [1], and [2]; API-02 is a dependent backend flight with status holding. The script records an API stale assumption, simulates schema-first policy, sends an RFI from SCHEMA-01 to API-02, acknowledges API-02 inbox delivery, sends a change_order from API-02 back to SCHEMA-01 with tower instruction to remain holding, aborts the API transaction after schema contract refresh invalidates the assumption, and asserts dependentFlightHeld, staleAssumptionInvalidated, and coordinationWorkflowRecorded evidence.",
+      "risk": "low"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/synthi/scripts/codesite-full-workflow-proof.mjs"
+    }
+  ],
+  "finalMessageDigest": "sha256:69c4403b868f859d713a14342b84ad4c9d0b28b0108cbd4c2ee28e80c452f71a",
+  "transcriptDigest": "sha256:e4d4ec975ce8bb2f5045f1197994449e7cff7824483b94829b54b2c193e1cfa1",
+  "stdoutDigest": "sha256:e4d4ec975ce8bb2f5045f1197994449e7cff7824483b94829b54b2c193e1cfa1",
+  "stderrDigest": "sha256:29581d29f67f0c44537fd3a76328bd5425056b5ce68f83c6d6ef893fd2d521fa",
+  "transcript": {
+    "eventsRawPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/API-02.events.raw.jsonl",
+    "stderrPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/API-02.stderr.log",
+    "finalMessagePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/API-02.final.txt",
+    "eventCount": 16,
+    "toolEventCount": 12,
+    "threadId": "019f2504-4720-7fd1-9ed9-d5eeb623377e",
+    "usage": {
+      "input_tokens": 138123,
+      "cached_input_tokens": 93440,
+      "output_tokens": 1217,
+      "reasoning_output_tokens": 130
+    },
+    "stdoutDigest": "sha256:e4d4ec975ce8bb2f5045f1197994449e7cff7824483b94829b54b2c193e1cfa1",
+    "stderrDigest": "sha256:29581d29f67f0c44537fd3a76328bd5425056b5ce68f83c6d6ef893fd2d521fa",
+    "finalMessageDigest": "sha256:69c4403b868f859d713a14342b84ad4c9d0b28b0108cbd4c2ee28e80c452f71a",
+    "eventsRawSha256": "sha256:113252d9a30eac8309480ebf5af0834c3f590355e79a77b155c676c73012f318",
+    "stderrSha256": "sha256:674b9d8a326cd0757916f7ed40f4446434f6bc50ab547879841cd948c310bac1",
+    "finalMessageSha256": "sha256:b6dd7c35aaeb9569720a6f8f8b2e5381d63aceb8ccadcccb014879bf903be880",
+    "redactionCounts": {}
+  },
+  "redactionReport": {
+    "finalPublicationSecretScanRequired": true,
+    "rawCredentialMaterialStored": "redacted_before_publication",
+    "authHomeStoredInRepo": "validated_at_publication",
+    "promptIncludedSecrets": "redacted_before_publication",
+    "counts": {},
+    "outerIsolation": "docker_playwright_sidecar_networked_with_proof_app"
+  },
+  "generatedAt": "2026-07-02T22:48:28.096Z",
+  "startedAt": "2026-07-02T22:47:44.902Z",
+  "completedAt": "2026-07-02T22:48:28.096Z"
+}

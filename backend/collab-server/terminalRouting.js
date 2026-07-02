@@ -18,8 +18,8 @@ function codeSiteTerminalLaunchMode({
 } = {}) {
   if (!codeSiteContext?.active) return 'normal';
   if (usesRuntimePodTerminal) return 'block-runtime';
-  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'block-runtime';
-  return 'quarantine';
+  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'quarantine-runtime';
+  return 'block-host';
 }
 
 module.exports = {

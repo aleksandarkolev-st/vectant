@@ -1,0 +1,81 @@
+{
+  "generatedAt": "2026-07-01T00:58:17.491Z",
+  "title": "CodeSite Isolation Contract Proof",
+  "slug": "codesite-isolation-contract-proof-1782867432286",
+  "project": {
+    "id": "cmr1d9dd900bdob4tkvjjrocp",
+    "title": "Isolation contract proof"
+  },
+  "clearance": {
+    "id": "cmr1d9q3l00d6ob4tqqkirtx0",
+    "callsign": "DOCS-01",
+    "status": "active"
+  },
+  "unsupportedIsolation": [
+    {
+      "label": "read_committed",
+      "requestedIsolation": "read_committed",
+      "status": 400,
+      "body": {
+        "error": "unsupported_transaction_isolation",
+        "detail": {
+          "requestedIsolation": "read_committed",
+          "supportedIsolation": "serializable"
+        }
+      }
+    },
+    {
+      "label": "blank string",
+      "requestedIsolation": "",
+      "status": 400,
+      "body": {
+        "error": "unsupported_transaction_isolation",
+        "detail": {
+          "requestedIsolation": "",
+          "supportedIsolation": "serializable"
+        }
+      }
+    },
+    {
+      "label": "false boolean",
+      "requestedIsolation": false,
+      "status": 400,
+      "body": {
+        "error": "unsupported_transaction_isolation",
+        "detail": {
+          "requestedIsolation": false,
+          "supportedIsolation": "serializable"
+        }
+      }
+    },
+    {
+      "label": "zero number",
+      "requestedIsolation": 0,
+      "status": 400,
+      "body": {
+        "error": "unsupported_transaction_isolation",
+        "detail": {
+          "requestedIsolation": 0,
+          "supportedIsolation": "serializable"
+        }
+      }
+    }
+  ],
+  "isolationSchema": {
+    "type": "string",
+    "enum": [
+      "serializable"
+    ]
+  },
+  "assertions": {
+    "liveDockerApiUsed": true,
+    "clearanceIssued": true,
+    "allUnsupportedIsolationRejected": true,
+    "readCommittedRejected": true,
+    "blankIsolationRejected": true,
+    "falseIsolationRejected": true,
+    "zeroIsolationRejected": true,
+    "supportedIsolationAdvertised": true,
+    "schemaRestrictsIsolation": true
+  }
+}

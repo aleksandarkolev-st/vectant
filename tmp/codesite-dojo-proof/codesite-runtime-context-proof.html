@@ -1,0 +1,37 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CodeSite Runtime Context Passthrough Proof</title><style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#08090e;color:#f5f7fb}body{margin:0;padding:28px;background:#08090e}main{max-width:1180px;margin:0 auto}.hero{border:1px solid #2a3147;border-radius:8px;background:#11131d;padding:22px;margin-bottom:16px}.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}h1{margin:0 0 8px;font-size:24px;letter-spacing:0}h2{font-size:18px;margin:22px 0 10px}p{color:#aeb7cc;line-height:1.5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.card{border:1px solid #24283a;border-radius:8px;background:#10121b;padding:14px;min-height:64px}.label{color:#9ba2b8;font-size:12px}.value{margin-top:6px;font-size:15px;overflow-wrap:anywhere}.pill{display:inline-flex;margin:0 6px 6px 0;border:1px solid #26324a;border-radius:6px;background:#0b1020;padding:5px 8px;font-size:12px;color:#dbe5ff}pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#05060a;padding:14px;color:#cbd1e3;font-size:12px}
+</style></head><body><main><section class="hero"><span class="pass">PASS</span><h1>CodeSite Runtime Context Passthrough Proof</h1><p>Docker-backed route and client tests prove CodeSite context is forwarded from MCP/browser routes into collab-server runtime calls.</p></section><section class="grid"><div class="card"><div class="label">Docker suites</div><div class="value">23 passed</div></div><div class="card"><div class="label">Tests</div><div class="value">66/66 passed</div></div><div class="card"><div class="label">Runtime boundary</div><div class="value">CodeSite context forwarded</div></div><div class="card"><div class="label">Failures</div><div class="value">0</div></div></section><h2>Surfaces</h2><div><span class="pill">execInWorkspaceRuntime -&gt; /program-runtime/:slug/exec</span><span class="pill">launchInstalledProgram -&gt; /program-runtime/:slug/launch-program</span><span class="pill">launchProgramRuntime -&gt; /exec-terminal/:slug</span><span class="pill">MCP runtime-exec route</span><span class="pill">MCP programs launch route</span><span class="pill">Workspace programs launch and detect routes</span><span class="pill">Workspace program-sessions command route</span></div><h2>Assertions</h2><pre>{
+  &quot;dockerVitestPassed&quot;: true,
+  &quot;runtimeClientCovered&quot;: true,
+  &quot;mcpRuntimeExecCovered&quot;: true,
+  &quot;mcpProgramLaunchCovered&quot;: true,
+  &quot;workspaceProgramLaunchCovered&quot;: true,
+  &quot;workspaceProgramSessionCovered&quot;: true,
+  &quot;noFailedTests&quot;: true
+}</pre><h2>Suites</h2><pre>[
+  {
+    &quot;name&quot;: &quot;/workspace/synthi/src/lib/programs/__tests__/runtimeClient.test.js&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;assertionResults&quot;: 9
+  },
+  {
+    &quot;name&quot;: &quot;/workspace/synthi/src/app/api/integrations/mcp/runtime-exec/__tests__/runtimeExecRoute.test.js&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;assertionResults&quot;: 8
+  },
+  {
+    &quot;name&quot;: &quot;/workspace/synthi/src/app/api/workspace/[slug]/programs/__tests__/programRoutes.test.js&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;assertionResults&quot;: 29
+  },
+  {
+    &quot;name&quot;: &quot;/workspace/synthi/src/app/api/workspace/[slug]/program-sessions/__tests__/programSessionRoutes.test.js&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;assertionResults&quot;: 12
+  },
+  {
+    &quot;name&quot;: &quot;/workspace/synthi/src/app/api/integrations/mcp/programs/launch/__tests__/launchRoute.test.js&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;assertionResults&quot;: 8
+  }
+]</pre></main></body></html>

@@ -12,14 +12,23 @@ const REPO_INDEX_ACTIONS = new Set([
   'unstage-all',
 ]);
 
+const GIT_PROVISIONING_ACTIONS = new Set([
+  'init',
+  'clone',
+]);
+
 const PATH_SCOPED_WORKTREE_ACTIONS = new Set([
+  'discard',
   'discard-lines',
+  'mark-resolved',
+  'resolve-ours',
+  'resolve-theirs',
 ]);
 
 const REPO_WORKTREE_ACTIONS = new Set([
-  'init',
-  'clone',
+  'abort-merge',
   'checkout',
+  'discard-all',
   'pull',
   'merge-branch',
   'stash-push',
@@ -33,7 +42,9 @@ const REPO_WORKTREE_ACTIONS = new Set([
 ]);
 
 const GIT_REF_ACTIONS = new Set([
+  'check-merge-conflicts',
   'commit',
+  'fetch',
   'push',
   'create-tag',
   'delete-tag',
@@ -47,6 +58,44 @@ const GIT_CONFIG_ACTIONS = new Set([
   'set-remote-url',
 ]);
 
+const CODE_SITE_GIT_BOUNDARY_ACTIONS = new Set([
+  'abort-merge',
+  'add-remote',
+  'check-merge-conflicts',
+  'checkout',
+  'cherry-pick',
+  'commit',
+  'create-tag',
+  'delete-tag',
+  'discard',
+  'discard-all',
+  'discard-lines',
+  'fetch',
+  'interactive-rebase',
+  'mark-resolved',
+  'merge-branch',
+  'pull',
+  'push',
+  'push-tag',
+  'rebase-abort',
+  'rebase-continue',
+  'remove-remote',
+  'resolve-ours',
+  'resolve-theirs',
+  'revert',
+  'set-remote-url',
+  'stage',
+  'stage-all',
+  'stage-lines',
+  'stash-apply',
+  'stash-drop',
+  'stash-pop',
+  'stash-push',
+  'unstage',
+  'unstage-all',
+  'unstage-lines',
+]);
+
 function codeSiteGitActionAttempts(action, data = {}) {
   const normalizedAction = String(action || '').trim();
   if (!normalizedAction) return [];
@@ -56,6 +105,9 @@ function codeSiteGitActionAttempts(action, data = {}) {
   }
   if (REPO_INDEX_ACTIONS.has(normalizedAction)) {
     return [gitAttempt(normalizedAction, '**', 'git_index')];
+  }
+  if (GIT_PROVISIONING_ACTIONS.has(normalizedAction)) {
+    return [gitAttempt(normalizedAction, '**', 'git_provisioning')];
   }
   if (PATH_SCOPED_WORKTREE_ACTIONS.has(normalizedAction)) {
     return [gitAttempt(normalizedAction, data.filePath || '**', 'git_worktree')];
@@ -72,6 +124,10 @@ function codeSiteGitActionAttempts(action, data = {}) {
   return [];
 }
 
+function shouldRunCodeSiteGitBoundary(action) {
+  return CODE_SITE_GIT_BOUNDARY_ACTIONS.has(String(action || ''));
+}
+
 function gitAttempt(kind, targetPath, tool) {
   return {
     path: targetPath,
@@ -82,4 +138,5 @@ function gitAttempt(kind, targetPath, tool) {
 
 module.exports = {
   codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
 };

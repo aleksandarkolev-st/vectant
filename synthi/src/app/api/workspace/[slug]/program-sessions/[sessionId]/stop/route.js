@@ -3,11 +3,11 @@ import { resolveActor } from '@/lib/integrations/session';
 import { canWriteScope } from '@/lib/integrations/scope';
 import { appendProgramRuntimeEvent, getProgramSession, updateProgramSession } from '@/lib/programs/store';
 import { stopProgramRuntimeSession } from '@/lib/programs/runtimeClient';
-import { mergeProgramSession } from '@/lib/programs/routeHelpers';
+import { codeSiteContextFromBody, mergeProgramSession } from '@/lib/programs/routeHelpers';
 
 export const runtime = 'nodejs';
 
-export async function POST(_req, { params }) {
+export async function POST(req, { params }) {
   const { slug, sessionId } = await params;
   const actor = await resolveActor();
   if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
@@ -15,6 +15,8 @@ export async function POST(_req, { params }) {
   if (!(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: slug }))) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
+  const body = await req.json().catch(() => ({}));
+  const codeSiteContext = codeSiteContextFromBody(body);
 
   const session = await getProgramSession(sessionId);
   if (!session || session.workspaceSlug !== slug) {
@@ -27,6 +29,7 @@ export async function POST(_req, { params }) {
     sessionId,
     type: 'stop_ack',
     data: { state: runtimeSession?.state || 'stopped' },
+    codeSiteContext,
   });
 
   return NextResponse.json({ session: mergeProgramSession(updated, runtimeSession) });

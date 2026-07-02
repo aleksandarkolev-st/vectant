@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+  "proofId": "fs-boundary-cmr43g1ty00lzpm0zz945lwfp",
+  "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+  "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+  "eventId": "cmr43g1ty00lzpm0zz945lwfp",
+  "policyDecisionId": "cmr43g1tt00lxpm0zaf1xx2dv",
+  "eventType": "write_denied",
+  "disposition": "write_denied",
+  "prevented": true,
+  "quarantined": false,
+  "path": "secrets/prod.env",
+  "transactionId": "cmr43fscb00jnpm0zryii10cd",
+  "mutationLeaseId": null,
+  "requestedMutationLeaseId": "cmr43fp1800inpm0zegvwgvkc",
+  "inspectedLeases": [],
+  "displayCallsign": "SCHEMA-01",
+  "leaseState": "unmatched_clearance",
+  "lease": null,
+  "reasonCodes": [
+    "outside_clearance_route"
+  ],
+  "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+  "zone": {
+    "zoneKey": "unclassified",
+    "label": "Unclassified repo airspace",
+    "class": "C",
+    "risk": "medium",
+    "rules": [
+      "auto_clearance_allowed",
+      "landing_inspection_required"
+    ],
+    "path": "secrets/prod.env"
+  },
+  "boundary": {
+    "source": "codesitefs",
+    "tool": "file_write",
+    "operation": "raw-terminal-write",
+    "actorType": "codesitefs",
+    "actorId": "cmr43g1tt00lxpm0zaf1xx2dv"
+  },
+  "process": {
+    "ancestry": [
+      "mcp:synthi_codesite_apply_patch",
+      "codex:tmp-proof-session"
+    ],
+    "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session"
+  },
+  "evidence": {
+    "refs": [
+      "event:cmr43g1ty00lzpm0zz945lwfp",
+      "mcp:audit:codesitefs-denied-full-workflow"
+    ],
+    "lineProvenanceCount": 0,
+    "changedLineRanges": [],
+    "dojoSourceRefs": []
+  },
+  "evidenceRefs": [
+    "event:cmr43g1ty00lzpm0zz945lwfp",
+    "mcp:audit:codesitefs-denied-full-workflow"
+  ],
+  "quarantine": null,
+  "proofComplete": true,
+  "missingProofFields": [],
+  "createdAt": "2026-07-02T22:46:25.606Z"
+}

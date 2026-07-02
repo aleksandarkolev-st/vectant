@@ -1,0 +1,672 @@
+{
+  "generatedAt": "2026-07-01T04:01:24.721Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-shadow-simulator-proof-1782878456107",
+  "schemaProject": {
+    "id": "cmr1jsvji003cob4t0o4saswv",
+    "title": "Tower simulator schema coordination proof",
+    "route": "/workspace/codesite-shadow-simulator-proof-1782878456107/codesite"
+  },
+  "migrationProject": {
+    "id": "cmr1jstb6002hob4thw3ntgio",
+    "title": "Tower simulator migration runway proof"
+  },
+  "schemaSimulation": {
+    "selected": "schema-first",
+    "reason": {
+      "reasonCodes": [
+        "schema_airspace_first",
+        "downstream_assumptions_refresh_after_contract",
+        "semantic_collision_mitigated",
+        "prior_incidents_weighted",
+        "import_graph_weighted",
+        "test_ownership_weighted"
+      ],
+      "staleAssumptions": 1,
+      "inspectionCost": 11,
+      "predictedCollisionRisk": 0.352,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 3,
+        "highRiskCount": 3,
+        "contractRiskCount": 3,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 2,
+        "downstreamDependents": 2,
+        "testOwners": 1,
+        "missingTestRoutes": 0,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 1,
+        "priorIncidents": 1,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 1,
+        "signalStrength": "strong"
+      }
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.352,
+        "staleAssumptions": 1,
+        "inspectionCost": 11,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        }
+      },
+      {
+        "strategy": "backend-first",
+        "result": "risk",
+        "predictedCollisionRisk": 0.988,
+        "staleAssumptions": 4,
+        "inspectionCost": 16,
+        "reworkRiskReduction": 0.22,
+        "confidence": 0.89,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "backend_route_before_ui",
+          "api_surface_stabilized_before_frontend",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        }
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "risk",
+        "predictedCollisionRisk": 1,
+        "staleAssumptions": 7,
+        "inspectionCost": 16,
+        "reworkRiskReduction": 0,
+        "confidence": 0.89,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        }
+      },
+      {
+        "strategy": "single-fullstack-agent",
+        "result": "review",
+        "predictedCollisionRisk": 0.456,
+        "staleAssumptions": 2,
+        "inspectionCost": 17,
+        "reworkRiskReduction": 0.56,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "single_writer_reduces_merge_collision",
+          "higher_serial_inspection_cost",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        }
+      },
+      {
+        "strategy": "test-first",
+        "result": "risk",
+        "predictedCollisionRisk": 0.642,
+        "staleAssumptions": 3,
+        "inspectionCost": 15,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        }
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:60de62251f4d5ba7c59c9c72fdc35296a8094f9d67b26928a214ce544b4ae006",
+    "baseSnapshot": "repo@sha256:732a495dd09fd6e80b7392ed907f6ded4fa54cedf602efd5274c937f1c967a79",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:dbfa2215f592bf52c818e504d3bdca544a82e8e011e8fe2ad135fd54374952f0",
+      "codesite:collision-forecast:sha256:f238e08619061365c77200a9e09d2f97e42c40f65050f99d020b7c7a91f6943c",
+      "codesite:incident:cmr1jsxjk004job4tueihxvtz",
+      "codesite:inspection:cmr1jsywp004pob4te8zsxvan"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "incident_weighted_preflight_hold",
+        "affectedIncidents": [
+          "cmr1jsxjk004job4tueihxvtz"
+        ],
+        "expectedRiskReduction": 0.16,
+        "confidence": 0.68
+      }
+    ],
+    "repoSignals": {
+      "signalStrength": "strong",
+      "planCount": 3,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 3,
+      "highRiskCount": 3,
+      "contractRiskCount": 3,
+      "migrationRiskCount": 0,
+      "classAOrBZones": 2,
+      "importGraphEdges": 2,
+      "downstreamDependents": 2,
+      "testOwners": 1,
+      "missingTestRoutes": 0,
+      "schemaOwners": 1,
+      "migrationLocks": 0,
+      "packageExports": 1,
+      "priorIncidents": 1,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 1
+    }
+  },
+  "migrationSimulation": {
+    "selected": "single-fullstack-agent",
+    "reason": {
+      "reasonCodes": [
+        "single_writer_reduces_merge_collision",
+        "single_migration_runway_lock",
+        "migration_collision_mitigated",
+        "migration_lock_weighted"
+      ],
+      "staleAssumptions": 0,
+      "inspectionCost": 13,
+      "predictedCollisionRisk": 0.126,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 1,
+        "highRiskCount": 1,
+        "contractRiskCount": 0,
+        "migrationRiskCount": 1,
+        "importGraphEdges": 0,
+        "downstreamDependents": 0,
+        "testOwners": 0,
+        "missingTestRoutes": 2,
+        "schemaOwners": 2,
+        "migrationLocks": 1,
+        "packageExports": 0,
+        "priorIncidents": 0,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 0,
+        "signalStrength": "simulated"
+      }
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.277,
+        "staleAssumptions": 0,
+        "inspectionCost": 10,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "migration_lock_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        }
+      },
+      {
+        "strategy": "backend-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.403,
+        "staleAssumptions": 1,
+        "inspectionCost": 12,
+        "reworkRiskReduction": 0.22,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "backend_route_before_ui",
+          "api_surface_stabilized_before_frontend",
+          "migration_lock_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        }
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "review",
+        "predictedCollisionRisk": 0.537,
+        "staleAssumptions": 1,
+        "inspectionCost": 13,
+        "reworkRiskReduction": 0,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "migration_lock_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        }
+      },
+      {
+        "strategy": "single-fullstack-agent",
+        "result": "passed",
+        "predictedCollisionRisk": 0.126,
+        "staleAssumptions": 0,
+        "inspectionCost": 13,
+        "reworkRiskReduction": 0.56,
+        "confidence": 0.52,
+        "avoidedRisks": [
+          "migration_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "single_writer_reduces_merge_collision",
+          "single_migration_runway_lock",
+          "migration_collision_mitigated",
+          "migration_lock_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        }
+      },
+      {
+        "strategy": "test-first",
+        "result": "passed",
+        "predictedCollisionRisk": 0.177,
+        "staleAssumptions": 0,
+        "inspectionCost": 11,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.52,
+        "avoidedRisks": [
+          "migration_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "migration_collision_mitigated",
+          "migration_lock_weighted"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        }
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:5051975e2e3ea6f72442a5b0b5193e076498cbd31e604f67a862e938b80081a5",
+    "baseSnapshot": "repo@sha256:3b26e47579da25e2177311166f21650f926a8e3da36269853ac3025f1c29d0c0",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:001c16ac5ca2ca61260e617f80911550f39d018f96ebbe4da01ba681492b82a3",
+      "codesite:collision-forecast:sha256:a7827ceb27787ed8b6bc879362c4b472ab454d2656a0fa486ddea3fb1f208914"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "require_test_owner_for_mutation_route",
+        "affectedRoutes": [
+          "prisma/migrations/202607010001_auth/migration.sql",
+          "prisma/migrations/202607010002_accounts/migration.sql"
+        ],
+        "expectedRiskReduction": 0.18,
+        "confidence": 0.72
+      },
+      {
+        "rule": "single_migration_runway_lock",
+        "affectedRoutes": [
+          "prisma/migrations/**"
+        ],
+        "expectedRiskReduction": 0.24,
+        "confidence": 0.82
+      }
+    ],
+    "repoSignals": {
+      "signalStrength": "simulated",
+      "planCount": 2,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 1,
+      "highRiskCount": 1,
+      "contractRiskCount": 0,
+      "migrationRiskCount": 1,
+      "classAOrBZones": 1,
+      "importGraphEdges": 0,
+      "downstreamDependents": 0,
+      "testOwners": 0,
+      "missingTestRoutes": 2,
+      "schemaOwners": 2,
+      "migrationLocks": 1,
+      "packageExports": 0,
+      "priorIncidents": 0,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 0
+    }
+  },
+  "persisted": {
+    "counterfactualRunCount": 1,
+    "eventTypes": [
+      "transponder_update",
+      "flight_plan_filed",
+      "transponder_update",
+      "flight_plan_filed",
+      "transponder_update",
+      "flight_plan_filed",
+      "tower_instruction",
+      "near_miss",
+      "policy_delta_proposed",
+      "landing_requested",
+      "shadow_run",
+      "arbiter_verdict"
+    ]
+  },
+  "browserProof": {
+    "captures": [
+      {
+        "viewport": {
+          "name": "desktop",
+          "width": 1440,
+          "height": 1100
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 1440,
+          "documentScrollWidth": 1440,
+          "panelRect": {
+            "x": 12,
+            "y": 581,
+            "width": 1416,
+            "height": 917.9375
+          },
+          "selectedVisible": true,
+          "hasParallelUniverse": true,
+          "hasSchemaReason": true,
+          "hasTowerAction": true,
+          "hasRepoPolicyEvidence": true,
+          "hasSourceSignals": true,
+          "fitsViewport": true
+        }
+      },
+      {
+        "viewport": {
+          "name": "mobile",
+          "width": 390,
+          "height": 980
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 390,
+          "documentScrollWidth": 390,
+          "panelRect": {
+            "x": 12,
+            "y": 500.265625,
+            "width": 366,
+            "height": 2283.71875
+          },
+          "selectedVisible": true,
+          "hasParallelUniverse": true,
+          "hasSchemaReason": true,
+          "hasTowerAction": true,
+          "hasRepoPolicyEvidence": true,
+          "hasSourceSignals": true,
+          "fitsViewport": true
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "schemaSelected": true,
+    "schemaAvoidsSemanticCollision": true,
+    "parallelLeavesSemanticCollision": true,
+    "aliasesNormalized": true,
+    "repoSignalsUsed": true,
+    "counterfactualPersisted": true,
+    "shadowAndArbiterEventsPersisted": true,
+    "evidenceRefsPortable": true,
+    "migrationSelectedSingleRunway": true,
+    "migrationLockActionVisible": true,
+    "migrationSchemaUnresolved": true,
+    "desktopUiProved": true,
+    "mobileUiProved": true
+  }
+}

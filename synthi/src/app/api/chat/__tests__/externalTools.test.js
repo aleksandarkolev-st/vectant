@@ -143,12 +143,43 @@ describe('callExternalTool', () => {
     }));
   });
 
+  it('records CodeSite substrate refs when the caller provides transaction context', async () => {
+    callToolMock.mockResolvedValue({ ok: true, data: { content: [{ type: 'text', text: 'done' }] } });
+    await callExternalTool('ext_0', { title: 't' }, aliasMap, {
+      userId: 'u1',
+      workspaceSlug: 'w1',
+      codeSiteContext: {
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        evidenceRefs: ['audit:external-tool-1', 'audit:external-tool-1'],
+      },
+    });
+    expect(auditCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        codeSiteProjectId: 'project-1',
+        codeSiteTransactionId: 'txn-1',
+        codeSiteMutationLeaseId: 'lease-1',
+        codeSiteAgentSessionId: 'agent-1',
+        codeSiteEvidenceRefsJson: JSON.stringify(['audit:external-tool-1']),
+      }),
+    }));
+  });
+
   it('returns a structured error and audits failure for an unknown alias', async () => {
-    const res = await callExternalTool('ext_99', {}, aliasMap, { userId: 'u1' });
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', evidenceRefs: ['audit:unknown-alias'] };
+    const res = await callExternalTool('ext_99', {}, aliasMap, { userId: 'u1', codeSiteContext });
     expect(res.error).toBeTruthy();
     expect(callToolMock).not.toHaveBeenCalled();
     expect(auditCreateMock).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ outcome: 'error', errorCode: 'unknown_alias' }),
+      data: expect.objectContaining({
+        outcome: 'error',
+        errorCode: 'unknown_alias',
+        codeSiteProjectId: 'project-1',
+        codeSiteTransactionId: 'txn-1',
+        codeSiteEvidenceRefsJson: JSON.stringify(['audit:unknown-alias']),
+      }),
     }));
   });
 
@@ -164,12 +195,19 @@ describe('callExternalTool', () => {
 
   it('enforces the per-turn execution cap without calling out (R1-11)', async () => {
     const turnState = { count: 8, max: 8 };
-    const res = await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1' }, turnState);
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', evidenceRefs: ['audit:turn-cap'] };
+    const res = await callExternalTool('ext_0', {}, aliasMap, { userId: 'u1', codeSiteContext }, turnState);
     expect(res.error).toBe('rate_limited');
     expect(callToolMock).not.toHaveBeenCalled();
     expect(turnState.count).toBe(8); // not incremented when capped
     expect(auditCreateMock).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ outcome: 'blocked', errorCode: 'turn_cap' }),
+      data: expect.objectContaining({
+        outcome: 'blocked',
+        errorCode: 'turn_cap',
+        codeSiteProjectId: 'project-1',
+        codeSiteTransactionId: 'txn-1',
+        codeSiteEvidenceRefsJson: JSON.stringify(['audit:turn-cap']),
+      }),
     }));
   });
 
