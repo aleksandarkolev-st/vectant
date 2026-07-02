@@ -1316,6 +1316,54 @@ function runtimeProofMaterials(scope, options = {}) {
   };
 }
 
+function withoutOutputTargetFields(event = {}) {
+  const normalized = cloneJson(event);
+  delete normalized.outputTargetId;
+  delete normalized.output_target_id;
+  delete normalized.targetId;
+  delete normalized.target_id;
+  return normalized;
+}
+
+function runtimeProofMaterialsWithRecordOutputTarget(scope, options = {}) {
+  const materials = runtimeProofMaterials(scope, options);
+  const record = cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]);
+  const recordOutputTargetId = options.recordOutputTargetId
+    ?? options.outputTargetId
+    ?? `output-target:${scope}`;
+  const recordTarget = {
+    kind: 'visual',
+    targetId: recordOutputTargetId,
+    target_id: recordOutputTargetId,
+    evidenceRefs: [`evidence:record-output-target:${scope}`],
+    evidence_refs: [`evidence:record-output-target:${scope}`],
+  };
+  record.dispatchEvent = options.keepDispatchOutputTarget === true
+    ? cloneJson(record.dispatchEvent ?? record.dispatch_event)
+    : withoutOutputTargetFields(record.dispatchEvent ?? record.dispatch_event);
+  record.outputEvent = options.keepOracleOutputTarget === true
+    ? cloneJson(record.outputEvent ?? record.output_event)
+    : withoutOutputTargetFields(record.outputEvent ?? record.output_event);
+  delete record.dispatch_event;
+  delete record.output_event;
+  record.outputOracleTarget = recordTarget;
+  record.output_oracle_target = recordTarget;
+
+  const proofLedger = buildGpuHmrProofLedger(record);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const mutated = cloneJson(materials);
+  mutated.proofLedger = proofLedger;
+  mutated.proof_ledger = proofLedger;
+  mutated.proofLedgerQuery = proofLedgerQuery;
+  mutated.proof_ledger_query = proofLedgerQuery;
+  mutated.runtimeProofArtifact.proofLedger = proofLedger;
+  mutated.runtimeProofArtifact.proof_ledger = proofLedger;
+  mutated.runtimeProofArtifact.proofLedgerQuery = proofLedgerQuery;
+  mutated.runtimeProofArtifact.proof_ledger_query = proofLedgerQuery;
+  mutated.runtime_proof_artifact = mutated.runtimeProofArtifact;
+  return mutated;
+}
+
 function computeProofLedgerMaterials(scope, {
   projectId,
   backend = 'hip',
@@ -3363,6 +3411,71 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
     cacheState: 'compiler_cache_warm',
     editId: 'source-edit:hot1',
     editHash: hashValue('source-edit:hot1'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-record-output-target.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-record-output-target',
+    'gpu-runtime-proof:sha256:synthetic-hot1-record-output-target',
+  ),
+  ...runtimeProofMaterialsWithRecordOutputTarget('hot_delta_1', {
+    projectId: 'flow-record-output-target',
+    outputTargetId: 'output-target:record-bound',
+    recordOutputTargetId: 'output-target:record-bound',
+  }),
+  targetId: 'flow-record-output-target',
+  profileId: 'flow-record-output-target',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-record-output-target',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-record-output-target',
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-record-output-target',
+    editHash: hashValue('source-edit:hot1-record-output-target'),
+  },
+});
+
+await writeJson(path.join(visualDir, 'run-mode-hot1-record-output-target-mismatch.json'), {
+  ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  ...waitProofValidation(
+    'gpu-ledger-proof:sha256:synthetic-hot1-record-output-target-mismatch',
+    'gpu-runtime-proof:sha256:synthetic-hot1-record-output-target-mismatch',
+  ),
+  ...runtimeProofMaterialsWithRecordOutputTarget('hot_delta_1', {
+    projectId: 'flow-record-output-target-mismatch',
+    outputTargetId: 'output-target:dispatch-bound',
+    recordOutputTargetId: 'output-target:record-bound',
+    keepDispatchOutputTarget: true,
+  }),
+  targetId: 'flow-record-output-target-mismatch',
+  profileId: 'flow-record-output-target-mismatch',
+  proofId: 'agent-split-run-mode-proof:sha256:hot1-record-output-target-mismatch',
+  coverageObligations: {
+    perTargetRunModes: false,
+  },
+  sourceFirstIngestion: sourceFirstIngestionEvidenceFor({
+    targetId: 'flow-record-output-target-mismatch',
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:hot1-record-output-target-mismatch',
+    editHash: hashValue('source-edit:hot1-record-output-target-mismatch'),
   },
 });
 
@@ -8676,6 +8789,36 @@ assert.equal(acceptedFlow.generalityClaim.broadLibraryAgnosticAccepted, false);
 assert.equal(acceptedFlow.generalityClaim.arbitraryLibraryAccepted, false);
 assert.equal(acceptedFlow.generalityClaim.arbitraryTargetRuntimeAccepted, false);
 assert.ok(acceptedFlow.generalityClaim.unsupportedWithoutEvidence.length > 0);
+
+const recordOutputTargetFlow = ledger.rows.find((row) =>
+  row.targetId === 'flow-record-output-target'
+    && row.runMode?.metricScope === 'hot_delta_1'
+);
+assert.equal(recordOutputTargetFlow?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(recordOutputTargetFlow.acceptedForGpuHmr, true);
+assert.equal(recordOutputTargetFlow.outputOracleFacet.accepted, true);
+assert.equal(
+  recordOutputTargetFlow.outputOracleFacet.outputBinding.outputTargetId,
+  'output-target:record-bound',
+);
+assert.ok(
+  recordOutputTargetFlow.outputOracleFacet.outputBinding.supplementalBindingSources
+    .includes('proof_artifact_output_oracle_target_binding'),
+);
+
+const forgedRecordOutputTargetFlow = ledger.rows.find((row) =>
+  row.targetId === 'flow-record-output-target-mismatch'
+    && row.runMode?.metricScope === 'hot_delta_1'
+);
+assert.ok(forgedRecordOutputTargetFlow);
+assert.notEqual(forgedRecordOutputTargetFlow.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(forgedRecordOutputTargetFlow.acceptedForGpuHmr, false);
+assert.equal(forgedRecordOutputTargetFlow.outputOracleFacet.accepted, false);
+assert.ok(
+  (forgedRecordOutputTargetFlow.outputOracleFacet.failedGates ?? [])
+    .map((gate) => gate?.code ?? gate)
+    .includes('output_oracle_binding_target_mismatch'),
+);
 
 const backendMutatedAcceptedRow = JSON.parse(JSON.stringify(acceptedFlow));
 backendMutatedAcceptedRow.backend = 'vulkan';
@@ -15642,10 +15785,10 @@ assert.equal(forgedLegacyPreview.runtimeProofArtifact.present, false);
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_recomputed_proof_ledger_missing'));
 assert.ok(forgedLegacyPreview.reasons.includes('mcp_preview_runtime_proof_artifact_missing'));
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 5);
 assert.equal(ledger.summary.broadFullRuntimeGpuHmrRows, 0);
-assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 4);
-assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 5);
+assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 5);
 assert.ok(ledger.summary.visualProfileAcceptedRows >= 1);
 assert.equal(
   Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),

@@ -20681,7 +20681,11 @@ function outputOracleTargetSupplementalBinding(targetValue = {}, ledgerRecord = 
 
 function ledgerOutputOracleBindingEvidence(proofLedger, options = {}) {
   const records = ledgerRecordsFromValue(proofLedger);
+  const recordTargetBindings = records.map((record) =>
+    outputOracleTargetSupplementalBinding(undefined, record)
+  );
   const supplementalBindings = compactObjectList([
+    ...recordTargetBindings,
     runtimeChainOutputOracleBindingOverlay(options.runtimeChain ?? options.runtime_chain),
     ...(Array.isArray(options.supplementalBindings) ? options.supplementalBindings : []),
     ...(Array.isArray(options.supplemental_bindings) ? options.supplemental_bindings : []),
