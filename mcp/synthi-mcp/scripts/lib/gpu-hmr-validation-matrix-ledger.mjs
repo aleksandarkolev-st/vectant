@@ -1456,11 +1456,12 @@ function randomColdManifestCandidate(json = {}, result = {}) {
   const candidateId = firstText(result.candidateId, result.candidate_id);
   const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
   const candidates = compactObjectList(json.candidates);
-  return selectedCandidates.find((candidate) => firstText(candidate.id) === candidateId)
-    ?? candidates.find((candidate) => firstText(candidate.id) === candidateId)
-    ?? selectedCandidates[0]
-    ?? candidates[0]
-    ?? {};
+  if (candidateId) {
+    return selectedCandidates.find((candidate) => firstText(candidate.id) === candidateId)
+      ?? candidates.find((candidate) => firstText(candidate.id) === candidateId)
+      ?? {};
+  }
+  return selectedCandidates[0] ?? candidates[0] ?? {};
 }
 
 function normalizeRandomColdBackend(backend) {
@@ -2513,9 +2514,15 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
 
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
+  const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
+  const candidates = compactObjectList(json.candidates);
   const selectedIds = compactStringList([
     ...(Array.isArray(selection.selectedIds) ? selection.selectedIds : []),
     ...(Array.isArray(selection.selected_ids) ? selection.selected_ids : []),
+  ]);
+  const candidateIds = compactStringList([
+    ...selectedCandidates.map((entry) => firstText(entry.id, entry.candidateId, entry.candidate_id)),
+    ...candidates.map((entry) => firstText(entry.id, entry.candidateId, entry.candidate_id)),
   ]);
   const schemaVersion = firstText(json.schemaVersion, json.schema_version, json.schema);
   const proofAuthority = firstText(json.proofAuthority, json.proof_authority);
@@ -2524,6 +2531,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     || firstText(result.status) === 'selected_not_executed_dry_run';
   const resultStatus = firstText(result.status) ?? firstText(json.status) ?? 'unknown';
   const resultCandidateId = firstText(result.candidateId, result.candidate_id);
+  const resultCandidateResolved =
+    !resultCandidateId || candidateIds.length === 0 || candidateIds.includes(resultCandidateId);
   const acceptedForGpuHmr = firstBool(json.acceptedForGpuHmr, json.accepted_for_gpu_hmr);
   const gpuHmrSuccess = firstBool(json.gpuHmrSuccess, json.gpu_hmr_success);
   const canSatisfyRuntimeProof = firstBool(
@@ -2610,6 +2619,9 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     selectedIds.length > 0 && resultCandidateId && !selectedIds.includes(resultCandidateId)
       ? 'random_large_project_cold_path_result_not_selected'
       : null,
+    !resultCandidateResolved && directInputEvidence.accepted !== true
+      ? 'random_large_project_cold_path_unresolved_result_requires_direct_input_evidence'
+      : null,
     directInputEvidence.present === true && directInputEvidence.accepted !== true
       ? 'random_cold_direct_input_evidence_invalid'
       : null,
@@ -2641,6 +2653,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     selected_candidate_ids: selectedIds,
     selectedCandidateCount: selectedIds.length,
     selected_candidate_count: selectedIds.length,
+    candidateIds,
+    candidate_ids: candidateIds,
+    resultCandidateResolved,
+    result_candidate_resolved: resultCandidateResolved,
     candidateId: firstText(resultCandidateId, candidate.id),
     candidate_id: firstText(resultCandidateId, candidate.id),
     candidateSource,

@@ -2283,6 +2283,133 @@ assert.ok(
   resultOnlyDirectInputRow.randomColdPathCanonicalTargetKey?.startsWith('random-cold-source:sha256:'),
 );
 
+const unresolvedResultOwnedPathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-unresolved-result-owned',
+);
+await writeJson(
+  path.join(unresolvedResultOwnedPathDir, 'random-cold-unresolved-result-owned.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-unresolved-result-owned',
+    sourceUrl: 'https://example.invalid/arbitrary/unresolved-result-owned.git',
+    immutableCommit: '1313131313131313131313131313131313131313',
+    topLevelOverrides: {
+      selection: {
+        seed: 'random-cold-smoke',
+        selectedIds: [],
+        selected_ids: [],
+        selectionHash: hashValue('unresolved-result-owned:selection'),
+        selection_hash: hashValue('unresolved-result-owned:selection'),
+      },
+      candidates: [{
+        id: 'borrowed-candidate-must-not-be-used',
+        candidateSource: 'direct_source_url_commit',
+        candidate_source: 'direct_source_url_commit',
+        sourceUrl: 'https://example.invalid/arbitrary/borrowed-candidate.git',
+        source_url: 'https://example.invalid/arbitrary/borrowed-candidate.git',
+        immutableCommit: '1414141414141414141414141414141414141414',
+        immutable_commit: '1414141414141414141414141414141414141414',
+        directInputEvidence: randomColdDirectInputEvidenceFixture({
+          sourceUrl: 'https://example.invalid/arbitrary/borrowed-candidate.git',
+          immutableCommit: '1414141414141414141414141414141414141414',
+        }),
+      }],
+      selectedCandidates: [],
+      selected_candidates: [],
+    },
+  }),
+);
+const unresolvedResultOwnedLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [unresolvedResultOwnedPathDir],
+  includeUnproven: true,
+});
+const unresolvedResultOwnedRow = unresolvedResultOwnedLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(unresolvedResultOwnedRow?.safety.accepted, true);
+assert.equal(unresolvedResultOwnedRow.randomLargeProjectColdPath.resultCandidateResolved, false);
+assert.equal(
+  unresolvedResultOwnedRow.randomLargeProjectColdPath.candidateId,
+  'direct-random-arbitrary-unresolved-result-owned',
+);
+assert.equal(
+  unresolvedResultOwnedRow.randomLargeProjectColdPath.sourceUrl,
+  'https://example.invalid/arbitrary/unresolved-result-owned.git',
+);
+assert.equal(
+  unresolvedResultOwnedRow.randomLargeProjectColdPath.directInputEvidence.sourceIdentityHashMatchesContext,
+  true,
+);
+
+const unresolvedBorrowedCandidatePathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-unresolved-borrowed-candidate',
+);
+await writeJson(
+  path.join(unresolvedBorrowedCandidatePathDir, 'random-cold-unresolved-borrowed-candidate.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-unresolved-borrowed',
+    sourceUrl: 'https://example.invalid/arbitrary/unresolved-borrowed-result.git',
+    immutableCommit: '1515151515151515151515151515151515151515',
+    resultOverrides: {
+      directInputEvidence: null,
+      direct_input_evidence: null,
+    },
+    topLevelOverrides: {
+      selection: {
+        seed: 'random-cold-smoke',
+        selectedIds: [],
+        selected_ids: [],
+        selectionHash: hashValue('unresolved-borrowed-candidate:selection'),
+        selection_hash: hashValue('unresolved-borrowed-candidate:selection'),
+      },
+      candidates: [{
+        id: 'borrowed-candidate-forged-source',
+        candidateSource: 'direct_source_url_commit',
+        candidate_source: 'direct_source_url_commit',
+        sourceUrl: 'https://example.invalid/arbitrary/borrowed-forged-source.git',
+        source_url: 'https://example.invalid/arbitrary/borrowed-forged-source.git',
+        immutableCommit: '1616161616161616161616161616161616161616',
+        immutable_commit: '1616161616161616161616161616161616161616',
+        directInputEvidence: randomColdDirectInputEvidenceFixture({
+          sourceUrl: 'https://example.invalid/arbitrary/borrowed-forged-source.git',
+          immutableCommit: '1616161616161616161616161616161616161616',
+        }),
+        direct_input_evidence: randomColdDirectInputEvidenceFixture({
+          sourceUrl: 'https://example.invalid/arbitrary/borrowed-forged-source.git',
+          immutableCommit: '1616161616161616161616161616161616161616',
+        }),
+      }],
+      selectedCandidates: [],
+      selected_candidates: [],
+    },
+  }),
+);
+const unresolvedBorrowedCandidateLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [unresolvedBorrowedCandidatePathDir],
+  includeUnproven: true,
+});
+const unresolvedBorrowedCandidateRow = unresolvedBorrowedCandidateLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(unresolvedBorrowedCandidateRow?.safety.accepted, false);
+assert.equal(
+  unresolvedBorrowedCandidateRow.randomLargeProjectColdPath.resultCandidateResolved,
+  false,
+);
+assert.ok(
+  unresolvedBorrowedCandidateRow.safety.failedGates
+    .some((gate) => gate.code === 'random_large_project_cold_path_facet_invalid'),
+);
+assert.ok(
+  unresolvedBorrowedCandidateRow.randomLargeProjectColdPath.failedGates
+    .includes('random_large_project_cold_path_unresolved_result_requires_direct_input_evidence'),
+);
+
 const forgedDirectInputPathDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-direct-input-forged',
