@@ -14057,6 +14057,16 @@ function rowSafetyFailures(row, context = {}) {
         failures.push(...coldSourceIntake.failedGates.map((code) => ({ code })));
       }
     }
+    const coldSourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
+    if (coldSourceIntakeFormConsistency.accepted !== true) {
+      failures.push({ code: 'random_large_project_cold_source_intake_form_mismatch' });
+      failures.push(
+        ...compactStringList(
+          coldSourceIntakeFormConsistency.failedGates
+          ?? coldSourceIntakeFormConsistency.failed_gates,
+        ).map((code) => ({ code })),
+      );
+    }
     if (row.acceptedForGpuHmr === true || row.gpuHmrSuccess === true) {
       failures.push({ code: 'random_large_project_cold_path_row_cannot_claim_gpu_hmr_success' });
     }
@@ -25435,6 +25445,163 @@ function sourceFirstVisualBroadReadinessPredicate() {
   };
 }
 
+function randomColdSourceIntakeForRow(row = {}) {
+  return firstCompactObject(
+    row.sourceIntakeEvidence,
+    row.source_intake_evidence,
+    row.coldSourceTreeIntake,
+    row.cold_source_tree_intake,
+  );
+}
+
+function randomColdSourceIntakeFormConsistency(row = {}) {
+  const rawIntake = firstCompactObject(row.sourceIntakeEvidence, row.source_intake_evidence);
+  const normalizedIntake = firstCompactObject(row.coldSourceTreeIntake, row.cold_source_tree_intake);
+  const rawPresent = Object.keys(rawIntake).length > 0;
+  const normalizedPresent = Object.keys(normalizedIntake).length > 0;
+  if (!rawPresent || !normalizedPresent) {
+    return {
+      present: rawPresent || normalizedPresent,
+      compared: false,
+      accepted: true,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const rawSummary = randomColdSourceIntakeSummary(rawIntake, row);
+  const normalizedFailedGates = compactStringList([
+    ...(Array.isArray(normalizedIntake.failedGates) ? normalizedIntake.failedGates : []),
+    ...(Array.isArray(normalizedIntake.failed_gates) ? normalizedIntake.failed_gates : []),
+  ]);
+  const normalizedAccepted = firstBool(
+    normalizedIntake.accepted,
+    normalizedIntake.acceptedAsIntakeEvidence,
+    normalizedIntake.accepted_as_intake_evidence,
+  ) === true;
+  const normalizedListing = compactObject(
+    normalizedIntake.sourceListingManifest
+    ?? normalizedIntake.source_listing_manifest,
+  );
+  const normalizedBuildContent = compactObject(
+    normalizedIntake.buildMetadataContentEvidence
+    ?? normalizedIntake.build_metadata_content_evidence,
+  );
+  const rawSourceListingHash = normalizeSha256(firstText(
+    rawSummary.sourceListingManifest?.recomputedSourceListingHash,
+    rawSummary.source_listing_manifest?.recomputed_source_listing_hash,
+    rawSummary.sourceListingHash,
+    rawSummary.source_listing_hash,
+  ));
+  const normalizedSourceListingHash = normalizeSha256(firstText(
+    normalizedListing.recomputedSourceListingHash,
+    normalizedListing.recomputed_source_listing_hash,
+    normalizedListing.sourceListingHash,
+    normalizedListing.source_listing_hash,
+    normalizedIntake.sourceListingHash,
+    normalizedIntake.source_listing_hash,
+  ));
+  const rawIntakeFacetHash = normalizeSha256(firstText(
+    rawSummary.recomputedFacetHash,
+    rawSummary.recomputed_facet_hash,
+    rawSummary.facetHash,
+    rawSummary.facet_hash,
+  ));
+  const normalizedIntakeFacetHash = normalizeSha256(firstText(
+    normalizedIntake.recomputedFacetHash,
+    normalizedIntake.recomputed_facet_hash,
+    normalizedIntake.facetHash,
+    normalizedIntake.facet_hash,
+  ));
+  const rawBuildMetadataContentHash = normalizeSha256(firstText(
+    rawSummary.buildMetadataContentEvidence?.recomputedContentEvidenceHash,
+    rawSummary.build_metadata_content_evidence?.recomputed_content_evidence_hash,
+    rawSummary.buildMetadataContentEvidence?.contentEvidenceHash,
+    rawSummary.build_metadata_content_evidence?.content_evidence_hash,
+    rawSummary.buildMetadataContentHash,
+    rawSummary.build_metadata_content_hash,
+  ));
+  const normalizedBuildMetadataContentHash = normalizeSha256(firstText(
+    normalizedBuildContent.recomputedContentEvidenceHash,
+    normalizedBuildContent.recomputed_content_evidence_hash,
+    normalizedBuildContent.contentEvidenceHash,
+    normalizedBuildContent.content_evidence_hash,
+    normalizedIntake.buildMetadataContentHash,
+    normalizedIntake.build_metadata_content_hash,
+  ));
+  const failedGates = compactStringList([
+    rawSummary.accepted !== true ? 'random_cold_source_intake_raw_invalid' : null,
+    ...(rawSummary.accepted !== true
+      ? compactStringList(rawSummary.failedGates ?? rawSummary.failed_gates)
+      : []),
+    normalizedAccepted !== true ? 'random_cold_source_intake_normalized_not_accepted' : null,
+    normalizedFailedGates.length > 0
+      ? 'random_cold_source_intake_normalized_failed_gates_present'
+      : null,
+    ...normalizedFailedGates,
+    !rawSourceListingHash || !normalizedSourceListingHash
+      ? 'random_cold_source_intake_form_listing_hash_missing'
+      : null,
+    rawSourceListingHash
+      && normalizedSourceListingHash
+      && rawSourceListingHash !== normalizedSourceListingHash
+      ? 'random_cold_source_intake_form_listing_hash_mismatch'
+      : null,
+    !rawIntakeFacetHash || !normalizedIntakeFacetHash
+      ? 'random_cold_source_intake_form_facet_hash_missing'
+      : null,
+    rawIntakeFacetHash
+      && normalizedIntakeFacetHash
+      && rawIntakeFacetHash !== normalizedIntakeFacetHash
+      ? 'random_cold_source_intake_form_facet_hash_mismatch'
+      : null,
+    !rawBuildMetadataContentHash || !normalizedBuildMetadataContentHash
+      ? 'random_cold_source_intake_form_build_metadata_hash_missing'
+      : null,
+    rawBuildMetadataContentHash
+      && normalizedBuildMetadataContentHash
+      && rawBuildMetadataContentHash !== normalizedBuildMetadataContentHash
+      ? 'random_cold_source_intake_form_build_metadata_hash_mismatch'
+      : null,
+    firstBool(normalizedIntake.acceptedForGpuHmr, normalizedIntake.accepted_for_gpu_hmr) === true
+      ? 'random_cold_source_intake_normalized_claimed_gpu_hmr_acceptance'
+      : null,
+    firstBool(normalizedIntake.gpuHmrSuccess, normalizedIntake.gpu_hmr_success) === true
+      ? 'random_cold_source_intake_normalized_claimed_gpu_hmr_success'
+      : null,
+    firstBool(
+      normalizedIntake.canSatisfyRuntimeProof,
+      normalizedIntake.can_satisfy_runtime_proof,
+    ) === true
+      ? 'random_cold_source_intake_normalized_claimed_runtime_authority'
+      : null,
+    firstBool(
+      normalizedIntake.canSatisfyDispatchProof,
+      normalizedIntake.can_satisfy_dispatch_proof,
+    ) === true
+      ? 'random_cold_source_intake_normalized_claimed_dispatch_authority'
+      : null,
+  ]);
+  return {
+    present: true,
+    compared: true,
+    accepted: failedGates.length === 0,
+    rawSourceListingHash,
+    raw_source_listing_hash: rawSourceListingHash,
+    normalizedSourceListingHash,
+    normalized_source_listing_hash: normalizedSourceListingHash,
+    rawIntakeFacetHash,
+    raw_intake_facet_hash: rawIntakeFacetHash,
+    normalizedIntakeFacetHash,
+    normalized_intake_facet_hash: normalizedIntakeFacetHash,
+    rawBuildMetadataContentHash,
+    raw_build_metadata_content_hash: rawBuildMetadataContentHash,
+    normalizedBuildMetadataContentHash,
+    normalized_build_metadata_content_hash: normalizedBuildMetadataContentHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathRowsForBroadReadiness(rows, options = {}) {
   const { requireLargeSourceTree = true, ...context } = options;
   return rows.filter((row) => {
@@ -25444,8 +25611,9 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       row.randomLargeProjectColdPath
       ?? row.random_large_project_cold_path,
     );
-    const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+    const intake = randomColdSourceIntakeForRow(row);
     const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
+    const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
     const templateRaw = firstCompactObject(
       row.coldRuntimeBoundaryEventManifestTemplate,
       row.cold_runtime_boundary_event_manifest_template,
@@ -25628,6 +25796,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && sourceDerivedBackendObserved
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
+      && sourceIntakeFormConsistency.accepted === true
       && sourceListingManifestAccepted
       && buildMetadataAccepted
       && Boolean(sourceContentIdentityHash)
@@ -25826,7 +25995,7 @@ function randomColdPathSourceContentIdentityHash(row) {
     row.randomLargeProjectColdPath
     ?? row.random_large_project_cold_path,
   );
-  const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+  const intake = randomColdSourceIntakeForRow(row);
   const sourceUrl = firstText(facet.sourceUrl, facet.source_url, row.sourceUrl, row.source_url);
   const repoPath = firstText(
     facet.repoPath,
@@ -25927,7 +26096,7 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     row.randomLargeProjectColdPath
     ?? row.random_large_project_cold_path,
   );
-  const intake = compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake);
+  const intake = randomColdSourceIntakeForRow(row);
   const sourceIntake = randomColdSourceIntakeSummary(intake, row);
   const sourceListingHash = normalizeSha256(firstText(
     sourceIntake.sourceListingManifest?.recomputedSourceListingHash,

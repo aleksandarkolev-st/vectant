@@ -12252,6 +12252,38 @@ assert.ok(
   forgedSourceIntakeAuthorityColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const forgedNormalizedSourceIntakeColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'forged-normalized-source-intake-random-cold',
+    sourceUrl: 'https://example.invalid/forged/normalized-source-intake.git',
+    immutableCommit: '2828282828282828282828282828282828282828',
+  });
+  row.sourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+  row.source_intake_evidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+  row.coldSourceTreeIntake.recomputedFacetHash = hashValue('forged-normalized-source-intake');
+  row.coldSourceTreeIntake.recomputed_facet_hash = row.coldSourceTreeIntake.recomputedFacetHash;
+  row.cold_source_tree_intake.recomputedFacetHash = row.coldSourceTreeIntake.recomputedFacetHash;
+  row.cold_source_tree_intake.recomputed_facet_hash = row.coldSourceTreeIntake.recomputedFacetHash;
+  return row;
+})());
+const forgedNormalizedSourceIntakeColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    forgedNormalizedSourceIntakeColdRow,
+  ],
+});
+assert.equal(forgedNormalizedSourceIntakeColdQuery.accepted, false);
+assert.ok(forgedNormalizedSourceIntakeColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_form_mismatch'
+));
+assert.ok(forgedNormalizedSourceIntakeColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_form_facet_hash_mismatch'
+));
+assert.equal(
+  forgedNormalizedSourceIntakeColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
 const profileIdOnlyRandomColdRow = withQueryRecomputedRowId((() => {
   const row = randomColdReadinessMatrixRow({
     targetId: 'profile-id-only-random-cold',
