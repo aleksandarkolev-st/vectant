@@ -20,6 +20,7 @@ function parseArgs(argv) {
     includeInvalidated: false,
     includeUnproven: false,
     selfCheck: false,
+    roots: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -33,6 +34,10 @@ function parseArgs(argv) {
       args.format = argv[++i] ?? args.format;
     } else if (arg === '--output-dir') {
       args.outputDir = path.resolve(argv[++i] ?? args.outputDir);
+    } else if (arg === '--root') {
+      const root = argv[++i];
+      if (!root) throw new Error('--root requires a directory');
+      args.roots.push(path.resolve(root));
     } else if (arg === '--self-check') {
       args.selfCheck = true;
     } else if (arg === '--help') {
@@ -46,9 +51,10 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--self-check]',
+    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root DIR] [--self-check]',
     '',
     'Collects GPU HMR proof artifacts into a matrix ledger. The collector records accepted full-runtime proof, visual-profile proof, preflight-only evidence, and structured refusals separately.',
+    'When --root is provided one or more times, collection is restricted to those artifact roots.',
   ].join('\n');
 }
 
@@ -133,6 +139,7 @@ async function main() {
     latestPerTarget: args.latestPerTarget,
     includeInvalidated: args.includeInvalidated,
     includeUnproven: args.includeUnproven,
+    roots: args.roots.length > 0 ? args.roots : undefined,
   });
   if (!ledger.query.accepted) {
     const failures = ledger.query.failedGates.map((failure) => failure.code).join(',');
