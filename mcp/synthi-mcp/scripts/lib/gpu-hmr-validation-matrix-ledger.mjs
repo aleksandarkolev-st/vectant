@@ -26025,7 +26025,7 @@ function realRocmRepositoryTargetCoverage(rows) {
   const byTarget = new Map();
   const missingIdentityRows = [];
   for (const row of candidates) {
-    const targetId = firstText(row.targetId, row.profileId);
+    const targetId = firstText(row.targetId);
     if (!targetId || targetId === 'unknown') {
       missingIdentityRows.push(row);
       continue;
@@ -26100,12 +26100,14 @@ function realRocmRepositoryTargetCoverage(rows) {
   if (missingIdentityRows.length > 0) {
     coverage.push(coverageEntry({
       id: 'large_real_rocm_repo:unknown_target_identity',
-      requirement: 'Large real ROCm repository rows require explicit target/profile identity; artifact paths are diagnostic only',
+      requirement: 'Large real ROCm repository rows require explicit target identity; profile IDs and artifact paths are diagnostic only',
       status: 'missing',
       rows: missingIdentityRows,
       openGaps: ['large_real_rocm_repo_target_identity_missing'],
       targetIdentityRequired: true,
       target_identity_required: true,
+      profileIdDiagnosticOnly: true,
+      profile_id_diagnostic_only: true,
       artifactPathDiagnosticOnly: true,
       artifact_path_diagnostic_only: true,
     }));

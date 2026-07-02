@@ -13663,6 +13663,41 @@ assert.ok(
   artifactPathIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')
     ?.openGaps.includes('large_real_rocm_repo_target_identity_missing'),
 );
+const profileIdIdentityOnlyRealRocm = withQueryRecomputedRowId((() => {
+  const row = JSON.parse(JSON.stringify(retainedSecondRocm));
+  delete row.targetId;
+  delete row.target_id;
+  row.profileId = 'synthetic-profile-derived-real-rocm-identity';
+  row.profile_id = 'synthetic-profile-derived-real-rocm-identity';
+  return row;
+})());
+const profileIdIdentityOnlyCoverageLedger = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [profileIdIdentityOnlyRealRocm],
+});
+assert.equal(profileIdIdentityOnlyCoverageLedger.accepted, true);
+const profileIdIdentityOnlyCoverage = new Map(
+  profileIdIdentityOnlyCoverageLedger.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  profileIdIdentityOnlyCoverage.get(
+    'large_real_rocm_repo:synthetic-profile-derived-real-rocm-identity',
+  ),
+  undefined,
+);
+assert.equal(
+  profileIdIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')?.status,
+  'missing',
+);
+assert.equal(
+  profileIdIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')
+    ?.profileIdDiagnosticOnly,
+  true,
+);
+assert.ok(
+  profileIdIdentityOnlyCoverage.get('large_real_rocm_repo:unknown_target_identity')
+    ?.openGaps.includes('large_real_rocm_repo_target_identity_missing'),
+);
 
 const originalHostPreflightRocm = ledger.rows.find((row) =>
   row.proofMode === 'real_rocm_repo_validation'
