@@ -99,6 +99,20 @@ function contentHashFor(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
 }
 
+function sourceListingHashForEntries(entries) {
+  const listingIdentity = entries
+    .map((entry) => ({
+      path: entry.path,
+      object: entry.object,
+      byteLength: entry.byteLength,
+    }))
+    .sort((a, b) =>
+      `${a.path}\0${a.object}\0${a.byteLength}`
+        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+    );
+  return contentHashFor(listingIdentity);
+}
+
 function sourceIntakeFacetHashFor(value) {
   const seed = JSON.parse(JSON.stringify(value));
   delete seed.facetHash;
@@ -1872,7 +1886,7 @@ function randomColdSourceListingManifestFixture({
       byteLength: perFileBytes,
     };
   });
-  const sourceListingHash = contentHashFor(entries);
+  const sourceListingHash = sourceListingHashForEntries(entries);
   const recomputedKnownBytes = entries.reduce((sum, entry) => sum + entry.byteLength, 0);
   return {
     schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
@@ -10619,7 +10633,7 @@ const broadReadinessPathOnlyListingRows = Array.from({ length: 5 }, (_, index) =
   sourceListingManifest.entries = sourceListingManifest.entries.map(({ path: entryPath }) => ({
     path: entryPath,
   }));
-  sourceListingManifest.sourceListingHash = contentHashFor(sourceListingManifest.entries);
+  sourceListingManifest.sourceListingHash = sourceListingHashForEntries(sourceListingManifest.entries);
   sourceListingManifest.source_listing_hash = sourceListingManifest.sourceListingHash;
   return randomColdReadinessMatrixRow({
     targetId: `path-only-listing-cold-readiness-${index + 1}`,
@@ -11696,6 +11710,58 @@ assert.ok(
   broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_content'),
 );
+const rotatedContentSourceListingManifest = randomColdSourceListingManifestFixture({
+  targetId: 'rotated-random-cold-content-only',
+});
+const rotatedContentBuildEvidence = randomColdBuildMetadataContentEvidenceFixture({
+  targetId: 'rotated-random-cold-content-only',
+});
+const rotatedSourceListingSameContentColdRows = Array.from({ length: 5 }, (_, index) => {
+  const rotatedManifest = JSON.parse(JSON.stringify(rotatedContentSourceListingManifest));
+  const splitAt = index % rotatedManifest.entries.length;
+  rotatedManifest.entries = [
+    ...rotatedManifest.entries.slice(splitAt),
+    ...rotatedManifest.entries.slice(0, splitAt),
+  ];
+  rotatedManifest.sourceListingHash = sourceListingHashForEntries(rotatedManifest.entries);
+  rotatedManifest.source_listing_hash = rotatedManifest.sourceListingHash;
+  return randomColdReadinessMatrixRow({
+    targetId: `rotated-listing-same-content-random-cold-${index + 1}`,
+    sourceUrl: `https://example.invalid/rotated/content-clone-${index + 1}.git`,
+    immutableCommit: sha256Hex(`rotated-listing-same-content-random-cold-${index + 1}`)
+      .slice(0, 40),
+    sourceListingManifest: rotatedManifest,
+    buildMetadataContentEvidence: rotatedContentBuildEvidence,
+  });
+});
+const broadReadinessWithRotatedListingsSameContentColdQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows,
+      ...rotatedSourceListingSameContentColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithRotatedListingsSameContentColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithRotatedListingsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithRotatedListingsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessWithRotatedListingsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathDistinctSourceContentOnlyIdentityCount,
+  1,
+);
+assert.ok(
+  broadReadinessWithRotatedListingsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_content'),
+);
 const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
     targetId: `forged-content-identity-source-random-cold-readiness-${index + 1}`,
@@ -11804,6 +11870,47 @@ assert.ok(forgedSourceIntakeListingHashColdQuery.failedGates.some((gate) =>
 ));
 assert.equal(
   forgedSourceIntakeListingHashColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+const parentOnlySourceListingHashColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'parent-only-source-listing-hash-random-cold',
+    sourceUrl: 'https://example.invalid/forged/parent-only-source-listing-hash.git',
+    immutableCommit: '2727272727272727272727272727272727272727',
+  });
+  delete row.coldSourceTreeIntake.sourceListingManifest.sourceListingHash;
+  delete row.coldSourceTreeIntake.sourceListingManifest.source_listing_hash;
+  delete row.coldSourceTreeIntake.source_listing_manifest.sourceListingHash;
+  delete row.coldSourceTreeIntake.source_listing_manifest.source_listing_hash;
+  delete row.cold_source_tree_intake.sourceListingManifest.sourceListingHash;
+  delete row.cold_source_tree_intake.sourceListingManifest.source_listing_hash;
+  delete row.cold_source_tree_intake.source_listing_manifest.sourceListingHash;
+  delete row.cold_source_tree_intake.source_listing_manifest.source_listing_hash;
+  row.coldSourceTreeIntake.facetHash = sourceIntakeFacetHashFor(row.coldSourceTreeIntake);
+  row.coldSourceTreeIntake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.facetHash = row.coldSourceTreeIntake.facetHash;
+  row.cold_source_tree_intake.facet_hash = row.coldSourceTreeIntake.facetHash;
+  return row;
+})());
+const parentOnlySourceListingHashColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    parentOnlySourceListingHashColdRow,
+  ],
+});
+assert.equal(parentOnlySourceListingHashColdQuery.accepted, false);
+assert.ok(parentOnlySourceListingHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(parentOnlySourceListingHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_listing_manifest_invalid'
+));
+assert.ok(parentOnlySourceListingHashColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_hash_missing'
+));
+assert.equal(
+  parentOnlySourceListingHashColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   0,
 );
 const forgedSourceIntakeAuthorityColdRow = withQueryRecomputedRowId((() => {

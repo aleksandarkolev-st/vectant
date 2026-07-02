@@ -1734,11 +1734,16 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   );
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
-  const listingIdentity = entries.map((entry) => ({
-    path: entry.path,
-    object: entry.object,
-    byteLength: entry.byteLength,
-  }));
+  const listingIdentity = entries
+    .map((entry) => ({
+      path: entry.path,
+      object: entry.object,
+      byteLength: entry.byteLength,
+    }))
+    .sort((a, b) =>
+      `${a.path}\0${a.object}\0${a.byteLength}`
+        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+    );
   const recomputedSourceListingHash = entries.length > 0
     ? `sha256:${sha256Hex(stableJson(listingIdentity))}`
     : null;
@@ -1747,10 +1752,6 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     facet.source_listing_hash,
     facet.listingHash,
     facet.listing_hash,
-    sourceIntake.sourceListingHash,
-    sourceIntake.source_listing_hash,
-    result.sourceListingHash,
-    result.source_listing_hash,
   ));
   const classification = randomColdListingClassification(entries);
   const declaredFileCount = finiteNumber(facet.fileCount ?? facet.file_count);
