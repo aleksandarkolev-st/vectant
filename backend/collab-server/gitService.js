@@ -3994,16 +3994,32 @@ class GitService {
         return out;
     }
 
-    async readFile(slug, filePath, userId) {
+    async readFile(slug, filePath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         // Normalize backslashes → forward slashes and strip leading slash
         const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
         const fullPath = path.join(repoPath, safePath);
-        try {
-            return await fs.promises.readFile(fullPath, 'utf-8');
-        } catch (_) {
-            throw new Error('File not found');
+        const readActualFile = async () => {
+            try {
+                return await fs.promises.readFile(fullPath, 'utf-8');
+            } catch (_) {
+                throw new Error('File not found');
+            }
+        };
+        const context = codeSiteContextFromOptions(options);
+        const boundaryOptions = this._codeSiteBoundaryOptions(context, options, repoPath);
+        if (boundaryOptions) {
+            const codesiteFs = createCodeSiteFS(context, boundaryOptions);
+            const boundary = await codesiteFs.read({
+                path: safePath,
+                kind: options.operation || 'read-file',
+                tool: options.tool || 'file_read',
+                evidenceRefs: options.evidenceRefs || options.evidence_refs,
+                processAncestry: options.processAncestry || options.process_ancestry,
+            }, readActualFile, boundaryOptions);
+            return boundary.readResult;
         }
+        return readActualFile();
     }
 
     _sanitizeRelativePath(filePath) {

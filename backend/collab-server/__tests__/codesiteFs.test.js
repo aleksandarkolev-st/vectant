@@ -309,6 +309,60 @@ test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply
   }
 });
 
+test('CodeSiteFS lifecycle records managed reads before returning file contents', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-read-boundary-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'contract.ts'), 'export const version = 1;\n');
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      transaction: {
+        id: 'txn-1',
+        status: 'open',
+        readSet: ['src/contract.ts'],
+        observedReadSet: ['src/contract.ts'],
+      },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/app.js'],
+    blockedPaths: ['secrets/**'],
+    allowedTools: ['file_write'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const codesiteFs = new CodeSiteFS(context, { fetch, repoRoot: repo });
+    const result = await codesiteFs.read({
+      path: 'src/contract.ts',
+      tool: 'file_read',
+      kind: 'read-file',
+      evidenceRefs: ['proof:read-boundary'],
+      processAncestry: ['codex:test-read'],
+    }, async () => {
+      assert.strictEqual(calls.length, 1, 'read observation is emitted before returning content');
+      return fs.readFile(path.join(repo, 'src', 'contract.ts'), 'utf8');
+    });
+
+    assert.strictEqual(result.phase, 'read');
+    assert.strictEqual(result.disposition, 'read_observed');
+    assert.strictEqual(result.readResult, 'export const version = 1;\n');
+    assert.strictEqual(result.verification.ok, true);
+    assert.match(result.verification.digest.digest, /^sha256:/);
+    assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-read');
+    assert.strictEqual(calls[0].body.path, 'src/contract.ts');
+    assert.strictEqual(calls[0].body.codesiteFsEvent.type, 'read_observed');
+    assert.deepStrictEqual(calls[0].body.processAncestry, ['codex:test-read']);
+  } finally {
+    await fs.rm(repo, { recursive: true, force: true });
+  }
+});
+
 test('CodeSiteFS lifecycle emits denied prewrite evidence and blocks apply outside clearance', async () => {
   const calls = [];
   const fetch = async (_url, options) => {
@@ -966,6 +1020,44 @@ test('collects repo-state evidence from actual workspace files', async () => {
   }]);
 });
 
+test('passes caller git environment into repo-state evidence collection', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-repo-state-env-'));
+  const bin = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-git-bin-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'app.js'), 'actual file content\n');
+  const gitShim = path.join(bin, 'git');
+  await fs.writeFile(gitShim, [
+    '#!/bin/sh',
+    'shift',
+    'shift',
+    'if [ "$1" = "rev-parse" ]; then',
+    '  printf "%s\\n" "$CODESITE_TEST_GIT_HEAD"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "diff" ]; then',
+    '  exit 0',
+    'fi',
+    'exit 1',
+    '',
+  ].join('\n'));
+  await fs.chmod(gitShim, 0o755);
+
+  const evidence = await collectCodeSiteRepoState(repo, {
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    writePaths: ['src/app.js'],
+    env: {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+      CODESITE_TEST_GIT_HEAD: '0123456789abcdef0123456789abcdef01234567',
+    },
+  });
+
+  assert.strictEqual(evidence.gitHead, '0123456789abcdef0123456789abcdef01234567');
+  assert.match(evidence.stagedDiffDigest, /^sha256:/);
+  assert.match(evidence.worktreeDiffDigest, /^sha256:/);
+});
+
 test('quarantines raw terminal workspace changes and records them as evidence', async () => {
   const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-src-'));
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-quarantine-'));
@@ -1064,15 +1156,33 @@ test('normalizes replayable quarantine text changes and rejects unsupported evid
     quarantineEvidence: { path: 'src/app.js', kind: 'modified' },
   }]);
   assert.strictEqual(missingText.ok, false);
-  assert.deepStrictEqual(missingText.rejected[0].reasonCodes, ['quarantine_after_text_required']);
+  assert.deepStrictEqual(missingText.rejected[0].reasonCodes, ['quarantine_after_content_required']);
 
   const deleted = codeSiteQuarantineReplayPlan([{
     path: 'src/old.js',
     kind: 'deleted',
-    quarantineEvidence: { path: 'src/old.js', kind: 'deleted', beforeText: 'old\n' },
+    quarantineEvidence: { path: 'src/old.js', kind: 'deleted', beforeText: 'old\n', beforeDigest: 'sha256:old', beforeExists: true, afterExists: false },
   }]);
-  assert.strictEqual(deleted.ok, false);
-  assert.deepStrictEqual(deleted.rejected[0].reasonCodes, ['quarantine_deleted_replay_requires_delete_adapter']);
+  assert.strictEqual(deleted.ok, true);
+  assert.strictEqual(deleted.changes[0].replayOperation, 'delete');
+  assert.strictEqual(deleted.changes[0].afterExists, false);
+
+  const binary = codeSiteQuarantineReplayPlan([{
+    path: 'assets/logo.bin',
+    kind: 'created',
+    quarantineEvidence: {
+      path: 'assets/logo.bin',
+      kind: 'created',
+      beforeExists: false,
+      afterExists: true,
+      afterBase64: Buffer.from([0, 1, 2, 255]).toString('base64'),
+      afterContentEncoding: 'base64',
+      afterDigest: `sha256:${'a'.repeat(64)}`,
+    },
+  }]);
+  assert.strictEqual(binary.ok, true);
+  assert.strictEqual(binary.changes[0].replayOperation, 'write_binary');
+  assert.strictEqual(binary.changes[0].afterContentEncoding, 'base64');
 });
 
 test('raw terminal quarantine replaces symlink escapes before command execution', async () => {
@@ -1128,7 +1238,7 @@ test('raw terminal quarantine replaces symlink escapes before command execution'
   }
 });
 
-test('can record headless terminal quarantine evidence without closing the overlay', async () => {
+test('can record managed runtime quarantine evidence without closing the overlay', async () => {
   const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-src-'));
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-quarantine-'));
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
@@ -1154,7 +1264,7 @@ test('can record headless terminal quarantine evidence without closing the overl
   try {
     const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
       baseDir,
-      operation: 'exec-terminal',
+      operation: 'managed-runtime',
     });
     await fs.writeFile(path.join(quarantine.cwd, 'src', 'app.js'), 'after-one\n');
 

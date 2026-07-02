@@ -16,9 +16,10 @@ const DEFAULT_QUARANTINE_BASE_DIR = path.join(os.tmpdir(), 'synthi-codesitefs-qu
 
 class CodeSiteFSDeniedError extends Error {
   constructor(event) {
-    super(event.details?.reason || 'codesite_write_denied');
+    const isReadDenied = event?.type === 'read_denied';
+    super(event.details?.reason || (isReadDenied ? 'codesite_read_denied' : 'codesite_write_denied'));
     this.name = 'CodeSiteFSDeniedError';
-    this.code = 'CODESITE_WRITE_DENIED';
+    this.code = isReadDenied ? 'CODESITE_READ_DENIED' : 'CODESITE_WRITE_DENIED';
     this.status = 403;
     this.event = event;
   }
@@ -525,6 +526,91 @@ class CodeSiteFS {
     }
   }
 
+  async prepareRead(attempt = {}) {
+    const effectiveContext = await authoritativeCodeSiteReadContext(this.context, this.options);
+    const result = evaluateCodeSiteRead(effectiveContext, attempt);
+    const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, this.options);
+    let pathResolution = null;
+    let pathFailure = null;
+    if (this.options.repoRoot && result.path) {
+      try {
+        pathResolution = await resolveCodeSiteRepoPath(this.options.repoRoot, result.path);
+      } catch (error) {
+        pathFailure = error;
+      }
+    }
+    const durableResult = durableFailure
+      ? deniedWithDurableFailure(result, durableFailure)
+      : result;
+    const preparedResult = pathFailure
+      ? deniedWithPathFailure(durableResult, pathFailure)
+      : durableResult;
+    return {
+      phase: 'read_prepared',
+      ok: preparedResult.ok,
+      disposition: preparedResult.event.type,
+      path: preparedResult.path,
+      tool: preparedResult.tool,
+      context: effectiveContext,
+      attempt,
+      result: preparedResult,
+      event: preparedResult.event,
+      durableFailure,
+      pathResolution,
+      pathFailure,
+    };
+  }
+
+  async emitReadEvent(preparedOrAttempt = {}, options = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepareRead(preparedOrAttempt);
+    if (!prepared.context?.active || !prepared.context.transactionId) {
+      return { ...prepared, phase: 'read_event_skipped', eventRecord: null };
+    }
+    const emitOptions = {
+      ...this.options,
+      ...options,
+      acceptDenied: options.acceptDenied ?? !prepared.ok,
+    };
+    try {
+      const eventRecord = await recordCodeSiteReadAttempt(prepared.context, prepared.result, emitOptions);
+      return { ...prepared, phase: 'read_event_emitted', eventRecord };
+    } catch (error) {
+      if (prepared.ok) throw error;
+      prepared.event.details.persistence_error = error?.message || 'codesite_denied_read_persistence_failed';
+      return {
+        ...prepared,
+        phase: 'read_event_failed',
+        eventRecord: null,
+        eventRecordError: error?.message || 'codesite_denied_read_persistence_failed',
+      };
+    }
+  }
+
+  async read(preparedOrAttempt = {}, readFn = null, options = {}) {
+    const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
+      ? preparedOrAttempt
+      : await this.prepareRead(preparedOrAttempt);
+    if (!prepared.ok) {
+      await this.emitReadEvent(prepared, { ...options, acceptDenied: true });
+      if (prepared.context?.mode !== 'monitor') {
+        throw new CodeSiteFSDeniedError(prepared.event);
+      }
+    }
+    const emitted = await this.emitReadEvent(prepared, options);
+    const readResult = typeof readFn === 'function'
+      ? await readFn(emitted)
+      : null;
+    const verification = await this.verify(emitted, options);
+    return {
+      ...emitted,
+      phase: 'read',
+      readResult,
+      verification,
+    };
+  }
+
   async apply(preparedOrAttempt = {}, applyFn = null, options = {}) {
     const prepared = isCodeSiteFSPrepared(preparedOrAttempt)
       ? preparedOrAttempt
@@ -694,15 +780,16 @@ function codeSiteFSOperationAttempts(operation = {}) {
 }
 
 function deniedWithDurableFailure(result, durableFailure) {
+  const deniedType = String(result.event?.type || '').startsWith('read') ? 'read_denied' : 'write_denied';
   return {
     ...result,
     ok: false,
     event: {
       ...result.event,
-      type: 'write_denied',
+      type: deniedType,
       details: {
         ...result.event.details,
-        reason: `CodeSite write requires durable control-plane context: ${durableFailure.reasonCodes.join(',')}`,
+        reason: `CodeSite filesystem access requires durable control-plane context: ${durableFailure.reasonCodes.join(',')}`,
         reason_codes: [
           ...durableFailure.reasonCodes,
           ...asArray(result.event.details?.reason_codes),
@@ -714,12 +801,13 @@ function deniedWithDurableFailure(result, durableFailure) {
 
 function deniedWithPathFailure(result, pathFailure) {
   const reasonCode = pathFailure?.code || 'repo_path_containment_failed';
+  const deniedType = String(result.event?.type || '').startsWith('read') ? 'read_denied' : 'write_denied';
   return {
     ...result,
     ok: false,
     event: {
       ...result.event,
-      type: 'write_denied',
+      type: deniedType,
       details: {
         ...result.event.details,
         reason: pathFailure?.message || 'CodeSiteFS path failed containment validation',
@@ -818,6 +906,48 @@ async function authoritativeCodeSiteContext(context, options = {}) {
   }
 }
 
+async function authoritativeCodeSiteReadContext(context, options = {}) {
+  if (!requiresAuthoritativeContext(context, options) || context?.mode === 'monitor') {
+    return context;
+  }
+  const base = { ...(context || {}), active: true, mode: context?.mode || 'enforce' };
+  if (options.requireAuthoritativeContext && !context?.active) {
+    return withHydrationFailure(base, ['codesite_context_required']);
+  }
+  if (!base.transactionId) {
+    return withHydrationFailure(base, ['codesite_transaction_required']);
+  }
+  const fetchImpl = options.fetch || global.fetch;
+  const baseUrl = resolveControlPlaneBaseUrl(base);
+  const reasonCodes = [];
+  if (!baseUrl) reasonCodes.push('codesite_control_plane_url_required');
+  if (typeof fetchImpl !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
+  if (reasonCodes.length) return withHydrationFailure(base, reasonCodes);
+
+  try {
+    const transaction = await loadCodeSiteTransaction(base, {
+      fetch: fetchImpl,
+      baseUrl,
+      headers: codeSiteControlPlaneHeaders(base),
+    });
+    if (!transaction) return withHydrationFailure(base, ['codesite_transaction_not_found']);
+    if (!isWritableTransactionStatus(transaction.status)) {
+      return withHydrationFailure(base, ['codesite_transaction_not_open'], { transactionStatus: transaction.status });
+    }
+    return {
+      ...base,
+      authoritative: true,
+      authoritativeSource: 'control_plane_transaction_read',
+      authoritativeTransactionStatus: transaction.status || null,
+      mutationLeaseId: transaction.mutationLeaseId || base.mutationLeaseId || null,
+      agentSessionId: transaction.agentSessionId || base.agentSessionId || null,
+      blockedPaths: parsePatternList(base.blockedPaths),
+    };
+  } catch (error) {
+    return withHydrationFailure(base, ['codesite_transaction_load_failed'], { error: error?.message || String(error) });
+  }
+}
+
 function requiresAuthoritativeContext(context = {}, options = {}) {
   return Boolean(options.requireAuthoritativeContext || context.required || context.managedAgent);
 }
@@ -904,6 +1034,62 @@ async function recordCodeSiteWriteAttempt(context, result, options = {}) {
   return body;
 }
 
+async function recordCodeSiteReadAttempt(context, result, options = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const fetchImpl = options.fetch || global.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('codesite_control_plane_fetch_unavailable');
+  }
+  const baseUrl = resolveControlPlaneBaseUrl(context);
+  if (!baseUrl) {
+    throw new Error('codesite_control_plane_url_required');
+  }
+  const url = `${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/record-read`;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      path: result.path,
+      tool: result.tool,
+      evidenceRefs: unique([
+        ...asArray(context.evidenceRefs),
+        ...asArray(result.event.evidence_refs || result.event.evidenceRefs),
+      ]),
+      processAncestry: unique([
+        ...asArray(context.processAncestry),
+        ...asArray(result.event.details?.process_ancestry || result.event.details?.processAncestry),
+      ]),
+      codesiteFsEvent: result.event,
+    }),
+  });
+  const body = await readJsonBody(response);
+  if ((!response.ok || body?.ok === false) && !(options.acceptDenied && body?.ok === false)) {
+    throw new CodeSiteFSDeniedError({
+      ...result.event,
+      type: 'read_denied',
+      details: {
+        ...result.event.details,
+        reason: 'codesite_control_plane_denied_read',
+        reason_codes: [
+          'control_plane_denied_read',
+          ...asArray(body?.policyDecision?.reasonCodes || body?.decision?.reasonCodes),
+        ],
+        control_plane_status: response.status,
+        control_plane_response: body,
+      },
+    });
+  }
+  return body;
+}
+
 async function completeCodeSiteCommitProof(context, data = {}, options = {}) {
   if (!context?.active || !context.transactionId) return null;
   const fetchImpl = options.fetch || global.fetch;
@@ -976,6 +1162,7 @@ async function collectRepoStateForCommit(context, options = {}) {
     transactionId: context.transactionId,
     baseSnapshot: transaction?.baseSnapshot || null,
     writePaths,
+    env: options.gitEnv || options.env,
   });
 }
 
@@ -995,9 +1182,9 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
   const writePaths = [...new Set(asArray(input.writePaths).map(cleanPattern).filter(Boolean))];
   const exactPaths = writePaths.filter((item) => !item.includes('*'));
   const [gitHead, stagedDiff, worktreeDiff, writeFileDigests] = await Promise.all([
-    gitOutput(root, ['rev-parse', 'HEAD']),
-    gitOutput(root, ['diff', '--cached', '--binary', '--', ...exactPaths]),
-    gitOutput(root, ['diff', '--binary', '--', ...exactPaths]),
+    gitOutput(root, ['rev-parse', 'HEAD'], input.env),
+    gitOutput(root, ['diff', '--cached', '--binary', '--', ...exactPaths], input.env),
+    gitOutput(root, ['diff', '--binary', '--', ...exactPaths], input.env),
     Promise.all(exactPaths.map((relPath) => fileDigestForRepoPath(root, relPath))),
   ]);
   const evidence = {
@@ -1016,11 +1203,12 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
   return evidence;
 }
 
-async function gitOutput(repoRoot, args) {
+async function gitOutput(repoRoot, args, env) {
   try {
     const result = await execFileAsync('git', ['-C', repoRoot, ...args], {
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
+      env,
     });
     return String(result.stdout || '').trimEnd();
   } catch (_) {
@@ -1368,6 +1556,10 @@ async function walkSnapshot(root, current, snapshot) {
         text: content && stat.size <= MAX_TEXT_DIFF_BYTES && isLikelyText(content)
           ? content.toString('utf8')
           : undefined,
+        base64: content && !isLikelyText(content)
+          ? content.toString('base64')
+          : undefined,
+        contentEncoding: content && !isLikelyText(content) ? 'base64' : undefined,
       });
     } catch (_) {
       // File changed while snapshotting; ignore and let the next scan catch it.
@@ -1428,6 +1620,8 @@ function enrichQuarantineChange(relPath, kind, beforeEntry, afterEntry) {
   return {
     path: relPath,
     kind,
+    beforeExists: Boolean(beforeEntry),
+    afterExists: Boolean(afterEntry),
     beforeDigest: beforeEntry?.digest || null,
     afterDigest: afterEntry?.digest || null,
     beforeSize: beforeEntry?.size ?? null,
@@ -1435,6 +1629,8 @@ function enrichQuarantineChange(relPath, kind, beforeEntry, afterEntry) {
     evidenceDigest: digestJson({
       path: relPath,
       kind,
+      beforeExists: Boolean(beforeEntry),
+      afterExists: Boolean(afterEntry),
       beforeDigest: beforeEntry?.digest || null,
       afterDigest: afterEntry?.digest || null,
       beforeSize: beforeEntry?.size ?? null,
@@ -1447,6 +1643,8 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
   const evidence = {
     path: change.path,
     kind: change.kind,
+    beforeExists: change.beforeExists ?? Boolean(beforeEntry),
+    afterExists: change.afterExists ?? Boolean(afterEntry),
     beforeDigest: change.beforeDigest || beforeEntry?.digest || null,
     afterDigest: change.afterDigest || afterEntry?.digest || null,
     beforeSize: change.beforeSize ?? beforeEntry?.size ?? null,
@@ -1457,6 +1655,14 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
   }
   if (typeof afterEntry?.text === 'string') {
     evidence.afterText = afterEntry.text;
+  }
+  if (typeof beforeEntry?.base64 === 'string') {
+    evidence.beforeBase64 = beforeEntry.base64;
+    evidence.beforeContentEncoding = beforeEntry.contentEncoding || 'base64';
+  }
+  if (typeof afterEntry?.base64 === 'string') {
+    evidence.afterBase64 = afterEntry.base64;
+    evidence.afterContentEncoding = afterEntry.contentEncoding || 'base64';
   }
   const textDiff = buildSmallTextDiff(beforeEntry?.text, afterEntry?.text);
   if (textDiff) {
@@ -1498,9 +1704,15 @@ function codeSiteQuarantineReplayChange(raw = {}, index = 0) {
     || raw.evidence
     || {};
   const relPath = normalizeRepoRelativePath(raw.path || evidence.path);
-  const kind = raw.kind || evidence.kind || 'modified';
+  const kind = String(raw.kind || evidence.kind || 'modified').toLowerCase();
   const afterText = firstString(raw.afterText, raw.after_text, raw.content, evidence.afterText, evidence.after_text);
   const beforeText = firstStringOrNull(raw.beforeText, raw.before_text, evidence.beforeText, evidence.before_text);
+  const afterBase64 = firstString(raw.afterBase64, raw.after_base64, raw.contentBase64, raw.content_base64, evidence.afterBase64, evidence.after_base64);
+  const beforeBase64 = firstStringOrNull(raw.beforeBase64, raw.before_base64, evidence.beforeBase64, evidence.before_base64);
+  const afterContentEncoding = firstString(raw.afterContentEncoding, raw.after_content_encoding, raw.contentEncoding, raw.content_encoding, evidence.afterContentEncoding, evidence.after_content_encoding);
+  const beforeContentEncoding = firstString(raw.beforeContentEncoding, raw.before_content_encoding, evidence.beforeContentEncoding, evidence.before_content_encoding);
+  const beforeExists = optionalBoolean(raw.beforeExists, raw.before_exists, evidence.beforeExists, evidence.before_exists);
+  const afterExists = optionalBoolean(raw.afterExists, raw.after_exists, evidence.afterExists, evidence.after_exists);
   const quarantineId = raw.quarantineId || raw.quarantine_id || evidence.quarantineId || evidence.quarantine_id || null;
   const evidenceRef = raw.evidenceRef || raw.evidence_ref || evidence.evidenceRef || evidence.evidence_ref || null;
   const evidenceDigest = raw.evidenceDigest || raw.evidence_digest || evidence.digest || null;
@@ -1509,22 +1721,34 @@ function codeSiteQuarantineReplayChange(raw = {}, index = 0) {
     ...(evidenceDigest ? [`codesitefs:quarantine:${evidenceDigest}`] : []),
     ...asArray(raw.evidenceRefs || raw.evidence_refs),
   ]);
-  if (String(kind).toLowerCase() === 'deleted') {
+  const deleteReplay = kind === 'deleted' || afterExists === false;
+  const binaryReplay = !deleteReplay && typeof afterBase64 === 'string';
+  const textReplay = !deleteReplay && typeof afterText === 'string';
+  if (!deleteReplay && !textReplay && !binaryReplay) {
     return {
       ok: false,
       index,
       path: relPath,
       kind,
-      reasonCodes: ['quarantine_deleted_replay_requires_delete_adapter'],
+      reasonCodes: ['quarantine_after_content_required'],
     };
   }
-  if (typeof afterText !== 'string') {
+  if (binaryReplay && !isValidBase64(afterBase64)) {
     return {
       ok: false,
       index,
       path: relPath,
       kind,
-      reasonCodes: ['quarantine_after_text_required'],
+      reasonCodes: ['quarantine_after_base64_invalid'],
+    };
+  }
+  if (typeof beforeBase64 === 'string' && !isValidBase64(beforeBase64)) {
+    return {
+      ok: false,
+      index,
+      path: relPath,
+      kind,
+      reasonCodes: ['quarantine_before_base64_invalid'],
     };
   }
   return {
@@ -1532,9 +1756,16 @@ function codeSiteQuarantineReplayChange(raw = {}, index = 0) {
     index,
     path: relPath,
     kind,
+    replayOperation: deleteReplay ? 'delete' : (binaryReplay ? 'write_binary' : 'write_text'),
+    beforeExists: beforeExists ?? (kind === 'created' ? false : null),
+    afterExists: deleteReplay ? false : (afterExists ?? true),
     quarantineId,
     beforeText,
     afterText,
+    beforeBase64,
+    afterBase64,
+    beforeContentEncoding: beforeContentEncoding || (beforeBase64 ? 'base64' : null),
+    afterContentEncoding: afterContentEncoding || (afterBase64 ? 'base64' : null),
     beforeDigest: raw.beforeDigest || raw.before_digest || evidence.beforeDigest || evidence.before_digest || null,
     afterDigest: raw.afterDigest || raw.after_digest || evidence.afterDigest || evidence.after_digest || null,
     evidenceRef,
@@ -1551,6 +1782,27 @@ function firstString(...values) {
 function firstStringOrNull(...values) {
   const found = firstString(...values);
   return typeof found === 'string' ? found : null;
+}
+
+function optionalBoolean(...values) {
+  for (const value of values) {
+    if (value === true || value === false) return value;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+  }
+  return null;
+}
+
+function isValidBase64(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  try {
+    return Buffer.from(value, 'base64').toString('base64').replace(/=+$/, '') === value.replace(/=+$/, '');
+  } catch (_) {
+    return false;
+  }
 }
 
 function buildSmallTextDiff(beforeText, afterText) {
@@ -1659,6 +1911,25 @@ function evaluateCodeSiteWrite(context, attempt = {}) {
   return base;
 }
 
+function evaluateCodeSiteRead(context, attempt = {}) {
+  const relPath = normalizeRepoRelativePath(attempt.path || attempt.filePath);
+  const tool = attempt.tool || attempt.kind || 'file_read';
+  const active = Boolean(context?.active);
+  const readAttempt = { ...attempt, kind: attempt.kind || 'read' };
+  const base = {
+    ok: true,
+    path: relPath,
+    tool,
+    event: buildEvent(context, readAttempt, relPath, 'read_observed', ['inside_repo_boundary']),
+  };
+  if (!active) return base;
+
+  if (context.blockedPaths?.some((pattern) => matchPathPattern(relPath, pattern))) {
+    return deniedRead(context, readAttempt, relPath, ['entered_no_fly_zone']);
+  }
+  return base;
+}
+
 function denied(context, attempt, relPath, reasonCodes) {
   const reason = `${attempt.kind || 'write'} denied for ${relPath}: ${reasonCodes.join(',')}`;
   return {
@@ -1667,6 +1938,17 @@ function denied(context, attempt, relPath, reasonCodes) {
     tool: attempt.tool || attempt.kind || 'file_write',
     reasonCodes,
     event: buildEvent(context, attempt, relPath, 'write_denied', reasonCodes, reason),
+  };
+}
+
+function deniedRead(context, attempt, relPath, reasonCodes) {
+  const reason = `${attempt.kind || 'read'} denied for ${relPath}: ${reasonCodes.join(',')}`;
+  return {
+    ok: false,
+    path: relPath,
+    tool: attempt.tool || attempt.kind || 'file_read',
+    reasonCodes,
+    event: buildEvent(context, attempt, relPath, 'read_denied', reasonCodes, reason),
   };
 }
 
@@ -1847,7 +2129,7 @@ function globToRegex(pattern) {
 }
 
 function isCodeSiteDeniedError(error) {
-  return error?.code === 'CODESITE_WRITE_DENIED';
+  return error?.code === 'CODESITE_WRITE_DENIED' || error?.code === 'CODESITE_READ_DENIED';
 }
 
 function isCodeSiteCommitBlockedError(error) {

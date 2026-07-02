@@ -521,7 +521,24 @@ function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
 }
 
 function sha256TextDigest(value) {
-  return `sha256:${crypto.createHash('sha256').update(Buffer.from(String(value ?? ''))).digest('hex')}`;
+  return sha256BufferDigest(Buffer.from(String(value ?? ''), 'utf8'));
+}
+
+function sha256BufferDigest(buffer) {
+  return `sha256:${crypto.createHash('sha256').update(buffer || Buffer.alloc(0)).digest('hex')}`;
+}
+
+function decodeQuarantineReplayContent(change) {
+  if (change.replayOperation === 'delete') {
+    return { operation: 'delete', buffer: null, text: null, digest: null };
+  }
+  if (change.replayOperation === 'write_binary' || typeof change.afterBase64 === 'string') {
+    const buffer = Buffer.from(String(change.afterBase64 || ''), 'base64');
+    return { operation: 'write_binary', buffer, text: null, digest: sha256BufferDigest(buffer) };
+  }
+  const text = String(change.afterText ?? '');
+  const buffer = Buffer.from(text, 'utf8');
+  return { operation: 'write_text', buffer, text, digest: sha256BufferDigest(buffer) };
 }
 
 async function workspaceFileExists(repoRoot, filePath) {
@@ -537,10 +554,23 @@ async function workspaceFileExists(repoRoot, filePath) {
   }
 }
 
-function validateQuarantineReplayBase(change, currentContent, currentExists) {
-  const currentDigest = sha256TextDigest(currentContent);
-  const afterDigest = sha256TextDigest(change.afterText);
-  if (change.afterDigest && change.afterDigest !== afterDigest) {
+async function readWorkspaceFileBuffer(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    return await fsPromises.readFile(path.join(repoRoot, relPath));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return null;
+    }
+    return null;
+  }
+}
+
+function validateQuarantineReplayBase(change, currentBuffer, currentExists) {
+  const currentDigest = currentBuffer ? sha256BufferDigest(currentBuffer) : null;
+  const nextContent = decodeQuarantineReplayContent(change);
+  const afterDigest = nextContent.digest;
+  if (change.afterDigest && afterDigest && change.afterDigest !== afterDigest) {
     return {
       ok: false,
       reasonCodes: ['quarantine_replay_after_digest_mismatch'],
@@ -548,9 +578,34 @@ function validateQuarantineReplayBase(change, currentContent, currentExists) {
       afterDigest,
     };
   }
+  if (change.afterDigest && nextContent.operation === 'delete' && change.afterDigest !== null) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === false && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === true && !currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_missing'],
+      currentDigest,
+      afterDigest,
+    };
+  }
   if (typeof change.beforeText === 'string') {
-    return currentContent === change.beforeText
-      ? { ok: true, currentDigest, afterDigest }
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
+    return currentExists && currentContent === change.beforeText
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
       : {
         ok: false,
         reasonCodes: ['quarantine_replay_base_mismatch'],
@@ -559,9 +614,21 @@ function validateQuarantineReplayBase(change, currentContent, currentExists) {
         afterDigest,
       };
   }
+  if (typeof change.beforeBase64 === 'string') {
+    const expectedBuffer = Buffer.from(change.beforeBase64, 'base64');
+    return currentExists && currentBuffer && currentBuffer.equals(expectedBuffer)
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256BufferDigest(expectedBuffer),
+        afterDigest,
+      };
+  }
   if (change.beforeDigest) {
     return currentDigest === change.beforeDigest
-      ? { ok: true, currentDigest, afterDigest }
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
       : {
         ok: false,
         reasonCodes: ['quarantine_replay_base_mismatch'],
@@ -569,6 +636,14 @@ function validateQuarantineReplayBase(change, currentContent, currentExists) {
         expectedDigest: change.beforeDigest,
         afterDigest,
       };
+  }
+  if (nextContent.operation === 'delete') {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_base_evidence_required'],
+      currentDigest,
+      afterDigest,
+    };
   }
   if (String(change.kind || '').toLowerCase() === 'created' && currentExists) {
     return {
@@ -578,7 +653,7 @@ function validateQuarantineReplayBase(change, currentContent, currentExists) {
       afterDigest,
     };
   }
-  return { ok: true, currentDigest, afterDigest };
+  return { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent };
 }
 
 function selectedQuarantineChanges(manifest, parsed = {}) {
@@ -657,9 +732,10 @@ async function prepareCodeSiteQuarantineReplayPlan({
     return { replayPlan, prepared, rejected };
   }
   for (const change of replayPlan.changes) {
-    const currentContent = await readWorkspaceFileForLineProvenance(slug, change.path, effectiveUserId);
+    const currentBuffer = await readWorkspaceFileBuffer(repoRoot, change.path);
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
     const currentExists = await workspaceFileExists(repoRoot, change.path);
-    const validation = validateQuarantineReplayBase(change, currentContent, currentExists);
+    const validation = validateQuarantineReplayBase(change, currentBuffer, currentExists);
     const changeEvidenceRefs = uniqueArray([
       ...arrayValue(evidenceRefs),
       ...arrayValue(change.evidenceRefs),
@@ -684,15 +760,15 @@ async function prepareCodeSiteQuarantineReplayPlan({
       });
       continue;
     }
-    const lineProvenance = deriveLineProvenanceFromContentChange(change.path, currentContent, change.afterText, {
+    const lineProvenance = quarantineReplayLineProvenance(change, currentContent, validation, {
       evidenceRefs: changeEvidenceRefs,
       processAncestry: changeProcessAncestry,
-      promptSummary: 'Apply reviewed CodeSiteFS quarantine change',
-      reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
     });
     prepared.push({
       change,
+      operation: validation.operation,
       currentContent,
+      currentBuffer,
       currentExists,
       validation,
       evidenceRefs: changeEvidenceRefs,
@@ -701,6 +777,71 @@ async function prepareCodeSiteQuarantineReplayPlan({
     });
   }
   return { replayPlan, prepared, rejected };
+}
+
+function quarantineReplayLineProvenance(change, currentContent, validation, options = {}) {
+  if (validation.operation === 'write_text' || validation.operation === 'delete') {
+    return deriveLineProvenanceFromContentChange(
+      change.path,
+      currentContent,
+      validation.operation === 'delete' ? '' : validation.nextContent.text,
+      {
+        evidenceRefs: options.evidenceRefs,
+        processAncestry: options.processAncestry,
+        promptSummary: validation.operation === 'delete'
+          ? 'Apply reviewed CodeSiteFS quarantine delete'
+          : 'Apply reviewed CodeSiteFS quarantine text change',
+        reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+      },
+    );
+  }
+  return [{
+    filePath: change.path,
+    startLine: 1,
+    endLine: 1,
+    lineAnchor: `${change.path}#L1-L1`,
+    reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: 'Apply reviewed CodeSiteFS quarantine binary change',
+  }];
+}
+
+function quarantineReplayAttempt(item) {
+  return {
+    path: item.change.path,
+    kind: 'quarantine-review-apply',
+    tool: item.operation === 'delete' ? 'file_delete' : 'file_write',
+    evidenceRefs: item.evidenceRefs,
+    processAncestry: item.processAncestry,
+    lineProvenance: item.lineProvenance,
+  };
+}
+
+async function applyQuarantineReplayItem(slug, item, effectiveUserId) {
+  if (item.operation === 'delete') {
+    await withTelemetry('fs:delete', () => gitService.deleteFile(slug, item.change.path, effectiveUserId));
+    return;
+  }
+  const nextContent = item.validation.nextContent;
+  await withTelemetry('fs:write', () => gitService.writeFile(
+    slug,
+    item.change.path,
+    item.operation === 'write_binary' ? nextContent.buffer : nextContent.text,
+    effectiveUserId,
+  ));
+}
+
+function quarantineReplayAppliedRecord(item) {
+  return {
+    path: item.change.path,
+    kind: item.change.kind,
+    operation: item.operation,
+    beforeDigest: item.validation.currentDigest,
+    afterDigest: item.validation.afterDigest,
+    evidenceRef: item.change.evidenceRef,
+    lineProvenanceCount: item.lineProvenance.length,
+  };
 }
 
 function codeSiteControlPlaneBaseUrl(context = {}) {
@@ -951,12 +1092,9 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
  * When userId is provided, reads from the per-user repo; otherwise falls
  * back to the slug-level repo.
  */
-async function getActualFileContent(slug, filePath, userId) {
+async function getActualFileContent(slug, filePath, userId, options = {}) {
   try {
-    const repoPath = gitService.getEffectiveRepoPath(slug, userId);
-    const fullPath = path.join(repoPath, filePath);
-    const content = await fsPromises.readFile(fullPath, 'utf8');
-    return content;
+    return await gitService.readFile(slug, filePath, userId, options);
   } catch (e) {
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
     return null;
@@ -2390,7 +2528,14 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      const content = await getActualFileContent(slug, filePath, userId);
+      const content = await getActualFileContent(slug, filePath, userId, {
+        codesiteContext: fileContentCodeSiteContext,
+        ...fileContentCodeSiteEnforcement,
+        operation: 'file-content',
+        tool: 'file_read',
+        evidenceRefs: ['collab:file-content'],
+        processAncestry: ['collab-server:file-content'],
+      });
       if (content === null) {
         console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -2530,7 +2675,7 @@ const server = http.createServer(async (req, res) => {
         sysboxEnabled: isSysboxRuntimeEnabled(),
         hasHybrid: Boolean(workspaceRuntime),
       });
-      if (launchMode === 'block-runtime') {
+      if (launchMode === 'block-runtime' || launchMode === 'block-host') {
         writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:launch-program');
         return;
       }
@@ -2939,14 +3084,7 @@ const server = http.createServer(async (req, res) => {
             status: quarantine.status,
             transactionId: quarantine.transactionId,
           },
-          replay: replay.prepared.map((item) => ({
-            path: item.change.path,
-            kind: item.change.kind,
-            beforeDigest: item.validation.currentDigest,
-            afterDigest: item.validation.afterDigest,
-            evidenceRef: item.change.evidenceRef,
-            lineProvenanceCount: item.lineProvenance.length,
-          })),
+          replay: replay.prepared.map(quarantineReplayAppliedRecord),
           rejected: replay.rejected,
           timelineEvents: {
             reviewed: reviewedEvent,
@@ -2968,14 +3106,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const attempts = replay.prepared.map((item) => ({
-        path: item.change.path,
-        kind: 'quarantine-review-apply',
-        tool: 'file_write',
-        evidenceRefs: item.evidenceRefs,
-        processAncestry: item.processAncestry,
-        lineProvenance: item.lineProvenance,
-      }));
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
       const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
         operation: 'quarantine-review-apply',
         tool: 'file_write',
@@ -2983,20 +3114,8 @@ const server = http.createServer(async (req, res) => {
       }, async () => {
         const applied = [];
         for (const item of replay.prepared) {
-          await withTelemetry('fs:write', () => gitService.writeFile(
-            slug,
-            item.change.path,
-            item.change.afterText,
-            effectiveUserId,
-          ));
-          applied.push({
-            path: item.change.path,
-            kind: item.change.kind,
-            beforeDigest: item.validation.currentDigest,
-            afterDigest: item.validation.afterDigest,
-            evidenceRef: item.change.evidenceRef,
-            lineProvenanceCount: item.lineProvenance.length,
-          });
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
         }
         return { applied };
       }, {
@@ -3006,7 +3125,11 @@ const server = http.createServer(async (req, res) => {
 
       const applied = boundary.applyResult?.applied || [];
       for (const item of applied) {
-        broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
       }
       broadcastFileTreeChanged(slug, { userId: effectiveUserId });
       broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
@@ -3137,14 +3260,7 @@ const server = http.createServer(async (req, res) => {
         }));
         return;
       }
-      const attempts = replay.prepared.map((item) => ({
-        path: item.change.path,
-        kind: 'quarantine-review-apply',
-        tool: 'file_write',
-        evidenceRefs: item.evidenceRefs,
-        processAncestry: item.processAncestry,
-        lineProvenance: item.lineProvenance,
-      }));
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
       const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
         operation: 'quarantine-review-apply',
         tool: 'file_write',
@@ -3152,15 +3268,8 @@ const server = http.createServer(async (req, res) => {
       }, async () => {
         const applied = [];
         for (const item of replay.prepared) {
-          await withTelemetry('fs:write', () => gitService.writeFile(slug, item.change.path, item.change.afterText, effectiveUserId));
-          applied.push({
-            path: item.change.path,
-            kind: item.change.kind,
-            beforeDigest: item.validation.currentDigest,
-            afterDigest: item.validation.afterDigest,
-            evidenceRef: item.change.evidenceRef,
-            lineProvenanceCount: item.lineProvenance.length,
-          });
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
         }
         return { applied };
       }, {
@@ -3169,7 +3278,11 @@ const server = http.createServer(async (req, res) => {
       });
       const applied = boundary.applyResult?.applied || [];
       for (const item of applied) {
-        broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
       }
       broadcastFileTreeChanged(slug, { userId: effectiveUserId });
       broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
@@ -3269,6 +3382,10 @@ const server = http.createServer(async (req, res) => {
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
       if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
         writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-terminal');
+        return;
+      }
+      if (codeSiteContext.active) {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-terminal');
         return;
       }
 
@@ -3487,6 +3604,10 @@ const server = http.createServer(async (req, res) => {
       writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
       return;
     }
+    if (codeSiteContext.active) {
+      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-pty');
+      return;
+    }
     let cwd;
     try {
       await ensureRuntimeFilesystem({
@@ -3648,6 +3769,10 @@ const server = http.createServer(async (req, res) => {
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
       writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
+      return;
+    }
+    if (codeSiteContext.active) {
+      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec');
       return;
     }
     let cwd;
@@ -5836,14 +5961,28 @@ const server = http.createServer(async (req, res) => {
                 case 'file':
                     // Normalize path - convert backslashes and strip leading slashes
                     const filePath_file = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId));
+                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId, {
+                      codesiteContext: codeSiteContext,
+                      ...codeSiteEnforcement,
+                      operation: 'workspace-action:file',
+                      tool: 'file_read',
+                      evidenceRefs: ['collab:workspace-action:file'],
+                      processAncestry: ['collab-server:workspace-action'],
+                    }));
                     result = { content };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
                     try {
                         const hashFilePath = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId);
+                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId, {
+                          codesiteContext: codeSiteContext,
+                          ...codeSiteEnforcement,
+                          operation: 'workspace-action:file-hash',
+                          tool: 'file_read',
+                          evidenceRefs: ['collab:workspace-action:file-hash'],
+                          processAncestry: ['collab-server:workspace-action'],
+                        });
                         const hashValue = computeHash(hashContent);
                         result = { hash: hashValue, path: data.path };
                     } catch (e) {

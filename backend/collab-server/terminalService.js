@@ -1442,6 +1442,9 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
     ? options.codesiteContext
     : null;
+  if (codeSiteContext?.active) {
+    throw new Error('codesite_host_headless_terminal_blocked');
+  }
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
@@ -1832,11 +1835,13 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceRuntime,
       workspaceSlug,
     });
-    if (launchMode === 'block-runtime') {
+    if (launchMode === 'block-runtime' || launchMode === 'block-host') {
       ws.send(JSON.stringify({
         type: 'error',
         code: 'codesite_terminal_quarantine_unavailable',
-        message: 'CodeSite terminal blocked: this runtime terminal cannot mount a transaction quarantine workspace yet.',
+        message: launchMode === 'block-host'
+          ? 'CodeSite terminal blocked: host shells cannot provide a syscall-level transaction boundary. Enable the container quarantine runtime.'
+          : 'CodeSite terminal blocked: this runtime terminal cannot mount a transaction quarantine workspace yet.',
         codesite: codeSiteMetadata,
       }));
       ws.close(1008, 'CodeSite terminal quarantine unavailable');

@@ -59,7 +59,7 @@ function signedDojoProof(slug) {
     }],
     evidence_record_ids: ['runtime-quarantine-live-api'],
     issued_at: '2026-07-01T00:00:00.000Z',
-    expires_at: '2026-07-02T00:00:00.000Z',
+    expires_at: '2026-08-01T00:00:00.000Z',
     signature_algorithm: 'ed25519',
   };
   const signature = signer.sign(canonicalDojoProofPayload(unsignedCapsule));
@@ -112,7 +112,7 @@ function createApi(baseUrl, slug) {
   return api;
 }
 
-async function postCollab(collabBaseUrl, route, body) {
+async function postCollab(collabBaseUrl, route, body, options = {}) {
   const response = await fetch(`${collabBaseUrl.replace(/\/+$/, '')}${route}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -125,10 +125,14 @@ async function postCollab(collabBaseUrl, route, body) {
   } catch {
     parsed = { raw: text };
   }
-  if (!response.ok) {
+  if (!response.ok && !options.allowFailure) {
     throw new Error(`POST ${route} returned ${response.status}: ${JSON.stringify(parsed)}`);
   }
-  return parsed;
+  return {
+    ...parsed,
+    ok: response.ok,
+    status: response.status,
+  };
 }
 
 function assertProof(assertions) {
@@ -162,7 +166,7 @@ function proofHtml(proof) {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CodeSite Runtime Quarantine Proof</title>
+  <title>CodeSite Runtime Boundary Proof</title>
 <style>
 :root { color-scheme: dark; --bg: #080a0f; --panel: #10131d; --panel-2: #0c0f17; --line: #273149; --text: #f3f6ff; --muted: #aab8df; --pass: #32d583; --accent: #9fb7ff; }
 * { box-sizing: border-box; }
@@ -192,13 +196,13 @@ code { font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 <main>
   <section class="hero">
     <span class="badge">PASS</span>
-    <h1>CodeSite Runtime Quarantine Proof</h1>
-    <p>A Docker-backed collab shell wrote through an active CodeSite context. The write landed in a quarantine overlay, the real workspace stayed unchanged, and CodeSite recorded write_quarantined events.</p>
+    <h1>CodeSite Runtime Boundary Proof</h1>
+    <p>A Docker-backed collab shell attempted to write through an active CodeSite context. Host exec was blocked before mutation, and the real workspace stayed unchanged.</p>
   </section>
   <section class="grid" aria-label="proof summary">
     <div class="metric"><span>Workspace</span><strong>${escapeHtml(proof.slug)}</strong></div>
     <div class="metric"><span>Transaction</span><strong>${escapeHtml(proof.transaction.id)}</strong></div>
-    <div class="metric"><span>Quarantined changes</span><strong>${escapeHtml(proof.quarantine.changes.length)}</strong></div>
+    <div class="metric"><span>Host exec</span><strong>${escapeHtml(proof.rawWrite.error || 'missing')}</strong></div>
     <div class="metric"><span>Source workspace</span><strong>${proof.assertions.sourceWorkspaceUnchanged ? 'unchanged' : 'changed'}</strong></div>
   </section>
   <h2>Quarantined Overlay Changes</h2>
@@ -338,7 +342,7 @@ async function main() {
       `printf 'docs terminal change\\n' > ${docPath}`,
       `printf 'overlay=' && cat ${targetPath}`,
     ].join(' && '),
-  });
+  }, { allowFailure: true });
 
   console.log('[runtime-quarantine-proof] reading source workspace after quarantine');
   const readback = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
@@ -372,24 +376,26 @@ async function main() {
     dockerCollabExecUsed: true,
     clearanceIssued: lease.status === 'active',
     transactionOpened: Boolean(transaction.id),
-    rawShellCommandSucceeded: rawWrite.exitCode === 0,
-    quarantineReturnedByCollab: Array.isArray(quarantine.changes) && quarantine.changes.length >= 3,
-    targetPathQuarantined: quarantinedPaths.has(targetPath),
-    newPathQuarantined: quarantinedPaths.has(newPath),
-    docsPathQuarantined: quarantinedPaths.has(docPath),
+    hostExecBlockedBeforeMutation: rawWrite.status === 409
+      && rawWrite.error === 'codesite_runtime_quarantine_unavailable'
+      && rawWrite.surface === 'exec',
+    hostExecDidNotReturnQuarantine: Array.isArray(quarantine.changes) && quarantine.changes.length === 0,
+    targetPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(targetPath),
+    newPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(newPath),
+    docsPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(docPath),
     sourceWorkspaceUnchanged: readbackOutput.includes('target=baseline')
       && readbackOutput.includes('new_path=absent')
       && readbackOutput.includes('doc_path=absent'),
-    controlPlaneRecordedQuarantine: quarantinedEvents.length >= 3,
-    controlPlaneRecordedTargetPath: eventPaths.has(targetPath),
-    controlPlaneRecordedNewPath: eventPaths.has(newPath),
-    controlPlaneRecordedDocsPath: eventPaths.has(docPath),
+    controlPlaneDidNotRecordUnsafeHostMutation: quarantinedEvents.length === 0,
+    controlPlaneDidNotRecordTargetPath: !eventPaths.has(targetPath),
+    controlPlaneDidNotRecordNewPath: !eventPaths.has(newPath),
+    controlPlaneDidNotRecordDocsPath: !eventPaths.has(docPath),
   };
   assertProof(assertions);
 
   const proof = {
     generatedAt: new Date().toISOString(),
-    title: 'CodeSite Runtime Quarantine Proof',
+    title: 'CodeSite Runtime Boundary Proof',
     slug,
     appBaseUrl,
     collabBaseUrl,
@@ -402,6 +408,9 @@ async function main() {
       exitCode: rawWrite.exitCode,
       stdout: rawWrite.stdout || rawWrite.output || '',
       stderr: rawWrite.stderr || '',
+      status: rawWrite.status,
+      error: rawWrite.error || null,
+      surface: rawWrite.surface || null,
       codesite: rawWrite.codesite || null,
     },
     quarantine,

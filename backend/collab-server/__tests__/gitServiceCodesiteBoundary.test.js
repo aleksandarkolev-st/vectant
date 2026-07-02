@@ -43,7 +43,7 @@ function codeSiteIndexContext(slug, overrides = {}) {
   });
 }
 
-function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) {
+function createCodeSiteFetch({ writeSet = ['src/**'], readSet = [], recordBodies = [], readBodies = [] } = {}) {
   const calls = [];
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
@@ -54,8 +54,22 @@ function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) 
           status: 'open',
           mutationLeaseId: 'lease-direct-1',
           agentSessionId: 'agent-direct-1',
+          readSet,
+          observedReadSet: [],
           writeSet,
           observedWriteSet: [],
+        },
+      }), { status: 200 });
+    }
+    if (String(url).endsWith('/transactions/txn-direct-1/record-read')) {
+      const body = JSON.parse(options.body || '{}');
+      readBodies.push(body);
+      return new Response(JSON.stringify({
+        transaction: {
+          id: 'txn-direct-1',
+          status: 'open',
+          readSet: [body.path],
+          observedReadSet: [body.path],
         },
       }), { status: 200 });
     }
@@ -66,7 +80,7 @@ function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) 
     }
     return new Response(JSON.stringify({ ok: false, error: 'unexpected_url' }), { status: 404 });
   };
-  return { fetch, calls, recordBodies };
+  return { fetch, calls, recordBodies, readBodies };
 }
 
 async function withTempGitService(t, slug, userId, fn) {
@@ -116,6 +130,35 @@ test('legacy direct gitService.writeFile still writes without CodeSite context',
 
     assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'legacy write\n');
     assert.strictEqual(gitService.safeWriteFile, undefined);
+  });
+});
+
+test('direct gitService.readFile records managed filesystem reads through CodeSiteFS', async (t) => {
+  const slug = uniqueSlug('codesite-read');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+    await fs.writeFile(path.join(repoPath, 'src', 'contract.ts'), 'export const version = 1;\n');
+    const readBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: [], readBodies });
+
+    const content = await gitService.readFile(slug, 'src/contract.ts', userId, {
+      codesiteContext: codeSiteContext(slug, {
+        allowedTools: ['file_write'],
+        processAncestry: ['codex:read-test'],
+      }),
+      fetch,
+      evidenceRefs: ['direct:read-file'],
+      processAncestry: ['gitService:readFile'],
+      tool: 'file_read',
+    });
+
+    assert.strictEqual(content, 'export const version = 1;\n');
+    assert.strictEqual(readBodies.length, 1);
+    assert.strictEqual(readBodies[0].path, 'src/contract.ts');
+    assert.strictEqual(readBodies[0].tool, 'file_read');
+    assert.strictEqual(readBodies[0].codesiteFsEvent.type, 'read_observed');
+    assert.deepStrictEqual(readBodies[0].processAncestry, ['codex:read-test', 'gitService:readFile']);
   });
 });
 
