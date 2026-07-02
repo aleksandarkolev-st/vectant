@@ -2436,7 +2436,12 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     result.sourceIntakeEvidence,
     result.source_intake_evidence,
   );
-  const candidateSource = firstText(candidate.candidateSource, candidate.candidate_source);
+  const candidateSource = firstText(
+    candidate.candidateSource,
+    candidate.candidate_source,
+    result.candidateSource,
+    result.candidate_source,
+  );
   const sourceUrl = firstText(result.sourceUrl, result.source_url, candidate.sourceUrl, candidate.source_url);
   const repoPath = firstText(
     result.repoPath,

@@ -1992,6 +1992,10 @@ function randomColdPathManifest({
     profile_mode: 'unprofiled_arbitrary_project_cold_intake',
     runnerAttempted: false,
     runner_attempted: false,
+    candidateSource: 'direct_source_url_commit',
+    candidate_source: 'direct_source_url_commit',
+    directInputEvidence,
+    direct_input_evidence: directInputEvidence,
     sourceUrl,
     source_url: sourceUrl,
     immutableCommit,
@@ -2188,6 +2192,42 @@ assert.equal(
 assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
+
+const resultOnlyDirectInputPathDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-result-only-direct-input',
+);
+await writeJson(
+  path.join(resultOnlyDirectInputPathDir, 'random-cold-result-only-direct-input.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-result-only',
+    sourceUrl: 'https://example.invalid/arbitrary/result-only-direct-input.git',
+    immutableCommit: '1212121212121212121212121212121212121212',
+    topLevelOverrides: {
+      candidates: [],
+      selectedCandidates: [],
+      selected_candidates: [],
+    },
+  }),
+);
+const resultOnlyDirectInputLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [resultOnlyDirectInputPathDir],
+});
+const resultOnlyDirectInputRow = resultOnlyDirectInputLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(resultOnlyDirectInputRow?.safety.accepted, true);
+assert.equal(resultOnlyDirectInputRow.randomColdPathDirectInputEvidence.acceptedAsDirectInputEvidence, true);
+assert.equal(
+  resultOnlyDirectInputRow.randomLargeProjectColdPath.directInputEvidence.sourceIdentityHashMatchesContext,
+  true,
+);
+assert.equal(resultOnlyDirectInputRow.randomLargeProjectColdPath.candidateSource, 'direct_source_url_commit');
+assert.ok(
+  resultOnlyDirectInputRow.randomColdPathCanonicalTargetKey?.startsWith('random-cold-source:sha256:'),
 );
 
 const forgedDirectInputPathDir = path.join(
