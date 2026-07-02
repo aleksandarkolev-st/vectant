@@ -1471,9 +1471,17 @@ function normalizeRandomColdBackend(backend) {
 }
 
 function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sourceIntake = {} } = {}) {
+  const sourceListingManifest = compactObject(
+    sourceIntake.sourceListingManifest
+    ?? sourceIntake.source_listing_manifest,
+  );
   const backendCandidates = compactStringList([
-    ...(Array.isArray(sourceIntake.backendCandidates) ? sourceIntake.backendCandidates : []),
-    ...(Array.isArray(sourceIntake.backend_candidates) ? sourceIntake.backend_candidates : []),
+    ...(Array.isArray(sourceListingManifest.backendCandidates)
+      ? sourceListingManifest.backendCandidates
+      : []),
+    ...(Array.isArray(sourceListingManifest.backend_candidates)
+      ? sourceListingManifest.backend_candidates
+      : []),
   ]);
   const candidateDeclaredBackend = firstText(result.backend, candidate.backend);
   const candidateDeclaredBackendFamily = firstText(
@@ -1502,6 +1510,10 @@ function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sour
     backendSource,
     sourceDerivedBackendCandidates: backendCandidates,
     source_derived_backend_candidates: backendCandidates,
+    sourceDerivedBackendAuthority:
+      'source_listing_classification_only_not_serialized_backend_declaration',
+    source_derived_backend_authority:
+      'source_listing_classification_only_not_serialized_backend_declaration',
     candidateDeclaredBackend: candidateDeclaredBackend ?? null,
     candidate_declared_backend: candidateDeclaredBackend ?? null,
     candidateDeclaredBackendFamily: candidateDeclaredBackendFamily ?? null,
@@ -1927,7 +1939,7 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const recomputedFacetHash = present
     ? normalizeSha256(`sha256:${sha256Hex(stableJson(randomColdSourceIntakeFacetHashSeed(facet)))}`)
     : null;
-  const backendCandidates = compactStringList([
+  const declaredBackendCandidates = compactStringList([
     ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
     ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
     ...(Array.isArray(buildDiscovery.backendCandidates) ? buildDiscovery.backendCandidates : []),
@@ -1937,6 +1949,14 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       : []),
     ...(Array.isArray(runtimeBoundaryExpectation.backend_candidates)
       ? runtimeBoundaryExpectation.backend_candidates
+      : []),
+  ]);
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(sourceListingManifest.backendCandidates)
+      ? sourceListingManifest.backendCandidates
+      : []),
+    ...(Array.isArray(sourceListingManifest.backend_candidates)
+      ? sourceListingManifest.backend_candidates
       : []),
   ]);
   const detectedBuildSystems = compactStringList([
@@ -2033,6 +2053,12 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     byte_length_mode: firstText(facet.byteLengthMode, facet.byte_length_mode),
     backendCandidates,
     backend_candidates: backendCandidates,
+    backendCandidateAuthority:
+      'source_listing_classification_only_not_serialized_backend_declaration',
+    backend_candidate_authority:
+      'source_listing_classification_only_not_serialized_backend_declaration',
+    declaredBackendCandidates,
+    declared_backend_candidates: declaredBackendCandidates,
     detectedBuildSystems,
     detected_build_systems: detectedBuildSystems,
     buildMetadataSignalCount: listCount(
@@ -25078,21 +25104,6 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && directInputEvidenceAccepted
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
-    const sourceDerivedBackendCandidates = compactStringList([
-      ...(Array.isArray(backendEvidence.sourceDerivedBackendCandidates)
-        ? backendEvidence.sourceDerivedBackendCandidates
-        : []),
-      ...(Array.isArray(backendEvidence.source_derived_backend_candidates)
-        ? backendEvidence.source_derived_backend_candidates
-        : []),
-      ...(Array.isArray(sourceIntakeEvidence.backendCandidates)
-        ? sourceIntakeEvidence.backendCandidates
-        : []),
-      ...(Array.isArray(sourceIntakeEvidence.backend_candidates)
-        ? sourceIntakeEvidence.backend_candidates
-        : []),
-    ]);
-    const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
     const candidateBackendUsedForAcceptance = firstBool(
       backendEvidence.candidateBackendUsedForAcceptance,
       backendEvidence.candidate_backend_used_for_acceptance,
@@ -25121,6 +25132,15 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       sourceIntakeEvidence.sourceListingManifest
       ?? sourceIntakeEvidence.source_listing_manifest,
     );
+    const sourceDerivedBackendCandidates = compactStringList([
+      ...(Array.isArray(sourceListingManifest.backendCandidates)
+        ? sourceListingManifest.backendCandidates
+        : []),
+      ...(Array.isArray(sourceListingManifest.backend_candidates)
+        ? sourceListingManifest.backend_candidates
+        : []),
+    ]);
+    const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
     const sourceListingManifestAccepted =
       sourceListingManifest.acceptedAsSourceListingEvidence === true
       && sourceListingManifest.recomputedSourceListingHash === sourceListingManifest.sourceListingHash

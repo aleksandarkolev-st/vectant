@@ -2213,12 +2213,16 @@ assert.equal(randomColdRow.acceptedForGpuHmr, false);
 assert.equal(randomColdRow.gpuHmrSuccess, false);
 assert.equal(randomColdRow.safety.accepted, true);
 assert.equal(randomColdRow.randomColdPathDirectInputEvidence.acceptedAsDirectInputEvidence, true);
-assert.equal(randomColdRow.backend, 'vulkan');
+assert.equal(randomColdRow.backend, 'hip');
 assert.equal(randomColdRow.randomColdBackendEvidence.backendSource, 'source_tree_intake_backend_candidates');
 assert.equal(randomColdRow.randomColdBackendEvidence.candidateBackendUsedForAcceptance, false);
+assert.equal(
+  randomColdRow.randomColdBackendEvidence.sourceDerivedBackendAuthority,
+  'source_listing_classification_only_not_serialized_backend_declaration',
+);
 assert.deepEqual(
   randomColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
-  ['vulkan', 'webgpu_wgsl'],
+  ['hip_rocm'],
 );
 assert.equal(randomColdRow.targetId, 'direct-random-arbitrary-cold');
 assert.ok(randomColdRow.randomColdPathSourceIdentityHash?.startsWith('sha256:'));
@@ -2703,7 +2707,7 @@ const forgedBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
 const forgedBackendColdRow = forgedBackendColdLedger.rows.find(
   (row) => row.proofMode === 'random_large_project_cold_path',
 );
-assert.equal(forgedBackendColdRow?.backend, 'vulkan');
+assert.equal(forgedBackendColdRow?.backend, 'hip');
 assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateDeclaredBackend, 'hip');
 assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateDeclaredBackendFamily, 'real_rocm');
 assert.deepEqual(
@@ -2713,7 +2717,7 @@ assert.deepEqual(
 assert.equal(forgedBackendColdRow.randomColdBackendEvidence.candidateBackendUsedForAcceptance, false);
 assert.deepEqual(
   forgedBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
-  ['vulkan', 'webgpu_wgsl'],
+  ['hip_rocm'],
 );
 assert.equal(forgedBackendColdRow.acceptedForGpuHmr, false);
 assert.equal(forgedBackendColdRow.gpuHmrSuccess, false);
@@ -10721,6 +10725,47 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithUnverifiableListingObjectQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const broadReadinessWithSerializedBackendOnlyRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `serialized-backend-only-${index + 1}`,
+    fileCount: 1500,
+    totalKnownBytes: 15 * 1024 * 1024,
+    sourceRelevantFileCount: 1500,
+    gpuSourceSignalCount: 0,
+  });
+  return randomColdReadinessMatrixRow({
+    targetId: `serialized-backend-only-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/serialized-backend-only/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`serialized-backend-only-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest,
+  });
+});
+const broadReadinessWithSerializedBackendOnlyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessWithSerializedBackendOnlyRows,
+  ],
+});
+assert.equal(broadReadinessWithSerializedBackendOnlyQuery.accepted, true);
+assert.equal(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
