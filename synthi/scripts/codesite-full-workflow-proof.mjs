@@ -401,8 +401,8 @@ function unique(values) {
 
 function proofSecretPatterns() {
   return [
-    { name: 'github_pat', pattern: /github_pat_[A-Za-z0-9_]{20,}/g, replacement: 'github_pat_[REDACTED:github_pat]' },
-    { name: 'github_classic_pat', pattern: /ghp_[A-Za-z0-9]{20,}/g, replacement: 'ghp_[REDACTED:github_classic_pat]' },
+    { name: 'github_pat', pattern: /\bgithub_pat_[A-Za-z0-9_]{8,}\b/g, replacement: '[REDACTED:github_pat]' },
+    { name: 'github_classic_pat', pattern: /\bghp_[A-Za-z0-9_]{3,}\b/g, replacement: '[REDACTED:github_classic_pat]' },
     { name: 'openai_project_key', pattern: /sk-proj-[A-Za-z0-9_-]{20,}/g, replacement: 'sk-proj-[REDACTED:openai_project_key]' },
     { name: 'openai_secret_key', pattern: /\bsk-[A-Za-z0-9_-]{32,}\b/g, replacement: 'sk-[REDACTED:openai_secret_key]' },
     {
