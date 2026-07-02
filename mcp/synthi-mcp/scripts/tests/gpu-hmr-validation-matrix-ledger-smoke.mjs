@@ -9356,11 +9356,17 @@ function withSourceFirstSourceAuthority(row, sourceAuthority) {
   return withQueryRecomputedRowId(cloned);
 }
 
-function withSourceFirstWorkspaceSourceProvenance(row, sourceAuthority, sourceRoot) {
+function withSourceFirstWorkspaceSourceProvenance(
+  row,
+  sourceAuthority,
+  sourceRoot,
+  sourceOptions = {},
+) {
   const cloned = JSON.parse(JSON.stringify(row));
   const sourceFirst = sourceFirstIngestionEvidenceFor({
     targetId: cloned.targetId,
     sourceAuthority,
+    ...sourceOptions,
   });
   const provenance = {
     schemaVersion: 'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
@@ -11524,6 +11530,44 @@ assert.equal(
 assert.equal(
   broadReadinessWithWorkspaceSourceProvenanceQuery.summary.broadLibraryAgnosticReadiness
     .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount,
+  2,
+);
+const sameTargetSourceFirstVisualRows = [0, 1].map((index) => {
+  const sourceHash = hashValue(`same-target-source-first-visual-source-${index + 1}`);
+  return withSourceFirstWorkspaceSourceProvenance(
+    broadReadinessRows[0],
+    'user_source_files',
+    `C:/external-user-workspaces/same-target-source-first-${index + 1}`,
+    {
+      sourceHash,
+      initialFiles: [{
+        path: 'src/main.cpp',
+        contentHash: sourceHash,
+        content_hash: sourceHash,
+        byteLength: 4096 + index,
+        byte_length: 4096 + index,
+      }],
+    },
+  );
+});
+const sameTargetSourceFirstVisualLedger = buildGpuHmrValidationMatrixLedger([
+  ...sameTargetSourceFirstVisualRows,
+  ...broadReadinessRows.slice(1),
+  ...broadReadinessRandomColdRows,
+]);
+assert.ok(
+  sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualRows >= 2,
+);
+assert.ok(
+  sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount >= 2,
+);
+assert.equal(
+  sameTargetSourceFirstVisualLedger.rows.filter((row) =>
+    row.targetId === broadReadinessRows[0].targetId
+    && row.matrixOutcome === 'full_runtime_gpu_hmr'
+  ).length,
   2,
 );
 const broadReadinessWithDirectSourceFirstMissingIdentityQuery = queryGpuHmrValidationMatrixLedger({

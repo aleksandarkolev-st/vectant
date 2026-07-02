@@ -4830,6 +4830,8 @@ function rowKey(row) {
 function canonicalTargetKey(row) {
   const randomColdKey = randomColdPathCanonicalTargetKey(row);
   if (randomColdKey) return randomColdKey;
+  const sourceFirstVisualKey = sourceFirstVisualCanonicalTargetKey(row);
+  if (sourceFirstVisualKey) return sourceFirstVisualKey;
   const supportedScope = firstText(
     row.supportedPipelineScope,
     row.supported_pipeline_scope,
@@ -4840,6 +4842,17 @@ function canonicalTargetKey(row) {
     return `${row.proofMode}:${supportedScope}`;
   }
   return firstText(row.targetId, row.profileId) ?? 'unknown';
+}
+
+function sourceFirstVisualCanonicalTargetKey(row = {}) {
+  const sourceFirst = sourceFirstIngestionFacet(row);
+  if (firstBool(sourceFirst.accepted) !== true) return null;
+  const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
+  if (!SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority)) return null;
+  const sourceIdentityHash = sourceFirstVisualSourceIdentityHash(row);
+  if (!contentAddressedSha256(sourceIdentityHash)) return null;
+  const targetId = firstText(row.targetId, row.profileId) ?? 'unknown';
+  return `source-first-visual:${sourceIdentityHash}:${targetId}`;
 }
 
 function randomColdPathCanonicalTargetKey(row = {}) {
