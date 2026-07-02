@@ -13810,14 +13810,24 @@ async function runtimeProofRow(json, filePath, context) {
     isObject(contract.backend) ? contract.backend.value : contract.backend,
     json.backend,
   ) ?? 'unknown';
-  const targetId = firstText(
+  const ledgerProjectId = firstText(
+    ledger.record?.projectId,
+    ledger.record?.project_id,
+    ledgerRecord.projectId,
+    ledgerRecord.project_id,
+  );
+  const contractProjectId = firstText(contract.project_id, contract.projectId);
+  const diagnosticTargetLabel = firstText(
     json.target_name,
     json.targetName,
     artifactIdentity.entry_points?.join('+'),
-    contract.project_id,
-    contract.projectId,
     json.workspaceSlug,
     json.workspace_slug,
+  );
+  const targetId = firstText(
+    ledgerProjectId,
+    contractProjectId,
+    diagnosticTargetLabel,
   );
   const oracleArtifacts = compactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts);
   const hasVisualOracle = isObject(oracleArtifacts.visual_oracle_artifacts ?? oracleArtifacts.visualOracleArtifacts);
@@ -13885,6 +13895,30 @@ async function runtimeProofRow(json, filePath, context) {
   const accepted = baseAccepted && outputOracleFacet.accepted === true;
   const outputOracleFailureCodes = (outputOracleFacet.failedGates ?? [])
     .map((failure) => compactObject(failure).code);
+  const runtimeTargetIdentity = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_target_identity.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_target_identity.v1',
+    proofAuthority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+    proof_authority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+    targetId,
+    target_id: targetId,
+    ledgerProjectId: ledgerProjectId ?? null,
+    ledger_project_id: ledgerProjectId ?? null,
+    contractProjectId: contractProjectId ?? null,
+    contract_project_id: contractProjectId ?? null,
+    diagnosticTargetLabel: diagnosticTargetLabel ?? null,
+    diagnostic_target_label: diagnosticTargetLabel ?? null,
+    diagnosticLabelAuthority: diagnosticTargetLabel
+      ? 'target_name_entrypoint_or_workspace_slug_for_debug_only'
+      : null,
+    diagnostic_label_authority: diagnosticTargetLabel
+      ? 'target_name_entrypoint_or_workspace_slug_for_debug_only'
+      : null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
   return finalizeRow({
     artifactSchema: json.schemaVersion,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -13892,6 +13926,8 @@ async function runtimeProofRow(json, filePath, context) {
     backend,
     targetId,
     profileId: targetId,
+    runtimeTargetIdentity,
+    runtime_target_identity: runtimeTargetIdentity,
     proofMode: 'strict_runtime_ledger',
     evidenceKind: outputKind,
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',

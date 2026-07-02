@@ -3800,13 +3800,13 @@ await writeRgbaPng(`${forgedGenericOpenclReadback}.card.png`, 8, 8, (x, y) => {
   return [value, 255 - value, (value * 3) % 256, 255];
 });
 const forgedGenericOpenclMaterials = computeProofLedgerMaterials('forged-generic-opencl-label', {
-  projectId: 'forged-generic-opencl-label',
+  projectId: 'forged-generic-opencl-ledger-project',
   backend: 'opencl',
   rawReadbackPath: forgedGenericOpenclReadback,
   rawReadbackBytes: forgedGenericOpenclBytes,
 });
 const forgedGenericOpenclContract = acceptanceContract('forged_generic_opencl_label', {
-  projectId: 'forged-generic-opencl-label',
+  projectId: 'forged-generic-opencl-ledger-project',
 });
 forgedGenericOpenclContract.backend = { value: 'opencl' };
 forgedGenericOpenclContract.artifact_identity.artifact_kind = 'opencl_program';
@@ -8449,13 +8449,29 @@ assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_raw_read
 assert.ok(strictComputeMissingReadback.openGaps.includes('compute_oracle_raw_readback_unreadable'));
 
 const forgedGenericOpencl = ledger.rows.find((row) =>
-  row.targetId === 'forged-generic-opencl-label'
+  row.targetId === 'forged-generic-opencl-ledger-project'
 );
 assert.equal(forgedGenericOpencl?.proofMode, 'strict_runtime_ledger');
 assert.equal(forgedGenericOpencl.backend, 'opencl');
 assert.equal(forgedGenericOpencl.matrixOutcome, 'unproven');
 assert.equal(forgedGenericOpencl.acceptedForGpuHmr, false);
 assert.equal(forgedGenericOpencl.gpuHmrSuccess, false);
+assert.equal(forgedGenericOpencl.runtimeTargetIdentity.targetId, 'forged-generic-opencl-ledger-project');
+assert.equal(
+  forgedGenericOpencl.runtimeTargetIdentity.diagnosticTargetLabel,
+  'forged-generic-opencl-label',
+);
+assert.equal(
+  forgedGenericOpencl.runtimeTargetIdentity.proofAuthority,
+  'ledger_or_contract_project_identity_preferred_not_target_label',
+);
+assert.equal(
+  ledger.rows.some((row) =>
+    row.proofMode === 'strict_runtime_ledger'
+    && row.targetId === 'forged-generic-opencl-label'
+  ),
+  false,
+);
 assert.equal(forgedGenericOpencl.outputOracleFacet.accepted, true);
 assert.equal(forgedGenericOpencl.acceptanceScope, 'declared_profile_scoped');
 assert.equal(forgedGenericOpencl.claimScope, 'unknown_scope');
