@@ -1770,6 +1770,10 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     facet.gpuSourceSignalCount
     ?? facet.gpu_source_signal_count
   );
+  const entryObjectCount = entries.filter((entry) => firstText(entry.object)).length;
+  const entryByteLengthCount = entries.filter((entry) =>
+    Number.isFinite(entry.byteLength) && entry.byteLength >= 0
+  ).length;
   const failedGates = compactStringList([
     present ? null : 'random_cold_source_listing_manifest_missing',
     present && schemaVersion !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION
@@ -1780,6 +1784,12 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
       : null,
     present && entries.length === 0
       ? 'random_cold_source_listing_manifest_entries_missing'
+      : null,
+    present && entries.length > 0 && entryObjectCount < entries.length
+      ? 'random_cold_source_listing_manifest_entry_object_missing'
+      : null,
+    present && entries.length > 0 && entryByteLengthCount < entries.length
+      ? 'random_cold_source_listing_manifest_entry_byte_length_missing'
       : null,
     present && !declaredSourceListingHash
       ? 'random_cold_source_listing_manifest_hash_missing'
@@ -1842,6 +1852,10 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     recomputed_source_listing_hash: recomputedSourceListingHash,
     entryCount: entries.length,
     entry_count: entries.length,
+    entryObjectCount,
+    entry_object_count: entryObjectCount,
+    entryByteLengthCount,
+    entry_byte_length_count: entryByteLengthCount,
     entries,
     ...classification,
     failedGates,

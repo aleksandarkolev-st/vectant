@@ -10599,6 +10599,48 @@ assert.ok(
   broadReadinessWithDeclaredOnlyBuildContentQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessPathOnlyListingRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `path-only-listing-${index + 1}`,
+  });
+  sourceListingManifest.entries = sourceListingManifest.entries.map(({ path: entryPath }) => ({
+    path: entryPath,
+  }));
+  sourceListingManifest.sourceListingHash = contentHashFor(sourceListingManifest.entries);
+  sourceListingManifest.source_listing_hash = sourceListingManifest.sourceListingHash;
+  return randomColdReadinessMatrixRow({
+    targetId: `path-only-listing-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/path-only-listing/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`path-only-listing-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest,
+  });
+});
+const broadReadinessWithPathOnlyListingQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessPathOnlyListingRows,
+  ],
+});
+assert.equal(broadReadinessWithPathOnlyListingQuery.accepted, true);
+assert.equal(
+  broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
   const evidence = randomColdBuildMetadataContentEvidenceFixture({
