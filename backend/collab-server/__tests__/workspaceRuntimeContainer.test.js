@@ -132,6 +132,28 @@ test('CodeSite runtime containers mount /workspace to a writable quarantine root
   assert.ok(opts.Env.includes('CODESITE_WORKSPACE_QUARANTINED=1'));
 });
 
+test('CodeSite quarantine root participates in runtime identity when transaction id repeats', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/first',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/first',
+  });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/second',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/second',
+  });
+
+  assert.equal(docker.created.length, 2);
+  assert.notEqual(docker.created[0].name, docker.created[1].name);
+  assert.notEqual(
+    docker.created[0].Labels['vectant/codesite-quarantine-id'],
+    docker.created[1].Labels['vectant/codesite-quarantine-id'],
+  );
+});
+
 test('CodeSite runtime volume mounts use the quarantine subpath in dataVolume mode', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker, dataVolume: 'synthi-ide_collab-data', reposSubpath: 'repos', dataVolumeRoot: '/data' });
@@ -164,6 +186,45 @@ test('CodeSite quarantine and ordinary runtime containers do not reuse each othe
   assert.equal(docker.created.length, 2);
   assert.equal(docker.created[0].name, 'workspace-runtime-repo-u1');
   assert.match(docker.created[1].name, /^workspace-runtime-repo-u1-codesite-[a-f0-9]{10}$/);
+});
+
+test('CodeSite quarantine runtime identity isolates same-transaction overlays', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/overlay-a',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/overlay-a',
+  });
+  await mgr.ensureRuntimeContainer('repo', 'u1', {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/overlay-b',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/overlay-b',
+  });
+  assert.equal(docker.created.length, 2);
+  assert.notEqual(docker.created[0].name, docker.created[1].name);
+  assert.ok(docker.created[0].HostConfig.Binds.includes('/tmp/codesite-q/repo/txn-1/overlay-a:/workspace'));
+  assert.ok(docker.created[1].HostConfig.Binds.includes('/tmp/codesite-q/repo/txn-1/overlay-b:/workspace'));
+});
+
+test('teardown removes the selected CodeSite quarantine runtime container', async () => {
+  const docker = fakeDocker();
+  const mgr = createRuntimeManager({ docker });
+  const optionsA = {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/overlay-a',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/overlay-a',
+  };
+  const optionsB = {
+    codesiteContext: { active: true, transactionId: 'txn-1' },
+    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/overlay-b',
+    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/overlay-b',
+  };
+  const first = await mgr.ensureRuntimeContainer('repo', 'u1', optionsA);
+  const second = await mgr.ensureRuntimeContainer('repo', 'u1', optionsB);
+  await mgr.teardown('repo', 'u1', optionsA);
+  assert.throws(() => docker.getContainer(first.containerId), /no such container/);
+  assert.ok(await docker.getContainer(second.containerId).inspect());
 });
 
 test('ensureRuntimeContainer adopts an existing running container after a restart (no 409)', async () => {

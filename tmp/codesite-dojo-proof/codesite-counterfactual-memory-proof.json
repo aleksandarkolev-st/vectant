@@ -1,0 +1,633 @@
+{
+  "generatedAt": "2026-07-01T06:01:56.925Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "slug": "codesite-counterfactual-memory-proof-1782885591326",
+  "simulationProject": {
+    "id": "cmr1o27bc0000ob4twnhfmi0g",
+    "title": "Counterfactual ATC memory proof"
+  },
+  "simulatorDelta": {
+    "id": "cmr1o2luf000xob4t65z2yqz5",
+    "projectId": "cmr1o27bc0000ob4twnhfmi0g",
+    "learnedFromIncidents": [
+      "near-miss-signup-contract-001"
+    ],
+    "affectedZoneKey": null,
+    "ruleCandidate": {
+      "rule": "contract_churn_requires_owned_tests",
+      "preferredStrategies": [
+        "test-first"
+      ],
+      "avoidStrategies": [
+        "schema-first",
+        "frontend-backend-parallel"
+      ],
+      "requiredTowerActions": [
+        "run_owned_tests_before_landing"
+      ],
+      "promotion": {
+        "reviewedBy": "codesite-dev-bypass",
+        "targetState": "active",
+        "validationStatus": "passed",
+        "replayRefs": [
+          "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+        ],
+        "evidenceRefs": [
+          "replay:evidence:counterfactual-memory-simulator"
+        ],
+        "reasonCodes": [],
+        "promotedAt": "2026-07-01T06:00:33.960Z"
+      }
+    },
+    "triggerConditions": [
+      {
+        "risk": "semantic_collision"
+      },
+      {
+        "path": "packages/schemas/**"
+      }
+    ],
+    "expectedRiskReduction": 0.6,
+    "confidence": 0.95,
+    "promotionState": "active",
+    "replayRefs": [
+      "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+    ],
+    "createdAt": "2026-07-01T06:00:31.768Z",
+    "promotedAt": "2026-07-01T06:00:33.960Z"
+  },
+  "leaseProject": {
+    "id": "cmr1o40z00018ob4tm2dt9j8n",
+    "title": "Counterfactual lease gate proof"
+  },
+  "leaseDelta": {
+    "id": "cmr1o4b8h0037ob4tyba2h6l4",
+    "projectId": "cmr1o40z00018ob4tm2dt9j8n",
+    "learnedFromIncidents": [
+      "near-miss-ui-contract-rfi-001"
+    ],
+    "affectedZoneKey": "Component-UI",
+    "ruleCandidate": {
+      "rule": "sequence_frontend_after_contract_rfi",
+      "decision": "hold",
+      "requiredRadar": [
+        "visual"
+      ],
+      "requiredTowerActions": [
+        "sequence_after_contract_response"
+      ],
+      "promotion": {
+        "reviewedBy": "codesite-dev-bypass",
+        "targetState": "active",
+        "validationStatus": "passed",
+        "replayRefs": [
+          "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+        ],
+        "evidenceRefs": [
+          "replay:evidence:counterfactual-memory-lease"
+        ],
+        "reasonCodes": [],
+        "promotedAt": "2026-07-01T06:01:53.012Z"
+      }
+    },
+    "triggerConditions": [
+      {
+        "path": "src/components/**"
+      }
+    ],
+    "expectedRiskReduction": 0.3,
+    "confidence": 0.9,
+    "promotionState": "active",
+    "replayRefs": [
+      "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+    ],
+    "createdAt": "2026-07-01T06:01:51.329Z",
+    "promotedAt": "2026-07-01T06:01:53.012Z"
+  },
+  "before": {
+    "selected": "schema-first",
+    "appliedPolicyDeltas": [],
+    "reason": {
+      "reasonCodes": [
+        "schema_airspace_first",
+        "downstream_assumptions_refresh_after_contract",
+        "semantic_collision_mitigated",
+        "import_graph_weighted",
+        "test_ownership_weighted"
+      ],
+      "staleAssumptions": 0,
+      "inspectionCost": 8,
+      "predictedCollisionRisk": 0.134,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 1,
+        "highRiskCount": 1,
+        "contractRiskCount": 1,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 1,
+        "downstreamDependents": 1,
+        "testOwners": 1,
+        "missingTestRoutes": 0,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 1,
+        "priorIncidents": 0,
+        "learnedPolicyDeltas": 0,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 0,
+        "signalStrength": "moderate"
+      },
+      "learnedPolicyDeltaRefs": []
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "passed",
+        "predictedCollisionRisk": 0.134,
+        "staleAssumptions": 0,
+        "inspectionCost": 8,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.71,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "semantic_collision_mitigated",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "risk",
+        "predictedCollisionRisk": 0.671,
+        "staleAssumptions": 4,
+        "inspectionCost": 12,
+        "reworkRiskReduction": 0,
+        "confidence": 0.71,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      },
+      {
+        "strategy": "test-first",
+        "result": "passed",
+        "predictedCollisionRisk": 0.244,
+        "staleAssumptions": 1,
+        "inspectionCost": 10,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.71,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "semantic_collision_mitigated",
+          "import_graph_weighted",
+          "test_ownership_weighted"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0",
+    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
+      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa"
+    ],
+    "policyDeltaCandidates": [],
+    "repoSignals": {
+      "signalStrength": "moderate",
+      "planCount": 2,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 1,
+      "highRiskCount": 1,
+      "contractRiskCount": 1,
+      "migrationRiskCount": 0,
+      "classAOrBZones": 1,
+      "importGraphEdges": 1,
+      "downstreamDependents": 1,
+      "testOwners": 1,
+      "missingTestRoutes": 0,
+      "schemaOwners": 1,
+      "migrationLocks": 0,
+      "packageExports": 1,
+      "priorIncidents": 0,
+      "learnedPolicyDeltas": 0,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 0
+    }
+  },
+  "after": {
+    "selected": "test-first",
+    "appliedPolicyDeltas": [
+      "cmr1o2luf000xob4t65z2yqz5"
+    ],
+    "reason": {
+      "reasonCodes": [
+        "test_ownership_before_landing",
+        "inspection_radar_runs_before_mutation",
+        "semantic_collision_mitigated",
+        "import_graph_weighted",
+        "test_ownership_weighted",
+        "counterfactual_policy_delta_applied",
+        "learned_policy_delta_preferred_strategy"
+      ],
+      "staleAssumptions": 0,
+      "inspectionCost": 6,
+      "predictedCollisionRisk": 0,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 1,
+        "highRiskCount": 1,
+        "contractRiskCount": 1,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 1,
+        "downstreamDependents": 1,
+        "testOwners": 1,
+        "missingTestRoutes": 0,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 1,
+        "priorIncidents": 0,
+        "learnedPolicyDeltas": 1,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 0,
+        "signalStrength": "moderate"
+      },
+      "learnedPolicyDeltaRefs": [
+        "cmr1o2luf000xob4t65z2yqz5"
+      ]
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "risk",
+        "predictedCollisionRisk": 0.704,
+        "staleAssumptions": 2,
+        "inspectionCost": 12,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.71,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "semantic_collision_mitigated",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "counterfactual_policy_delta_applied",
+          "learned_policy_delta_avoided_strategy"
+        ],
+        "learnedPolicyDeltaRefs": [
+          "cmr1o2luf000xob4t65z2yqz5"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "risk",
+        "predictedCollisionRisk": 1,
+        "staleAssumptions": 6,
+        "inspectionCost": 15,
+        "reworkRiskReduction": 0,
+        "confidence": 0.71,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "counterfactual_policy_delta_applied",
+          "learned_policy_delta_avoided_strategy"
+        ],
+        "learnedPolicyDeltaRefs": [
+          "cmr1o2luf000xob4t65z2yqz5"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      },
+      {
+        "strategy": "test-first",
+        "result": "passed",
+        "predictedCollisionRisk": 0,
+        "staleAssumptions": 0,
+        "inspectionCost": 6,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.71,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "semantic_collision_mitigated",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "counterfactual_policy_delta_applied",
+          "learned_policy_delta_preferred_strategy"
+        ],
+        "learnedPolicyDeltaRefs": [
+          "cmr1o2luf000xob4t65z2yqz5"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 1,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 1,
+          "downstreamDependents": 1,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 1,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "moderate"
+        }
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c",
+    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
+      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
+      "codesite:policy-delta:cmr1o2luf000xob4t65z2yqz5"
+    ],
+    "policyDeltaCandidates": [],
+    "repoSignals": {
+      "signalStrength": "moderate",
+      "planCount": 2,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 1,
+      "highRiskCount": 1,
+      "contractRiskCount": 1,
+      "migrationRiskCount": 0,
+      "classAOrBZones": 1,
+      "importGraphEdges": 1,
+      "downstreamDependents": 1,
+      "testOwners": 1,
+      "missingTestRoutes": 0,
+      "schemaOwners": 1,
+      "migrationLocks": 0,
+      "packageExports": 1,
+      "priorIncidents": 0,
+      "learnedPolicyDeltas": 1,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 0
+    }
+  },
+  "leaseDecision": {
+    "status": "holding",
+    "requiredRadar": [
+      "tests",
+      "visual"
+    ],
+    "counterfactualPolicy": {
+      "appliedPolicyDeltas": [
+        "cmr1o4b8h0037ob4tyba2h6l4"
+      ],
+      "reasonCodes": [
+        "counterfactual_policy_delta_applied",
+        "counterfactual_policy_delta_hold"
+      ],
+      "requiredRadar": [
+        "visual"
+      ],
+      "requiredTowerActions": [
+        "sequence_after_contract_response"
+      ],
+      "status": "holding",
+      "decision": "hold",
+      "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
+    },
+    "policyDecision": {
+      "id": "cmr1o4eb5003fob4trq1oi4d9",
+      "projectId": "cmr1o40z00018ob4tm2dt9j8n",
+      "mutationLeaseId": "cmr1o4eat003dob4tt2y24g36",
+      "displayCallsign": "UI-GATE-01",
+      "decision": "hold",
+      "reasonCodes": [
+        "route_inside_clearance",
+        "counterfactual_policy_delta_applied",
+        "counterfactual_policy_delta_hold"
+      ],
+      "inputDigest": "sha256:88d9455b59154faa3aa262c57be2b7cecf04e3382e4a19b1a2871650422b105e",
+      "decisionBody": {
+        "status": "holding",
+        "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.",
+        "inspectedZones": [
+          {
+            "zoneKey": "component-ui",
+            "label": "Component UI",
+            "class": "C",
+            "paths": [
+              "src/components/**"
+            ],
+            "rules": [
+              "landing_inspection_required"
+            ],
+            "risk": "medium",
+            "source": "custom",
+            "path": "src/components/SignupForm.tsx"
+          }
+        ],
+        "dojoProof": {
+          "proofRef": null,
+          "licenseRef": null,
+          "evidenceRefs": [],
+          "ledgerCheckpointHash": null,
+          "decisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+          "implementationStatus": {
+            "executable": false,
+            "productionRuntime": false
+          },
+          "verification": {
+            "ok": false,
+            "status": "blocked",
+            "checkedAt": "2026-07-01T06:01:55.071Z",
+            "source": "codesite_dojo_public_verifier",
+            "signatureVerified": false,
+            "blockedBy": [
+              "dojo_public_proof_capsule_required",
+              "dojo_public_proof_key_required"
+            ],
+            "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+          }
+        },
+        "collisionAvoidance": null,
+        "counterfactualPolicy": {
+          "appliedPolicyDeltas": [
+            "cmr1o4b8h0037ob4tyba2h6l4"
+          ],
+          "reasonCodes": [
+            "counterfactual_policy_delta_applied",
+            "counterfactual_policy_delta_hold"
+          ],
+          "requiredRadar": [
+            "visual"
+          ],
+          "requiredTowerActions": [
+            "sequence_after_contract_response"
+          ],
+          "status": "holding",
+          "decision": "hold",
+          "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
+        }
+      },
+      "createdAt": "2026-07-01T06:01:55.313Z"
+    }
+  },
+  "assertions": {
+    "baselineHadNoAppliedPolicyDelta": true,
+    "promotedDeltaChangedTowerSelection": true,
+    "afterReasonExplainsLearning": true,
+    "simulatorEvidenceReferencesDelta": true,
+    "governedPromotionActivatedMemory": true,
+    "explicitAvoidWasNotNeutralizedByFallback": true,
+    "learnedLeaseGateHeldClearance": true,
+    "learnedLeaseGateAugmentedRadar": true
+  }
+}

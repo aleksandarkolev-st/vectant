@@ -5,6 +5,12 @@ import { listTools, callTool } from '@synthi/mcp-hub';
 import { jsonSchemaToGemini } from '@synthi/mcp-hub/helpers';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 import { canReadScope } from '@/lib/integrations/scope';
+import {
+  codeSiteEvidenceRefsJson,
+  firstCodeSiteRef,
+  normalizeCodeSiteEvidenceRefs,
+  normalizeCodeSiteRef,
+} from '@/lib/codesite/substrateIdentity';
 
 const ALIAS_RE = /^ext_\d+$/;
 // R1-7 aggregate guards: skip a tool whose converted schema is too large, and cap
@@ -38,6 +44,17 @@ async function mapWithConcurrency(items, limit, fn) {
 
 function sha256Hex(s) {
   return crypto.createHash('sha256').update(s).digest('hex');
+}
+
+function normalizeCodeSiteAuditContext(value) {
+  const context = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    codeSiteProjectId: firstCodeSiteRef(context.codeSiteProjectId, context.projectId),
+    codeSiteTransactionId: firstCodeSiteRef(context.codeSiteTransactionId, context.transactionId),
+    codeSiteMutationLeaseId: firstCodeSiteRef(context.codeSiteMutationLeaseId, context.mutationLeaseId, context.leaseId),
+    codeSiteAgentSessionId: firstCodeSiteRef(context.codeSiteAgentSessionId, context.agentSessionId),
+    codeSiteEvidenceRefs: normalizeCodeSiteEvidenceRefs(context.codeSiteEvidenceRefs || context.evidenceRefs),
+  };
 }
 
 /**
@@ -146,6 +163,11 @@ async function writeAudit(row) {
         argsHash: row.argsHash || null,
         argsBytes: row.argsBytes ?? null,
         resultBytes: row.resultBytes ?? null,
+        codeSiteProjectId: normalizeCodeSiteRef(row.codeSiteProjectId),
+        codeSiteTransactionId: normalizeCodeSiteRef(row.codeSiteTransactionId),
+        codeSiteMutationLeaseId: normalizeCodeSiteRef(row.codeSiteMutationLeaseId),
+        codeSiteAgentSessionId: normalizeCodeSiteRef(row.codeSiteAgentSessionId),
+        codeSiteEvidenceRefsJson: codeSiteEvidenceRefsJson(row.codeSiteEvidenceRefs),
       },
     });
   } catch (e) {
@@ -173,13 +195,14 @@ export async function callExternalTool(alias, args, aliasMap, scope, turnState) 
   const argsBytes = Buffer.byteLength(argsJson);
   const argsHash = sha256Hex(argsJson);
   const entry = aliasMap[alias];
+  const codeSiteRefs = normalizeCodeSiteAuditContext(scope?.codeSiteContext);
 
   if (!entry) {
-    await writeAudit({ scope, alias, outcome: 'error', errorCode: 'unknown_alias', argsHash, argsBytes });
+    await writeAudit({ scope, alias, outcome: 'error', errorCode: 'unknown_alias', argsHash, argsBytes, ...codeSiteRefs });
     return { error: `Unknown tool "${alias}". It may have been disabled. Do not retry.` };
   }
 
-  const auditBase = { connId: entry.connId, connName: entry.connName, toolName: entry.toolName, scope, alias, argsHash, argsBytes };
+  const auditBase = { connId: entry.connId, connName: entry.connName, toolName: entry.toolName, scope, alias, argsHash, argsBytes, ...codeSiteRefs };
 
   // R1-11: per-turn execution cap.
   if (turnState && typeof turnState.count === 'number') {

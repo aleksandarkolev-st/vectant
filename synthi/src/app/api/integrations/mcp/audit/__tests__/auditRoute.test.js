@@ -3,7 +3,14 @@ import { it, expect, vi, beforeEach } from 'vitest';
 const h = vi.hoisted(() => ({
   auth: vi.fn(),
   canRead: vi.fn(),
-  prisma: { mcpCallAudit: { create: vi.fn() }, mcpConnection: { findUnique: vi.fn() } },
+  prisma: {
+    mcpCallAudit: { create: vi.fn() },
+    mcpConnection: { findUnique: vi.fn() },
+    codeSiteProject: { findFirst: vi.fn() },
+    codeSiteMutationTransaction: { findFirst: vi.fn() },
+    codeSiteMutationLease: { findFirst: vi.fn() },
+    codeSiteAgentSession: { findFirst: vi.fn() },
+  },
 }));
 vi.mock('@/lib/integrations/patAuth', () => ({ authenticatePat: h.auth }));
 vi.mock('@/lib/integrations/scope', () => ({ canReadScope: h.canRead }));
@@ -23,6 +30,10 @@ beforeEach(() => {
   __resetRateLimits(); vi.clearAllMocks();
   h.prisma.mcpCallAudit.create.mockResolvedValue({});
   h.prisma.mcpConnection.findUnique.mockResolvedValue({ id: 'c1' });
+  h.prisma.codeSiteProject.findFirst.mockResolvedValue({ id: 'project-1' });
+  h.prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({ id: 'txn-1' });
+  h.prisma.codeSiteMutationLease.findFirst.mockResolvedValue({ id: 'lease-1' });
+  h.prisma.codeSiteAgentSession.findFirst.mockResolvedValue({ id: 'agent-1' });
 });
 
 it('401 when the PAT is invalid', async () => {
@@ -53,6 +64,100 @@ it('echoes workspaceSlug only for a member', async () => {
   h.canRead.mockResolvedValue(false);
   await POST(req({ serverName: 'gh', toolName: 't', outcome: 'ok', workspaceSlug: 'team' }));
   expect(h.prisma.mcpCallAudit.create.mock.calls[0][0].data.workspaceSlug).toBe(null);
+});
+
+it('attaches CodeSite refs only after workspace membership is proven', async () => {
+  h.auth.mockResolvedValue({ userId: 'u1' });
+  h.canRead.mockResolvedValue(true);
+  await POST(req({
+    serverName: 'codesite',
+    toolName: 'synthi_launch_program',
+    outcome: 'ok',
+    workspaceSlug: 'team',
+    codeSiteContext: {
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      evidenceRefs: ['runtime:event:launch-1', 'runtime:event:launch-1'],
+    },
+  }));
+  expect(h.prisma.codeSiteProject.findFirst).toHaveBeenCalledWith({
+    where: { id: 'project-1', workspaceSlug: 'team' },
+    select: { id: true },
+  });
+  expect(h.prisma.codeSiteMutationTransaction.findFirst).toHaveBeenCalledWith({
+    where: { id: 'txn-1', projectId: 'project-1' },
+    select: { id: true },
+  });
+  expect(h.prisma.mcpCallAudit.create.mock.calls[0][0].data).toMatchObject({
+    workspaceSlug: 'team',
+    codeSiteProjectId: 'project-1',
+    codeSiteTransactionId: 'txn-1',
+    codeSiteMutationLeaseId: 'lease-1',
+    codeSiteAgentSessionId: 'agent-1',
+    codeSiteEvidenceRefsJson: JSON.stringify(['runtime:event:launch-1']),
+  });
+
+  vi.clearAllMocks();
+  h.prisma.mcpCallAudit.create.mockResolvedValue({});
+  h.prisma.mcpConnection.findUnique.mockResolvedValue({ id: 'c1' });
+  h.prisma.codeSiteProject.findFirst.mockResolvedValue({ id: 'project-1' });
+  h.prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({ id: 'txn-1' });
+  h.prisma.codeSiteMutationLease.findFirst.mockResolvedValue({ id: 'lease-1' });
+  h.prisma.codeSiteAgentSession.findFirst.mockResolvedValue({ id: 'agent-1' });
+  h.canRead.mockResolvedValue(false);
+  await POST(req({
+    serverName: 'codesite',
+    toolName: 'synthi_launch_program',
+    outcome: 'ok',
+    workspaceSlug: 'team',
+    codeSiteProjectId: 'project-1',
+    codeSiteTransactionId: 'txn-1',
+    codeSiteMutationLeaseId: 'lease-1',
+    codeSiteAgentSessionId: 'agent-1',
+    codeSiteEvidenceRefs: ['runtime:event:launch-1'],
+  }));
+  expect(h.prisma.mcpCallAudit.create.mock.calls[0][0].data).toMatchObject({
+    workspaceSlug: null,
+    codeSiteProjectId: null,
+    codeSiteTransactionId: null,
+    codeSiteMutationLeaseId: null,
+    codeSiteAgentSessionId: null,
+    codeSiteEvidenceRefsJson: null,
+  });
+});
+
+it('drops CodeSite refs when the referenced project is outside the authorized workspace', async () => {
+  h.auth.mockResolvedValue({ userId: 'u1' });
+  h.canRead.mockResolvedValue(true);
+  h.prisma.codeSiteProject.findFirst.mockResolvedValue(null);
+
+  await POST(req({
+    serverName: 'codesite',
+    toolName: 'synthi_launch_program',
+    outcome: 'ok',
+    workspaceSlug: 'team-a',
+    codeSiteProjectId: 'project-from-team-b',
+    codeSiteTransactionId: 'txn-from-team-b',
+    codeSiteMutationLeaseId: 'lease-from-team-b',
+    codeSiteAgentSessionId: 'agent-from-team-b',
+    codeSiteEvidenceRefs: ['runtime:event:foreign'],
+  }));
+
+  expect(h.prisma.codeSiteProject.findFirst).toHaveBeenCalledWith({
+    where: { id: 'project-from-team-b', workspaceSlug: 'team-a' },
+    select: { id: true },
+  });
+  expect(h.prisma.codeSiteMutationTransaction.findFirst).not.toHaveBeenCalled();
+  expect(h.prisma.mcpCallAudit.create.mock.calls[0][0].data).toMatchObject({
+    workspaceSlug: 'team-a',
+    codeSiteProjectId: null,
+    codeSiteTransactionId: null,
+    codeSiteMutationLeaseId: null,
+    codeSiteAgentSessionId: null,
+    codeSiteEvidenceRefsJson: null,
+  });
 });
 
 it('bounds untrusted strings: oversized / non-hex fields are rejected (storage-abuse guard)', async () => {

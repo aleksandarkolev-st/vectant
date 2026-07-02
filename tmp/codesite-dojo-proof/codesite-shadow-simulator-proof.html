@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Tower Simulator Proof</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a10;color:#f4f7fb}
+body{margin:0;padding:28px;background:#080a10}
+main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
+.hero,.card{border:1px solid #252d3f;border-radius:8px;background:#10131c;padding:18px}
+.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
+h1{margin:8px 0 6px;font-size:25px;letter-spacing:0}
+h2{font-size:16px;margin:0 0 10px}
+p{margin:0;color:#a5adbf;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.label{color:#98a2b8;font-size:12px}
+.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-top:1px solid #252d3f;padding:8px;text-align:left;vertical-align:top}
+th{color:#a5adbf;font-weight:600}
+pre{white-space:pre-wrap;border:1px solid #252d3f;border-radius:8px;background:#05060a;padding:14px;color:#cbd1e3;font-size:12px}
+img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #252d3f}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<span class="pass">PASS</span>
+<h1>CodeSite Tower Simulator Proof</h1>
+<p>Live Docker workflow using real CodeSite projects, repo policy signals, incidents, inspection history, API simulations, and actual browser captures of the Tower Simulator UI.</p>
+</section>
+<section class="grid">
+<div class="card"><div class="label">Workspace</div><div class="value">codesite-shadow-simulator-proof-1782878456107</div></div>
+<div class="card"><div class="label">Schema selected</div><div class="value">schema-first</div></div>
+<div class="card"><div class="label">Migration selected</div><div class="value">single-fullstack-agent</div></div>
+<div class="card"><div class="label">UI captures</div><div class="value">desktop, mobile</div></div>
+</section>
+<section class="card"><h2>Schema Coordination Universes</h2><table><thead><tr><th>Strategy</th><th>Result</th><th>Risk</th><th>Cost</th><th>Unresolved</th></tr></thead><tbody>
+<tr>
+<td>schema-first</td>
+<td>review</td>
+<td>35%</td>
+<td>11</td>
+<td>none</td>
+</tr>
+
+<tr>
+<td>backend-first</td>
+<td>risk</td>
+<td>99%</td>
+<td>16</td>
+<td>semantic_collision</td>
+</tr>
+
+<tr>
+<td>frontend-backend-parallel</td>
+<td>risk</td>
+<td>100%</td>
+<td>16</td>
+<td>semantic_collision</td>
+</tr>
+
+<tr>
+<td>single-fullstack-agent</td>
+<td>review</td>
+<td>46%</td>
+<td>17</td>
+<td>none</td>
+</tr>
+
+<tr>
+<td>test-first</td>
+<td>risk</td>
+<td>64%</td>
+<td>15</td>
+<td>none</td>
+</tr></tbody></table></section>
+<section class="card"><h2>Migration Runway Universes</h2><table><thead><tr><th>Strategy</th><th>Result</th><th>Risk</th><th>Cost</th><th>Tower actions</th></tr></thead><tbody>
+<tr>
+<td>schema-first</td>
+<td>review</td>
+<td>28%</td>
+<td>10</td>
+<td>single_migration_runway_lock, refresh_downstream_assumptions, run_owned_tests_before_landing</td>
+</tr>
+
+<tr>
+<td>backend-first</td>
+<td>review</td>
+<td>40%</td>
+<td>12</td>
+<td>single_migration_runway_lock, refresh_downstream_assumptions, run_owned_tests_before_landing</td>
+</tr>
+
+<tr>
+<td>frontend-backend-parallel</td>
+<td>review</td>
+<td>54%</td>
+<td>13</td>
+<td>single_migration_runway_lock, refresh_downstream_assumptions, run_owned_tests_before_landing</td>
+</tr>
+
+<tr>
+<td>single-fullstack-agent</td>
+<td>passed</td>
+<td>13%</td>
+<td>13</td>
+<td>single_migration_runway_lock, refresh_downstream_assumptions, run_owned_tests_before_landing</td>
+</tr>
+
+<tr>
+<td>test-first</td>
+<td>passed</td>
+<td>18%</td>
+<td>11</td>
+<td>single_migration_runway_lock, refresh_downstream_assumptions, run_owned_tests_before_landing</td>
+</tr></tbody></table></section>
+<section><pre>{
+  &quot;schemaSelected&quot;: true,
+  &quot;schemaAvoidsSemanticCollision&quot;: true,
+  &quot;parallelLeavesSemanticCollision&quot;: true,
+  &quot;aliasesNormalized&quot;: true,
+  &quot;repoSignalsUsed&quot;: true,
+  &quot;counterfactualPersisted&quot;: true,
+  &quot;shadowAndArbiterEventsPersisted&quot;: true,
+  &quot;evidenceRefsPortable&quot;: true,
+  &quot;migrationSelectedSingleRunway&quot;: true,
+  &quot;migrationLockActionVisible&quot;: true,
+  &quot;migrationSchemaUnresolved&quot;: true,
+  &quot;desktopUiProved&quot;: true,
+  &quot;mobileUiProved&quot;: true
+}</pre></section>
+<section><h2>desktop UI Capture</h2><img src="codesite-shadow-simulator-ui-desktop.png" alt="Tower Simulator desktop capture"></section>
+<section><h2>mobile UI Capture</h2><img src="codesite-shadow-simulator-ui-mobile.png" alt="Tower Simulator mobile capture"></section>
+</main>
+</body>
+</html>

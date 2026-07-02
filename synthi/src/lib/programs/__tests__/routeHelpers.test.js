@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { mergeProgramSession } from '../routeHelpers';
+import { codeSiteContextFromBody, mergeProgramSession } from '../routeHelpers';
+
+describe('codeSiteContextFromBody', () => {
+  it('accepts object CodeSite context aliases and rejects non-objects', () => {
+    const context = { projectId: 'project-1', transactionId: 'txn-1' };
+    expect(codeSiteContextFromBody({ codeSiteContext: context })).toBe(context);
+    expect(codeSiteContextFromBody({ code_site_context: context })).toBe(context);
+    expect(codeSiteContextFromBody({ codeSiteContext: ['project-1'] })).toBeNull();
+    expect(codeSiteContextFromBody({ codeSiteContext: 'project-1' })).toBeNull();
+    expect(codeSiteContextFromBody(null)).toBeNull();
+  });
+});
 
 describe('mergeProgramSession health surfacing', () => {
   it('surfaces the live runtime healthState as lastHealthState', () => {

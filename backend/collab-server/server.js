@@ -20,7 +20,10 @@ const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntime
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
-const { codeSiteGitActionAttempts } = require('./codesiteGitPolicy');
+const {
+  codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
+} = require('./codesiteGitPolicy');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
@@ -37,9 +40,11 @@ const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
   codeSiteCommitMessage,
   codeSiteContextFromRequest,
+  codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   completeCodeSiteCommitProof,
+  createCodeSiteFS,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
@@ -47,6 +52,9 @@ const {
   finalizeCodeSiteQuarantineWorkspace,
   isCodeSiteCommitBlockedError,
   isCodeSiteDeniedError,
+  listCodeSiteQuarantineManifests,
+  normalizeRepoRelativePath,
+  readCodeSiteQuarantineManifest,
 } = require('./codesiteFs');
 
 function queueHeadlessCommandStart(ptyProcess, command) {
@@ -240,6 +248,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
           runtimeOptions = {
             codesiteContext,
             codeSiteQuarantineRoot: codeSiteQuarantine?.root || '',
+            codeSiteQuarantineId: codeSiteQuarantine?.root || '',
           };
         }
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId, runtimeOptions);
@@ -492,6 +501,10 @@ function arrayValue(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function uniqueArray(values) {
+  return [...new Set(arrayValue(values).filter(Boolean))];
+}
+
 function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
   const explicitLineProvenance = arrayValue(
     payload.lineProvenance
@@ -505,6 +518,379 @@ function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
     evidenceRefs: arrayValue(payload.evidenceRefs || payload.evidence_refs),
     processAncestry: arrayValue(payload.processAncestry || payload.process_ancestry),
   };
+}
+
+function sha256TextDigest(value) {
+  return sha256BufferDigest(Buffer.from(String(value ?? ''), 'utf8'));
+}
+
+function sha256BufferDigest(buffer) {
+  return `sha256:${crypto.createHash('sha256').update(buffer || Buffer.alloc(0)).digest('hex')}`;
+}
+
+function decodeQuarantineReplayContent(change) {
+  if (change.replayOperation === 'delete') {
+    return { operation: 'delete', buffer: null, text: null, digest: null };
+  }
+  if (change.replayOperation === 'write_binary' || typeof change.afterBase64 === 'string') {
+    const buffer = Buffer.from(String(change.afterBase64 || ''), 'base64');
+    return { operation: 'write_binary', buffer, text: null, digest: sha256BufferDigest(buffer) };
+  }
+  const text = String(change.afterText ?? '');
+  const buffer = Buffer.from(text, 'utf8');
+  return { operation: 'write_text', buffer, text, digest: sha256BufferDigest(buffer) };
+}
+
+async function workspaceFileExists(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    await fsPromises.stat(path.join(repoRoot, relPath));
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return false;
+    }
+    return false;
+  }
+}
+
+async function readWorkspaceFileBuffer(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    return await fsPromises.readFile(path.join(repoRoot, relPath));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return null;
+    }
+    return null;
+  }
+}
+
+function validateQuarantineReplayBase(change, currentBuffer, currentExists) {
+  const currentDigest = currentBuffer ? sha256BufferDigest(currentBuffer) : null;
+  const nextContent = decodeQuarantineReplayContent(change);
+  const afterDigest = nextContent.digest;
+  if (change.afterDigest && afterDigest && change.afterDigest !== afterDigest) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.afterDigest && nextContent.operation === 'delete' && change.afterDigest !== null) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === false && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === true && !currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_missing'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (typeof change.beforeText === 'string') {
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
+    return currentExists && currentContent === change.beforeText
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256TextDigest(change.beforeText),
+        afterDigest,
+      };
+  }
+  if (typeof change.beforeBase64 === 'string') {
+    const expectedBuffer = Buffer.from(change.beforeBase64, 'base64');
+    return currentExists && currentBuffer && currentBuffer.equals(expectedBuffer)
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256BufferDigest(expectedBuffer),
+        afterDigest,
+      };
+  }
+  if (change.beforeDigest) {
+    return currentDigest === change.beforeDigest
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: change.beforeDigest,
+        afterDigest,
+      };
+  }
+  if (nextContent.operation === 'delete') {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_base_evidence_required'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (String(change.kind || '').toLowerCase() === 'created' && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  return { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent };
+}
+
+function selectedQuarantineChanges(manifest, parsed = {}) {
+  const requestedPaths = new Set(arrayValue(parsed.paths || parsed.selectedPaths || parsed.selected_paths)
+    .map((item) => {
+      try { return normalizeRepoRelativePath(item); } catch (_) { return null; }
+    })
+    .filter(Boolean));
+  if (!requestedPaths.size) {
+    const error = new Error('missing_selected_paths');
+    error.code = 'MISSING_SELECTED_PATHS';
+    throw error;
+  }
+  const changes = arrayValue(manifest?.changes);
+  return changes.filter((change) => requestedPaths.has(change.path || change.quarantineEvidence?.path));
+}
+
+function quarantineManifestEventDetails(manifest = {}) {
+  const changes = arrayValue(manifest.changes).map((change) => {
+    const evidence = change.quarantineEvidence || {};
+    return {
+      path: change.path || evidence.path || null,
+      kind: change.kind || evidence.kind || null,
+      beforeDigest: change.beforeDigest || evidence.beforeDigest || null,
+      afterDigest: change.afterDigest || evidence.afterDigest || null,
+      evidenceRef: evidence.evidenceRef || change.evidenceRef || null,
+      quarantineId: change.quarantineId || evidence.quarantineId || manifest.quarantineId || null,
+    };
+  }).filter((change) => change.path);
+  return {
+    manifestPaths: uniqueArray(changes.map((change) => change.path)),
+    manifestChanges: changes,
+    manifestChangeCount: changes.length,
+    symlinkSanitization: manifest.symlinkSanitization || null,
+  };
+}
+
+async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason) {
+  await ensureRuntimeFilesystem({
+    workspaceSlug: slug,
+    filesystemUserId,
+    runtimeScope,
+    reason,
+  });
+  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const baseDir = codeSiteRuntimeQuarantineBaseDir(cwd)
+    || path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
+  return {
+    cwd,
+    baseDir,
+    repoRoot: gitService.getEffectiveRepoPath(slug, filesystemUserId),
+  };
+}
+
+async function prepareCodeSiteQuarantineReplayPlan({
+  slug,
+  changes,
+  repoRoot,
+  effectiveUserId,
+  evidenceRefs = [],
+  processAncestry = [],
+  ancestryLabel = 'collab-server:codesitefs-quarantine-replay',
+}) {
+  const replayPlan = codeSiteQuarantineReplayPlan(changes);
+  const rejected = [...replayPlan.rejected];
+  const prepared = [];
+  if (!replayPlan.changes.length && !rejected.length) {
+    rejected.push({
+      ok: false,
+      index: null,
+      path: null,
+      reasonCodes: ['quarantine_replay_no_changes_selected'],
+    });
+  }
+  if (rejected.length) {
+    return { replayPlan, prepared, rejected };
+  }
+  for (const change of replayPlan.changes) {
+    const currentBuffer = await readWorkspaceFileBuffer(repoRoot, change.path);
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
+    const currentExists = await workspaceFileExists(repoRoot, change.path);
+    const validation = validateQuarantineReplayBase(change, currentBuffer, currentExists);
+    const changeEvidenceRefs = uniqueArray([
+      ...arrayValue(evidenceRefs),
+      ...arrayValue(change.evidenceRefs),
+      change.evidenceRef,
+    ]);
+    const changeProcessAncestry = uniqueArray([
+      ...arrayValue(processAncestry),
+      ancestryLabel,
+    ]);
+    if (!validation.ok) {
+      rejected.push({
+        ok: false,
+        index: change.index,
+        path: change.path,
+        kind: change.kind,
+        reasonCodes: validation.reasonCodes,
+        currentDigest: validation.currentDigest,
+        expectedDigest: validation.expectedDigest || change.beforeDigest || null,
+        afterDigest: validation.afterDigest || change.afterDigest || null,
+        evidenceRef: change.evidenceRef,
+        quarantineId: change.quarantineId || null,
+      });
+      continue;
+    }
+    const lineProvenance = quarantineReplayLineProvenance(change, currentContent, validation, {
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+    });
+    prepared.push({
+      change,
+      operation: validation.operation,
+      currentContent,
+      currentBuffer,
+      currentExists,
+      validation,
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+      lineProvenance,
+    });
+  }
+  return { replayPlan, prepared, rejected };
+}
+
+function quarantineReplayLineProvenance(change, currentContent, validation, options = {}) {
+  if (validation.operation === 'write_text' || validation.operation === 'delete') {
+    return deriveLineProvenanceFromContentChange(
+      change.path,
+      currentContent,
+      validation.operation === 'delete' ? '' : validation.nextContent.text,
+      {
+        evidenceRefs: options.evidenceRefs,
+        processAncestry: options.processAncestry,
+        promptSummary: validation.operation === 'delete'
+          ? 'Apply reviewed CodeSiteFS quarantine delete'
+          : 'Apply reviewed CodeSiteFS quarantine text change',
+        reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+      },
+    );
+  }
+  return [{
+    filePath: change.path,
+    startLine: 1,
+    endLine: 1,
+    lineAnchor: `${change.path}#L1-L1`,
+    reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: 'Apply reviewed CodeSiteFS quarantine binary change',
+  }];
+}
+
+function quarantineReplayAttempt(item) {
+  return {
+    path: item.change.path,
+    kind: 'quarantine-review-apply',
+    tool: item.operation === 'delete' ? 'file_delete' : 'file_write',
+    evidenceRefs: item.evidenceRefs,
+    processAncestry: item.processAncestry,
+    lineProvenance: item.lineProvenance,
+  };
+}
+
+async function applyQuarantineReplayItem(slug, item, effectiveUserId) {
+  if (item.operation === 'delete') {
+    await withTelemetry('fs:delete', () => gitService.deleteFile(slug, item.change.path, effectiveUserId));
+    return;
+  }
+  const nextContent = item.validation.nextContent;
+  await withTelemetry('fs:write', () => gitService.writeFile(
+    slug,
+    item.change.path,
+    item.operation === 'write_binary' ? nextContent.buffer : nextContent.text,
+    effectiveUserId,
+  ));
+}
+
+function quarantineReplayAppliedRecord(item) {
+  return {
+    path: item.change.path,
+    kind: item.change.kind,
+    operation: item.operation,
+    beforeDigest: item.validation.currentDigest,
+    afterDigest: item.validation.afterDigest,
+    evidenceRef: item.change.evidenceRef,
+    lineProvenanceCount: item.lineProvenance.length,
+  };
+}
+
+function codeSiteControlPlaneBaseUrl(context = {}) {
+  const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
+  if (explicit) {
+    return String(explicit)
+      .replace('{workspace_slug}', encodeURIComponent(context.workspaceSlug || ''))
+      .replace(/\/+$/, '');
+  }
+  const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
+  if (!appBase || !context.workspaceSlug) return null;
+  return `${String(appBase).replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
+}
+
+async function recordCodeSiteQuarantineTimelineEvent(context, eventType, body = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const baseUrl = codeSiteControlPlaneBaseUrl(context);
+  if (!baseUrl || typeof fetch !== 'function') return null;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/quarantine-events`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...body,
+      eventType,
+    }),
+  });
+  const text = await response.text().catch(() => '');
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch (_) {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: parsed.error || parsed.message || 'codesite_quarantine_event_failed',
+    };
+  }
+  return parsed.event || parsed;
 }
 
 async function readWorkspaceFileForLineProvenance(slug, filePath, userId) {
@@ -706,12 +1092,9 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
  * When userId is provided, reads from the per-user repo; otherwise falls
  * back to the slug-level repo.
  */
-async function getActualFileContent(slug, filePath, userId) {
+async function getActualFileContent(slug, filePath, userId, options = {}) {
   try {
-    const repoPath = gitService.getEffectiveRepoPath(slug, userId);
-    const fullPath = path.join(repoPath, filePath);
-    const content = await fsPromises.readFile(fullPath, 'utf8');
-    return content;
+    return await gitService.readFile(slug, filePath, userId, options);
   } catch (e) {
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
     return null;
@@ -806,7 +1189,7 @@ async function flushDocToDisk(docName, options = {}) {
   // the user's edited content, and there's nothing to revert to.
   //
   // ORDER MATTERS: we MUST read the prior disk content BEFORE calling
-  // safeWriteFile, otherwise the read sees the freshly-written new content
+  // gitService.writeFile, otherwise the read sees the freshly-written new content
   // and `prior === content` short-circuits the baseline seed.  An earlier
   // version relied on gitService.syncFile() happening in the caller, which
   // broke this ordering and meant the very first saved version was always
@@ -842,13 +1225,16 @@ async function flushDocToDisk(docName, options = {}) {
     promptSummary: 'Yjs save flushed to disk',
     reasonRef: `yjs_flush:${filePath}`,
   });
-  await enforceCodeSiteWriteAllowed(options.codesiteContext, {
-    path: filePath,
-    kind: 'yjs_flush',
+  await runCodeSiteMutationBoundary(options.codesiteContext, {
+    operation: 'yjs_flush',
     tool: 'file_write',
-    ...codeSiteWriteEvidence(options, derivedLineProvenance),
-  }, codeSiteEnforceOptions(options.codesiteContext));
-  await gitService.safeWriteFile(fullPath, content);
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(options, derivedLineProvenance),
+    }],
+  }, async () => gitService.writeFile(slug, filePath, content, effectiveUserId), { repoRoot: repoPath });
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -973,6 +1359,45 @@ function codeSiteEnforceOptions(context, options = {}) {
   };
 }
 
+async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
+  const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
+  return codesiteFs.run(operation, applyFn, options);
+}
+
+async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn, options = {}) {
+  return runCodeSiteMutationBoundary(context, {
+    operation: `git:${action}`,
+    tool: attempts?.[0]?.tool || 'git_worktree',
+    attempts,
+  }, applyFn, options);
+}
+
+function codeSiteProvisioningAttempt(kind) {
+  return {
+    path: '**',
+    kind,
+    tool: 'git_provisioning',
+  };
+}
+
+async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
+  if (!context?.active) return null;
+  return enforceCodeSiteWriteAllowed(
+    context,
+    codeSiteProvisioningAttempt(kind),
+    codeSiteEnforceOptions(context, options),
+  );
+}
+
+function needsCodeSiteUserRepoProvisioning(slug, userId) {
+  if (!userId) return false;
+  try {
+    return !gitService.isUserRepoInitialized(slug, userId);
+  } catch (_) {
+    return true;
+  }
+}
+
 function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   return codeSiteContextFromRequest(req, parsed, {
     workspaceSlug: extra.workspaceSlug,
@@ -1082,14 +1507,19 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
     promptSummary: 'Yjs pre-stage flush to disk',
     reasonRef: `yjs_flush:${filePath}`,
   });
-  await enforceCodeSiteWriteAllowed(scope.codesiteContext, {
-    path: filePath,
-    kind: 'yjs_flush',
+  await runCodeSiteMutationBoundary(scope.codesiteContext, {
+    operation: 'yjs_flush',
     tool: 'file_write',
-    ...codeSiteWriteEvidence(scope, derivedLineProvenance),
-  }, codeSiteEnforceOptions(scope.codesiteContext));
-  await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-  await fsPromises.writeFile(fullPath, content, 'utf-8');
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(scope, derivedLineProvenance),
+    }],
+  }, async () => {
+    await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fsPromises.writeFile(fullPath, content, 'utf-8');
+  }, { repoRoot: repoPath });
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
 }
@@ -1900,6 +2330,13 @@ const server = http.createServer(async (req, res) => {
     const effectiveUserId = sessionId && userId
       ? sessionManager.getEffectiveUserId(userId, sessionId)
       : userId;
+    const prepCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const prepCodeSiteContext = codeSiteContextFromRequest(req, prepCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: effectiveUserId || null,
+    });
+    const prepCodeSiteEnforcement = codeSiteEnforceOptions(prepCodeSiteContext);
 
     if (req.method === 'GET') {
       const status = await workspacePrepManager.getWorkspacePrepStatus(slug, effectiveUserId);
@@ -1920,11 +2357,31 @@ const server = http.createServer(async (req, res) => {
 
       const hKey = hydrationKey(slug, effectiveUserId);
       if (!hydratedSlugs.has(hKey)) {
-        await gitService.initRepo(slug, null, effectiveUserId);
+        try {
+          if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+            await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare:auto-init', prepCodeSiteEnforcement);
+          }
+          await gitService.initRepo(slug, null, effectiveUserId);
+        } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
+          throw e;
+        }
         hydratedSlugs.add(hKey);
       }
 
       const force = /^(1|true|yes)$/i.test(String(urlObj.searchParams.get('force') || ''));
+      try {
+        await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare', prepCodeSiteEnforcement);
+      } catch (e) {
+        if (e?.code === 'CODESITE_WRITE_DENIED') {
+          writeCodeSiteDenied(res, e);
+          return;
+        }
+        throw e;
+      }
       const status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
         force,
         trigger: 'workspace_prepare_api',
@@ -2041,6 +2498,13 @@ const server = http.createServer(async (req, res) => {
     
     // Extract optional userId for per-user repo support
     const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    const fileContentCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const fileContentCodeSiteContext = codeSiteContextFromRequest(req, fileContentCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: userId || null,
+    });
+    const fileContentCodeSiteEnforcement = codeSiteEnforceOptions(fileContentCodeSiteContext);
 
     try {
       // Ensure repo exists and (when configured) hydrate from GCS before reading.
@@ -2048,16 +2512,30 @@ const server = http.createServer(async (req, res) => {
       const hKey = hydrationKey(slug, userId);
       if (!hydratedSlugs.has(hKey)) {
         try {
+          if (!userId || needsCodeSiteUserRepoProvisioning(slug, userId)) {
+            await enforceCodeSiteProvisioningAllowed(fileContentCodeSiteContext, 'file-content:auto-init', fileContentCodeSiteEnforcement);
+          }
           await gitService.initRepo(slug, null, userId);
           hydratedSlugs.add(hKey);
         } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
           if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
           }
         }
       }
 
-      const content = await getActualFileContent(slug, filePath, userId);
+      const content = await getActualFileContent(slug, filePath, userId, {
+        codesiteContext: fileContentCodeSiteContext,
+        ...fileContentCodeSiteEnforcement,
+        operation: 'file-content',
+        tool: 'file_read',
+        evidenceRefs: ['collab:file-content'],
+        processAncestry: ['collab-server:file-content'],
+      });
       if (content === null) {
         console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -2197,7 +2675,7 @@ const server = http.createServer(async (req, res) => {
         sysboxEnabled: isSysboxRuntimeEnabled(),
         hasHybrid: Boolean(workspaceRuntime),
       });
-      if (launchMode === 'block-runtime') {
+      if (launchMode === 'block-runtime' || launchMode === 'block-host') {
         writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:launch-program');
         return;
       }
@@ -2448,8 +2926,12 @@ const server = http.createServer(async (req, res) => {
           ...codeSiteWriteEvidence({ ...parsed, ...file }, derivedLineProvenance),
         };
       }));
-      await enforceCodeSiteWritesAllowed(codeSiteContext, scaffoldAttempts, codeSiteEnforceOptions(codeSiteContext));
-      const result = applyScaffoldFiles(cwd, parsed.files || []);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'program-scaffold',
+        tool: 'file_write',
+        attempts: scaffoldAttempts,
+      }, async () => applyScaffoldFiles(cwd, parsed.files || []), { repoRoot: cwd });
+      const result = boundary.applyResult;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
@@ -2460,6 +2942,387 @@ const server = http.createServer(async (req, res) => {
       const code = err?.message === 'path_escape' ? 400 : 500;
       res.writeHead(code, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
+    }
+    return;
+  }
+
+  const quarantineCollectionMatch = /^\/codesitefs\/quarantines\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineCollectionMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(quarantineCollectionMatch[1]);
+    const actorUserId = programRuntimeUrl.searchParams.get('userId') || (req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '');
+    const effectiveUserId = programRuntimeUrl.searchParams.get('filesystemUserId')
+      || (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '')
+      || actorUserId;
+    const runtimeScope = programRuntimeUrl.searchParams.get('runtimeScope') || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list');
+      const quarantines = await listCodeSiteQuarantineManifests(storage.baseDir, slug, {
+        transactionId: programRuntimeUrl.searchParams.get('transactionId') || null,
+        status: programRuntimeUrl.searchParams.get('status') || null,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, quarantines }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err?.message || 'codesite_quarantine_list_failed' }));
+    }
+    return;
+  }
+
+  const quarantineRecordMatch = /^\/codesitefs\/quarantines\/([^/]+)\/([^/]+)(?:\/(replay|apply))?$/.exec(programRuntimeUrl.pathname);
+  if (quarantineRecordMatch) {
+    const slug = decodeURIComponent(quarantineRecordMatch[1]);
+    const quarantineId = decodeURIComponent(quarantineRecordMatch[2]);
+    const action = quarantineRecordMatch[3] || null;
+    let parsed = {};
+    if (req.method !== 'GET') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { parsed = JSON.parse(body || '{}'); } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+    }
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope
+      || programRuntimeUrl.searchParams.get('runtimeScope')
+      || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || programRuntimeUrl.searchParams.get('userId') || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      programRuntimeUrl.searchParams.get('filesystemUserId') ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`);
+      const quarantine = await readCodeSiteQuarantineManifest(storage.baseDir, slug, quarantineId);
+      if (!action && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, quarantine }));
+        return;
+      }
+      if (!['replay', 'apply'].includes(action) || req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
+        return;
+      }
+      if (action === 'apply' && (!codeSiteContext.active || !codeSiteContext.transactionId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'codesite_transaction_required',
+          message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      if (action === 'apply' && requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+        return;
+      }
+
+      const selected = selectedQuarantineChanges(quarantine, parsed);
+      const manifestEventDetails = quarantineManifestEventDetails(quarantine);
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: selected,
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: [
+          ...arrayValue(parsed.evidenceRefs || parsed.evidence_refs),
+          ...arrayValue(quarantine.evidenceRefs),
+        ],
+        processAncestry: [
+          ...arrayValue(parsed.processAncestry || parsed.process_ancestry),
+          ...arrayValue(quarantine.processAncestry),
+        ],
+        ancestryLabel: action === 'apply'
+          ? 'collab-server:codesitefs-quarantine-apply'
+          : 'collab-server:codesitefs-quarantine-replay',
+      });
+
+      if (action === 'replay') {
+        const reviewedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_reviewed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
+          },
+        });
+        const replayedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_replayed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
+          },
+        });
+        res.writeHead(replay.rejected.length ? 409 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: replay.rejected.length === 0,
+          mode: 'replay',
+          quarantine: {
+            quarantineId,
+            status: quarantine.status,
+            transactionId: quarantine.transactionId,
+          },
+          replay: replay.prepared.map(quarantineReplayAppliedRecord),
+          rejected: replay.rejected,
+          timelineEvents: {
+            reviewed: reviewedEvent,
+            replayed: replayedEvent,
+          },
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: quarantine.evidenceRefs,
+        details: {
+          quarantineId,
+          applied,
+          boundaryPhase: boundary.phase,
+          ...manifestEventDetails,
+        },
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        quarantine: { quarantineId, status: quarantine.status, transactionId: quarantine.transactionId },
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      if (err?.code === 'MISSING_SELECTED_PATHS') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'missing_selected_paths',
+          message: 'Replay/apply requires explicit selected quarantine paths.',
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      const notFound = err?.code === 'ENOENT';
+      console.error('[CodeSiteFS Quarantine] failed:', err?.message || err);
+      res.writeHead(notFound ? 404 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: notFound ? 'codesite_quarantine_not_found' : 'codesite_quarantine_failed',
+        message: err?.message || 'CodeSite quarantine operation failed',
+        detail: {
+          action: action || 'get',
+          controlPlaneUrl: codeSiteControlPlaneBaseUrl(codeSiteContext),
+          hasControlPlaneCookie: Boolean(codeSiteContext.cookie),
+        },
+        codesite: codeSiteMetadata,
+      }));
+    }
+    return;
+  }
+
+  // Compatibility endpoint for callers that already have explicit quarantine
+  // evidence packets but not a stored manifest id.
+  const quarantineApplyMatch = /^\/codesitefs\/quarantine\/apply\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineApplyMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(quarantineApplyMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    if (!codeSiteContext.active || !codeSiteContext.transactionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_transaction_required',
+        message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+        codesite: codeSiteMetadata,
+      }));
+      return;
+    }
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+      return;
+    }
+
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantine-apply');
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes || parsed.files || [],
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        processAncestry: parsed.processAncestry || parsed.process_ancestry,
+        ancestryLabel: 'collab-server:codesitefs-quarantine-apply',
+      });
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId: replay.prepared[0]?.change?.quarantineId || null,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        details: { applied, boundaryPhase: boundary.phase },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      console.error('[CodeSiteFS Quarantine Apply] failed:', err?.message || err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_quarantine_apply_failed',
+        message: err?.message || 'CodeSite quarantine apply failed',
+        codesite: codeSiteMetadata,
+      }));
     }
     return;
   }
@@ -2519,6 +3382,10 @@ const server = http.createServer(async (req, res) => {
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
       if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
         writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-terminal');
+        return;
+      }
+      if (codeSiteContext.active) {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-terminal');
         return;
       }
 
@@ -2737,6 +3604,10 @@ const server = http.createServer(async (req, res) => {
       writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
       return;
     }
+    if (codeSiteContext.active) {
+      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-pty');
+      return;
+    }
     let cwd;
     try {
       await ensureRuntimeFilesystem({
@@ -2898,6 +3769,10 @@ const server = http.createServer(async (req, res) => {
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
       writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
+      return;
+    }
+    if (codeSiteContext.active) {
+      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec');
       return;
     }
     let cwd;
@@ -3365,12 +4240,15 @@ const server = http.createServer(async (req, res) => {
           actorUserId: userId,
           effectiveUserId: targetUserId,
         });
-        await enforceCodeSiteWriteAllowed(codeSiteContext, {
-          path: normalizedPath,
-          kind: 'file-version-restore',
+        await runCodeSiteMutationBoundary(codeSiteContext, {
+          operation: 'file-version-restore',
           tool: 'file_write',
-        }, codeSiteEnforceOptions(codeSiteContext));
-        await gitService.safeWriteFile(fullPath, content);
+          attempts: [{
+            path: normalizedPath,
+            kind: 'file-version-restore',
+            tool: 'file_write',
+          }],
+        }, async () => gitService.writeFile(slug, normalizedPath, content, targetUserId), { repoRoot: repoPath });
 
         // 2) Pull the CRDT doc onto the restored content so live editors
         // converge without data loss, then ALWAYS hard-invalidate the doc.
@@ -4318,14 +5196,21 @@ const server = http.createServer(async (req, res) => {
         // exists with partial/stale content (e.g. .code_intel artifacts).
         // Now safe to run AFTER permission check.
         const hKey = hydrationKey(slug, effectiveUserId);
-        if (action !== 'clone' && !hydratedSlugs.has(hKey)) {
+        if (action !== 'clone' && action !== 'init' && !hydratedSlugs.has(hKey)) {
           try {
             // initRepo will mkdir the repo path, init .git, and (when configured)
             // pull the current workspace contents from GCS.
             // Pass effectiveUserId so it also provisions the per-user working tree.
+            if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+              await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:auto-init', codeSiteEnforcement);
+            }
             await gitService.initRepo(slug, null, effectiveUserId);
             hydratedSlugs.add(hKey);
           } catch (e) {
+            if (e?.code === 'CODESITE_WRITE_DENIED') {
+              writeCodeSiteDenied(res, e);
+              return;
+            }
             // If init fails, continue so the normal handler can return a structured error.
             if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
               console.warn('[Collab] auto-init repo failed for slug:', slug, e?.message || e);
@@ -4340,12 +5225,19 @@ const server = http.createServer(async (req, res) => {
             // skip provisioning a separate repo.
             if (effectiveUserId) {
               try {
+                if (needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+                  await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:ensure-user-repo', codeSiteEnforcement);
+                }
                 await gitService.ensureUserRepo(slug, effectiveUserId);
                 // Pin the per-user repo in the cache so it won't be evicted
                 // while this user is actively interacting with the workspace.
                 // Unpinning happens when the notification WS disconnects.
                 repoCache.pin(slug, effectiveUserId);
               } catch (e) {
+                if (e?.code === 'CODESITE_WRITE_DENIED') {
+                  writeCodeSiteDenied(res, e);
+                  return;
+                }
                 // For non-clone/init actions this is a real error — the user
                 // cannot operate without an isolated repo.
                 if (action !== 'clone' && action !== 'init') {
@@ -4381,7 +5273,18 @@ const server = http.createServer(async (req, res) => {
             }
 
             const codeSiteGitAttempts = codeSiteGitActionAttempts(action, data);
-            if (codeSiteGitAttempts.length) {
+            const codeSiteGitRepoRoot = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+            const runGitBoundary = (applyFn) => runCodeSiteGitMutationBoundary(
+              codeSiteContext,
+              action,
+              codeSiteGitAttempts,
+              applyFn,
+              {
+                ...codeSiteEnforcement,
+                repoRoot: codeSiteGitRepoRoot,
+              },
+            );
+            if (codeSiteGitAttempts.length && !shouldRunCodeSiteGitBoundary(action)) {
               await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts, codeSiteEnforcement);
             }
 
@@ -4397,13 +5300,28 @@ const server = http.createServer(async (req, res) => {
                 }
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remove-remote':
-                    result = await gitService.removeRemote(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.removeRemote(slug, data.name, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'set-remote-url':
-                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
@@ -4508,7 +5426,10 @@ const server = http.createServer(async (req, res) => {
                 case 'checkout':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4519,65 +5440,112 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'fetch':
-                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds)),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
-	                case 'commit':
-	                    const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
-	                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
-	                    });
-                    const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
-                      ? {
-                        ...data,
-                        codesite: {
-                          ...(data.codesite || data.codeSite || {}),
-                          proofBundle: codeSiteCommitProof.proofBundle,
-                        },
-                      }
-                      : data;
-                    result = await withTelemetry('git:commit', () => gitService.commit(
-                      slug,
-                      codeSiteCommitMessage(data.message, codeSiteCommitPayload),
-                      effectiveUserId,
-                      data.amend,
-                      commitIdentity,
-                    ));
+                case 'commit':
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
+                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                        });
+                        const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
+                          ? {
+                            ...data,
+                            codesite: {
+                              ...(data.codesite || data.codeSite || {}),
+                              proofBundle: codeSiteCommitProof.proofBundle,
+                            },
+                          }
+                          : data;
+                        return withTelemetry('git:commit', () => gitService.commit(
+                          slug,
+                          codeSiteCommitMessage(data.message, codeSiteCommitPayload),
+                          effectiveUserId,
+                          data.amend,
+                          commitIdentity,
+                        ));
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before staging
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before staging
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-all':
-                    result = await gitService.stageAll(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-lines':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before patching so the
-                    // working tree matches the editor state exactly.
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before patching so the
+                          // working tree matches the editor state exactly.
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
-                    result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
@@ -4585,19 +5553,35 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':
-                    acquireStagingLock(slug, data.filePath);
-                    result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          return gitService.unstageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-all':
-                    result = await gitService.unstageAll(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.unstageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds)),
+                      );
+                      result = boundary.applyResult;
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     } finally {
                       resumeWatcher(slug);
@@ -4606,7 +5590,10 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity)),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4618,12 +5605,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'discard':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'discard',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardChange(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
@@ -4634,14 +5621,12 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: '**',
-                      kind: 'discard-all',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.discardAll(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -4654,44 +5639,44 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'resolve-ours',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'resolve-theirs':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'resolve-theirs',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'mark-resolved':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.filePath,
-                      kind: 'mark-resolved',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.markResolved(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'abort-merge':
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: '**',
-                      kind: 'abort-merge',
-                      tool: 'git_worktree',
-                    }, codeSiteEnforcement);
-                    result = await gitService.abortMerge(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.abortMerge(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4699,7 +5684,10 @@ const server = http.createServer(async (req, res) => {
                 case 'merge-branch':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4709,11 +5697,13 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'check-merge-conflicts':
-                    // In-memory merge conflict detection using git merge-tree.
-                    // No working tree changes — runs in milliseconds.
-                    result = await gitService.checkMergeConflicts(
+                    // Fetch updates remote-tracking refs, then merge-tree checks in memory.
+                    {
+                      const boundary = await runGitBoundary(() => gitService.checkMergeConflicts(
                         slug, data.baseBranch, data.headBranch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds
-                    );
+                      ));
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
@@ -4744,12 +5734,20 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashList(slug, effectiveUserId);
                     break;
                 case 'stash-push':
-                    result = await gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'stash-pop':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4760,7 +5758,10 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-apply':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashApply(slug, data.index, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashApply(slug, data.index, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4769,12 +5770,20 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'stash-drop':
-                    result = await gitService.stashDrop(slug, data.index, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashDrop(slug, data.index, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'interactive-rebase':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4786,7 +5795,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-abort':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseAbort(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseAbort(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4798,7 +5810,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-continue':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseContinue(slug, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseContinue(slug, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -4808,7 +5823,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'cherry-pick':
-                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4817,16 +5837,36 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getTags(slug, effectiveUserId);
                     break;
                 case 'create-tag':
-                    result = await gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'delete-tag':
-                    result = await gitService.deleteTag(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.deleteTag(slug, data.name, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'push-tag':
-                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'revert':
-                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -4921,14 +5961,28 @@ const server = http.createServer(async (req, res) => {
                 case 'file':
                     // Normalize path - convert backslashes and strip leading slashes
                     const filePath_file = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId));
+                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId, {
+                      codesiteContext: codeSiteContext,
+                      ...codeSiteEnforcement,
+                      operation: 'workspace-action:file',
+                      tool: 'file_read',
+                      evidenceRefs: ['collab:workspace-action:file'],
+                      processAncestry: ['collab-server:workspace-action'],
+                    }));
                     result = { content };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
                     try {
                         const hashFilePath = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId);
+                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId, {
+                          codesiteContext: codeSiteContext,
+                          ...codeSiteEnforcement,
+                          operation: 'workspace-action:file-hash',
+                          tool: 'file_read',
+                          evidenceRefs: ['collab:workspace-action:file-hash'],
+                          processAncestry: ['collab-server:workspace-action'],
+                        });
                         const hashValue = computeHash(hashContent);
                         result = { hash: hashValue, path: data.path };
                     } catch (e) {
@@ -4943,13 +5997,19 @@ const server = http.createServer(async (req, res) => {
                       promptSummary: 'Direct file write',
                       reasonRef: `write-file:${data.path}`,
                     });
-                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                      path: data.path,
-                      kind: 'write-file',
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-file',
                       tool: 'file_write',
-                      ...codeSiteWriteEvidence(data, derivedLineProvenance),
-                    }, codeSiteEnforcement);
-	                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
+                      attempts: [{
+                        path: data.path,
+                        kind: 'write-file',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                      }],
+                    }, async () => withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId)), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
 	                    result = { success: true };
 	                    broadcastFileTreeChanged(slug, notifyScope);
 	                  }
@@ -4977,24 +6037,33 @@ const server = http.createServer(async (req, res) => {
                           promptSummary: 'Apply verified shadow patch',
                           reasonRef: `apply-shadow-patch:${data.universeId || 'universe'}:${f.path}`,
                         });
-                        await enforceCodeSiteWriteAllowed(codeSiteContext, {
-                          path: f.path,
-                          kind: 'apply-shadow-patch',
+                        const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                          operation: 'apply-shadow-patch',
                           tool: 'shadow_patch',
-                          ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
-                        }, codeSiteEnforcement);
-                        const docName = buildDocName(slug, f.path, notifyScope);
-                        const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
-                        if (op?.ok) {
-                          // Persist to disk so git sees the same content.
-                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
-                          result.applied.push({ path: f.path, strategy: op.strategy });
-                        } else {
+                          attempts: [{
+                            path: f.path,
+                            kind: 'apply-shadow-patch',
+                            tool: 'shadow_patch',
+                            ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
+                          }],
+                        }, async () => {
+                          const nonRecordingScope = { ...codeSiteNotifyScope, codesiteContext: null };
+                          const docName = buildDocName(slug, f.path, notifyScope);
+                          const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
+                          if (op?.ok) {
+                            // Persist to disk so git sees the same content.
+                            await flushYjsDocForFile(slug, f.path, nonRecordingScope);
+                            return { strategy: op.strategy };
+                          }
                           // CRDT path failed — fall back to direct write.
-                          await flushYjsDocForFile(slug, f.path, codeSiteNotifyScope);
+                          await flushYjsDocForFile(slug, f.path, nonRecordingScope);
                           await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
-                          result.applied.push({ path: f.path, strategy: 'direct-fallback' });
-                        }
+                          return { strategy: 'direct-fallback' };
+                        }, {
+                          ...codeSiteEnforcement,
+                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                        });
+                        result.applied.push({ path: f.path, strategy: boundary.applyResult.strategy });
                       } catch (e) {
                         result.skipped.push({ path: f.path, reason: e?.message || 'apply failed' });
                       }
@@ -5023,21 +6092,34 @@ const server = http.createServer(async (req, res) => {
                         ...codeSiteWriteEvidence({ ...data, ...file }, derivedLineProvenance),
                       };
                     }));
-                    await enforceCodeSiteWritesAllowed(codeSiteContext, attempts, codeSiteEnforcement);
+                    const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-files-batch',
+                      tool: 'file_write',
+                      attempts,
+                    }, async () => gitService.writeFilesBatch(slug, data.files, {
+                      syncToGcs: data.syncToGcs !== false,
+                      userId: effectiveUserId,
+                    }), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
+                    result = boundary.applyResult;
                   }
-                  result = await gitService.writeFilesBatch(slug, data.files, {
-                    syncToGcs: data.syncToGcs !== false,
-                    userId: effectiveUserId,
-                  });
                   break;
                 case 'create-directory':
-	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-	                      path: data.path,
-	                      kind: 'create-directory',
-	                      tool: 'file_write',
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'create-directory',
+                      tool: 'file_write',
+                      attempts: [{
+                        path: data.path,
+                        kind: 'create-directory',
+                        tool: 'file_write',
                         ...codeSiteWriteEvidence(data),
-	                    }, codeSiteEnforcement);
-                    await gitService.createDirectory(slug, data.path, effectiveUserId);
+                      }],
+                    }, async () => gitService.createDirectory(slug, data.path, effectiveUserId), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
@@ -5052,14 +6134,21 @@ const server = http.createServer(async (req, res) => {
                         promptSummary: 'Delete workspace item',
                         reasonRef: `delete-item:${data.path}`,
                       });
-	                    await enforceCodeSiteWriteAllowed(codeSiteContext, {
-	                      path: data.path,
-	                      kind: 'delete-item',
-	                      tool: 'file_delete',
-                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
-	                    }, codeSiteEnforcement);
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'delete-item',
+                        tool: 'file_delete',
+                        attempts: [{
+                          path: data.path,
+                          kind: 'delete-item',
+                          tool: 'file_delete',
+                          ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                        }],
+                      }, async () => gitService.deleteItem(slug, data.path, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
                     }
-	                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
                       await invalidateDocsForSlug(slug, [data.path], notifyScope);
@@ -5082,22 +6171,29 @@ const server = http.createServer(async (req, res) => {
                         promptSummary: 'Rename destination path',
                         reasonRef: `rename-item:new:${data.newPath}`,
                       });
-                      await enforceCodeSiteWritesAllowed(codeSiteContext, [
-                        {
-                          path: data.oldPath,
-                          kind: 'rename-item:old',
-                          tool: 'file_rename',
-                          ...codeSiteWriteEvidence(data, oldPathLineProvenance),
-                        },
-                        {
-                          path: data.newPath,
-                          kind: 'rename-item:new',
-                          tool: 'file_rename',
-                          ...codeSiteWriteEvidence(data, newPathLineProvenance),
-                        },
-                      ], codeSiteEnforcement);
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'rename-item',
+                        tool: 'file_rename',
+                        attempts: [
+                          {
+                            path: data.oldPath,
+                            kind: 'rename-item:old',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, oldPathLineProvenance),
+                          },
+                          {
+                            path: data.newPath,
+                            kind: 'rename-item:new',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, newPathLineProvenance),
+                          },
+                        ],
+                      }, async () => gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
                     }
-	                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
                       await invalidateDocsForSlug(slug, [data.oldPath], notifyScope);

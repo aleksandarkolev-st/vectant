@@ -127,6 +127,12 @@ function finalizeSessionCodeSiteQuarantine(sessionId, session, reason = 'dispose
   });
 }
 
+function codeSiteTerminalQuarantineBaseDir(cwd) {
+  const dataRoot = process.env.DATA_ROOT || process.env.WORKSPACE_DATA_VOLUME_ROOT || '';
+  if (dataRoot) return path.posix.join(path.posix.resolve(dataRoot), 'codesitefs-quarantine');
+  return path.join(path.dirname(cwd), '.synthi', 'codesitefs-quarantine');
+}
+
 function disposeTerminalSession(sessionId, reason = 'disposed') {
   const session = activeSessions.get(sessionId);
   if (!session) return;
@@ -137,6 +143,12 @@ function disposeTerminalSession(sessionId, reason = 'disposed') {
   try { session.unwatchFs?.(); } catch (_) {}
   try { session.pty?.kill?.(); } catch (_) {}
   try { session.releasePort?.(); } catch (_) {}
+  if (session.runtimeTeardownOnDispose && session.workspaceRuntime && session.runtimeOptions) {
+    Promise.resolve(session.workspaceRuntime.teardown(session.workspaceSlug, session.runtimeUserId || session.userId, session.runtimeOptions))
+      .catch((err) => {
+        console.warn(`[Terminal] CodeSite runtime quarantine teardown failed for ${sessionId}: ${err?.message || err}`);
+      });
+  }
   finalizeSessionCodeSiteQuarantine(sessionId, session, reason);
   activeSessions.delete(sessionId);
   console.log(`[Terminal] Session ${sessionId} disposed (${reason})`);
@@ -1430,6 +1442,9 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
     ? options.codesiteContext
     : null;
+  if (codeSiteContext?.active) {
+    throw new Error('codesite_host_headless_terminal_blocked');
+  }
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
@@ -1793,6 +1808,26 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       return;
     }
     codeSiteOriginalCwd = cwd;
+    if (flushWorkspaceDocsToDisk) {
+      try {
+        await flushWorkspaceDocsToDisk(workspaceSlug, requestedUserId, {
+          codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+        });
+      } catch (err) {
+        if (codeSiteContext.active) {
+          console.error(`[Terminal] CodeSite pre-quarantine doc flush failed for session ${sessionId}:`, err.message);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'codesite_terminal_flush_denied',
+            message: 'CodeSite terminal blocked: pending editor buffers could not be flushed through the active transaction.',
+            detail: err.message,
+            codesite: codeSiteMetadata,
+          }));
+          ws.close(1008, 'CodeSite terminal flush denied');
+          return;
+        }
+      }
+    }
     const launchMode = codeSiteTerminalLaunchMode({
       codeSiteContext,
       usesRuntimePodTerminal: shouldUseRuntimePodTerminal(runtimeScope),
@@ -1800,20 +1835,23 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceRuntime,
       workspaceSlug,
     });
-    if (launchMode === 'block-runtime') {
+    if (launchMode === 'block-runtime' || launchMode === 'block-host') {
       ws.send(JSON.stringify({
         type: 'error',
         code: 'codesite_terminal_quarantine_unavailable',
-        message: 'CodeSite terminal blocked: runtime-container/sysbox terminals cannot mount a quarantine workspace yet.',
+        message: launchMode === 'block-host'
+          ? 'CodeSite terminal blocked: host shells cannot provide a syscall-level transaction boundary. Enable the container quarantine runtime.'
+          : 'CodeSite terminal blocked: this runtime terminal cannot mount a transaction quarantine workspace yet.',
         codesite: codeSiteMetadata,
       }));
       ws.close(1008, 'CodeSite terminal quarantine unavailable');
       return;
     }
-    if (launchMode === 'quarantine') {
+    if (launchMode === 'quarantine' || launchMode === 'quarantine-runtime') {
       try {
         codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
           operation: 'terminal-ws',
+          ...(launchMode === 'quarantine-runtime' ? { baseDir: codeSiteTerminalQuarantineBaseDir(cwd) } : {}),
         });
         if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
       } catch (err) {
@@ -1836,24 +1874,33 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     //   3. host shell         — fallback (no runtime configured)
     let ptyProcess, shell;
     let runtimeLaunch = null;
+    let containerRuntimeOptions = null;
     if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) {
+      const runtimeOptions = codeSiteQuarantine
+        ? {
+            codesiteContext: codeSiteContext,
+            codeSiteQuarantineRoot: codeSiteQuarantine.root,
+            codeSiteQuarantineId: codeSiteQuarantine.root,
+          }
+        : {};
+      containerRuntimeOptions = runtimeOptions;
       try {
-        // Editor edits live in the yjsWsServer rooms until saved; flush them to
-        // disk so `cat`/`git`/builds in this terminal see current content.
-        if (flushWorkspaceDocsToDisk) {
-          await flushWorkspaceDocsToDisk(workspaceSlug, requestedUserId).catch(() => {});
-        }
         ws.send(JSON.stringify({ type: 'status', message: 'starting runtime…' }));
-        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId);
-        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId);
+        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId, runtimeOptions);
+        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId, runtimeOptions);
         const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
           cols: initialCols,
           rows: initialRows,
           env: codeSiteEnv,
+          ...runtimeOptions,
         });
         ptyProcess = handle.ptyProcess;
         shell = 'bash';
       } catch (err) {
+        if (codeSiteQuarantine) {
+          await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+          codeSiteQuarantine = null;
+        }
         console.error(`[Terminal] container shell failed for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal: ' + err.message }));
         ws.close(1011, 'container shell failed');
@@ -1912,6 +1959,10 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceSlug,
       userId: requestedUserId,
       filesystemUserId: requestedFilesystemUserId,
+      workspaceRuntime: containerRuntimeOptions ? workspaceRuntime : null,
+      runtimeOptions: containerRuntimeOptions,
+      runtimeUserId: requestedUserId,
+      runtimeTeardownOnDispose: Boolean(containerRuntimeOptions?.codeSiteQuarantineRoot),
       codesite: codeSiteMetadata,
       codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       codesiteQuarantine: codeSiteQuarantine || null,

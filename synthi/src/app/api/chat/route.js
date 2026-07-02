@@ -862,6 +862,7 @@ const streamGeminiWithTools = async ({
     runtimeScope = '',
     filesystemUserId = null,
     userId = null,
+    codeSiteContext = null,
     signal,
     maxRetries = 3,
 }) => {
@@ -1117,7 +1118,7 @@ const streamGeminiWithTools = async ({
                         const extEntry = extAliasMap[name];
                         const label = extEntry ? `${extEntry.connName}:${extEntry.toolName}` : name;
                         await writeEvent({ toolCall: { tool: label, args, status: 'running' } });
-                        const result = await callExternalTool(name, args, extAliasMap, { userId: mcpUserId, workspaceSlug: workspacePath || null }, extTurnState);
+                        const result = await callExternalTool(name, args, extAliasMap, { userId: mcpUserId, workspaceSlug: workspacePath || null, codeSiteContext }, extTurnState);
                         await writeEvent({ toolCall: { tool: label, args, status: result?.error ? 'error' : 'done' } });
                         fnResponses.push({ functionResponse: { name, response: result } });
                     } else {
@@ -1815,6 +1816,7 @@ export async function POST(request) {
         workspacePath = '',
         runtimeScope = '',
         filesystemUserId = null,
+        codeSiteContext = null,
         useCodeIntel = true, // Enable by default when workspacePath is provided
         maxContextTokens = 30000,
         conversationHistory = [],
@@ -1973,6 +1975,7 @@ export async function POST(request) {
                 runtimeScope,
                 filesystemUserId,
                 userId,
+                codeSiteContext: codeSiteContext && typeof codeSiteContext === 'object' && !Array.isArray(codeSiteContext) ? codeSiteContext : null,
                 signal,
             });
         } else if (provider === 'anthropic') {

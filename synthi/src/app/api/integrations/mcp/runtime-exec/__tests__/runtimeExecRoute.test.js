@@ -31,12 +31,13 @@ beforeEach(() => {
 
 describe('POST /api/integrations/mcp/runtime-exec', () => {
   it('runs a command in the workspace runtime pod and returns stdout/stderr/exitCode', async () => {
-    const res = await POST(req({ workspaceSlug: 'team', command: 'docker ps' }));
+    const codeSiteContext = { projectId: 'project-1', transactionId: 'txn-1', mutationLeaseId: 'lease-1' };
+    const res = await POST(req({ workspaceSlug: 'team', command: 'docker ps', codeSiteContext }));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ runtimeScope: 'scope-1', stdout: 'CONTAINER ID\n', stderr: '', exitCode: 0, timedOut: false });
     // routed by slug only (no user id threaded) — reaches the docker runtime pod.
-    expect(h.execRuntime).toHaveBeenCalledWith('team', expect.objectContaining({ command: 'docker ps' }));
+    expect(h.execRuntime).toHaveBeenCalledWith('team', expect.objectContaining({ command: 'docker ps', codeSiteContext }));
   });
 
   it('rejects an unauthenticated (no/invalid PAT) request', async () => {

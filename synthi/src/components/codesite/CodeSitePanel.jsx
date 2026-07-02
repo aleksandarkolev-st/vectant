@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ClipboardCheck,
   FileJson,
@@ -22,10 +23,14 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  applyCodeSiteQuarantine,
   createCodeSiteProject,
   createEmptyCodeSiteRadarState,
   exportCodeSiteArtifacts,
+  fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
+  replayCodeSiteQuarantine,
+  simulateCodeSiteShadowMerge,
 } from './codesiteClient';
 
 const POLL_MS = 5000;
@@ -34,13 +39,391 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function uniqueValues(values) {
+  return [...new Set(asArray(values).filter(Boolean).map((value) => String(value)))];
+}
+
 function compact(value, fallback = 'none') {
   if (value == null || value === '') return fallback;
   return String(value);
 }
 
+function formatPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '0%';
+  return `${Math.round(numeric * 100)}%`;
+}
+
+function formatDurationMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '0s';
+  if (numeric < 1000) return `${Math.round(numeric)}ms`;
+  const seconds = numeric / 1000;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function formatMetricValue(metric) {
+  if (!metric || metric.value == null) return 'n/a';
+  if (metric.unit === 'ratio') return formatPercent(metric.value);
+  if (metric.unit === 'duration_ms') return formatDurationMs(metric.value);
+  return String(metric.value);
+}
+
+function metricTone(metric) {
+  if (!metric || metric.status === 'not_instrumented') return 'pending';
+  const value = Number(metric.value);
+  if (!Number.isFinite(value)) return 'idle';
+  if (/blocked|violation|abort|goAround|red|rollback|drift/i.test(metric.key || '')) return value > 0 ? 'holding' : 'active';
+  return value > 0 ? 'active' : 'idle';
+}
+
+function parseLineRange(lineAnchor) {
+  const match = String(lineAnchor || '').match(/#?L(\d+)(?:-L?(\d+))?/i);
+  if (!match) return { startLine: null, endLine: null };
+  const startLine = Math.max(1, Number(match[1]));
+  const endLine = Math.max(startLine, Number(match[2] || match[1]));
+  return { startLine, endLine };
+}
+
+function lineRange(row = {}) {
+  const parsed = parseLineRange(row.lineAnchor);
+  const startLine = Number.isFinite(Number(row.startLine)) ? Number(row.startLine) : parsed.startLine;
+  const endLine = Number.isFinite(Number(row.endLine)) ? Number(row.endLine) : parsed.endLine || startLine;
+  return { startLine, endLine };
+}
+
+function lineRangeLabel(row = {}) {
+  const range = lineRange(row);
+  if (!range.startLine) return compact(row.lineAnchor, 'line');
+  return range.endLine && range.endLine !== range.startLine
+    ? `L${range.startLine}-L${range.endLine}`
+    : `L${range.startLine}`;
+}
+
+function lineProvenanceKey(row) {
+  if (!row) return 'line:none';
+  return row.id || `${row.filePath || 'file'}:${row.lineAnchor || lineRangeLabel(row)}:${row.transactionId || ''}`;
+}
+
+function pathCoversFile(pattern, filePath) {
+  if (!pattern || !filePath) return false;
+  if (pattern === filePath) return true;
+  if (pattern.endsWith('/**')) return filePath.startsWith(pattern.slice(0, -3));
+  if (pattern.includes('*')) return filePath.startsWith(pattern.split('*')[0]);
+  return false;
+}
+
+function inspectionRunRefs(run) {
+  return uniqueValues([
+    ...asArray(run?.evidenceRefs),
+    ...asArray(run?.inspectionSignals).flatMap((signal) => asArray(signal?.evidenceRefs || signal?.evidence_refs)),
+    run?.id ? `codesite:inspection:${run.id}` : null,
+  ]);
+}
+
+function latestCounterfactualSimulation(runs) {
+  const latestRun = asArray(runs).slice().sort((left, right) => {
+    const leftTime = Date.parse(left?.createdAt || '') || 0;
+    const rightTime = Date.parse(right?.createdAt || '') || 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
+  }).slice(-1)[0] || null;
+  const verdict = latestRun?.arbiterVerdict || null;
+  if (!verdict) return { run: latestRun, result: null };
+  return {
+    run: latestRun,
+    result: {
+      ...verdict,
+      universes: asArray(verdict.universes).length ? verdict.universes : latestRun.universes,
+      evidenceRefs: asArray(verdict.evidenceRefs).length ? verdict.evidenceRefs : latestRun.evidenceRefs,
+      shadowJobRef: verdict.shadowJobRef || latestRun.shadowJobRef,
+      baseSnapshot: verdict.baseSnapshot || latestRun.baseSnapshot,
+    },
+  };
+}
+
 function hasEntries(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
+}
+
+function quarantinePath(change = {}) {
+  return compact(change.path || change.quarantineEvidence?.path, '');
+}
+
+function quarantineDigest(change = {}, key) {
+  const evidence = change.quarantineEvidence || {};
+  return compact(change[key] || evidence[key] || evidence[key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`)], '');
+}
+
+function quarantineEvidenceRef(change = {}) {
+  const evidence = change.quarantineEvidence || {};
+  return compact(change.evidenceRef || evidence.evidenceRef || asArray(change.evidenceRefs || evidence.evidenceRefs)[0], '');
+}
+
+function selectedPathKey(paths) {
+  return asArray(paths).map(String).sort().join('\n');
+}
+
+function quarantineAppliedPaths(record = {}, reviewState = {}) {
+  return uniqueValues([
+    ...asArray(record.appliedPaths),
+    ...asArray(record.applied).map((item) => item.path),
+    ...asArray(reviewState.apply?.applied).map((item) => item.path),
+  ]);
+}
+
+function quarantineRemainingPaths(record = {}, reviewState = {}) {
+  const paths = uniqueValues([
+    ...asArray(record.paths),
+    ...asArray(record.changes).map(quarantinePath),
+  ]);
+  const applied = new Set(quarantineAppliedPaths(record, reviewState));
+  return paths.filter((item) => !applied.has(item));
+}
+
+function quarantineDisplayStatus(record = {}, reviewState = {}) {
+  const appliedPaths = quarantineAppliedPaths(record, reviewState);
+  if (appliedPaths.length > 0) {
+    return quarantineRemainingPaths(record, reviewState).length > 0 ? 'partially_applied' : 'applied';
+  }
+  if (reviewState.replay?.ok === true) return 'replayed';
+  return record.status || 'reviewable';
+}
+
+function quarantineEventId(event = {}) {
+  const details = event.details || {};
+  const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
+  const fsDetails = codesiteFsEvent.details || {};
+  const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
+  return String(
+    details.quarantineId
+    || details.quarantine_id
+    || fsDetails.quarantineId
+    || fsDetails.quarantine_id
+    || evidence.quarantineId
+    || evidence.quarantine_id
+    || event.actorId
+    || evidence.evidenceRef
+    || event.id
+    || 'unknown-quarantine'
+  );
+}
+
+function quarantineRecordsFromEvents(events) {
+  const records = new globalThis.Map();
+  for (const event of asArray(events)) {
+    if (!['write_quarantined', 'quarantine_reviewed', 'quarantine_replayed', 'quarantine_applied'].includes(event?.eventType)) continue;
+    const details = event.details || {};
+    const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
+    const fsDetails = codesiteFsEvent.details || {};
+    const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
+    const id = quarantineEventId(event);
+    const record = records.get(id) || {
+      quarantineId: id,
+      status: 'reviewable',
+      transactionId: details.transactionId || details.transaction_id || codesiteFsEvent.transaction_id || null,
+      mutationLeaseId: event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null,
+      displayCallsign: event.displayCallsign || null,
+      paths: [],
+      changes: [],
+      rejected: [],
+      latestReplayAttempt: null,
+      replayAttempts: [],
+      successfulReplay: null,
+      evidenceRefs: [],
+      eventRefs: [],
+      lifecycle: { capturedAt: null, reviewedAt: null, replayedAt: null, appliedAt: null },
+      symlinkSanitization: fsDetails.symlinkSanitization || fsDetails.symlink_sanitization || details.symlinkSanitization || details.symlink_sanitization || null,
+      updatedAt: event.createdAt || null,
+    };
+    record.eventRefs = uniqueValues([...record.eventRefs, event.id]);
+    record.evidenceRefs = uniqueValues([
+      ...record.evidenceRefs,
+      ...asArray(event.evidenceRefs),
+      ...asArray(details.evidenceRefs || details.evidence_refs),
+      evidence.evidenceRef,
+      ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+    ]);
+    record.paths = uniqueValues([
+      ...record.paths,
+      details.path,
+      codesiteFsEvent.path,
+      evidence.path,
+      ...asArray(details.paths || details.changedPaths || details.changed_paths),
+    ]);
+    if (event.eventType === 'write_quarantined') {
+      record.lifecycle.capturedAt = record.lifecycle.capturedAt || event.createdAt || null;
+      const change = {
+        path: evidence.path || details.path || codesiteFsEvent.path,
+        kind: evidence.kind || details.changeKind || details.change_kind || 'modified',
+        beforeDigest: evidence.beforeDigest || evidence.before_digest,
+        afterDigest: evidence.afterDigest || evidence.after_digest,
+        evidenceRef: evidence.evidenceRef,
+        quarantineEvidence: evidence,
+      };
+      if (change.path && !record.changes.some((item) => quarantinePath(item) === change.path && quarantineEvidenceRef(item) === quarantineEvidenceRef(change))) {
+        record.changes.push(change);
+      }
+    }
+    if (event.eventType === 'quarantine_reviewed') {
+      record.status = record.status === 'applied' ? record.status : 'reviewed';
+      record.lifecycle.reviewedAt = record.lifecycle.reviewedAt || event.createdAt || null;
+    }
+    if (event.eventType === 'quarantine_replayed') {
+      const attempt = quarantineReplayAttemptFromEvent(event, details);
+      record.latestReplayAttempt = attempt;
+      record.replayAttempts = appendUniqueObjects(record.replayAttempts, [attempt]);
+      record.rejected = [...record.rejected, ...asArray(details.rejected)];
+      if (isSuccessfulQuarantineReplay(attempt)) {
+        record.status = record.status === 'applied' ? record.status : 'replayed';
+        if (isReplayAttemptBeforeApply(attempt, record.lifecycle)) {
+          record.lifecycle.replayedAt = attempt.attemptedAt || record.lifecycle.replayedAt || null;
+          record.successfulReplay = attempt;
+        } else if (!record.successfulReplay) {
+          record.successfulReplay = attempt;
+        }
+      } else if (record.status !== 'applied' && record.status !== 'replayed') {
+        record.status = 'blocked';
+      }
+    }
+    if (event.eventType === 'quarantine_applied') {
+      record.status = 'applied';
+      record.lifecycle.appliedAt = event.createdAt || record.lifecycle.appliedAt;
+      record.applied = asArray(details.applied);
+    }
+    records.set(id, record);
+  }
+  return [...records.values()];
+}
+
+function normalizeQuarantineRecord(record = {}) {
+  const changes = asArray(record.changes);
+  const paths = uniqueValues([
+    ...asArray(record.paths),
+    ...changes.map(quarantinePath),
+  ]);
+  return {
+    ...record,
+    quarantineId: compact(record.quarantineId || record.id, 'unknown-quarantine'),
+    status: compact(record.status, changes.length ? 'reviewable' : 'pending'),
+    paths,
+    changes,
+    rejected: asArray(record.rejected),
+    applied: asArray(record.applied),
+    latestReplayAttempt: record.latestReplayAttempt || null,
+    replayAttempts: asArray(record.replayAttempts),
+    successfulReplay: record.successfulReplay || record.replay || null,
+    appliedPaths: uniqueValues([
+      ...asArray(record.appliedPaths),
+      ...asArray(record.applied).map((item) => item.path),
+    ]),
+    remainingPaths: asArray(record.remainingPaths),
+    evidenceRefs: uniqueValues(record.evidenceRefs),
+    eventRefs: uniqueValues(record.eventRefs),
+    lifecycle: record.lifecycle || {
+      capturedAt: record.createdAt || null,
+      reviewedAt: null,
+      replayedAt: null,
+      appliedAt: null,
+    },
+    symlinkSanitization: record.symlinkSanitization || record.symlink_sanitization || null,
+  };
+}
+
+function mergeQuarantineRecords(...groups) {
+  const merged = new globalThis.Map();
+  for (const raw of groups.flatMap((group) => asArray(group))) {
+    const record = normalizeQuarantineRecord(raw);
+    const previous = merged.get(record.quarantineId);
+    if (!previous) {
+      merged.set(record.quarantineId, record);
+      continue;
+    }
+    merged.set(record.quarantineId, {
+      ...previous,
+      ...record,
+      changes: [...previous.changes, ...record.changes].filter((change, index, allChanges) => {
+        const key = `${quarantinePath(change)}:${quarantineEvidenceRef(change)}`;
+        return index === allChanges.findIndex((candidate) => `${quarantinePath(candidate)}:${quarantineEvidenceRef(candidate)}` === key);
+      }),
+      paths: uniqueValues([...previous.paths, ...record.paths]),
+      rejected: [...asArray(previous.rejected), ...asArray(record.rejected)],
+      applied: [...asArray(previous.applied), ...asArray(record.applied)].filter((item, index, allItems) => {
+        const key = `${item?.path || ''}:${item?.evidenceRef || ''}`;
+        return index === allItems.findIndex((candidate) => `${candidate?.path || ''}:${candidate?.evidenceRef || ''}` === key);
+      }),
+      appliedPaths: uniqueValues([...asArray(previous.appliedPaths), ...asArray(record.appliedPaths)]),
+      remainingPaths: record.remainingPaths?.length ? record.remainingPaths : previous.remainingPaths,
+      latestReplayAttempt: record.latestReplayAttempt || previous.latestReplayAttempt || null,
+      replayAttempts: appendUniqueObjects(previous.replayAttempts, record.replayAttempts),
+      successfulReplay: previous.successfulReplay || record.successfulReplay || null,
+      evidenceRefs: uniqueValues([...previous.evidenceRefs, ...record.evidenceRefs]),
+      eventRefs: uniqueValues([...previous.eventRefs, ...record.eventRefs]),
+      lifecycle: mergeLifecycle(previous.lifecycle, record.lifecycle),
+      symlinkSanitization: record.symlinkSanitization || previous.symlinkSanitization,
+    });
+  }
+  return [...merged.values()].sort((left, right) => String(right.updatedAt || right.finalizedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.finalizedAt || left.createdAt || '')));
+}
+
+function quarantineReplayAttemptFromEvent(event, details = {}) {
+  return {
+    attemptedAt: event.createdAt || null,
+    selectedChangeCount: details.selectedChangeCount ?? null,
+    replayableChangeCount: details.replayableChangeCount ?? null,
+    rejectedChangeCount: details.rejectedChangeCount ?? null,
+    paths: asArray(details.paths || details.selectedPaths || details.selected_paths),
+    replayablePaths: asArray(details.replay || details.replayable || details.prepared).map((item) => item.path).filter(Boolean),
+    rejectedPaths: asArray(details.rejected).map((item) => item.path).filter(Boolean),
+  };
+}
+
+function isSuccessfulQuarantineReplay(attempt = {}) {
+  return Number(attempt.replayableChangeCount || 0) > 0 && Number(attempt.rejectedChangeCount || 0) === 0;
+}
+
+function isReplayAttemptBeforeApply(attempt = {}, lifecycle = {}) {
+  if (!lifecycle.appliedAt) return true;
+  const attemptedAt = Date.parse(attempt.attemptedAt || '');
+  const appliedAt = Date.parse(lifecycle.appliedAt);
+  if (Number.isNaN(attemptedAt) || Number.isNaN(appliedAt)) return false;
+  return attemptedAt <= appliedAt;
+}
+
+function appendUniqueObjects(current, values) {
+  const next = [...asArray(current)];
+  const seen = new Set(next.map((item) => JSON.stringify(item)));
+  for (const value of asArray(values)) {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(value);
+  }
+  return next;
+}
+
+function mergeLifecycle(previous = {}, next = {}) {
+  return {
+    capturedAt: previous.capturedAt || next.capturedAt || null,
+    reviewedAt: previous.reviewedAt || next.reviewedAt || null,
+    replayedAt: previous.replayedAt || next.replayedAt || null,
+    appliedAt: previous.appliedAt || next.appliedAt || null,
+  };
+}
+
+function quarantineReviewMessage(reviewState = {}) {
+  if (reviewState.status === 'replaying') return 'Replaying selected paths against the current workspace.';
+  if (reviewState.status === 'applying') return 'Applying replayed paths through the active transaction.';
+  const rejected = asArray(reviewState.replay?.rejected || reviewState.apply?.rejected);
+  if (rejected.length) {
+    const paths = uniqueValues(rejected.map((item) => item.path)).join(', ') || 'selected paths';
+    const reasons = uniqueValues(rejected.flatMap((item) => item.reasonCodes || item.reason_codes || item.error)).join(', ') || 'replay rejected';
+    return `Replay blocked for ${paths}: ${reasons}. Refresh the workspace, inspect the changed base, then replay again before applying.`;
+  }
+  return reviewState.error || '';
 }
 
 function formatTime(value) {
@@ -57,7 +440,7 @@ function statusTone(status) {
   if (['holding', 'blocked', 'denied', 'mayday', 'failed', 'critical'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #ff5757 18%, transparent)', color: 'var(--text-primary)' };
   }
-  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium'].includes(normalized)) {
+  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium', 'partially_applied'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #fbbf24 18%, transparent)', color: 'var(--text-primary)' };
   }
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
@@ -77,9 +460,10 @@ function riskTone(level) {
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
 }
 
-function Pill({ children, tone = 'idle', className = '' }) {
+function Pill({ children, tone = 'idle', className = '', testId }) {
   return (
     <span
+      data-testid={testId}
       className={`inline-flex h-6 items-center rounded px-2 text-[11px] font-medium ${className}`}
       style={typeof tone === 'string' ? statusTone(tone) : tone}
     >
@@ -98,7 +482,7 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-9 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
         background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
@@ -136,10 +520,481 @@ function Metric({ label, value, tone = null, testId }) {
     >
       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className="mt-1 flex items-end justify-between gap-2">
-        <div className="font-mono text-xl leading-none tabular-nums" style={{ color: 'var(--text-primary)' }}>
+        <div className="min-w-0 truncate font-mono text-xl leading-none tabular-nums" title={String(value)} style={{ color: 'var(--text-primary)' }}>
           {value}
         </div>
         {tone ? <span className="h-2 w-2 rounded-full" style={riskTone(tone)} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function MetricRow({ metric }) {
+  return (
+    <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="min-w-0">
+        <div className="truncate text-xs font-medium" title={metric.label} style={{ color: 'var(--text-primary)' }}>{metric.label}</div>
+        <div className="mt-0.5 truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>
+          {metric.status === 'not_instrumented' ? 'needs instrumentation' : `${metric.sampleSize || 0} evidence refs`}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-sm tabular-nums" title={formatMetricValue(metric)} style={{ color: 'var(--text-primary)' }}>
+          {formatMetricValue(metric)}
+        </span>
+        <span className="h-2 w-2 rounded-full" style={riskTone(metricTone(metric))} />
+      </div>
+    </div>
+  );
+}
+
+function MetricsGroup({ title, rows }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-[11px] font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>{title}</div>
+      <div className="min-w-0">
+        {asArray(rows).map((metric, index) => (
+          <MetricRow key={metric.key || metric.label || `${title}-metric-${index}`} metric={metric} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RunwayOccupancyBoard({ runways }) {
+  const rows = asArray(runways);
+  if (!rows.length) return <EmptyLine>No occupied runways</EmptyLine>;
+  return (
+    <div data-testid="codesite-runway-occupancy" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+      {rows.map((runway, index) => {
+        const diffPaths = asArray(runway.diffPaths?.length ? runway.diffPaths : runway.route);
+        const pendingInspections = asArray(runway.pendingInspections);
+        const eligibleFlights = asArray(runway.eligibleFlights);
+        return (
+          <div
+            key={`${runway.mutationLeaseId || runway.runway || 'runway'}-${index}`}
+            data-testid="codesite-runway-row"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(136px,0.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)]"
+            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
+          >
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium" title={runway.runway || 'unassigned runway'}>{compact(runway.runway, 'unassigned runway')}</span>
+                <Pill tone={runway.runwayClass === 'A' ? 'holding' : 'active'}>Class {compact(runway.runwayClass, 'C')}</Pill>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill tone="active">{compact(runway.occupiedBy, 'occupied')}</Pill>
+                {runway.mutationLeaseId ? <Pill>{compact(runway.mutationLeaseId, 'lease')}</Pill> : null}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Diff on runway</div>
+              <PathList paths={diffPaths} empty="no diff yet" maxVisible={3} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Pending inspections</div>
+              <PathList paths={pendingInspections} empty="none pending" maxVisible={3} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Can land</div>
+              <PathList paths={eligibleFlights} empty="runway locked" maxVisible={3} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PilotLicenseHealthPanel({ records }) {
+  const rows = asArray(records);
+  if (!rows.length) return <EmptyLine>No pilot licenses on file</EmptyLine>;
+  return (
+    <div data-testid="codesite-pilot-license-health" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+      {rows.map((record, index) => {
+        const sourceDrift = record.sourceDrift || {};
+        const landingStats = record.landingStats || {};
+        const violationStats = record.violationStats || {};
+        return (
+          <div
+            key={record.key || record.agentSessionId || record.displayCallsign || index}
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(124px,0.8fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(96px,0.75fr)]"
+            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
+          >
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium" title={record.displayCallsign || record.agentSessionId || 'agent'}>{compact(record.displayCallsign || record.agentSessionId, 'agent')}</span>
+                <Pill tone={record.status}>{compact(record.status, 'unknown')}</Pill>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill>{compact(record.level, 'Student')}</Pill>
+                {sourceDrift.expired ? <Pill tone="blocked">source drift</Pill> : null}
+                {record.requiredAction ? <Pill tone="holding">action</Pill> : null}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Authorized airspace</div>
+              <PathList paths={record.authorizedAirspace || []} empty="none filed" maxVisible={3} />
+              <TagList items={[record.dojoLicenseRef, record.dojoProofRef, record.dojoDecisionDigest]} empty="" maxVisible={3} />
+            </div>
+            <div className="min-w-0">
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  ['Landings', `${landingStats.passed || 0}/${landingStats.total || 0}`, (landingStats.failed || 0) ? 'holding' : 'active'],
+                  ['Violations', violationStats.total || 0, (violationStats.critical || 0) ? 'blocked' : ((violationStats.total || 0) ? 'holding' : 'idle')],
+                  ['Radar', asArray(record.requiredRadar).length, asArray(record.requiredRadar).length ? 'active' : 'idle'],
+                ].map(([label, value, tone]) => (
+                  <div key={label} className="min-w-0 border-t pt-1" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <div className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
+                    <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                      <span className="truncate font-mono text-xs tabular-nums" title={String(value)}>{value}</span>
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={riskTone(tone)} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Health reasons</div>
+              <TagList items={record.reasonCodes || []} empty="clear" maxVisible={3} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FilesystemBoundaryProofPanel({ records }) {
+  const rows = asArray(records);
+  if (!rows.length) return <EmptyLine>No filesystem boundary proofs recorded</EmptyLine>;
+
+  return (
+    <div data-testid="codesite-filesystem-boundary-proof" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+      {rows.map((record, index) => {
+        const processChain = asArray(record.process?.ancestry);
+        const evidenceRefs = uniqueValues([
+          ...asArray(record.evidenceRefs),
+          ...asArray(record.evidence?.refs),
+        ]);
+        const inspectedLeaseIds = uniqueValues(asArray(record.inspectedLeases).map((lease) => lease.mutationLeaseId));
+        const leaseLabel = record.mutationLeaseId
+          || record.requestedMutationLeaseId
+          || record.lease?.id
+          || inspectedLeaseIds[0]
+          || record.leaseState
+          || 'no_active_clearance';
+        const leaseTone = record.mutationLeaseId ? 'active' : 'holding';
+        return (
+          <div
+            key={record.proofId || `${record.eventId || 'event'}-${index}`}
+            data-testid="codesite-filesystem-boundary-proof-row"
+            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(126px,0.78fr)_minmax(0,1.18fr)_minmax(0,1.05fr)_minmax(0,1fr)]"
+            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
+          >
+            <div className="min-w-0">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <Pill tone={record.proofComplete ? record.disposition : 'holding'}>{record.proofComplete ? 'complete' : 'incomplete'}</Pill>
+                <Pill tone={record.disposition}>{compact(record.disposition, 'write_denied')}</Pill>
+              </div>
+              <div className="mt-1 truncate font-medium" title={record.displayCallsign || record.boundary?.source || 'CodeSiteFS'}>
+                {compact(record.displayCallsign || record.boundary?.source, 'CodeSiteFS')}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill>{compact(record.boundary?.tool || record.boundary?.operation, 'write')}</Pill>
+                {record.quarantine?.quarantineId ? <Pill tone="holding">quarantine</Pill> : null}
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Path and lease</div>
+              <ProofValueList values={[record.path].filter(Boolean)} empty="missing path" maxVisible={1} />
+              <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                <Pill tone={leaseTone}>{compact(record.leaseState, 'no_active_clearance')}</Pill>
+                <code className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-secondary)' }} title={leaseLabel}>
+                  {leaseLabel}
+                </code>
+                {inspectedLeaseIds.length ? <Pill tone="idle">{inspectedLeaseIds.length} inspected</Pill> : null}
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Reason and process</div>
+              <TagList items={record.reasonCodes || []} empty="missing reason" maxVisible={3} />
+              <div className="mt-1 truncate font-mono text-[10px]" style={{ color: processChain.length ? 'var(--text-secondary)' : 'var(--text-muted)' }} title={record.process?.display || processChain.join(' <- ')}>
+                {processChain.length ? processChain.join(' <- ') : 'missing process ancestry'}
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence</div>
+              <ProofValueList values={evidenceRefs} empty="missing evidence" maxVisible={3} />
+              <div className="mt-1 flex flex-wrap gap-1">
+                {asArray(record.missingProofFields).map((field) => <Pill key={field} tone="holding">missing {field}</Pill>)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProofValueList({ values, empty = 'none', maxVisible = 3 }) {
+  const list = asArray(values);
+  const visible = list.slice(0, maxVisible);
+  if (!visible.length) {
+    return <span style={{ color: 'var(--text-muted)' }}>{empty}</span>;
+  }
+  return (
+    <div className="flex min-w-0 max-w-full flex-wrap gap-1">
+      {visible.map((value, index) => (
+        <code
+          key={`${value}-${index}`}
+          className="block min-w-0 max-w-full whitespace-normal break-all rounded border px-1.5 py-0.5 text-[10px] leading-4"
+          style={{
+            borderColor: 'var(--border-subtle)',
+            background: 'var(--bg-surface)',
+            color: 'var(--text-secondary)',
+            overflow: 'visible',
+            textOverflow: 'clip',
+            whiteSpace: 'normal',
+            wordBreak: 'break-all',
+          }}
+          title={value}
+        >
+          {value}
+        </code>
+      ))}
+      {list.length > visible.length ? (
+        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{list.length - visible.length}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function QuarantineReviewPanel({
+  records,
+  fetchError,
+  selectedId,
+  selectedPaths,
+  reviewState,
+  onSelect,
+  onTogglePath,
+  onReplay,
+  onApply,
+  disabled,
+}) {
+  const rows = asArray(records);
+  const selected = rows.find((record) => record.quarantineId === selectedId) || rows[0] || null;
+  const changes = asArray(selected?.changes);
+  const replayOk = reviewState.replay?.ok === true && reviewState.replayPathKey === selectedPathKey(selectedPaths);
+  const selectedSet = new Set(selectedPaths);
+  const reviewMessage = quarantineReviewMessage(reviewState);
+  const selectedStatus = selected ? quarantineDisplayStatus(selected, reviewState) : 'reviewable';
+  const selectedRemainingPaths = selected ? quarantineRemainingPaths(selected, reviewState) : [];
+  const selectedLifecycle = selected ? {
+    ...(selected.lifecycle || {}),
+    reviewedAt: reviewState.replay?.timelineEvents?.reviewed?.createdAt || selected.lifecycle?.reviewedAt,
+    replayedAt: reviewState.replay?.ok === true
+      ? reviewState.replay?.timelineEvents?.replayed?.createdAt || selected.lifecycle?.replayedAt
+      : selected.lifecycle?.replayedAt,
+    appliedAt: reviewState.apply?.timelineEvent?.createdAt || reviewState.apply?.timelineEvents?.applied?.createdAt || selected.lifecycle?.appliedAt,
+  } : {};
+
+  if (!rows.length) {
+    return fetchError ? (
+      <div data-testid="codesite-quarantine-fetch-error" className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+        Quarantine manifests unavailable: {compact(fetchError.message, 'fetch failed')}
+      </div>
+    ) : <EmptyLine>No CodeSiteFS quarantines waiting for review</EmptyLine>;
+  }
+
+  return (
+    <div data-testid="codesite-quarantine-review" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]">
+      <div className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
+        {rows.map((record) => {
+          const active = selected?.quarantineId === record.quarantineId;
+          const displayStatus = active ? quarantineDisplayStatus(record, reviewState) : quarantineDisplayStatus(record);
+          return (
+            <button
+              key={record.quarantineId}
+              type="button"
+              data-testid="codesite-quarantine-row"
+              aria-pressed={active}
+              onClick={() => onSelect(record)}
+              className="block w-full border-t px-3 py-2 text-left text-xs first:border-t-0"
+              style={{
+                borderColor: 'var(--border-subtle)',
+                background: active ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))' : 'var(--bg-surface)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <code className="min-w-0 truncate text-[10px]" title={record.quarantineId}>{record.quarantineId}</code>
+                <Pill tone={displayStatus}>{displayStatus}</Pill>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                <Pill>{compact(record.displayCallsign, 'codesitefs')}</Pill>
+                <Pill>{asArray(record.changes).length || asArray(record.paths).length} paths</Pill>
+              </div>
+              <div className="mt-1"><PathList paths={record.paths} empty="no paths" maxVisible={2} /></div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        data-testid="codesite-quarantine-detail"
+        className="min-w-0 overflow-hidden rounded border p-3 text-xs"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+      >
+        {!selected ? (
+          <EmptyLine>Select a quarantine</EmptyLine>
+        ) : (
+          <div className="space-y-3">
+            <div data-testid="codesite-quarantine-summary" className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <code className="min-w-0 truncate text-[11px]" title={selected.quarantineId}>{selected.quarantineId}</code>
+                  <Pill tone={selectedStatus}>{selectedStatus}</Pill>
+                  <Pill>{selectedPaths.length} selected</Pill>
+                  {selectedRemainingPaths.length ? <Pill tone="holding">{selectedRemainingPaths.length} pending</Pill> : null}
+                </div>
+                <div className="mt-1 grid gap-1 text-[11px] sm:grid-cols-2">
+                  <div className="min-w-0">
+                    <span style={{ color: 'var(--text-muted)' }}>Transaction </span>
+                    <code className="truncate" title={selected.transactionId}>{compact(selected.transactionId, 'none')}</code>
+                  </div>
+                  <div className="min-w-0">
+                    <span style={{ color: 'var(--text-muted)' }}>Clearance </span>
+                    <code className="truncate" title={selected.mutationLeaseId}>{compact(selected.mutationLeaseId, 'none')}</code>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 sm:justify-end">
+                <IconButton
+                  title="Replay selected quarantine paths"
+                  onClick={() => onReplay(selected)}
+                  disabled={disabled || !selected.transactionId || selectedPaths.length === 0}
+                  testId="codesite-quarantine-replay-button"
+                >
+                  <FileSearch className="h-3.5 w-3.5" />
+                  Replay
+                </IconButton>
+                <IconButton
+                  title="Apply replayed quarantine paths"
+                  onClick={() => onApply(selected)}
+                  disabled={disabled || !replayOk || selectedPaths.length === 0}
+                  variant={replayOk ? 'primary' : 'neutral'}
+                  testId="codesite-quarantine-apply-button"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Apply
+                </IconButton>
+              </div>
+            </div>
+
+            {reviewMessage ? (
+              <div role="alert" aria-live="polite" className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))' }}>
+                {reviewMessage}
+              </div>
+            ) : null}
+
+            <div className="space-y-1">
+              {(changes.length ? changes : selected.paths.map((path) => ({ path }))).map((change) => {
+                const path = quarantinePath(change);
+                const checked = selectedSet.has(path);
+                return (
+                  <label
+                    key={`${selected.quarantineId}-${path}-${quarantineEvidenceRef(change)}`}
+                    data-testid="codesite-quarantine-change-row"
+                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded border px-2 py-1.5"
+                    style={{
+                      borderColor: checked ? 'color-mix(in srgb, var(--accent-primary) 44%, var(--border-subtle))' : 'var(--border-subtle)',
+                      background: checked ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-editor))' : 'var(--bg-editor)',
+                    }}
+                  >
+                    <input
+                      data-testid="codesite-quarantine-path-toggle"
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onTogglePath(path)}
+                      className="mt-1 h-4 w-4"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1">
+                        <code className="min-w-0 truncate text-[10px]" title={path}>{path}</code>
+                        <Pill>{compact(change.kind || change.change_kind, 'modified')}</Pill>
+                      </div>
+                      <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                        <PathList paths={[quarantineDigest(change, 'beforeDigest'), quarantineDigest(change, 'expectedDigest')].filter(Boolean)} empty="no base digest" maxVisible={2} />
+                        <PathList paths={[quarantineDigest(change, 'afterDigest'), quarantineEvidenceRef(change)].filter(Boolean)} empty="no after digest" maxVisible={2} />
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            {asArray(selected.symlinkSanitization?.sanitized).length ? (
+              <div data-testid="codesite-quarantine-symlink-guard" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #fbbf24 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 text-[11px] font-medium">Symlink Escape Guard</div>
+                {selected.symlinkSanitization.sanitized.map((item) => (
+                  <div key={`${item.path}-${item.resolvedTarget}`} className="grid gap-1 border-t py-1 first:border-t-0 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <code className="truncate text-[10px]" title={item.path}>{item.path}</code>
+                    <code className="truncate text-[10px]" title={item.resolvedTarget || item.target}>{item.resolvedTarget || item.target}</code>
+                    <Pill tone="holding">{compact(item.reason, 'replaced')}</Pill>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {reviewState.replay ? (
+              <div data-testid="codesite-quarantine-replay-result" className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-medium">Replay result</span>
+                  <Pill tone={reviewState.replay.ok ? 'active' : 'failed'}>{reviewState.replay.ok ? 'replayable' : 'blocked'}</Pill>
+                </div>
+                <PathList paths={asArray(reviewState.replay.replay).map((item) => item.path)} empty="no replayed paths" maxVisible={8} />
+                {asArray(reviewState.replay.rejected).length ? (
+                  <div className="mt-2 space-y-1">
+                    {reviewState.replay.rejected.map((item, index) => (
+                      <div key={`${item.path || 'reject'}-${index}`} data-testid="codesite-quarantine-rejected-row" className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' }}>
+                        <code className="truncate text-[10px]" title={item.path}>{compact(item.path, 'path')}</code>
+                        <PathList paths={item.reasonCodes || item.reason_codes || [item.error].filter(Boolean)} empty="rejected" maxVisible={4} />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {reviewState.apply ? (
+              <div data-testid="codesite-quarantine-apply-result" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #4ade80 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-medium">Apply result</span>
+                  <Pill tone={reviewState.apply.ok ? 'active' : 'failed'}>{reviewState.apply.ok ? 'applied' : 'blocked'}</Pill>
+                </div>
+                <PathList paths={asArray(reviewState.apply.applied).map((item) => item.path)} empty="no applied paths" maxVisible={8} />
+              </div>
+            ) : null}
+
+            <div data-testid="codesite-quarantine-timeline" className="grid gap-1 text-[11px] sm:grid-cols-4">
+              {[
+                ['Captured', selectedLifecycle.capturedAt],
+                ['Reviewed', selectedLifecycle.reviewedAt],
+                ['Replayed', selectedLifecycle.replayedAt],
+                ['Applied', selectedLifecycle.appliedAt],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                  <div style={{ color: 'var(--text-muted)' }}>{label}</div>
+                  <div className="truncate font-mono text-[10px]" title={value || ''}>{formatTime(value) || 'pending'}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -153,12 +1008,17 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-start gap-1 self-start">
-      {visible.map((path) => (
+    <div className="flex min-w-0 max-w-full flex-wrap items-start gap-1 self-start overflow-hidden">
+      {visible.map((path, index) => (
         <code
-          key={path}
-          className="inline-block max-w-full truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
+          key={`${path}-${index}`}
+          className="inline-block min-w-0 truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
+          style={{
+            maxWidth: 'min(100%, 18rem)',
+            borderColor: 'var(--border-subtle)',
+            background: 'var(--bg-editor)',
+            color: 'var(--text-secondary)',
+          }}
           title={path}
         >
           {path}
@@ -178,9 +1038,9 @@ function TagList({ items, empty = null, maxVisible = 5 }) {
 
   return (
     <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-      {visible.map((item) => (
+      {visible.map((item, index) => (
         <code
-          key={item}
+          key={`${item}-${index}`}
           className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
           title={item}
@@ -241,52 +1101,362 @@ function zonePaths(zone) {
   return asArray(zone?.paths || zone?.route || zone?.allowedPaths);
 }
 
-function AirspaceMap({ zones, noFlyZones, flights, risks }) {
+function pathPatternSegments(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .split('/')
+    .filter(Boolean);
+}
+
+function remainingPatternCanBeEmpty(segments, start) {
+  return segments.slice(start).every((segment) => segment === '**');
+}
+
+function globSegmentRegex(segment) {
+  const escaped = String(segment).replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`);
+}
+
+function pathSegmentsMayOverlap(left, right) {
+  if (left === right) return true;
+  const leftGlob = /[*?]/.test(left);
+  const rightGlob = /[*?]/.test(right);
+  if (leftGlob && !rightGlob) return globSegmentRegex(left).test(right);
+  if (rightGlob && !leftGlob) return globSegmentRegex(right).test(left);
+  return leftGlob && rightGlob;
+}
+
+function pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex = 0, rightIndex = 0, seen = new Set()) {
+  const key = `${leftIndex}:${rightIndex}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+
+  if (leftIndex >= leftSegments.length && rightIndex >= rightSegments.length) return true;
+  if (leftIndex >= leftSegments.length) return remainingPatternCanBeEmpty(rightSegments, rightIndex);
+  if (rightIndex >= rightSegments.length) return remainingPatternCanBeEmpty(leftSegments, leftIndex);
+
+  const left = leftSegments[leftIndex];
+  const right = rightSegments[rightIndex];
+  if (left === '**') {
+    return pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex, new Set(seen))
+      || pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex, rightIndex + 1, new Set(seen));
+  }
+  if (right === '**') {
+    return pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex, rightIndex + 1, new Set(seen))
+      || pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex, new Set(seen));
+  }
+  return pathSegmentsMayOverlap(left, right)
+    && pathPatternsMayOverlap(leftSegments, rightSegments, leftIndex + 1, rightIndex + 1, new Set(seen));
+}
+
+function pathsLikelyOverlap(left, right) {
+  const leftSegments = pathPatternSegments(left);
+  const rightSegments = pathPatternSegments(right);
+  if (!leftSegments.length || !rightSegments.length) return false;
+  return pathPatternsMayOverlap(leftSegments, rightSegments);
+}
+
+function normalizedZoneToken(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function zoneHasFlight(zone, flight) {
+  const paths = zonePaths(zone);
+  const route = asArray(flight?.route);
+  return paths.length > 0 && route.some((path) => paths.some((zonePath) => pathsLikelyOverlap(path, zonePath)));
+}
+
+function riskTouchesZone(risk, zone) {
+  const riskPaths = [
+    risk?.conflictZone,
+    risk?.path,
+    risk?.zoneKey,
+    ...asArray(risk?.affectedZones),
+  ].filter(Boolean);
+  const paths = zonePaths(zone);
+  const zoneTokens = new Set([
+    zone?.zoneKey,
+    zone?.key,
+    zone?.id,
+    zoneName(zone, 0),
+  ].map(normalizedZoneToken).filter(Boolean));
+  return riskPaths.some((riskPath) => paths.some((zonePath) => pathsLikelyOverlap(riskPath, zonePath)))
+    || riskPaths.some((riskPath) => zoneTokens.has(normalizedZoneToken(riskPath)));
+}
+
+function riskTouchesFlight(risk, flight) {
+  const riskPaths = [
+    risk?.conflictZone,
+    risk?.path,
+    risk?.zoneKey,
+    ...asArray(risk?.affectedZones),
+  ].filter(Boolean);
+  return asArray(flight?.route).some((routePath) => riskPaths.some((riskPath) => pathsLikelyOverlap(routePath, riskPath)));
+}
+
+function radarPoint(angle, radius) {
+  const radians = (angle - 90) * (Math.PI / 180);
+  return {
+    x: 50 + Math.cos(radians) * radius,
+    y: 50 + Math.sin(radians) * radius,
+  };
+}
+
+function sectorPath(index, total, outer = 45) {
+  const startAngle = (360 / total) * index;
+  const endAngle = (360 / total) * (index + 1);
+  const start = radarPoint(startAngle, outer);
+  const end = radarPoint(endAngle, outer);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return `M 50 50 L ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${outer} ${outer} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)} Z`;
+}
+
+function plotFlight(flight, index, zones, totalFlights) {
+  const matchedZoneIndex = zones.findIndex((zone) => zoneHasFlight(zone, flight));
+  const zoneIndex = matchedZoneIndex === -1 ? index % Math.max(1, zones.length || totalFlights) : matchedZoneIndex;
+  const baseAngle = zones.length ? (360 / zones.length) * zoneIndex : (360 / Math.max(1, totalFlights)) * index;
+  const angle = baseAngle + 18 + ((index * 17) % Math.max(26, 360 / Math.max(1, zones.length || totalFlights)));
+  const radius = 18 + ((index % 3) * 9);
+  return radarPoint(angle, radius);
+}
+
+function eventPoint(event, index, total) {
+  const seed = String(event?.eventType || event?.id || index).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const angle = (seed + (index * 29)) % 360;
+  const radius = 12 + ((index % Math.max(1, total)) * (34 / Math.max(1, total)));
+  return radarPoint(angle, radius);
+}
+
+function radarColor(status, riskLevel = null) {
+  const risk = String(riskLevel || '').toLowerCase();
+  if (['critical', 'high'].includes(risk)) return '#ff5757';
+  if (['medium', 'warning'].includes(risk)) return '#fbbf24';
+  const normalized = String(status || '').toLowerCase();
+  if (['holding', 'blocked', 'denied', 'mayday', 'failed', 'critical'].includes(normalized)) return '#ff5757';
+  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium'].includes(normalized)) return '#fbbf24';
+  return '#4ade80';
+}
+
+function replayTailFromNewestFirst(events) {
+  return events.slice(0, 7).reverse();
+}
+
+function causalReplayHandovers(incidents, proofBundles) {
+  return asArray(incidents)
+    .filter((incident) => incident?.replayDigest || incident?.incidentReplay)
+    .map((incident) => {
+      const replay = incident.incidentReplay || {};
+      const transactionId = replay.transaction?.id
+        || replay.transactionId
+        || asArray(replay.causalEvents).map((event) => event.transactionId || event.details?.transactionId).find(Boolean)
+        || null;
+      const proofBundle = asArray(proofBundles).find((bundle) => (
+        bundle.incidentReplayDigest === incident.replayDigest
+        || bundle.id === replay.proofBundle?.id
+        || (transactionId && bundle.transactionId === transactionId)
+      )) || null;
+      const codeSiteBlackBox = proofBundle?.trailers?.['CodeSite-Black-Box']
+        || proofBundle?.incidentReplayDigest
+        || incident.replayDigest
+        || replay.proofBundle?.incidentReplayDigest
+        || null;
+      const exportPaths = uniqueValues([
+        ...asArray(replay.handover?.exportPaths),
+        `incidents/incident-replay-${incident.id}.jsonl`,
+        'handover.md',
+        proofBundle?.id && `proof-bundles/${proofBundle.id}.proof.json`,
+        proofBundle?.id && `proof-bundles/${proofBundle.id}.trailers.txt`,
+      ]);
+      return {
+        incident,
+        replay,
+        transactionId,
+        proofBundle,
+        codeSiteBlackBox,
+        exportPaths,
+        causalEvents: asArray(replay.causalEvents),
+        completeness: replay.completeness || null,
+      };
+    })
+    .sort((left, right) => Date.parse(right.incident.createdAt || 0) - Date.parse(left.incident.createdAt || 0));
+}
+
+function replayCompletenessTone(completeness) {
+  const score = Number(completeness?.score);
+  if (!Number.isFinite(score)) return 'pending';
+  if (score >= 0.75) return 'active';
+  if (score >= 0.45) return 'warning';
+  return 'blocked';
+}
+
+function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
   ];
   const visibleFlights = flights.slice(0, 5);
+  const visibleRisks = risks.slice(0, 4);
+  const replayEvents = replayTailFromNewestFirst(events);
+  const replayPoints = replayEvents.map((event, index) => eventPoint(event, index, replayEvents.length));
+  const replayPath = replayPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
+  const landingRuns = asArray(inspections).slice(-4).reverse();
 
   return (
     <div className="space-y-2">
       <div
-        className="relative overflow-hidden rounded border"
+        data-testid="codesite-radar-graph"
+        className="overflow-hidden rounded border p-3"
         style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
       >
-        <div className="absolute inset-y-0 left-1/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
-        <div className="absolute inset-y-0 left-2/3 border-l" style={{ borderColor: 'var(--border-subtle)' }} />
-        <div className="relative space-y-1 p-2">
-          {lanes.slice(0, 5).map((zone, index) => {
-            const relatedFlights = visibleFlights.filter((flight) => {
-              const route = asArray(flight.route);
-              const paths = zonePaths(zone);
-              return route.some((path) => paths.some((zonePath) => path.includes(zonePath.replace('/**', '')) || zonePath.includes(path.replace('/**', ''))));
-            });
-            const hasRisk = risks.some((risk) => compact(risk.conflictZone || risk.path || risk.zoneKey, '').includes(zonePaths(zone)[0]?.replace('/**', '') || zoneName(zone, index)));
-            return (
-              <div
-                key={zone.zoneKey || zone.id || index}
-                className="grid min-h-[46px] grid-cols-[72px_minmax(0,1fr)_minmax(84px,auto)] items-center gap-2 rounded border px-2 py-1.5"
-                style={{
-                  borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
-                  background: hasRisk ? 'color-mix(in srgb, #ff5757 7%, var(--bg-editor))' : 'var(--bg-editor)',
-                }}
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
-                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
-                </div>
-                <PathList paths={zonePaths(zone)} empty="route pending" />
-                <div className="flex justify-end gap-1">
-                  {relatedFlights.length ? relatedFlights.map((flight) => (
-                    <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
-                      {compact(flight.displayCallsign, 'agent')}
-                    </Pill>
-                  )) : <Pill>clear</Pill>}
-                </div>
+        <div className="grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]">
+          <div
+            className="relative min-h-[280px] overflow-hidden rounded border"
+            style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-editor) 88%, transparent)' }}
+          >
+            <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" role="img" aria-label="CodeSite radar graph with flights, risks, and replay trace">
+              <defs>
+                <radialGradient id="codesite-radar-sweep" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="var(--accent-primary)" stopOpacity="0.18" />
+                  <stop offset="66%" stopColor="var(--accent-primary)" stopOpacity="0.04" />
+                  <stop offset="100%" stopColor="var(--accent-primary)" stopOpacity="0" />
+                </radialGradient>
+              </defs>
+              <rect width="100" height="100" fill="url(#codesite-radar-sweep)" opacity="0.82" />
+              {[14, 27, 40].map((radius) => (
+                <circle key={radius} cx="50" cy="50" r={radius} fill="none" stroke="var(--border-subtle)" strokeWidth="0.35" />
+              ))}
+              {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => {
+                const end = radarPoint(angle, 45);
+                return <line key={angle} x1="50" y1="50" x2={end.x} y2={end.y} stroke="var(--border-subtle)" strokeWidth="0.25" />;
+              })}
+              {lanes.slice(0, 6).map((zone, index) => {
+                const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+                return (
+                  <path
+                    key={`sector-${zone.zoneKey || zone.id || index}`}
+                    d={sectorPath(index, Math.max(1, Math.min(6, lanes.length)))}
+                    fill={hasRisk ? '#ff5757' : 'var(--accent-primary)'}
+                    opacity={hasRisk ? '0.16' : '0.06'}
+                    stroke={hasRisk ? '#ff5757' : 'var(--border-subtle)'}
+                    strokeWidth="0.35"
+                  />
+                );
+              })}
+              {visibleRisks.map((risk, index) => {
+                const angle = 24 + (index * 68);
+                const left = radarPoint(angle - 13, 44);
+                const right = radarPoint(angle + 18, 44);
+                return (
+                  <path
+                    key={`risk-cone-${index}`}
+                    data-testid="codesite-risk-cone"
+                    d={`M 50 50 L ${left.x.toFixed(2)} ${left.y.toFixed(2)} L ${right.x.toFixed(2)} ${right.y.toFixed(2)} Z`}
+                    fill={radarColor(null, risk.severity || risk.riskLevel)}
+                    opacity="0.24"
+                  />
+                );
+              })}
+              {replayPoints.length > 1 ? (
+                <polyline
+                  data-testid="codesite-replay-trace"
+                  points={replayPath}
+                  fill="none"
+                  stroke="color-mix(in srgb, var(--accent-primary) 72%, #8fd9ff)"
+                  strokeWidth="0.9"
+                  strokeDasharray="2.4 1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ) : null}
+              {visibleFlights.map((flight, index) => {
+                const point = plotFlight(flight, index, lanes, visibleFlights.length);
+                const hasRisk = risks.some((risk) => riskTouchesFlight(risk, flight));
+                const color = radarColor(flight.status, hasRisk ? 'high' : null);
+                const holding = ['holding', 'blocked', 'preflight'].includes(String(flight.status || '').toLowerCase());
+                return (
+                  <g key={`flight-dot-${flight.id || flight.displayCallsign || index}`} data-testid="codesite-flight-blip">
+                    {holding ? (
+                      <circle
+                        data-testid="codesite-holding-pattern"
+                        cx={point.x}
+                        cy={point.y}
+                        r="4.5"
+                        fill="none"
+                        stroke={color}
+                        strokeWidth="0.45"
+                        strokeDasharray="1.4 1.2"
+                        opacity="0.92"
+                      />
+                    ) : null}
+                    <circle cx={point.x} cy={point.y} r="2.2" fill={color} stroke="var(--bg-surface)" strokeWidth="0.8" />
+                    <text x={Math.min(86, point.x + 3.4)} y={Math.max(9, point.y - 2.4)} fill="var(--text-primary)" fontSize="3.1" fontFamily="monospace">
+                      {compact(flight.displayCallsign, 'agent').slice(0, 10)}
+                    </text>
+                  </g>
+                );
+              })}
+              <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
+            </svg>
+            <div className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <span>Risk cone</span>
+              <span>Replay trace</span>
+              <span>Holding pattern</span>
+            </div>
+            <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <span>{visibleFlights.length} flights tracked</span>
+              <span>{visibleRisks.length || 'no'} active risk cones</span>
+            </div>
+          </div>
+
+          <div className="grid content-start gap-2">
+            <div className="grid gap-1">
+              {lanes.slice(0, 4).map((zone, index) => {
+                const relatedFlights = visibleFlights.filter((flight) => {
+                  return zoneHasFlight(zone, flight);
+                });
+                const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+                return (
+                  <div
+                    key={zone.zoneKey || zone.id || index}
+                    data-testid="codesite-airspace-lane"
+                    className="grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[76px_minmax(0,1fr)_minmax(76px,auto)]"
+                    style={{
+                      borderColor: hasRisk ? 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' : 'var(--border-subtle)',
+                      background: hasRisk ? 'color-mix(in srgb, #ff5757 12%, var(--bg-editor))' : 'var(--bg-editor)',
+                    }}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] font-semibold">{zoneName(zone, index)}</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Class {zoneClass(zone)}</div>
+                    </div>
+                    <div className="col-span-2 col-start-1 row-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:row-start-auto">
+                      <PathList paths={zonePaths(zone)} empty="route pending" />
+                    </div>
+                    <div className="col-start-2 row-start-1 flex min-w-0 justify-end gap-1 sm:col-auto sm:row-auto">
+                      {relatedFlights.length ? relatedFlights.map((flight, flightIndex) => (
+                        <Pill key={flight.id || flight.displayCallsign || `related-flight-${flightIndex}`} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
+                          {compact(flight.displayCallsign, 'agent')}
+                        </Pill>
+                      )) : <Pill>clear</Pill>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Landing queue</span>
+                <Pill tone={landingRuns.some((run) => String(run.status).includes('failed')) ? 'failed' : 'active'}>{landingRuns.length}</Pill>
               </div>
-            );
-          })}
+              {landingRuns.length ? landingRuns.map((run, runIndex) => (
+                <div key={run.id || `landing-run-${runIndex}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
+                  <span className="min-w-0 truncate">{compact(run.displayCallsign, 'inspection')}</span>
+                  <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(run.status, 'pending')}</span>
+                </div>
+              )) : <div style={{ color: 'var(--text-muted)' }}>No landings</div>}
+            </div>
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
@@ -328,6 +1498,17 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [error, setError] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [exportResult, setExportResult] = useState(null);
+  const [lineInspector, setLineInspector] = useState({ status: 'idle', row: null, rows: [], error: null });
+  const [simulationRun, setSimulationRun] = useState({ status: 'idle', result: null, error: null });
+  const [quarantineReview, setQuarantineReview] = useState({
+    selectedId: null,
+    selectedPaths: [],
+    status: 'idle',
+    replay: null,
+    replayPathKey: '',
+    apply: null,
+    error: null,
+  });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -408,26 +1589,253 @@ export default function CodeSitePanel({ workspaceSlug }) {
     }
   }, [acting, loadRadar, radarState.selectedProjectId, workspaceSlug]);
 
+  const handleRunTowerSimulation = useCallback(async () => {
+    if (!workspaceSlug || !radarState.selectedProjectId || acting) return;
+
+    setActing(true);
+    setSimulationRun({ status: 'running', result: simulationRun.result, error: null });
+    try {
+      const result = await simulateCodeSiteShadowMerge(workspaceSlug, radarState.selectedProjectId);
+      setSimulationRun({ status: 'ready', result, error: null });
+      await loadRadar({ silent: true, projectId: radarState.selectedProjectId });
+    } catch (nextError) {
+      setSimulationRun({
+        status: 'error',
+        result: simulationRun.result,
+        error: nextError.message || 'codesite_tower_simulation_failed',
+      });
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, radarState.selectedProjectId, simulationRun.result, workspaceSlug]);
+
   const currentProject = radarState.project;
   const controlState = radarState.controlState;
+  const metrics = radarState.metrics;
+  const metricSections = metrics?.sections || {};
+  const metricSummary = metrics?.summary || {};
   const hasProjects = radarState.projects.length > 0;
-  const risks = radarState.collisionForecast.risks;
+  const collisionForecast = radarState.collisionForecast || controlState?.collisionForecast || {};
+  const risks = asArray(collisionForecast.risks);
+  const runwayOccupancy = asArray(collisionForecast.runwayOccupancy || controlState?.collisionForecast?.runwayOccupancy);
   const activeFlights = asArray(controlState?.activeFlights);
   const activeLeases = asArray(controlState?.activeMutationLeases);
   const activeTransactions = asArray(controlState?.activeTransactions);
+  const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth);
+  const filesystemBoundaryProofs = asArray(controlState?.filesystemBoundaryProofs);
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
+  const replayHandovers = useMemo(() => causalReplayHandovers(incidents, proofBundles), [incidents, proofBundles]);
   const inboxItems = asArray(currentProject?.inboxItems);
+  const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-12).reverse();
+  const allEvents = asArray(radarState.events);
+  const quarantineRecords = useMemo(() => mergeQuarantineRecords(
+    radarState.quarantines,
+    controlState?.pendingQuarantines,
+    quarantineRecordsFromEvents(allEvents),
+  ), [allEvents, controlState?.pendingQuarantines, radarState.quarantines]);
+  const selectedQuarantine = quarantineRecords.find((record) => record.quarantineId === quarantineReview.selectedId) || quarantineRecords[0] || null;
   const zones = asArray(currentProject?.zonePolicy?.zones);
   const noFlyZones = asArray(currentProject?.zonePolicy?.noFlyZones || currentProject?.zonePolicy?.noFly)
     .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
     .filter(Boolean);
   const lineProvenance = asArray(currentProject?.lineProvenance);
+  const selectedLineRow = lineInspector.row;
+  const selectedLineTransaction = selectedLineRow
+    ? selectedLineRow.transaction
+      || activeTransactions.find((txn) => txn.id === selectedLineRow.transactionId)
+      || asArray(currentProject?.mutationTxns).find((txn) => txn.id === selectedLineRow.transactionId)
+      || null
+    : null;
+  const selectedLineLease = selectedLineRow
+    ? selectedLineRow.mutationLease
+      || activeLeases.find((lease) => lease.id === selectedLineTransaction?.mutationLeaseId)
+      || asArray(currentProject?.mutationLeases).find((lease) => lease.id === selectedLineTransaction?.mutationLeaseId)
+      || null
+    : null;
+  const selectedLineProof = selectedLineRow
+    ? selectedLineRow.proofBundleId
+      ? asArray(selectedLineRow.proofBundles).find((bundle) => bundle.id === selectedLineRow.proofBundleId)
+        || proofBundles.find((bundle) => bundle.id === selectedLineRow.proofBundleId)
+        || null
+      : asArray(selectedLineRow.proofBundles)[0] || null
+    : null;
+  const selectedLineEvidenceRefs = selectedLineRow ? uniqueValues([
+    ...asArray(selectedLineRow.evidenceRefs),
+    ...asArray(selectedLineProof?.evidenceRefs),
+  ]) : [];
+  const selectedLineInspectionRefs = selectedLineRow ? uniqueValues(inspectionRuns
+    .filter((run) => asArray(run.changedPaths).some((changedPath) => pathCoversFile(changedPath, selectedLineRow.filePath)))
+    .flatMap(inspectionRunRefs)) : [];
+  const selectedLineDojoRefs = selectedLineRow ? uniqueValues([
+    ...asArray(selectedLineRow.dojoSourceRefs),
+    selectedLineLease?.dojoProofRef,
+    selectedLineLease?.dojoLicenseRef,
+    ...asArray(selectedLineLease?.dojoEvidenceRefs),
+  ]) : [];
   const artifactContent = artifacts.find((file) => file.contentPreview)?.contentPreview;
   const artifactContentPath = artifacts.find((file) => file.contentPreview)?.path;
+  const latestSimulation = latestCounterfactualSimulation(counterfactualRuns);
+  const towerSimulation = simulationRun.result || latestSimulation.result;
+  const towerUniverses = asArray(towerSimulation?.universes);
+  const selectedUniverse = towerUniverses.find((universe) => universe.strategy === towerSimulation?.selected) || towerUniverses[0] || null;
+
+  useEffect(() => {
+    setLineInspector({ status: 'idle', row: null, rows: [], error: null });
+    setSimulationRun({ status: 'idle', result: null, error: null });
+    setQuarantineReview({
+      selectedId: null,
+      selectedPaths: [],
+      status: 'idle',
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    });
+  }, [currentProject?.id]);
+
+  useEffect(() => {
+    if (!selectedQuarantine) return;
+    if (quarantineReview.selectedId === selectedQuarantine.quarantineId) return;
+    setQuarantineReview((current) => ({
+      ...current,
+      selectedId: selectedQuarantine.quarantineId,
+      selectedPaths: [],
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    }));
+  }, [quarantineReview.selectedId, selectedQuarantine]);
+
+  const handleInspectLine = useCallback(async (row) => {
+    if (!row?.filePath) return;
+    const range = lineRange(row);
+    setLineInspector({ status: 'loading', row, rows: [], error: null });
+    try {
+      const rows = await fetchCodeSiteLineProvenance(workspaceSlug, {
+        projectId: currentProject?.id,
+        filePath: row.filePath,
+        lineAnchor: row.lineAnchor,
+        lineNumber: range.startLine,
+      });
+      const nextRows = rows.length ? rows : [row];
+      setLineInspector({ status: 'ready', row: nextRows[0], rows: nextRows, error: null });
+    } catch (nextError) {
+      setLineInspector({
+        status: 'error',
+        row,
+        rows: [row],
+        error: nextError.message || 'line_provenance_lookup_failed',
+      });
+    }
+  }, [currentProject?.id, workspaceSlug]);
+
+  const handleSelectQuarantine = useCallback((record) => {
+    setQuarantineReview({
+      selectedId: record?.quarantineId || null,
+      selectedPaths: [],
+      status: 'idle',
+      replay: null,
+      replayPathKey: '',
+      apply: null,
+      error: null,
+    });
+  }, []);
+
+  const handleToggleQuarantinePath = useCallback((path) => {
+    if (!path) return;
+    setQuarantineReview((current) => {
+      const currentPaths = new Set(current.selectedPaths);
+      if (currentPaths.has(path)) currentPaths.delete(path);
+      else currentPaths.add(path);
+      return {
+        ...current,
+        selectedPaths: [...currentPaths],
+        replay: null,
+        replayPathKey: '',
+        apply: null,
+        error: null,
+      };
+    });
+  }, []);
+
+  const handleReplayQuarantine = useCallback(async (record) => {
+    if (!workspaceSlug || !record?.quarantineId || acting) return;
+    const paths = quarantineReview.selectedPaths;
+    if (!paths.length) {
+      setQuarantineReview((current) => ({ ...current, error: 'Select at least one quarantined path before replay.' }));
+      return;
+    }
+    setActing(true);
+    setQuarantineReview((current) => ({ ...current, status: 'replaying', error: null, replay: null, replayPathKey: selectedPathKey(paths), apply: null }));
+    try {
+      const result = await replayCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
+        transactionId: record.transactionId,
+        mutationLeaseId: record.mutationLeaseId,
+        paths,
+      });
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'replayed',
+        replay: result,
+        replayPathKey: selectedPathKey(paths),
+        error: null,
+      }));
+      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
+        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
+      });
+    } catch (nextError) {
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'error',
+        replay: nextError.body || null,
+        replayPathKey: selectedPathKey(paths),
+        error: nextError.message || 'codesite_quarantine_replay_failed',
+      }));
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
+
+  const handleApplyQuarantine = useCallback(async (record) => {
+    if (!workspaceSlug || !record?.quarantineId || acting) return;
+    const paths = quarantineReview.selectedPaths;
+    if (!paths.length || quarantineReview.replay?.ok !== true || quarantineReview.replayPathKey !== selectedPathKey(paths)) {
+      setQuarantineReview((current) => ({ ...current, error: 'Replay the selected quarantined paths before apply.' }));
+      return;
+    }
+    setActing(true);
+    setQuarantineReview((current) => ({ ...current, status: 'applying', error: null, apply: null }));
+    try {
+      const result = await applyCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
+        transactionId: record.transactionId,
+        mutationLeaseId: record.mutationLeaseId,
+        paths,
+      });
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'applied',
+        apply: result,
+        error: null,
+      }));
+      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
+        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
+      });
+    } catch (nextError) {
+      setQuarantineReview((current) => ({
+        ...current,
+        status: 'error',
+        apply: nextError.body || null,
+        error: nextError.message || 'codesite_quarantine_apply_failed',
+      }));
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, quarantineReview.replay, quarantineReview.replayPathKey, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
 
   const latestStatus = useMemo(() => {
     if (error?.status === 401) return 'auth';
@@ -465,11 +1873,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 data-testid="codesite-project-select"
                 value={radarState.selectedProjectId || ''}
                 onChange={(event) => setSelectedProjectId(event.target.value || null)}
-                className="h-8 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
+                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid] sm:h-8"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
               >
-                {radarState.projects.map((project) => (
-                  <option key={project.id} value={project.id}>{project.title}</option>
+                {radarState.projects.map((project, index) => (
+                  <option key={project.id || project.slug || `project-${index}`} value={project.id}>{project.title}</option>
                 ))}
               </select>
             </div>
@@ -494,7 +1902,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       {loading && !currentProject && !error ? (
         <LoadingSkeleton />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto" tabIndex={0} aria-label="CodeSite evidence sections">
+        <div className="min-h-0 flex-1 overflow-y-auto pb-16" tabIndex={0} aria-label="CodeSite evidence sections">
           {error ? (
             <div className="m-3 rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 38%, var(--border-subtle))', color: 'var(--text-primary)' }}>
               {error.status ? `${error.status}: ` : null}{error.message}
@@ -545,15 +1953,82 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
                   <Metric label="Transactions" value={radarState.counts.activeTransactions} />
                   <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
-                  <Metric label="Risk" value={compact(radarState.collisionForecast.riskLevel, 'unknown')} tone={radarState.collisionForecast.riskLevel} />
+                  <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
                 </div>
               </div>
 
-              <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
-                <AirspaceMap zones={zones} noFlyZones={noFlyZones} flights={activeFlights} risks={risks} />
+              <Section title="Success Metrics" icon={BarChart3} right={<Pill tone={metrics?.status || 'pending'}>{metrics ? 'measured' : 'no data'}</Pill>}>
+                {metrics ? (
+                  <div data-testid="codesite-success-metrics" className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                    <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+                      <MetricsGroup title="ATC" rows={metricSections.atc} />
+                      <MetricsGroup title="Transaction" rows={metricSections.transaction} />
+                    </div>
+                    <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-1">
+                      <MetricsGroup title="Quality" rows={metricSections.quality} />
+                      <MetricsGroup title="Trust" rows={metricSections.trust} />
+                    </div>
+                    <div className="min-w-0 lg:col-span-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
+                        <Metric label="Avoided" value={compact(metricSummary.collisionsAvoided, '0')} tone={metricSummary.collisionsAvoided ? 'active' : 'idle'} />
+                        <Metric label="Blocked" value={compact(metricSummary.codeSiteFsBlockedWrites, '0')} tone={metricSummary.codeSiteFsBlockedWrites ? 'holding' : 'idle'} />
+                        <Metric label="Line coverage" value={formatPercent(metricSummary.lineProvenanceCoverage || 0)} tone={metricSummary.lineProvenanceCoverage ? 'active' : 'pending'} />
+                        <Metric label="Black box" value={metricSummary.blackBoxCompletenessScore == null ? 'n/a' : formatPercent(metricSummary.blackBoxCompletenessScore)} tone={metricSummary.blackBoxCompletenessScore ? 'active' : 'pending'} />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyLine>No success metrics exported yet</EmptyLine>
+                )}
               </Section>
 
-              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(radarState.collisionForecast.riskLevel)}>{compact(radarState.collisionForecast.riskLevel, 'unknown')}</Pill>}>
+              <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
+                <AirspaceMap
+                  zones={zones}
+                  noFlyZones={noFlyZones}
+                  flights={activeFlights}
+                  risks={risks}
+                  events={events}
+                  inspections={inspectionRuns}
+                />
+              </Section>
+
+              <Section title="Runway Occupancy" icon={Route} right={<Pill tone={runwayOccupancy.length ? 'holding' : 'active'}>{runwayOccupancy.length}</Pill>}>
+                <RunwayOccupancyBoard runways={runwayOccupancy} />
+              </Section>
+
+              <Section
+                title="Pilot License Health"
+                icon={ShieldCheck}
+                right={<Pill tone={pilotLicenseHealth.some((record) => record.status !== 'active') ? 'holding' : 'active'}>{pilotLicenseHealth.length}</Pill>}
+              >
+                <PilotLicenseHealthPanel records={pilotLicenseHealth} />
+              </Section>
+
+              <Section
+                title="Filesystem Boundary Proofs"
+                icon={FileSearch}
+                right={<Pill tone={filesystemBoundaryProofs.some((record) => !record.proofComplete) ? 'holding' : (filesystemBoundaryProofs.length ? 'active' : 'idle')}>{filesystemBoundaryProofs.length}</Pill>}
+              >
+                <FilesystemBoundaryProofPanel records={filesystemBoundaryProofs} />
+              </Section>
+
+              <Section title="Quarantine Review" icon={FileSearch} right={<Pill tone={quarantineRecords.length ? 'holding' : 'active'}>{quarantineRecords.length}</Pill>}>
+                <QuarantineReviewPanel
+                  records={quarantineRecords}
+                  fetchError={radarState.quarantineError}
+                  selectedId={selectedQuarantine?.quarantineId || quarantineReview.selectedId}
+                  selectedPaths={quarantineReview.selectedPaths}
+                  reviewState={quarantineReview}
+                  onSelect={handleSelectQuarantine}
+                  onTogglePath={handleToggleQuarantinePath}
+                  onReplay={handleReplayQuarantine}
+                  onApply={handleApplyQuarantine}
+                  disabled={acting}
+                />
+              </Section>
+
+              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(collisionForecast.riskLevel)}>{compact(collisionForecast.riskLevel, 'unknown')}</Pill>}>
                 {risks.length === 0 ? (
                   <EmptyLine>No forecasted collisions</EmptyLine>
                 ) : (
@@ -577,13 +2052,124 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
+              <Section
+                title="Tower Simulator"
+                icon={Activity}
+                right={<Pill tone={selectedUniverse?.result || simulationRun.status}>{compact(towerSimulation?.selected, simulationRun.status === 'running' ? 'running' : 'not run')}</Pill>}
+              >
+                <div data-testid="codesite-tower-simulator" className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Compare route strategies against repo policy, inspection evidence, incidents, and active clearances.
+                    </div>
+                    <IconButton
+                      title="Run Tower simulation"
+                      onClick={handleRunTowerSimulation}
+                      disabled={!radarState.selectedProjectId || loading || acting}
+                      testId="codesite-run-tower-simulator"
+                    >
+                      <Radar className="h-3.5 w-3.5" />
+                      Simulate
+                    </IconButton>
+                  </div>
+                  {simulationRun.error ? (
+                    <div className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', color: 'var(--text-primary)' }}>
+                      {simulationRun.error}
+                    </div>
+                  ) : null}
+                  {towerUniverses.length === 0 ? (
+                    <EmptyLine>No simulator run recorded</EmptyLine>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
+                        <Metric label="Selected" value={compact(towerSimulation?.selected, 'none')} tone={selectedUniverse?.result || 'idle'} testId="codesite-tower-selected" />
+                        <Metric label="Collision" value={formatPercent(selectedUniverse?.predictedCollisionRisk)} tone={selectedUniverse?.result || 'idle'} />
+                        <Metric label="Inspect" value={selectedUniverse?.inspectionCost ?? 0} />
+                        <Metric label="Confidence" value={formatPercent(selectedUniverse?.confidence)} />
+                      </div>
+                      <div className="space-y-1">
+                        {towerUniverses.map((universe, index) => {
+                          const selected = universe.strategy === towerSimulation?.selected;
+                          return (
+                            <div
+                              key={universe.strategy || universe.id || `tower-universe-${index}`}
+                              data-testid="codesite-tower-universe"
+                              className="rounded border px-3 py-2 text-xs"
+                              style={{
+                                borderColor: selected ? 'color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))' : 'var(--border-subtle)',
+                                background: selected ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))' : 'var(--bg-surface)',
+                              }}
+                            >
+                              <div className="grid gap-2 sm:grid-cols-[minmax(128px,1fr)_minmax(0,2fr)_auto] sm:items-center">
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium">{compact(universe.strategy, 'strategy')}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    <Pill tone={universe.result}>{compact(universe.result, 'review')}</Pill>
+                                    {selected ? <Pill tone="active">selected</Pill> : null}
+                                  </div>
+                                </div>
+                                <div className="grid min-w-0 gap-1 text-[11px] sm:grid-cols-3">
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Risk </span>
+                                    <span className="font-mono tabular-nums">{formatPercent(universe.predictedCollisionRisk)}</span>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Stale </span>
+                                    <span className="font-mono tabular-nums">{universe.staleAssumptions ?? 0}</span>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: 'var(--text-muted)' }}>Cost </span>
+                                    <span className="font-mono tabular-nums">{universe.inspectionCost ?? 0}</span>
+                                  </div>
+                                </div>
+                                <div className="justify-self-start sm:justify-self-end">
+                                  <Pill tone={universe.unresolvedRisks?.length ? 'holding' : 'active'}>
+                                    {asArray(universe.unresolvedRisks).length} unresolved
+                                  </Pill>
+                                </div>
+                              </div>
+                              <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                <div>
+                                  <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Tower actions</div>
+                                  <PathList paths={universe.requiredTowerActions || []} empty="none" maxVisible={6} />
+                                </div>
+                                <div>
+                                  <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Reason codes</div>
+                                  <PathList paths={universe.reasonCodes || []} empty="none" maxVisible={6} />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                          <div className="mb-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Signals used</div>
+                          <PathList
+                            paths={Object.entries(selectedUniverse?.sourceSignals || {})
+                              .map(([key, value]) => `${key}:${value}`)
+                              .filter((item) => !item.endsWith(':0'))}
+                            empty="no source signals"
+                            maxVisible={10}
+                          />
+                        </div>
+                        <div className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                          <div className="mb-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence</div>
+                          <PathList paths={towerSimulation?.evidenceRefs || latestSimulation.run?.evidenceRefs || []} empty="none" maxVisible={10} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Section>
+
               <Section title="Flights" icon={Route} right={<Pill>{activeFlights.length}</Pill>}>
                 {activeFlights.length === 0 ? (
                   <EmptyLine>No active flights</EmptyLine>
                 ) : (
                   <div>
-                    {activeFlights.map((plan) => (
-                      <Row key={plan.id} testId={`codesite-flight-${plan.id}`}>
+                    {activeFlights.map((plan, index) => (
+                      <Row key={plan.id || plan.displayCallsign || `flight-${index}`} testId={`codesite-flight-${plan.id || index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(plan.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(plan.domain, 'implementation')}</div>
@@ -604,25 +2190,33 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No active clearances</EmptyLine>
                 ) : (
                   <div>
-                    {activeLeases.map((lease) => (
-                      <Row key={lease.id}>
+                    {activeLeases.map((lease, index) => (
+                      <Row key={lease.id || lease.displayCallsign || `lease-${index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(lease.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(lease.expiresAt) || 'open'}</div>
                         </div>
-	                        <div className="min-w-0">
-	                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
-                            <TagList
-                              items={[
-                                lease.dojoProofRef,
-                                lease.dojoLicenseRef,
-                                ...asArray(lease.dojoEvidenceRefs),
-                                lease.dojoLedgerCheckpointHash,
-                                lease.dojoDecisionDigest,
-                              ]}
-                              empty=""
-                            />
-	                        </div>
+                        <div className="min-w-0">
+                          <PathList paths={lease.lease?.allowedPaths || []} empty="route pending" />
+                          <TagList
+                            items={[
+                              lease.dojoProofRef,
+                              lease.dojoLicenseRef,
+                              ...asArray(lease.dojoEvidenceRefs),
+                              lease.dojoLedgerCheckpointHash,
+                              lease.dojoDecisionDigest,
+                            ]}
+                            empty=""
+                          />
+                          <TagList
+                            items={[
+                              lease.pilotLicenseHealth?.status ? `pilot:${lease.pilotLicenseHealth.status}` : null,
+                              lease.pilotLicenseHealth?.level ? `level:${lease.pilotLicenseHealth.level}` : null,
+                              lease.pilotLicenseRequirement?.minimumLevel ? `min:${lease.pilotLicenseRequirement.minimumLevel}` : null,
+                            ]}
+                            empty=""
+                          />
+                        </div>
                         <div className="justify-self-end"><Pill tone={lease.status}>{lease.status}</Pill></div>
                       </Row>
                     ))}
@@ -635,8 +2229,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No open transactions</EmptyLine>
                 ) : (
                   <div>
-                    {activeTransactions.map((transaction) => (
-                      <Row key={transaction.id}>
+                    {activeTransactions.map((transaction, index) => (
+                      <Row key={transaction.id || `transaction-${index}`}>
                         <div className="min-w-0">
                           <div className="truncate font-mono text-[11px]">{transaction.id}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(transaction.openedAt)}</div>
@@ -647,8 +2241,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="justify-self-end"><Pill tone={transaction.status}>{transaction.status}</Pill></div>
                       </Row>
                     ))}
-                    {proofBundles.slice(-3).reverse().map((bundle) => (
-                      <div key={bundle.id} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                    {proofBundles.slice(-3).reverse().map((bundle, index) => (
+                      <div key={bundle.id || `proof-bundle-${index}`} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
                         <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 text-xs">
                           <div className="min-w-0">
                             <div className="truncate font-mono text-[11px]">{bundle.id}</div>
@@ -661,26 +2255,26 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             <CheckCircle2 className="h-4 w-4" style={{ color: 'color-mix(in srgb, #4ade80 70%, var(--text-primary))' }} />
                           </div>
                         </div>
-	                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-	                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
-	                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" />
-	                        </div>
-	                        {bundle.repoState ? (
-	                          <div className="mt-1">
-	                            <PathList
-	                              paths={[
-	                                bundle.repoState.evidenceDigest && `repo-state:${bundle.repoState.evidenceDigest}`,
-	                                bundle.repoState.gitHead && `git-head:${bundle.repoState.gitHead}`,
-	                                bundle.repoState.worktreeDiffDigest && `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
-	                                ...asArray(bundle.repoState.writeFileDigests).map((file) => `${file.path}:${file.digest || 'missing'}`),
-	                              ].filter(Boolean)}
-	                              empty="no repo-state evidence"
-	                              maxVisible={6}
-	                            />
-	                          </div>
-	                        ) : null}
-	                      </div>
-	                    ))}
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          <PathList paths={bundle.evidenceRefs || []} empty="no evidence refs" />
+                          <PathList paths={Object.entries(bundle.trailers || {}).map(([key, value]) => `${key}: ${value}`)} empty="no trailers" maxVisible={10} />
+                        </div>
+                        {bundle.repoState ? (
+                          <div className="mt-1">
+                            <PathList
+                              paths={[
+                                bundle.repoState.evidenceDigest && `repo-state:${bundle.repoState.evidenceDigest}`,
+                                bundle.repoState.gitHead && `git-head:${bundle.repoState.gitHead}`,
+                                bundle.repoState.worktreeDiffDigest && `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
+                                ...asArray(bundle.repoState.writeFileDigests).map((file) => `${file.path}:${file.digest || 'missing'}`),
+                              ].filter(Boolean)}
+                              empty="no repo-state evidence"
+                              maxVisible={6}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                 )}
               </Section>
@@ -690,8 +2284,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No inspections or incidents</EmptyLine>
                 ) : (
                   <div className="space-y-2">
-                    {inspectionRuns.slice(-3).reverse().map((run) => (
-                      <div key={run.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inspectionRuns.slice(-3).reverse().map((run, index) => (
+                      <div key={run.id || `inspection-run-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(run.displayCallsign, 'inspection')}</span>
                           <Pill tone={run.status}>{run.status}</Pill>
@@ -700,15 +2294,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="mt-1 flex flex-wrap gap-1">
                           {asArray(run.inspectionSignals).slice(0, 3).map((signal, index) => (
                             <Pill key={`${run.id}-signal-${index}`} tone={signal.status || run.status}>
-                              {compact(signal.type || signal.kind, 'signal')}
+                              {compact(signal.key || signal.type || signal.kind, 'signal')}
                             </Pill>
                           ))}
                         </div>
                         <div className="mt-1"><PathList paths={run.evidenceRefs || []} empty="no evidence refs" /></div>
                       </div>
                     ))}
-                    {incidents.slice(-3).reverse().map((incident) => (
-                      <div key={incident.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+                    {incidents.slice(-3).reverse().map((incident, index) => (
+                      <div key={incident.id || `incident-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(incident.category, 'incident')}</span>
                           <Pill tone={incident.severity}>{incident.severity}</Pill>
@@ -727,6 +2321,84 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
+              <Section title="Causal Replay Handover" icon={ScrollText} right={<Pill tone={replayHandovers.length ? replayCompletenessTone(replayHandovers[0].completeness) : 'pending'}>{replayHandovers.length}</Pill>}>
+                <div data-testid="codesite-causal-replay-handover" className="min-w-0">
+                  {replayHandovers.length === 0 ? (
+                    <EmptyLine>No black-box handover closed yet</EmptyLine>
+                  ) : (
+                    <div className="space-y-2">
+                      {replayHandovers.slice(0, 2).map((handover, index) => {
+                        const score = Number(handover.completeness?.score);
+                        const eventTypes = handover.causalEvents.map((event) => event.type).filter(Boolean);
+                        const latestEvents = handover.causalEvents.slice(-6);
+                        return (
+                          <div key={handover.incident.id || handover.transactionId || `handover-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                            <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                              <div className="min-w-0">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="min-w-0 truncate font-medium">{compact(handover.transactionId, handover.incident.category)}</span>
+                                  <Pill tone={handover.incident.severity}>{handover.incident.severity}</Pill>
+                                  <Pill tone={replayCompletenessTone(handover.completeness)}>
+                                    {Number.isFinite(score) ? formatPercent(score) : 'pending'}
+                                  </Pill>
+                                </div>
+                                <div className="mt-1 grid min-w-0 gap-1 sm:grid-cols-3">
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Replay digest</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.incident.replayDigest || 'missing'}>
+                                      {compact(handover.incident.replayDigest, 'missing')}
+                                    </div>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Proof bundle</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.proofBundle?.id || 'none'}>
+                                      {compact(handover.proofBundle?.id, 'none')}
+                                    </div>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>CodeSite-Black-Box</div>
+                                    <div className="break-all font-mono text-[10px]" title={handover.codeSiteBlackBox || 'missing'}>
+                                      {compact(handover.codeSiteBlackBox, 'missing')}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="min-w-0 md:w-44">
+                                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Export refs</div>
+                                <PathList paths={handover.exportPaths} empty="no export refs" maxVisible={4} />
+                              </div>
+                            </div>
+                            <div className="mt-2 grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+                              <div className="min-w-0 space-y-1">
+                                <div className="text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Coverage</div>
+                                <PathList paths={handover.completeness?.presentEventTypes || eventTypes} empty="no present event types" maxVisible={6} />
+                                <PathList paths={handover.completeness?.missingEventTypes || []} empty="no missing event types" maxVisible={6} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="mb-1 text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Causal timeline</div>
+                                {latestEvents.length === 0 ? (
+                                  <EmptyLine>No replay events indexed</EmptyLine>
+                                ) : (
+                                  <div className="space-y-1">
+                                    {latestEvents.map((event, index) => (
+                                      <div key={`${handover.incident.id}-${event.eventId || index}`} className="grid min-h-7 grid-cols-[40px_minmax(0,1fr)_minmax(72px,auto)] items-center gap-2 rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{event.logicalTime || index + 1}</span>
+                                        <span className="min-w-0 truncate">{compact(event.type, 'event')}</span>
+                                        <span className="min-w-0 truncate text-right font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(event.path || event.displayCallsign, '')}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </Section>
+
               <Section title="Artifact Projection" icon={FileJson} right={<Pill>{artifacts.length}</Pill>}>
                 {exportResult ? (
                   <div className="mb-2 rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
@@ -737,8 +2409,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No artifact preview</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {artifacts.slice(0, 10).map((file) => (
-                      <div key={file.path} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {artifacts.slice(0, 10).map((file, index) => (
+                      <div key={file.path || `artifact-${index}`} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <code className="min-w-0 truncate text-[10px]" title={file.path}>{file.path}</code>
                         <span className="shrink-0 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{file.bytes}b</span>
                       </div>
@@ -761,8 +2433,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No events recorded</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {events.map((event) => (
-                      <div key={event.id} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {events.map((event, index) => (
+                      <div key={event.id || event.eventId || `${event.eventType || 'event'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
                           <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
                           <span className="min-w-0 truncate">{event.eventType}</span>
@@ -792,8 +2464,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No blocking actions</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {controlState.requiredActions.map((action) => (
-                      <div key={action} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {controlState.requiredActions.map((action, index) => (
+                      <div key={`${action}-${index}`} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         {action}
                       </div>
                     ))}
@@ -806,8 +2478,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No routed inbox items</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {inboxItems.slice(-5).reverse().map((item) => (
-                      <div key={item.id || item.eventId} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inboxItems.slice(-5).reverse().map((item, index) => (
+                      <div key={item.id || item.eventId || `${item.kind || 'inbox'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="truncate font-medium">{compact(item.kind, 'inbox')}</div>
@@ -844,22 +2516,113 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 {lineProvenance.length === 0 ? (
                   <EmptyLine>No line provenance indexed</EmptyLine>
                 ) : (
-                  <div className="space-y-1">
-                    {lineProvenance.slice(-5).reverse().map((row) => (
-                      <div key={row.id || `${row.filePath}-${row.lineAnchor}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-                        <div className="flex items-center justify-between gap-2">
-                          <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
-                          <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
+                  <div className="grid min-w-0 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)]">
+                    <div className="min-w-0 space-y-1">
+                      {lineProvenance.slice(-8).reverse().map((row, index) => {
+                        const selected = lineProvenanceKey(row) === lineProvenanceKey(selectedLineRow);
+                        return (
+                          <button
+                            key={lineProvenanceKey(row) || `${row.filePath || 'line'}-${index}`}
+                            type="button"
+                            data-testid="codesite-line-provenance-row"
+                            aria-pressed={selected}
+                            onClick={() => handleInspectLine(row)}
+                            className="block w-full min-w-0 overflow-hidden rounded border px-2 py-1.5 text-left text-xs transition-colors"
+                            style={{
+                              borderColor: selected ? 'color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))' : 'var(--border-subtle)',
+                              background: selected ? 'color-mix(in srgb, var(--accent-primary) 14%, var(--bg-surface))' : 'var(--bg-surface)',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-1.5">
+                              <code className="min-w-0 flex-1 basis-[11rem] truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
+                              <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
+                                <Pill>{lineRangeLabel(row)}</Pill>
+                                <Pill className="max-w-[8rem] truncate">{compact(row.displayCallsign, 'agent')}</Pill>
+                              </div>
+                            </div>
+                            <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                              <PathList paths={[row.reasonRef, row.proofBundleId].filter(Boolean)} empty="no reason" />
+                              <PathList paths={asArray(row.evidenceRefs)} empty="no evidence refs" maxVisible={5} />
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div
+                      data-testid="codesite-line-inspector"
+                      className="min-h-[168px] min-w-0 overflow-hidden rounded border p-2 text-xs"
+                      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+                    >
+                      {!selectedLineRow ? (
+                        <EmptyLine>Select a changed line</EmptyLine>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium">{lineRangeLabel(selectedLineRow)} causal trace</div>
+                              <code className="mt-0.5 block truncate text-[10px]" title={selectedLineRow.filePath} style={{ color: 'var(--text-muted)' }}>
+                                {selectedLineRow.filePath}
+                              </code>
+                            </div>
+                            <Pill testId="codesite-line-inspector-status" tone={lineInspector.status === 'error' ? 'failed' : lineInspector.status === 'loading' ? 'running' : 'active'}>
+                              {lineInspector.status === 'loading' && lineInspector.rows.length === 0 ? 'loading' : `${lineInspector.rows.length || 1} rows`}
+                            </Pill>
+                          </div>
+                          <div className="grid gap-1 text-[11px]">
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Transaction</span>
+                              <code className="truncate" title={selectedLineRow.transactionId}>{compact(selectedLineRow.transactionId)}</code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Clearance</span>
+                              <code className="truncate" title={selectedLineLease?.id || selectedLineTransaction?.mutationLeaseId}>
+                                {compact(selectedLineLease?.displayCallsign || selectedLineRow.displayCallsign, 'agent')} / {compact(selectedLineLease?.id || selectedLineTransaction?.mutationLeaseId, 'lease')}
+                              </code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Reason</span>
+                              <code className="truncate" title={selectedLineRow.reasonRef}>{compact(selectedLineRow.reasonRef, 'none')}</code>
+                            </div>
+                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
+                              <span style={{ color: 'var(--text-muted)' }}>Proof</span>
+                              <code className="truncate" title={selectedLineProof?.bundleDigest || selectedLineRow.proofBundleId}>
+                                {compact(selectedLineProof?.bundleDigest || selectedLineRow.proofBundleId, 'none')}
+                              </code>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence refs</div>
+                            <PathList paths={selectedLineEvidenceRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Inspection/test approvals</div>
+                            <PathList paths={selectedLineInspectionRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Dojo/source refs</div>
+                            <PathList paths={selectedLineDojoRefs} empty="none" maxVisible={8} />
+                          </div>
+                          <div>
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Process ancestry</div>
+                            <PathList paths={asArray(selectedLineRow.processAncestry)} empty="none" maxVisible={8} />
+                          </div>
+                          {selectedLineRow.promptSummary ? (
+                            <div>
+                              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Prompt/process</div>
+                              <div className="mt-1 rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                                {selectedLineRow.promptSummary}
+                              </div>
+                            </div>
+                          ) : null}
+                          {lineInspector.error ? (
+                            <div className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', color: 'var(--text-primary)' }}>
+                              {lineInspector.error}
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                          <PathList paths={[row.lineAnchor, row.reasonRef].filter(Boolean)} empty="no anchor" />
-                          <PathList paths={[...asArray(row.evidenceRefs), ...asArray(row.processAncestry)]} empty="no evidence refs" maxVisible={8} />
-                        </div>
-                        {row.promptSummary ? (
-                          <div className="mt-1 truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{row.promptSummary}</div>
-                        ) : null}
+                      )}
                       </div>
-                    ))}
                   </div>
                 )}
               </Section>

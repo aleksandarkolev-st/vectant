@@ -1,0 +1,97 @@
+{
+  "generatedAt": "2026-06-30T22:58:25.500Z",
+  "baseUrl": "http://127.0.0.1:3107/api/workspace",
+  "slug": "codesite-schema-first-proof-1782860194043",
+  "projectId": "cmr18yvtv0027ob4skvnznl18",
+  "schemaPlanId": "cmr18yzvq003tob4st6n9l4n5",
+  "workflow": {
+    "activeFlights": [
+      {
+        "callsign": "SCHEMA-01",
+        "status": "preflight",
+        "route": [
+          "synthi/prisma/**"
+        ]
+      },
+      {
+        "callsign": "API-02",
+        "status": "holding",
+        "route": [
+          "synthi/prisma/**"
+        ]
+      }
+    ],
+    "riskLevel": "high",
+    "risks": [
+      {
+        "risk": "contract_collision",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "action": "schema_first",
+        "conflictZone": "synthi/prisma/**"
+      },
+      {
+        "risk": "migration_collision",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "action": "single_migration_runway_lock",
+        "conflictZone": "synthi/prisma/migrations"
+      },
+      {
+        "risk": "wake_turbulence",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "action": "hold_for_wake_turbulence",
+        "conflictZone": "synthi/prisma/migrations"
+      },
+      {
+        "risk": "wake_turbulence",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "action": "hold_for_wake_turbulence",
+        "conflictZone": "synthi/prisma/**"
+      }
+    ]
+  },
+  "clearance": {
+    "id": "cmr18ziyj0047ob4so1g7k6k9",
+    "callsign": "SCHEMA-01",
+    "status": "active",
+    "reasonCodes": [
+      "restricted_airspace_requires_inspection",
+      "dojo_clearance_proof_verified",
+      "dojo_public_proof_signature_verified",
+      "schema_first_leader_clearance"
+    ],
+    "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+    "dojoProofRef": "pcap-schema-first-clearance",
+    "dojoDecisionDigest": "sha256:25b1e4096c2d338d34a22a04f86eeda89abca565d015c86cbdf32e9fc4d68cf2"
+  },
+  "eventTypes": [
+    "transponder_update",
+    "flight_plan_filed",
+    "transponder_update",
+    "flight_plan_filed",
+    "tower_instruction",
+    "clearance_issued",
+    "near_miss"
+  ],
+  "assertions": {
+    "schemaLeaderActive": true,
+    "schemaFirstReasonRecorded": true,
+    "dependentFlightHolding": true,
+    "verifiedDojoProof": true
+  }
+}

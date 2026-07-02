@@ -82,10 +82,14 @@ export const CODE_SITE_EVENT_TYPES = [
   'transaction_aborted',
   'assumption_recorded',
   'assumption_invalidated',
+  'read_observed',
   'write_attempted',
   'write_allowed',
   'write_denied',
   'write_quarantined',
+  'quarantine_reviewed',
+  'quarantine_replayed',
+  'quarantine_applied',
   'snapshot_taken',
   'transponder_update',
   'route_deviation',
@@ -95,6 +99,7 @@ export const CODE_SITE_EVENT_TYPES = [
   'change_order',
   'mayday',
   'ground_stop',
+  'mayday_resumed',
   'landing_requested',
   'radar_result',
   'inspection_result',
@@ -102,8 +107,25 @@ export const CODE_SITE_EVENT_TYPES = [
   'arbiter_verdict',
   'near_miss',
   'policy_delta_proposed',
+  'policy_delta_promoted',
+  'policy_delta_rejected',
   'black_box_closed',
 ];
+
+const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);
+
+export function validateCodeSiteEventType(input) {
+  const eventType = String(input || '').trim();
+  if (!CODE_SITE_EVENT_TYPE_SET.has(eventType)) {
+    const error = new Error(`codesite_event_type_invalid:${eventType || 'missing'}`);
+    error.code = 'CODESITE_EVENT_TYPE_INVALID';
+    error.status = 422;
+    error.eventType = eventType || null;
+    error.allowedEventTypes = CODE_SITE_EVENT_TYPES;
+    throw error;
+  }
+  return eventType;
+}
 
 export function normalizePath(input) {
   if (typeof input !== 'string') return null;
@@ -149,7 +171,7 @@ export function compileZonePolicy(overrides = {}) {
     ...normalizePatternList(overrides?.noFlyZones || overrides?.no_fly_zones || []),
   ]);
 
-  return {
+  const compiled = {
     version: 1,
     generatedAt: new Date().toISOString(),
     zones,
@@ -171,6 +193,10 @@ export function compileZonePolicy(overrides = {}) {
       pastIncidents: repoSignals.pastIncidents.length,
       secretPatterns: noFlyZones.length,
     },
+  };
+  return {
+    ...compiled,
+    policyDigest: digest(policyDigestPayload(compiled)),
   };
 }
 
@@ -213,6 +239,10 @@ export function normalizeRepoSignals(input = {}) {
     pastIncidents,
     repoRoot: input.repoRoot || input.repo_root || null,
     source: input.source || 'repo_policy_signals',
+    compilerVersion: input.compilerVersion || input.compiler_version || null,
+    maxFiles: input.maxFiles ?? input.max_files ?? null,
+    fileCount: input.fileCount ?? input.file_count ?? files.length,
+    truncated: Boolean(input.truncated),
     digest: input.digest || digest({
       files,
       codeowners,
@@ -226,6 +256,17 @@ export function normalizeRepoSignals(input = {}) {
       secretPatterns,
       pastIncidents,
     }),
+  };
+}
+
+function policyDigestPayload(policy) {
+  return {
+    version: policy.version,
+    zones: policy.zones,
+    noFlyZones: policy.noFlyZones,
+    classRules: policy.classRules,
+    semanticGraph: policy.semanticGraph,
+    policySources: policy.policySources,
   };
 }
 
@@ -243,6 +284,7 @@ function buildSemanticGraph(repoSignals) {
     packageName: entry.packageName,
     root: entry.root,
     exports: uniqueStrings(entry.exports),
+    exportMap: normalizePackageExportMap(entry.exportMap),
   }));
   return {
     files,
@@ -274,14 +316,26 @@ function compileRepoSignalZones(repoSignals) {
   }
 
   for (const [index, entry] of repoSignals.openapi.entries()) {
+    const paths = uniqueStrings([
+      entry.path,
+      ...normalizePatternList(entry.routePatterns || entry.route_patterns || entry.contractRoutePatterns || []),
+    ]);
     zones.push({
       zoneKey: `openapi_contract_${zoneKeySegment(entry.path, index)}`,
       label: `API contract: ${entry.path}`,
       class: 'B',
-      paths: [entry.path],
+      paths,
       rules: uniqueStrings([...AIRSPACE_CLASSES.B.rules, 'api_contract_radar_required']),
       risk: 'high',
       source: 'repo_openapi',
+      contractPaths: asArray(entry.contractPaths || entry.contract_paths || [])
+        .map((contractPath) => String(contractPath || '').trim())
+        .filter(Boolean),
+      operations: asArray(entry.operations).map((operation) => ({
+        path: operation.path,
+        method: operation.method,
+        operationId: operation.operationId || null,
+      })),
     });
   }
 
@@ -389,9 +443,22 @@ function normalizePackageExports(value) {
       const root = normalizePath(entry?.root || entry?.packageRoot || entry?.dir || '') || '';
       const packageName = String(entry?.packageName || entry?.name || root || 'package');
       const exports = normalizePathList(entry?.exports || entry?.exportedFiles || entry?.files || []);
-      return root || exports.length ? { packageName, root, exports } : null;
+      const exportMap = normalizePackageExportMap(entry?.exportMap || entry?.exportsMap || entry?.packageExportMap);
+      return root || exports.length ? { packageName, root, exports, exportMap } : null;
     })
     .filter(Boolean);
+}
+
+function normalizePackageExportMap(value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, paths]) => {
+      const exportKey = String(key || '.').trim() || '.';
+      const exports = normalizePathList(paths);
+      return exports.length ? [exportKey, exports] : null;
+    })
+    .filter(Boolean)
+    .sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function normalizeImportEdges(value) {
@@ -552,8 +619,9 @@ export function evaluateLeaseRequest({ executionPlan, zonePolicy, requestedLease
   const noFlyZones = pathsForRoute(zonePolicy?.noFlyZones || []);
   const inspected = route.map((path) => classifyPath(path, zonePolicy)).filter(Boolean);
   const criticalZones = inspected.filter((zone) => ['A', 'B'].includes(String(zone.class || '').toUpperCase()));
+  const noFlyPatterns = [...blockedPaths, ...noFlyZones];
   const enteredNoFly = route.filter((path) =>
-    [...blockedPaths, ...noFlyZones].some((pattern) => matchPathPattern(path, pattern)));
+    noFlyPatterns.some((pattern) => routeMayEnterPattern(path, pattern)));
 
   if (enteredNoFly.length > 0) {
     return {
@@ -588,7 +656,10 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   const rel = normalizePath(path);
   const leaseJson = typeof lease?.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease?.leaseJson || {});
   const allowedPaths = pathsForRoute(leaseJson.allowedPaths || leaseJson.route || []);
-  const blockedPaths = pathsForRoute(leaseJson.blockedPaths || leaseJson.noFlyZones || []);
+  const blockedPaths = pathsForRoute([
+    ...asArray(leaseJson.blockedPaths || leaseJson.noFlyZones || []),
+    ...asArray(zonePolicy?.noFlyZones || []),
+  ]);
   const allowedTools = asArray(leaseJson.allowedTools || leaseJson.tools || []);
   const zone = classifyPath(rel, zonePolicy);
 
@@ -600,6 +671,16 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   }
   if (lease?.expiresAt && new Date(lease.expiresAt).getTime() < Date.now()) {
     return { ok: false, reasonCodes: ['clearance_expired'], zone, path: rel };
+  }
+  const pilotLicenseHealth = leaseJson.pilotLicenseHealth || null;
+  const pilotStatus = String(pilotLicenseHealth?.status || '').toLowerCase();
+  if (pilotLicenseHealth && pilotStatus && pilotStatus !== 'active') {
+    return { ok: false, reasonCodes: [`pilot_license_${pilotStatus}`, 'pilot_license_health_not_active'], zone, path: rel };
+  }
+  const sourceDrift = pilotLicenseHealth?.sourceDrift || {};
+  const currentSourceDigest = firstPolicySourceDigest(zonePolicy);
+  if (sourceDrift.monitored && sourceDrift.sourceDigest && currentSourceDigest && sourceDrift.sourceDigest !== currentSourceDigest) {
+    return { ok: false, reasonCodes: ['pilot_license_source_drift_expired'], zone, path: rel };
   }
   if (blockedPaths.some((pattern) => matchPathPattern(rel, pattern))) {
     return { ok: false, reasonCodes: ['entered_no_fly_zone'], zone, path: rel };
@@ -613,14 +694,26 @@ export function evaluatePathMutation({ lease, path, tool = 'file_write', zonePol
   return { ok: true, reasonCodes: ['inside_clearance_route'], zone, path: rel };
 }
 
-export function predictCollisions({ executionPlans, leases, zonePolicy }) {
+function firstPolicySourceDigest(zonePolicy = {}) {
+  return zonePolicy.compiler?.sourceDigest
+    || zonePolicy.compiler?.source_digest
+    || zonePolicy.semanticGraph?.sourceDigest
+    || zonePolicy.semanticGraph?.source_digest
+    || zonePolicy.sourceDigest
+    || zonePolicy.source_digest
+    || null;
+}
+
+export function predictCollisions({ executionPlans, leases, transactions = [], inspectionRuns = [], zonePolicy }) {
   const plans = asArray(executionPlans);
   const activeLeases = asArray(leases).filter((lease) => lease.status === 'active');
+  const activeTransactions = asArray(transactions).filter((txn) => ['open', 'validated', 'blocked'].includes(String(txn.status || '').toLowerCase()));
+  const inspections = asArray(inspectionRuns);
   const risks = [];
   const riskKeys = new Set();
   const semanticGraph = zonePolicy?.semanticGraph || {};
   const footprints = new Map(plans.map((plan) => [plan, semanticFootprint(plan, semanticGraph)]));
-  const runwayOccupancy = buildRunwayOccupancy(activeLeases, plans, zonePolicy);
+  const runwayOccupancy = buildRunwayOccupancy(activeLeases, plans, zonePolicy, activeTransactions, inspections);
 
   for (let i = 0; i < plans.length; i += 1) {
     for (let j = i + 1; j < plans.length; j += 1) {
@@ -657,8 +750,8 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   }
 
   for (const lease of activeLeases) {
-    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : lease.leaseJson;
-    const route = pathsForRoute(leaseJson?.allowedPaths || []);
+    const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
+    const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
     const restrictedPaths = route.filter((path) => {
       const zone = classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy);
       return ['A', 'B'].includes(String(zone?.class || '').toUpperCase());
@@ -694,15 +787,20 @@ export function predictCollisions({ executionPlans, leases, zonePolicy }) {
   };
 }
 
-function buildRunwayOccupancy(activeLeases, plans, zonePolicy) {
+function buildRunwayOccupancy(activeLeases, plans, zonePolicy, activeTransactions = [], inspectionRuns = []) {
   return activeLeases.map((lease) => {
     const leaseJson = typeof lease.leaseJson === 'string' ? JSON.parse(lease.leaseJson) : (lease.leaseJson || lease.lease || {});
     const route = pathsForRoute(leaseJson?.allowedPaths || leaseJson?.route || []);
+    const transactionDiffPaths = asArray(activeTransactions)
+      .filter((txn) => txn.mutationLeaseId === lease.id)
+      .flatMap(transactionWritePaths);
     const runway = route[0] || null;
     const classes = uniqueStrings(route.map((path) =>
       classifyPath(path.replace(/\*\*?$/, 'index.ts'), zonePolicy)?.class || 'C'));
-    const pendingInspections = uniqueStrings(route.flatMap((path) =>
-      defaultRadarForWakePath(path, zonePolicy)));
+    const pendingInspections = uniqueStrings([
+      ...route.flatMap((path) => defaultRadarForWakePath(path, zonePolicy)),
+      ...pendingInspectionLabelsForRoute(route, inspectionRuns),
+    ]);
     const eligibleFlights = plans
       .filter((plan) => {
         const planRoutes = pathsForRoute(plan.route);
@@ -717,11 +815,43 @@ function buildRunwayOccupancy(activeLeases, plans, zonePolicy) {
       occupiedBy: lease.displayCallsign || lease.agentSessionId || lease.id || null,
       mutationLeaseId: lease.id || null,
       runwayClass: classes.includes('A') ? 'A' : (classes.includes('B') ? 'B' : classes[0] || 'C'),
-      diffPaths: uniqueStrings(pathsForRoute(leaseJson?.writeSet || leaseJson?.observedWriteSet || leaseJson?.allowedPaths || [])),
+      diffPaths: uniqueStrings([
+        ...transactionDiffPaths,
+        ...pathsForRoute(leaseJson?.writeSet || leaseJson?.observedWriteSet || []),
+        ...(transactionDiffPaths.length || leaseJson?.writeSet || leaseJson?.observedWriteSet ? [] : pathsForRoute(leaseJson?.allowedPaths || [])),
+      ]),
       pendingInspections,
       eligibleFlights,
     };
   });
+}
+
+function pendingInspectionLabelsForRoute(route, inspectionRuns = []) {
+  return asArray(inspectionRuns)
+    .filter((run) => ['requested', 'running', 'pending'].includes(String(run?.status || '').toLowerCase()))
+    .filter((run) => {
+      const changedPaths = pathsForRoute(run?.changedPaths || run?.changed_paths || parseJsonArray(run?.changedPathsJson));
+      return changedPaths.some((changedPath) =>
+        route.some((routePath) => patternsOverlap(changedPath, routePath) || patternsOverlap(routePath, changedPath)));
+    })
+    .map((run) => `inspection:${run.displayCallsign || run.id}`)
+    .filter(Boolean);
+}
+
+function transactionWritePaths(transaction) {
+  const writeSet = transaction?.writeSet || transaction?.write_set || parseJsonArray(transaction?.writeSetJson);
+  const observedWriteSet = transaction?.observedWriteSet || transaction?.observed_write_set || parseJsonArray(transaction?.observedWriteSetJson);
+  return pathsForRoute([...asArray(writeSet), ...asArray(observedWriteSet)]);
+}
+
+function parseJsonArray(value) {
+  if (!value || typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function wakeTurbulenceRisks({ activeLeases, plans, zonePolicy, semanticGraph }) {
@@ -1017,6 +1147,19 @@ function patternsOverlap(left, right) {
   const rightRoot = right.split('*')[0].replace(/\/+$/, '');
   if (!leftRoot || !rightRoot) return true;
   return leftRoot.startsWith(rightRoot) || rightRoot.startsWith(leftRoot);
+}
+
+function routeMayEnterPattern(routePath, pattern) {
+  const route = normalizePath(routePath);
+  const blocked = normalizePath(pattern);
+  if (!route || !blocked) return false;
+  if (matchPathPattern(route, blocked) || matchPathPattern(blocked, route)) return true;
+  if (route === '**' || route === '*' || blocked === '**' || blocked === '*') return true;
+  const routeRoot = route.split('*')[0].replace(/\/+$/, '');
+  const blockedRoot = blocked.split('*')[0].replace(/\/+$/, '');
+  if (!routeRoot) return true;
+  if (!blockedRoot) return false;
+  return routeRoot.startsWith(blockedRoot) || blockedRoot.startsWith(routeRoot);
 }
 
 function schemaFirstResolution(left, right) {

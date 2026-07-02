@@ -1,0 +1,219 @@
+{
+  "schemaVersion": "synthi.codesite.codexAgentExecutionEvidence.v1",
+  "callsign": "SCHEMA-01",
+  "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+  "providerSessionRef": "codex-schema-20260702bc",
+  "providerSessionRefSource": "codesite_registered_session",
+  "role": "schema",
+  "agentSessionId": "cmr43fkim00htpm0zscp5ulab",
+  "executionPlanId": "cmr43flhq00hzpm0zo83guaf0",
+  "codexExecThreadId": "019f2503-9393-7472-8eca-73ed828be071",
+  "commands": [
+    {
+      "command": "/bin/bash -lc pwd",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_2",
+      "outputDigest": "sha256:31868d0a109aacaa31ef5e11ab19038eb4da29c9fe40cedf09765050dc643524",
+      "evidenceDigest": "sha256:066a9e28e10bd0193fbf9df0f04b71266a94339f3788ed55be97f3ba65a3f10d"
+    },
+    {
+      "command": "/bin/bash -lc 'rg -n \"SCHEMA-01|schema-first|transaction|mutation|CodeSiteFS|proof-carrying|registration|providerSessionRef\" /workspace/synthi/scripts/codesite-full-workflow-proof.mjs'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 127,
+      "status": "failed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_3",
+      "outputDigest": "sha256:1e44d4c89f9c471dd7fb9f5a1504313a390df318374a668cb58fbb0e71e5da11",
+      "evidenceDigest": "sha256:1c0ee35708f2657f4d653c22fbd516b965f08e21f86098f069794692ac14a4ca"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,260p' /workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/synthi/prisma/schema.prisma\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_4",
+      "outputDigest": "sha256:967559a5b173a07f87e6eaed8a3f533cfb5447f597aa6e6427fb82b8b1461c60",
+      "evidenceDigest": "sha256:69afe9da005577ef031bc5ae6164b5fc4b28062b5c643c08a1b11436690f4241"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,220p' /workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/package.json\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_5",
+      "outputDigest": "sha256:6f83dee3a8a8b2c71c9e9fcda48801385d5856356144b061fca4893eee08206c",
+      "evidenceDigest": "sha256:940fce67cb11004a08b2861f2f34ae95ca63ef32ae65f8ab8d7a13084b00d3fa"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,240p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_6",
+      "outputDigest": "sha256:9f9d7c3c430cabbc33bb0c5544104ff780c6c61d5e0b086e1bef1d0f3896afc6",
+      "evidenceDigest": "sha256:3053d956a1955fc7ba427ea9082849539697527d8e42f133dba58ad4b30d44a5"
+    },
+    {
+      "command": "/bin/bash -lc \"grep -n \\\"SCHEMA-01\\\\|schema-first\\\\|transaction\\\\|mutation\\\\|CodeSiteFS\\\\|proof-carrying\\\\|registration\\\\|providerSessionRef\\\" /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_7",
+      "outputDigest": "sha256:5b477a3cc302baef36494a59ea23121f7ba94d000151090fdfa59fe4c4b3cf50",
+      "evidenceDigest": "sha256:eaab82c3299f271c2153699493630afdaf42b52aa6a37ecb717d7f5b34f019d0"
+    },
+    {
+      "command": "/bin/bash -lc \"grep -n \\\"Mutation Transactions\\\\|CodeSiteFS\\\\|Proof-Carrying Commits\\\\|schema-first\\\\|transaction\\\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_8",
+      "outputDigest": "sha256:f35b9759f3327852e1e6af30143f566990dbd1884de0d464fb069e82cc3b7420",
+      "evidenceDigest": "sha256:3b348fb587c620ec73ec10c0e9aae731c1449bdc52dafac3fe1703e120bfefe9"
+    },
+    {
+      "command": "/bin/bash -lc 'npm run typecheck'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_9",
+      "outputDigest": "sha256:ab366bd76387034113b4fe64cc9b5aa948c4ac55709930ce3196e0b6837b3b46",
+      "evidenceDigest": "sha256:7967615a6925b59c4bb396b6d393d1523b3c243931339cff854fcf7e089e9c31"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '3020,3050p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_10",
+      "outputDigest": "sha256:e4f6d9ea41cb4c77c92793f4c02a9e671d67782141c900aebd80533552fe35ac",
+      "evidenceDigest": "sha256:7102cd0a910f158514d00dec426344902d49ad0185c59857a659a8d0fcac3036"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2268,2328p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_11",
+      "outputDigest": "sha256:43d892a3c997e3c52b2a8782429e76c6b957ae51acbdb575565c889ac4afa753",
+      "evidenceDigest": "sha256:0ae9119b81e9fc193ed7e5465455d2a8d418d7230f597dd0a3951b447531ccb6"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2420,2532p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_12",
+      "outputDigest": "sha256:c3c4971bd3cc9a3723b5c448d86717353c002cdac6375eca7c703faada11b1b4",
+      "evidenceDigest": "sha256:da04ada0e0fdc3595b98b6d4bc81b7285790b6783ad4b3d919781bf01ff75d9a"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2636,2688p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_13",
+      "outputDigest": "sha256:fead55c94cd1438a99944064d199412994863797c0da050fb25acfca4c6b6bf4",
+      "evidenceDigest": "sha256:66a9774021a3525880e09efb7ecea8161b4fc305f9c1d03c77c08dd113c67611"
+    }
+  ],
+  "reportedCommands": [
+    "pwd",
+    "sed -n '1,240p' /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "rg -n \"SCHEMA-01|schema-first|transaction|mutation|CodeSiteFS|proof-carrying|registration|providerSessionRef\" /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '1,260p' /workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/synthi/prisma/schema.prisma",
+    "sed -n '1,220p' /workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/package.json",
+    "grep -n \"SCHEMA-01\\|schema-first\\|transaction\\|mutation\\|CodeSiteFS\\|proof-carrying\\|registration\\|providerSessionRef\" /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "grep -n \"Mutation Transactions\\|CodeSiteFS\\|Proof-Carrying Commits\\|schema-first\\|transaction\" /workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "npm run typecheck",
+    "sed -n '2268,2328p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '2420,2532p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '2636,2688p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '3020,3050p' /workspace/synthi/scripts/codesite-full-workflow-proof.mjs"
+  ],
+  "workflowActions": [
+    {
+      "kind": "role_execution",
+      "callsign": "SCHEMA-01",
+      "summary": "Inspected the coordination plan and confirmed it defines mutation transactions, CodeSiteFS filesystem boundary enforcement, proof-carrying commits, and schema-first routing. Inspected the workflow proof script and confirmed SCHEMA-01 is registered as the schema flight with its providerSessionRef, opens a mutation lease and transaction, records assumptions/read/write sets, uses schema-first shadow/counterfactual evidence, exercises CodeSiteFS read/deny/quarantine behavior, commits the transaction, and attaches proof bundle trailers. The proof repo schema and package scripts define the schema workflow, and npm run typecheck passed with the AuditEvent/User compatibility check.",
+      "risk": "none"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/synthi/scripts/codesite-full-workflow-proof.mjs"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/synthi/prisma/schema.prisma"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260702bc/package.json"
+    }
+  ],
+  "finalMessageDigest": "sha256:7c0d7214ced7786453651b53b5d149ef4324037bc9647cf5986fcf5f2c11b388",
+  "transcriptDigest": "sha256:b01c412be319eba7d9579d744262280004c931a77bd02c4108f3dce0b16a3611",
+  "stdoutDigest": "sha256:b01c412be319eba7d9579d744262280004c931a77bd02c4108f3dce0b16a3611",
+  "stderrDigest": "sha256:29581d29f67f0c44537fd3a76328bd5425056b5ce68f83c6d6ef893fd2d521fa",
+  "transcript": {
+    "eventsRawPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/SCHEMA-01.events.raw.jsonl",
+    "stderrPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/SCHEMA-01.stderr.log",
+    "finalMessagePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260702bc/SCHEMA-01.final.txt",
+    "eventCount": 30,
+    "toolEventCount": 24,
+    "threadId": "019f2503-9393-7472-8eca-73ed828be071",
+    "usage": {
+      "input_tokens": 81817,
+      "cached_input_tokens": 69632,
+      "output_tokens": 1885,
+      "reasoning_output_tokens": 194
+    },
+    "stdoutDigest": "sha256:b01c412be319eba7d9579d744262280004c931a77bd02c4108f3dce0b16a3611",
+    "stderrDigest": "sha256:29581d29f67f0c44537fd3a76328bd5425056b5ce68f83c6d6ef893fd2d521fa",
+    "finalMessageDigest": "sha256:7c0d7214ced7786453651b53b5d149ef4324037bc9647cf5986fcf5f2c11b388",
+    "eventsRawSha256": "sha256:a8781fdb92a6db7613cb4b6b348b1c505f3a9a8af9d869f66e889c1782cc0c49",
+    "stderrSha256": "sha256:674b9d8a326cd0757916f7ed40f4446434f6bc50ab547879841cd948c310bac1",
+    "finalMessageSha256": "sha256:7e261f7005748e5d44f7d739083d34578fed1e6c8ead431ccc87a30719a6928d",
+    "redactionCounts": {}
+  },
+  "redactionReport": {
+    "finalPublicationSecretScanRequired": true,
+    "rawCredentialMaterialStored": "redacted_before_publication",
+    "authHomeStoredInRepo": "validated_at_publication",
+    "promptIncludedSecrets": "redacted_before_publication",
+    "counts": {},
+    "outerIsolation": "docker_playwright_sidecar_networked_with_proof_app"
+  },
+  "generatedAt": "2026-07-02T22:47:44.654Z",
+  "startedAt": "2026-07-02T22:46:58.442Z",
+  "completedAt": "2026-07-02T22:47:44.654Z"
+}
