@@ -15012,6 +15012,24 @@ assert.ok(retargetedSourceFirstReplayQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_row_target_bound_to_ledger_record'
 ));
 
+const editIdRetargetedRuntimeReplayRow = JSON.parse(JSON.stringify(acceptedFlow));
+editIdRetargetedRuntimeReplayRow.targetId = editIdRetargetedRuntimeReplayRow.ledger.record.editId;
+editIdRetargetedRuntimeReplayRow.target_id = editIdRetargetedRuntimeReplayRow.ledger.record.editId;
+delete editIdRetargetedRuntimeReplayRow.fullRuntimeRowIdentityBinding;
+delete editIdRetargetedRuntimeReplayRow.full_runtime_row_identity_binding;
+const editIdRetargetedRuntimeReplayEvaluatedRow = withQueryRecomputedRowId(
+  editIdRetargetedRuntimeReplayRow,
+);
+const editIdRetargetedRuntimeReplayQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [editIdRetargetedRuntimeReplayEvaluatedRow],
+});
+assert.equal(editIdRetargetedRuntimeReplayQuery.accepted, false);
+assert.equal(editIdRetargetedRuntimeReplayQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(editIdRetargetedRuntimeReplayQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_row_target_bound_to_ledger_record'
+));
+
 const forgedSourceFirstVisualJobRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow-source-first-forged-visual-job'
 );

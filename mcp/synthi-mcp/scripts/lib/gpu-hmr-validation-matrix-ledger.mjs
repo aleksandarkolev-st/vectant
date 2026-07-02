@@ -6171,7 +6171,6 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
   const requiredStrictProofIds = compactStringList([ledgerProofId, runtimeProofId]);
   const directlyBoundRuntimeIdentities = compactStringList([
     recordProjectId,
-    recordEditId,
     contractProjectId,
   ]);
   const targetDirectlyBoundToLedger =
@@ -6230,6 +6229,10 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
     ledger_proof_id: ledgerProofId,
     runtimeProofId,
     runtime_proof_id: runtimeProofId,
+    directlyBoundRuntimeIdentities,
+    directly_bound_runtime_identities: directlyBoundRuntimeIdentities,
+    recordEditIdDiagnosticOnly: Boolean(recordEditId),
+    record_edit_id_diagnostic_only: Boolean(recordEditId),
     targetDirectlyBoundToLedger,
     target_directly_bound_to_ledger: targetDirectlyBoundToLedger,
     sourceFirstAliasBoundToLedger,
