@@ -274,6 +274,10 @@ function bloblessBuildMetadataContentFetchEnabled(env = process.env) {
     || bloblessGitTreeSizeListingEnabled(env);
 }
 
+function fullGitSourceTreeFallbackEnabled(env = process.env) {
+  return env.SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK === '1';
+}
+
 function cleanCandidate(
   raw,
   index = 0,
@@ -1112,8 +1116,9 @@ async function readBuildFileContent({
       content: show.stdout,
     };
   }
-  if (transport === 'git_fetch_depth_1_blobless') {
-    const lazyBlobFetchAllowed = bloblessBuildMetadataContentFetchEnabled();
+  if (transport === 'git_fetch_depth_1_blobless' || transport === 'git_fetch_depth_1_full_tree') {
+    const fullTreeTransport = transport === 'git_fetch_depth_1_full_tree';
+    const lazyBlobFetchAllowed = fullTreeTransport || bloblessBuildMetadataContentFetchEnabled();
     const repoPath = transportEvidence?.resolvedLocalPath
       ?? transportEvidence?.resolved_local_path
       ?? transportEvidence?.localPath
@@ -1162,7 +1167,7 @@ async function readBuildFileContent({
     return {
       path: pathName,
       accepted: true,
-      transport: 'git_fetch_blobless_show',
+      transport: fullTreeTransport ? 'git_fetch_full_tree_show' : 'git_fetch_blobless_show',
       lazyBlobFetchAllowed,
       lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
       content: show.stdout,
@@ -2544,6 +2549,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   const relativeLocalPath = path.relative(REPO_ROOT, localPath).replace(/\\/g, '/');
   const liveGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK === '1';
   const forceGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK === '1';
+  const fullGitFallbackEnabled = fullGitSourceTreeFallbackEnabled();
   const base = {
     schemaVersion: SOURCE_INTAKE_SCHEMA,
     schema_version: SOURCE_INTAKE_SCHEMA,
@@ -2565,6 +2571,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     local_path: relativeLocalPath,
     gitFallbackForced: forceGitFallbackEnabled,
     git_fallback_forced: forceGitFallbackEnabled,
+    fullGitFallbackEnabled,
+    full_git_fallback_enabled: fullGitFallbackEnabled,
     startedAt,
     started_at: startedAt,
   };
@@ -2648,12 +2656,18 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
           const gitFallbackPlan = {
             available: true,
             available_authority: 'fallback_plan_only_not_source_intake_or_gpu_hmr_success',
-            recommendedTransport: 'git_fetch_depth_1_blobless',
-            recommended_transport: 'git_fetch_depth_1_blobless',
+            recommendedTransport: fullGitFallbackEnabled
+              ? 'git_fetch_depth_1_full_tree'
+              : 'git_fetch_depth_1_blobless',
+            recommended_transport: fullGitFallbackEnabled
+              ? 'git_fetch_depth_1_full_tree'
+              : 'git_fetch_depth_1_blobless',
             requiresExplicitOptIn: true,
             requires_explicit_opt_in: true,
             optInEnv: 'SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK=1',
             opt_in_env: 'SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK=1',
+            fullTreeOptInEnv: 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1',
+            full_tree_opt_in_env: 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1',
             reason: 'github_recursive_tree_truncated',
           };
           return fail('source_intake_github_tree_truncated_git_fallback_disabled', githubTree.reason, {
@@ -2675,8 +2689,18 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
           fallback_authority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
           automatic: true,
           automatic_reason: 'github_api_rate_limited',
-          recommendedTransport: 'git_fetch_depth_1_blobless',
-          recommended_transport: 'git_fetch_depth_1_blobless',
+          recommendedTransport: fullGitFallbackEnabled
+            ? 'git_fetch_depth_1_full_tree'
+            : 'git_fetch_depth_1_blobless',
+          recommended_transport: fullGitFallbackEnabled
+            ? 'git_fetch_depth_1_full_tree'
+            : 'git_fetch_depth_1_blobless',
+          fullTreeOptInEnv: fullGitFallbackEnabled
+            ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1'
+            : null,
+          full_tree_opt_in_env: fullGitFallbackEnabled
+            ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1'
+            : null,
           githubTree,
           github_tree: githubTree,
         };
@@ -2749,7 +2773,9 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   }
   const fetch = await runProcess(
     'git',
-    ['-C', localPath, 'fetch', '--depth=1', '--filter=blob:none', 'origin', candidate.immutableCommit],
+    fullGitFallbackEnabled
+      ? ['-C', localPath, 'fetch', '--depth=1', 'origin', candidate.immutableCommit]
+      : ['-C', localPath, 'fetch', '--depth=1', '--filter=blob:none', 'origin', candidate.immutableCommit],
     {
       cwd: REPO_ROOT,
       timeoutMs: sourceIntakeTimeoutMs,
@@ -2785,9 +2811,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     });
   }
   const bloblessSizeListing = bloblessGitTreeSizeListingEnabled();
+  const sizeListing = fullGitFallbackEnabled || bloblessSizeListing;
   const lsTree = await runProcess(
     'git',
-    bloblessSizeListing
+    sizeListing
       ? ['-C', localPath, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit]
       : ['-C', localPath, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit],
     {
@@ -2817,20 +2844,38 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     base,
     candidate,
     files,
-    transport: 'git_fetch_depth_1_blobless',
+    transport: fullGitFallbackEnabled ? 'git_fetch_depth_1_full_tree' : 'git_fetch_depth_1_blobless',
     transportEvidence: {
       githubTreeFallback,
       github_tree_fallback: githubTreeFallback,
-      listingMode: bloblessSizeListing
+      fetchMode: fullGitFallbackEnabled ? 'depth_1_full_tree' : 'depth_1_blobless',
+      fetch_mode: fullGitFallbackEnabled ? 'depth_1_full_tree' : 'depth_1_blobless',
+      fullGitFallbackEnabled,
+      full_git_fallback_enabled: fullGitFallbackEnabled,
+      fullGitFallbackOptInEnv: fullGitFallbackEnabled
+        ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK'
+        : null,
+      full_git_fallback_opt_in_env: fullGitFallbackEnabled
+        ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK'
+        : null,
+      listingMode: fullGitFallbackEnabled
+        ? 'git_ls_tree_with_size_full_fetch'
+        : bloblessSizeListing
         ? 'git_ls_tree_with_size_blobless_opt_in'
         : 'git_ls_tree_no_size_blobless',
-      listing_mode: bloblessSizeListing
+      listing_mode: fullGitFallbackEnabled
+        ? 'git_ls_tree_with_size_full_fetch'
+        : bloblessSizeListing
         ? 'git_ls_tree_with_size_blobless_opt_in'
         : 'git_ls_tree_no_size_blobless',
-      byteLengthMode: bloblessSizeListing
+      byteLengthMode: fullGitFallbackEnabled
+        ? 'declared_from_git_ls_tree_l_full_fetch'
+        : bloblessSizeListing
         ? 'declared_from_git_ls_tree_l_blobless_opt_in'
         : 'unknown_avoids_blob_fetch',
-      byte_length_mode: bloblessSizeListing
+      byte_length_mode: fullGitFallbackEnabled
+        ? 'declared_from_git_ls_tree_l_full_fetch'
+        : bloblessSizeListing
         ? 'declared_from_git_ls_tree_l_blobless_opt_in'
         : 'unknown_avoids_blob_fetch',
       byteLengthOptInEnv: bloblessSizeListing
@@ -3334,6 +3379,9 @@ async function selfCheck() {
     || bloblessBuildMetadataContentFetchEnabled({}) !== false
     || bloblessBuildMetadataContentFetchEnabled({ SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH: '1' }) !== true
     || bloblessBuildMetadataContentFetchEnabled({ SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING: '1' }) !== true
+    || fullGitSourceTreeFallbackEnabled({}) !== false
+    || fullGitSourceTreeFallbackEnabled({ SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK: '1' }) !== true
+    || fullGitSourceTreeFallbackEnabled({ SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK: '1' }) !== false
   ) {
     throw new Error('random large-project cold-path blobless fetch opt-in separation failed');
   }
@@ -3927,6 +3975,24 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path git fallback build-file content self-check failed');
   }
+  const fullTreeContentRead = await readBuildFileContent({
+    candidate: localCandidate,
+    file: { path: 'CMakeLists.txt', object: 'self-check-cmake', byteLength: 64 },
+    transport: 'git_fetch_depth_1_full_tree',
+    transportEvidence: {
+      resolvedLocalPath: localRepoPath,
+      resolved_local_path: localRepoPath,
+    },
+    sourceIntakeTimeoutMs: 30000,
+  });
+  if (
+    fullTreeContentRead.accepted !== true
+    || fullTreeContentRead.transport !== 'git_fetch_full_tree_show'
+    || fullTreeContentRead.lazyBlobFetchAllowed !== true
+    || !String(fullTreeContentRead.content ?? '').includes('project(local_user_project)')
+  ) {
+    throw new Error('random large-project cold-path full git fallback build-file content self-check failed');
+  }
   const noSizeLsTree = await runProcess('git', ['-C', localRepoPath, 'ls-tree', '-r', '--full-tree', localCommit], {
     cwd: REPO_ROOT,
     timeoutMs: 30000,
@@ -4016,6 +4082,37 @@ async function selfCheck() {
     } else {
       process.env.SYNTHI_GPU_HMR_BLOBLESS_CONTENT_FETCH = previousBloblessContentFetch;
     }
+  }
+  const fullTreeFallbackFacet = await buildAcceptedSourceIntakeFacet({
+    base: noSizeFallbackBase,
+    candidate: localCandidate,
+    files: localResult.sourceIntakeEvidence.sourceListingManifest.entries,
+    transport: 'git_fetch_depth_1_full_tree',
+    transportEvidence: {
+      resolvedLocalPath: localRepoPath,
+      resolved_local_path: localRepoPath,
+      listingMode: 'git_ls_tree_with_size_full_fetch',
+      listing_mode: 'git_ls_tree_with_size_full_fetch',
+      byteLengthMode: 'declared_from_git_ls_tree_l_full_fetch',
+      byte_length_mode: 'declared_from_git_ls_tree_l_full_fetch',
+      fullGitFallbackEnabled: true,
+      full_git_fallback_enabled: true,
+    },
+    sourceIntakeTimeoutMs: 30000,
+  });
+  if (
+    fullTreeFallbackFacet.acceptedAsIntakeEvidence !== true
+    || fullTreeFallbackFacet.transport !== 'git_fetch_depth_1_full_tree'
+    || !(fullTreeFallbackFacet.totalKnownBytes > 0)
+    || fullTreeFallbackFacet.buildMetadataContentAccepted !== true
+    || fullTreeFallbackFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.transport
+      !== 'git_fetch_full_tree_show'
+    || fullTreeFallbackFacet.buildMetadataContentEvidence?.buildFiles?.[0]?.lazyBlobFetchAllowed
+      !== true
+    || fullTreeFallbackFacet.acceptedForGpuHmr !== false
+    || fullTreeFallbackFacet.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-path full git fallback facet self-check failed');
   }
   await writeFile(path.join(localRepoPath, 'untracked-dirty.tmp'), 'dirty\n');
   const { manifest: dirtyManifest } = await buildManifest({
