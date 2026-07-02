@@ -1063,6 +1063,9 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       ? manifestTemplate.adapter_runtime_boundary_events
       : []),
   ];
+  const manifestEventTemplates = compactObjectList(
+    manifestTemplate.eventObjectTemplates ?? manifestTemplate.event_object_templates,
+  );
   const requiredKindSet = new Set(COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS);
   const suppliedRequiredKindSet = new Set(requiredEventKinds);
   const eventKinds = compactStringList(eventTemplates.map(runtimeBoundaryTemplateEventKind))
@@ -1160,6 +1163,74 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       );
     }
   }
+  const manifestEventTemplateFailures = [];
+  const manifestEventTemplateHashes = [];
+  const manifestEventKinds = compactStringList(
+    manifestEventTemplates.map(runtimeBoundaryTemplateEventKind),
+  ).map((kind) => kind.toLowerCase()).sort();
+  for (const manifestEventTemplate of manifestEventTemplates) {
+    const kind = runtimeBoundaryTemplateEventKind(manifestEventTemplate) ?? 'unknown';
+    const manifestEventAcceptedForGpuHmr = firstBool(
+      manifestEventTemplate.acceptedForGpuHmr,
+      manifestEventTemplate.accepted_for_gpu_hmr,
+    );
+    const manifestEventGpuHmrSuccess = firstBool(
+      manifestEventTemplate.gpuHmrSuccess,
+      manifestEventTemplate.gpu_hmr_success,
+    );
+    const manifestEventCanSatisfyRuntimeProof = firstBool(
+      manifestEventTemplate.canSatisfyRuntimeProof,
+      manifestEventTemplate.can_satisfy_runtime_proof,
+    );
+    const manifestEventCanSatisfyDispatchProof = firstBool(
+      manifestEventTemplate.canSatisfyDispatchProof,
+      manifestEventTemplate.can_satisfy_dispatch_proof,
+    );
+    const suppliedManifestEventHash = normalizeSha256(firstText(
+      manifestEventTemplate.templateHash,
+      manifestEventTemplate.template_hash,
+    ));
+    const recomputedManifestEventHash = coldTemplateContentHash(manifestEventTemplate);
+    manifestEventTemplateHashes.push(recomputedManifestEventHash);
+    if (!requiredKindSet.has(kind)) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_kind_unknown:${kind}`,
+      );
+    }
+    if (manifestEventAcceptedForGpuHmr === true) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_claimed_gpu_hmr_acceptance:${kind}`,
+      );
+    }
+    if (manifestEventGpuHmrSuccess === true) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_claimed_gpu_hmr_success:${kind}`,
+      );
+    }
+    if (manifestEventCanSatisfyRuntimeProof === true) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_claimed_runtime_authority:${kind}`,
+      );
+    }
+    if (manifestEventCanSatisfyDispatchProof === true) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_claimed_dispatch_authority:${kind}`,
+      );
+    }
+    if (!suppliedManifestEventHash || suppliedManifestEventHash !== recomputedManifestEventHash) {
+      manifestEventTemplateFailures.push(
+        `cold_runtime_boundary_event_manifest_template_manifest_event_hash_mismatch:${kind}`,
+      );
+    }
+  }
+  const eventTemplateHashSet = new Set(eventTemplateHashes);
+  const manifestEventTemplateHashSet = new Set(manifestEventTemplateHashes);
+  const missingManifestEventTemplateHashes = eventTemplateHashes
+    .filter((hash) => !manifestEventTemplateHashSet.has(hash));
+  const extraManifestEventTemplateHashes = manifestEventTemplateHashes
+    .filter((hash) => !eventTemplateHashSet.has(hash));
+  const unknownManifestEventKinds = manifestEventKinds
+    .filter((kind) => !requiredKindSet.has(kind));
   const suppliedTemplateHash = normalizeSha256(firstText(
     facet.templateHash,
     facet.template_hash,
@@ -1233,8 +1304,28 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     ) === true
       ? 'cold_runtime_boundary_event_manifest_template_manifest_claimed_runtime_authority'
       : null,
+    firstBool(
+      manifestTemplate.canSatisfyDispatchProof,
+      manifestTemplate.can_satisfy_dispatch_proof,
+    ) === true
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_claimed_dispatch_authority'
+      : null,
     manifestTemplateEvents.length > 0
       ? 'cold_runtime_boundary_event_manifest_template_contains_runtime_events'
+      : null,
+    eventTemplates.length > 0 && manifestEventTemplates.length === 0
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_event_templates_missing'
+      : null,
+    manifestEventTemplates.length !== eventTemplates.length
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_event_template_count_mismatch'
+      : null,
+    ...unknownManifestEventKinds
+      .map((kind) => `cold_runtime_boundary_event_manifest_template_manifest_event_kind_unknown:${kind}`),
+    missingManifestEventTemplateHashes.length > 0
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_event_template_hash_missing'
+      : null,
+    extraManifestEventTemplateHashes.length > 0
+      ? 'cold_runtime_boundary_event_manifest_template_manifest_event_template_hash_extra_or_mismatch'
       : null,
     firstBool(
       manifestTemplate.requiresObservedRuntimeEvents,
@@ -1249,6 +1340,7 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       ? 'cold_runtime_boundary_event_manifest_template_hash_mismatch'
       : null,
     ...eventTemplateFailures,
+    ...manifestEventTemplateFailures,
   ]);
   return {
     present,
@@ -1304,6 +1396,14 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     event_template_count: eventTemplates.length,
     eventTemplateHashes,
     event_template_hashes: eventTemplateHashes,
+    manifestEventTemplateCount: manifestEventTemplates.length,
+    manifest_event_template_count: manifestEventTemplates.length,
+    manifestEventTemplateHashes,
+    manifest_event_template_hashes: manifestEventTemplateHashes,
+    missingManifestEventTemplateHashes,
+    missing_manifest_event_template_hashes: missingManifestEventTemplateHashes,
+    extraManifestEventTemplateHashes,
+    extra_manifest_event_template_hashes: extraManifestEventTemplateHashes,
     suppliedTemplateHash: suppliedTemplateHash ?? null,
     supplied_template_hash: suppliedTemplateHash ?? null,
     templateHash: recomputedTemplateHash,

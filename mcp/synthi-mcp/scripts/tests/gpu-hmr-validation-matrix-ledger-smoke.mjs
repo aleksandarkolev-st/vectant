@@ -242,7 +242,10 @@ assert.equal(acceptedColdRuntimeBoundaryTemplate.acceptedForGpuHmr, false);
 assert.equal(acceptedColdRuntimeBoundaryTemplate.gpuHmrSuccess, false);
 assert.equal(acceptedColdRuntimeBoundaryTemplate.canSatisfyRuntimeProof, false);
 assert.equal(acceptedColdRuntimeBoundaryTemplate.eventTemplateCount, 5);
+assert.equal(acceptedColdRuntimeBoundaryTemplate.manifestEventTemplateCount, 5);
 assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.missingRequiredEventKinds, []);
+assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.missingManifestEventTemplateHashes, []);
+assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.extraManifestEventTemplateHashes, []);
 assert.deepEqual(acceptedColdRuntimeBoundaryTemplate.failedGates, []);
 
 const sourceDerivedOracleTemplate =
@@ -331,6 +334,56 @@ assert.equal(populatedRuntimeEventsTemplate.validated, false);
 assert.ok(
   populatedRuntimeEventsTemplate.failedGates
     .includes('cold_runtime_boundary_event_manifest_template_contains_runtime_events'),
+);
+
+const missingManifestEventTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+missingManifestEventTemplateSeed.manifestTemplate = {
+  ...missingManifestEventTemplateSeed.manifestTemplate,
+  eventObjectTemplates: [],
+  event_object_templates: [],
+};
+missingManifestEventTemplateSeed.manifest_template =
+  missingManifestEventTemplateSeed.manifestTemplate;
+const missingManifestEventTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(
+  rehashColdRuntimeBoundaryTemplateFacet(missingManifestEventTemplateSeed),
+);
+assert.equal(missingManifestEventTemplate.validated, false);
+assert.ok(
+  missingManifestEventTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_manifest_event_templates_missing'),
+);
+assert.ok(
+  missingManifestEventTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_manifest_event_template_count_mismatch'),
+);
+
+const forgedManifestEventTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
+forgedManifestEventTemplateSeed.manifestTemplate = {
+  ...forgedManifestEventTemplateSeed.manifestTemplate,
+  eventObjectTemplates: forgedManifestEventTemplateSeed.manifestTemplate.eventObjectTemplates
+    .map((entry, index) => (index === 0
+      ? { ...entry, gpuHmrSuccess: true, gpu_hmr_success: true }
+      : entry)),
+};
+forgedManifestEventTemplateSeed.manifestTemplate.event_object_templates =
+  forgedManifestEventTemplateSeed.manifestTemplate.eventObjectTemplates;
+forgedManifestEventTemplateSeed.manifest_template =
+  forgedManifestEventTemplateSeed.manifestTemplate;
+const forgedManifestEventTemplate = coldRuntimeBoundaryEventManifestTemplateFacet(
+  rehashColdRuntimeBoundaryTemplateFacet(forgedManifestEventTemplateSeed),
+);
+assert.equal(forgedManifestEventTemplate.validated, false);
+assert.ok(
+  forgedManifestEventTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_manifest_event_template_hash_missing'),
+);
+assert.ok(
+  forgedManifestEventTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_manifest_event_template_hash_extra_or_mismatch'),
+);
+assert.ok(
+  forgedManifestEventTemplate.failedGates
+    .includes('cold_runtime_boundary_event_manifest_template_manifest_event_claimed_gpu_hmr_success:artifact_transport'),
 );
 
 const missingOutputOracleTemplateSeed = hashedColdRuntimeBoundaryTemplateFacet();
