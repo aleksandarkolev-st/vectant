@@ -16650,13 +16650,20 @@ function externalVisualStateBindingFacet({
     deterministicVisualMode.seedPolicyHash,
   );
   const visualHashes = compactStringList(requiredContentHashes).filter(contentAddressedSha256);
+  const visualCameraHashAccepted = contentAddressedSha256(cameraStateHash);
+  const deterministicCameraHashAccepted = contentAddressedSha256(deterministicCameraStateHash);
   const cameraHashesMatch =
-    !cameraStateHash
-    || !deterministicCameraStateHash
-    || cameraStateHash === deterministicCameraStateHash;
+    visualCameraHashAccepted
+    && deterministicCameraHashAccepted
+    && cameraStateHash === deterministicCameraStateHash;
   const failedGates = compactStringList([
-    contentAddressedSha256(cameraStateHash) ? null : 'external_visual_state_camera_hash_missing',
-    cameraHashesMatch ? null : 'external_visual_state_camera_hash_mismatch',
+    visualCameraHashAccepted ? null : 'external_visual_state_camera_hash_missing',
+    deterministicCameraHashAccepted
+      ? null
+      : 'external_visual_state_deterministic_camera_hash_missing',
+    !visualCameraHashAccepted || !deterministicCameraHashAccepted || cameraHashesMatch
+      ? null
+      : 'external_visual_state_camera_hash_mismatch',
     contentAddressedSha256(seedPolicyHash) ? null : 'external_visual_state_seed_hash_missing',
     visualHashes.length >= 3 ? null : 'external_visual_state_visual_hashes_missing',
   ]);

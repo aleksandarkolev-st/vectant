@@ -5029,6 +5029,125 @@ await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine
   proofId: 'external-profile-report:sha256:forged-seedless-engine-visual',
 });
 
+const cameraUnboundExternalVisualProfileId = 'forged-external-engine-camera-unbound-visual';
+const cameraUnboundExternalVisualProfileSelection = {
+  ...externalVisualProfileSelection,
+  profileId: cameraUnboundExternalVisualProfileId,
+  profile_id: cameraUnboundExternalVisualProfileId,
+  manifestHash: hashValue(`${cameraUnboundExternalVisualProfileId}-manifest`),
+  manifest_hash: hashValue(`${cameraUnboundExternalVisualProfileId}-manifest`),
+  path: `profiles/${cameraUnboundExternalVisualProfileId}.json`,
+  evidenceRefs: [`test:external-profile-selection:${cameraUnboundExternalVisualProfileId}`],
+  evidence_refs: [`test:external-profile-selection:${cameraUnboundExternalVisualProfileId}`],
+};
+const cameraUnboundExternalVisualSourceDeltaEvidence = {
+  ...externalVisualSourceDeltaEvidence,
+  beforeFileHash: hashValue(`${cameraUnboundExternalVisualProfileId}-before-file`),
+  before_file_hash: hashValue(`${cameraUnboundExternalVisualProfileId}-before-file`),
+  afterFileHash: hashValue(`${cameraUnboundExternalVisualProfileId}-after-file`),
+  after_file_hash: hashValue(`${cameraUnboundExternalVisualProfileId}-after-file`),
+  evidenceRefs: [`source:src/material.frag:${cameraUnboundExternalVisualProfileId}`],
+  evidence_refs: [`source:src/material.frag:${cameraUnboundExternalVisualProfileId}`],
+};
+const cameraUnboundExternalVisualProjectContract = externalProjectContractForTest({
+  profileId: cameraUnboundExternalVisualProfileId,
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  manifestHash: cameraUnboundExternalVisualProfileSelection.manifestHash,
+  runtimeEvidenceRefs: [`external-visual-proof:${cameraUnboundExternalVisualProfileId}`],
+});
+const cameraUnboundExternalVisualMode = { ...deterministicMode(cameraUnboundExternalVisualProfileId) };
+delete cameraUnboundExternalVisualMode.camera_state_hash;
+delete cameraUnboundExternalVisualMode.cameraStateHash;
+const cameraUnboundVisualArtifacts = visualArtifactSet({
+  before: externalVisualBefore,
+  after: externalVisualAfter,
+  diff: externalVisualDiff,
+}, {
+  capture_backend: 'external_runtime_screenshot',
+  camera_state_hash: hashValue(`camera:${cameraUnboundExternalVisualProfileId}`),
+});
+const cameraUnboundExternalVisualProofMaterial = {
+  ...externalVisualProofMaterial,
+  profileId: cameraUnboundExternalVisualProfileId,
+  externalProjectContract: cameraUnboundExternalVisualProjectContract,
+  external_project_contract: cameraUnboundExternalVisualProjectContract,
+  profileSelection: cameraUnboundExternalVisualProfileSelection,
+  profile_selection: cameraUnboundExternalVisualProfileSelection,
+  sourceDeltaEvidence: cameraUnboundExternalVisualSourceDeltaEvidence,
+  source_delta_evidence: cameraUnboundExternalVisualSourceDeltaEvidence,
+  deterministicVisualMode: cameraUnboundExternalVisualMode,
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  visualOracleArtifacts: cameraUnboundVisualArtifacts,
+  visual_oracle_artifacts: cameraUnboundVisualArtifacts,
+};
+const cameraUnboundExternalVisualProofArtifact = {
+  ...cameraUnboundExternalVisualProofMaterial,
+  proofId: `external-visual-proof:${sha256Hex(stableJson(cameraUnboundExternalVisualProofMaterial))}`,
+};
+const cameraUnboundExternalVisualProofArtifactPath = path.join(
+  logsRoot,
+  'external-projects',
+  'forged-external-engine-camera-unbound-visual-proof.json',
+);
+await writeJson(cameraUnboundExternalVisualProofArtifactPath, cameraUnboundExternalVisualProofArtifact);
+await writeJson(path.join(logsRoot, 'external-projects', 'forged-external-engine-camera-unbound-visual-report.json'), {
+  schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+  profile: {
+    id: cameraUnboundExternalVisualProfileId,
+    backend: 'webgl',
+    backendFamily: 'webgl',
+    libraryFamily: 'threejs',
+    runtimeEnvironment: 'browser_dev_server',
+    profileClass: 'external_engine_visual_profile',
+  },
+  proofMode: 'external_runtime_screenshot',
+  backend: 'webgl',
+  backendFamily: 'webgl',
+  libraryFamily: 'threejs',
+  runtimeEnvironment: 'browser_dev_server',
+  profileClass: 'external_engine_visual_profile',
+  externalProjectContract: cameraUnboundExternalVisualProjectContract,
+  external_project_contract: cameraUnboundExternalVisualProjectContract,
+  status: 'pass',
+  profileSelection: cameraUnboundExternalVisualProfileSelection,
+  profile_selection: cameraUnboundExternalVisualProfileSelection,
+  sourceDeltaEvidence: cameraUnboundExternalVisualSourceDeltaEvidence,
+  source_delta_evidence: cameraUnboundExternalVisualSourceDeltaEvidence,
+  visualOracleArtifacts: cameraUnboundVisualArtifacts,
+  visual_oracle_artifacts: cameraUnboundVisualArtifacts,
+  visualDiff: {
+    changedPixelRatio: 0.5,
+    meanAbsDelta8bit: 24,
+    visiblePixelCount: 76800,
+  },
+  deterministicVisualMode: cameraUnboundExternalVisualMode,
+  deterministic_visual_mode: cameraUnboundExternalVisualMode,
+  deterministicVisualModeEvaluation: {
+    accepted: true,
+  },
+  visualProofArtifact: {
+    schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    proofId: cameraUnboundExternalVisualProofArtifact.proofId,
+    path: cameraUnboundExternalVisualProofArtifactPath,
+    visualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    acceptedVisualEvidenceArtifactCount: externalVisualEvidenceArtifacts.length,
+    contentHashes: externalVisualEvidenceArtifacts.map((artifact) => artifact.contentHash),
+  },
+  proofArtifactPaths: [cameraUnboundExternalVisualProofArtifactPath],
+  timings: {
+    totalMs: 44,
+    editToScreenshotMs: 12,
+    visualDiffMs: 3,
+  },
+  proofId: 'external-profile-report:sha256:forged-camera-unbound-engine-visual',
+});
+
 const forgedExternalVisualDir = path.join(logsRoot, 'external-projects', 'forged-external-engine-visual');
 await writeRgbaPng(path.join(forgedExternalVisualDir, 'before.png'), 320, 240, (x, y) => [
   (x + y) % 256,
@@ -12747,6 +12866,31 @@ assert.ok(seedlessExternalVisual.openGaps.includes('deterministic_visual_mode_no
 assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('seed_policy_unproven'));
 assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('external_visual_state_binding_not_accepted'));
 assert.ok(seedlessExternalVisual.externalVisualProofArtifact.failedGates.includes('external_visual_state_seed_hash_missing'));
+
+const cameraUnboundExternalVisual = ledger.rows.find(
+  (row) => row.targetId === 'forged-external-engine-camera-unbound-visual',
+);
+assert.equal(cameraUnboundExternalVisual?.matrixOutcome, 'unproven');
+assert.equal(cameraUnboundExternalVisual.visual.accepted, true);
+assert.equal(cameraUnboundExternalVisual.externalProjectContract.accepted, true);
+assert.equal(cameraUnboundExternalVisual.externalProfileSelection.accepted, true);
+assert.equal(cameraUnboundExternalVisual.externalSourceDelta.accepted, true);
+assert.equal(cameraUnboundExternalVisual.externalVisualProofArtifact.accepted, false);
+assert.equal(
+  cameraUnboundExternalVisual.externalVisualProofArtifact.externalVisualStateBinding.accepted,
+  false,
+);
+assert.equal(
+  cameraUnboundExternalVisual.externalVisualProofArtifact.externalVisualStateBinding.cameraHashesMatch,
+  false,
+);
+assert.ok(cameraUnboundExternalVisual.externalVisualProofArtifact.failedGates.includes(
+  'external_visual_state_binding_not_accepted',
+));
+assert.ok(cameraUnboundExternalVisual.externalVisualProofArtifact.failedGates.includes(
+  'external_visual_state_deterministic_camera_hash_missing',
+));
+assert.ok(cameraUnboundExternalVisual.openGaps.includes('external_visual_state_binding_not_accepted'));
 
 const forgedExternalVisual = ledger.rows.find((row) => row.targetId === 'forged-external-engine-visual');
 assert.equal(forgedExternalVisual?.matrixOutcome, 'unproven');
