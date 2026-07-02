@@ -1706,28 +1706,35 @@ function randomColdListingClassification(entries) {
       if (sourceRelevantFiles.length < 80) sourceRelevantFiles.push(pathName);
     }
     if (isSourceRelevant || isBuildSignal) sourceOrBuildRelevantFileCount += 1;
-    if (ext === '.hip' || lower.includes('/hip/') || lower.includes('rocm')) {
+    const backendPathHintAllowed = isGpuSourceSignal || isSourceRelevant || isBuildSignal;
+    if (
+      ext === '.hip'
+      || (backendPathHintAllowed && (lower.includes('/hip/') || lower.includes('rocm')))
+    ) {
       addBackend('hip_rocm', pathName, 'path_or_extension');
     }
-    if (ext === '.cu' || ext === '.cuh' || lower.includes('cuda')) {
+    if (ext === '.cu' || ext === '.cuh' || (backendPathHintAllowed && lower.includes('cuda'))) {
       addBackend('cuda', pathName, 'path_or_extension');
     }
-    if (ext === '.cl' || ext === '.clh' || lower.includes('opencl')) {
+    if (ext === '.cl' || ext === '.clh' || (backendPathHintAllowed && lower.includes('opencl'))) {
       addBackend('opencl', pathName, 'path_or_extension');
     }
-    if (ext === '.wgsl' || lower.includes('wgpu') || lower.includes('webgpu')) {
+    if (
+      ext === '.wgsl'
+      || (backendPathHintAllowed && (lower.includes('wgpu') || lower.includes('webgpu')))
+    ) {
       addBackend('webgpu_wgsl', pathName, 'path_or_extension');
     }
     if (
       ['.spv', '.glsl', '.hlsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
-      || lower.includes('vulkan')
+      || (backendPathHintAllowed && lower.includes('vulkan'))
     ) {
       addBackend('vulkan', pathName, 'path_or_extension');
     }
-    if (ext === '.metal' || lower.includes('/metal/')) {
+    if (ext === '.metal' || (backendPathHintAllowed && lower.includes('/metal/'))) {
       addBackend('metal', pathName, 'path_or_extension');
     }
-    if (lower.includes('sycl') || lower.includes('dpcpp')) {
+    if (backendPathHintAllowed && (lower.includes('sycl') || lower.includes('dpcpp'))) {
       addBackend('sycl', pathName, 'path_or_extension');
     }
   }

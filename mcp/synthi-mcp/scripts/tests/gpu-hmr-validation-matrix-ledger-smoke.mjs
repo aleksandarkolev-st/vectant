@@ -10854,6 +10854,55 @@ assert.ok(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessDocOnlyBackendSignalRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `documentation-notes-only-${index + 1}`,
+    fileCount: 1500,
+    totalKnownBytes: 15 * 1024 * 1024,
+    sourceRelevantFileCount: 1499,
+    gpuSourceSignalCount: 0,
+  });
+  sourceListingManifest.entries.push({
+    path: `docs/rocm-notes-${index + 1}.md`,
+    object: sha256Hex(`documentation-rocm-note-${index + 1}`).slice(0, 40),
+    byteLength: 2048,
+  });
+  sourceListingManifest.fileCount = sourceListingManifest.entries.length;
+  sourceListingManifest.file_count = sourceListingManifest.entries.length;
+  sourceListingManifest.totalKnownBytes =
+    sourceListingManifest.entries.reduce((sum, entry) => sum + entry.byteLength, 0);
+  sourceListingManifest.total_known_bytes = sourceListingManifest.totalKnownBytes;
+  sourceListingManifest.sourceListingHash = sourceListingHashForEntries(sourceListingManifest.entries);
+  sourceListingManifest.source_listing_hash = sourceListingManifest.sourceListingHash;
+  return randomColdReadinessMatrixRow({
+    targetId: `doc-only-backend-signal-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/doc-only-backend-signal/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`doc-only-backend-signal-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest,
+  });
+});
+const broadReadinessWithDocOnlyBackendSignalQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessDocOnlyBackendSignalRows,
+  ],
+});
+assert.equal(broadReadinessWithDocOnlyBackendSignalQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
   const evidence = randomColdBuildMetadataContentEvidenceFixture({
