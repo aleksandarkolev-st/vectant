@@ -224,6 +224,10 @@ const RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
   'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const RANDOM_COLD_SOURCE_INTAKE_AUTHORITY =
   'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
+const RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_source_listing_manifest.v1';
+const RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY =
+  'source_listing_entries_only_not_gpu_hmr_success';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
@@ -1417,6 +1421,332 @@ function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sour
   };
 }
 
+const RANDOM_COLD_BUILD_FILE_BASENAMES = Object.freeze(new Set([
+  'cmakelists.txt',
+  'makefile',
+  'meson.build',
+  'build.bazel',
+  'workspace',
+  'cargo.toml',
+  'package.json',
+  'pyproject.toml',
+  'build.gradle',
+  'configure.ac',
+  'xmake.lua',
+  'premake5.lua',
+  'sconstruct',
+  'sconscript',
+  'build.gn',
+]));
+
+const RANDOM_COLD_BUILD_FILE_EXTENSIONS = Object.freeze(new Set([
+  '.sln',
+  '.vcxproj',
+  '.vcxproj.filters',
+  '.csproj',
+]));
+
+const RANDOM_COLD_GPU_SOURCE_EXTENSIONS = Object.freeze(new Set([
+  '.hip',
+  '.cu',
+  '.cuh',
+  '.cl',
+  '.clh',
+  '.wgsl',
+  '.glsl',
+  '.hlsl',
+  '.spv',
+  '.metal',
+  '.comp',
+  '.vert',
+  '.frag',
+  '.geom',
+  '.tesc',
+  '.tese',
+  '.ll',
+  '.mlir',
+]));
+
+const RANDOM_COLD_SOURCE_RELEVANT_EXTENSIONS = Object.freeze(new Set([
+  ...RANDOM_COLD_GPU_SOURCE_EXTENSIONS,
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cxx',
+  '.h',
+  '.hh',
+  '.hpp',
+  '.hxx',
+  '.ipp',
+  '.inl',
+  '.rs',
+  '.zig',
+  '.go',
+  '.swift',
+  '.m',
+  '.mm',
+  '.java',
+  '.kt',
+  '.kts',
+  '.scala',
+  '.cs',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.rb',
+  '.lua',
+  '.nim',
+  '.d',
+  '.f',
+  '.for',
+  '.f90',
+  '.f95',
+  '.jl',
+]));
+
+function randomColdNormalizeSourceListingEntries(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => {
+      const object = compactObject(entry);
+      const pathName = firstText(object.path, object.sourcePath, object.source_path);
+      if (!pathName) return null;
+      return {
+        path: pathName.replace(/\\/g, '/'),
+        object: firstText(object.object, object.objectId, object.object_id, object.sha, object.hash) ?? null,
+        byteLength: finiteNumber(
+          object.byteLength
+          ?? object.byte_length
+          ?? object.size
+          ?? object.size_bytes
+        ),
+      };
+    })
+    .filter(Boolean);
+}
+
+function randomColdListingClassification(entries) {
+  const backendSignals = new Map();
+  const addBackend = (backend, pathName, reason) => {
+    if (!backendSignals.has(backend)) backendSignals.set(backend, []);
+    const values = backendSignals.get(backend);
+    if (values.length < 20) values.push({ path: pathName, reason });
+  };
+  const buildSignals = [];
+  const gpuSourceSignals = [];
+  const sourceRelevantFiles = [];
+  let buildSignalCount = 0;
+  let gpuSourceSignalCount = 0;
+  let sourceRelevantFileCount = 0;
+  let sourceOrBuildRelevantFileCount = 0;
+  let totalKnownBytes = 0;
+  for (const entry of entries) {
+    const pathName = String(entry.path ?? '');
+    const lower = pathName.toLowerCase();
+    const basename = lower.split('/').pop() ?? lower;
+    const ext = path.extname(lower);
+    const isBuildSignal =
+      RANDOM_COLD_BUILD_FILE_BASENAMES.has(basename)
+      || RANDOM_COLD_BUILD_FILE_EXTENSIONS.has(ext);
+    const isGpuSourceSignal = RANDOM_COLD_GPU_SOURCE_EXTENSIONS.has(ext);
+    const isSourceRelevant = RANDOM_COLD_SOURCE_RELEVANT_EXTENSIONS.has(ext);
+    if (Number.isFinite(entry.byteLength)) totalKnownBytes += entry.byteLength;
+    if (isBuildSignal) {
+      buildSignalCount += 1;
+      if (buildSignals.length < 80) buildSignals.push(pathName);
+    }
+    if (isGpuSourceSignal) {
+      gpuSourceSignalCount += 1;
+      if (gpuSourceSignals.length < 80) gpuSourceSignals.push(pathName);
+    }
+    if (isSourceRelevant) {
+      sourceRelevantFileCount += 1;
+      if (sourceRelevantFiles.length < 80) sourceRelevantFiles.push(pathName);
+    }
+    if (isSourceRelevant || isBuildSignal) sourceOrBuildRelevantFileCount += 1;
+    if (ext === '.hip' || lower.includes('/hip/') || lower.includes('rocm')) {
+      addBackend('hip_rocm', pathName, 'path_or_extension');
+    }
+    if (ext === '.cu' || ext === '.cuh' || lower.includes('cuda')) {
+      addBackend('cuda', pathName, 'path_or_extension');
+    }
+    if (ext === '.cl' || ext === '.clh' || lower.includes('opencl')) {
+      addBackend('opencl', pathName, 'path_or_extension');
+    }
+    if (ext === '.wgsl' || lower.includes('wgpu') || lower.includes('webgpu')) {
+      addBackend('webgpu_wgsl', pathName, 'path_or_extension');
+    }
+    if (
+      ['.spv', '.glsl', '.hlsl', '.comp', '.vert', '.frag', '.geom', '.tesc', '.tese'].includes(ext)
+      || lower.includes('vulkan')
+    ) {
+      addBackend('vulkan', pathName, 'path_or_extension');
+    }
+    if (ext === '.metal' || lower.includes('/metal/')) {
+      addBackend('metal', pathName, 'path_or_extension');
+    }
+    if (lower.includes('sycl') || lower.includes('dpcpp')) {
+      addBackend('sycl', pathName, 'path_or_extension');
+    }
+  }
+  const backendCandidates = [...backendSignals.keys()].sort();
+  return {
+    fileCount: entries.length,
+    file_count: entries.length,
+    totalKnownBytes,
+    total_known_bytes: totalKnownBytes,
+    buildSignals,
+    build_signals: buildSignals,
+    buildSignalCount,
+    build_signal_count: buildSignalCount,
+    gpuSourceSignals,
+    gpu_source_signals: gpuSourceSignals,
+    gpuSourceSignalCount,
+    gpu_source_signal_count: gpuSourceSignalCount,
+    sourceRelevantFiles,
+    source_relevant_files: sourceRelevantFiles,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    backendSignals: Object.fromEntries(backendSignals),
+    backend_signals: Object.fromEntries(backendSignals),
+  };
+}
+
+function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}, result = {}) {
+  const facet = compactObject(manifest);
+  const present = Object.keys(facet).length > 0;
+  const entries = randomColdNormalizeSourceListingEntries(
+    facet.entries
+    ?? facet.sourceListingEntries
+    ?? facet.source_listing_entries
+    ?? facet.files
+    ?? facet.sourceFiles
+    ?? facet.source_files,
+  );
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const listingIdentity = entries.map((entry) => ({
+    path: entry.path,
+    object: entry.object,
+    byteLength: entry.byteLength,
+  }));
+  const recomputedSourceListingHash = entries.length > 0
+    ? `sha256:${sha256Hex(stableJson(listingIdentity))}`
+    : null;
+  const declaredSourceListingHash = normalizeSha256(firstText(
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+    facet.listingHash,
+    facet.listing_hash,
+    sourceIntake.sourceListingHash,
+    sourceIntake.source_listing_hash,
+    result.sourceListingHash,
+    result.source_listing_hash,
+  ));
+  const classification = randomColdListingClassification(entries);
+  const declaredFileCount = finiteNumber(facet.fileCount ?? facet.file_count);
+  const declaredTotalKnownBytes = finiteNumber(
+    facet.totalKnownBytes
+    ?? facet.total_known_bytes
+  );
+  const declaredSourceRelevantFileCount = finiteNumber(
+    facet.sourceRelevantFileCount
+    ?? facet.source_relevant_file_count
+  );
+  const declaredSourceOrBuildRelevantFileCount = finiteNumber(
+    facet.sourceOrBuildRelevantFileCount
+    ?? facet.source_or_build_relevant_file_count
+  );
+  const declaredGpuSourceSignalCount = finiteNumber(
+    facet.gpuSourceSignalCount
+    ?? facet.gpu_source_signal_count
+  );
+  const failedGates = compactStringList([
+    present ? null : 'random_cold_source_listing_manifest_missing',
+    present && schemaVersion !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION
+      ? 'random_cold_source_listing_manifest_schema_invalid'
+      : null,
+    present && proofAuthority !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY
+      ? 'random_cold_source_listing_manifest_authority_invalid'
+      : null,
+    present && entries.length === 0
+      ? 'random_cold_source_listing_manifest_entries_missing'
+      : null,
+    present && !declaredSourceListingHash
+      ? 'random_cold_source_listing_manifest_hash_missing'
+      : null,
+    present && declaredSourceListingHash && recomputedSourceListingHash
+      && declaredSourceListingHash !== recomputedSourceListingHash
+      ? 'random_cold_source_listing_manifest_hash_mismatch'
+      : null,
+    present && declaredFileCount !== null && declaredFileCount !== classification.fileCount
+      ? 'random_cold_source_listing_manifest_file_count_mismatch'
+      : null,
+    present && declaredTotalKnownBytes !== null
+      && declaredTotalKnownBytes !== classification.totalKnownBytes
+      ? 'random_cold_source_listing_manifest_known_bytes_mismatch'
+      : null,
+    present && declaredSourceRelevantFileCount !== null
+      && declaredSourceRelevantFileCount !== classification.sourceRelevantFileCount
+      ? 'random_cold_source_listing_manifest_source_relevant_count_mismatch'
+      : null,
+    present && declaredSourceOrBuildRelevantFileCount !== null
+      && declaredSourceOrBuildRelevantFileCount !== classification.sourceOrBuildRelevantFileCount
+      ? 'random_cold_source_listing_manifest_source_or_build_count_mismatch'
+      : null,
+    present && declaredGpuSourceSignalCount !== null
+      && declaredGpuSourceSignalCount !== classification.gpuSourceSignalCount
+      ? 'random_cold_source_listing_manifest_gpu_source_count_mismatch'
+      : null,
+    present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'random_cold_source_listing_manifest_claimed_gpu_hmr_acceptance'
+      : null,
+    present && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'random_cold_source_listing_manifest_claimed_gpu_hmr_success'
+      : null,
+    present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'random_cold_source_listing_manifest_claimed_runtime_authority'
+      : null,
+    present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_source_listing_manifest_claimed_dispatch_authority'
+      : null,
+  ]);
+  const accepted = present && failedGates.length === 0;
+  return {
+    present,
+    accepted,
+    acceptedAsSourceListingEvidence: accepted,
+    accepted_as_source_listing_evidence: accepted,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    sourceListingHash: declaredSourceListingHash,
+    source_listing_hash: declaredSourceListingHash,
+    recomputedSourceListingHash,
+    recomputed_source_listing_hash: recomputedSourceListingHash,
+    entryCount: entries.length,
+    entry_count: entries.length,
+    entries,
+    ...classification,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const facet = compactObject(sourceIntake);
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
@@ -1434,6 +1764,12 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ?? result.build_metadata_content_evidence,
   );
   const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(buildContent);
+  const sourceListingManifest = randomColdSourceListingManifestSummary(firstCompactObject(
+    facet.sourceListingManifest,
+    facet.source_listing_manifest,
+    result.sourceListingManifest,
+    result.source_listing_manifest,
+  ), facet, result);
   const runtimeBoundaryExpectation = compactObject(
     facet.runtimeBoundaryExpectation
     ?? facet.runtime_boundary_expectation
@@ -1531,6 +1867,8 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     transport: firstText(facet.transport) ?? null,
     sourceListingHash,
     source_listing_hash: sourceListingHash,
+    sourceListingManifest,
+    source_listing_manifest: sourceListingManifest,
     facetHash,
     facet_hash: facetHash,
     fileCount: finiteNumber(facet.fileCount ?? facet.file_count) ?? 0,
@@ -23842,46 +24180,18 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       template.acceptedAsSupportEvidence,
       template.accepted_as_support_evidence,
     ) === true;
-    const fileCount = finiteNumber(
-      row.sourceTreeFileCount
-      ?? row.source_tree_file_count
-      ?? row.fileCount
-      ?? row.file_count
-      ?? facet.fileCount
-      ?? facet.file_count
-      ?? intake.fileCount
-      ?? intake.file_count,
-    ) ?? 0;
-    const knownBytes = finiteNumber(
-      row.sourceTreeTotalKnownBytes
-      ?? row.source_tree_total_known_bytes
-      ?? row.totalKnownBytes
-      ?? row.total_known_bytes
-      ?? facet.totalKnownBytes
-      ?? facet.total_known_bytes
-      ?? intake.totalKnownBytes
-      ?? intake.total_known_bytes,
-    ) ?? 0;
-    const sourceRelevantFileCount = finiteNumber(
-      row.sourceOrBuildRelevantFileCount
-      ?? row.source_or_build_relevant_file_count
-      ?? row.sourceRelevantFileCount
-      ?? row.source_relevant_file_count
-      ?? row.gpuSourceFileCount
-      ?? row.gpu_source_file_count
-      ?? facet.sourceOrBuildRelevantFileCount
-      ?? facet.source_or_build_relevant_file_count
-      ?? facet.sourceRelevantFileCount
-      ?? facet.source_relevant_file_count
-      ?? facet.gpuSourceFileCount
-      ?? facet.gpu_source_file_count
-      ?? intake.sourceOrBuildRelevantFileCount
-      ?? intake.source_or_build_relevant_file_count
-      ?? intake.sourceRelevantFileCount
-      ?? intake.source_relevant_file_count
-      ?? intake.gpuSourceFileCount
-      ?? intake.gpu_source_file_count,
-    ) ?? 0;
+    const sourceListingManifest = compactObject(
+      sourceIntakeEvidence.sourceListingManifest
+      ?? sourceIntakeEvidence.source_listing_manifest,
+    );
+    const sourceListingManifestAccepted =
+      sourceListingManifest.acceptedAsSourceListingEvidence === true
+      && sourceListingManifest.recomputedSourceListingHash === sourceListingManifest.sourceListingHash
+      && sourceListingManifest.acceptedForGpuHmr === false
+      && sourceListingManifest.gpuHmrSuccess === false;
+    const fileCount = sourceListingManifest.fileCount ?? 0;
+    const knownBytes = sourceListingManifest.totalKnownBytes ?? 0;
+    const sourceRelevantFileCount = sourceListingManifest.sourceOrBuildRelevantFileCount ?? 0;
     const rawLargeSourceTree =
       fileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
       || knownBytes >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES;
@@ -23923,6 +24233,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && sourceDerivedBackendObserved
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
+      && sourceListingManifestAccepted
       && buildMetadataAccepted
       && Boolean(sourceContentIdentityHash)
       && templateAccepted

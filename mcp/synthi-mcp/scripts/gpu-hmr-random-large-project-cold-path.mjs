@@ -2312,6 +2312,34 @@ async function buildAcceptedSourceIntakeFacet({
   }));
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
   const classification = classifySourceListing(files);
+  const sourceListingHash = contentHash(stableJson(listingIdentity));
+  const sourceListingManifest = {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
+    proofAuthority: 'source_listing_entries_only_not_gpu_hmr_success',
+    proof_authority: 'source_listing_entries_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    entries: listingIdentity,
+    fileCount: files.length,
+    file_count: files.length,
+    totalKnownBytes,
+    total_known_bytes: totalKnownBytes,
+    sourceRelevantFileCount: classification.sourceRelevantFileCount,
+    source_relevant_file_count: classification.sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount: classification.sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: classification.sourceOrBuildRelevantFileCount,
+    gpuSourceSignalCount: classification.gpuSourceSignalCount,
+    gpu_source_signal_count: classification.gpuSourceSignalCount,
+  };
   const buildMetadataContentEvidence = await collectBuildMetadataContentEvidence({
     candidate,
     files,
@@ -2352,8 +2380,12 @@ async function buildAcceptedSourceIntakeFacet({
     file_count: files.length,
     totalKnownBytes,
     total_known_bytes: totalKnownBytes,
-    listingHash: contentHash(stableJson(listingIdentity)),
-    listing_hash: contentHash(stableJson(listingIdentity)),
+    listingHash: sourceListingHash,
+    listing_hash: sourceListingHash,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    sourceListingManifest,
+    source_listing_manifest: sourceListingManifest,
     sampleFiles: files.slice(0, 80).map((file) => file.path),
     sample_files: files.slice(0, 80).map((file) => file.path),
     buildSystemHints: candidate.buildSystemHints,
@@ -3582,6 +3614,15 @@ async function selfCheck() {
     || localResult.sourceIntakeEvidence?.sourceRelevantFileCount !== 1
     || localResult.sourceIntakeEvidence?.sourceOrBuildRelevantFileCount !== 2
     || localResult.sourceIntakeEvidence?.gpuSourceSignalCount !== 1
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.schemaVersion
+      !== 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1'
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.proofAuthority
+      !== 'source_listing_entries_only_not_gpu_hmr_success'
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.sourceListingHash
+      !== localResult.sourceIntakeEvidence?.sourceListingHash
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.entries?.length !== 2
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.gpuHmrSuccess !== false
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.canSatisfyRuntimeProof !== false
     || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.sourceRelevantFileCount !== 1
     || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.sourceOrBuildRelevantFileCount !== 2
     || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.gpuSourceSignalCount !== 1

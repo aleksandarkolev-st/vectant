@@ -1774,6 +1774,60 @@ function randomColdBuildMetadataContentEvidenceFixture({
   };
 }
 
+function randomColdSourceListingManifestFixture({
+  targetId = 'random-cold-readiness-user-project',
+  fileCount = 1500,
+  totalKnownBytes = 15 * 1024 * 1024,
+  sourceRelevantFileCount = fileCount,
+  gpuSourceSignalCount = 31,
+} = {}) {
+  const perFileBytes = Math.max(1, Math.floor(totalKnownBytes / Math.max(fileCount, 1)));
+  const entries = Array.from({ length: fileCount }, (_, index) => {
+    let filePath;
+    if (index < gpuSourceSignalCount) {
+      filePath = `src/gpu/${targetId}-kernel-${index}.hip`;
+    } else if (index < sourceRelevantFileCount) {
+      filePath = `src/core/${targetId}-source-${index}.cpp`;
+    } else {
+      filePath = `assets/${targetId}-asset-${index}.bin`;
+    }
+    return {
+      path: filePath,
+      object: `fixture-object-${targetId}-${index}`,
+      byteLength: perFileBytes,
+    };
+  });
+  const sourceListingHash = contentHashFor(entries);
+  const recomputedKnownBytes = entries.reduce((sum, entry) => sum + entry.byteLength, 0);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
+    proofAuthority: 'source_listing_entries_only_not_gpu_hmr_success',
+    proof_authority: 'source_listing_entries_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    entries,
+    fileCount,
+    file_count: fileCount,
+    totalKnownBytes: recomputedKnownBytes,
+    total_known_bytes: recomputedKnownBytes,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount: sourceRelevantFileCount,
+    source_or_build_relevant_file_count: sourceRelevantFileCount,
+    gpuSourceSignalCount,
+    gpu_source_signal_count: gpuSourceSignalCount,
+  };
+}
+
 function randomColdPathManifest({
   candidateId = 'direct-random-arbitrary-cold',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
@@ -1786,6 +1840,13 @@ function randomColdPathManifest({
   const sourceOrBuildRelevantFileCount = 75;
   const gpuSourceFileCount = 31;
   const directInputEvidence = randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit });
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: candidateId,
+    fileCount: 2445,
+    totalKnownBytes: 35885065,
+    sourceRelevantFileCount,
+    gpuSourceSignalCount: gpuSourceFileCount,
+  });
   const sourceIntakeEvidence = {
     schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
     schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
@@ -1802,14 +1863,16 @@ function randomColdPathManifest({
     acceptedAsIntakeEvidence: true,
     accepted_as_intake_evidence: true,
     transport: 'github_git_tree_api_recursive',
-    sourceListingHash: hashValue(`${candidateId}:listing`),
-    source_listing_hash: hashValue(`${candidateId}:listing`),
+    sourceListingHash: sourceListingManifest.sourceListingHash,
+    source_listing_hash: sourceListingManifest.sourceListingHash,
+    sourceListingManifest,
+    source_listing_manifest: sourceListingManifest,
     facetHash: hashValue(`${candidateId}:source-intake`),
     facet_hash: hashValue(`${candidateId}:source-intake`),
-    fileCount: 2445,
-    file_count: 2445,
-    totalKnownBytes: 35885065,
-    total_known_bytes: 35885065,
+    fileCount: sourceListingManifest.fileCount,
+    file_count: sourceListingManifest.fileCount,
+    totalKnownBytes: sourceListingManifest.totalKnownBytes,
+    total_known_bytes: sourceListingManifest.totalKnownBytes,
     gpuSourceSignals: ['src/shaders/sample.wgsl'],
     gpu_source_signals: ['src/shaders/sample.wgsl'],
     gpuSourceSignalCount: gpuSourceFileCount,
@@ -8732,6 +8795,7 @@ function randomColdReadinessMatrixRow({
   buildMetadataContentEvidence = undefined,
   buildMetadataContentHash = null,
   sourceListingHash = null,
+  sourceListingManifest = null,
   sourceIntakeFacetHash = null,
   eventType = 'cold_path_complete',
   dryRun = false,
@@ -8748,6 +8812,14 @@ function randomColdReadinessMatrixRow({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_listing_identity.v1',
     ...sourceContentSeed,
   });
+  sourceListingManifest ??= randomColdSourceListingManifestFixture({
+    targetId,
+    fileCount,
+    totalKnownBytes,
+    sourceRelevantFileCount,
+    gpuSourceSignalCount: Math.min(31, sourceRelevantFileCount),
+  });
+  sourceListingHash = sourceListingManifest.sourceListingHash;
   sourceIntakeFacetHash ??= contentHashFor({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_intake_identity.v1',
     ...sourceContentSeed,
@@ -8956,6 +9028,8 @@ function randomColdReadinessMatrixRow({
       detected_build_systems: ['cargo', 'npm_or_node'],
       sourceListingHash,
       source_listing_hash: sourceListingHash,
+      sourceListingManifest,
+      source_listing_manifest: sourceListingManifest,
       facetHash: sourceIntakeFacetHash,
       facet_hash: sourceIntakeFacetHash,
       fileCount,
@@ -8998,6 +9072,8 @@ function randomColdReadinessMatrixRow({
       detected_build_systems: ['cargo', 'npm_or_node'],
       sourceListingHash,
       source_listing_hash: sourceListingHash,
+      sourceListingManifest,
+      source_listing_manifest: sourceListingManifest,
       facetHash: sourceIntakeFacetHash,
       facet_hash: sourceIntakeFacetHash,
       fileCount,
@@ -9594,6 +9670,23 @@ const broadReadinessRandomColdRows = Array.from({ length: 5 }, (_, index) =>
     immutableCommit: sha256Hex(`random-cold-readiness-commit-${index + 1}`).slice(0, 40),
   })
 );
+const inflatedCountSmallListingRandomColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `inflated-count-small-listing-random-cold-${index + 1}`,
+    sourceUrl: `https://example.invalid/inflated/small-listing-${index + 1}.git`,
+    immutableCommit: sha256Hex(`inflated-count-small-listing-${index + 1}`).slice(0, 40),
+    fileCount: 5000,
+    totalKnownBytes: 50 * 1024 * 1024,
+    sourceRelevantFileCount: 5000,
+    sourceListingManifest: randomColdSourceListingManifestFixture({
+      targetId: `small-listing-random-cold-${index + 1}`,
+      fileCount: 20,
+      totalKnownBytes: 20 * 1024,
+      sourceRelevantFileCount: 20,
+      gpuSourceSignalCount: 2,
+    }),
+  })
+);
 const broadReadinessWithoutRandomColdQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRows,
@@ -9611,6 +9704,28 @@ assert.ok(
   broadReadinessWithoutRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps.includes(
     'broad_acceptance_requires_random_large_project_cold_path',
   ),
+);
+const broadReadinessWithInflatedCountSmallListingColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...inflatedCountSmallListingRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithInflatedCountSmallListingColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithInflatedCountSmallListingColdQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithInflatedCountSmallListingColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithInflatedCountSmallListingColdQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_large_random_project_cold_paths'),
 );
 const broadReadinessWithProfiledColdOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -10766,12 +10881,16 @@ const variedInputChannelSets = [
   ['env_source_url', 'cli_arg_commit'],
   ['cli_arg_source_url', 'cli_arg_commit', 'env_source_id'],
 ];
+const variedChannelSameSourceListingManifest = randomColdSourceListingManifestFixture({
+  targetId: 'varied-channel-same-source-content',
+});
 const variedChannelSameSourceRandomColdRows = variedInputChannelSets.map((inputChannels, index) =>
   randomColdReadinessMatrixRow({
     targetId: `varied-channel-source-random-cold-readiness-${index + 1}`,
     sourceUrl: 'https://example.invalid/replayed/channel-variant-large-project.git',
     immutableCommit: '5555555555555555555555555555555555555555',
     directInputEvidenceInputChannels: inputChannels,
+    sourceListingManifest: variedChannelSameSourceListingManifest,
   })
 );
 const broadReadinessWithVariedChannelSameSourceColdQuery = queryGpuHmrValidationMatrixLedger({
@@ -10805,7 +10924,9 @@ assert.ok(
   broadReadinessWithVariedChannelSameSourceColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_distinct_random_large_project_cold_sources'),
 );
-const sharedContentSourceListingHash = hashValue('shared-random-cold-content-only:listing');
+const sharedContentSourceListingManifest = randomColdSourceListingManifestFixture({
+  targetId: 'shared-random-cold-content-only',
+});
 const sharedContentBuildEvidence = randomColdBuildMetadataContentEvidenceFixture({
   targetId: 'shared-random-cold-content-only',
 });
@@ -10815,7 +10936,7 @@ const differentSourceLabelsSameContentColdRows = Array.from({ length: 5 }, (_, i
     sourceUrl: `https://example.invalid/relabelled/content-clone-${index + 1}.git`,
     immutableCommit: sha256Hex(`different-label-same-content-random-cold-${index + 1}`)
       .slice(0, 40),
-    sourceListingHash: sharedContentSourceListingHash,
+    sourceListingManifest: sharedContentSourceListingManifest,
     buildMetadataContentEvidence: sharedContentBuildEvidence,
   })
 );
@@ -10857,7 +10978,9 @@ const replayedSourceWithForgedContentIdentitiesRows = Array.from({ length: 5 }, 
     targetId: `forged-content-identity-source-random-cold-readiness-${index + 1}`,
     sourceUrl: 'https://example.invalid/replayed/content-identity-large-project.git',
     immutableCommit: '6666666666666666666666666666666666666666',
-    sourceListingHash: hashValue(`forged-content-identity:listing:${index + 1}`),
+    sourceListingManifest: randomColdSourceListingManifestFixture({
+      targetId: `forged-content-identity-listing-${index + 1}`,
+    }),
     sourceIntakeFacetHash: hashValue(`forged-content-identity:intake:${index + 1}`),
     buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceFixture({
       targetId: `forged-content-identity-build-${index + 1}`,
