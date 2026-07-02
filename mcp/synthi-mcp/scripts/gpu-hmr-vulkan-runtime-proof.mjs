@@ -31,6 +31,8 @@ const MCP_ROOT = path.resolve(__dirname, '..');
 const ARTIFACT_DIR = path.join(MCP_ROOT, '.gpu-hmr-test-artifacts/vulkan-runtime-proof');
 const SCHEMA = 'synthi.gpu_hmr.vulkan_runtime_proof.v1';
 const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
+const VULKAN_VISUAL_OUTPUT_TARGET_ID = 'vulkan-frame-readback';
+const VULKAN_FRAMEBUFFER_ID = 'swapchain-framebuffer';
 
 const MODEL_REGISTRY = Object.freeze({
   'gemini-3.5-flash': {
@@ -1281,7 +1283,7 @@ function buildContract({
   deviceName = 'self-check-vulkan-device',
   deviceHandle = 'VkDevice:self-check',
   queueHandle = 'VkQueue:self-check',
-  framebufferIdentity = 'VkImage:swapchain-framebuffer:self-check',
+  framebufferIdentity = `VkImage:${VULKAN_FRAMEBUFFER_ID}:self-check`,
   evidenceSource = 'vulkan_runtime_same_process_trace',
 }) {
   const sourcePaths = ['shaders/vulkan-before.comp', 'shaders/vulkan-after.comp'];
@@ -1308,7 +1310,8 @@ function buildContract({
   ];
   const outputOracleContract = {
     kind: 'visual',
-    target_id: 'swapchain-framebuffer',
+    target_id: VULKAN_VISUAL_OUTPUT_TARGET_ID,
+    framebuffer_id: VULKAN_FRAMEBUFFER_ID,
     epoch: 2,
     frame_number: 2,
     evidence_refs: ['runtime:vulkan:vkQueueSubmit', 'visual:vulkan:frame-readback'],
@@ -1397,7 +1400,7 @@ function buildContract({
       device_uuid: deviceUuid,
       context_or_device_handle: deviceHandle,
       queue_or_stream_handle: queueHandle,
-      persistent_gpu_allocations: ['swapchain-framebuffer', 'readback-buffer'],
+      persistent_gpu_allocations: [VULKAN_FRAMEBUFFER_ID, 'readback-buffer'],
       engine_scene_handles: [],
       camera_state_hash: sha256Text('vulkan-fixed-camera'),
       swapchain_or_framebuffer_identity: framebufferIdentity,
@@ -1577,7 +1580,7 @@ function buildLedgerRecord({
   const afterOutput = traceValidation?.events?.afterOutput;
   const retirementEvent = traceValidation?.events?.retirementEvent;
   const dispatchId = firstText(afterDispatch?.id, 'vulkan-dispatch-epoch-2');
-  const outputTargetId = 'vulkan-frame-readback';
+  const outputTargetId = VULKAN_VISUAL_OUTPUT_TARGET_ID;
   const deterministicMode = deterministicVisualMode({ beforeHash: frames.beforeHash, afterHash: frames.afterHash });
   return {
     project_id: CFG.targetId,
@@ -2503,6 +2506,18 @@ async function selfCheck() {
       declaredScopeEvidence: row?.declaredScopeEvidence,
       nativeVulkanApiEvidence: row?.nativeVulkanApiEvidence,
       negativeLayoutRefusalAccepted: row?.negativeLayoutRefusalAccepted,
+    }, null, 2)}`);
+  }
+  const outputBinding = row.outputOracleFacet?.outputBinding ?? row.output_oracle_facet?.output_binding;
+  if (
+    outputBinding?.accepted !== true
+    || outputBinding.outputTargetId !== VULKAN_VISUAL_OUTPUT_TARGET_ID
+    || outputBinding.dispatchOutputTargetId !== VULKAN_VISUAL_OUTPUT_TARGET_ID
+    || outputBinding.oracleOutputTargetId !== VULKAN_VISUAL_OUTPUT_TARGET_ID
+  ) {
+    throw new Error(`self-check output-oracle target binding rejected: ${JSON.stringify({
+      outputBinding,
+      expectedOutputTargetId: VULKAN_VISUAL_OUTPUT_TARGET_ID,
     }, null, 2)}`);
   }
   const forged = JSON.parse(JSON.stringify(proof));
