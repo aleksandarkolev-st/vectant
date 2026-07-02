@@ -44,6 +44,9 @@ import {
   buildGpuHmrRunModeCoverageSupport,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -6652,6 +6655,21 @@ function withRunModeVisualLedgerProof({
     gpuHmrSuccess: recomputed.gpuHmrSuccess,
     gpu_hmr_success: recomputed.gpuHmrSuccess,
   };
+  const finalLedgerRecord = firstLedgerRecord(finalLedger);
+  const visualOracleArtifacts =
+    finalLedgerRecord?.outputEvent?.visualOracleArtifacts
+    ?? finalLedgerRecord?.output_event?.visual_oracle_artifacts
+    ?? finalLedgerRecord?.oracleArtifacts?.visualOracleArtifacts
+    ?? finalLedgerRecord?.oracle_artifacts?.visual_oracle_artifacts
+    ?? null;
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualOracleArtifacts,
+    {
+      proofLedgerQuery: recomputed,
+      proofLedgerRecord: finalLedgerRecord,
+      producerSubsystem: 'mcp.agent_split_source_first_visual_runtime',
+    },
+  );
   const deterministicVisualMode = enrichedRecords
     .map((record) => isRecord(record) ? record.deterministicVisualMode : null)
     .filter(Boolean)
@@ -6683,6 +6701,10 @@ function withRunModeVisualLedgerProof({
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
     gpuHmrSuccess: recomputed.gpuHmrSuccess,
     gpu_hmr_success: recomputed.gpuHmrSuccess,
   };
@@ -6700,6 +6722,10 @@ function withRunModeVisualLedgerProof({
     proof_ledger: finalLedger,
     runtimeProofArtifact: finalRuntimeProofArtifact,
     runtime_proof_artifact: finalRuntimeProofArtifact,
+    visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
   };
 }
 
