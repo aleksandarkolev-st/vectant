@@ -17,6 +17,7 @@ import {
   analyzeGpuHmrImageEvidence,
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
+  visualEvidenceAcceptedAsImage,
   visualEvidenceAcceptedAsRuntimeProof,
   visualEvidenceIsSupplementalOnly,
 } from './gpu-hmr-visual-evidence.mjs';
@@ -48,6 +49,10 @@ function sha256Hex(value) {
 
 function sha256BufferHash(bytes) {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function contentAddressedSha256(value) {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/i.test(value.trim());
 }
 
 function stableJson(value) {
@@ -469,6 +474,15 @@ function evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath = ne
     acceptedAsVisualEvidence: visualArtifact?.acceptedAsVisualEvidence
       ?? visualArtifact?.accepted_as_visual_evidence
       ?? null,
+    acceptedAsImageEvidence: visualArtifact?.acceptedAsImageEvidence
+      ?? visualArtifact?.accepted_as_image_evidence
+      ?? null,
+    acceptedAsRuntimeVisualProof: visualArtifact?.acceptedAsRuntimeVisualProof
+      ?? visualArtifact?.accepted_as_runtime_visual_proof
+      ?? null,
+    runtimeVisualProofBinding: visualArtifact?.runtimeVisualProofBinding
+      ?? visualArtifact?.runtime_visual_proof_binding
+      ?? null,
     visualEvidenceSupplementalOnly:
       visualArtifact?.visualEvidenceSupplementalOnly
       ?? visualArtifact?.visual_evidence_supplemental_only
@@ -766,6 +780,18 @@ function proofFacetsSnapshot(input = {}, visualEvidenceArtifacts = []) {
     acceptedAsVisualEvidence:
       artifact.acceptedAsVisualEvidence
       ?? artifact.accepted_as_visual_evidence
+      ?? null,
+    acceptedAsImageEvidence:
+      artifact.acceptedAsImageEvidence
+      ?? artifact.accepted_as_image_evidence
+      ?? null,
+    acceptedAsRuntimeVisualProof:
+      artifact.acceptedAsRuntimeVisualProof
+      ?? artifact.accepted_as_runtime_visual_proof
+      ?? null,
+    runtimeVisualProofBinding:
+      artifact.runtimeVisualProofBinding
+      ?? artifact.runtime_visual_proof_binding
       ?? null,
     visualEvidenceSupplementalOnly:
       artifact.visualEvidenceSupplementalOnly
@@ -1947,10 +1973,14 @@ function visualProofArtifactLimitations({
       limitations.push({
         degradedReason: visualEvidenceIsSupplementalOnly(artifact)
           ? 'visual_artifact_supplemental_only'
-          : 'visual_artifact_not_accepted',
+          : visualEvidenceAcceptedAsImage(artifact)
+            ? 'visual_artifact_not_runtime_bound'
+            : 'visual_artifact_not_accepted',
         observedState: visualEvidenceIsSupplementalOnly(artifact)
           ? 'diagnostic_visual_not_runtime_proof'
-          : visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
+          : visualEvidenceAcceptedAsImage(artifact)
+            ? 'image_evidence_without_runtime_ledger_binding'
+            : visualArtifactQuality(artifact) ?? 'gpu-hmr-visual-unaccepted',
         proofArtifactPath: visualArtifactPath(artifact),
       });
     }
@@ -2042,6 +2072,104 @@ function visualOracleArtifactsFromLedgerRecord(record) {
     outputOracleArtifacts.visual_oracle_artifacts,
     outputOracleArtifacts.visualOracleArtifacts,
   ], VISUAL_ORACLE_ARTIFACT_HINT_FIELDS);
+}
+
+function visualOracleArtifactHashes(oracleArtifacts) {
+  const artifacts = objectOrNull(oracleArtifacts);
+  if (!artifacts) return new Set();
+  const verification = objectOrNull(artifacts.visual_pixel_verification)
+    ?? objectOrNull(artifacts.visualPixelVerification)
+    ?? {};
+  return new Set(compactStringList([
+    artifacts.before_image_hash,
+    artifacts.beforeImageHash,
+    artifacts.after_image_hash,
+    artifacts.afterImageHash,
+    artifacts.diff_image_hash,
+    artifacts.diffImageHash,
+    verification.before_image_hash,
+    verification.beforeImageHash,
+    verification.after_image_hash,
+    verification.afterImageHash,
+    verification.diff_image_hash,
+    verification.diffImageHash,
+  ]).filter(contentAddressedSha256));
+}
+
+function runtimeVisualProofBindingForArtifact(artifact, {
+  proofLedgerQuery,
+  proofLedgerRecord,
+}) {
+  const contentHash = visualArtifactHash(artifact);
+  const imageAccepted = visualEvidenceAcceptedAsImage(artifact)
+    && !visualEvidenceIsSupplementalOnly(artifact)
+    && !firstString(artifact.readError, artifact.read_error)
+    && !firstString(artifact.visualAnalysisError, artifact.visual_analysis_error);
+  const oracleHashes = visualOracleArtifactHashes(
+    visualOracleArtifactsFromLedgerRecord(proofLedgerRecord),
+  );
+  const ledgerAccepted = proofLedgerQuery?.gpuHmrSuccess === true;
+  const matchedOracleHash = contentHash && oracleHashes.has(contentHash) ? contentHash : null;
+  const missingReasons = compactStringList([
+    imageAccepted ? null : 'visual_image_evidence_not_accepted',
+    ledgerAccepted ? null : 'proof_ledger_success_required',
+    oracleHashes.size > 0 ? null : 'visual_oracle_ledger_hashes_missing',
+    matchedOracleHash ? null : 'visual_artifact_hash_not_bound_to_ledger_visual_oracle',
+  ]);
+  const accepted = missingReasons.length === 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.runtime_visual_proof_binding.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_visual_proof_binding.v1',
+    proofAuthority: 'proof_ledger_visual_oracle_hash_binding_not_image_only',
+    proof_authority: 'proof_ledger_visual_oracle_hash_binding_not_image_only',
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    imageAccepted,
+    image_accepted: imageAccepted,
+    ledgerAccepted,
+    ledger_accepted: ledgerAccepted,
+    contentHash: contentHash ?? null,
+    content_hash: contentHash ?? null,
+    matchedOracleHash,
+    matched_oracle_hash: matchedOracleHash,
+    oracleHashCount: oracleHashes.size,
+    oracle_hash_count: oracleHashes.size,
+    missingReasons,
+    missing_reasons: missingReasons,
+  };
+}
+
+function bindRuntimeVisualProofArtifacts(artifacts, {
+  proofLedgerQuery,
+  proofLedgerRecord,
+}) {
+  return compactObjects(artifacts).map((artifact) => {
+    const imageAccepted = visualEvidenceAcceptedAsImage(artifact);
+    const binding = runtimeVisualProofBindingForArtifact(artifact, {
+      proofLedgerQuery,
+      proofLedgerRecord,
+    });
+    return {
+      ...artifact,
+      acceptedAsImageEvidence:
+        artifact.acceptedAsImageEvidence
+        ?? artifact.accepted_as_image_evidence
+        ?? imageAccepted,
+      accepted_as_image_evidence:
+        artifact.accepted_as_image_evidence
+        ?? artifact.acceptedAsImageEvidence
+        ?? imageAccepted,
+      acceptedAsRuntimeVisualProof: binding.accepted,
+      accepted_as_runtime_visual_proof: binding.accepted,
+      runtimeVisualProofAccepted: binding.accepted,
+      runtime_visual_proof_accepted: binding.accepted,
+      runtimeVisualProofBinding: binding,
+      runtime_visual_proof_binding: binding,
+    };
+  });
 }
 
 function visualLedgerOracleLimitations({
@@ -3162,7 +3290,13 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const proofLedger = buildGpuHmrProofLedger(proofLedgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const visualEvidenceRefs = compactStringList(input.visualEvidenceRefs);
-  const visualEvidenceArtifacts = compactObjects(input.visualEvidenceArtifacts);
+  const visualEvidenceArtifacts = bindRuntimeVisualProofArtifacts(
+    input.visualEvidenceArtifacts,
+    {
+      proofLedgerQuery,
+      proofLedgerRecord,
+    },
+  );
   const visualEvidenceRequired =
     outputProofRequiresVisualEvidence(
       outputProof,
@@ -3507,6 +3641,10 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
       visual_quality: imageEvidence.visual_quality,
       acceptedAsVisualEvidence,
       accepted_as_visual_evidence: acceptedAsVisualEvidence,
+      acceptedAsImageEvidence: acceptedAsVisualEvidence,
+      accepted_as_image_evidence: acceptedAsVisualEvidence,
+      acceptedAsRuntimeVisualProof: false,
+      accepted_as_runtime_visual_proof: false,
     } : {
       visualQuality: fileRecord.readError
         ? 'gpu-hmr-visual-unreadable-artifact'
@@ -3516,6 +3654,10 @@ export async function visualEvidenceArtifactsFromFiles(paths, existingArtifacts 
         : 'gpu-hmr-visual-unanalyzable-artifact',
       acceptedAsVisualEvidence: false,
       accepted_as_visual_evidence: false,
+      acceptedAsImageEvidence: false,
+      accepted_as_image_evidence: false,
+      acceptedAsRuntimeVisualProof: false,
+      accepted_as_runtime_visual_proof: false,
     };
     records.push({
       ...existing,

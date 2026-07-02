@@ -308,6 +308,9 @@ function visualEvidenceQuality(input) {
       unique_color_sample_count: row.unique_color_sample_count,
       visual_quality: row.visual_quality,
       accepted_as_visual_evidence: row.accepted_as_visual_evidence,
+      accepted_as_image_evidence: row.accepted_as_image_evidence,
+      accepted_as_runtime_visual_proof: row.accepted_as_runtime_visual_proof,
+      runtime_visual_proof_binding: row.runtime_visual_proof_binding ?? row.runtimeVisualProofBinding ?? null,
       visual_evidence_supplemental_only:
         row.visualEvidenceSupplementalOnly === true
         || row.visual_evidence_supplemental_only === true,
@@ -327,7 +330,10 @@ function visualEvidenceQuality(input) {
       rgb_span_mean: null,
       unique_color_sample_count: null,
       visual_quality: 'gpu-hmr-visual-unmeasured',
-      accepted_as_visual_evidence: true,
+      accepted_as_visual_evidence: false,
+      accepted_as_image_evidence: false,
+      accepted_as_runtime_visual_proof: false,
+      runtime_visual_proof_binding: null,
       visual_evidence_supplemental_only: false,
     }));
   return [...measured, ...unmeasured];

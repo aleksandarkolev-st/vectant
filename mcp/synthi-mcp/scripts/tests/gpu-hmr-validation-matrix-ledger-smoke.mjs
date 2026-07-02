@@ -18024,6 +18024,94 @@ const acceptedRuntimeArtifactInput = {
 const acceptedRuntimeArtifactWithoutProbe = acceptedComputeProofMaterials.runtimeProofArtifact;
 assert.equal(acceptedRuntimeArtifactWithoutProbe.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(acceptedRuntimeArtifactWithoutProbe.gpuHmrSuccess, true);
+
+const acceptedVisualRuntimeBindingMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'visual-runtime-binding-smoke',
+});
+const acceptedVisualRuntimeBindingRecord =
+  acceptedVisualRuntimeBindingMaterials.proofLedger.records[0];
+const acceptedVisualRuntimeBindingOracle =
+  (
+    acceptedVisualRuntimeBindingRecord.oracle_artifacts
+    ?? acceptedVisualRuntimeBindingRecord.oracleArtifacts
+  ).visual_oracle_artifacts
+  ?? (
+    acceptedVisualRuntimeBindingRecord.oracle_artifacts
+    ?? acceptedVisualRuntimeBindingRecord.oracleArtifacts
+  ).visualOracleArtifacts;
+const acceptedVisualRuntimeImageArtifact = {
+  path: acceptedVisualRuntimeBindingOracle.after_image,
+  contentHash: acceptedVisualRuntimeBindingOracle.after_image_hash,
+  content_hash: acceptedVisualRuntimeBindingOracle.after_image_hash,
+  width: 800,
+  height: 600,
+  visiblePixels: 2000,
+  visible_pixels: 2000,
+  meanLuma: 96,
+  mean_luma: 96,
+  lumaStddev: 24,
+  luma_stddev: 24,
+  rgbSpanMean: 96,
+  rgb_span_mean: 96,
+  uniqueColorSampleCount: 32,
+  unique_color_sample_count: 32,
+  visualQuality: 'gpu-hmr-visual-varied-frame',
+  visual_quality: 'gpu-hmr-visual-varied-frame',
+  acceptedAsVisualEvidence: true,
+  accepted_as_visual_evidence: true,
+};
+const ledgerBoundVisualRuntimeArtifact = buildValidationRuntimeProofArtifact({
+  ...acceptedRuntimeArtifactInput,
+  workspaceSlug: 'ledger-bound-visual-runtime-smoke',
+  proofLedgerRecord: acceptedVisualRuntimeBindingRecord,
+  acceptanceContract:
+    acceptedVisualRuntimeBindingMaterials.runtimeProofArtifact.acceptanceContract,
+  deterministicVisualMode:
+    acceptedVisualRuntimeBindingRecord.deterministic_visual_mode,
+  visualEvidenceRefs: [acceptedVisualRuntimeImageArtifact.path],
+  visualEvidenceArtifacts: [acceptedVisualRuntimeImageArtifact],
+});
+assert.equal(
+  ledgerBoundVisualRuntimeArtifact.visualEvidenceArtifacts[0].accepted_as_runtime_visual_proof,
+  true,
+);
+assert.equal(
+  ledgerBoundVisualRuntimeArtifact.visualEvidenceArtifacts[0]
+    .runtime_visual_proof_binding.accepted,
+  true,
+);
+assert.ok(!ledgerBoundVisualRuntimeArtifact.limitations.some(
+  (limitation) => limitation.degradedReason === 'visual_artifact_not_runtime_bound',
+));
+const imageOnlyVisualRuntimeArtifact = buildValidationRuntimeProofArtifact({
+  ...acceptedRuntimeArtifactInput,
+  workspaceSlug: 'image-only-visual-runtime-smoke',
+  proofLedgerRecord: acceptedVisualRuntimeBindingRecord,
+  acceptanceContract:
+    acceptedVisualRuntimeBindingMaterials.runtimeProofArtifact.acceptanceContract,
+  deterministicVisualMode:
+    acceptedVisualRuntimeBindingRecord.deterministic_visual_mode,
+  visualEvidenceRefs: [acceptedVisualRuntimeImageArtifact.path],
+  visualEvidenceArtifacts: [{
+    ...acceptedVisualRuntimeImageArtifact,
+    contentHash: hashValue('unbound-image-only-visual-runtime-artifact'),
+    content_hash: hashValue('unbound-image-only-visual-runtime-artifact'),
+  }],
+});
+assert.equal(imageOnlyVisualRuntimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(imageOnlyVisualRuntimeArtifact.gpuHmrSuccess, false);
+assert.equal(
+  imageOnlyVisualRuntimeArtifact.visualEvidenceArtifacts[0].accepted_as_image_evidence,
+  true,
+);
+assert.equal(
+  imageOnlyVisualRuntimeArtifact.visualEvidenceArtifacts[0].accepted_as_runtime_visual_proof,
+  false,
+);
+assert.ok(imageOnlyVisualRuntimeArtifact.limitations.some(
+  (limitation) => limitation.degradedReason === 'visual_artifact_not_runtime_bound',
+));
+
 const missingDependencyRuntimeArtifact = buildValidationRuntimeProofArtifact({
   ...acceptedRuntimeArtifactInput,
   realRocmMissingDependencyProbe: missingDependencyProbe,

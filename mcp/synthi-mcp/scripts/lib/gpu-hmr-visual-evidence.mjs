@@ -874,8 +874,25 @@ export function visualEvidenceAcceptedAsImage(artifact) {
 }
 
 export function visualEvidenceAcceptedAsRuntimeProof(artifact) {
+  const binding = artifact?.runtimeVisualProofBinding
+    ?? artifact?.runtime_visual_proof_binding
+    ?? null;
+  const bindingAccepted = binding
+    && typeof binding === 'object'
+    && binding.accepted === true
+    && (
+      binding.proofAuthority === 'proof_ledger_visual_oracle_hash_binding_not_image_only'
+      || binding.proof_authority === 'proof_ledger_visual_oracle_hash_binding_not_image_only'
+    );
   return visualEvidenceAcceptedAsImage(artifact)
-    && !visualEvidenceIsSupplementalOnly(artifact);
+    && !visualEvidenceIsSupplementalOnly(artifact)
+    && (
+      artifact?.acceptedAsRuntimeVisualProof === true
+      || artifact?.accepted_as_runtime_visual_proof === true
+      || artifact?.runtimeVisualProofAccepted === true
+      || artifact?.runtime_visual_proof_accepted === true
+    )
+    && bindingAccepted;
 }
 
 export async function analyzeGpuHmrImageEvidence(input) {
@@ -949,6 +966,8 @@ export function visualEvidenceRow(extra = {}) {
     ?? extra.visualQuality
     ?? classifyGpuHmrVisualEvidenceStats(row);
   row.accepted_as_visual_evidence = screenshotQualifiesAsVisualEvidence(row);
+  row.accepted_as_image_evidence = row.accepted_as_visual_evidence;
+  row.accepted_as_runtime_visual_proof = visualEvidenceAcceptedAsRuntimeProof(row);
   const artifactCasLocators = collectVisualArtifactCasLocators(extra);
   if (artifactCasLocators.length > 0) {
     row.artifact_cas_locators = artifactCasLocators;

@@ -14371,6 +14371,19 @@ async function agentSplitRow(records, filePath, context) {
     deltaMetrics,
     runtimeVisualOracleEvidenceRequirements(),
   );
+  const proofLedger = compactObject(
+    waitDetail?.proofLedger
+    ?? waitDetail?.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
+  const outputOracleFacet = await ledgerOutputOracleFacet(
+    recomputedLedger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
   const strictRuntimeProofAccepted =
     recomputedLedger.present === true
     && recomputedLedger.source === 'recomputed_ledger'
@@ -14396,8 +14409,11 @@ async function agentSplitRow(records, filePath, context) {
     && identity.targetId !== 'unknown'
     && deltaRecord?.status === 'pass'
     && visual.accepted === true;
-  const accepted =
+  const fullRuntimePreviewProofAccepted =
     strictPreviewProofAccepted === true
+    && outputOracleFacet.accepted === true;
+  const accepted =
+    fullRuntimePreviewProofAccepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
   const sourceAdaptedVisualProfileAccepted =
     strictPreviewProofAccepted === true
@@ -14486,6 +14502,8 @@ async function agentSplitRow(records, filePath, context) {
     source_adaptation: sourceAdaptation,
     sourceAdaptedProfile: sourceAdaptation.sourceAdaptedProfile,
     source_adapted_profile: sourceAdaptation.sourceAdaptedProfile,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     visual,
     runMode,
     cpuHmrUsed: firewall.cpuHmrUsed,
@@ -14502,13 +14520,19 @@ async function agentSplitRow(records, filePath, context) {
       recomputedLedger.source === 'recomputed_ledger' ? null : 'mcp_preview_recomputed_proof_ledger_required',
       runtimeProofArtifactGate.present === true ? null : 'mcp_preview_runtime_proof_artifact_missing',
       runtimeProofArtifactGate.accepted === true ? null : 'mcp_preview_runtime_proof_artifact_not_strictly_accepted',
+      outputOracleFacet.accepted === true ? null : 'mcp_preview_visual_oracle_not_bound_to_runtime_ledger',
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
     openGaps: accepted ? [] : compactStringList([
       'mcp_runtime_visual_proof_not_accepted',
+      outputOracleFacet.accepted === true
+        ? null
+        : 'mcp_preview_visual_oracle_runtime_ledger_binding_required',
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
     ]),
   });
@@ -14740,6 +14764,19 @@ async function hiprtWarmRow(json, filePath, context) {
     },
     runtimeVisualOracleEvidenceRequirements(),
   );
+  const proofLedger = compactObject(
+    json.proofLedger
+    ?? json.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
+  const outputOracleFacet = await ledgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
   const oracleRegionAccepted =
     acceptance.oracleRegionNonBlank === true
     && oracleRegion.nonBlankAfterEpoch === true
@@ -14788,6 +14825,7 @@ async function hiprtWarmRow(json, filePath, context) {
     && processRestarted === false;
   const strictVisualProofAccepted =
     strictVisualProfileAccepted === true
+    && outputOracleFacet.accepted === true
     && runtimeProofArtifactProof.accepted === true
     && strict.fullRuntimeProven === true
     && strict.strictFullRuntimePassed === true;
@@ -14870,6 +14908,8 @@ async function hiprtWarmRow(json, filePath, context) {
     sourceAdaptedProfile,
     source_adapted_profile: sourceAdaptedProfile,
     oracleRegion: oracleRegionRecomputed,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     visual,
     runMode,
     cpuHmrUsed,
@@ -14883,6 +14923,7 @@ async function hiprtWarmRow(json, filePath, context) {
     reasons: accepted ? [] : compactStringList([
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      outputOracleFacet.accepted === true ? null : 'visual_oracle_not_bound_to_runtime_ledger',
       strict.fullRuntimeProven === true ? null : 'strict_full_runtime_not_proven',
       ledger.present === true ? null : 'proof_ledger_missing',
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_not_recomputed',
@@ -14900,6 +14941,7 @@ async function hiprtWarmRow(json, filePath, context) {
         ? null
         : 'hiprt_profile_instrumentation_disclosure_not_proven',
       ...visual.failedGates,
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...runtimeProbeInstrumentation.failedGates,
       ...hiprtContract.failedGates,
       ...oracleRegionRecomputed.failedGates.map((failure) => failure.code),
@@ -14913,7 +14955,11 @@ async function hiprtWarmRow(json, filePath, context) {
           : compactStringList([
               'hiprt_same_process_visual_proof_not_accepted',
               hiprtContract.accepted === true ? null : 'hiprt_contract_required',
+              outputOracleFacet.accepted === true
+                ? null
+                : 'hiprt_visual_oracle_runtime_ledger_binding_required',
               ...visual.failedGates,
+              ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
               ...hiprtContract.failedGates,
             ]),
   });
@@ -14939,6 +14985,19 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     runtimeVisualOracleEvidenceRequirements(),
   );
   const ledger = ledgerFacet(json);
+  const proofLedger = compactObject(
+    json.proofLedger
+    ?? json.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
+  const outputOracleFacet = await ledgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
   const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
@@ -15002,8 +15061,11 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && runtimeProofArtifactGate.accepted === true
     && visual.accepted === true
     && deterministicVisualModeEvaluation.accepted === true;
-  const accepted =
+  const strictRuntimeVisualProofAccepted =
     strictVisualProofAccepted === true
+    && outputOracleFacet.accepted === true;
+  const accepted =
+    strictRuntimeVisualProofAccepted === true
     && sourceAdaptation.acceptedForNoShimHmr === true;
   const sourceAdaptedVisualProfileAccepted =
     strictVisualProofAccepted === true
@@ -15068,6 +15130,8 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
     visual,
     runMode: timingEvidence(
       ledgerRecord,
@@ -15088,6 +15152,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       ledger.present === true ? null : 'proof_ledger_record_missing',
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      outputOracleFacet.accepted === true ? null : 'visual_oracle_not_bound_to_runtime_ledger',
       json.visualThresholdValidation?.accepted === true ? null : 'visual_threshold_not_accepted',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
@@ -15095,11 +15160,16 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
       declaredScopeEvidence.accepted === true ? null : 'webgpu_visual_declared_scope_not_evidence_backed',
       deterministicVisualModeEvaluation.accepted === true ? null : 'deterministic_visual_mode_not_accepted',
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted ? [] : compactStringList([
       'webgpu_runtime_visual_proof_not_accepted',
+      outputOracleFacet.accepted === true
+        ? null
+        : 'webgpu_visual_oracle_runtime_ledger_binding_required',
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...declaredScopeEvidence.failedGates,
       ...deterministicVisualModeEvaluation.failedGates.map((failure) => failure.code),
       ...sourceAdaptation.failedGates.map((failure) => failure.code),
@@ -22416,32 +22486,29 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   );
   const asyncVisualProofJob = rawAsyncVisualProofJob(json);
   const asyncVisualCasBundle = asyncVisualCasBundleFacet(json, visual);
+  const proofLedger = compactObject(
+    json.proofLedger
+    ?? json.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
   const declaredOutputOracleFacet = compactObject(
     json.outputOracleFacet
     ?? json.output_oracle_facet
     ?? json.outputOracle
     ?? json.output_oracle,
   );
-  const outputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
+  const outputOracleFacet = await ledgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    visual,
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  outputOracleFacet.declaredOutputOracleFacet = Object.keys(declaredOutputOracleFacet).length > 0
     ? declaredOutputOracleFacet
-    : {
-      kind: 'visual_oracle',
-      oracleKind: 'visual_oracle',
-      oracle_kind: 'visual_oracle',
-      accepted: visual.accepted === true && visual.present === true,
-      proofAuthority: 'matrix_recomputed_visual_oracle_artifacts_not_gpu_hmr_success',
-      proof_authority: 'matrix_recomputed_visual_oracle_artifacts_not_gpu_hmr_success',
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      canSatisfyRuntimeProof: false,
-      can_satisfy_runtime_proof: false,
-      visualAccepted: visual.accepted === true,
-      visual_accepted: visual.accepted === true,
-      failedGates: visual.accepted === true ? [] : ['visual_artifacts_not_accepted'],
-      failed_gates: visual.accepted === true ? [] : ['visual_artifacts_not_accepted'],
-    };
+    : null;
+  outputOracleFacet.declared_output_oracle_facet = outputOracleFacet.declaredOutputOracleFacet;
   const asyncVisualProofJobBindingAccepted =
     asyncVisualCasBundle.asyncVisualProofJobPresent !== true
     || asyncVisualCasBundle.asyncVisualProofJobBinding?.accepted === true;
@@ -22514,6 +22581,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     ));
   const strictRuntimeVisualProof =
     strictRuntimeVisualProfileProof === true
+    && outputOracleFacet.accepted === true
     && runtimeProofArtifactGate.accepted === true
     && json.gpuHmrSuccess === true;
   const acceptedRuntime =
@@ -22656,6 +22724,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       sourceAdaptedVisualProfileAccepted ? 'source_adapted_profile_not_no_shim_gpu_hmr' : null,
       runMode.accepted ? null : 'run_mode_timing_not_accepted',
       visual.accepted ? null : 'visual_artifacts_not_readable',
+      !isCold && outputOracleFacet.accepted !== true
+        ? 'visual_oracle_not_bound_to_runtime_ledger'
+        : null,
       isCold || ledger.present ? null : 'embedded_proof_ledger_missing',
       isCold || ledger.source === 'recomputed_ledger' ? null : 'embedded_proof_ledger_not_recomputed',
       isCold || ledger.gpuHmrSuccess === true ? null : 'embedded_proof_ledger_not_accepted',
@@ -22676,6 +22747,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
       ...visual.failedGates,
+      ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...ledger.failedInvariants.map((failure) => failure.code),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...(backend === 'hiprt' && !isCold ? runtimeProbeInstrumentation.failedGates : []),
@@ -22701,7 +22773,11 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
             : null,
           asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_required',
           visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_visual_locator_required',
+          !isCold && outputOracleFacet.accepted !== true
+            ? 'visual_oracle_runtime_ledger_binding_required'
+            : null,
           ...visual.failedGates,
+          ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
           ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),
           ...sourceAdaptation.failedGates.map((failure) => failure.code),
           ...(requiresSourceFirstIngestion ? sourceFirstIngestion.failedGates : []),
@@ -25966,7 +26042,14 @@ function hipModuleScopedRuntimeCoverage(rows) {
 }
 
 function rowHasAcceptedVisualEvidence(row) {
-  return row.visual?.present === true && row.visual?.accepted === true;
+  const visualAccepted = row.visual?.present === true && row.visual?.accepted === true;
+  if (!visualAccepted) return false;
+  const outputOracleFacet = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const runtimeVisualAuthorityRequired =
+    row.matrixOutcome === 'full_runtime_gpu_hmr'
+    || row.acceptedForGpuHmr === true
+    || row.gpuHmrSuccess === true;
+  return !runtimeVisualAuthorityRequired || outputOracleFacet.accepted === true;
 }
 
 function rowHasAcceptedExternalProjectContract(row, options = {}) {
