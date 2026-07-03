@@ -14,6 +14,7 @@ Latest continuation update on 2026-07-03:
 - `d358f8378 fix(gpu-hmr): require hiprt profile proof shape` keeps HIPRT visual-profile coverage diagnostic unless strict runtime proof, recomputed ledger binding, runtime visual proof binding, output-oracle evidence, and firewall fields are present.
 - `bec134f60 fix(gpu-hmr): require accepted compute oracle facet` keeps compute proof cards supplemental. Compute GPU HMR output closure now requires an accepted `compute_oracle` output facet; a rendered card cannot substitute for raw readback/schema/checksum proof.
 - `129d48aa7 fix(gpu-hmr): require strict oracle authority for broad proof` makes broad-readiness visual/compute target counts use recomputed strict full-runtime oracle authority instead of row-carried oracle booleans.
+- `fc90f1fdb fix(gpu-hmr): bind source-first attempts to source identity` removes target/profile labels from source-first visual attempt identity once a content-addressed source identity is proven. A newer relabeled attempt for the same source now blocks broad readiness through latest-attempt freshness instead of being hidden under a different target label.
 
 Latest verification for this continuation:
 
@@ -90,6 +91,22 @@ npm run proof:validation-matrix
   outcomes: refusal_proven=175, cold_split_proven=10, full_runtime_gpu_hmr=17, deterministic_fission_proven=2, visual_profile_accepted=2, preflight_only=1
   backends: bevy_wgsl=1, hip=163, hiprt=6, oidn_hip=7, opencl=5, unknown=5, vulkan=7, webgpu=13
   broad proof: gpu-hmr-broad-library-agnostic-proof:sha256:d92611e746bccd4a437f26d28543d5b785dee8a7685ff647b83dfeff2e855242
+  random cold-path rows: 9
+  source-first visual rows: 4
+  open broad gaps: none
+
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
+  passed after source-first attempt identity hardening
+  proof: gpu-validation-matrix-ledger:sha256:8e3b1fadf7d3448da8c9ad18cec463e8f65414a47beb38a46eca39177e909a0b
+  rows: 77
+
+npm run proof:validation-matrix
+  passed after source-first attempt identity hardening
+  matrix: gpu-validation-matrix-ledger:sha256:4bc2bece67fde48515b29850e833a39e5d8e83e40c5c42ff21e795b099e24f51
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260703T171752Z.json
+  rows: 207
+  outcomes: refusal_proven=175, cold_split_proven=10, full_runtime_gpu_hmr=17, deterministic_fission_proven=2, visual_profile_accepted=2, preflight_only=1
+  broad proof: gpu-hmr-broad-library-agnostic-proof:sha256:a6c39e69810f889cb1f8c04068b9fdb387ff46b5f6a0db92da9aab0897696a36
   random cold-path rows: 9
   source-first visual rows: 4
   open broad gaps: none
