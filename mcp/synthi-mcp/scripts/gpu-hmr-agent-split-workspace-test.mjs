@@ -638,6 +638,17 @@ function normalizeDirectSourceOverride(rawManifest, {
   fallbackEntryPath = 'main.cpp',
 } = {}) {
   const raw = profileObject(rawManifest, 'directSourceManifest');
+  const manifestAcceptedForGpuHmr = raw.acceptedForGpuHmr ?? raw.accepted_for_gpu_hmr;
+  const manifestGpuHmrSuccess = raw.gpuHmrSuccess ?? raw.gpu_hmr_success;
+  const manifestCanSatisfyRuntimeProof =
+    raw.canSatisfyRuntimeProof ?? raw.can_satisfy_runtime_proof;
+  if (
+    manifestAcceptedForGpuHmr === true
+    || manifestGpuHmrSuccess === true
+    || manifestCanSatisfyRuntimeProof === true
+  ) {
+    throw new Error('direct source manifest must not claim GPU HMR or runtime proof authority');
+  }
   const source = profileObject(raw.source ?? raw, 'directSourceManifest.source');
   const manifestDir = manifestPath ? path.dirname(resolveProfilePath(manifestPath)) : process.cwd();
   const rootFromManifest = profileString(
@@ -746,6 +757,34 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
   profile.source_authority = override.source_authority;
   refreshAgentProfileHash(profile);
   return profile;
+}
+
+function directSourceProfileId(override) {
+  const hash = String(override?.manifestHash ?? override?.manifest_hash ?? '')
+    .replace(/^sha256:/i, '')
+    .slice(0, 16)
+    .toLowerCase()
+    .replace(/[^a-f0-9]+/g, '');
+  return `direct-source-${hash || 'manifest'}`;
+}
+
+function createDirectSourceAgentProfile(override = loadDirectSourceOverride()) {
+  if (!override) return null;
+  const baseProfile = normalizeAgentVisualProfile({
+    schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+    profileId: directSourceProfileId(override),
+    profileClass: 'direct_source_visual_gpu_path',
+    source: {
+      entryPath: override.entryPath,
+      files: override.files,
+    },
+    compile: {
+      width: 800,
+      height: 600,
+    },
+    requireDeclaredEdits: false,
+  });
+  return applyDirectSourceOverride(baseProfile, override);
 }
 
 function agentProfileHash(profile) {
@@ -952,13 +991,17 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
 
 function loadAgentVisualProfile(profilePath = CFG.profilePath) {
   const configured = profileString(profilePath, 'SYNTHI_GPU_AGENT_PROFILE_PATH');
-  if (!configured) return null;
+  const directSourceOverride = loadDirectSourceOverride();
+  if (!configured) return createDirectSourceAgentProfile(directSourceOverride);
   const resolved = resolveProfilePath(configured);
   if (!existsSync(resolved)) {
     throw new Error(`agent visual profile not found: ${resolved}`);
   }
   const raw = JSON.parse(readFileSync(resolved, 'utf8'));
-  return applyDirectSourceOverride(normalizeAgentVisualProfile(raw, { profilePath: resolved }));
+  return applyDirectSourceOverride(
+    normalizeAgentVisualProfile(raw, { profilePath: resolved }),
+    directSourceOverride,
+  );
 }
 
 function sourceFromAgentVisualProfile(profile, vendor) {
@@ -1018,6 +1061,7 @@ function validationProfileId() {
 }
 
 function validationFixtureId() {
+  if (ACTIVE_AGENT_PROFILE) return ACTIVE_AGENT_PROFILE.source?.fixture || '';
   return ACTIVE_AGENT_PROFILE?.source?.fixture || CFG.fixture;
 }
 
@@ -1026,9 +1070,11 @@ function validationProfileClass() {
 }
 
 function validationProfileEvidenceSource() {
-  return ACTIVE_AGENT_PROFILE
-    ? 'agent_split_profile_runtime_visual_proof'
-    : 'agent_split_fixture_runtime_visual_proof';
+  if (!ACTIVE_AGENT_PROFILE) return 'agent_split_fixture_runtime_visual_proof';
+  const sourceAuthority = ACTIVE_AGENT_PROFILE.sourceAuthority ?? ACTIVE_AGENT_PROFILE.source_authority ?? '';
+  return DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority)
+    ? 'agent_split_direct_source_runtime_visual_proof'
+    : 'agent_split_profile_runtime_visual_proof';
 }
 
 function validationProfileEntryPath() {
@@ -5191,6 +5237,38 @@ function selfCheckAgentVisualProfile() {
     } catch (err) {
       directProfileAuthorityRejected = String(err.message).includes('invalid direct source authority');
     }
+    let directSuccessClaimRejected = false;
+    try {
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        acceptedForGpuHmr: true,
+        entryPath: 'src/main.cpp',
+        files: [{
+          path: 'src/main.cpp',
+          inline: multiFileEntrySource,
+        }],
+      });
+    } catch (err) {
+      directSuccessClaimRejected = String(err.message).includes('must not claim GPU HMR');
+    }
+    const directBootstrapProfile = createDirectSourceAgentProfile(
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        entryPath: 'src/main.cpp',
+        files: [
+          {
+            path: 'include/params.hpp',
+            inline: multiFileHeaderSource,
+          },
+          {
+            path: 'src/main.cpp',
+            inline: multiFileEntrySource,
+          },
+        ],
+      }, {
+        manifestPath: path.join(process.cwd(), 'self-check-direct-bootstrap-source-manifest.json'),
+      }),
+    );
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -5284,6 +5362,8 @@ function selfCheckAgentVisualProfile() {
       sawGpuSplit: { matched: false },
       splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
     });
+    const directSourceFixtureId = validationFixtureId();
+    const directSourceEvidenceSource = validationProfileEvidenceSource();
     ACTIVE_AGENT_PROFILE = multiFileProfile;
     const dirtySecondaryInitialFiles = multiFileInitialFiles.map((entry) =>
       entry.path === 'include/params.hpp'
@@ -5472,11 +5552,17 @@ function selfCheckAgentVisualProfile() {
       || multiFileProfile.sourceAuthority !== 'profile_source_files'
       || directSourceProfile.sourceAuthority !== 'user_source_files'
       || directSourceProfile.source.fixture !== ''
+      || directBootstrapProfile.sourceAuthority !== 'user_source_files'
+      || directBootstrapProfile.source.fixture !== ''
+      || directBootstrapProfile.profileId === 'flow'
+      || !directBootstrapProfile.profileId.startsWith('direct-source-')
       || directSourceProfile.source.files.length !== 2
       || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
       || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')
       || directSourceResolvedSource !== multiFileEntrySource
       || directSourceInitialFiles.length !== 2
+      || directSourceFixtureId !== ''
+      || directSourceEvidenceSource !== 'agent_split_direct_source_runtime_visual_proof'
       || acceptedDirectSourceFirst.accepted !== true
       || acceptedDirectSourceFirst.sourceAuthority !== 'user_source_files'
       || acceptedDirectSourceFirst.sourceTreeManifestHashMatches !== true
@@ -5496,6 +5582,7 @@ function selfCheckAgentVisualProfile() {
         String(entry).startsWith('evidence:agent-direct-source-file:sha256:')
       )
       || !directProfileAuthorityRejected
+      || !directSuccessClaimRejected
       || multiFileProfile.source.files.length !== 2
       || !multiFileProfile.source.manifestHash?.startsWith('sha256:')
       || multiFileResolvedSource !== multiFileEntrySource

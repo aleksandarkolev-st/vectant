@@ -95,6 +95,7 @@ const VALIDATION_PROFILE_EVIDENCE_SCHEMA_VERSION =
 const VALIDATION_PROFILE_EVIDENCE_SOURCES = new Set([
   'agent_split_fixture_runtime_visual_proof',
   'agent_split_profile_runtime_visual_proof',
+  'agent_split_direct_source_runtime_visual_proof',
   'agent_split_run_mode_visual_ledger_recomputed',
 ]);
 const AGENT_SPLIT_SOURCE_FIRST_INGESTION_SCHEMA_VERSION =
