@@ -28712,7 +28712,10 @@ function rowHasAcceptedVisualEvidence(row) {
     row.matrixOutcome === 'full_runtime_gpu_hmr'
     || row.acceptedForGpuHmr === true
     || row.gpuHmrSuccess === true;
-  return !runtimeVisualAuthorityRequired || outputOracleFacet.accepted === true;
+  if (!runtimeVisualAuthorityRequired) return true;
+  return outputOracleFacet.accepted === true
+    && firstText(outputOracleFacet.kind, outputOracleFacet.oracleKind, outputOracleFacet.oracle_kind)
+      === 'visual_oracle';
 }
 
 function rowHasAcceptedExternalProjectContract(row, options = {}) {

@@ -10257,6 +10257,20 @@ function withoutOutputOracleFacet(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withComputeOutputOracleFacetOnVisualRow(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const outputOracle = {
+    ...(cloned.outputOracleFacet ?? cloned.output_oracle_facet ?? {}),
+    kind: 'compute_oracle',
+  };
+  outputOracle.oracleKind = 'compute_oracle';
+  outputOracle.oracle_kind = 'compute_oracle';
+  outputOracle.accepted = true;
+  cloned.outputOracleFacet = outputOracle;
+  cloned.output_oracle_facet = outputOracle;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withoutSourceFirstVisualSupport(row) {
   const cloned = JSON.parse(JSON.stringify(row));
   delete cloned.sourceFirstIngestion;
@@ -12646,6 +12660,26 @@ assert.equal(
 );
 assert.ok(
   broadReadinessWithoutVisualOutputOracleFacetQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithComputeOutputOracleVisualRowsQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows.map((row) => withComputeOutputOracleFacetOnVisualRow(row)),
+    ...broadReadinessRandomColdRows,
+  ],
+});
+assert.equal(
+  broadReadinessWithComputeOutputOracleVisualRowsQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithComputeOutputOracleVisualRowsQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithComputeOutputOracleVisualRowsQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
 );
 const forgedComputeCardOnlyOutputClosureQuery = queryGpuHmrValidationMatrixLedger({
