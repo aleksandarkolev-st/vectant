@@ -10694,6 +10694,61 @@ assert.equal(acceptedRowRefusalMismatchQuery.accepted, false);
 assert.ok(acceptedRowRefusalMismatchQuery.failedGates.some((gate) =>
   gate.code === 'accepted_gpu_hmr_row_cannot_be_refusal_proven'
 ));
+const diagnosticSelfCheckAcceptedRow = withQueryRecomputedRowId(
+  acceptedAuthoritativeMatrixRow('accepted-diagnostic-self-check-artifact', {
+    diagnosticArtifactMarkers: {
+      schemaVersion: 'synthi.gpu_hmr.diagnostic_artifact_marker.v1',
+      schema_version: 'synthi.gpu_hmr.diagnostic_artifact_marker.v1',
+      proofAuthority: 'diagnostic_artifact_marker_detection_not_gpu_hmr_acceptance',
+      proof_authority: 'diagnostic_artifact_marker_detection_not_gpu_hmr_acceptance',
+      accepted: false,
+      selfCheckMarkerPresent: true,
+      self_check_marker_present: true,
+      diagnosticOnly: true,
+      diagnostic_only: true,
+      markers: [
+        {
+          role: 'runtime_proof_artifact.gpu_arch_source',
+          value: 'self_check_fixture',
+        },
+      ],
+      selfCheckMarkers: [
+        {
+          role: 'runtime_proof_artifact.gpu_arch_source',
+          value: 'self_check_fixture',
+        },
+      ],
+      self_check_markers: [
+        {
+          role: 'runtime_proof_artifact.gpu_arch_source',
+          value: 'self_check_fixture',
+        },
+      ],
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      failedGates: [{ code: 'diagnostic_self_check_artifact_cannot_accept_gpu_hmr' }],
+      failed_gates: [{ code: 'diagnostic_self_check_artifact_cannot_accept_gpu_hmr' }],
+    },
+  }),
+);
+diagnosticSelfCheckAcceptedRow.diagnostic_artifact_markers =
+  diagnosticSelfCheckAcceptedRow.diagnosticArtifactMarkers;
+const diagnosticSelfCheckAcceptedQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [diagnosticSelfCheckAcceptedRow],
+});
+assert.equal(diagnosticSelfCheckAcceptedQuery.accepted, false);
+assert.equal(diagnosticSelfCheckAcceptedQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(diagnosticSelfCheckAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_diagnostic_self_check_artifact'
+));
+assert.ok(diagnosticSelfCheckAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'diagnostic_self_check_artifact_cannot_accept_gpu_hmr'
+));
 const sourceAdaptedFirewallQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: [

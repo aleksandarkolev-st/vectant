@@ -8768,6 +8768,12 @@ function finalizeRow(seed) {
   row.full_runtime_evidence_authority = row.fullRuntimeEvidenceAuthority;
   row.noShimSourceIdentity = noShimSourceIdentityFacet(row);
   row.no_shim_source_identity = row.noShimSourceIdentity;
+  if (!isObject(row.diagnosticArtifactMarkers) && !isObject(row.diagnostic_artifact_markers)) {
+    row.diagnosticArtifactMarkers = diagnosticSelfCheckArtifactFacet(row);
+  } else if (!isObject(row.diagnosticArtifactMarkers)) {
+    row.diagnosticArtifactMarkers = compactObject(row.diagnostic_artifact_markers);
+  }
+  row.diagnostic_artifact_markers = row.diagnosticArtifactMarkers;
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -14250,6 +14256,79 @@ function fullRuntimeEvidenceAuthorityFacet(row = {}) {
   };
 }
 
+function diagnosticSelfCheckArtifactFacet(...sources) {
+  const markerEntries = [];
+  const pushMarker = (role, value) => {
+    const textValue = firstText(value);
+    if (!textValue) return;
+    markerEntries.push({ role, value: textValue });
+  };
+  const scan = (source, prefix = '') => {
+    const object = compactObject(source);
+    if (Object.keys(object).length === 0) return;
+    pushMarker(`${prefix}worker_container`, object.workerContainer ?? object.worker_container);
+    pushMarker(`${prefix}gpu_arch_source`, object.gpuArchSource ?? object.gpu_arch_source);
+    pushMarker(`${prefix}rocm_prefix_source`, object.rocmPrefixSource ?? object.rocm_prefix_source);
+    pushMarker(
+      `${prefix}runtime_boundary_event_source`,
+      object.runtimeBoundaryEventSource ?? object.runtime_boundary_event_source,
+    );
+    pushMarker(
+      `${prefix}runtime_boundary_event_manifest_source`,
+      object.runtimeBoundaryEventManifestSource ?? object.runtime_boundary_event_manifest_source,
+    );
+    pushMarker(
+      `${prefix}runtime_adapter_template_source`,
+      object.runtimeAdapterTemplateSource ?? object.runtime_adapter_template_source,
+    );
+  };
+
+  for (const source of sources) {
+    const object = compactObject(source);
+    scan(object);
+    scan(object.runtimeProofArtifact ?? object.runtime_proof_artifact, 'runtime_proof_artifact.');
+    scan(object.acceptanceContract ?? object.acceptance_contract, 'acceptance_contract.');
+    scan(object.compileContract ?? object.compile_contract, 'compile_contract.');
+    scan(object.initialCompileContract ?? object.initial_compile_contract, 'initial_compile_contract.');
+    scan(object.runtimeBoundary ?? object.runtime_boundary, 'runtime_boundary.');
+  }
+
+  const selfCheckMarkers = markerEntries.filter((entry) => {
+    const normalized = entry.value.toLowerCase().replace(/[-\s]+/g, '_');
+    return normalized === 'self_check'
+      || normalized === 'self_check_fixture'
+      || normalized.endsWith('_self_check')
+      || normalized.includes('_self_check_');
+  });
+  const selfCheckMarkerPresent = selfCheckMarkers.length > 0;
+  const failedGates = selfCheckMarkerPresent
+    ? [{ code: 'diagnostic_self_check_artifact_cannot_accept_gpu_hmr' }]
+    : [];
+
+  return {
+    schemaVersion: 'synthi.gpu_hmr.diagnostic_artifact_marker.v1',
+    schema_version: 'synthi.gpu_hmr.diagnostic_artifact_marker.v1',
+    proofAuthority: 'diagnostic_artifact_marker_detection_not_gpu_hmr_acceptance',
+    proof_authority: 'diagnostic_artifact_marker_detection_not_gpu_hmr_acceptance',
+    accepted: selfCheckMarkerPresent !== true,
+    selfCheckMarkerPresent,
+    self_check_marker_present: selfCheckMarkerPresent,
+    diagnosticOnly: selfCheckMarkerPresent,
+    diagnostic_only: selfCheckMarkerPresent,
+    markers: markerEntries,
+    selfCheckMarkers,
+    self_check_markers: selfCheckMarkers,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function rowSafetyFailures(row, context = {}) {
   const failures = [];
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
@@ -14341,6 +14420,22 @@ function rowSafetyFailures(row, context = {}) {
     const noShimSourceIdentity = noShimSourceIdentityFacet(row);
     if (noShimSourceIdentity.accepted !== true) {
       failures.push(...compactObjectList(noShimSourceIdentity.failedGates ?? noShimSourceIdentity.failed_gates));
+    }
+    const diagnosticArtifactMarkers = compactObject(
+      row.diagnosticArtifactMarkers
+      ?? row.diagnostic_artifact_markers,
+    );
+    if (
+      firstBool(
+        diagnosticArtifactMarkers.selfCheckMarkerPresent,
+        diagnosticArtifactMarkers.self_check_marker_present,
+      ) === true
+    ) {
+      failures.push({ code: 'gpu_hmr_success_cannot_use_diagnostic_self_check_artifact' });
+      failures.push(...compactObjectList(
+        diagnosticArtifactMarkers.failedGates
+        ?? diagnosticArtifactMarkers.failed_gates,
+      ));
     }
   }
   if (row.acceptedForGpuHmr === true && row.cpuHmrUsed !== false) {
