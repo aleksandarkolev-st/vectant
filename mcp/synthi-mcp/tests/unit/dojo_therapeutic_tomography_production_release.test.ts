@@ -356,6 +356,69 @@ describe("therapeutic tomography production release evidence gate", () => {
       restore();
     }
   });
+
+  it("writes production evidence only after runtime, probes, store, signing, and authorization path pass", async () => {
+    const {
+      runTherapeuticTomographyProductionReleaseEvidence,
+      validateProductionTherapeuticTomographyEvidence,
+    } = await releaseModulePromise;
+    const { env, restore } = externalSignerEnv();
+    const outputPath = join(await mkdtemp(join(tmpdir(), "therapeutic-prod-success-")), "evidence.json");
+    try {
+      const result = await runTherapeuticTomographyProductionReleaseEvidence({
+        env,
+        outputPath,
+        now: "2026-07-01T00:00:00.000Z",
+        fetchImpl: productionFetch(),
+      });
+
+      expect(existsSync(outputPath)).toBe(true);
+      expect(result.output_path).toBe(outputPath);
+      expect(validateProductionTherapeuticTomographyEvidence(result.artifact).ok).toBe(true);
+      expect(result.artifact.hosted_runtime.authorization_context).toMatchObject({
+        session_id: "session-prod-001",
+        tenant_id: "tenant-prod-001",
+        organization_id: "org-prod-001",
+        workspace_id: "workspace-prod-001",
+        actor_id: "agent-prod-001",
+      });
+      expect(result.artifact.deployed_probe_adapter.http_observations.map((item: any) => item.probe_name)).toEqual([
+        "service_health_rollup",
+        "blast_radius_summary",
+      ]);
+      expect(result.artifact.production_durable_store).toMatchObject({
+        kind: "external_control_plane",
+        readback_url: "https://control.prod.synthi.ai/therapeutic/runtime-state/record-prod-001",
+        append_status: 201,
+        read_status: 200,
+        reconstruction_verified: true,
+      });
+      expect(result.artifact.proof_signing).toMatchObject({
+        signing_provider: "external-command",
+        key_custody: "external",
+        signature_algorithm: "ed25519",
+        signature_verified: true,
+      });
+      expect(result.artifact.authorization_path).toMatchObject({
+        unauthorized_bypass_decision: "denied",
+        access_decision: "approved",
+        protected_dispatch_decision: "approved",
+        post_revocation_dispatch_decision: "denied",
+      });
+      expect(result.artifact.safety_assertions).toMatchObject({
+        narrative_only_access_decision: "denied",
+        narrative_only_grants_broader_access: false,
+        diagnostic_proof_authorized_mutation: false,
+        broad_access_granted: false,
+        raw_logs_granted: false,
+        model_weights_granted: false,
+        admin_privileges_granted: false,
+        full_db_access_granted: false,
+      });
+    } finally {
+      restore();
+    }
+  });
 });
 
 function externalSignerEnv() {
