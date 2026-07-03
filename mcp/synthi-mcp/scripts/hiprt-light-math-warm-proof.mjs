@@ -3921,6 +3921,8 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
   proof.gpu_hmr_success = proof.gpuHmrSuccess;
   proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
   proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
+  proof.visualProofAccepted = proof.accepted === true;
+  proof.visual_proof_accepted = proof.visualProofAccepted;
   proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(stableJson({
     slug: proof.slug,
     proofLedgerId: proof.proofLedger.proofId,
@@ -4283,6 +4285,8 @@ async function main() {
   proof.gpu_hmr_success = proof.gpuHmrSuccess;
   proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
   proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
+  proof.visualProofAccepted = proof.accepted === true;
+  proof.visual_proof_accepted = proof.visualProofAccepted;
   const proofBytesForId = Buffer.from(JSON.stringify({
     schemaVersion: proof.schemaVersion,
     slug: proof.slug,
@@ -4298,6 +4302,7 @@ async function main() {
     timingMetrics: proof.timingMetrics,
     acceptance: proof.acceptance,
     accepted: proof.accepted,
+    visualProofAccepted: proof.visualProofAccepted,
     gpuHmrSuccess: proof.gpuHmrSuccess,
     visualProfileAccepted: proof.visualProfileAccepted,
     sourceAdaptedProfile: proof.sourceAdaptedProfile,
@@ -4317,7 +4322,15 @@ async function main() {
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-proof.json`);
   await fs.writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
   console.log(JSON.stringify({
-    accepted,
+    accepted: proof.gpuHmrSuccess,
+    acceptedForGpuHmr: proof.acceptedForGpuHmr,
+    accepted_for_gpu_hmr: proof.acceptedForGpuHmr,
+    gpuHmrSuccess: proof.gpuHmrSuccess,
+    gpu_hmr_success: proof.gpuHmrSuccess,
+    visualProofAccepted: proof.visualProofAccepted,
+    visual_proof_accepted: proof.visualProofAccepted,
+    visualEvidenceAccepted: accepted,
+    visual_evidence_accepted: accepted,
     proofId: proof.proofId,
     proofPath,
     mode: CFG.mode,
@@ -4347,6 +4360,7 @@ async function main() {
     },
     claimBoundary: {
       gpuHmrSuccess: proof.gpuHmrSuccess,
+      visualProofAccepted: proof.visualProofAccepted,
       visualProfileAccepted: proof.visualProfileAccepted,
       sourceAdaptedProfile: proof.sourceAdaptedProfile,
       acceptedForGpuHmr: proof.acceptedForGpuHmr,
